@@ -1,5 +1,6 @@
 {
   "schemaVersion": 3,
+  "platforms": ["codex"],
   "name": "native-only",
   "version": "0.1.0",
   "description": "Fixture plugin without Codex project repo-managed artifacts.",
@@ -9,8 +10,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": ["CODEX"]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {

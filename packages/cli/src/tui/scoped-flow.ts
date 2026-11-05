@@ -99,17 +99,17 @@ export async function prepareTargetsPlan(
   if (expected.state === 'unreadable' || action === 'set' && expected.state === 'invalid') {
     throw new Error('deploymentPreferencesUnavailable');
   }
-  const previousAgents = expected.state === 'valid' ? expected.value.agents : [];
-  const overrideCount = expected.state === 'valid' ? expected.value.dependencyScopeOverrides.length : 0;
+  const previousAgents = expected.state === 'valid' ? expected.value.targets : [];
+  const overrideCount = expected.state === 'valid' ? expected.value.exclusions.length : 0;
   const nextAgents = action === 'reset' ? [] : normalizeAgents(agents);
   if (await preferencesPath(location) !== canonicalPath) throw new Error('operationReviewStale');
   return {
     kind: 'targets', scope: location.scope, action, agents: nextAgents, previousAgents,
     overrideCount, expected, canonicalPath,
     changes: action === 'reset'
-      ? ['清空本机工具选择', `清空 ${overrideCount} 项本机依赖范围覆盖`]
+      ? ['清空本机工具选择', `清空 ${overrideCount} 项插件排除`]
       : [`本机工具：${previousAgents.join('、') || '未选择'} → ${nextAgents.join('、') || '未选择'}`,
-        '保留已有本机依赖范围覆盖'],
+        '保留已有插件排除'],
     warnings: [],
   };
 }
@@ -126,6 +126,6 @@ export async function executeTargetsPlan(location: PreferencesLocation, plan: Ta
     const saved = plan.action === 'reset'
       ? await resetTargets({ ...location, token })
       : await setAgents({ ...location, token }, plan.agents);
-    return { changed: saved.changed, agents: saved.value.agents };
+    return { changed: saved.changed, agents: saved.value.targets };
   } });
 }

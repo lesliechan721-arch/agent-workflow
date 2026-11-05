@@ -3,6 +3,7 @@
   "defaults": {},
   "profiles": {
     "project-default": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "decision-kit": {},
@@ -10,6 +11,7 @@
       }
     },
     "user-default": {
+      "platform": "codex",
       "scope": "user",
       "plugins": {
         "decision-kit": {},

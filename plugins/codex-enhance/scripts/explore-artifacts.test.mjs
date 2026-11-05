@@ -14,6 +14,9 @@ const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const ids = ['codex-explore-skill', 'codex-explore-role', 'codex-advisor-skill', 'codex-advisor-role'];
 const skillIds = ids.filter((id) => id.endsWith('-skill'));
+const sourceManifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
+const defaultValues = Object.fromEntries(Object.entries(sourceManifest.config.fields)
+  .filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default]));
 function sourceRoot(id) {
   const staged = path.join(root, '.agents-plugin/artifact-sources/codex', id, '0');
   return existsSync(staged) ? staged : path.join(root, 'skills', id.replace(/-skill$/, ''));
@@ -23,7 +26,7 @@ function context(values = {}) {
   return {
     platform: 'codex', scope: 'user', requestedArtifactIds: ids,
     artifactSources: skillIds.map((id) => ({ id, target: 'codex.skill', sourceDirs: [sourceRoot(id)] })),
-    config: { values },
+    config: { values: { ...structuredClone(defaultValues), ...values } },
   };
 }
 

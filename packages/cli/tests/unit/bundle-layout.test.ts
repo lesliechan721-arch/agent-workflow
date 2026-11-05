@@ -84,7 +84,7 @@ async function createEmbeddedRootFromFixture(
 async function createClaudeOnlyEmbeddedRoot(): Promise<{ repoRoot: string; embeddedRoot: string }> {
   const repoRoot = await makeTempRepo();
   await updateFixturePluginManifest(repoRoot, (manifest) => {
-    manifest.marketplace.policy.products = ['CLAUDE'];
+    manifest.platforms = ['claude'];
     delete manifest.apps;
   });
   await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', '.app.json'));
@@ -319,7 +319,7 @@ describe('bundle layout validation', () => {
 
   it('accepts platform-filtered marketplaces that match supported plugin sets', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
     });
 
     await expect(
@@ -365,13 +365,15 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('command entry');
   });
 
-  it('validates static portable distribution roots and generated dynamic sources', async () => {
+  it('validates concrete Portable roots and generated dynamic sources', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
-      manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
+      manifest.platforms = ['codex', 'claude', 'generic'];
+      manifest.buildConfig = { fileRules: { generic: { include: ['skills/static-portable/**'], exclude: ['skills/commit/**'] } } };
       manifest.artifacts = { targets: [{
         id: 'portable-source',
+        platform: 'generic',
         distribution: 'agent-skills',
         target: 'agent-skills.skill',
         kind: 'skill',
@@ -379,18 +381,24 @@ describe('bundle layout validation', () => {
         states: ['present'],
         refreshKeys: [],
         skillKey: 'portable-source',
-        sourceDirs: ['./portable-source'],
+        sourceDirs: ['./skills/portable-source'],
       }] };
     });
     await fs.outputFile(
-      path.join(pluginRoot, 'agent-skills', 'skills', 'static-portable', 'SKILL.md'),
+      path.join(pluginRoot, 'skills', 'static-portable', 'SKILL.md'),
       '---\nname: static-portable\ndescription: Static portable fixture.\n---\nBody.\n',
     );
     await fs.outputFile(
-      path.join(pluginRoot, 'agent-skills', 'skills', 'static-portable', 'README.md'),
+      path.join(pluginRoot, 'skills', 'static-portable', 'README.md'),
       '# Static portable\n',
     );
-    await fs.outputFile(path.join(pluginRoot, 'portable-source', 'README.md'), '# Portable source\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'static-portable', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'portable-source', 'README.md'), '# Portable source\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'portable-source', 'SKILL.md'),
+      '---\nname: portable-source\ndescription: Dynamic source fixture.\n---\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'portable-source', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n');
 
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(embeddedRoot);
@@ -400,7 +408,7 @@ describe('bundle layout validation', () => {
       'git-commit',
       '.agents-plugin',
       'artifact-sources',
-      'agent-skills',
+      'generic',
       'portable-source',
       '0',
     );
@@ -417,7 +425,7 @@ describe('bundle layout validation', () => {
       embeddedRoot,
       'plugins',
       'git-commit',
-      'agent-skills',
+      'generic',
       'skills',
     );
     const savedPortableRoot = path.join(
@@ -428,13 +436,13 @@ describe('bundle layout validation', () => {
     );
     await fs.rename(bundledPortableRoot, savedPortableRoot);
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
-      'distributions.agentSkills.skills',
+      'generic/skills',
     );
 
     if (process.platform !== 'win32') {
       await fs.symlink(path.relative(path.dirname(bundledPortableRoot), savedPortableRoot), bundledPortableRoot, 'dir');
       await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
-        'distributions.agentSkills.skills',
+        'generic/skills',
       );
     }
   });
@@ -571,9 +579,6 @@ describe('bundle layout validation', () => {
   it('rejects a source-owned reserved receipt before catalog output', async () => {
     const repoRoot = await makeTempRepo();
     const outputRoot = path.join(repoRoot, 'embedded');
-    await updateFixturePluginManifest(repoRoot, (manifest) => {
-      manifest.distributions = { agentSkills: {} };
-    });
     await fs.outputJson(path.join(
       repoRoot,
       'plugins',
@@ -875,7 +880,7 @@ describe('bundle layout validation', () => {
 
   it('rejects unexpected Claude bundle manifests for unsupported plugins', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
     });
     const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
 
@@ -896,7 +901,7 @@ describe('bundle layout validation', () => {
 
   it('rejects unexpected Claude runtime directories for unsupported plugins', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
     });
 
     await fs.outputFile(
@@ -1017,7 +1022,7 @@ describe('bundle layout validation', () => {
 
   it('rejects marketplace entries that do not match supported plugin sets', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
     });
     const claudeMarketplacePath = path.join(embeddedRoot, '.claude-plugin', 'marketplace.json');
     const codexMarketplace = await fs.readJson(

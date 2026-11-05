@@ -36,8 +36,8 @@ function fixture() {
       config: createConfigV4Definition(),
     },
   };
-  const save = (updates: Record<string, unknown>, scope: 'user' | 'project' = 'user') => applyPluginConfigWrite({
-    plugin, scope, cwd: store.cwd, env: store.env, request: { updates }, apply: false,
+  const save = (updates: Record<string, unknown>, platform?: 'codex' | 'claude') => applyPluginConfigWrite({
+    plugin, scope: 'user', platform, cwd: store.cwd, env: store.env, request: { updates }, apply: false,
   });
   return { store, plugin, save };
 }
@@ -169,10 +169,10 @@ describe('Config Definition v4 CLI boundaries', () => {
     expect(receipt).toMatchObject({ configWrite: 'succeeded', overallState: 'succeeded', apply: { state: 'skipped', reason: 'notRequested' } });
     const file = resolvePluginConfigStorePath(store);
     const before = await fs.readFile(file);
-    expect(JSON.parse(before.toString())).toMatchObject({ schemaVersion: 5, values });
+    expect(JSON.parse(before.toString())).toMatchObject({ schemaVersion: 6, common: values, platforms: {} });
     expect((await readPluginConfigStore(store)).values).toEqual(values);
     expect((await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' })).values).toEqual(values);
-    expect(JSON.parse(before.toString()).values.subagentCommands[0]).not.toHaveProperty('mode');
+    expect(JSON.parse(before.toString()).common.subagentCommands[0]).not.toHaveProperty('mode');
 
     const builtin = commands[0]!;
     for (const command of [
@@ -194,15 +194,15 @@ describe('Config Definition v4 CLI boundaries', () => {
   });
 
   // Test Value Gate: whole-layer override and dependency validation protect materialized runtime values.
-  it('uses whole-field scope overrides and validates runtime dependency closure without resolving envFrom', async () => {
+  it('uses whole-field platform overrides and validates runtime dependency closure without resolving envFrom', async () => {
     const { store, plugin, save } = fixture();
     await save({ subagentCommands: [{ key: 'remote', title: 'User', adapter: 'codex', args: ['--user'], envFrom: { TOKEN: 'HOST_TOKEN' } }],
       advisorProfile: { executor: 'remote' } });
-    await save({ subagentCommands: [{ key: 'remote', title: 'Project', adapter: 'oracle', args: [], envFrom: { TOKEN: 'HOST_TOKEN' } }] }, 'project');
-    const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'project' });
+    await save({ subagentCommands: [{ key: 'remote', title: 'Project', adapter: 'oracle', args: [], envFrom: { TOKEN: 'HOST_TOKEN' } }] }, 'codex');
+    const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, platform: 'codex', targetScope: 'project' });
     expect(config.values.subagentCommands).toEqual([{ key: 'remote', title: 'Project', adapter: 'oracle', args: [], envFrom: { TOKEN: 'HOST_TOKEN' } }]);
-    expect(config.sources).toMatchObject({ subagentCommands: 'project', advisorProfile: 'user' });
-    plugin.manifest.artifacts = { targets: [{ id: 'runtime', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' },
+    expect(config.sources).toMatchObject({ subagentCommands: 'platform', advisorProfile: 'common' });
+    plugin.manifest.artifacts = { targets: [{ id: 'runtime', platform: 'codex', target: 'codex.skill',
       kind: 'skill', scopes: ['project'], states: ['present'], skillKey: 'runtime', refreshKeys: ['advisorProfile', 'subagentCommands'],
       runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }] };
     const runtime = (resolved: typeof config) => createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
@@ -210,10 +210,10 @@ describe('Config Definition v4 CLI boundaries', () => {
       config: { ...resolved, mode: 'artifact-render', targetScope: 'project' },
     });
     expect(runtime(config).runtime!.effectiveValues).toEqual(config.values);
-    await writePluginConfigStore({ ...store, scope: 'project', values: {
+    await writePluginConfigStore({ ...store, platform: 'codex', values: {
       subagentCommands: [{ key: 'remote', title: 'Invalid project', adapter: 'codex', mode: 'bundle' }],
     } });
-    const invalid = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'project' });
+    const invalid = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, platform: 'codex', targetScope: 'project' });
     expect(invalid.values).not.toHaveProperty('subagentCommands');
     expect(invalid.values).not.toHaveProperty('advisorProfile');
     expect(invalid.issues).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'advisorProfile', code: 'valueRefSource' })]));

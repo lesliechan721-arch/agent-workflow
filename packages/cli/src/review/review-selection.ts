@@ -2,6 +2,8 @@ import path from 'node:path'
 
 import {
   calculateCatalogWorkspaceSourceIdentity,
+  compilePluginConfigDefinition,
+  PLATFORM_TARGETS,
   getPluginConfigDependencyFields,
   readCatalogWorkspace,
   resolveSupportedPlatforms,
@@ -18,7 +20,6 @@ import {
 } from '../commands/catalog-workspace-resolution.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js'
-import { codexNativeRefreshKeys } from '../utils/plugin-config.js'
 import {
   createReviewProfile,
   normalizeReviewProfileConfig,
@@ -61,16 +62,8 @@ function isSkillTarget(target: PluginArtifactTargetDefinition): boolean {
     || target.target === 'agent-skills.skill'
 }
 
-function targetPlatform(target: PluginArtifactTargetDefinition): ReviewPlatform {
-  return target.target === 'agent-skills.skill'
-    ? 'agent-skills'
-    : target.target === 'codex.skill' ? 'codex' : 'claude'
-}
-
 function targetDelivery(target: PluginArtifactTargetDefinition): ReviewSkillDelivery {
-  if (target.target === 'agent-skills.skill') return 'agent-skills'
-  if (target.target === 'codex.skill') return target.delivery.mode
-  return 'aw-extension'
+  return target.target === 'agent-skills.skill' ? 'agent-skills' : 'native'
 }
 
 async function directSkillDirectories(
@@ -111,116 +104,53 @@ async function canonicalDeclaredPaths(plugin: PluginMeta, target: PluginArtifact
 export async function resolveReviewDynamicSkillSource(options: {
   plugin: PluginMeta
   target: PluginArtifactTargetDefinition
-  nativeSkillPaths?: readonly string[]
-  portableSkillPaths?: readonly string[]
+  skillPaths?: readonly string[]
 }): Promise<{
   sourcePath: string
   sourcePaths: string[]
   sourceKind: ReviewSkillSourceKind
 }> {
   const sourcePaths = await canonicalDeclaredPaths(options.plugin, options.target)
-  const sourceKind: ReviewSkillSourceKind = options.target.target === 'agent-skills.skill'
-    && sourcePaths.some((sourcePath) => options.portableSkillPaths?.includes(sourcePath))
-    ? 'portable-source-skill'
-    : sourcePaths.some((sourcePath) => options.nativeSkillPaths?.includes(sourcePath))
-      ? 'source-skill'
-      : 'artifact-source'
+  const sourceKind: ReviewSkillSourceKind = sourcePaths.some((sourcePath) => options.skillPaths?.includes(sourcePath))
+    ? 'source-skill' : 'artifact-source'
   return { sourcePath: sourcePaths[0]!, sourcePaths, sourceKind }
 }
 
 async function inventoryPluginSkills(plugin: PluginMeta): Promise<ReviewSkillDeclaration[]> {
-  const nativeSkills = plugin.manifest.skills
+  const skills = plugin.manifest.skills
     ? await directSkillDirectories(plugin, plugin.manifest.skills)
     : []
-  const portableSkills = plugin.manifest.distributions?.agentSkills?.skills
-    ? await directSkillDirectories(plugin, plugin.manifest.distributions.agentSkills.skills)
-    : []
   const declarations: ReviewSkillDeclaration[] = []
-  const dynamicProfiles = new Set((plugin.manifest.artifacts?.targets ?? [])
-    .filter(isSkillTarget)
-    .flatMap((target) => target.scopes.map((scope) =>
-      `${targetPlatform(target)}\0${scope}\0${target.skillKey}`)))
-
-  for (const platform of [...resolveSupportedPlatforms(plugin.manifest)].sort(compareText)) {
-    for (const skill of nativeSkills) {
+  const supported = resolveSupportedPlatforms(plugin.manifest)
+  const dynamicTargets = (plugin.manifest.artifacts?.targets ?? []).filter(isSkillTarget)
+  for (const platform of [...supported].sort(compareText)) {
+    const native = platform === 'codex' || platform === 'claude'
+    const targets = dynamicTargets.filter((target) => target.platform === platform)
+    for (const skill of skills) {
+      if (targets.some((target) => target.skillKey === skill.name)) continue
       for (const scope of ['project', 'user'] as const) {
-        if (dynamicProfiles.has(`${platform}\0${scope}\0${skill.name}`)) continue
         declarations.push({
-          plugin,
-          pluginName: plugin.manifest.name,
-          name: skill.name,
-          sourcePath: skill.path,
-          sourcePaths: [skill.path],
-          sourceKind: 'source-skill',
-          targetId: null,
-          dynamic: false,
-          delivery: 'static',
-          configScope: scope,
-          configScopes: {},
-          refreshKeys: [],
-          platform,
-          scope,
+          plugin, pluginName: plugin.manifest.name, name: skill.name,
+          sourcePath: skill.path, sourcePaths: [skill.path], sourceKind: 'source-skill',
+          targetId: null, dynamic: false, delivery: 'static',
+          configScope: native ? 'user' : scope, configScopes: {}, refreshKeys: [], platform, scope,
         })
       }
     }
-  }
-
-  if (plugin.manifest.distributions?.agentSkills) {
-    for (const skill of portableSkills) {
-      for (const scope of ['project', 'user'] as const) {
-        if (dynamicProfiles.has(`agent-skills\0${scope}\0${skill.name}`)) continue
-        declarations.push({
-          plugin,
-          pluginName: plugin.manifest.name,
-          name: skill.name,
-          sourcePath: skill.path,
-          sourcePaths: [skill.path],
-          sourceKind: 'portable-source-skill',
-          targetId: null,
-          dynamic: false,
-          delivery: 'static',
-          configScope: scope,
-          configScopes: {},
-          refreshKeys: [],
-          platform: 'agent-skills',
-          scope,
-        })
-      }
-    }
-  }
-
-  for (const target of plugin.manifest.artifacts?.targets ?? []) {
-    if (!isSkillTarget(target)) continue
-    const { sourcePath, sourcePaths, sourceKind } = await resolveReviewDynamicSkillSource({
-      plugin,
-      target,
-      nativeSkillPaths: nativeSkills.map((skill) => skill.path),
-      portableSkillPaths: portableSkills.map((skill) => skill.path),
-    })
-    const refreshKeys = [...target.refreshKeys].sort(compareText)
-    const configScope = target.delivery?.mode === 'codex-native' ? 'user' : undefined
-    const userOnlyKeys = codexNativeRefreshKeys(plugin.manifest)
-    for (const scope of target.scopes) {
-      const targetConfigScope = configScope ?? scope
-      declarations.push({
-        plugin,
-        pluginName: plugin.manifest.name,
-        name: target.skillKey!,
-        sourcePath,
-        sourcePaths,
-        sourceKind,
-        targetId: target.id,
-        dynamic: true,
-        delivery: targetDelivery(target),
-        configScope: targetConfigScope,
-        configScopes: Object.fromEntries(refreshKeys.map((key) => [
-          key,
-          userOnlyKeys.has(key) ? 'user' : targetConfigScope,
-        ])),
-        refreshKeys,
-        platform: targetPlatform(target),
-        scope,
+    for (const target of targets) {
+      const source = await resolveReviewDynamicSkillSource({
+        plugin, target, skillPaths: skills.map((skill) => skill.path),
       })
+      const refreshKeys = [...target.refreshKeys].sort(compareText)
+      for (const scope of native ? ['project', 'user'] as const : target.scopes) {
+        const configScope = native ? 'user' : scope
+        declarations.push({
+          plugin, pluginName: plugin.manifest.name, name: target.skillKey!, ...source,
+          targetId: target.id, dynamic: true, delivery: targetDelivery(target),
+          configScope, configScopes: Object.fromEntries(refreshKeys.map((key) => [key, configScope])),
+          refreshKeys, platform, scope,
+        })
+      }
     }
   }
   return declarations.sort((left, right) => compareText(declarationKey(left), declarationKey(right)))
@@ -391,13 +321,16 @@ async function readReviewConfig(options: {
 function validateConfigPlugins(
   workspace: CatalogWorkspace,
   config: ReviewProfileConfig,
+  platform?: ReviewPlatform,
 ): void {
   for (const pluginName of Object.keys(config)) {
     const plugin = workspace.plugins.find((entry) => entry.manifest.name === pluginName)
     if (!plugin) {
       throw new ReviewSelectionError('invalidConfig', `Review config names unknown plugin "${pluginName}".`)
     }
-    resolveReviewPluginProfileConfig({ plugin, plugins: workspace.plugins, scope: 'user', config, keys: [] })
+    for (const selectedPlatform of platform ? [platform] : resolveSupportedPlatforms(plugin.manifest)) {
+      resolveReviewPluginProfileConfig({ plugin, plugins: workspace.plugins, platform: selectedPlatform, scope: 'user', config, keys: [] })
+    }
   }
 }
 
@@ -457,11 +390,7 @@ function profileSources(options: {
     skill.sourcePaths.forEach((entry) => sources.add(entry))
     if (!skill.dynamic) {
       for (const entry of skill.plugin.manifest.buildConfig?.skillRuntimeFiles ?? []) {
-        const native = skill.platform !== 'agent-skills'
-          && (entry.platforms?.includes(skill.platform) ?? entry.distributions === undefined)
-        const portable = skill.platform === 'agent-skills'
-          && (entry.distributions?.includes('agent-skills') ?? false)
-        if (entry.skill !== skill.name || (!native && !portable)) continue
+        if (entry.skill !== skill.name || (entry.platforms?.length && !entry.platforms.includes(skill.platform))) continue
         if (entry.source) sources.add(path.join(skill.plugin.rootDir, stripDotSlash(entry.source)))
         if (entry.import) {
           const source = runtimeExportSource(options.workspace, entry.import.plugin, entry.import.export)
@@ -492,17 +421,17 @@ function buildProfile(options: {
   for (const skill of selectedSkills.filter((entry) => entry.dynamic)) {
     for (const refreshKey of skill.refreshKeys) {
       const scope = skill.configScopes[refreshKey] ?? skill.configScope
-      const dependencies = getPluginConfigDependencyFields(skill.plugin.manifest.config ?? { fields: {} }, [refreshKey], {
+      const dependencies = getPluginConfigDependencyFields(compilePluginConfigDefinition(skill.plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform), [refreshKey], {
+        platform: options.platform,
         plugin: skill.pluginName,
         dependencies: skill.plugin.manifest.dependencies ?? [],
         plugins: Object.fromEntries(options.workspace.plugins.map((plugin) => [plugin.manifest.name, {
-          definition: plugin.manifest.config ?? { fields: {} },
+          definition: compilePluginConfigDefinition(plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform),
           dependencies: plugin.manifest.dependencies ?? [],
         }])),
       })
       for (const dependency of dependencies) {
-        const plugin = options.workspace.plugins.find((entry) => entry.manifest.name === dependency.plugin)!
-        const dependencyScope = codexNativeRefreshKeys(plugin.manifest).has(dependency.field) ? 'user' : scope
+        const dependencyScope = scope
         const key = `${dependency.plugin}\0${dependencyScope}`
         const keys = configKeys.get(key) ?? new Set<string>()
         keys.add(dependency.field)
@@ -518,6 +447,7 @@ function buildProfile(options: {
       plugin,
       plugins: options.workspace.plugins,
       scope: configScope,
+      platform: options.platform,
       config: options.config,
       keys: [...keys].sort(compareText),
     }))
@@ -586,10 +516,7 @@ export async function resolveReviewSelection(options: {
   env?: NodeJS.ProcessEnv
 }): Promise<ReviewSelection> {
   void options.env
-  if (options.platform !== undefined
-    && options.platform !== 'codex'
-    && options.platform !== 'claude'
-    && options.platform !== 'agent-skills') {
+  if (options.platform !== undefined && !PLATFORM_TARGETS.includes(options.platform)) {
     throw new ReviewSelectionError('invalidArguments', `Unsupported Review platform: ${options.platform}`)
   }
   if (options.scope !== undefined && options.scope !== 'project' && options.scope !== 'user') {
@@ -607,7 +534,7 @@ export async function resolveReviewSelection(options: {
   })
   try {
     const config = await readReviewConfig(options)
-    validateConfigPlugins(workspace, config)
+    validateConfigPlugins(workspace, config, options.platform)
     const selected = filterRequestedSkills({ target, declarations, skills })
     const profiles = groupProfiles({
       workspace,

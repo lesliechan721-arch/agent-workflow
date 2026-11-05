@@ -12,7 +12,6 @@ import type {
   NormalizedPluginManifest,
 } from '../types.js';
 import {
-  assertActualNativePluginCapability,
   assertStrictSemVer,
   validatePluginManifest,
 } from './manifest.js';
@@ -26,7 +25,7 @@ import {
 import { scanNodeImportContract } from './plugin-script-contract.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 import {
-  validatePortableSkillDirectoriesRoot,
+  validatePortableSkillDirectory,
   validateSkillDirectory,
 } from './dynamic-skill-tree.js';
 import { validateRuntimeSkillClosure } from './runtime-skill-closure.js';
@@ -515,28 +514,20 @@ async function validateAwRuntimeLayout(
     throw new Error('Invalid bundle source manifest: scripts.node.build must not be included in runtime bundle.');
   }
 
-  const portableSkillsRoot = manifest.distributions?.agentSkills?.skills;
-  if (portableSkillsRoot) {
-    const resolvedRoot = await resolveExistingBundlePath(
-      pluginRoot,
-      portableSkillsRoot,
-      'distributions.agentSkills.skills',
-      './',
-    );
-    const stats = await fs.lstat(path.join(pluginRoot, stripDotSlash(portableSkillsRoot)));
-    if (stats.isSymbolicLink() || !stats.isDirectory()) {
-      throw new Error('Invalid distributions.agentSkills.skills: skills root must be a regular directory.');
+  for (const platform of resolveSupportedPlatforms(manifest)) {
+    if (platform === 'codex' || platform === 'claude') continue;
+    const relativeRoot = `./${platform}/skills`;
+    if (!manifest.skills && !await fs.pathExists(path.join(pluginRoot, stripDotSlash(relativeRoot)))) continue;
+    const resolvedRoot = await resolveSkillsCollectionRoot(pluginRoot, relativeRoot, `${platform}/skills`, `./${platform}/`);
+    const dynamicKeys = new Set((manifest.artifacts?.targets ?? []).filter((target) =>
+      target.platform === platform && target.target === 'agent-skills.skill').map((target) => target.skillKey!));
+    for (const entry of await fs.readdir(resolvedRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`Invalid ${platform}/skills: direct children must be regular Skill directories (${entry.name}).`);
+      if (dynamicKeys.has(entry.name)) continue;
+      const skillRoot = path.join(resolvedRoot, entry.name);
+      await validatePortableSkillDirectory(skillRoot);
+      await validateRuntimeSkillClosure(skillRoot);
     }
-    const entries = await fs.readdir(resolvedRoot, { withFileTypes: true });
-    const invalidEntry = entries.find((entry) => entry.isSymbolicLink() || !entry.isDirectory());
-    if (invalidEntry) {
-      throw new Error(
-        `Invalid distributions.agentSkills.skills: direct child ${JSON.stringify(invalidEntry.name)} must be a regular directory.`,
-      );
-    }
-    const trees = await validatePortableSkillDirectoriesRoot(resolvedRoot);
-    await Promise.all(trees.map((tree) =>
-      validateRuntimeSkillClosure(path.join(resolvedRoot, tree.skillKey))));
   }
 
   const runtimeFiles = new Set<string>();
@@ -789,7 +780,6 @@ export async function validateBundleLayout(
         );
       }
     }
-    await assertActualNativePluginCapability(pluginRoot, sourceManifest, 'bundle');
   }
 
   validateMarketplaceEntriesForPlatform(

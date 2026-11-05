@@ -50,7 +50,7 @@ function manifest(): Record<string, unknown> {
     version: 1,
     defaults: { profile: 'selected' },
     profiles: {
-      selected: { scope: 'project', plugins: { 'fixture-plugin': {} } },
+      selected: { platform: 'codex', scope: 'project', plugins: { 'fixture-plugin': {} } },
     },
     suites: [{
       id: 'trigger',
@@ -90,50 +90,24 @@ describe('AwSkillEvalManifest v1 reader', () => {
     expect(validated).toBeGreaterThan(0)
   })
 
-  it('rejects fixed and dynamic sensitive object children without leaking values', () => {
+  it('rejects platform sensitive config without leaking values', () => {
     const plugin = {
-      rootDir: '/fixture',
-      manifestPath: '/fixture/.agents-plugin/plugin.json',
-      manifest: {
-        name: 'fixture-plugin',
-        config: {
-          fields: {
-            settings: {
-              type: 'object',
-              properties: {
-                public: { type: 'string' },
-                token: { type: 'string', sensitive: true },
-              },
-              additionalProperties: { type: 'string', sensitive: true },
-            },
-          },
-        },
-      },
+      rootDir: '/fixture', manifestPath: '/fixture/.agents-plugin/plugin.json',
+      manifest: { name: 'fixture-plugin', config: { schemaVersion: 5,
+        fields: { public: { type: 'string' } },
+        platforms: { codex: { fields: { token: { type: 'string', sensitive: true } } } },
+      } },
     } as PluginMeta
     const profile = (config: Record<string, unknown>) => ({
-      id: 'selected',
-      scope: 'project' as const,
+      id: 'selected', platform: 'codex' as const, scope: 'project' as const,
       plugins: [{ name: 'fixture-plugin', config }],
     })
-
-    expect(() => assertNoSensitiveProfileConfig(
-      profile({ settings: { public: 'safe' } }),
-      [plugin],
-    )).not.toThrow()
-
-    for (const [config, sensitiveValue] of [
-      [{ settings: { token: 'fixed-secret-must-not-leak' } }, 'fixed-secret-must-not-leak'],
-      [{ settings: { custom: 'dynamic-secret-must-not-leak' } }, 'dynamic-secret-must-not-leak'],
-    ] as const) {
-      let message = ''
-      try {
-        assertNoSensitiveProfileConfig(profile(config), [plugin])
-      } catch (error) {
-        message = error instanceof Error ? error.message : String(error)
-      }
-      expect(message).toContain('provides a sensitive config field')
-      expect(message).not.toContain(sensitiveValue)
-    }
+    expect(() => assertNoSensitiveProfileConfig(profile({ public: 'safe' }), [plugin])).not.toThrow()
+    let message = ''
+    try { assertNoSensitiveProfileConfig(profile({ token: 'platform-secret-must-not-leak' }), [plugin]) }
+    catch (error) { message = error instanceof Error ? error.message : String(error) }
+    expect(message).toContain('provides a sensitive config field')
+    expect(message).not.toContain('platform-secret-must-not-leak')
   })
 
   it('accepts canonical v1 and rejects invalid profile selections', async () => {
@@ -199,8 +173,8 @@ describe('AwSkillEvalManifest v1 reader', () => {
     await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
       ...manifest(),
       profiles: {
-        selected: { scope: 'project', plugins: { 'fixture-plugin': {} } },
-        unused: { scope: 'project', plugins: { 'another-plugin': {} } },
+        selected: { platform: 'codex', scope: 'project', plugins: { 'fixture-plugin': {} } },
+        unused: { platform: 'codex', scope: 'project', plugins: { 'another-plugin': {} } },
       },
     }, { spaces: 2 })
 

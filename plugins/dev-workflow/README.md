@@ -5,7 +5,8 @@
 ## 安装与开始
 
 ```bash
-aw install dev-workflow --scope user --target codex --target claude-code
+aw plugin targets set codex claude
+aw plugin install dev-workflow --scope user
 ```
 
 安装同时提供 decision-kit 和 human-content，分别用于取得有效决定和组织可审阅的材料。

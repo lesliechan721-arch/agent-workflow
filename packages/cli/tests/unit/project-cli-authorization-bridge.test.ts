@@ -23,7 +23,7 @@ describe('scoped CLI authorization bridge', () => {
   it('does not turn --yes into managed Codex authorization', async () => {
     const output = createCapturedCliIo();
     expect(await runCli([
-      'sync', '--all', '--scope', 'project', '--target', 'codex', '--yes', '--json',
+      'plugin', 'sync', '--context', 'user', '--target', 'codex', '--yes', '--json',
     ], { interactive: false, io: output.io })).toBe(0);
     expect(JSON.parse(output.readStdout())).toMatchObject({ kind: 'aw-recovery', ok: true });
     const runtime = vi.mocked(runRecovery).mock.calls[0]?.[3];
@@ -34,7 +34,7 @@ describe('scoped CLI authorization bridge', () => {
   it('passes managed authorization only from its explicit flag', async () => {
     const output = createCapturedCliIo();
     expect(await runCli([
-      'sync', '--all', '--scope', 'project', '--target', 'codex',
+      'plugin', 'sync', '--context', 'user', '--target', 'codex',
       '--allow-managed-codex-install', '--json',
     ], { interactive: false, io: output.io })).toBe(0);
     const runtime = vi.mocked(runRecovery).mock.calls[0]?.[3];

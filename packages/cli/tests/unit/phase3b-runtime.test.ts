@@ -132,9 +132,6 @@ describe('phase 3B namespaced runtime stores', () => {
     };
     await writeIntentFixture(location, {
       roots: [{ pluginId: 'team/demo', platforms: ['codex', 'claude'] }],
-      dependencyScopeOverrides: [{
-        pluginId: 'team/dependency', platform: 'codex', scope: 'user',
-      }],
     });
 
     const preview = await cleanupWriteCommand(['team/demo'], {
@@ -796,11 +793,12 @@ describe('phase 3B namespaced runtime stores', () => {
     const storePath = resolvePluginConfigStorePath(options);
     expect(storePath).toBe(path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'demo', 'config.json'));
     expect(await fs.readJson(storePath)).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       sourceId: 'team',
       binding: { kind: 'source', sourceIdentity: SOURCE_IDENTITY },
       pluginName: 'demo',
-      values: { mode: 'fast' },
+      common: { mode: 'fast' },
+      platforms: {},
     });
     await expect(readPluginConfigStore(options)).resolves.toMatchObject({ values: { mode: 'fast' } });
     await expect(listNamespacedPluginConfigStores({
@@ -848,7 +846,7 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
     });
     const setOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--json'], {
+    expect(await runCli(['plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--json'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: setOutput.io, interactive: false,
     })).toBe(0);
     await writePluginConfigStore({
@@ -856,7 +854,7 @@ describe('phase 3B namespaced runtime stores', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { retained: true },
     });
     const ambiguous = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'demo', '--yes', '--json'], {
+    expect(await runCli(['plugin', 'config', 'reset', 'demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: ambiguous.io, interactive: false,
     })).toBe(1);
     expect(JSON.parse(ambiguous.readStdout())).toMatchObject({
@@ -872,7 +870,7 @@ describe('phase 3B namespaced runtime stores', () => {
     })).resolves.toMatchObject({ ok: true, changed: true });
 
     const reset = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
+    expect(await runCli(['plugin', 'config', 'reset', 'team/demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: reset.io, interactive: false,
     })).toBe(0);
     expect(JSON.parse(reset.readStdout())).toMatchObject({
@@ -931,50 +929,39 @@ describe('phase 3B namespaced runtime stores', () => {
     },
   );
 
-  it.each(['user store root', 'project parent'] as const)(
-    'rejects a namespaced config inventory symlink at the %s boundary',
-    async (boundary) => {
-      const isolation = getCurrentSourceTestIsolation();
-      const externalRoot = path.join(isolation.layout.rootDir, `external-boundary-${boundary.replace(' ', '-')}`);
-      const externalStore = boundary === 'project parent'
-        ? path.join(externalRoot, 'plugin-config')
-        : externalRoot;
-      await fs.outputJson(path.join(externalStore, 'team', 'demo', 'config.json'), {
-        schemaVersion: 2,
-        sourceId: 'team',
-        sourceIdentity: SOURCE_IDENTITY,
-        pluginName: 'demo',
-        values: { secret: 'outside-boundary' },
-      });
-      if (boundary === 'project parent') {
-        await fs.symlink(externalRoot, path.join(isolation.layout.fixtureCwd, '.agent-workflows'));
-      } else {
-        await fs.ensureDir(isolation.env.AW_HOME!);
-        await fs.symlink(externalRoot, path.join(isolation.env.AW_HOME!, 'plugin-config'));
-      }
-      const scope = boundary === 'project parent' ? 'project' as const : 'user' as const;
+  it('rejects a namespaced config inventory symlink at the user store root boundary', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const externalRoot = path.join(isolation.layout.rootDir, 'external-config-boundary');
+    await fs.outputJson(path.join(externalRoot, 'team', 'demo', 'config.json'), {
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity: SOURCE_IDENTITY,
+      pluginName: 'demo',
+      values: { secret: 'outside-boundary' },
+    });
+    await fs.ensureDir(isolation.env.AW_HOME!);
+    await fs.symlink(externalRoot, path.join(isolation.env.AW_HOME!, 'plugin-config'));
 
-      await expect(listNamespacedPluginConfigStores({
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        scope,
-      })).rejects.toMatchObject({ code: 'invalidPluginConfigStore' });
+    await expect(listNamespacedPluginConfigStores({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      scope: 'user',
+    })).rejects.toMatchObject({ code: 'invalidPluginConfigStore' });
 
-      const inventory = await inventoryCatalogSourceReferences({
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-      });
-      expect(inventory.references).not.toContainEqual(expect.objectContaining({
-        kind: 'namespacedConfig',
-        sourceId: 'team',
-        pluginName: 'demo',
-      }));
-      expect(inventory.errors).toContainEqual(expect.objectContaining({
-        kind: expect.stringContaining('config'),
-        relevance: expect.objectContaining({ global: false, scope }),
-      }));
-    },
-  );
+    const inventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      kind: 'namespacedConfig',
+      sourceId: 'team',
+      pluginName: 'demo',
+    }));
+    expect(inventory.errors).toContainEqual(expect.objectContaining({
+      kind: expect.stringContaining('config'),
+      relevance: expect.objectContaining({ global: false, scope: 'user' }),
+    }));
+  });
 
   it('emits config receipt 7 and keeps a namespaced store after its source is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1017,23 +1004,23 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
     });
     for (const args of [
-      ['--scope', 'user'],
-      ['--scope', 'user', '--value-json', '"fast"', '--preset', 'fast'],
+      ['--context', 'user'],
+      ['--context', 'user', '--value-json', '"fast"', '--preset', 'fast'],
     ]) {
       const invalidOutput = createCapturedCliIo();
-      expect(await runCli(['config', 'set', 'team/demo', 'mode', ...args, '--json'], {
+      expect(await runCli(['plugin', 'config', 'set', 'team/demo', 'mode', ...args, '--json'], {
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
         io: invalidOutput.io,
         interactive: false,
-      })).toBe(1);
+      })).toBe(2);
       expect(JSON.parse(invalidOutput.readStdout())).toMatchObject({
         command: 'config:set', ok: false, overallState: 'failed',
       });
     }
     const setOutput = createCapturedCliIo();
     expect(await runCli([
-      'config', 'set', 'team/demo', 'mode', '--preset', 'fast', '--scope', 'user', '--json',
+      'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'fast', '--context', 'user', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1061,7 +1048,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(JSON.stringify(stored.values)).not.toContain('preset');
     const booleanPresetOutput = createCapturedCliIo();
     expect(await runCli([
-      'config', 'set', 'team/demo', 'enabled', '--preset', 'off', '--scope', 'user', '--json',
+      'plugin', 'config', 'set', 'team/demo', 'enabled', '--preset', 'off', '--context', 'user', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1077,7 +1064,7 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
     })).toMatchObject({ values: { mode: 'fast', enabled: false } });
     const getOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'get', 'team/demo', 'mode', '--scope', 'user', '--json'], {
+    expect(await runCli(['plugin', 'config', 'get', 'team/demo', 'mode', '--context', 'user', '--json'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: getOutput.io,
@@ -1085,20 +1072,20 @@ describe('phase 3B namespaced runtime stores', () => {
     })).toBe(0);
     expect(JSON.parse(getOutput.readStdout())).toMatchObject({
       fields: [{
-        key: 'mode', value: 'fast', source: 'user', matchedPreset: 'fast', valid: true, issues: [],
+        key: 'mode', effectiveValue: 'fast', sourceLayer: 'common', matchedPreset: 'fast', valid: true, issues: [],
       }],
     });
     await fs.outputFile(stored.path, '{ invalid json');
     const unconfirmedReset = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--json'], {
+    expect(await runCli(['plugin', 'config', 'reset', 'team/demo', '--context', 'user', '--json'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: unconfirmedReset.io,
       interactive: false,
-    })).toBe(1);
+    })).toBe(2);
     await expect(fs.pathExists(stored.path)).resolves.toBe(true);
     const confirmedReset = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--yes', '--json'], {
+    expect(await runCli(['plugin', 'config', 'reset', 'team/demo', '--context', 'user', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: confirmedReset.io,
@@ -1115,7 +1102,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(remainingNames.some((name) => /backup|journal/iu.test(name))).toBe(false);
     const restoreOutput = createCapturedCliIo();
     expect(await runCli([
-      'config', 'set', 'team/demo', 'mode', '--preset', 'fast', '--scope', 'user', '--json',
+      'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'fast', '--context', 'user', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1174,7 +1161,7 @@ describe('phase 3B namespaced runtime stores', () => {
       },
     });
     const offlineResetOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
+    expect(await runCli(['plugin', 'config', 'reset', 'team/demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: offlineResetOutput.io,
@@ -1268,7 +1255,7 @@ describe('phase 3B namespaced runtime stores', () => {
     await Promise.all([
       createCatalogSnapshotFixture(primaryRoot, 'primary-demo'),
       createCatalogSnapshotFixture(teamRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.marketplace.policy.products = ['CLAUDE'];
+        manifest.platforms = ['claude'];
       }),
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -1446,7 +1433,7 @@ describe('phase 3B namespaced runtime stores', () => {
       manifest.extensions = {
         instructions: [{ name: 'policy', title: 'Policy', content: 'Use policy.' }],
       };
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -1547,7 +1534,7 @@ describe('phase 3B namespaced runtime stores', () => {
         'policy:\n  allow_implicit_invocation: true\n',
       );
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.marketplace.policy.products = [platform === 'codex' ? 'CODEX' : 'CLAUDE'];
+        manifest.platforms = [platform];
         manifest.skills = './skills';
         manifest.extensions = {
           instructions: [{ name: 'policy', title: 'Policy', content: 'Use policy.' }],
@@ -1808,7 +1795,7 @@ describe('phase 3B namespaced runtime stores', () => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, 'double-marketplace-collision-source');
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
       });
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
@@ -1870,7 +1857,7 @@ describe('phase 3B namespaced runtime stores', () => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, `revoked-${command}-source`);
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
         manifest.extensions = {
           instructions: [{ name: 'policy', title: 'Policy', content: 'Keep this policy.' }],
         };
@@ -1895,7 +1882,7 @@ describe('phase 3B namespaced runtime stores', () => {
       }, runtime);
       expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.marketplace.policy.products = ['CLAUDE'];
+        manifest.platforms = ['claude'];
       });
 
       const result = command === 'cleanup'
@@ -1927,7 +1914,7 @@ describe('phase 3B namespaced runtime stores', () => {
         manifest.extensions = {
           instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
         };
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
       }),
       createCatalogSnapshotFixture(replacementRoot, 'demo'),
     ]);
@@ -1939,9 +1926,6 @@ describe('phase 3B namespaced runtime stores', () => {
       },
       expectedDigest: initial.digest,
       env: isolation.env,
-    });
-    const originalSourceIdentity = await calculateCatalogSourceIdentity({
-      id: 'team', type: 'path', primary: true, path: sourceRoot,
     });
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
@@ -1966,7 +1950,9 @@ describe('phase 3B namespaced runtime stores', () => {
         env: isolation.env,
         nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
       });
-      await installBuilt.promise;
+      await Promise.race([installBuilt.promise, installing.then((result) => {
+        throw new Error(`Install ended before owner publication: ${JSON.stringify(result)}`);
+      })]);
       let mutationCompleted = false;
       mutation = updateCatalogSourceCommand({
         sourceId: 'team',

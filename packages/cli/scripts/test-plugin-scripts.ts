@@ -19,7 +19,7 @@ import {
   bundleLocalPlugin,
   collectSensitivePluginConfigValues,
   discoverPlugins,
-  formatMarketplaceProductsForError,
+  formatManifestPlatformsForError,
   formatSupportedPlatforms,
   matchesPluginTestEntryGlob,
   prepareLocalPluginBundleSource,
@@ -44,6 +44,8 @@ import type {
 } from './plugin-staging.js';
 import type { NormalizedPluginManifest } from '../src/types.js';
 import { resolvePluginMetaDependencyClosure } from '../src/utils/plugin-dependencies.js';
+import { compilePluginConfigDefinition } from '../src/utils/manifest.js';
+import { writePluginConfigStore } from '../src/utils/plugin-config.js';
 
 type PluginTestPlatformSelection = PlatformName | 'both';
 type NativeTestMode = 'fixture' | 'installed' | 'source-candidate';
@@ -317,7 +319,7 @@ function platformSelectionError(options: {
 }): Error {
   const supportedPlatforms = resolveSupportedPlatforms(options.manifest);
   return new Error(
-    `Cannot run plugin tests for "${options.pluginName}" with --platform=${options.selection}: staging manifest ${formatMarketplaceProductsForError(options.manifest)} resolves to supported platforms=${formatSupportedPlatforms(supportedPlatforms)}.`,
+    `Cannot run plugin tests for "${options.pluginName}" with --platform=${options.selection}: staging manifest ${formatManifestPlatformsForError(options.manifest)} resolves to supported platforms=${formatSupportedPlatforms(supportedPlatforms)}.`,
   );
 }
 
@@ -464,53 +466,46 @@ async function writeTestContext(options: {
   const sourceIdentity = `sha256:${crypto.createHash('sha256')
     .update(`${sourceId}/${options.manifest.name}`, 'utf8')
     .digest('hex')}`;
-  const configStores = {
-    user: resolvePluginConfigStorePath({
+  const configStorePath = resolvePluginConfigStorePath({
+    sourceId,
+    pluginName: options.manifest.name,
+    scope: 'user',
+    cwd: options.projectRoot,
+    env: options.env,
+  });
+  const configStores = { user: configStorePath, project: configStorePath };
+  if (options.manifest.config?.fields) {
+    await writePluginConfigStore({
       sourceId,
+      sourceIdentity,
       pluginName: options.manifest.name,
       scope: 'user',
       cwd: options.projectRoot,
       env: options.env,
-    }),
-    project: resolvePluginConfigStorePath({
-      sourceId,
-      pluginName: options.manifest.name,
-      scope: 'project',
-      cwd: options.projectRoot,
-      env: options.env,
-    }),
-  };
-  if (options.manifest.config?.fields) {
-    await Promise.all(Object.entries(configStores).map(([scope, storePath]) => fs.outputJson(
-      storePath,
-      {
-        schemaVersion: 5,
-        sourceId,
-        pluginName: options.manifest.name,
-        binding: scope === 'user'
-          ? { kind: 'source', sourceIdentity }
-          : { kind: 'catalog', logicalIdentity },
-        values: options.testConfigValues ?? {},
-      },
-      { spaces: 2 },
-    )));
+      values: options.testConfigValues ?? {},
+    });
   }
   const effective = options.manifest.config?.fields
     ? await resolveEffectivePluginConfig({
         referenceContext: {
           plugin: options.manifest.name,
           dependencies: options.manifest.dependencies ?? [],
-          plugins: Object.fromEntries(options.referencePlugins.map((plugin) => [plugin.manifest.name, {
-            definition: plugin.manifest.config ?? { fields: {} },
-            dependencies: plugin.manifest.dependencies ?? [],
-            values: Object.fromEntries(Object.entries(plugin.manifest.config?.fields ?? {})
-              .flatMap(([key, field]) => field.default === undefined ? [] : [[key, field.default]])),
-          }])),
+          plugins: Object.fromEntries(options.referencePlugins.map((plugin) => {
+            const definition = compilePluginConfigDefinition(plugin.manifest.config ?? { fields: {} }, options.platform);
+            return [plugin.manifest.name, {
+              definition,
+              dependencies: plugin.manifest.dependencies ?? [],
+              values: Object.fromEntries(Object.entries(definition.fields)
+                .flatMap(([key, field]) => field.default === undefined ? [] : [[key, field.default]])),
+            }];
+          })),
         },
         sourceId,
         sourceIdentity,
         logicalIdentity,
         manifest: options.manifest,
+        platform: options.platform,
+        context: options.scope,
         cwd: options.projectRoot,
         env: options.env,
       })
@@ -556,7 +551,7 @@ async function writeTestContext(options: {
   }
   return {
     contextPath,
-    sensitiveValues: collectSensitivePluginConfigValues(options.manifest, effective.values as Record<string, PluginConfigValue>),
+    sensitiveValues: collectSensitivePluginConfigValues(options.manifest, effective.values as Record<string, PluginConfigValue>, options.platform),
   };
 }
 
@@ -657,6 +652,9 @@ async function runPreparedPluginTests(options: {
       manifest: options.prepared.manifest,
     });
     await fs.ensureDir(projectRoot);
+    if (options.scope === 'project') {
+      await fs.outputFile(path.join(projectRoot, 'pnpm-workspace.yaml'), 'packages: []\n');
+    }
     await fs.ensureDir(awHome);
     await fs.ensureDir(tempDir);
     await preparePluginScriptDirectories(tempDir);

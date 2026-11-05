@@ -19,13 +19,13 @@ async function fixture(scope: 'project' | 'user' = 'project') {
   const digest = portableJsonDigest('old');
   await writeAwSourceBinding({ rootDir, source: { kind: 'catalog-snapshot', sourceId: 'team', catalogSourceIdentity: digest,
     logicalIdentity: 'test-catalog', snapshotDigest: digest, workspaceIdentity: 'test-workspace', workspaceSourceIdentity: digest },
-    subject: { plugin: 'root' }, profile: { kind: 'portable', id: `agent-skills-${scope}`, scope, inputDigest: digest },
+    subject: { plugin: 'root' }, profile: { kind: 'portable', id: `cursor-${scope}`, platform: 'cursor', scope, inputDigest: digest },
     artifacts: [{ kind: 'portable-skill', plugin: 'dependency', skill: 'alpha', path: 'skills/alpha' }] });
   const selectedSkills = [{ name: 'alpha', providerPluginId: 'team/dependency', filesDigest: await portableSkillTreeDigest(skill) }];
   const outputDigest = portableJsonDigest(selectedSkills.map((entry) => [entry.name, entry.filesDigest]));
   await fs.writeJson(path.join(rootDir, '.aw-materialization.json'), { schemaVersion: 1, receiptSchemaVersion: 5,
-    command: 'skill:materialize', plugin: { id: 'team/root', sourceId: 'team', sourceIdentity: digest }, scope,
-    selectedSkills, config: { pluginConfigDigest: digest }, outputDigest, materializationDigest: outputDigest });
+    command: 'skill:materialize', platform: 'cursor', plugin: { id: 'team/root', sourceId: 'team', sourceIdentity: digest }, scope,
+    selectedSkills, config: { pluginConfigDigest: digest }, outputDigest, materializationDigest: portableJsonDigest({ platform: 'cursor', scope, skills: selectedSkills.map((entry) => [entry.name, entry.filesDigest]) }) });
   return { generationRoot, scope, rootDir, pluginId: 'team/root', logicalIdentity: 'test-catalog', skill };
 }
 describe('historical portable generation integrity', () => {

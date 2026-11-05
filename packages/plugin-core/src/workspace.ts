@@ -28,7 +28,8 @@ import {
   readPluginManifest,
   validatePlatformManifestProjection,
 } from './manifest-contract.js';
-import { resolveSupportedPlatforms } from './platform-support.js';
+import { assertPluginDependencyPlatformCoverage, PORTABLE_PLATFORM_TARGETS, resolveSupportedPlatforms } from './platform-support.js';
+import { validatePortableSkillDirectoriesRoot } from './portable-skill-validation.js';
 import { assertPluginConfigReferenceSchemas } from './plugin-config.js';
 import {
   createAwPluginRequirementsReceipt,
@@ -471,13 +472,24 @@ function assertDependencyGraph(plugins: readonly PluginMeta[]): void {
   const byName = new Map(plugins.map((plugin) => [plugin.manifest.name, plugin]));
   const visiting = new Set<string>();
   const visited = new Set<string>();
-  const visit = (name: string): void => {
+  const visit = (name: string, dependencyPath: readonly string[] = []): void => {
     if (visiting.has(name)) throw new Error(`Plugin dependency cycle includes ${JSON.stringify(name)}.`);
     if (visited.has(name)) return;
     const plugin = byName.get(name);
     if (!plugin) throw new Error(`Missing same-source plugin dependency ${JSON.stringify(name)}.`);
     visiting.add(name);
-    for (const dependency of plugin.manifest.dependencies ?? []) visit(dependency);
+    const currentPath = [...dependencyPath, name];
+    for (const dependencyName of plugin.manifest.dependencies ?? []) {
+      const dependency = byName.get(dependencyName);
+      if (!dependency) throw new Error(`Missing same-source plugin dependency ${JSON.stringify(dependencyName)}; path: ${[...currentPath, dependencyName].join(' -> ')}.`);
+      assertPluginDependencyPlatformCoverage({
+        source: plugin.catalogLogicalIdentity ?? plugin.sourceIdentity ?? plugin.sourceId ?? path.dirname(path.dirname(plugin.rootDir)),
+        consumer: plugin.manifest,
+        dependency: dependency.manifest,
+        path: [...currentPath, dependencyName],
+      });
+      visit(dependencyName, currentPath);
+    }
     visiting.delete(name);
     visited.add(name);
   };
@@ -674,7 +686,7 @@ async function validateBundleRuntimeRequirementsReceipts(
 ): Promise<void> {
   const files = await listBundleFiles(pluginRoot);
   const expectedReceiptPaths = new Set(files.flatMap((relative) =>
-    /^(?:claude|codex|agent-skills)\/skills\/[^/]+\/SKILL\.md$/u.test(relative)
+    /^(?:claude|codex|antigravity|cursor|opencode|pi|generic)\/skills\/[^/]+\/SKILL\.md$/u.test(relative)
       ? [path.posix.join(path.posix.dirname(relative), AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME)]
       : []));
   const actualReceiptPaths = files.filter((relative) =>
@@ -1475,6 +1487,17 @@ async function validateCatalogPluginEntriesComplete(
       if (exists) {
         const rawPlatformManifest = await readRegularJson(platformManifestPath, `${platform} plugin manifest`);
         await validatePlatformManifestProjection(plugin, platform, rawPlatformManifest);
+      }
+    }
+    if (plugin.manifest.skills) {
+      const supported = resolveSupportedPlatforms(plugin.manifest);
+      for (const platform of PORTABLE_PLATFORM_TARGETS) {
+        if (supported.has(platform)) {
+          const dynamicSkillKeys = new Set((plugin.manifest.artifacts?.targets ?? [])
+            .filter((target) => target.target === 'agent-skills.skill' && target.platform === platform)
+            .map((target) => target.skillKey!));
+          await validatePortableSkillDirectoriesRoot(path.join(pluginRoot, platform, 'skills'), { dynamicSkillKeys });
+        }
       }
     }
     const expected = await expectedCatalogEntry(plugin, pluginRoot);

@@ -10,7 +10,7 @@ import {
   type RegisteredAwCapabilityId,
 } from './aw-capabilities.js'
 import { resolvePlatformHookDefinitions } from './hooks-contract.js'
-import { resolveSupportedPlatforms } from './platform-support.js'
+import { resolveSupportedNativePlatforms, resolveSupportedPlatforms, isPortablePlatformTarget } from './platform-support.js'
 import type { NormalizedPluginManifest, PluginConfigSchemaField, PluginManifestSource } from './types.js'
 
 export interface PluginRequirementObservation {
@@ -51,10 +51,13 @@ export function deriveAwCapabilitiesFromManifest(
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
   if (manifest.config) capabilities.push('aw.plugin-config.v2')
   if (manifest.config && 'schemaVersion' in manifest.config
-    && (manifest.config.schemaVersion === 3 || manifest.config.schemaVersion === 4)) {
+    && (manifest.config.schemaVersion === 3 || manifest.config.schemaVersion === 4 || manifest.config.schemaVersion === 5)) {
     capabilities.push('aw.plugin-config.v3')
-    if (manifest.config.schemaVersion === 4) capabilities.push('aw.plugin-config.v4')
-    const configFields: PluginConfigSchemaField[] = Object.values(normalizePluginConfigDefinition(manifest.config).fields)
+    if (manifest.config.schemaVersion === 4 || manifest.config.schemaVersion === 5) capabilities.push('aw.plugin-config.v4')
+    if (manifest.config.schemaVersion === 5) capabilities.push('aw.plugin-config.v5')
+    const definition = normalizePluginConfigDefinition(manifest.config)
+    const profiles = definition.schemaVersion === 5 ? Object.values(definition.platforms ?? {}) : []
+    const configFields: PluginConfigSchemaField[] = [definition, ...profiles].flatMap((profile) => Object.values(profile.fields))
     const hasArray = (field: PluginConfigSchemaField): boolean => {
       if (field.type === 'array') return true
       if (field.type !== 'object' || field.properties === undefined) return false
@@ -79,8 +82,8 @@ export function deriveAwCapabilitiesFromManifest(
     }
     if (configFields.some((field) => hasValueRef(field))) capabilities.push('aw.plugin-config-value-ref.v1')
     if (configFields.some((field) => hasValueRef(field, true))) capabilities.push('aw.plugin-config-cross-plugin-value-ref.v1')
-    const presentation = manifest.config.presentation
-    if (presentation && (('summaries' in presentation && presentation.summaries)
+    const presentations = [definition, ...profiles].flatMap((profile) => profile.presentation ? [profile.presentation] : [])
+    if (presentations.some((presentation) => ('summaries' in presentation && presentation.summaries)
       || ('fieldViews' in presentation && presentation.fieldViews))) {
       capabilities.push('aw.plugin-config-summary.v1')
     }
@@ -99,7 +102,7 @@ export function deriveAwCapabilitiesFromManifest(
   if ((manifest.artifacts?.targets ?? []).some((target) => target.runtimeConfig !== undefined)) {
     capabilities.push('aw.installed-runtime-config.v2')
   }
-  if (manifest.distributions?.agentSkills) capabilities.push('aw.portable-skills.v1')
+  if ([...resolveSupportedPlatforms(manifest)].some(isPortablePlatformTarget)) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')
   return normalizeAwCapabilities(capabilities)
 }
@@ -228,7 +231,7 @@ function manifestExecutableCommands(
   manifest: PluginManifestSource | NormalizedPluginManifest,
 ): ScannedAwCommand[] {
   const commands = new Set<string>()
-  for (const platform of resolveSupportedPlatforms(manifest)) {
+  for (const platform of resolveSupportedNativePlatforms(manifest)) {
     for (const hook of resolvePlatformHookDefinitions(
       manifest as NormalizedPluginManifest,
       platform,
@@ -311,7 +314,6 @@ export async function scanPluginAwCliRequirements(options: {
   }
   const skillCollections = new Set([
     options.manifest.skills,
-    options.manifest.distributions?.agentSkills?.skills,
   ].filter((value): value is string => value !== undefined))
   const skillFiles = (await Promise.all(
     [...skillCollections].map((value) => actualSkillMainFiles(options.pluginRoot, value)),

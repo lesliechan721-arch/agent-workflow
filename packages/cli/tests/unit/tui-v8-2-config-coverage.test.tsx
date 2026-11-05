@@ -6,10 +6,9 @@ import {
   TuiController,
   type OperationEvidence,
   type OperationIntent,
-  type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
-import type { ConfigPageViewModel } from '../../src/tui/model.js';
+import type { ConfigPageViewModel, ConfigReadOptions } from '../../src/tui/model.js';
 import type { ConsoleV4ScreenId } from '../../src/tui/screen-registry.js';
 
 afterEach(() => cleanup());
@@ -19,7 +18,7 @@ const pluginId = 'team/config-coverage';
 function status(): TuiStatusLoadResult {
   return {
     payload: {
-      schemaVersion: 7,
+      schemaVersion: 8,
       catalog: {
         primarySourceId: 'team',
         configDigest: 'sha256:config',
@@ -54,11 +53,11 @@ function evidence(intent: OperationIntent): OperationEvidence {
     catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
     configBatch: {
       groups: intent.groups.map((group) => ({
-        scope: group.scope,
-        targetFingerprint: `sha256:${group.scope}`,
+        scope: 'user', platform: group.platform,
+        targetFingerprint: `sha256:${group.platform ?? 'common'}`,
         config: {
-          scope: group.scope,
-          storeDigest: `sha256:store:${group.scope}`,
+          scope: 'user', platform: group.platform, context: intent.context ?? 'user',
+          storeDigest: `sha256:store:${group.platform ?? 'common'}`,
           impactState: 'known',
           affectedTargets: [],
         },
@@ -67,11 +66,20 @@ function evidence(intent: OperationIntent): OperationEvidence {
   };
 }
 
-function sensitivePage(layer: ConfigPageViewModel['layer']): ConfigPageViewModel {
-  const projectBlocked = layer.scope === 'project';
+function savedConfigBatch(intent: OperationIntent) {
+  if (intent.kind !== 'configSaveBatch') throw new Error(`Unexpected save intent: ${intent.kind}`);
+  return { status: 'succeeded', groups: intent.groups.map((group) => ({
+    scope: 'user', platform: group.platform, status: 'succeeded', configSaved: true,
+    applyRequested: false, applyStatus: 'notRequested',
+  })) };
+}
+
+function sensitivePage(options: ConfigReadOptions): ConfigPageViewModel {
+  const profile = options.platform ?? 'common';
+  const context = options.context ?? 'user';
   return {
     pluginId,
-    layer,
+    profile, context, layer: { profile, context },
     storedCount: 0,
     presets: [],
     groups: [{
@@ -90,8 +98,8 @@ function sensitivePage(layer: ConfigPageViewModel['layer']): ConfigPageViewModel
         displayValue: '未设置',
         required: true,
         sensitive: true,
-        writable: !projectBlocked,
-        canSet: !projectBlocked,
+        writable: true,
+        canSet: true,
         canUnset: false,
         dirty: false,
         inherited: true,
@@ -121,7 +129,7 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
 
 describe('TUI v8.2 config coverage', () => {
   it.each([[60, 18], [80, 24]] as const)(
-    'shows pending config Progress and the completed Result at %ix%i',
+    'shows pending save state before the completed save dialog at %ix%i',
     async (columns, rows) => {
       let finishExecution!: (result: unknown) => void;
       const executeIntent = vi.fn(() => new Promise((resolve) => {
@@ -130,6 +138,7 @@ describe('TUI v8.2 config coverage', () => {
       const value = new TuiController({
         loadStatus: vi.fn().mockResolvedValue(status()),
         captureEvidence: vi.fn(async (intent: OperationIntent) => evidence(intent)),
+        getConfigPage: vi.fn(async (_pluginId, options) => sensitivePage(options)),
         executeIntent,
       });
       await value.load();
@@ -141,19 +150,13 @@ describe('TUI v8.2 config coverage', () => {
         size={{ columns, rows }}
         onScreenChange={(screen) => reached.add(screen)}
       />);
-      const review = await value.buildOperationReview({
-        kind: 'configSaveBatch',
-        pluginId,
-        apply: false,
-        groups: [{ scope: 'user', updates: { mode: 'safe' } }],
-      });
-
-      const pending = value.executeOperation(review.reviewToken);
+      await nextTurn(5);
+      await input(instance, '\r', 'private-token-value', '\r', 's');
       await nextTurn(3);
-      expect(value.snapshot.router.current.route.name).toBe('progress');
-      expect(reached).toContain('C11');
+      expect(value.snapshot.router.current.route.name).toBe('configFields');
+      expect(reached).toContain('C01');
       expect(instance.lastFrame()).toContain('正在保存设置');
-      expect(instance.lastFrame()).toContain('只保存所选设置层');
+      expect(instance.lastFrame()).not.toContain('已保存，是否更新插件？');
       expect(value.snapshot.result).toBeUndefined();
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
 
@@ -164,17 +167,15 @@ describe('TUI v8.2 config coverage', () => {
           applyRequested: false, applyStatus: 'notRequested',
         }],
       });
-      await pending;
       await nextTurn(3);
-      expect(value.snapshot.router.current.route.name).toBe('result');
-      expect(reached).toContain('C12');
-      expect(instance.lastFrame()).toContain('设置已保存');
+      expect(value.snapshot.router.current.route.name).toBe('configFields');
+      expect(instance.lastFrame()).toContain('已保存，是否更新插件？');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
     },
   );
 
   it.each([[60, 18], [80, 24]] as const)(
-    'keeps a sensitive value private from input through its user-only target and Review at %ix%i',
+    'keeps a sensitive value private from input through saving its selected profile at %ix%i',
     async (columns, rows) => {
       const privateValue = 'private-token-value';
       const captured: OperationIntent[] = [];
@@ -185,11 +186,11 @@ describe('TUI v8.2 config coverage', () => {
           captured.push(intent);
           return evidence(intent);
         }),
-        executeIntent: vi.fn(),
+        executeIntent: vi.fn(async (intent: OperationIntent) => savedConfigBatch(intent)),
       });
       await value.load();
       value.push({ name: 'pluginDetail', pluginId });
-      value.beginConfigFlow(pluginId);
+      value.beginConfigFlow(pluginId, { platform: 'generic', context: 'project' });
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
       await nextTurn(4);
 
@@ -202,14 +203,13 @@ describe('TUI v8.2 config coverage', () => {
 
       await input(instance, '\r');
       expect(value.snapshot.router.current.route.name).toBe('configFields');
-      expect(instance.lastFrame()).toContain('个人默认');
-      expect(instance.lastFrame()).not.toContain('› 当前项目');
+      expect(value.snapshot.router.current.route).toMatchObject({ layer: { profile: 'generic', context: 'project' } });
       expect(instance.lastFrame()).not.toContain(privateValue);
       expect(JSON.stringify(value.snapshot)).not.toContain(privateValue);
 
       await nextTurn(3);
       expect(value.snapshot.router.current.route.name).toBe('configFields');
-      expect(instance.lastFrame()).toContain('待保存到个人默认');
+      expect(instance.lastFrame()).toContain('1 项待保存');
       expect(instance.lastFrame()).not.toContain(privateValue);
       await input(instance, 's');
       for (let index = 0; index < 12
@@ -217,13 +217,14 @@ describe('TUI v8.2 config coverage', () => {
         await nextTurn();
       }
 
-      expect(value.snapshot.router.current.route.name).toBe('review');
-      expect(value.snapshot.activeReview?.operationKind).toBe('configSaveBatch');
+      expect(value.snapshot.router.current.route.name).toBe('configFields');
       await vi.waitFor(() => expect(captured.at(-1)).toMatchObject({
         kind: 'configSaveBatch',
         apply: false,
-        groups: [{ scope: 'user', updates: { token: privateValue }, sensitiveKeys: ['token'] }],
+        context: 'project',
+        groups: [{ scope: 'user', platform: 'generic', updates: { token: privateValue }, sensitiveKeys: ['token'] }],
       }));
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('已保存，是否更新插件？'));
       expect(instance.lastFrame()).not.toContain(privateValue);
       expect(JSON.stringify(value.snapshot)).not.toContain(privateValue);
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);

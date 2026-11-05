@@ -90,18 +90,6 @@ async function writeScriptFixture(pluginRoot: string): Promise<void> {
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
 }
 
-function createMarketplaceWithProducts(products: string[]) {
-  return {
-    category: 'workflow',
-    strict: true,
-    policy: {
-      installation: 'AVAILABLE',
-      authentication: 'ON_INSTALL',
-      products,
-    },
-  };
-}
-
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -157,7 +145,7 @@ describe('manifest utils', () => {
         authentication: 'ON_INSTALL',
       },
     });
-    expect(plugin.manifest.marketplace.policy.products).toBeUndefined();
+    expect(plugin.manifest.marketplace.policy).not.toHaveProperty('products');
     expect(plugin.manifest.schemaVersion).toBe(3);
     expect(plugin.manifest.extensions?.hooks?.[0]).toMatchObject({
       event: 'before_tool',
@@ -940,7 +928,6 @@ describe('manifest utils', () => {
         platform: 'codex',
         scopes: ['user', 'project'],
         target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         states: ['present'],
         refreshKeys: ['model'],
         skillKey: 'native-codex-skill',
@@ -950,9 +937,7 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
       manifest: {
         artifacts: {
-          targets: [expect.objectContaining({
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-          })],
+          targets: [expect.objectContaining({ target: 'codex.skill', scopes: ['user'] })],
         },
       },
     });
@@ -1009,7 +994,6 @@ describe('manifest utils', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present', 'disabled'],
           refreshKeys: ['model'],
@@ -1038,7 +1022,6 @@ describe('manifest utils', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: ['model'],
@@ -1108,7 +1091,7 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'duplicate dynamic skill owner "claude:project:codex-explore"',
+      'duplicate dynamic skill owner "claude:user:codex-explore"',
     );
 
     await fs.ensureDir(path.join(pluginRoot, 'skills', 'codex-explore', 'base'));
@@ -1118,7 +1101,6 @@ describe('manifest utils', () => {
         platform: 'codex',
         scopes: ['project'],
         target: 'codex.skill',
-        delivery: { mode: 'aw-extension' },
         projectManagedKind: 'skill',
         states: ['present'],
         refreshKeys: [],
@@ -1149,7 +1131,6 @@ describe('manifest utils', () => {
         platform: 'codex',
         scopes: ['project'],
         target: 'codex.skill',
-        delivery: { mode: 'aw-extension' },
         projectManagedKind: 'skill',
         states: ['present'],
         refreshKeys: [],
@@ -1171,7 +1152,7 @@ describe('manifest utils', () => {
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
 
-    manifest.marketplace = createMarketplaceWithProducts(['CODEX']);
+    manifest.platforms = ['codex'];
     manifest.buildConfig = {
       fileRules: {
         claude: {
@@ -1182,7 +1163,7 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": buildConfig.fileRules.claude requires CLAUDE support, but marketplace.policy.products=[CODEX].',
+      'Invalid plugin "git-commit": buildConfig.fileRules.claude requires claude support, but platforms=[codex].',
     );
 
     manifest.buildConfig = {
@@ -1196,16 +1177,16 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": buildConfig.manifestOverrides.claude requires CLAUDE support, but marketplace.policy.products=[CODEX].',
+      'Invalid plugin "git-commit": buildConfig.manifestOverrides.claude requires claude support, but platforms=[codex].',
     );
 
-    manifest.marketplace = createMarketplaceWithProducts(['CLAUDE']);
+    manifest.platforms = ['claude'];
     manifest.buildConfig = undefined;
     manifest.apps = './.app.json';
     await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: {} }, { spaces: 2 });
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": apps requires CODEX support, but marketplace.policy.products=[CLAUDE].',
+      'Invalid plugin "git-commit": apps requires codex support, but platforms=[claude].',
     );
   });
 
@@ -1224,7 +1205,7 @@ describe('manifest utils', () => {
       requiresCodexProjectConfig: true,
     };
 
-    manifest.marketplace = createMarketplaceWithProducts(['CLAUDE']);
+    manifest.platforms = ['claude'];
     delete manifest.apps;
     await fs.remove(path.join(pluginRoot, '.app.json'));
     manifest.config = {
@@ -1244,10 +1225,10 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": artifacts.targets[0].platform requires CODEX support, but marketplace.policy.products=[CLAUDE].',
+      'Invalid plugin "git-commit": artifacts.targets[0].platform requires codex support, but platforms=[claude].',
     );
 
-    manifest.marketplace = createMarketplaceWithProducts(['CODEX', 'CLAUDE']);
+    manifest.platforms = ['codex', 'claude'];
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
       manifest: {
@@ -1859,89 +1840,29 @@ describe('manifest utils', () => {
     });
   });
 
-  it('requires a non-empty native inventory for portable plugins in source and bundle modes', async () => {
+  it('accepts Portable-only plugins from the unified Skill root without Native inventory', async () => {
     const repoRoot = await makeTempRepo();
     const fixtureManifest = await readFixturePluginManifest(repoRoot);
     const pluginRoot = path.join(repoRoot, 'portable-inventory');
     const manifest = {
-      schemaVersion: 3,
-      name: 'portable-inventory',
-      version: '1.0.0',
-      description: 'Portable inventory fixture.',
-      marketplace: fixtureManifest.marketplace,
-      skills: './skills',
-      distributions: { agentSkills: { skills: './portable-skills' } },
+      schemaVersion: 3, name: 'portable-inventory', version: '1.0.0',
+      description: 'Portable inventory fixture.', platforms: ['generic'],
+      marketplace: fixtureManifest.marketplace, skills: './skills',
     };
-    await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
-    await fs.ensureDir(path.join(pluginRoot, 'skills'));
-    await fs.ensureDir(path.join(pluginRoot, 'portable-skills', 'portable'));
-    await fs.writeFile(
-      path.join(pluginRoot, 'portable-skills', 'portable', 'SKILL.md'),
-      '---\nname: portable\ndescription: Portable fixture.\n---\n',
-    );
-    await fs.writeFile(path.join(pluginRoot, 'portable-skills', 'portable', 'README.md'), '# Portable\n');
-    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
-
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('portable-only plugins');
-    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' })).rejects.toThrow('portable-only plugins');
-
-    Object.assign(manifest, {
-      artifacts: {
-        targets: [{
-          id: 'disabled-native',
-          platform: 'codex',
-          scopes: ['user'],
-          target: 'codex.developerInstructionsBlock',
-          states: ['disabled'],
-          refreshKeys: [],
-        }],
-      },
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'portable', 'SKILL.md'),
+      '---\nname: portable\ndescription: Portable fixture.\n---\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'portable', 'README.md'), '# Portable\n');
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest);
+    for (const mode of ['source', 'bundle'] as const) {
+      await expect(readPluginManifest(pluginRoot, { mode })).resolves.toMatchObject({
+        manifest: { name: 'portable-inventory', platforms: ['generic'], skills: './skills' },
+      });
+    }
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), { ...manifest,
+      artifacts: { targets: [{ id: 'native', platform: 'codex', scopes: ['user'],
+        target: 'codex.developerInstructionsBlock', states: ['present'], refreshKeys: [] }] },
     });
-    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('portable-only plugins');
-    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' })).rejects.toThrow('portable-only plugins');
-
-    manifest.artifacts.targets[0].states = ['present', 'disabled'];
-    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
-    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' }))
-      .resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
-    delete (manifest as { artifacts?: unknown }).artifacts;
-
-    delete (manifest as { skills?: string }).skills;
-    await fs.remove(path.join(pluginRoot, 'skills'));
-    Object.assign(manifest, { slashCommands: './commands' });
-    await fs.ensureDir(path.join(pluginRoot, 'commands'));
-    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must contain at least one root "*.md" command file');
-    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' })).rejects.toThrow('portable-only plugins');
-
-    delete (manifest as { slashCommands?: string }).slashCommands;
-    Object.assign(manifest, { mcpServers: './mcp.json', apps: './apps.json' });
-    await fs.writeJson(path.join(pluginRoot, 'mcp.json'), { mcpServers: {} });
-    await fs.writeJson(path.join(pluginRoot, 'apps.json'), { apps: {} });
-    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('portable-only plugins');
-    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' })).rejects.toThrow('portable-only plugins');
-
-    delete (manifest as { mcpServers?: string }).mcpServers;
-    delete (manifest as { apps?: string }).apps;
-    Object.assign(manifest, { skills: './skills' });
-    await fs.ensureDir(path.join(pluginRoot, 'skills', 'native'));
-    await fs.writeFile(
-      path.join(pluginRoot, 'skills', 'native', 'SKILL.md'),
-      '---\nname: native\ndescription: Native fixture.\n---\n',
-    );
-    await fs.writeFile(path.join(pluginRoot, 'skills', 'native', 'README.md'), '# Native\n');
-    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
-    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' }))
-      .resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
-
-    await fs.writeFile(path.join(pluginRoot, 'portable-skills', 'README.md'), '# Invalid root file\n');
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('直接子节点必须是普通目录');
-    await fs.remove(path.join(pluginRoot, 'portable-skills', 'README.md'));
-    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('requires codex support');
   });
 
   it('accepts native hooks and public session_start shared matcher values', async () => {
@@ -2209,7 +2130,7 @@ describe('manifest utils', () => {
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
 
-    manifest.marketplace = createMarketplaceWithProducts(['CLAUDE']);
+    manifest.platforms = ['claude'];
     delete manifest.apps;
     await fs.remove(path.join(pluginRoot, '.app.json'));
     manifest.extensions.nativeHooks = {
@@ -2222,7 +2143,7 @@ describe('manifest utils', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": extensions.nativeHooks.codex requires CODEX support, but marketplace.policy.products=[CLAUDE].',
+      'Invalid plugin "git-commit": extensions.nativeHooks.codex requires codex support, but platforms=[claude].',
     );
 
     manifest.extensions.nativeHooks = undefined;
@@ -2240,7 +2161,7 @@ describe('manifest utils', () => {
     ];
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": extensions.instructions[0].agentOverrides.codex requires CODEX support, but marketplace.policy.products=[CLAUDE].',
+      'Invalid plugin "git-commit": extensions.instructions[0].agentOverrides.codex requires codex support, but platforms=[claude].',
     );
 
     manifest.extensions.instructions[0].agentOverrides = {

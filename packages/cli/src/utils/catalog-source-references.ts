@@ -4,6 +4,7 @@ import type { Dirent } from 'node:fs';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { readClaudeSettings } from '../adapters/helpers.js';
 import { readCodexConfigFile } from './codex-config.js';
@@ -416,35 +417,6 @@ async function inventoryPluginConfigRoots(options: {
     if (userRoot) roots.push({ root: userRoot, scope: 'user' });
   }
 
-  if (options.scope === 'user') return roots;
-  const rawRepoRoot = resolveRepoRootSync(options.cwd);
-  const repoRoot = await inventoryRead({
-    operation: () => fs.realpath(rawRepoRoot),
-    absent: null,
-    reportAbsent: true,
-    errors: options.errors,
-    location: rawRepoRoot,
-    kind: 'projectRootRead',
-    env: options.env,
-    cwd: options.cwd,
-  });
-  if (repoRoot && await inventoryCanonicalDirectory({
-    errors: options.errors,
-    location: repoRoot,
-    kind: 'projectRootRead',
-    env: options.env,
-    cwd: options.cwd,
-  })) {
-    const projectRoot = await inventoryCanonicalDescendantDirectory({
-      root: rawRepoRoot,
-      segments: ['.agent-workflows', 'plugin-config'],
-      errors: options.errors,
-      kind: 'configDirectoryRead',
-      env: options.env,
-      cwd: options.cwd,
-    });
-    if (projectRoot) roots.push({ root: projectRoot, scope: 'project', projectKey: repoRoot });
-  }
   return roots;
 }
 
@@ -940,39 +912,34 @@ function assertNamespacedConfigEnvelope(
   value: unknown,
   sourceId: string,
   pluginName: string,
-  scope: 'user' | 'project',
 ): asserts value is {
-  schemaVersion: 5;
+  schemaVersion: 6;
   sourceId: string;
   pluginName: string;
-  binding:
-    | { kind: 'source'; sourceIdentity: string }
-    | { kind: 'catalog'; logicalIdentity: string };
-  values: Record<string, unknown>;
+  binding: { kind: 'source'; sourceIdentity: string };
+  common: Record<string, unknown>;
+  platforms: Record<string, Record<string, unknown>>;
 } {
   if (!isRecord(value)
-    || value.schemaVersion !== 5
+    || value.schemaVersion !== 6
     || typeof value.sourceId !== 'string'
     || typeof value.pluginName !== 'string'
     || !isRecord(value.binding)
-    || !isRecord(value.values)
+    || !isRecord(value.common)
+    || !isRecord(value.platforms)
+    || Object.entries(value.platforms).some(([platform, values]) => !isPlatformTarget(platform) || !isRecord(values))
     || Object.keys(value).some((key) => ![
-      'schemaVersion', 'sourceId', 'pluginName', 'binding', 'values',
+      'schemaVersion', 'sourceId', 'pluginName', 'binding', 'common', 'platforms',
     ].includes(key))) {
-    throw new Error('Namespaced plugin config is not a valid schema 5 envelope.');
+    throw new Error('Namespaced plugin config is not a valid schema 6 envelope.');
   }
   const binding = value.binding;
-  const validBinding = scope === 'user'
-    ? binding.kind === 'source'
+  const validBinding = binding.kind === 'source'
       && typeof binding.sourceIdentity === 'string'
       && /^sha256:[0-9a-f]{64}$/u.test(binding.sourceIdentity)
-      && Object.keys(binding).every((key) => ['kind', 'sourceIdentity'].includes(key))
-    : binding.kind === 'catalog'
-      && typeof binding.logicalIdentity === 'string'
-      && binding.logicalIdentity.trim().length > 0
-      && Object.keys(binding).every((key) => ['kind', 'logicalIdentity'].includes(key));
+      && Object.keys(binding).every((key) => ['kind', 'sourceIdentity'].includes(key));
   if (!validBinding) {
-    throw new Error(`Namespaced ${scope} plugin config has an invalid binding.`);
+    throw new Error('Namespaced user plugin config has an invalid binding.');
   }
   if (value.sourceId !== sourceId || value.pluginName !== pluginName) {
     throw new Error('Namespaced plugin config identity does not match its directory path.');
@@ -1281,7 +1248,6 @@ export async function inventoryCatalogSourceReferences(options: {
             value,
             sourceEntry.name,
             pluginEntry.name,
-            configInventory.scope,
           );
         } catch (error) {
           errors.push(inventoryError(

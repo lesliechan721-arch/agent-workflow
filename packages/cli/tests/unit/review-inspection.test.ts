@@ -43,6 +43,7 @@ function manifest(name: string, extra: Partial<PluginManifestSource> = {}): Plug
     name,
     version: '0.1.0',
     description: `${name} inspection fixture.`,
+    platforms: ['codex', 'claude', 'generic'],
     mcpServers: './.mcp.json',
     marketplace: {
       category: 'test',
@@ -70,9 +71,7 @@ async function writeSkill(pluginRoot: string, skill: string, collection = 'skill
     path.join(skillRoot, 'SKILL.md'),
     `---\nname: ${skill}\ndescription: ${skill} fixture.\n---\n\n# ${skill}\n`,
   )
-  if (collection !== 'skills') {
-    await fs.outputFile(path.join(skillRoot, 'README.md'), `# ${skill}\n`)
-  }
+  await fs.outputFile(path.join(skillRoot, 'README.md'), `# ${skill}\n`)
   return skillRoot
 }
 
@@ -85,7 +84,7 @@ async function writeEval(pluginRoot: string, skill: string, options: {
     version: 1,
     defaults: { runs: 2, timeoutMs: 3000 },
     profiles: Object.fromEntries(profiles.map((scope) => [`${scope}-default`, {
-      scope,
+      platform: 'codex', scope,
       plugins: { [path.basename(pluginRoot)]: {} },
     }])),
     suites: [{
@@ -153,10 +152,11 @@ describe('AW Review static inspection', () => {
     const root = await tempRoot()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const pluginRoot = await writePlugin(root, manifest('static', {
+      platforms: ['codex'],
       skills: './skills',
       marketplace: {
         category: 'test', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
     }))
     const skillRoot = await writeSkill(pluginRoot, 'shared')
@@ -188,14 +188,14 @@ describe('AW Review static inspection', () => {
     const targets = [
       ...['one', 'two'].map((skill) => ({
         id: skill,
-        distribution: 'agent-skills' as const,
+        platform: 'generic' as const, distribution: 'agent-skills' as const,
         target: 'agent-skills.skill' as const,
         kind: 'skill' as const,
         scopes: ['project' as const],
         states: ['present' as const],
         refreshKeys: [skill],
         skillKey: skill,
-        sourceDirs: [`./portable-skills/${skill}`],
+        sourceDirs: [`./skills/${skill}`],
       })),
       {
         id: 'native',
@@ -204,7 +204,6 @@ describe('AW Review static inspection', () => {
         kind: 'skill' as const,
         scopes: ['project' as const, 'user' as const],
         states: ['present' as const],
-        delivery: { mode: 'codex-native' as const, identity: 'shared', renderProfile: 'user' as const },
         refreshKeys: ['one'],
         skillKey: 'native',
         sourceDirs: ['./skills/native'],
@@ -212,7 +211,7 @@ describe('AW Review static inspection', () => {
     ]
     const pluginRoot = await writePlugin(root, manifest('portable-leaves', {
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-      distributions: { agentSkills: { skills: './portable-skills' } },
+      skills: './skills',
       config: { fields: {
         one: { type: 'string', default: 'default-one' },
         two: { type: 'string', default: 'default-two' },
@@ -221,8 +220,8 @@ describe('AW Review static inspection', () => {
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
       artifacts: { targets },
     }))
-    const oneRoot = await writeSkill(pluginRoot, 'one', 'portable-skills')
-    await writeSkill(pluginRoot, 'two', 'portable-skills')
+    const oneRoot = await writeSkill(pluginRoot, 'one', 'skills')
+    await writeSkill(pluginRoot, 'two', 'skills')
     await writeSkill(pluginRoot, 'native')
     await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
     const workspace = await readCatalogWorkspace(root, { reservedImports: CLI_RESERVED_IMPORTS })
@@ -230,14 +229,15 @@ describe('AW Review static inspection', () => {
       pluginName: 'portable-leaves',
       scope: 'project',
       cwd: root,
-      values: { one: 'ignored-project', two: 'custom-two' },
+      values: { two: 'custom-two' },
     })
     await fs.copy(oneRoot, path.join(materializedRoot, 'one'))
     const binding = await writeAwSourceBinding({
       rootDir: materializedRoot,
       source: await resolveWorkspaceBindingSource(workspace),
       subject: { plugin: 'portable-leaves' },
-      profile: await resolvePortableProfileBindingInput({
+      profile: await resolvePortableProfileBindingInput({ platform: 'generic',
+        offlineConfig: { 'portable-leaves': { two: 'custom-two' } },
         plugins: workspace.plugins,
         pluginName: 'portable-leaves',
         scope: 'project',
@@ -258,7 +258,7 @@ describe('AW Review static inspection', () => {
     const receipt = await inspectReviewTarget({
       cwd: root,
       target: pluginRoot,
-      platform: 'agent-skills',
+      platform: 'generic',
       scope: 'project',
       configFile,
       materializations: [binding.bindingPath],
@@ -281,7 +281,7 @@ describe('AW Review static inspection', () => {
       cwd: root,
       target: pluginRoot,
       skills: ['one'],
-      platform: 'agent-skills',
+      platform: 'generic',
       scope: 'project',
       configFile: incompatibleConfigFile,
       materializations: [binding.bindingPath],
@@ -308,29 +308,29 @@ describe('AW Review static inspection', () => {
       dependencies: ['portable-config-provider'],
       requires: { aw: { capabilities: ['aw.plugin-config-cross-plugin-value-ref.v1'] } },
       extensions: { instructions: [{ name: 'anchor', title: 'Anchor', content: 'Anchor.' }] },
-      distributions: { agentSkills: { skills: './portable-skills' } },
+      skills: './skills',
       config: { schemaVersion: 4, fields: { selected: { type: 'string', default: 'external',
         valueRef: { plugin: 'portable-config-provider', field: 'registry', key: 'key' } } } },
     }))
-    const skillRoot = await writeSkill(pluginRoot, 'portable-selected', 'portable-skills')
+    const skillRoot = await writeSkill(pluginRoot, 'portable-selected', 'skills')
     const workspace = await readCatalogWorkspace(root, { reservedImports: CLI_RESERVED_IMPORTS })
     await fs.copy(skillRoot, path.join(materializedRoot, 'portable-selected'))
     const binding = await writeAwSourceBinding({ rootDir: materializedRoot,
       source: await resolveWorkspaceBindingSource(workspace), subject: { plugin: 'portable-config-consumer' },
-      profile: await resolvePortableProfileBindingInput({ plugins: workspace.plugins,
+      profile: await resolvePortableProfileBindingInput({ platform: 'generic', plugins: workspace.plugins,
         pluginName: 'portable-config-consumer', scope: 'project', cwd: root }),
       artifacts: [{ kind: 'portable-skill', plugin: 'portable-config-consumer', skill: 'portable-selected', path: 'portable-selected' }],
     })
     await writePluginConfigStore({ pluginName: 'portable-config-provider', scope: 'project', cwd: root,
       values: { registry: [] } })
-    const receipt = await inspectReviewTarget({ cwd: root, target: pluginRoot, platform: 'agent-skills',
+    const receipt = await inspectReviewTarget({ cwd: root, target: pluginRoot, platform: 'generic',
       scope: 'project', materializations: [binding.bindingPath] })
     expect(receipt.skills).toEqual([expect.objectContaining({ skill: 'portable-selected', state: 'stale' })])
     expect(receipt.issues).toContainEqual(expect.objectContaining({ code: 'sourceBindingDrifted',
       message: expect.stringContaining('aw review prepare') }))
   })
 
-  it('uses Eval dependency defaults without reinterpreting a project override as user config', async () => {
+  it('uses explicit Eval platform config when selecting Review evidence', async () => {
     const root = await tempRoot()
     const materializedRoot = await tempRoot('aw-review-eval-shared-config-')
     await initializeCatalogWorkspace({ workspaceRoot: root })
@@ -344,7 +344,7 @@ describe('AW Review static inspection', () => {
       requires: { aw: { capabilities: ['aw.plugin-config-cross-plugin-value-ref.v1'] } },
       marketplace: {
         category: 'test', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       config: { schemaVersion: 4, fields: {
         shared: { type: 'string', default: 'shared-default' },
@@ -359,7 +359,6 @@ describe('AW Review static inspection', () => {
           platform: 'codex',
           scopes: ['project', 'user'],
           target: 'codex.skill',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           states: ['present'],
           refreshKeys: ['shared'],
           skillKey: 'native',
@@ -370,7 +369,6 @@ describe('AW Review static inspection', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           states: ['present'],
           refreshKeys: ['shared', 'projectOnly'],
           skillKey: 'extension',
@@ -414,7 +412,7 @@ describe('AW Review static inspection', () => {
     })
     const matchingConfigFile = path.join(root, 'review-matching-config.json')
     await fs.outputJson(matchingConfigFile, {
-      'eval-shared-config': { projectOnly: 'eval-project-only' },
+      'eval-shared-config': { shared: 'eval-project-shared', projectOnly: 'eval-project-only' },
     })
 
     const matching = await inspectReviewTarget({
@@ -433,7 +431,7 @@ describe('AW Review static inspection', () => {
     const incompatibleConfigFile = path.join(root, 'review-incompatible-config.json')
     await fs.outputJson(incompatibleConfigFile, {
       'eval-shared-config': {
-        shared: 'eval-project-shared',
+        shared: 'different-profile',
         projectOnly: 'eval-project-only',
       },
     })
@@ -467,7 +465,6 @@ describe('AW Review static inspection', () => {
         platform: 'codex',
         scopes: ['project', 'user'],
         target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         projectManagedKind: 'skill',
         states: ['present'],
         refreshKeys: [],
@@ -476,7 +473,7 @@ describe('AW Review static inspection', () => {
       }] },
       marketplace: {
         category: 'test', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
     }))
     const skillRoot = await writeSkill(pluginRoot, 'navigation-skill')
@@ -525,8 +522,8 @@ describe('AW Review static inspection', () => {
       scope: 'project',
       materializations: [evalBinding.bindingPath],
     })
-    expect(evalReview.skills).toEqual([expect.objectContaining({ state: 'missing' })])
-    expect(evalReview.issues).toContainEqual(expect.objectContaining({
+    expect(evalReview.skills).toEqual([expect.objectContaining({ state: 'ready' })])
+    expect(evalReview.issues).not.toContainEqual(expect.objectContaining({
       code: 'materializationNotSelected',
       path: evalBinding.bindingPath,
     }))
@@ -627,21 +624,21 @@ describe('AW Review static inspection', () => {
 
     const portableRoot = await writePlugin(root, manifest('declared-portable', {
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-      distributions: { agentSkills: { skills: './portable-skills' } },
+      skills: './skills',
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
       artifacts: { targets: [{
         id: 'portable-output',
-        distribution: 'agent-skills',
+        platform: 'generic', distribution: 'agent-skills',
         scopes: ['project'],
         target: 'agent-skills.skill',
         states: ['present'],
         refreshKeys: [],
         skillKey: 'shared-name',
-        sourceDirs: ['./portable-source'],
+        sourceDirs: ['./skills/shared-name/source', './skills/shared-name'],
       }] },
     }))
-    await writeSkill(portableRoot, 'shared-name', 'portable-skills')
-    const portableSource = path.join(portableRoot, 'portable-source')
+    await writeSkill(portableRoot, 'shared-name', 'skills')
+    const portableSource = path.join(portableRoot, 'skills', 'shared-name', 'source')
     await fs.outputFile(path.join(portableSource, 'input.txt'), 'portable declared source\n')
     await fs.outputFile(path.join(portableRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
 
@@ -654,7 +651,6 @@ describe('AW Review static inspection', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           states: ['present'],
           refreshKeys: [],
           skillKey: 'same-skill',
@@ -680,31 +676,28 @@ describe('AW Review static inspection', () => {
     await fs.outputFile(path.join(surfacesRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
 
     const extensionRoot = await writePlugin(root, manifest('renderer-source', {
-      skills: './skills',
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
       artifacts: { targets: [{
         id: 'extension-output',
         platform: 'codex',
         scopes: ['project'],
         target: 'codex.skill',
-        delivery: { mode: 'aw-extension' },
         states: ['present'],
         refreshKeys: [],
         skillKey: 'placeholder',
       }] },
       marketplace: {
         category: 'test', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
     }))
-    const placeholder = await writeSkill(extensionRoot, 'placeholder')
     const rendererSource = path.join(extensionRoot, 'scripts', 'render.mjs')
     await fs.outputFile(rendererSource, '// actual extension source\n')
 
     const assertMappedSource = async (options: {
       pluginRoot: string
       skill: string
-      platform: 'codex' | 'claude' | 'agent-skills'
+      platform: 'codex' | 'claude' | 'generic'
       expectedSource: string
     }): Promise<void> => {
       const review = await inspectReviewTarget({
@@ -722,7 +715,7 @@ describe('AW Review static inspection', () => {
     await assertMappedSource({
       pluginRoot: portableRoot,
       skill: 'shared-name',
-      platform: 'agent-skills',
+      platform: 'generic',
       expectedSource: portableSource,
     })
     await assertMappedSource({
@@ -743,6 +736,5 @@ describe('AW Review static inspection', () => {
       platform: 'codex',
       expectedSource: rendererSource,
     })
-    expect(rendererSource).not.toBe(placeholder)
   })
 })

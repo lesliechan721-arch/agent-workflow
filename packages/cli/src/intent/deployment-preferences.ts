@@ -3,23 +3,25 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import type { DependencyScopeOverride, Scope } from '../types.js';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core';
+import type { PlatformTarget, Scope } from '../types.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import { atomicReplaceConfigFile } from '../utils/plugin-config.js';
 import { assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import {
-  createProjectLocationKey, resolveAbsoluteAwHome, resolveRequiredCanonicalRepoRoot,
+  resolveAbsoluteAwHome,
 } from '../utils/state-paths.js';
 import { assertTestReadablePath, assertTestWritablePath } from '../utils/test-path-fence.js';
 import { describeStrongStateProblem } from './diagnostics.js';
 
-export type AgentId = 'codex' | 'claude-code' | 'cursor';
+export type AgentId = PlatformTarget;
+export interface DeploymentExclusion { plugin: string; target: AgentId }
 export interface DeploymentPreferences {
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: 'aw-deployment-preferences';
-  agents: AgentId[];
-  dependencyScopeOverrides: DependencyScopeOverride[];
+  targets: AgentId[];
+  exclusions: DeploymentExclusion[];
 }
 export interface PreferencesLocation {
   scope: Scope;
@@ -56,56 +58,41 @@ function assertKeys(value: Record<string, unknown>, expected: readonly string[],
 
 export function normalizeAgents(values: readonly string[]): AgentId[] {
   return [...new Set(values.map((value): AgentId => {
-    if (value === 'codex' || value === 'claude-code' || value === 'cursor') return value;
+    if (isPlatformTarget(value)) return value;
     throw new Error('Invalid Agent ID.');
   }))].sort(compareText);
 }
 
-export function validateDependencyScopeOverrides(
-  value: unknown, scope: Scope,
-): DependencyScopeOverride[] {
-  if (!Array.isArray(value)) throw new Error('Invalid dependency scope overrides.');
-  const overrides = value.map((entry): DependencyScopeOverride => {
-    if (!isRecord(entry)) throw new Error('Invalid dependency scope override.');
-    assertKeys(entry, ['pluginId', 'platform', 'scope'], 'dependency scope override');
-    if (typeof entry.pluginId !== 'string') throw new Error('Invalid dependency plugin ID.');
-    const parsed = parsePluginId(entry.pluginId);
-    if (!parsed.sourceId) throw new Error('Invalid dependency plugin ID: source required.');
-    if (entry.platform !== 'codex' && entry.platform !== 'claude') {
-      throw new Error('Invalid dependency platform.');
-    }
-    if (entry.scope !== 'project' && entry.scope !== 'user') {
-      throw new Error('Invalid dependency placement.');
-    }
-    if (scope === 'user' && entry.scope === 'project') {
-      throw new Error('User dependency cannot use project placement.');
-    }
-    return {
-      pluginId: `${parsed.sourceId}/${parsed.pluginName}`,
-      platform: entry.platform,
-      scope: entry.scope,
-    };
+export function normalizeExclusions(value: unknown): DeploymentExclusion[] {
+  if (!Array.isArray(value)) throw new Error('Invalid deployment exclusions.');
+  const result = value.map((entry): DeploymentExclusion => {
+    if (!isRecord(entry)) throw new Error('Invalid deployment exclusion.');
+    assertKeys(entry, ['plugin', 'target'], 'deployment exclusion');
+    if (typeof entry.plugin !== 'string' || typeof entry.target !== 'string') throw new Error('Invalid deployment exclusion.');
+    const parsed = parsePluginId(entry.plugin);
+    if (!parsed.sourceId) throw new Error('Deployment exclusion requires source/plugin.');
+    return { plugin: `${parsed.sourceId}/${parsed.pluginName}`, target: normalizeAgents([entry.target])[0]! };
   });
-  const keys = overrides.map((item) => `${item.pluginId}\0${item.platform}`);
-  if (new Set(keys).size !== keys.length) throw new Error('Duplicate dependency placement.');
-  return overrides.sort((a, b) => compareText(`${a.pluginId}\0${a.platform}`, `${b.pluginId}\0${b.platform}`));
+  const keys = result.map((entry) => `${entry.plugin}\0${entry.target}`);
+  if (new Set(keys).size !== keys.length) throw new Error('Duplicate deployment exclusion.');
+  return result.sort((a, b) => compareText(`${a.plugin}\0${a.target}`, `${b.plugin}\0${b.target}`));
 }
 
 export function createEmptyPreferences(): DeploymentPreferences {
-  return { schemaVersion: 1, kind: 'aw-deployment-preferences', agents: [], dependencyScopeOverrides: [] };
+  return { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: [], exclusions: [] };
 }
 
-export function parsePreferences(value: unknown, scope: Scope): DeploymentPreferences {
+export function parsePreferences(value: unknown, _scope?: Scope): DeploymentPreferences {
   if (!isRecord(value)) throw new Error('Invalid deployment preferences.');
-  assertKeys(value, ['schemaVersion', 'kind', 'agents', 'dependencyScopeOverrides'], 'deployment preferences');
-  if (value.schemaVersion !== 1 || value.kind !== 'aw-deployment-preferences') {
+  assertKeys(value, ['schemaVersion', 'kind', 'targets', 'exclusions'], 'deployment preferences');
+  if (value.schemaVersion !== 2 || value.kind !== 'aw-deployment-preferences') {
     throw new Error('Invalid deployment preferences version or kind.');
   }
-  if (!Array.isArray(value.agents)) throw new Error('Invalid deployment Agents.');
+  if (!Array.isArray(value.targets)) throw new Error('Invalid deployment Agents.');
   return {
-    schemaVersion: 1, kind: 'aw-deployment-preferences',
-    agents: normalizeAgents(value.agents),
-    dependencyScopeOverrides: validateDependencyScopeOverrides(value.dependencyScopeOverrides, scope),
+    schemaVersion: 2, kind: 'aw-deployment-preferences',
+    targets: normalizeAgents(value.targets),
+    exclusions: normalizeExclusions(value.exclusions),
   };
 }
 
@@ -115,9 +102,7 @@ export function serializePreferences(value: DeploymentPreferences, scope: Scope)
 
 export async function resolvePreferencesPath(location: PreferencesLocation): Promise<string> {
   const awHome = resolveAbsoluteAwHome(location.env);
-  if (location.scope === 'user') return path.join(awHome, 'deployment-preferences.json');
-  const key = await resolveRequiredCanonicalRepoRoot(location.cwd);
-  return path.join(awHome, 'project-preferences', `${createProjectLocationKey(key)}.json`);
+  return path.join(awHome, 'deployment-preferences.json');
 }
 
 function invalidPath(error: unknown): boolean {
@@ -162,12 +147,12 @@ async function mutatePreferences(
   return withAwHomeMutationLock({ env: location.env, token: location.token, action: async () => {
     const observation = await observePreferences(location);
     if (observation.state === 'unreadable') {
-      const diagnostic = describeStrongStateProblem({ kind: 'preferences', scope: location.scope,
+      const diagnostic = describeStrongStateProblem({ kind: 'preferences', scope: 'user',
         state: observation.state, filePath: await resolvePreferencesPath(location) });
       throw new Error(`${diagnostic.code}: ${diagnostic.message}`);
     }
     if (observation.state === 'invalid' && !allowInvalid) {
-      const diagnostic = describeStrongStateProblem({ kind: 'preferences', scope: location.scope,
+      const diagnostic = describeStrongStateProblem({ kind: 'preferences', scope: 'user',
         state: observation.state, filePath: await resolvePreferencesPath(location) });
       throw new Error(`${diagnostic.code}: ${diagnostic.message}`);
     }
@@ -192,7 +177,7 @@ export function writePreferences(
 
 export function setAgents(location: PreferencesLocation, agents: readonly string[]): Promise<PreferencesWriteResult> {
   const normalized = normalizeAgents(agents);
-  return mutatePreferences(location, (current) => ({ ...current, agents: normalized }));
+  return mutatePreferences(location, (current) => ({ ...current, targets: normalized }));
 }
 
 export function resetTargets(location: PreferencesLocation): Promise<PreferencesWriteResult> {
@@ -210,6 +195,21 @@ export function selectAgents(options: {
   if (targets !== undefined) {
     return { agents: normalizeAgents(targets), origin: 'argument', preferences: preferences.state };
   }
-  const agents = preferences.state === 'valid' ? preferences.value.agents : [];
+  const agents = preferences.state === 'valid' ? preferences.value.targets : [];
   return { agents, origin: agents.length > 0 ? 'preference' : 'none', preferences: preferences.state };
+}
+
+export const setTargets = setAgents;
+
+/** The caller supplies a complete joint-demand check; it runs under the same write lock. */
+export async function setExclusions(location: PreferencesLocation, exclusions: readonly DeploymentExclusion[],
+  validate: (draft: DeploymentPreferences) => Promise<void>): Promise<PreferencesWriteResult> {
+  const normalized = normalizeExclusions(exclusions);
+  return withAwHomeMutationLock({ env: location.env, token: location.token, action: async (token) => {
+    const observed = await observePreferences(location);
+    if (observed.state !== 'valid' && observed.state !== 'absent') throw new Error('deploymentPreferencesInvalid');
+    const next = { ...(observed.state === 'valid' ? observed.value : createEmptyPreferences()), exclusions: normalized };
+    await validate(next);
+    return writePreferences({ ...location, token }, next);
+  } });
 }

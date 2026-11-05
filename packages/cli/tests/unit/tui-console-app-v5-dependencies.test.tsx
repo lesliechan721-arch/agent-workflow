@@ -32,6 +32,23 @@ import {
 
 afterEach(() => cleanup());
 
+async function readScopedDetails(instance: ReturnType<typeof render>): Promise<string> {
+  await input(instance, 'd');
+  const frames: string[] = [];
+  for (let page = 0; page < 20; page += 1) {
+    const frame = instance.lastFrame() ?? '';
+    frames.push(frame);
+    const pager = frame.match(/(\d+)\s*\/\s*(\d+)/u);
+    expect(pager).not.toBeNull();
+    if (pager![1] === pager![2]) {
+      await input(instance, 'd');
+      return frames.join('\n');
+    }
+    await input(instance, '\u001B[C');
+  }
+  throw new Error('The technical details did not reach the last page.');
+}
+
 function forceCleanupLoadResult(): TuiStatusLoadResult {
   const loaded = loadResult();
   const offlineTarget = loaded.payload.targets.find((entry) =>
@@ -130,7 +147,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     expect(screens).toContain('D09');
     expect(instance.lastFrame()).toContain('依赖关系');
-    expect(instance.lastFrame()).not.toContain('Agent Skill Toolkit');
+    expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     expect(instance.lastFrame()).not.toContain('› Agent Skill Toolkit');
     expect(instance.lastFrame()).not.toContain('planDigest');
@@ -187,12 +204,12 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain('依赖关系');
     expect(frame).not.toContain('Agent Skill Toolkit');
     expect(frame).not.toContain('› Agent Lab');
-    expect(frame).toContain('› 安装');
-    expect(frame).toContain('↑↓ 选择动作');
+    expect(frame).toContain('› 添加插件…');
+    expect(frame).toContain('↑↓ 连续阅读与选择');
     expect(frame.match(/›/gu)).toHaveLength(1);
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
     await input(instance, '\u001B[C');
-    expect(instance.lastFrame()).toContain('› 安装');
+    expect(instance.lastFrame()).toContain('› 添加插件…');
 
     await focusAction(instance, '更多操作');
     await input(instance, '\r');
@@ -244,10 +261,10 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     expect(instance.lastFrame()).toContain('依赖关系');
-    expect(instance.lastFrame()).not.toContain('Direct 2');
+    expect(instance.lastFrame()).toContain('Direct 2');
     expect(instance.lastFrame()).not.toContain('› Agent Lab');
     await input(instance, '\u001B[C');
-    expect(instance.lastFrame()).toContain('› 安装');
+    expect(instance.lastFrame()).toContain('› 添加插件…');
     await focusAction(instance, '更多操作');
     await input(instance, '\r');
     for (const label of ['查看插件来源', '诊断与技术详情']) {
@@ -262,29 +279,30 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'official' });
   });
 
-  it('offers Portable only on the install platform page without materializing candidates', async () => {
+  it('previews the configured Agents before preparing an install from plugin details', async () => {
     const loaded = loadResult();
-    loaded.portablePluginIds = ['official/review-gate', 'team-tools/review-gate'];
-    const captureEvidence = vi.fn().mockResolvedValue(evidence);
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
+    const executeScopedTask = vi.fn();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), prepareScopedTask, executeScopedTask });
     await value.load();
-    const screens = new Set<ConsoleV4ScreenId>();
     value.push({ name: 'pluginDetail', pluginId: 'official/review-gate' });
-    const preview = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    const preview = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
     await focusAction(preview, '更多操作');
     await input(preview, '\r');
     expect(preview.lastFrame()).not.toContain('通用 Agent Skills');
     expect(preview.lastFrame()).not.toContain('在其他 Agent 使用');
-    expect(captureEvidence).not.toHaveBeenCalled();
+    expect(prepareScopedTask).not.toHaveBeenCalled();
     await input(preview, 'b');
-    await focusAction(preview, '安装');
+    await focusAction(preview, '添加插件…');
     await input(preview, '\r');
-    const platformFrame = preview.lastFrame() ?? '';
-    expect(platformFrame).toContain('通用 Agent Skills');
-    expect(platformFrame).toContain('通过外部 Skills CLI 安装到支持的 Agent');
-    expect(platformFrame).not.toContain('候选');
-    expect(captureEvidence).not.toHaveBeenCalled();
+    const scopeFrame = preview.lastFrame() ?? '';
+    expect(scopeFrame).toContain('选择使用范围');
+    expect(scopeFrame).toContain('◆ Codex');
+    expect(scopeFrame).toContain('◆ Claude Code');
+    expect(scopeFrame).not.toContain('通用 Agent Skills');
+    expect(prepareScopedTask).not.toHaveBeenCalled();
+    expect(executeScopedTask).not.toHaveBeenCalled();
   });
 
   it('mounts dependency placement, target platforms, installed detail, and installed relation templates', async () => {
@@ -295,9 +313,9 @@ describe('ConsoleAppV4', () => {
     const placement = render(<ConsoleAppV4 controller={available} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => availableScreens.add(screen)} />);
     await nextTurn(2);
     expect(availableScreens).toContain('D03');
-    expect(placement.lastFrame()).toContain('第 2 步，共 2 步');
-    expect(placement.lastFrame()).toContain('依赖计划');
-    expect(placement.lastFrame()).toContain('所需插件会自动安排');
+    expect(placement.lastFrame()).toContain('选择使用范围');
+    expect(placement.lastFrame()).toContain('◆ Codex');
+    expect(placement.lastFrame()).toContain('◆ Claude Code');
     expect(placement.lastFrame()).not.toContain('缺失依赖使用同一个位置');
     expect(placement.lastFrame()?.match(/›/gu)).toHaveLength(1);
     placement.unmount();
@@ -306,8 +324,8 @@ describe('ConsoleAppV4', () => {
     const targetsPage = render(<ConsoleAppV4 controller={available} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => availableScreens.add(screen)} />);
     await nextTurn(2);
     expect(availableScreens).toContain('D04');
-    expect(targetsPage.lastFrame()).toContain('选择目标平台');
-    expect(targetsPage.lastFrame()).toContain('至少选择一个目标平台');
+    expect(targetsPage.lastFrame()).toContain('选择使用范围');
+    expect(targetsPage.lastFrame()).toContain('◆ Codex');
     expect(targetsPage.lastFrame()?.match(/›/gu)).toHaveLength(1);
     targetsPage.unmount();
 
@@ -485,12 +503,9 @@ describe('ConsoleAppV4', () => {
     expect(value.listInstallTargets('official/agent-lab', 'user')).toContainEqual({
       platform: 'codex', compatible: true,
     });
-    expect(instance.lastFrame()).toContain('› [ ] Codex');
+    expect(instance.lastFrame()).toContain('◆ Codex');
     expect(instance.lastFrame()).not.toContain('只在当前项目可用');
-    await input(instance, '\r');
-    await focusAction(instance, '确定所选平台');
-    await input(instance, '\r');
-    await focusAction(instance, '所有项目');
+    await focusAction(instance, '■ 所有项目');
     await input(instance, '\r');
     await nextTurn(3);
 
@@ -505,7 +520,7 @@ describe('ConsoleAppV4', () => {
     }));
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'recovery', command: 'install', scope: 'user',
-      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'codex' }],
+      selectors: ['official/agent-lab'],
     }), expect.any(AbortSignal));
   });
 
@@ -638,23 +653,25 @@ describe('ConsoleAppV4', () => {
     await focusAction(instance, `在${addedScope === 'user' ? '所有项目' : '当前项目'}中启用`);
     await input(instance, '\r');
     expect(value.snapshot.router.current.route.name).toBe('installTargets');
-    expect(instance.lastFrame()).toContain('[x] Codex');
-    expect(instance.lastFrame()).toContain('Enter/Space');
+    expect(instance.lastFrame()).toContain('◆ Codex');
+    expect(instance.lastFrame()).toContain('Enter 选择');
 
-    await focusAction(instance, '确定所选平台');
-    await input(instance, '\r');
-    await focusAction(instance, addedScope === 'user' ? '所有项目' : '当前项目');
+    await focusAction(instance, addedScope === 'user' ? '■ 所有项目' : '■ 当前项目');
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'recovery', command: 'install', scope: addedScope,
       selectors: ['official/agent-lab'],
-      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'codex' }],
     }), expect.any(AbortSignal));
+    expect(executeScopedTask).not.toHaveBeenCalled();
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
     expect(executeScopedTask).toHaveBeenCalledTimes(1);
-    expect(instance.lastFrame()).toContain(`official/agent-lab · Codex [${addedScope === 'user' ? '个人' : '当前项目'}] · 原生 · applied · verified`);
+    expect(instance.lastFrame()).toContain('请求已完成。');
+    expect(instance.lastFrame()).toContain('✓ 完成 agent-lab（official）');
+    const details = await readScopedDetails(instance);
+    expect(details).toContain(`official/agent-lab · Codex [${addedScope === 'user' ? '个人' : '当前项目'}] · 原生 · applied · verified`);
+    expect(executeScopedTask).toHaveBeenCalledTimes(1);
   });
 
   it('renders kept, failed, and skipped dependency targets as target-level results', async () => {
@@ -684,26 +701,30 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
-    await focusAction(instance, '安装');
-    await input(instance, '\r', '\r');
-    await focusAction(instance, '确定所选平台');
+    await focusAction(instance, '添加插件…');
     await input(instance, '\r');
-    await focusAction(instance, '当前项目');
+    await focusAction(instance, '■ 当前项目');
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'recovery', command: 'install', scope: 'project',
-      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'codex' }],
+      selectors: ['official/agent-lab'],
     }), expect.any(AbortSignal));
+    expect(executeScopedTask).not.toHaveBeenCalled();
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
     const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('official/content-toolkit');
-    expect(frame).toContain('no-op · verified');
-    expect(frame).toContain('official/skill-toolkit');
-    expect(frame).toContain('failed · missing');
-    expect(frame).toContain('official/agent-lab');
-    expect(frame).toContain('not-run · missing');
+    expect(frame).toContain('请求仍有未完成目标。');
+    expect(frame).toContain('✓ 完成 content-toolkit（official）');
+    expect(frame).toContain('× 安装失败 skill-toolkit（official）');
+    const details = await readScopedDetails(instance);
+    expect(details).toContain('official/content-toolkit');
+    expect(details).toContain('no-op · verified');
+    expect(details).toContain('official/skill-toolkit');
+    expect(details).toContain('failed · missing');
+    expect(details).toContain('official/agent-lab');
+    expect(details).toContain('not-run · missing');
+    expect(executeScopedTask).toHaveBeenCalledTimes(1);
     await focusAction(instance, '重试明确失败项（1）');
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
@@ -886,7 +907,7 @@ describe('ConsoleAppV4', () => {
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'recovery', command: 'uninstall', scope: 'user',
-      exactTargets: [{ pluginId: 'official/skill-toolkit', agent: 'claude-code' }],
+      exactTargets: [{ pluginId: 'official/skill-toolkit', agent: 'claude' }],
     }), expect.any(AbortSignal));
   });
 
@@ -917,7 +938,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
 
     expect(screens).toContain('D04');
-    expect(instance.lastFrame()).toContain('[x] Codex');
+    expect(instance.lastFrame()).toContain('◆ Codex');
     expect(instance.lastFrame()).not.toContain('所选目标平台不可用');
     expect(instance.lastFrame()).not.toContain('Agent Skill Toolkit 不支持所选位置');
     expect(captureEvidence).not.toHaveBeenCalled();
@@ -1585,12 +1606,12 @@ describe('ConsoleAppV4', () => {
       {
         command: 'uninstall' as const,
         scope: 'user' as const,
-        description: '运行 aw uninstall official/agent-lab --platform codex --scope user，再运行 aw sync official/agent-lab --platform codex --scope project。',
+        description: '运行 aw plugin intent remove official/agent-lab --scope user，再运行 aw plugin cleanup official/agent-lab --target codex --scope user，最后 aw plugin sync official/agent-lab --target codex --context project。',
       },
       {
         command: 'uninstall' as const,
         scope: 'project' as const,
-        description: '运行 aw uninstall official/agent-lab --platform codex --scope project，再运行 aw sync official/agent-lab --platform codex --scope user。',
+        description: '运行 aw plugin intent remove official/agent-lab --scope project，再运行 aw plugin cleanup official/agent-lab --target codex --scope project，最后 aw plugin sync official/agent-lab --target codex --context user。',
       },
     ];
     const loaded = loadResult();
@@ -1685,20 +1706,23 @@ describe('ConsoleAppV4', () => {
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
       expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
         kind: 'recovery', scope: 'project', selectors: ['official/agent-lab'],
-        exactTargets: [{ pluginId: 'official/agent-lab', agent: 'codex' }],
       }), expect.any(AbortSignal));
+      expect(executeScopedTask).not.toHaveBeenCalled();
       await input(instance, '\r');
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
 
       const frame = instance.lastFrame() ?? '';
-      expect(frame).toContain('official/skill-toolkit');
-      expect(frame).toContain('failed · missing');
+      expect(frame).toContain('请求仍有未完成目标。');
+      expect(frame).toContain('× 安装失败 skill-toolkit（official）');
       expect(frame).toContain('重试明确失败项（1）');
-      expect(frame).toContain('official/agent-lab');
-      expect(frame).toContain('not-run · missing');
+      const details = await readScopedDetails(instance);
+      expect(details).toContain('official/skill-toolkit');
+      expect(details).toContain('failed · missing');
+      expect(details).toContain('official/agent-lab');
+      expect(details).toContain('not-run · missing');
       if (resultState === 'partial') {
-        expect(frame).toContain('official/content-toolkit');
-        expect(frame).toContain('no-op · verified');
+        expect(details).toContain('official/content-toolkit');
+        expect(details).toContain('no-op · verified');
       }
 
       await focusAction(instance, '重试明确失败项（1）');

@@ -1,3 +1,4 @@
+import type { PlatformTarget } from '@lesliechan721/aw-plugin-core';
 import type { PlatformName, Scope } from '../types.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import {
@@ -36,7 +37,7 @@ export interface PluginDetailPlacement {
 }
 
 function agentForPlatform(platform: PlatformName): AgentId {
-  return platform === 'claude' ? 'claude-code' : 'codex';
+  return platform === 'claude' ? 'claude' : 'codex';
 }
 
 function placementIdentity(placement: Pick<PluginDetailPlacement,
@@ -65,6 +66,8 @@ export interface PluginDetailSubject {
   description?: string;
   catalogVersion?: string;
   definitionAvailable: boolean;
+  supportedPlatforms?: PlatformTarget[];
+  selectedAgents?: PlatformTarget[];
   savedConfigScopes: Scope[];
   /** Existing overview is retained only for actions that already accept it. */
   plugin?: PluginListItemViewModel;
@@ -86,8 +89,7 @@ function declarationFact(inventory: ScopedInventoryViewModel | undefined,
   const state = root && inventory?.declarationState === 'ready' ? 'declared'
     : inventory?.declarationState === 'ready' || inventory?.declarationState === 'absent'
       ? 'not-declared' : 'unobserved';
-  const agents = inventory?.selectedAgents.filter((agent): agent is AgentId =>
-    agent === 'codex' || agent === 'claude-code' || agent === 'cursor') ?? [];
+  const agents = inventory?.selectedAgents ?? [];
   return {
     state,
     ...(state === 'declared' && root?.sourceState ? { sourceState: root.sourceState } : {}),
@@ -314,6 +316,8 @@ export function buildPluginDetailSubject(options: {
     ...(summary?.description ? { description: summary.description } : {}),
     ...(summary?.version ? { catalogVersion: summary.version } : {}),
     definitionAvailable,
+    ...(summary?.platforms ? { supportedPlatforms: summary.platforms } : {}),
+    selectedAgents: options.scopedInventories?.user?.selectedAgents ?? options.scopedInventories?.project?.selectedAgents,
     savedConfigScopes: plugin?.savedConfigScopes ?? [],
     ...(plugin ? { plugin } : {}),
     declarations: {

@@ -3,11 +3,12 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { render } from 'ink-testing-library';
 import stringWidth from 'string-width';
-import { expect } from 'vitest';
+import { expect, vi } from 'vitest';
 
 import {
   TuiController,
 } from '../../src/tui/controller.js';
+import type { ConfigProfileKey } from '../../src/tui/model.js';
 
 export async function nextTurn(count = 1): Promise<void> {
   for (let index = 0; index < count; index += 1) {
@@ -101,45 +102,35 @@ export async function chooseConfigSave(
   value: TuiController,
   action: 'only' | 'apply',
 ): Promise<void> {
-  expect(value.snapshot.router.current.route.name).toBe('review');
-  if (action === 'only' && instance.lastFrame()?.includes('改为只保存')) {
-    await focusAction(instance, '改为只保存，稍后应用');
+  expect(instance.lastFrame()).toContain('已保存，是否更新插件？');
+  if (action === 'only') {
+    await escape(instance);
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+  } else {
     await input(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'), { timeout: 5000 });
   }
-
-  for (let index = 0; index < 12 && value.snapshot.router.current.route.name === 'reviewPreparing'; index += 1) {
-    await nextTurn();
-  }
-  expect(value.snapshot.router.current.route.name).toBe('review');
 }
 
 export async function openConfigSave(
   instance: ReturnType<typeof render>,
   value: TuiController,
 ): Promise<void> {
-  if (value.snapshot.router.current.route.name === 'configLayer') {
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-  }
   expect(value.snapshot.router.current.route.name).toBe('configFields');
   await input(instance, 's');
-  expect(value.snapshot.router.current.route.name).toBe('review');
+  await vi.waitFor(() => expect(instance.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
 }
 
-export async function chooseConfigTarget(
+export async function chooseConfigProfile(
   instance: ReturnType<typeof render>,
   value: TuiController,
-  scope: 'project' | 'user',
+  profile: ConfigProfileKey,
 ): Promise<void> {
-  if (value.snapshot.router.current.route.name === 'configFields') {
-    expect(instance.lastFrame()).toContain(`仅可保存到${scope === 'project' ? '当前项目' : '个人默认'}`);
-    return;
+  for (let index = 0; index < 8; index += 1) {
+    const route = value.snapshot.router.current.route;
+    expect(route.name).toBe('configFields');
+    if (route.name === 'configFields' && route.layer.profile === profile) return;
+    await input(instance, '\t');
   }
-  expect(value.snapshot.router.current.route.name).toBe('configLayer');
-  await focusAction(instance, scope === 'project' ? '当前项目' : '个人默认');
-  await input(instance, '\r');
-  await nextTurn(3);
-  expect(value.snapshot.router.current.route).toMatchObject({
-    name: 'configFields', layer: { scope: 'effective' },
-  });
+  throw new Error(`Configuration profile was not reachable: ${profile}`);
 }

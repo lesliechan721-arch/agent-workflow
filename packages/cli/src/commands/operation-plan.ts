@@ -19,7 +19,7 @@ export interface OperationArtifactFile {
 export interface OperationPlanEvidence {
   catalogDigests: Array<{ sourceId: string; digest: string }>;
   intentDigests: Array<{ scope: Scope; digest: string }>;
-  configDigests: Array<{ pluginId: string; scope: Scope; digest: string }>;
+  configDigests: Array<{ pluginId: string; scope: Scope; platform?: PlatformName; digest: string }>;
   targetOwnerFingerprints: Array<{
     pluginId: string;
     platform: PlatformName;
@@ -171,6 +171,7 @@ export type OperationPlanInput = Omit<OperationPlan, 'planFingerprint'>;
 export function createOperationPlanConfigDigest(options: {
   pluginId: string;
   scope: Scope;
+  platform?: PlatformName;
   effectiveValues: Readonly<Record<string, PluginConfigValue>>;
 }): OperationPlanEvidence['configDigests'][number] {
   const digest = crypto
@@ -180,6 +181,7 @@ export function createOperationPlanConfigDigest(options: {
   return {
     pluginId: options.pluginId,
     scope: options.scope,
+    ...(options.platform ? { platform: options.platform } : {}),
     digest: `sha256:${digest}`,
   };
 }
@@ -203,7 +205,7 @@ function canonicalizeOperationPlanInput(input: OperationPlanInput): OperationPla
       intentDigests: canonical(input.evidence.intentDigests, (entry) => entry.scope),
       configDigests: canonical(
         input.evidence.configDigests,
-        (entry) => `${entry.pluginId}\0${entry.scope}`,
+        (entry) => `${entry.pluginId}\0${entry.scope}\0${entry.platform ?? ''}`,
       ),
       targetOwnerFingerprints: canonical(
         input.evidence.targetOwnerFingerprints,

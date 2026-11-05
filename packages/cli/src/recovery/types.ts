@@ -4,7 +4,7 @@ import type { IntentObservation } from '../intent/intent-store.js';
 
 export type Delivery =
   | { kind: 'native'; platform: 'codex' | 'claude' }
-  | { kind: 'agent-skills'; provider: 'skills-cli'; agentId: AgentId };
+  | { kind: 'agent-skills'; provider: 'aw'; agentId: AgentId };
 
 export type Execution = 'not-run' | 'no-op' | 'applied' | 'partial' | 'failed';
 export type Observation = 'verified' | 'missing' | 'unknown';

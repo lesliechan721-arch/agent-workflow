@@ -10,6 +10,7 @@ import type {
 } from '../../src/commands/catalog-store.js';
 import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { agentSettings } from '../helpers/tui-console-app-fixture.js';
 import {
   TuiController,
   type OperationEvidence,
@@ -144,7 +145,7 @@ function longSourceLoadResult(): TuiStatusLoadResult {
 }
 
 function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiController {
-  return new TuiController({
+  return new TuiController({ readAgentSettings: async () => agentSettings(),
     loadStatus: vi.fn().mockResolvedValue(loadResult()),
     captureEvidence: vi.fn(async () => CATALOG_EVIDENCE),
     executeIntent: vi.fn().mockResolvedValue({ overallState: 'succeeded', targetResults: [] }),
@@ -640,8 +641,10 @@ describe('plugin detail readable structured facts', () => {
     await nextTurn(2);
     const initial = frame(instance, size);
     expect(initial).toContain('Fixture plugin');
-    expect(initial).toContain('目录版本 1.0.0');
-    expect(initial).toContain('使用位置');
+    expect(initial).toContain('最新版本 1.0.0');
+    expect(initial).toContain('Agent');
+    expect(initial).toContain('状态');
+    expect(initial).toContain('尚无安装结果');
     expect(initial).toContain('更多操作');
     expect(initial).not.toContain('上一页');
     expect(initial).not.toContain('翻信息');
@@ -662,41 +665,46 @@ describe('plugin detail readable structured facts', () => {
     expect(initial).toContain('› ');
     expect(initial).not.toContain('完整基本信息');
     expect(initial).toContain('Esc 返回');
-    expect(initial).toContain('←→ 翻信息');
+    expect(initial).toContain('↑↓ 连续阅读与选择');
+    expect(initial).toContain('PgUp/PgDn 翻动');
+    expect(initial).not.toMatch(/\d+ \/ \d+/u);
+    await input(instance, '\u001B[C', '\u001B[D');
+    expect(frame(instance, size)).toBe(initial);
     expect(initial).not.toContain('› Demo');
     expect(initial).not.toContain('复制全文');
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
-    const pages: string[] = [];
-    for (let page = 0; page < 30; page += 1) {
+    const focusedAction = initial.split('\n').find((line) => line.includes('› '))?.trim();
+    const frames: string[] = [initial];
+    for (let step = 0; step < 30; step += 1) {
+      await input(instance, '\u001B[6~');
       const current = frame(instance, size);
-      pages.push(current);
-      const pageNumbers = current.match(/(\d+) \/ (\d+)/u);
-      if (pageNumbers?.[1] === pageNumbers?.[2]) break;
-      await input(instance, '\u001B[C');
+      frames.push(current);
+      expect(current.split('\n').find((line) => line.includes('› '))?.trim()).toBe(focusedAction);
+      expect(current).not.toMatch(/\d+ \/ \d+/u);
+      if (current.includes('最新版本 1.0.0') && !current.includes('后面还有信息')) break;
     }
-    const allPages = pages.join('\n');
-    expect(allPages.replace(/\s/gu, '')).toContain('摘要完整结尾');
-    expect(allPages).toContain('目录版本 1.0.0');
-    expect(allPages).toContain('[official]');
-    expect(allPages).toContain('使用位置');
-    expect(allPages).toContain('未确认');
+    const readContent = frames.join('\n');
+    expect(readContent.replace(/\s/gu, '')).toContain('摘要完整结尾');
+    expect(readContent).toContain('最新版本 1.0.0');
+    expect(readContent).toContain('[official]');
+    expect(readContent).toContain('Agent');
+    expect(readContent).toContain('尚无安装结果');
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
-    instance.rerender(<ConsoleAppV4 controller={value} size={size.columns === 60
-      ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 }} />);
+    const resized = size.columns === 60 ? { columns: 80, rows: 24 } : { columns: 60, rows: 18 };
+    instance.rerender(<ConsoleAppV4 controller={value} size={resized} />);
     await nextTurn(2);
-    for (let page = 0; page < 30; page += 1) {
-      const pageNumbers = instance.lastFrame()?.match(/(\d+) \/ (\d+)/u);
-      if (pageNumbers?.[1] === pageNumbers?.[2]) break;
-      await input(instance, '\u001B[C');
-    }
-    expect(instance.lastFrame()).toContain('使用位置');
+    await input(instance, '\u001B[6~');
+    frame(instance, resized);
+    await focusAction(instance, '更多操作', 40);
+    expect(frame(instance, resized)).toContain('› 更多操作');
     const expandedSize = { columns: 120, rows: 100 };
     instance.rerender(<ConsoleAppV4 controller={value} size={expandedSize} />);
     await nextTurn(2);
     const expanded = frame(instance, expandedSize);
     expect(expanded).toContain('用于检查长说明的完整阅读');
     expect(expanded.replace(/\s/gu, '')).toContain('摘要完整结尾');
-    expect(expanded).toContain('使用位置');
+    expect(expanded).toContain('Agent');
+    expect(expanded).toContain('尚无安装结果');
     expect(expanded).toContain('更多操作');
     expect(expanded).not.toContain('上一页');
     expect(expanded).not.toContain('翻信息');
@@ -715,13 +723,12 @@ it.each(SIZES)('offers the personal inventory when there is no project at $colum
   const value = controller({ loadStatus: vi.fn().mockResolvedValue(data), executeIntent });
   const instance = render(<ConsoleAppV4 controller={value} size={size} />);
   await nextTurn(3);
-  expect(frame(instance, size)).toContain('插件清单');
+  expect(frame(instance, size)).toContain('项目插件');
+  expect(frame(instance, size)).toContain('Agent 管理');
   await input(instance, '\u001b[B');
   await input(instance, '\r');
-  expect(value.snapshot.router.current.route.name).toBe('intentScopes');
-  expect(frame(instance, size)).toContain('当前没有项目；个人清单仍可使用');
-  await input(instance, '\r');
   expect(value.snapshot.router.current.route).toEqual({ name: 'intentInventory', scope: 'user' });
+  expect(frame(instance, size)).toContain('个人');
   expect(executeIntent).not.toHaveBeenCalled();
   value.dispose();
 });

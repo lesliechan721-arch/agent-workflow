@@ -11,6 +11,8 @@ import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { TuiController, type TuiControllerDependencies, type TuiStatusLoadResult } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, UserIssueViewModel } from '../../src/tui/model.js';
 import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
+import { agentSettings } from '../helpers/tui-console-app-fixture.js';
+import { escape } from '../helpers/tui-console-app-input.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -62,19 +64,19 @@ function receipt(request: Extract<ScopedRequest, { kind: 'recovery' }>, failed =
     ok: !failed, intent: { state: 'valid', roots: request.selectors ?? [] },
     requestedRoots: request.selectors ?? [],
     requestedTargets: exactTargets.map((target) => ({ ...target, scope: request.scope,
-      delivery: { kind: 'native', platform: target.agent === 'claude-code' ? 'claude' : 'codex' } })),
+      delivery: { kind: 'native', platform: target.agent === 'claude' ? 'claude' : 'codex' } })),
     selection: { agents: exactTargets.map((target) => target.agent), origin: 'argument',
       preferences: 'valid' }, blockers: [], errors: [],
     targetResults: exactTargets.map((target, index) => ({
       ...target, scope: request.scope, delivery: { kind: 'native' as const,
-        platform: target.agent === 'claude-code' ? 'claude' as const : 'codex' as const },
+        platform: target.agent === 'claude' ? 'claude' as const : 'codex' as const },
       execution: failed && index === 0 ? 'failed' as const : 'applied' as const,
       observation: failed && index === 0 ? 'missing' as const : 'verified' as const,
       blockers: [], requiredBy: [target.pluginId],
     })),
     remainingTargets: failed ? exactTargets.slice(0, 1).map((target) => ({ ...target,
       scope: request.scope, delivery: { kind: 'native' as const,
-        platform: target.agent === 'claude-code' ? 'claude' as const : 'codex' as const } })) : [],
+        platform: target.agent === 'claude' ? 'claude' as const : 'codex' as const } })) : [],
     recoveryActions: [], declarationChanged: false, preferencesChanged: false,
     configChanged: false, outputsMayHaveChanged: true,
   };
@@ -100,7 +102,7 @@ function fixture(failed = false, extra: Partial<TuiControllerDependencies> = {})
   const executeScopedTask: NonNullable<TuiControllerDependencies['executeScopedTask']> = vi.fn(
     async (plan) => ({ kind: 'recovery', receipt: plan.kind === 'recovery'
       ? plan.plan.receipt : (() => { throw new Error('unexpected plan'); })() }));
-  const value = new TuiController({ loadStatus: async () => loaded(), prepareScopedTask,
+  const value = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: async () => loaded(), prepareScopedTask,
     executeScopedTask, ...extra });
   return { value, requests, plans, disposals, prepareScopedTask, executeScopedTask };
 }
@@ -123,7 +125,8 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
     { name: 'empty preferences', savedAgents: [] as const, corrupt: false },
     { name: 'different saved Agent', savedAgents: ['cursor'] as const, corrupt: false },
     { name: 'invalid preferences', savedAgents: ['cursor'] as const, corrupt: true },
-  ])('prepares an exact task with $name through the real recovery selector',
+    { name: 'enabled saved Agent', savedAgents: ['codex'] as const, corrupt: false },
+  ])('keeps an exact restore request bounded by $name without creating a disabled target',
     async ({ savedAgents, corrupt }) => {
       const isolation = getCurrentSourceTestIsolation();
       const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd,
@@ -141,7 +144,9 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
         prepared.push(plan);
         return { kind: 'recovery', scope: request.scope, plan };
       });
-      const value = new TuiController({ loadStatus: async () => loaded(), prepareScopedTask });
+      const executeScopedTask = vi.fn();
+      const value = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: async () => loaded(),
+        prepareScopedTask, executeScopedTask });
       try {
         await value.load();
         vi.spyOn(value, 'listPluginWriteTaskCandidates').mockReturnValue([{ target: userTarget,
@@ -156,14 +161,22 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
           expect(prepared[0]!.receipt.requestedTargets).toEqual([]);
         } else {
           expect(prepared[0]!.receipt.selection).toMatchObject({ agents: ['codex'], origin: 'argument' });
-          expect(prepared[0]!.receipt.requestedTargets).toMatchObject([{ pluginId, agent: 'codex' }]);
-          expect(prepared[0]!.receipt.blockers.map((entry) => entry.code))
-            .not.toContain('invalidExactTargets');
+          expect(prepared[0]!.receipt.targetResults).toEqual([]);
+          expect(prepared[0]!.nativeGroups).toEqual([]);
+          const blockers = prepared[0]!.receipt.blockers.map((entry) => entry.code);
+          if (savedAgents.some((agent) => agent === 'codex')) {
+            expect(blockers).not.toContain('invalidExactTargets');
+          } else {
+            expect(prepared[0]!.blockExecution).toBe(true);
+            expect(blockers).toContain('invalidExactTargets');
+            if (savedAgents.length === 0) expect(blockers).toContain('targetsNotConfigured');
+          }
         }
         expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
           targets: ['codex'], exactTargets: [{ pluginId, agent: 'codex' }],
         }), expect.any(AbortSignal));
         expect(await observePreferences(location)).toEqual(previousPreferences);
+        expect(executeScopedTask).not.toHaveBeenCalled();
         instance.unmount();
       } finally {
         value.dispose();
@@ -193,7 +206,7 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
       prepared.push(plan);
       return { kind: 'recovery', scope: request.scope, plan };
     });
-    const value = new TuiController({ loadStatus: async () => loaded(), prepareScopedTask });
+    const value = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: async () => loaded(), prepareScopedTask });
     try {
       await value.load();
       vi.spyOn(value, 'listPluginWriteBatchTargets').mockReturnValue([userTarget]);
@@ -214,7 +227,8 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
       }), expect.any(AbortSignal));
       expect(prepared[0]!.receipt.requestedRoots).toEqual([pluginId]);
       expect(prepared[0]!.receipt.selection).toMatchObject({ agents: ['codex'], origin: 'argument' });
-      expect(prepared[0]!.receipt.requestedTargets).toMatchObject([{ pluginId, agent: 'codex' }]);
+      expect(prepared[0]!.receipt.requestedRoots).toEqual([pluginId]);
+          expect(prepared[0]!.receipt.targetResults.every((target) => target.agent === 'codex')).toBe(true);
       expect(prepared[0]!.receipt.blockers.map((entry) => entry.code))
         .not.toContain('syncPluginNotDesired');
       expect(await observePreferences(location)).toEqual(previousPreferences);
@@ -236,7 +250,11 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(requests).toEqual([expect.objectContaining({ kind: 'recovery', command: 'reinstall',
       scope: 'user', selectors: [pluginId], exactTargets: [{ pluginId, agent: 'codex' }] })]);
+    expect(instance.lastFrame()).toContain('所有项目');
+    await write(instance, 'd');
     expect(instance.lastFrame()).toContain('范围：个人（所有项目）');
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    await write(instance, 'd');
     expect(executeScopedTask).not.toHaveBeenCalled();
     await write(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
@@ -365,7 +383,7 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
     await vi.waitFor(() => expect(requests).toHaveLength(2));
     expect(requests[0]).toMatchObject({ scope: 'user', exactTargets: [{ pluginId, agent: 'codex' }] });
     expect(requests[1]).toMatchObject({ scope: 'user',
-      exactTargets: [{ pluginId, agent: 'claude-code' }] });
+      exactTargets: [{ pluginId, agent: 'claude' }] });
     value.dispose();
   });
 
@@ -383,7 +401,7 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(requests[0]).toMatchObject({ scope: 'user', exactTargets: [
-      { pluginId, agent: 'codex' }, { pluginId, agent: 'claude-code' },
+      { pluginId, agent: 'codex' }, { pluginId, agent: 'claude' },
     ] });
     await write(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
@@ -588,15 +606,16 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
   it('returns from a required config save to a freshly prepared restore task', async () => {
     let configured = false;
     const { value, prepareScopedTask } = fixture(false, {
-      getConfigPage: vi.fn(async (requestedPluginId, layer): Promise<ConfigPageViewModel> => ({
-        pluginId: requestedPluginId, layer, storedCount: configured ? 1 : 0, presets: [],
+      getConfigPage: vi.fn(async (requestedPluginId, options): Promise<ConfigPageViewModel> => ({
+        pluginId: requestedPluginId, profile: options.platform ?? 'common', context: options.context ?? 'user',
+        layer: { profile: options.platform ?? 'common', context: options.context ?? 'user' }, storedCount: configured ? 1 : 0, presets: [],
         groups: [{ id: 'required', title: '必填设置', advanced: false, fields: [{
           key: 'mode', title: '运行模式', type: 'string',
           definition: { type: 'string', choices: { allowCustom: false,
             presets: [{ id: 'safe', title: '安全', value: 'safe' }] } },
           choices: [{ id: 'safe', title: '安全', value: 'safe' }],
           displayValue: configured ? '安全' : '未设置', required: true,
-          sensitive: false, writable: true, dirty: false, inherited: !configured,
+          sensitive: false, writable: true, canSet: true, canUnset: configured, dirty: false, inherited: !configured,
           configured, sourceLabel: configured ? '个人默认' : '未设置',
           effectiveDisplayValue: configured ? '安全' : '未设置',
           effectiveSourceLabel: configured ? '个人默认' : '未设置',
@@ -657,15 +676,11 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFieldEditor'));
     await write(instance, '\r');
-    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configLayer'));
-    await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFields'));
     await write(instance, 's');
-    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
-    await focusAction(instance, '改为只保存，稍后应用');
-    await write(instance, '\r');
-    await write(instance, '\r');
-    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('已保存，是否更新插件？'));
+    expect(configured).toBe(true);
+    await escape(instance);
     await write(instance, 'b');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask'));
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));

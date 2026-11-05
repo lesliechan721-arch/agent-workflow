@@ -12,7 +12,6 @@ import {
   resolveWorkspaceBindingSource,
   writeAwSourceBinding,
 } from '../../src/review/source-binding.js'
-import { writePluginConfigStore } from '../../src/utils/plugin-config.js'
 import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js'
 
 const roots: string[] = []
@@ -63,7 +62,6 @@ describe('review inspect CLI entry', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
     })
@@ -224,7 +222,6 @@ describe('review inspect CLI entry', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
     })
@@ -274,21 +271,23 @@ describe('review inspect CLI entry', () => {
       name: 'portable-env',
       version: '0.1.0',
       description: 'Portable environment fixture.',
-      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-      distributions: { agentSkills: { skills: './portable-skills' } },
+      platforms: ['cursor'],
+      skills: './skills',
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
       artifacts: { targets: [{
         id: 'portable',
         distribution: 'agent-skills',
+        platform: 'cursor',
         target: 'agent-skills.skill',
         kind: 'skill',
         scopes: ['user'],
         states: ['present'],
         refreshKeys: ['flavor'],
         skillKey: 'portable',
-        sourceDirs: ['./portable-skills/portable'],
+        sourceDirs: ['./skills/portable'],
       }] },
       config: {
+        schemaVersion: 5,
         fields: {
           flavor: { type: 'string', required: true, default: 'ambient' },
         },
@@ -299,7 +298,7 @@ describe('review inspect CLI entry', () => {
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
     })
-    const sourceSkill = path.join(pluginRoot, 'portable-skills', 'portable')
+    const sourceSkill = path.join(pluginRoot, 'skills', 'portable')
     await fs.outputFile(
       path.join(sourceSkill, 'SKILL.md'),
       '---\nname: portable\ndescription: Portable fixture.\n---\n\n# Portable\n',
@@ -310,12 +309,8 @@ describe('review inspect CLI entry', () => {
       'throw new Error("Review inspection must not run the renderer.")\n',
     )
     const injectedEnv = { ...process.env, AW_HOME: injectedHome }
-    await writePluginConfigStore({
-      pluginName: 'portable-env',
-      scope: 'user',
-      cwd: root,
-      env: injectedEnv,
-      values: { flavor: 'injected' },
+    await fs.outputJson(path.join(injectedHome, 'plugin-config', 'portable-env', 'config.json'), {
+      schemaVersion: 6, common: { flavor: 'ambient-home-value' }, platforms: {},
     })
     const workspace = await readCatalogWorkspace(root, { reservedImports: CLI_RESERVED_IMPORTS })
     await fs.copy(sourceSkill, path.join(materializedRoot, 'portable'))
@@ -324,6 +319,8 @@ describe('review inspect CLI entry', () => {
       source: await resolveWorkspaceBindingSource(workspace),
       subject: { plugin: 'portable-env' },
       profile: await resolvePortableProfileBindingInput({
+        platform: 'cursor',
+        offlineConfig: { 'portable-env': { flavor: 'injected' } },
         plugins: workspace.plugins,
         pluginName: 'portable-env',
         scope: 'user',
@@ -339,7 +336,7 @@ describe('review inspect CLI entry', () => {
     })
     const args = [
       'review', 'inspect', pluginRoot,
-      '--platform', 'agent-skills', '--scope', 'user',
+      '--platform', 'cursor', '--scope', 'user',
       '--materialization', written.bindingPath,
       '--json',
     ]

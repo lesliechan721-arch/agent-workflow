@@ -3,6 +3,10 @@
   "name": "dev-workflow",
   "version": "0.1.0",
   "description": "从需求设计到实现交付的可组合工作流，项目规范与本地过程资料分工清楚。",
+  "platforms": [
+    "codex",
+    "claude"
+  ],
   "dependencies": [
     "decision-kit",
     "human-content"

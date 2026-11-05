@@ -23,7 +23,9 @@ describe('review command options', () => {
     ]],
     ['missing option value', ['review', 'inspect', 'target', '--scope', '--json']],
     ['extra positional argument', ['review', 'inspect', 'target', 'extra', '--json']],
-    ['invalid choice', ['review', 'inspect', 'target', '--platform', 'both', '--json']],
+    ...['both', 'agent-skills', 'claude-code', 'gemini'].map((platform) => [
+      `invalid platform ${platform}`, ['review', 'inspect', 'target', '--platform', platform, '--json'],
+    ] as [string, string[]]),
   ])('returns one inspect JSON argument failure for %s', async (_label, argv) => {
     const output = capture()
 
@@ -58,10 +60,10 @@ describe('review command options', () => {
       'review', 'prepare', 'target', 'extra', '--platform', 'codex', '--scope', 'user',
       '--out', 'prepared', '--json',
     ]],
-    ['invalid choice', [
-      'review', 'prepare', 'target', '--platform', 'both', '--scope', 'user',
-      '--out', 'prepared', '--json',
-    ]],
+    ...['both', 'agent-skills', 'claude-code', 'gemini'].map((platform) => [
+      `invalid platform ${platform}`, ['review', 'prepare', 'target', '--platform', platform, '--scope', 'user', '--out', 'prepared', '--json'],
+    ] as [string, string[]]),
+    ['missing platform', ['review', 'prepare', 'target', '--scope', 'user', '--out', 'prepared', '--json']],
   ])('returns one prepare JSON argument failure for %s', async (_label, argv) => {
     const output = capture()
 

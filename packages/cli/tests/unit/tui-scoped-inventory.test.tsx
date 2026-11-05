@@ -19,6 +19,8 @@ import type { DemandSnapshot } from '../../src/recovery/demand.js';
 import type { ScopeContext } from '../../src/intent/scope-context.js';
 import * as portableRecovery from '../../src/portable/recovery.js';
 import * as clipboard from '../../src/tui/clipboard.js';
+import { escape } from '../helpers/tui-console-app-input.js';
+import { agentSettings } from '../helpers/tui-console-app-fixture.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -67,6 +69,22 @@ function checkedFrame(instance: ReturnType<typeof render>, size: { columns: numb
   return frame;
 }
 
+async function readScopedPages(
+  instance: ReturnType<typeof render>,
+  size: { columns: number; rows: number },
+): Promise<string> {
+  const frames: string[] = [];
+  for (let page = 0; page < 40; page += 1) {
+    const frame = checkedFrame(instance, size);
+    if (frames.at(-1) === frame) return frames.join('\n');
+    frames.push(frame);
+    const pager = frame.match(/(\d+)\s*\/\s*(\d+)/u);
+    if (pager && pager[1] === pager[2]) return frames.join('\n');
+    await press(instance, '\u001b[C');
+  }
+  throw new Error('The scoped details did not reach the last page.');
+}
+
 afterEach(cleanup);
 
 describe('scoped inventory in Ink', () => {
@@ -82,7 +100,7 @@ describe('scoped inventory in Ink', () => {
       selection: { agents: ['cursor'], preferences: 'valid' },
       inventory: [{ pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: [{
         pluginId, agent: 'cursor', scope: 'user',
-        delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
+        delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
         execution: 'not-run', observation: caseValue.observation, content: caseValue.content,
         blockers: [], requiredBy: [pluginId],
       }] }],
@@ -119,7 +137,7 @@ describe('scoped inventory in Ink', () => {
         selection: { agents: ['cursor'], preferences: 'valid' },
         inventory: [{ pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: [{
           pluginId, agent: 'cursor', scope: 'project',
-          delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
+          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
           execution: 'not-run', observation, content, blockers: [], requiredBy: [pluginId],
         }] }],
       };
@@ -135,13 +153,49 @@ describe('scoped inventory in Ink', () => {
     }
   });
 
+  it('shows a project card reason and keeps its complete code and plugin ID in technical details', async () => {
+    const current = recovery('project');
+    current.inventory![0]!.targetResults[0] = {
+      ...current.inventory![0]!.targetResults[0]!,
+      observation: 'unknown', content: 'conflict',
+      blockers: [{ code: 'targetPlacementConflict', message: '/private/project-card-conflict' }],
+    };
+    const prepareScopedTask = vi.fn();
+    const executeScopedTask = vi.fn();
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(),
+      loadStatus: vi.fn().mockResolvedValue(status),
+      loadScopedStatus: vi.fn().mockResolvedValue(current), prepareScopedTask, executeScopedTask });
+    await controller.load();
+    controller.push({ name: 'intentInventory', scope: 'project', projectKey: '/tmp/project' });
+    const instance = render(<ConsoleAppV4 controller={controller} size={sizes[1]!} />);
+    await tick();
+    let summary = checkedFrame(instance, sizes[1]!);
+    for (let step = 0; step < 8 && !summary.includes('Agent 目录冲突'); step += 1) {
+      await press(instance, '\u001b[B');
+      summary += `\n${checkedFrame(instance, sizes[1]!)}`;
+    }
+    expect(summary).toContain('Agent 目录冲突');
+    expect(summary).not.toContain('targetPlacementConflict');
+    expect(summary).not.toContain('/private/project-card-conflict');
+    await press(instance, 'd');
+    expect(checkedFrame(instance, sizes[1]!)).toContain('清单安全详情');
+    const details = await readScopedPages(instance, sizes[1]!);
+    expect(details).toContain('official/demo');
+    expect(details).toContain('targetPlacementConflict');
+    expect(details).not.toContain('/private/project-card-conflict');
+    expect(prepareScopedTask).not.toHaveBeenCalled();
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    instance.unmount();
+    controller.dispose();
+  });
+
   it.each(sizes)('selects one scope and keeps its inventory within $columns x $rows', async (size) => {
     const loadScopedStatus = vi.fn(async (scope: 'user' | 'project') => recovery(scope));
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status), loadScopedStatus });
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status), loadScopedStatus });
     await controller.load();
     const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
     await tick();
-    expect(checkedFrame(instance, size)).toContain('插件清单');
+    expect(checkedFrame(instance, size)).toContain('项目插件');
     controller.push({ name: 'intentScopes' });
     await tick();
     expect(checkedFrame(instance, size)).toContain('个人');
@@ -167,7 +221,7 @@ describe('scoped inventory in Ink', () => {
         return new Promise<ScopedInventoryLoadResult>((resolve) => { finish = resolve; });
       });
     const prepareScopedTask = vi.fn();
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status), loadScopedStatus,
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status), loadScopedStatus,
       prepareScopedTask });
     await controller.load();
     const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
@@ -198,7 +252,7 @@ describe('scoped inventory in Ink', () => {
       dependencies: [], dependents: [], blockers: [],
     }] };
     const prepareScopedTask = vi.fn().mockRejectedValue(new Error('stopped before write'));
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(loaded),
       loadScopedStatus: vi.fn(async (scope: 'user' | 'project') => {
         const value = recovery(scope);
         if (scope === 'project') value.selection.agents = [];
@@ -244,8 +298,9 @@ describe('scoped inventory in Ink', () => {
       detailFacts.push(subject);
       const detail = checkedFrame(instance, sizes[0]!);
       expect(detail).toContain('Demo');
-      expect(detail).toContain('个人清单');
-      expect(detail).toContain('当前项目清单');
+      expect(detail).toContain('所有项目');
+      expect(detail).toContain('当前项目');
+      expect(detail).toContain('待安装');
       await press(instance, '\u001b');
       expect(controller.snapshot.router.current.route).toEqual(route);
       expect(controller.snapshot.router.current.context).toMatchObject(originContext);
@@ -289,9 +344,9 @@ describe('scoped inventory in Ink', () => {
       payload: initial.payload, pluginSummaries: [{ pluginId: native.pluginId, displayName: 'Current Extra' }],
       targetRevisions: revisions, dependencyOverviews: [],
     } };
-    current.extraObserved = [{ pluginId: native.pluginId, agent: 'claude-code', scope: 'user',
+    current.extraObserved = [{ pluginId: native.pluginId, agent: 'claude', scope: 'user',
       delivery: { kind: 'native', platform: 'claude' }, observation: 'verified', content: 'satisfied' }];
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(initial),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(initial),
       loadScopedStatus: vi.fn(async () => current), loadPluginContent: vi.fn().mockRejectedValue(new Error('unavailable')) });
     await controller.load();
     await controller.refreshScopedInventory('user');
@@ -316,7 +371,7 @@ describe('scoped inventory in Ink', () => {
   it('does not let delayed failure logging replace a newer scoped refresh', async () => {
     let releaseLog!: () => void;
     const logError = vi.fn(() => new Promise<void>((resolve) => { releaseLog = resolve; }));
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status), logError,
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status), logError,
       loadScopedStatus: vi.fn().mockRejectedValueOnce(new Error('oldFailure')).mockResolvedValue(recovery('user')) });
     await controller.load();
     const old = controller.refreshScopedInventory('user');
@@ -331,7 +386,7 @@ describe('scoped inventory in Ink', () => {
   it('keeps the previous snapshot when local refresh fails', async () => {
     const loadScopedStatus = vi.fn().mockResolvedValueOnce(recovery('user'))
       .mockRejectedValueOnce(new Error('refreshFailed'));
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status), loadScopedStatus });
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status), loadScopedStatus });
     await controller.load();
     expect(await controller.refreshScopedInventory('user')).toBe(true);
     const before = controller.listScopedInventoryRoots('user');
@@ -392,7 +447,7 @@ describe('scoped inventory in Ink', () => {
       summary: { directCount: 1, transitiveCount: 0, dependentCount: 0, blockedCount: 0 },
       dependencies: [{ pluginId: 'official/base', displayName: 'Base', relation: 'direct', depth: 1,
         requiredBy: [], placements: [], aggregateStatus: 'ready' }], dependents: [], blockers: [] }] };
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn(async (scope: 'user' | 'project') => scope === 'project' ? project : recovery('user')) });
     await controller.load();
     await controller.refreshScopedInventory('user');
@@ -419,7 +474,7 @@ describe('scoped inventory in Ink', () => {
   });
 
   it.each(sizes)('keeps selection and search inside one scope at $columns x $rows', async (size) => {
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn(async (scope: 'user' | 'project') => recovery(scope)) });
     await controller.load();
     controller.push({ name: 'intentInventory', scope: 'user' });
@@ -472,7 +527,7 @@ describe('scoped inventory in Ink', () => {
           observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [] }] },
       { pluginId: 'official/pending', source: 'official', sourceState: 'ready', blockers: [],
         targetResults: [{ pluginId: 'official/pending', agent: 'cursor', scope: 'user',
-          delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' }, execution: 'not-run',
+          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }, execution: 'not-run',
           observation: 'missing', content: 'absent', blockers: [], requiredBy: [] }] },
       { pluginId: 'official/blocked', source: 'official', sourceState: 'ready', blockers: [],
         targetResults: [{ pluginId: 'official/blocked', agent: 'codex', scope: 'user',
@@ -485,7 +540,7 @@ describe('scoped inventory in Ink', () => {
             delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run',
             observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [] },
           { pluginId: 'official/mixed', agent: 'cursor', scope: 'user',
-            delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' }, execution: 'not-run',
+            delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }, execution: 'not-run',
             observation: 'missing', content: 'absent', blockers: [], requiredBy: [] },
         ] },
     ];
@@ -497,7 +552,7 @@ describe('scoped inventory in Ink', () => {
       nativeGroups: [], portableGroups: [],
     } } as unknown as ScopedTuiPlan;
     const prepareScopedTask = vi.fn().mockResolvedValue(plan);
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(current), prepareScopedTask });
     await controller.load();
     expect(buildScopedInventory({ recovery: current, status: status.payload,
@@ -528,15 +583,15 @@ describe('scoped inventory in Ink', () => {
         delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run',
         observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [] },
       { pluginId: 'official/demo', agent: 'cursor', scope: 'user',
-        delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' }, execution: 'not-run',
+        delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }, execution: 'not-run',
         observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [] },
     ];
     current.extraObserved = [{ pluginId: 'official/extra', agent: 'cursor', scope: 'user',
-      delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
+      delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
       observation: 'verified', content: 'satisfied' }];
     const loaded = { ...status, pluginSummaries: [...status.pluginSummaries,
       { pluginId: 'official/extra', pluginName: 'extra', displayName: 'Extra', version: '1.0.0' }] };
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(loaded),
       loadScopedStatus: vi.fn().mockResolvedValue(current) });
     await controller.load();
     expect(await controller.refreshScopedInventory('user')).toBe(true);
@@ -565,7 +620,7 @@ describe('scoped inventory in Ink', () => {
     const current = recovery('project');
     current.inventory![0]!.blockers = [{ code: 'pluginUnavailable', message: 'removed' }];
     const prepareScopedTask = vi.fn().mockRejectedValue(new Error('prepareStopped'));
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(current), prepareScopedTask });
     await controller.load();
     controller.push({ name: 'intentInventory', scope: 'project', projectKey: '/tmp/project' });
@@ -576,11 +631,12 @@ describe('scoped inventory in Ink', () => {
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({ kind: 'retire',
       scope: 'project', selector: 'official/demo', deleteConfig: false }), expect.anything());
     await press(instance, '\u001b');
-    await focusAction(instance, '选择本机工具');
+    await focusAction(instance, 'Agent 管理');
     await press(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('◆ Codex'));
     await press(instance, '\r');
-    await press(instance, '\u001b');
-    expect(checkedFrame(instance, sizes[0]!)).toContain('放弃');
+    await escape(instance);
+    expect(checkedFrame(instance, sizes[0]!)).toContain('还有未保存的修改');
     expect(prepareScopedTask).toHaveBeenCalledTimes(1);
     instance.unmount();
   });
@@ -591,17 +647,17 @@ describe('scoped inventory in Ink', () => {
       env: isolation.env };
     await writeIntentFixture(location, { roots: [{ pluginId: 'official/demo' },
       { pluginId: 'official/other' }],
-      agents: ['cursor'] });
+      agents: ['codex', 'claude', 'cursor'] });
     const previousPreferences = await observePreferences(location);
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
       command: 'sync', ok: false, intent: { state: 'valid', roots: ['official/demo', 'official/other'] },
       requestedRoots: ['official/demo', 'official/other'], requestedTargets: [], selection: {
-        agents: ['codex', 'claude-code', 'cursor'], origin: 'preference', preferences: 'valid',
+        agents: ['codex', 'claude', 'cursor'], origin: 'preference', preferences: 'valid',
       }, blockers: [], errors: [], targetResults: [
         { pluginId: 'official/demo', agent: 'codex', scope: 'user',
           delivery: { kind: 'native', platform: 'codex' }, execution: 'failed',
           observation: 'missing', blockers: [], requiredBy: ['official/demo'] },
-        { pluginId: 'official/demo', agent: 'claude-code', scope: 'user',
+        { pluginId: 'official/demo', agent: 'claude', scope: 'user',
           delivery: { kind: 'native', platform: 'claude' }, execution: 'not-run',
           observation: 'unknown', blockers: [], requiredBy: ['official/demo'] },
         { pluginId: 'official/demo', agent: 'cursor', scope: 'user',
@@ -610,7 +666,7 @@ describe('scoped inventory in Ink', () => {
         { pluginId: 'official/other', agent: 'codex', scope: 'user',
           delivery: { kind: 'native', platform: 'codex' }, execution: 'applied',
           observation: 'verified', blockers: [], requiredBy: ['official/other'] },
-        { pluginId: 'official/other', agent: 'claude-code', scope: 'user',
+        { pluginId: 'official/other', agent: 'claude', scope: 'user',
           delivery: { kind: 'native', platform: 'claude' }, execution: 'failed',
           observation: 'missing', blockers: [], requiredBy: ['official/other'] },
       ], remainingTargets: [], recoveryActions: [], declarationChanged: false,
@@ -627,7 +683,7 @@ describe('scoped inventory in Ink', () => {
       });
       return { kind: 'recovery', scope: request.scope, plan: retryPlan };
     });
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(recovery('user')), prepareScopedTask,
       executeScopedTask: vi.fn().mockResolvedValue({ kind: 'recovery', receipt }) });
     await controller.load();
@@ -635,7 +691,8 @@ describe('scoped inventory in Ink', () => {
     const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
     await tick();
     await press(instance, 'c');
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('本次影响'));
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(controller.dependencies.executeScopedTask).not.toHaveBeenCalled();
     await press(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('重试明确失败项（2）'));
     expect(checkedFrame(instance, sizes[0]!)).toContain('检查未确认项（2）');
@@ -645,18 +702,18 @@ describe('scoped inventory in Ink', () => {
     await vi.waitFor(() => expect(prepareScopedTask).toHaveBeenCalledTimes(2));
     expect(prepareScopedTask.mock.calls[1]?.[0]).toMatchObject({ kind: 'recovery', scope: 'user',
       command: 'sync', selectors: ['official/demo', 'official/other'],
-      targets: ['codex', 'claude-code'], exactTargets: [
+      targets: ['codex', 'claude'], exactTargets: [
         { pluginId: 'official/demo', agent: 'codex' },
-        { pluginId: 'official/other', agent: 'claude-code' },
+        { pluginId: 'official/other', agent: 'claude' },
       ] });
     await vi.waitFor(() => expect(retryPlan).toBeDefined());
     expect(retryPlan?.receipt.selection).toMatchObject({
-      agents: ['claude-code', 'codex'], origin: 'argument',
+      agents: ['claude', 'codex'], origin: 'argument',
     });
-    expect(retryPlan?.receipt.requestedTargets).toMatchObject([
-      { pluginId: 'official/demo', agent: 'codex' },
-      { pluginId: 'official/other', agent: 'claude-code' },
-    ]);
+    expect(retryPlan?.receipt.requestedRoots).toEqual(['official/demo', 'official/other']);
+    expect(retryPlan?.receipt.targetResults.every((target) =>
+      target.pluginId === 'official/demo' && target.agent === 'codex'
+      || target.pluginId === 'official/other' && target.agent === 'claude')).toBe(true);
     expect(retryPlan?.receipt.blockers.map((entry) => entry.code)).not.toContain('invalidExactTargets');
     expect(await observePreferences(location)).toEqual(previousPreferences);
     instance.unmount();
@@ -667,18 +724,18 @@ describe('scoped inventory in Ink', () => {
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
       command: 'sync', ok: false, intent: { state: 'valid', roots: ['official/demo'] },
       requestedRoots: ['official/demo'], requestedTargets: [], selection: {
-        agents: ['codex', 'claude-code', 'cursor'], origin: 'preference', preferences: 'valid',
+        agents: ['codex', 'claude', 'cursor'], origin: 'preference', preferences: 'valid',
       }, blockers: [], errors: [], targetResults: [
         { pluginId: 'official/demo', agent: 'codex', scope: 'user',
           delivery: { kind: 'native', platform: 'codex' }, execution: 'failed',
           observation: 'unknown', content: 'unknown',
           blockers: [{ code: 'nativeRecoveryFailed', message: 'diagnosed' }], requiredBy: ['official/demo'] },
-        { pluginId: 'official/demo', agent: 'claude-code', scope: 'user',
-          delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'claude-code' },
+        { pluginId: 'official/demo', agent: 'claude', scope: 'user',
+          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'claude' },
           execution: 'failed', observation: 'unknown', content: 'conflict',
           blockers: [{ code: 'portableOutputConflict', message: 'external content' }], requiredBy: ['official/demo'] },
         { pluginId: 'official/demo', agent: 'cursor', scope: 'user',
-          delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
+          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
           execution: 'partial', observation: 'unknown', content: 'absent',
           blockers: [], requiredBy: ['official/demo'] },
       ], remainingTargets: [], recoveryActions: [], declarationChanged: false,
@@ -690,7 +747,7 @@ describe('scoped inventory in Ink', () => {
     const prepareScopedTask = vi.fn(async () => ({ ...plan,
       plan: { ...plan.plan, context: { dispose: async () => {} } } } as ScopedTuiPlan));
     const loadScopedStatus = vi.fn().mockResolvedValue(recovery('user'));
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus, prepareScopedTask,
       executeScopedTask: vi.fn().mockResolvedValue({ kind: 'recovery', receipt }) });
     await controller.load();
@@ -732,7 +789,7 @@ describe('scoped inventory in Ink', () => {
       plannedImpact: { declaration: true, preferences: false, config: false, outputs: true },
       changes: [], warnings: [], context: { dispose: async () => {} },
       nativeGroups: [], portableGroups: [] } } as unknown as ScopedTuiPlan;
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(recovery('project')),
       prepareScopedTask: vi.fn().mockResolvedValue(plan),
       executeScopedTask: vi.fn().mockResolvedValue({ kind: 'recovery', receipt }) });
@@ -743,13 +800,23 @@ describe('scoped inventory in Ink', () => {
     await press(instance, 'c');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     const review = checkedFrame(instance, sizes[0]!);
-    expect(review).toContain('需求变更（计划）：保存当前范围需求');
-    expect(review).toContain('输出变更（计划）：执行所列精确目标');
+    expect(review).toContain('插件清单也将保存本次变化。');
+    await press(instance, 'd');
+    const reviewDetails = await readScopedPages(instance, sizes[0]!);
+    expect(reviewDetails).toContain('需求变更（计划）：保存当前范围需求');
+    expect(reviewDetails).toContain('输出变更（计划）：执行所列精确目标');
+    expect(controller.dependencies.executeScopedTask).not.toHaveBeenCalled();
+    await press(instance, 'd');
     await press(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
     const result = checkedFrame(instance, sizes[0]!);
-    expect(result).toContain('需求变更：无');
-    expect(result).toContain('输出可能改变：否');
+    expect(result).toContain('请求已完成。');
+    expect(result).not.toContain('插件清单已保存。');
+    await press(instance, 'd');
+    const resultDetails = await readScopedPages(instance, sizes[0]!);
+    expect(resultDetails).toContain('需求变更：无');
+    expect(resultDetails).toContain('输出可能改变：否');
+    expect(controller.dependencies.executeScopedTask).toHaveBeenCalledTimes(1);
     instance.unmount();
   });
 
@@ -775,7 +842,7 @@ describe('scoped inventory in Ink', () => {
     const executeScopedTask = vi.fn()
       .mockResolvedValueOnce({ kind: 'recoveryReview', plan: recoveryReview })
       .mockResolvedValueOnce({ kind: 'recovery', receipt });
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(recovery('project')),
       prepareScopedTask: vi.fn().mockResolvedValue(sourceReview), executeScopedTask });
     await controller.load();
@@ -783,14 +850,29 @@ describe('scoped inventory in Ink', () => {
     const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
     await tick();
     await press(instance, 'c');
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('刷新 Catalog 来源 official'));
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    const sourceSummary = checkedFrame(instance, sizes[0]!);
+    expect(sourceSummary).toContain('启用来源 official 的候选版本');
+    expect(sourceSummary).toContain('来源启用后，将重新准备插件操作汇总；本次不会直接更新插件。');
+    expect(sourceSummary).toContain('来源影响清单不完整');
+    await press(instance, 'd');
+    const sourceDetails = await readScopedPages(instance, sizes[0]!);
+    expect(sourceDetails).toContain('刷新 Catalog 来源 official');
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    await press(instance, 'd');
     await press(instance, '\r');
     expect(checkedFrame(instance, sizes[0]!)).toContain('来源影响清单不完整');
     expect(executeScopedTask).not.toHaveBeenCalled();
     await press(instance, '\u001b[B');
     await press(instance, '\r');
-    await vi.waitFor(() => expect(instance.lastFrame()).toContain('基于新的 Active generation'));
+    await vi.waitFor(() => expect(executeScopedTask).toHaveBeenCalledTimes(1));
+    expect(checkedFrame(instance, sizes[0]!)).toContain('操作汇总');
     expect(executeScopedTask).toHaveBeenNthCalledWith(1, sourceReview);
+    await press(instance, 'd');
+    const recoveryDetails = await readScopedPages(instance, sizes[0]!);
+    expect(recoveryDetails).toContain('基于新的 Active generation');
+    expect(executeScopedTask).toHaveBeenCalledTimes(1);
+    await press(instance, 'd');
     await press(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
     expect(executeScopedTask).toHaveBeenNthCalledWith(2, recoveryReview);
@@ -818,7 +900,7 @@ describe('scoped inventory in Ink', () => {
       staleReceipt.errors = [...staleReceipt.blockers];
       const cleanPlan = { ...reviewPlan, plan: { ...reviewPlan.plan, receipt: base } } as ScopedTuiPlan;
       const prepareScopedTask = vi.fn().mockResolvedValueOnce(reviewPlan).mockResolvedValue(cleanPlan);
-      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
         loadScopedStatus: vi.fn().mockResolvedValue(recovery('project')), prepareScopedTask,
         executeScopedTask: vi.fn().mockResolvedValue({ kind: 'recovery', receipt: staleReceipt }) });
       await controller.load();
@@ -826,21 +908,29 @@ describe('scoped inventory in Ink', () => {
       const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
       await tick();
       await press(instance, 'c');
-      await vi.waitFor(() => expect(instance.lastFrame()).toContain('全局受阻：declarationInvalid'));
-      await press(instance, '\u001b');
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+      expect(checkedFrame(instance, sizes[0]!)).toContain('当前无法完成，请查看详情');
+      await press(instance, 'd');
+      expect(await readScopedPages(instance, sizes[0]!)).toContain('全局受阻：declarationInvalid');
+      expect(controller.dependencies.executeScopedTask).not.toHaveBeenCalled();
+      await escape(instance);
       await press(instance, 'c');
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
       const preparedRequest = prepareScopedTask.mock.calls[1]?.[0];
       await press(instance, '\r');
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
       const result = checkedFrame(instance, sizes[0]!);
-      expect(result).toContain('operationReviewStale');
-      expect(result).toContain('本次未执行，需要重新准备');
+      expect(result).toContain('状态已变化，请重新准备');
       expect(result).toContain('重新准备本次操作');
+      await press(instance, 'd');
+      const details = await readScopedPages(instance, sizes[0]!);
+      expect(details).toContain('operationReviewStale');
+      expect(details).toContain('本次未执行，需要重新准备');
       await press(instance, 'y');
       await vi.waitFor(() => expect(copy).toHaveBeenCalledWith(expect.stringContaining('operationReviewStale')));
       expect(copy).toHaveBeenCalledWith(expect.stringContaining('本次未执行，需要重新准备。'));
-      await press(instance, '\u001b[B');
+      await press(instance, 'd');
+      await focusAction(instance, '重新准备本次操作');
       await press(instance, '\r');
       await vi.waitFor(() => expect(prepareScopedTask).toHaveBeenCalledTimes(3));
       expect(prepareScopedTask.mock.calls[2]?.[0]).toEqual(preparedRequest);
@@ -863,23 +953,31 @@ describe('scoped inventory in Ink', () => {
         changes: [], warnings: Array.from({ length: 18 }, (_, index) => `检查说明 ${index + 1}`),
         context: { dispose: async () => {} }, nativeGroups: [], portableGroups: [],
       } } as unknown as ScopedTuiPlan;
-      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
         loadScopedStatus: vi.fn().mockResolvedValue(recovery('project')),
-        prepareScopedTask: vi.fn().mockResolvedValue(plan) });
+        prepareScopedTask: vi.fn().mockResolvedValue(plan), executeScopedTask: vi.fn() });
       await controller.load();
       controller.push({ name: 'intentInventory', scope: 'project', projectKey: '/tmp/project' });
       const instance = render(<ConsoleAppV4 controller={controller} size={sizes[1]!} />);
       await tick();
       await press(instance, 'c');
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+      expect(checkedFrame(instance, sizes[1]!)).toContain('插件清单也将保存本次变化。');
+      await press(instance, 'd');
       expect(checkedFrame(instance, sizes[1]!)).toContain('1 /');
       await press(instance, '\u001b[6~');
       expect(checkedFrame(instance, sizes[1]!)).toContain('2 /');
       instance.rerender(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
       await tick();
-      expect(checkedFrame(instance, sizes[0]!)).toContain('本次影响');
+      expect(checkedFrame(instance, sizes[0]!)).toContain('技术详情');
+      await press(instance, '\u001b[5~');
+      const details = await readScopedPages(instance, sizes[0]!);
+      for (let index = 1; index <= 18; index += 1) {
+        expect(details).toMatch(new RegExp(`检查说明 ${index}(?!\\d)`, 'u'));
+      }
       await press(instance, 'y');
       await vi.waitFor(() => expect(copy).toHaveBeenCalledWith(expect.stringContaining('检查说明 18')));
+      expect(controller.dependencies.executeScopedTask).not.toHaveBeenCalled();
       instance.unmount();
     } finally { copy.mockRestore(); }
   });
@@ -891,7 +989,7 @@ describe('scoped inventory in Ink', () => {
     const project: RecoveryInventoryInput = { ...recovery('project'),
       intent: { state: 'absent' }, inventory: [], selection: { agents: [], preferences: 'absent' } };
     const prepareScopedTask = vi.fn().mockRejectedValue(new Error('prepareStopped'));
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn(async (scope: 'user' | 'project') => scope === 'user' ? personal : project),
       prepareScopedTask });
     await controller.load();
@@ -901,12 +999,9 @@ describe('scoped inventory in Ink', () => {
     const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
     await tick();
     const detail = checkedFrame(instance, sizes[0]!);
-    expect(detail).toContain('个人清单');
-    expect(detail).toContain('已声明');
-    expect(detail).toContain('当前项目清单');
-    expect(detail).toContain('未声明');
-    expect(detail).toContain('使用位置');
-    expect(detail).toContain('未确认');
+    expect(detail).toContain('所有项目 待安装');
+    expect(detail).not.toContain('当前项目 待安装');
+    expect(detail).toContain('本机未启用');
     await focusAction(instance, '移出插件清单（保留安装）');
     await press(instance, '\r');
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({ kind: 'intent',
@@ -917,6 +1012,7 @@ describe('scoped inventory in Ink', () => {
   it.each([
     { name: 'User Portable', scope: 'user' as const, kind: 'portable' as const },
     { name: 'shared Native', scope: 'project' as const, kind: 'shared' as const },
+    { name: 'joint child shared Native', scope: 'project' as const, kind: 'joint-shared' as const },
     { name: 'retirement config deletion', scope: 'project' as const, kind: 'retire' as const },
     { name: 'User retirement output', scope: 'user' as const, kind: 'retire' as const },
   ])('requires a separate, default-return risk confirmation for $name', async ({ scope, kind }) => {
@@ -929,6 +1025,9 @@ describe('scoped inventory in Ink', () => {
       blockers: [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
       declarationChanged: false, preferencesChanged: false, configChanged: false,
       outputsMayHaveChanged: false };
+    const sharedNativeGroups = [{ preview: { codexReconcilePlans: [{ review: {
+      requiresConfirmation: true, sharedImpact: { warning: '共享内容可能影响其他项目。' },
+    } }] } }];
     const plan = kind === 'retire' ? { kind: 'retire', scope, plan: {
       receipt, options: { deleteConfig: scope === 'project' },
       plannedImpact: { declaration: true, preferences: true, config: scope === 'project', outputs: true },
@@ -936,13 +1035,17 @@ describe('scoped inventory in Ink', () => {
     } } : { kind: 'recovery', scope, plan: { receipt,
       plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
       changes: [], warnings: [], context: { dispose: async () => {} },
-      nativeGroups: kind === 'shared' ? [{ preview: { codexReconcilePlans: [{ review: {
-        requiresConfirmation: true, sharedImpact: { warning: '共享内容可能影响其他项目。' },
-      } }] } }] : [],
+      nativeGroups: kind === 'shared' ? sharedNativeGroups : [],
       portableGroups: kind === 'portable' ? [{}] : [],
+      ...(kind === 'joint-shared' ? { joint: { children: [{
+        receipt: { ...receipt, scope: 'user' },
+        plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
+        changes: [], warnings: [], context: { dispose: async () => {} },
+        nativeGroups: sharedNativeGroups, portableGroups: [], sourceRefreshes: [],
+      }] } } : {}),
     } } as unknown as ScopedTuiPlan;
     const executeScopedTask = vi.fn().mockResolvedValue({ kind: 'recovery', receipt });
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(current),
       prepareScopedTask: vi.fn().mockResolvedValue(plan), executeScopedTask });
     await controller.load();
@@ -956,13 +1059,24 @@ describe('scoped inventory in Ink', () => {
     else await press(instance, 'c');
     if (kind === 'retire') await press(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    if (kind === 'shared' || kind === 'joint-shared') {
+      expect(checkedFrame(instance, size)).toContain('共享内容可能影响其他项目');
+    }
+    expect(executeScopedTask).not.toHaveBeenCalled();
     await press(instance, '\r');
     expect(checkedFrame(instance, size)).toContain('请确认本次风险');
     expect(checkedFrame(instance, size)).toContain('返回检查');
     expect(checkedFrame(instance, size)).toContain('› 返回检查');
-    expect(checkedFrame(instance, size)).toContain(kind === 'portable' ? '适用于所有项目'
-      : kind === 'shared' ? '共享内容可能影响其他项目'
-        : scope === 'user' ? '可能影响其他项目' : '删除所选范围已保存的插件设置');
+    const riskFrame = checkedFrame(instance, size);
+    if (kind === 'retire' && scope === 'project') {
+      expect(riskFrame).toContain('全部本机设置');
+      expect(riskFrame).toContain('通用与各');
+      expect(riskFrame).toContain('Agent），影响所有项目');
+    } else {
+      expect(riskFrame).toContain(kind === 'portable' ? '适用于所有项目'
+        : kind === 'shared' || kind === 'joint-shared' ? '共享内容可能影响其他项目'
+          : '可能影响其他项目');
+    }
     expect(executeScopedTask).not.toHaveBeenCalled();
     await press(instance, '\r');
     expect(instance.lastFrame()).toContain('操作汇总');
@@ -978,7 +1092,7 @@ describe('scoped inventory in Ink', () => {
     const current = recovery(scope);
     current.selection.agents = ['cursor'];
     current.inventory![0]!.targetResults = [{ pluginId: 'official/demo', agent: 'cursor', scope,
-      delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
+      delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
       execution: 'not-run', observation: 'unknown', content: 'unknown',
       blockers: [{ code: 'needs-preparation', message: 'prepare first' }], requiredBy: ['official/demo'] }];
     const plan = { kind: 'recovery', scope, plan: { receipt: {
@@ -989,7 +1103,7 @@ describe('scoped inventory in Ink', () => {
     nativeGroups: [], portableGroups: [],
     } } as unknown as ScopedTuiPlan;
     const prepareScopedTask = vi.fn().mockResolvedValue(plan);
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(current), prepareScopedTask });
     await controller.load();
     controller.push({ name: 'intentInventory', scope,
@@ -1013,18 +1127,18 @@ describe('scoped inventory in Ink', () => {
       const demand = { scope, intent: { state: 'valid', value: { schemaVersion: 3,
         kind: 'aw-plugin-intents', sources: { official: { logicalIdentity: 'official' } },
         roots: [{ pluginId: 'official/demo' }] }, digest: 'intent', rawDigest: 'intent', rawBytes: Buffer.from('{}') },
-      preferences: { state: 'valid', value: { schemaVersion: 1,
-        kind: 'aw-deployment-preferences', agents: ['cursor'], dependencyScopeOverrides: [] },
+      preferences: { state: 'valid', value: { schemaVersion: 2,
+        kind: 'aw-deployment-preferences', targets: ['cursor'], exclusions: [] },
       digest: 'preferences', rawDigest: 'preferences', rawBytes: Buffer.from('{}') },
       roots: [{ pluginId: 'official/demo', sourceId: 'official', sourceState: 'ready', blockers: [],
-        plugin: { manifest: { distributions: { agentSkills: {} } } } }], plugins: [], errors: [],
+        plugin: { manifest: { platforms: ['cursor'], skills: './skills' } } }], plugins: [], errors: [],
       } as unknown as DemandSnapshot;
       const projected = await statusFromObservations({ scope, cwd: '/tmp/project',
         context: { scope } as ScopeContext, demand, nativeObservations: [] });
       expect(projected.inventory?.[0]?.targetResults[0]).toMatchObject({ agent: 'cursor',
         delivery: { kind: 'agent-skills' }, observation: 'unknown',
         blockers: [{ code: 'needs-preparation' }] });
-      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
         loadScopedStatus: vi.fn().mockResolvedValue({ ...projected, nativeSnapshot: recovery(scope).nativeSnapshot }) });
       await controller.load();
       controller.push({ name: 'intentInventory', scope,
@@ -1043,11 +1157,11 @@ describe('scoped inventory in Ink', () => {
       const demand = { scope, intent: { state: 'valid', value: { schemaVersion: 3,
         kind: 'aw-plugin-intents', sources: { official: { logicalIdentity: 'official' } },
         roots: [{ pluginId: 'official/demo' }] }, digest: 'intent', rawDigest: 'intent', rawBytes: Buffer.from('{}') },
-      preferences: { state: 'valid', value: { schemaVersion: 1,
-        kind: 'aw-deployment-preferences', agents: ['cursor'], dependencyScopeOverrides: [] },
+      preferences: { state: 'valid', value: { schemaVersion: 2,
+        kind: 'aw-deployment-preferences', targets: ['cursor'], exclusions: [] },
       digest: 'preferences', rawDigest: 'preferences', rawBytes: Buffer.from('{}') },
       roots: [{ pluginId: 'official/demo', sourceId: 'official', sourceState: 'ready', blockers: [],
-        plugin: { manifest: { distributions: { agentSkills: {} } } } }], plugins: [], errors: [],
+        plugin: { manifest: { platforms: ['cursor'], skills: './skills' } } }], plugins: [], errors: [],
       } as unknown as DemandSnapshot;
       const projected = await statusFromObservations({ scope, cwd: '/tmp/project',
         context: { scope } as ScopeContext, demand, nativeObservations: [] });
@@ -1058,7 +1172,7 @@ describe('scoped inventory in Ink', () => {
         pluginSummaries: status.pluginSummaries });
       expect(view.declaredRoots[0]?.state).toBe('pending');
       expect(view.syncTargets).toEqual([{ pluginId: 'official/demo', agent: 'cursor', scope }]);
-      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
         loadScopedStatus: vi.fn().mockResolvedValue({ ...projected, nativeSnapshot: recovery(scope).nativeSnapshot }) });
       await controller.load();
       controller.push({ name: 'intentInventory', scope,
@@ -1073,7 +1187,7 @@ describe('scoped inventory in Ink', () => {
   it('shows incomplete Portable coverage in the scoped inventory', async () => {
     const current = recovery('project');
     current.coverage = { native: true, portable: false };
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(current) });
     await controller.load();
     controller.push({ name: 'intentInventory', scope: 'project', projectKey: '/tmp/project' });
@@ -1122,7 +1236,7 @@ describe('managed commands in scoped Ink recovery', () => {
     let finish!: (value: { kind: 'recovery'; receipt: RecoveryReceipt }) => void;
     const executeScopedTask = vi.fn(() => new Promise<{ kind: 'recovery'; receipt: RecoveryReceipt }>((resolve) => { finish = resolve; }));
     const feed = createRebuildProgressFeed();
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(status),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn().mockResolvedValue(recovery('user')),
       prepareScopedTask: vi.fn().mockResolvedValue(plan), executeScopedTask }, feed);
     const copied = vi.spyOn(clipboard, 'copyToClipboard').mockResolvedValue({ ok: true });
@@ -1133,7 +1247,12 @@ describe('managed commands in scoped Ink recovery', () => {
     await tick();
     await press(instance, 'c');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    await press(instance, 'd');
+    const reviewPages = await readScopedPages(instance, size);
+    expect(reviewPages).toContain('命令包 tools');
     await press(instance, 'y');
+    await vi.waitFor(() => expect(copied).toHaveBeenCalledTimes(1));
     const review = String(copied.mock.lastCall?.[0]);
     expect(review.match(/命令包 tools/gu)).toHaveLength(1);
     if (command === 'sync') {
@@ -1145,6 +1264,8 @@ describe('managed commands in scoped Ink recovery', () => {
       expect(review).toContain('所有项目共用');
       expect(review).toContain(remove);
     }
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    await press(instance, 'd');
     await press(instance, '\r');
     await vi.waitFor(() => expect(executeScopedTask).toHaveBeenCalledOnce());
     feed.addEvent({ type: 'managed-command:producer', source: { plugin: 'provider', scope: 'user' },
@@ -1155,11 +1276,16 @@ describe('managed commands in scoped Ink recovery', () => {
     expect(String(copied.mock.lastCall?.[0])).toContain(command === 'sync' ? '固定参数' : remove);
     finish({ kind: 'recovery', receipt });
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
+    expect(checkedFrame(instance, size)).toContain(command === 'sync'
+      ? '请求仍有未完成目标' : '请求已完成');
+    await press(instance, 'd');
+    const resultPages = await readScopedPages(instance, size);
+    expect(resultPages).toContain('official/provider');
     await press(instance, 'y');
+    await vi.waitFor(() => expect(copied).toHaveBeenCalledTimes(2));
     const result = String(copied.mock.lastCall?.[0]);
     expect(result).toContain('official/provider');
     if (command === 'sync') {
-      expect(checkedFrame(instance, size)).toContain('请求仍有未完成目标');
       expect(result).toContain('failed');
       expect(result).toContain('commandProducerFailed');
     } else {

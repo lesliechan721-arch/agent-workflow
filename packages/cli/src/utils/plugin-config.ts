@@ -1,10 +1,15 @@
 import crypto from 'node:crypto';
+import { resolveWorkContext } from '../intent/work-context.js';
 import * as nodeFs from 'node:fs/promises';
 import path from 'node:path';
 
 import fs from 'fs-extra';
 import {
   canonicalizePluginConfigValues,
+  compilePluginConfigDefinition,
+  PLATFORM_TARGETS,
+  type PlatformTarget,
+  type PluginConfigCompiledDefinition,
   formatPluginConfigIssue,
   getPluginConfigDependencyKeys,
   getPluginConfigDependencyFields,
@@ -33,10 +38,6 @@ import type {
   Scope,
 } from '../types.js';
 import {
-  assertTestReadablePath,
-  assertTestWritablePath,
-} from './test-path-fence.js';
-import {
   canonicalizePathThroughExistingAncestor,
   resolveAwHome,
   resolveRepoRootSync,
@@ -47,10 +48,6 @@ import {
   atomicReplaceSafeFile,
 } from './safe-fs.js';
 import {
-  assertProjectSharedConfigPathVisible,
-  PROJECT_CONFIG_SHAREABILITY_UNVERIFIED_WARNING,
-} from './project-boundary.js';
-import {
   pluginConfigHasExternalReferences,
   resolvePluginConfigReferenceContext,
   type PluginConfigReferenceEvidence,
@@ -60,7 +57,7 @@ export { resolvePluginConfigReferenceContext } from './plugin-config-references.
 
 export type PluginConfigValue = CorePluginConfigValue;
 export type RedactedPluginConfigValue = ReturnType<typeof redactPluginConfigValue>;
-export type PluginConfigSource = 'default' | 'user' | 'project' | 'missing';
+export type PluginConfigSource = 'default' | 'common' | 'platform' | 'missing';
 export type PluginConfigIssueType =
   | 'missing-required'
   | 'invalid-config';
@@ -72,7 +69,6 @@ export function codexNativeRefreshKeys(
   return new Set((manifest.artifacts?.targets ?? []).flatMap((target) =>
     target.platform === 'codex'
       && target.target === 'codex.skill'
-      && target.delivery?.mode === 'codex-native'
       ? target.refreshKeys
       : []));
 }
@@ -96,71 +92,41 @@ export interface PluginConfigStore {
   exists: boolean;
   state: 'missing' | 'ready' | 'invalid';
   values: Record<string, PluginConfigValue>;
+  common?: Record<string, PluginConfigValue>;
+  platforms?: Partial<Record<PlatformTarget, Record<string, PluginConfigValue>>>;
+  platform?: PlatformTarget;
   rawDigest?: string;
   invalidCode?: PluginConfigStoreInvalidCode;
   issues: string[];
 }
 
-export interface PluginConfigEnvelopeV5 {
-  schemaVersion: 5;
+export interface PluginConfigEnvelopeV6 {
+  schemaVersion: 6;
   sourceId: string;
   pluginName: string;
-  binding:
-    | { kind: 'source'; sourceIdentity: string }
-    | { kind: 'catalog'; logicalIdentity: string };
-  values: Record<string, PluginConfigValue>;
+  binding: { kind: 'source'; sourceIdentity: string };
+  common: Record<string, PluginConfigValue>;
+  platforms: Partial<Record<PlatformTarget, Record<string, PluginConfigValue>>>;
 }
 
-function readPluginConfigBinding(
-  value: unknown,
-  scope: Scope,
-): PluginConfigEnvelopeV5['binding'] | null {
-  if (!isRecord(value)) return null;
-  if (scope === 'user') {
-    return value.kind === 'source'
-      && typeof value.sourceIdentity === 'string'
-      && /^sha256:[0-9a-f]{64}$/u.test(value.sourceIdentity)
-      && Object.keys(value).every((key) => ['kind', 'sourceIdentity'].includes(key))
-      ? { kind: 'source', sourceIdentity: value.sourceIdentity }
-      : null;
-  }
-  return value.kind === 'catalog'
-    && typeof value.logicalIdentity === 'string'
-    && value.logicalIdentity.trim().length > 0
-    && Object.keys(value).every((key) => ['kind', 'logicalIdentity'].includes(key))
-    ? { kind: 'catalog', logicalIdentity: value.logicalIdentity }
-    : null;
+function readPluginConfigBinding(value: unknown): PluginConfigEnvelopeV6['binding'] | null {
+  return isRecord(value) && value.kind === 'source'
+    && typeof value.sourceIdentity === 'string'
+    && /^sha256:[0-9a-f]{64}$/u.test(value.sourceIdentity)
+    && Object.keys(value).every((key) => ['kind', 'sourceIdentity'].includes(key))
+    ? { kind: 'source', sourceIdentity: value.sourceIdentity } : null;
 }
 
-const PLUGIN_CONFIG_ENVELOPE_V5_KEYS = new Set([
-  'schemaVersion',
-  'sourceId',
-  'pluginName',
-  'binding',
-  'values',
-]);
-
-function readPluginConfigEnvelopeV5(
-  value: unknown,
-  scope: Scope,
-): PluginConfigEnvelopeV5 | null {
-  if (!isRecord(value)
-    || value.schemaVersion !== 5
-    || typeof value.sourceId !== 'string'
-    || typeof value.pluginName !== 'string'
-    || !isRecord(value.values)
-    || Object.keys(value).some((key) => !PLUGIN_CONFIG_ENVELOPE_V5_KEYS.has(key))) {
-    return null;
-  }
-  const binding = readPluginConfigBinding(value.binding, scope);
-  if (!binding) return null;
-  return {
-    schemaVersion: 5,
-    sourceId: value.sourceId,
-    pluginName: value.pluginName,
-    binding,
-    values: value.values as Record<string, PluginConfigValue>,
-  };
+function readPluginConfigEnvelopeV6(value: unknown, _scope?: Scope): PluginConfigEnvelopeV6 | null {
+  if (!isRecord(value) || value.schemaVersion !== 6
+    || typeof value.sourceId !== 'string' || typeof value.pluginName !== 'string'
+    || !isRecord(value.common) || !isRecord(value.platforms)
+    || Object.keys(value).some((key) => !['schemaVersion', 'sourceId', 'pluginName', 'binding', 'common', 'platforms'].includes(key))
+    || Object.keys(value.platforms).some((key) => !PLATFORM_TARGETS.includes(key as PlatformTarget))) return null;
+  const binding = readPluginConfigBinding(value.binding);
+  return binding ? { schemaVersion: 6, sourceId: value.sourceId, pluginName: value.pluginName,
+    binding, common: value.common as PluginConfigEnvelopeV6['common'],
+    platforms: value.platforms as PluginConfigEnvelopeV6['platforms'] } : null;
 }
 
 export type PluginConfigStoreInvalidCode =
@@ -184,6 +150,9 @@ export interface PluginConfigResetTargetInspection {
 }
 
 export interface ResolvedEffectivePluginConfig {
+  context?: Scope;
+  platform?: PlatformTarget;
+  definition: PluginConfigCompiledDefinition;
   pluginName: string;
   projectRoot: string;
   values: Record<string, PluginConfigValue>;
@@ -203,7 +172,7 @@ export interface UnsupportedPluginConfigLayerOverride {
   type: 'configLayerUnsupported';
   key: string;
   scope: 'project';
-  source: 'project';
+  source: 'platform';
 }
 
 export interface PluginConfigResolvedValue {
@@ -232,36 +201,12 @@ export interface ResolvedProjectArtifactRenderConfig {
   schema: PluginConfigSchema['fields'];
   stores: {
     user: PluginConfigStore;
-    project: PluginConfigStore;
+    project?: PluginConfigStore;
   };
-}
-
-export interface ProjectScopedPluginConfigEntryView {
-  key: string;
-  defaultValue?: RedactedPluginConfigValue;
-  userValue?: RedactedPluginConfigValue;
-  projectValue?: RedactedPluginConfigValue;
-  effectiveValue?: RedactedPluginConfigValue;
-  effectiveSource: PluginConfigSource;
-}
-
-export interface ResolvedProjectScopedPluginConfigView {
-  pluginName: string;
-  projectRoot: string;
-  schema: PluginConfigSchema['fields'];
-  stores: {
-    user: PluginConfigStore;
-    project: PluginConfigStore;
-  };
-  redactedValues: Record<string, RedactedPluginConfigValue>;
-  sources: Record<string, PluginConfigSource>;
-  entries: Record<string, ProjectScopedPluginConfigEntryView>;
-  issues: PluginConfigIssue[];
-  unsupportedLayerOverrides: UnsupportedPluginConfigLayerOverride[];
-  ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
 }
 
 export interface PluginConfigStoreReceipt {
+  platform?: PlatformTarget;
   pluginName: string;
   scope: Scope;
   path: string;
@@ -271,7 +216,7 @@ export interface ResetPluginConfigStoreReceipt extends PluginConfigStoreReceipt 
   storeKind: 'user' | 'project';
   existed: boolean;
   deleted: boolean;
-  resetDisposition: 'absent' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
+  resetDisposition: 'absent' | 'clearedLayer' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
   quarantineBasename?: string;
 }
 
@@ -297,6 +242,7 @@ export interface PluginConfigStoreTarget {
 }
 
 export interface RequiredPluginConfigPreflightTarget {
+  platform?: PlatformTarget;
   sourceId?: string;
   sourceIdentity?: string;
   logicalIdentity?: string;
@@ -335,6 +281,8 @@ export interface PluginConfigFormModel {
 }
 
 export interface ResolvedConfigRead {
+  context?: Scope;
+  platform?: PlatformTarget;
   pluginName: string;
   scope: Scope | 'effective';
   schema?: ConfigSchemaEvidence;
@@ -596,10 +544,12 @@ async function calculateConfigSchemaManifestDigestForPlugin(
 function createConfigSchemaEvidenceFromCurrentCatalog(
   plugin: PluginMeta,
   manifestDigest: string,
+  platform?: PlatformTarget,
 ): ConfigSchemaEvidence {
   return {
     source: 'currentCatalog',
-    identity: createPluginConfigSchemaIdentity(plugin.manifest),
+    identity: createPluginConfigSchemaIdentity(plugin.manifest, platform),
+    platform,
     pluginVersion: plugin.manifest.version,
     manifestDigest,
   };
@@ -634,75 +584,25 @@ export function resolveAwProjectRoot(cwd: string): string {
   return path.resolve(resolveRepoRootSync(cwd));
 }
 
-function resolvePluginConfigAllowedRoot(options: {
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}): string {
-  return options.scope === 'user'
-    ? resolveAwHome(options.env)
-    : path.join(resolveAwProjectRoot(options.cwd), '.agent-workflows');
+function resolvePluginConfigAllowedRoot(options: { scope: Scope; cwd: string; env?: NodeJS.ProcessEnv }): string {
+  return resolveAwHome(options.env);
 }
 
+/** Scope selects source context. All config values belong to the user document. */
 export function resolvePluginConfigStorePath(options: {
-  sourceId?: string;
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  access?: PluginConfigStorePathAccess;
+  sourceId?: string; pluginName: string; scope: Scope; cwd: string;
+  env?: NodeJS.ProcessEnv; access?: PluginConfigStorePathAccess;
 }): string {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
-  const sourceId = options.sourceId === undefined
-    ? undefined
-    : assertSafePluginConfigSegment(options.sourceId);
-  const root = options.scope === 'user'
-    ? resolveAwHome(options.env)
-    : path.join(resolveAwProjectRoot(options.cwd), '.agent-workflows');
-  const filePath = path.join(root, CONFIG_DIR, ...(sourceId ? [sourceId] : []), pluginName, CONFIG_FILE);
-
-  if (options.scope !== 'project') {
-    return filePath;
-  }
-
-  if (options.access === 'read') {
-    return assertTestReadablePath(
-      filePath,
-      'project plugin config store (.agent-workflows/plugin-config)',
-      '用 registerReadonlyFixtureRoot() 或 runWithRepositoryCwdAsReadOnly() 登记只读 project fixture 根；需要写入时改用 withSafeTestCwd() 或 registerWritableStateRoot()。',
-    );
-  }
-
-  if (options.access === 'write') {
-    return assertTestWritablePath(
-      filePath,
-      'project plugin config store (.agent-workflows/plugin-config)',
-      '用 withSafeTestCwd() 切到测试可写 cwd，或通过 registerWritableStateRoot() 登记 project fixture 根。',
-    );
-  }
-
-  return filePath;
+  const sourceId = options.sourceId === undefined ? undefined : assertSafePluginConfigSegment(options.sourceId);
+  return path.join(resolveAwHome(options.env), CONFIG_DIR, ...(sourceId ? [sourceId] : []), pluginName, CONFIG_FILE);
 }
 
 export function resolvePluginConfigStoreTargets(options: {
-  sourceId?: string;
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  access?: PluginConfigStorePathAccess;
+  sourceId?: string; pluginName: string; scope: Scope; cwd: string;
+  env?: NodeJS.ProcessEnv; access?: PluginConfigStorePathAccess;
 }): PluginConfigStoreTarget[] {
-  if (options.scope === 'user') {
-    return [{
-      storeKind: 'user',
-      path: resolvePluginConfigStorePath(options),
-    }];
-  }
-
-  return [{
-    storeKind: 'project',
-    path: resolvePluginConfigStorePath(options),
-  }];
+  return [{ storeKind: 'user', path: resolvePluginConfigStorePath(options) }];
 }
 
 function isPluginConfigScalar(value: unknown): value is string | number | boolean {
@@ -828,124 +728,84 @@ function validateStoreValues(options: {
     : readyStore(options.filePath, values, options.rawDigest);
 }
 
-async function readStoreFile(filePath: string): Promise<PluginConfigStore> {
+function documentStore(options: {
+  filePath: string; common: unknown; platforms: unknown; rawDigest?: string; platform?: PlatformTarget;
+}): PluginConfigStore {
+  const common = validateStoreValues({ filePath: options.filePath, values: options.common, rawDigest: options.rawDigest });
+  if (common.state === 'invalid') return common;
+  if (!isRecord(options.platforms) || Object.keys(options.platforms).some((key) => !PLATFORM_TARGETS.includes(key as PlatformTarget))) {
+    return invalidStore(options.filePath, 'invalidValues', 'The platforms field must contain known platform objects.', options.rawDigest);
+  }
+  const platforms: NonNullable<PluginConfigStore['platforms']> = {};
+  for (const [platform, values] of Object.entries(options.platforms)) {
+    const store = validateStoreValues({ filePath: options.filePath, values, rawDigest: options.rawDigest });
+    if (store.state === 'invalid') return store;
+    platforms[platform as PlatformTarget] = store.values;
+  }
+  return { ...common, common: common.values, platforms, ...(options.platform ? { platform: options.platform } : {}),
+    values: options.platform ? platforms[options.platform] ?? {} : common.values };
+}
+
+export function pluginConfigStoreForProfile(store: PluginConfigStore, platform?: PlatformTarget): PluginConfigStore {
+  return { ...store, platform, values: platform ? store.platforms?.[platform] ?? {} : store.common ?? store.values };
+}
+
+/** Replace one layer in memory without changing any other profile. */
+export function replacePluginConfigStoreLayer(store: PluginConfigStore, values: Record<string, PluginConfigValue>, platform?: PlatformTarget): PluginConfigStore {
+  const common = platform ? store.common ?? store.values : canonicalizePluginConfigValues(values);
+  const platforms = { ...store.platforms };
+  if (platform) {
+    if (Object.keys(values).length) platforms[platform] = canonicalizePluginConfigValues(values);
+    else delete platforms[platform];
+  }
+  const exists = Object.keys(common).length > 0 || Object.keys(platforms).length > 0;
+  return { ...store, common, platforms, platform, values: platform ? platforms[platform] ?? {} : common,
+    exists, state: exists ? 'ready' : 'missing', issues: [], rawDigest: undefined };
+}
+
+async function readStoreFile(filePath: string, platform?: PlatformTarget): Promise<PluginConfigStore> {
   const parsed = await parseStoreJson(filePath);
   if (parsed.state === 'invalidJson') return parsed.store;
-  return validateStoreValues({ filePath, values: parsed.value, rawDigest: parsed.rawDigest });
+  const raw = parsed.value;
+  if (!isRecord(raw) || raw.schemaVersion !== 6
+    || Object.keys(raw).some((key) => !['schemaVersion', 'common', 'platforms'].includes(key))) {
+    return invalidStore(filePath, 'schemaVersionUnsupported', 'Only plugin config store schemaVersion 6 is supported. Reset the old document, then save the required values.', parsed.rawDigest);
+  }
+  return documentStore({ filePath, common: raw.common, platforms: raw.platforms, rawDigest: parsed.rawDigest, platform });
 }
 
 async function readNamespacedStoreFile(options: {
-  filePath: string;
-  sourceId: string;
-  scope: Scope;
-  sourceIdentity?: string;
-  logicalIdentity?: string;
-  pluginName: string;
+  filePath: string; sourceId: string; scope: Scope; sourceIdentity?: string; logicalIdentity?: string;
+  pluginName: string; platform?: PlatformTarget;
 }): Promise<PluginConfigStore> {
   const parsed = await parseStoreJson(options.filePath);
   if (parsed.state === 'invalidJson') return parsed.store;
-  const raw = parsed.value;
-  if (!isRecord(raw) || raw.schemaVersion !== 5) {
-    return invalidStore(
-      options.filePath,
-      'schemaVersionUnsupported',
-      'Only plugin config store schemaVersion 5 is supported.',
-      parsed.rawDigest,
-    );
+  const envelope = readPluginConfigEnvelopeV6(parsed.value);
+  if (!envelope) return invalidStore(options.filePath, 'schemaVersionUnsupported',
+    'Only a valid plugin config store schemaVersion 6 is supported. Reset the old document, then save the required values.', parsed.rawDigest);
+  if (envelope.sourceId !== options.sourceId || envelope.pluginName !== options.pluginName
+    || !options.sourceIdentity || envelope.binding.sourceIdentity !== options.sourceIdentity) {
+    return invalidStore(options.filePath, 'identityMismatch', 'The user store is not bound to the requested source and plugin identity.', parsed.rawDigest);
   }
-  const envelope = readPluginConfigEnvelopeV5(raw, options.scope);
-  if (!envelope) {
-    return invalidStore(
-      options.filePath,
-      'schemaVersionUnsupported',
-      'The plugin config store schemaVersion 5 envelope is invalid.',
-      parsed.rawDigest,
-    );
-  }
-  if (
-    envelope.sourceId !== options.sourceId
-    || envelope.pluginName !== options.pluginName
-  ) {
-    return invalidStore(
-      options.filePath,
-      'identityMismatch',
-      'The store identity does not match its source and namespaced path.',
-      parsed.rawDigest,
-    );
-  }
-  const binding = envelope.binding;
-  const matchesBinding = options.scope === 'user'
-    ? binding?.kind === 'source'
-      && typeof options.sourceIdentity === 'string'
-      && binding.sourceIdentity === options.sourceIdentity
-    : binding?.kind === 'catalog'
-      && typeof options.logicalIdentity === 'string'
-      && binding.logicalIdentity === options.logicalIdentity;
-  if (!matchesBinding) {
-    return invalidStore(
-      options.filePath,
-      'identityMismatch',
-      options.scope === 'user'
-        ? 'The user store is not bound to the requested source identity.'
-        : 'The project store is not bound to the requested Catalog logical identity.',
-      parsed.rawDigest,
-    );
-  }
-  return validateStoreValues({
-    filePath: options.filePath,
-    values: envelope.values,
-    rawDigest: parsed.rawDigest,
-  });
+  return documentStore({ filePath: options.filePath, common: envelope.common, platforms: envelope.platforms,
+    rawDigest: parsed.rawDigest, platform: options.platform });
 }
 
 function namespacedConfigContent(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  logicalIdentity?: string;
-  scope: Scope;
-  pluginName: string;
-  values: Record<string, PluginConfigValue>;
+  sourceId?: string; sourceIdentity?: string; logicalIdentity?: string; scope: Scope; pluginName: string;
+  common: Record<string, PluginConfigValue>; platforms: NonNullable<PluginConfigStore['platforms']>;
 }): string {
-  const values = canonicalizePluginConfigValues(options.values);
-  if (!options.sourceId) return `${JSON.stringify(values, null, 2)}\n`;
-  const binding: PluginConfigEnvelopeV5['binding'] = options.scope === 'user'
-    ? options.sourceIdentity
-      ? { kind: 'source', sourceIdentity: options.sourceIdentity }
-      : (() => { throw new Error('sourceChanged: user plugin config requires a source identity.'); })()
-    : options.logicalIdentity
-      ? { kind: 'catalog', logicalIdentity: options.logicalIdentity }
-      : (() => { throw new Error('catalogUnavailable: project plugin config requires verified Catalog logical identity evidence.'); })();
-  const envelope: PluginConfigEnvelopeV5 = {
-    schemaVersion: 5,
-    sourceId: options.sourceId,
-    pluginName: options.pluginName,
-    binding,
-    values,
-  };
-  return `${JSON.stringify(envelope, null, 2)}\n`;
-}
-
-async function assertNoLegacyConfigCoexistence(options: {
-  sourceId?: string;
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<void> {
-  if (!options.sourceId) return;
-  const legacyPath = resolvePluginConfigStorePath({
-    pluginName: options.pluginName,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env,
-    ...(options.scope === 'project' ? { access: 'read' as const } : {}),
-  });
-  if (await lstatIfExists(legacyPath)) {
-    throw new Error('legacyStateUnsupported: legacy and namespaced plugin config stores cannot coexist.');
-  }
+  const document = { schemaVersion: 6 as const, common: canonicalizePluginConfigValues(options.common),
+    platforms: Object.fromEntries(Object.entries(options.platforms).sort(([a], [b]) => a.localeCompare(b, 'en'))
+      .map(([platform, values]) => [platform, canonicalizePluginConfigValues(values!)])) };
+  if (!options.sourceId) return `${JSON.stringify(document, null, 2)}\n`;
+  if (!options.sourceIdentity) throw new Error('sourceChanged: user plugin config requires a source identity.');
+  return `${JSON.stringify({ ...document, sourceId: options.sourceId, pluginName: options.pluginName,
+    binding: { kind: 'source', sourceIdentity: options.sourceIdentity } }, null, 2)}\n`;
 }
 
 export async function readPluginConfigStore(options: {
+  platform?: PlatformTarget;
   sourceId?: string;
   sourceIdentity?: string;
   logicalIdentity?: string;
@@ -990,18 +850,20 @@ export async function readPluginConfigStore(options: {
         sourceIdentity: options.sourceIdentity,
         logicalIdentity: options.logicalIdentity,
         pluginName: options.pluginName,
+        platform: options.platform,
       })
-    : readStoreFile(filePath);
+    : readStoreFile(filePath, options.platform);
 }
 
 export async function readNamespacedPluginConfigStoreIdentity(options: {
+  platform?: PlatformTarget;
   sourceId: string;
   pluginName: string;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<{
-  binding: PluginConfigEnvelopeV5['binding'];
+  binding: PluginConfigEnvelopeV6['binding'];
   store: PluginConfigStore;
 } | null> {
   const filePath = resolvePluginConfigStorePath({
@@ -1013,13 +875,13 @@ export async function readNamespacedPluginConfigStoreIdentity(options: {
   if (parsed.state === 'invalidJson') {
     throw new Error(`${parsed.store.invalidCode}: invalid namespaced plugin config store.`);
   }
-  const envelope = readPluginConfigEnvelopeV5(parsed.value, options.scope);
+  const envelope = readPluginConfigEnvelopeV6(parsed.value, options.scope);
   if (!envelope
     || envelope.sourceId !== options.sourceId
     || envelope.pluginName !== options.pluginName) {
     throw new Error('schemaVersionUnsupported: invalid namespaced plugin config store.');
   }
-  const store = validateStoreValues({ filePath, values: envelope.values });
+  const store = documentStore({ filePath, common: envelope.common, platforms: envelope.platforms, platform: options.platform });
   assertReadyPluginConfigStore(store);
   return {
     binding: envelope.binding,
@@ -1058,15 +920,7 @@ export async function listPluginConfigStorePluginNames(options: {
   env?: NodeJS.ProcessEnv;
   scope?: Scope;
 }): Promise<string[]> {
-  const projectRoot = resolveAwProjectRoot(options.cwd);
-  const storeRoots = options.scope === 'user'
-    ? [path.join(resolveAwHome(options.env), CONFIG_DIR)]
-    : options.scope === 'project'
-      ? [path.join(projectRoot, '.agent-workflows', CONFIG_DIR)]
-      : [
-          path.join(resolveAwHome(options.env), CONFIG_DIR),
-          path.join(projectRoot, '.agent-workflows', CONFIG_DIR),
-        ];
+  const storeRoots = [path.join(resolveAwHome(options.env), CONFIG_DIR)];
   const pluginNames = (await Promise.all(
     storeRoots.map((storeRoot) => listConfigStoreDirectoryPluginNames(storeRoot)),
   )).flat();
@@ -1077,7 +931,7 @@ export async function listPluginConfigStorePluginNames(options: {
 
 export interface NamespacedPluginConfigStoreInventoryEntry {
   sourceId: string;
-  binding: PluginConfigEnvelopeV5['binding'];
+  binding: PluginConfigEnvelopeV6['binding'];
   pluginName: string;
   pluginId: string;
   values: Record<string, PluginConfigValue>;
@@ -1094,9 +948,7 @@ export async function listNamespacedPluginConfigStoreIdentities(options: {
   env?: NodeJS.ProcessEnv;
   scope: Scope;
 }): Promise<NamespacedPluginConfigStoreIdentity[]> {
-  const boundaryRoot = options.scope === 'user'
-    ? resolveAwHome(options.env)
-    : resolveAwProjectRoot(options.cwd);
+  const boundaryRoot = resolveAwHome(options.env);
   if (options.scope === 'user') {
     await canonicalizePathThroughExistingAncestor(boundaryRoot);
   } else {
@@ -1104,7 +956,6 @@ export async function listNamespacedPluginConfigStoreIdentities(options: {
   }
   const storeRoot = path.join(
     boundaryRoot,
-    ...(options.scope === 'project' ? ['.agent-workflows'] : []),
     CONFIG_DIR,
   );
   if (!await inspectConfigInventoryStoreRoot(boundaryRoot, storeRoot)) return [];
@@ -1152,9 +1003,7 @@ export async function listNamespacedPluginConfigStores(options: {
   env?: NodeJS.ProcessEnv;
   scope: Scope;
 }): Promise<NamespacedPluginConfigStoreInventoryEntry[]> {
-  const boundaryRoot = options.scope === 'user'
-    ? resolveAwHome(options.env)
-    : resolveAwProjectRoot(options.cwd);
+  const boundaryRoot = resolveAwHome(options.env);
   if (options.scope === 'user') {
     await canonicalizePathThroughExistingAncestor(boundaryRoot);
   } else {
@@ -1162,7 +1011,6 @@ export async function listNamespacedPluginConfigStores(options: {
   }
   const storeRoot = path.join(
     boundaryRoot,
-    ...(options.scope === 'project' ? ['.agent-workflows'] : []),
     CONFIG_DIR,
   );
   const output: NamespacedPluginConfigStoreInventoryEntry[] = [];
@@ -1188,13 +1036,13 @@ export async function listNamespacedPluginConfigStores(options: {
       if (parsed.state === 'invalidJson') {
         throw new Error(`${parsed.store.invalidCode}: invalid namespaced plugin config store "${filePath}".`);
       }
-      const envelope = readPluginConfigEnvelopeV5(parsed.value, options.scope);
+      const envelope = readPluginConfigEnvelopeV6(parsed.value, options.scope);
       if (!envelope
         || envelope.sourceId !== sourceId
         || envelope.pluginName !== pluginName) {
         throw new Error(`schemaVersionUnsupported: invalid namespaced plugin config store "${filePath}".`);
       }
-      const store = validateStoreValues({ filePath, values: envelope.values });
+      const store = documentStore({ filePath, common: envelope.common, platforms: envelope.platforms });
       assertReadyPluginConfigStore(store);
       output.push({
         sourceId,
@@ -1209,158 +1057,54 @@ export async function listNamespacedPluginConfigStores(options: {
 }
 
 export async function writePluginConfigStore(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  logicalIdentity?: string;
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  values: Record<string, unknown>;
-  env?: NodeJS.ProcessEnv;
+  sourceId?: string; sourceIdentity?: string; logicalIdentity?: string; pluginName: string;
+  scope: Scope; platform?: PlatformTarget; cwd: string; values: Record<string, unknown>; env?: NodeJS.ProcessEnv;
 }): Promise<PluginConfigStoreReceipt & { warnings: string[] }> {
-  await assertNoLegacyConfigCoexistence(options);
-  const filePath = resolvePluginConfigStorePath({
-    ...options,
-    ...(options.scope === 'project' ? { access: 'write' as const } : {}),
-  });
-  const allowedRoot = resolvePluginConfigAllowedRoot(options);
-  const validated = validateStoreValues({ filePath, values: options.values });
+  const current = await readPluginConfigStore(options);
+  assertReadyPluginConfigStore(current);
+  const validated = validateStoreValues({ filePath: current.path, values: options.values });
   assertReadyPluginConfigStore(validated);
-  const warnings: string[] = [];
-  await withConfigFileMutation({
-    filePath,
-    allowedRoot,
-    action: async () => {
-      if (!options.sourceId && Object.keys(validated.values).length === 0) {
-        return atomicRemoveConfigFile({ filePath, allowedRoot });
-      }
-      if (options.sourceId && await lstatIfExists(filePath)) {
-        const current = await readNamespacedStoreFile({
-          filePath,
-          sourceId: options.sourceId,
-          scope: options.scope,
-          sourceIdentity: options.sourceIdentity,
-          logicalIdentity: options.logicalIdentity,
-          pluginName: options.pluginName,
-        });
-        assertReadyPluginConfigStore(current);
-      }
-      if (options.scope === 'project') {
-        const visibility = await assertProjectSharedConfigPathVisible({
-          cwd: options.cwd,
-          targetPath: filePath,
-          env: options.env,
-        });
-        if (visibility?.state === 'unverified') {
-          warnings.push(PROJECT_CONFIG_SHAREABILITY_UNVERIFIED_WARNING);
-        }
-      }
-      return atomicReplaceConfigFile({
-          filePath,
-          allowedRoot,
-          content: namespacedConfigContent({ ...options, values: validated.values }),
-          mode: 0o600,
-        });
-    },
-  });
+  return commitPluginConfigLayer(options, current, validated.values);
+}
 
-  return {
-    pluginName: options.pluginName,
-    scope: options.scope,
-    path: filePath,
-    warnings,
-  };
+async function commitPluginConfigLayer(options: {
+  sourceId?: string; sourceIdentity?: string; logicalIdentity?: string; pluginName: string;
+  scope: Scope; platform?: PlatformTarget; cwd: string; env?: NodeJS.ProcessEnv;
+}, current: PluginConfigStore, values: Record<string, PluginConfigValue>): Promise<PluginConfigStoreReceipt & { warnings: string[] }> {
+  const next = replacePluginConfigStoreLayer(current, values, options.platform);
+  const allowedRoot = resolvePluginConfigAllowedRoot(options);
+  await withConfigFileMutation({ filePath: current.path, allowedRoot, action: async () => {
+    if (!next.exists) await atomicRemoveConfigFile({ filePath: current.path, allowedRoot });
+    else await atomicReplaceConfigFile({ filePath: current.path, allowedRoot,
+      content: namespacedConfigContent({ ...options, common: next.common!, platforms: next.platforms! }), mode: 0o600 });
+  } });
+  return { pluginName: options.pluginName, scope: 'user', platform: options.platform, path: current.path, warnings: [] };
 }
 
 export async function patchPluginConfigStore(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  logicalIdentity?: string;
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  updates: Record<string, PluginConfigValue>;
-  removeKeys?: string[];
-  requireExistingRemoveKeys?: boolean;
-  env?: NodeJS.ProcessEnv;
-  schema?: PluginConfigSchema['fields'];
-  reviewPreflight?: () => Promise<void> | void;
-}): Promise<PluginConfigStoreReceipt & {
-  updatedKeys: string[];
-  removedKeys: string[];
-  warnings: string[];
-}> {
-  await assertNoLegacyConfigCoexistence(options);
-  const filePath = resolvePluginConfigStorePath({
-    ...options,
-    ...(options.scope === 'project' ? { access: 'write' as const } : {}),
-  });
-  const allowedRoot = resolvePluginConfigAllowedRoot(options);
+  sourceId?: string; sourceIdentity?: string; logicalIdentity?: string; pluginName: string;
+  scope: Scope; platform?: PlatformTarget; cwd: string; updates: Record<string, PluginConfigValue>;
+  removeKeys?: string[]; requireExistingRemoveKeys?: boolean; env?: NodeJS.ProcessEnv;
+  schema?: PluginConfigSchema['fields']; reviewPreflight?: () => Promise<void> | void;
+}): Promise<PluginConfigStoreReceipt & { updatedKeys: string[]; removedKeys: string[]; warnings: string[] }> {
+  await options.reviewPreflight?.();
+  const current = await readPluginConfigStore(options);
+  assertReadyPluginConfigStore(current);
   const removedKeys = options.removeKeys ?? [];
-  const warnings: string[] = [];
-  await withConfigFileMutation({
-    filePath,
-    allowedRoot,
-    action: async () => {
-      await options.reviewPreflight?.();
-      const current = (await lstatIfExists(filePath))
-        ? options.sourceId
-          ? await readNamespacedStoreFile({
-              filePath,
-              sourceId: options.sourceId,
-              scope: options.scope,
-              sourceIdentity: options.sourceIdentity,
-              logicalIdentity: options.logicalIdentity,
-              pluginName: options.pluginName,
-            })
-          : await readStoreFile(filePath)
-        : readyStore(filePath, {});
-      assertReadyPluginConfigStore(current);
-      if (options.requireExistingRemoveKeys) {
-        const missingKey = removedKeys.find((key) => !Object.hasOwn(current.values, key));
-        if (missingKey) throw new Error(`Unknown config key "${missingKey}".`);
-      }
-      const next = { ...current.values };
-      for (const key of removedKeys) {
-        delete next[key];
-      }
-      for (const [key, value] of Object.entries(options.updates)) {
-        next[key] = value;
-      }
-      if (Object.keys(next).length === 0) {
-        await atomicRemoveConfigFile({ filePath, allowedRoot });
-      } else {
-        if (options.scope === 'project') {
-          const visibility = await assertProjectSharedConfigPathVisible({
-            cwd: options.cwd,
-            targetPath: filePath,
-            env: options.env,
-          });
-          if (visibility?.state === 'unverified') {
-            warnings.push(PROJECT_CONFIG_SHAREABILITY_UNVERIFIED_WARNING);
-          }
-        }
-        await atomicReplaceConfigFile({
-          filePath,
-          allowedRoot,
-          content: namespacedConfigContent({ ...options, values: next }),
-          mode: 0o600,
-        });
-      }
-    },
-  });
-
-  return {
-    pluginName: options.pluginName,
-    scope: options.scope,
-    path: filePath,
-    warnings,
-    updatedKeys: Object.keys(options.updates),
-    removedKeys,
-  };
+  if (options.requireExistingRemoveKeys) {
+    const missing = removedKeys.find((key) => !Object.hasOwn(current.values, key));
+    if (missing) throw new Error(`Unknown config key "${missing}".`);
+  }
+  const next = Object.assign(Object.create(null) as Record<string, PluginConfigValue>, current.values);
+  for (const key of removedKeys) delete next[key];
+  for (const [key, value] of Object.entries(options.updates)) next[key] = value;
+  const validated = validateStoreValues({ filePath: current.path, values: next });
+  assertReadyPluginConfigStore(validated);
+  return { ...await commitPluginConfigLayer(options, current, validated.values), updatedKeys: Object.keys(options.updates), removedKeys };
 }
 
-export async function resetPluginConfigStore(options: {
+interface ResetPluginConfigStoreOptions {
+  platform?: PlatformTarget;
   sourceId?: string;
   sourceIdentity?: string;
   pluginName: string;
@@ -1368,7 +1112,18 @@ export async function resetPluginConfigStore(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   reviewPreflight?: () => Promise<void> | void;
-}): Promise<ResetPluginConfigStoreReceipt> {
+}
+
+export async function resetPluginConfigStore(options: ResetPluginConfigStoreOptions): Promise<ResetPluginConfigStoreReceipt> {
+  return resetPluginConfigStoreTarget(options, false);
+}
+
+/** Delete the plugin's complete user document, including every platform profile. */
+export async function deletePluginConfigStore(options: Omit<ResetPluginConfigStoreOptions, 'platform'>): Promise<ResetPluginConfigStoreReceipt> {
+  return resetPluginConfigStoreTarget(options, true);
+}
+
+async function resetPluginConfigStoreTarget(options: ResetPluginConfigStoreOptions, wholeDocument: boolean): Promise<ResetPluginConfigStoreReceipt> {
   const filePath = resolvePluginConfigStorePath({
     ...options,
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
@@ -1387,8 +1142,8 @@ export async function resetPluginConfigStore(options: {
       if (!stats) {
         return {
           pluginName: options.pluginName,
-          scope: options.scope,
-          storeKind: options.scope,
+          scope: 'user',
+          storeKind: 'user',
           path: filePath,
           existed: false,
           deleted: false,
@@ -1407,8 +1162,8 @@ export async function resetPluginConfigStore(options: {
     if (!parentStats) {
       return {
         pluginName: options.pluginName,
-        scope: options.scope,
-        storeKind: options.scope,
+        scope: 'user',
+        storeKind: 'user',
         path: filePath,
         existed: false,
         deleted: false,
@@ -1426,21 +1181,34 @@ export async function resetPluginConfigStore(options: {
     if (!target) {
       return {
         pluginName: options.pluginName,
-        scope: options.scope,
-        storeKind: options.scope,
+        scope: 'user',
+        storeKind: 'user',
         path: filePath,
         existed: false,
         deleted: false,
         resetDisposition: 'absent',
       };
     }
+    let store: PluginConfigStore | undefined;
+    if (target.isFile()) {
+      try {
+        store = await readPluginConfigStore(options);
+      } catch {
+        // A broken document still has the schema-independent reset recovery below.
+      }
+    }
+    if (!wholeDocument && store && store.state !== 'invalid' && replacePluginConfigStoreLayer(store, {}, options.platform).exists) {
+      await commitPluginConfigLayer(options, store, {});
+      return { pluginName: options.pluginName, scope: 'user', platform: options.platform, storeKind: 'user',
+        path: filePath, existed: true, deleted: false, resetDisposition: 'clearedLayer' };
+    }
     if (target.isFile() || target.isSymbolicLink()) {
       await assertNoConfigSymlink(allowedRoot, path.dirname(filePath));
       await nodeFs.unlink(filePath);
       return {
         pluginName: options.pluginName,
-        scope: options.scope,
-        storeKind: options.scope,
+        scope: 'user',
+        storeKind: 'user',
         path: filePath,
         existed: true,
         deleted: true,
@@ -1454,8 +1222,8 @@ export async function resetPluginConfigStore(options: {
       await nodeFs.rename(filePath, path.join(path.dirname(filePath), quarantineBasename));
       return {
         pluginName: options.pluginName,
-        scope: options.scope,
-        storeKind: options.scope,
+        scope: 'user',
+        storeKind: 'user',
         path: filePath,
         existed: true,
         deleted: true,
@@ -1549,6 +1317,7 @@ function resetTargetInspection(
 }
 
 export async function resetPluginConfigStores(options: {
+  platform?: PlatformTarget;
   sourceId?: string;
   sourceIdentity?: string;
   pluginName: string;
@@ -1556,40 +1325,7 @@ export async function resetPluginConfigStores(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<ResetPluginConfigStoreReceipt[]> {
-  await assertNoLegacyConfigCoexistence(options);
-  const targets = resolvePluginConfigStoreTargets({
-    ...options,
-    ...(options.scope === 'project' ? { access: 'write' as const } : {}),
-  });
-  const allowedRoot = resolvePluginConfigAllowedRoot(options);
-  const receipts: ResetPluginConfigStoreReceipt[] = [];
-  const existing: boolean[] = [];
-  for (const target of targets) {
-    await prepareConfigFileParent(target.path, allowedRoot);
-    await assertNoConfigSymlink(allowedRoot, target.path);
-    const stats = await lstatIfExists(target.path);
-    existing.push(stats !== null);
-    if (!stats) continue;
-    if (!stats.isFile() || stats.isSymbolicLink()) {
-      throw new Error(`Config target must be a regular file: ${target.path}`);
-    }
-  }
-  for (const [index, target] of targets.entries()) {
-    const deleted = await atomicRemoveConfigFile({
-      filePath: target.path,
-      allowedRoot,
-    });
-    receipts.push({
-      pluginName: options.pluginName,
-      scope: options.scope,
-      storeKind: target.storeKind,
-      path: target.path,
-      existed: existing[index]!,
-      deleted,
-      resetDisposition: deleted ? 'deletedFile' : 'absent',
-    });
-  }
-  return receipts;
+  return [await resetPluginConfigStore(options)];
 }
 
 function coerceConfigValue(
@@ -1620,30 +1356,12 @@ export async function coercePluginConfigValue(options: {
   return coerceConfigValue(options.key, options.field, options.value);
 }
 
-function validateConfigReadValue(
-  key: string,
-  field: PluginConfigSchemaField,
-  value: unknown,
-): PluginConfigValue {
-  const issues = validateCorePluginConfigValue(field, value, key);
-  if (issues.length > 0) {
-    throw new Error(formatPluginConfigIssue(issues[0]!));
-  }
-  return value as PluginConfigValue;
-}
-
 function redactValue(
   field: PluginConfigSchemaField,
   value: PluginConfigValue,
 ): RedactedPluginConfigValue {
   return redactPluginConfigValue(field, value);
 }
-function sourceForStoreLayer(
-  scope: Scope,
-): Exclude<PluginConfigSource, 'default' | 'missing'> {
-  return scope === 'user' ? 'user' : 'project';
-}
-
 async function applyConfigLayer(options: {
   values: Record<string, PluginConfigValue>;
   redactedValues: Record<string, RedactedPluginConfigValue>;
@@ -1688,65 +1406,25 @@ async function applyConfigLayer(options: {
 }
 
 export async function resolveEffectivePluginConfig(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  logicalIdentity?: string;
-  pluginName?: string;
-  manifest: NormalizedPluginManifest;
-  targetScope?: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  referencePlugins?: readonly PluginMeta[];
+  sourceId?: string; sourceIdentity?: string; logicalIdentity?: string; pluginName?: string;
+  manifest: NormalizedPluginManifest; platform?: PlatformTarget; targetScope?: Scope; context?: Scope;
+  cwd: string; env?: NodeJS.ProcessEnv; referencePlugins?: readonly PluginMeta[];
   referenceContext?: PluginConfigReferenceContext;
 }): Promise<ResolvedEffectivePluginConfig> {
+  const workContext = options.context ? await resolveWorkContext({ cwd: options.cwd, context: options.context }) : undefined;
   const pluginName = assertSafePluginConfigSegment(options.pluginName ?? options.manifest.name);
-  const schema = options.manifest.config?.fields;
-  if (!schema) {
-    throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
-  }
-
-  const projectRoot = resolveAwProjectRoot(options.cwd);
-  const userStore = await readPluginConfigStore({
-    sourceId: options.sourceId,
-    sourceIdentity: options.sourceIdentity,
-    logicalIdentity: options.logicalIdentity,
-    pluginName,
-    scope: 'user',
-    cwd: options.cwd,
-    env: options.env,
-  });
-  const projectStore = options.targetScope === 'user'
-    ? undefined
-    : await readPluginConfigStore({
-        sourceId: options.sourceId,
-        sourceIdentity: options.sourceIdentity,
-        logicalIdentity: options.logicalIdentity,
-        pluginName,
-        scope: 'project',
-        cwd: options.cwd,
-        env: options.env,
-      });
-  assertReadyPluginConfigStore(userStore);
-  if (projectStore) assertReadyPluginConfigStore(projectStore);
-
+  const user = await readPluginConfigStore({ ...options, pluginName, scope: 'user' });
+  assertReadyPluginConfigStore(user);
   const references = !options.referenceContext && pluginConfigHasExternalReferences(options.manifest)
-    ? await resolvePluginConfigReferenceContext({ ...options, scope: options.targetScope ?? 'project', plugins: options.referencePlugins })
-    : undefined;
-  return resolveEffectivePluginConfigFromStores({
-    pluginName,
-    manifest: options.manifest,
-    targetScope: options.targetScope,
-    projectRoot,
-    referenceContext: options.referenceContext ?? references?.context,
-    referenceEvidence: references?.evidence,
-    stores: {
-      user: userStore,
-      ...(projectStore ? { project: projectStore } : {}),
-    },
-  });
+    ? await resolvePluginConfigReferenceContext({ ...options, scope: options.context ?? options.targetScope ?? 'user', plugins: options.referencePlugins }) : undefined;
+  return resolveEffectivePluginConfigFromStores({ ...options, pluginName, projectRoot: workContext?.projectRoot ?? ((options.context ?? options.targetScope) === 'project' ? resolveAwProjectRoot(options.cwd) : ''),
+    referenceContext: options.referenceContext ?? references?.context, referenceEvidence: references?.evidence,
+    stores: { user } });
 }
 
 export async function resolveEffectivePluginConfigFromStores(options: {
+  platform?: PlatformTarget;
+  context?: Scope;
   pluginName?: string;
   manifest: NormalizedPluginManifest;
   targetScope?: Scope;
@@ -1759,17 +1437,13 @@ export async function resolveEffectivePluginConfigFromStores(options: {
   };
 }): Promise<ResolvedEffectivePluginConfig> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName ?? options.manifest.name);
-  const schema = options.manifest.config?.fields;
+  const definition = options.manifest.config ? compilePluginConfigDefinition(options.manifest.config, options.platform) : undefined;
+  const schema = definition?.fields;
   if (!schema) {
-    throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
+    throw new PluginConfigSchemaResolutionError('configSchemaUnavailable', `Plugin "${pluginName}" does not declare an AW config schema.`);
   }
   const userStore = options.stores.user;
-  const projectStore = options.targetScope === 'user' ? undefined : options.stores.project;
   assertReadyPluginConfigStore(userStore);
-  if (!projectStore && options.targetScope !== 'user') {
-    throw new Error(`Project plugin config store is required for ${pluginName}.`);
-  }
-  if (projectStore) assertReadyPluginConfigStore(projectStore);
 
   const values: Record<string, PluginConfigValue> = {};
   const redactedValues: Record<string, RedactedPluginConfigValue> = {};
@@ -1779,7 +1453,6 @@ export async function resolveEffectivePluginConfigFromStores(options: {
   const unsupportedLayerOverrides: UnsupportedPluginConfigLayerOverride[] = [];
   const dangerousKeyIssues: PluginConfigIssue[] = [];
   const schemaKeys = new Set(Object.keys(schema));
-  const userOnlyKeys = codexNativeRefreshKeys(options.manifest);
 
   for (const key of schemaKeys) {
     sources[key] = 'missing';
@@ -1800,55 +1473,28 @@ export async function resolveEffectivePluginConfigFromStores(options: {
     });
   }
 
-  const layers = options.targetScope === 'user'
-    ? [['user', userStore] as const]
-    : [
-        ['user', userStore] as const,
-        ['project', projectStore!] as const,
-      ];
-  for (const [scope, store] of layers) {
-    const plainEntries = getStoreEntries(store.values);
-    const source = sourceForStoreLayer(scope);
-    const dangerousIssues = new Map(validatePluginConfigDocument(
-      options.manifest.config!,
-      plainEntries,
-    ).filter((issue) => issue.code === 'dangerousKey')
-      .map((issue) => [issue.path.field, issue] as const));
+  const layers: Array<{ entries: Record<string, PluginConfigValue>; source: 'common' | 'platform' }> = [
+    { entries: userStore.common ?? userStore.values, source: 'common' },
+    ...(options.platform ? [{ entries: userStore.platforms?.[options.platform] ?? {}, source: 'platform' as const }] : []),
+  ];
+  for (const { entries, source } of layers) {
+    const plainEntries = getStoreEntries(entries);
+    const dangerousIssues = new Map(validatePluginConfigDocument(definition!, plainEntries)
+      .filter((issue) => issue.code === 'dangerousKey').map((issue) => [issue.path.field, issue] as const));
     for (const key of Object.keys(plainEntries)) {
-      if (!schemaKeys.has(key)) {
-        const dangerousIssue = dangerousIssues.get(key);
-        if (dangerousIssue) {
-          dangerousKeyIssues.push({
-            type: 'invalid-config',
-            code: dangerousIssue.code,
-            key,
-            source,
-            message: formatPluginConfigIssue(dangerousIssue),
-          });
-        } else {
-          ignoredUnknownKeys.push({ scope, source, key });
-        }
-      }
+      if (schemaKeys.has(key)) continue;
+      const dangerousIssue = dangerousIssues.get(key);
+      if (dangerousIssue) dangerousKeyIssues.push({ type: 'invalid-config', code: dangerousIssue.code,
+        key, source, message: formatPluginConfigIssue(dangerousIssue) });
+      else ignoredUnknownKeys.push({ scope: 'user', source, key });
     }
-    const supportedEntries = scope === 'project'
-      ? Object.fromEntries(Object.entries(plainEntries).filter(([key]) => {
-          if (!schemaKeys.has(key) || !userOnlyKeys.has(key)) return true;
-          unsupportedLayerOverrides.push({
-            type: 'configLayerUnsupported',
-            key,
-            scope: 'project',
-            source: 'project',
-          });
-          return false;
-        }))
-      : plainEntries;
     await applyConfigLayer({
       values,
       redactedValues,
       sources,
       fieldStates,
       schema,
-      entries: supportedEntries,
+      entries: plainEntries,
       source,
     });
   }
@@ -1857,11 +1503,11 @@ export async function resolveEffectivePluginConfigFromStores(options: {
   for (const [key, field] of Object.entries(schema)) {
     const source = sources[key];
     if (source === 'default') candidateValues[key] = field.default;
-    if (source === 'user') candidateValues[key] = ownStoreValue(userStore.values, key);
-    if (source === 'project' && projectStore) candidateValues[key] = ownStoreValue(projectStore.values, key);
+    if (source === 'common') candidateValues[key] = ownStoreValue(userStore.common ?? userStore.values, key);
+    if (source === 'platform' && options.platform) candidateValues[key] = ownStoreValue(userStore.platforms?.[options.platform] ?? {}, key);
   }
   const candidateIssues = validatePluginConfigCandidate(
-    options.manifest.config!, candidateValues, undefined, options.referenceContext,
+    definition!, candidateValues, undefined, options.referenceContext,
   );
   const referenceIssues = candidateIssues.filter((issue) => issue.code.startsWith('valueRef')
     && (!issue.path.plugin || issue.path.plugin === pluginName));
@@ -1893,7 +1539,7 @@ export async function resolveEffectivePluginConfigFromStores(options: {
       for (const key of schemaKeys) {
         let dependencies;
         try {
-          dependencies = getPluginConfigDependencyFields(options.manifest.config!, [key], options.referenceContext);
+          dependencies = getPluginConfigDependencyFields(definition!, [key], options.referenceContext);
         } catch {
           continue; // The local association issue already reports the invalid schema.
         }
@@ -1919,7 +1565,7 @@ export async function resolveEffectivePluginConfigFromStores(options: {
   ]);
   for (const key of schemaKeys) {
     if (invalidKeys.has(key)) continue;
-    const dependency = getPluginConfigDependencyKeys(options.manifest.config!, [key])
+    const dependency = getPluginConfigDependencyKeys(definition!, [key])
       .find((dependencyKey) => dependencyKey !== key && invalidKeys.has(dependencyKey));
     if (dependency === undefined) continue;
     const source = sources[key]!;
@@ -1958,6 +1604,9 @@ export async function resolveEffectivePluginConfigFromStores(options: {
 
   return {
     pluginName,
+    platform: options.platform,
+    context: options.context ?? options.targetScope ?? 'user',
+    definition: definition!,
     projectRoot: options.projectRoot,
     values,
     redactedValues,
@@ -1969,7 +1618,6 @@ export async function resolveEffectivePluginConfigFromStores(options: {
     schema,
     stores: {
       user: userStore,
-      ...(projectStore ? { project: projectStore } : {}),
     },
     ...(options.referenceContext ? { referenceContext: options.referenceContext } : {}),
     ...(options.referenceEvidence ? { referenceEvidence: options.referenceEvidence } : {}),
@@ -1982,53 +1630,29 @@ function ownStoreValue(values: Record<string, PluginConfigValue>, key: string): 
 
 /** Check cross-field relations before saving one complete layer candidate. */
 export async function assertPluginConfigMutationCandidate(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  logicalIdentity?: string;
-  pluginName: string;
-  manifest: NormalizedPluginManifest;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  updates: Record<string, PluginConfigValue>;
-  removeKeys: readonly string[];
+  sourceId?: string; sourceIdentity?: string; logicalIdentity?: string; pluginName: string;
+  manifest: NormalizedPluginManifest; scope: Scope; platform?: PlatformTarget;
+  cwd: string; env?: NodeJS.ProcessEnv; updates: Record<string, PluginConfigValue>; removeKeys: readonly string[];
   referencePlugins?: readonly PluginMeta[];
 }): Promise<void> {
   const user = await readPluginConfigStore({ ...options, scope: 'user' });
-  const project = options.scope === 'project'
-    ? await readPluginConfigStore({ ...options, scope: 'project' })
-    : undefined;
   assertReadyPluginConfigStore(user);
-  if (project) assertReadyPluginConfigStore(project);
-  const edited = options.scope === 'user' ? user : project!;
-  const values = { ...edited.values };
+  const values = { ...user.values };
   for (const key of options.removeKeys) delete values[key];
   for (const [key, value] of Object.entries(options.updates)) values[key] = value;
-  const candidateStore = { ...edited, values };
-  const references = pluginConfigHasExternalReferences(options.manifest)
-    ? await resolvePluginConfigReferenceContext({ ...options, plugins: options.referencePlugins }) : undefined;
-  const effective = await resolveEffectivePluginConfigFromStores({
-    pluginName: options.pluginName,
-    manifest: options.manifest,
-    targetScope: options.scope,
-    projectRoot: resolveAwProjectRoot(options.cwd),
-    referenceContext: references?.context,
-    stores: {
-      user: options.scope === 'user' ? candidateStore : user,
-      ...(project ? { project: candidateStore } : {}),
-    },
-  });
-  const before = await resolveEffectivePluginConfigFromStores({ manifest: options.manifest,
-    targetScope: options.scope, projectRoot: resolveAwProjectRoot(options.cwd),
-    stores: { user, ...(project ? { project } : {}) }, referenceContext: references?.context });
-  const existingIssues = new Set(before.issues.map((issue) => `${issue.key}\0${issue.code}\0${issue.message}`));
-  const editedKeys = new Set([...Object.keys(options.updates), ...options.removeKeys]);
-  const issues = effective.issues.filter((issue) => issue.code?.startsWith('valueRef')
-    && (editedKeys.has(issue.key) || !existingIssues.has(`${issue.key}\0${issue.code}\0${issue.message}`)));
-  if (issues.length > 0) {
-    throw Object.assign(new Error(`configReferenceInvalid: ${issues.map((issue) => issue.message).join(' ')}`), {
-      code: 'configReferenceInvalid',
-    });
+  const candidate = replacePluginConfigStoreLayer(user, values, options.platform);
+  const profiles: Array<PlatformTarget | undefined> = options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS];
+  for (const platform of profiles) {
+    const references = pluginConfigHasExternalReferences(options.manifest)
+      ? await resolvePluginConfigReferenceContext({ ...options, platform, plugins: options.referencePlugins }) : undefined;
+    const resolve = (store: PluginConfigStore) => resolveEffectivePluginConfigFromStores({ ...options, platform,
+      targetScope: options.scope, projectRoot: options.scope === 'project' ? resolveAwProjectRoot(options.cwd) : '', stores: { user: store }, referenceContext: references?.context });
+    const [before, after] = await Promise.all([resolve(user), resolve(candidate)]);
+    const existing = new Set(before.issues.map((issue) => `${issue.key}\0${issue.code}\0${issue.message}`));
+    const editedKeys = new Set([...Object.keys(options.updates), ...options.removeKeys]);
+    const issues = after.issues.filter((issue) => (editedKeys.has(issue.key) && Object.hasOwn(options.updates, issue.key))
+      || !existing.has(`${issue.key}\0${issue.code}\0${issue.message}`));
+    if (issues.length) throw Object.assign(new Error(`configReferenceInvalid: ${platform ?? 'common'}: ${issues.map((issue) => issue.message).join(' ')}`), { code: 'configReferenceInvalid' });
   }
 }
 
@@ -2056,6 +1680,7 @@ export async function coercePluginConfigUpdates(options: {
 }
 
 export async function resolveProjectArtifactRenderConfig(options: {
+  platform?: PlatformTarget;
   sourceId?: string;
   sourceIdentity?: string;
   logicalIdentity?: string;
@@ -2067,7 +1692,7 @@ export async function resolveProjectArtifactRenderConfig(options: {
 }): Promise<ResolvedProjectArtifactRenderConfig> {
   if (!options.manifest.config?.fields) {
     const pluginName = assertSafePluginConfigSegment(options.pluginName ?? options.manifest.name);
-    const [userStore, projectStore] = await Promise.all([
+    const [userStore] = await Promise.all([
       readPluginConfigStore({
         sourceId: options.sourceId,
         sourceIdentity: options.sourceIdentity,
@@ -2077,18 +1702,8 @@ export async function resolveProjectArtifactRenderConfig(options: {
         cwd: options.cwd,
         env: options.env,
       }),
-      readPluginConfigStore({
-        sourceId: options.sourceId,
-        sourceIdentity: options.sourceIdentity,
-        logicalIdentity: options.logicalIdentity,
-        pluginName,
-        scope: 'project',
-        cwd: options.cwd,
-        env: options.env,
-      }),
     ]);
     assertReadyPluginConfigStore(userStore);
-    assertReadyPluginConfigStore(projectStore);
     return {
       pluginName,
       projectRoot: resolveAwProjectRoot(options.cwd),
@@ -2098,7 +1713,7 @@ export async function resolveProjectArtifactRenderConfig(options: {
       unsupportedLayerOverrides: [],
       ignoredUnknownKeys: [],
       schema: {},
-      stores: { user: userStore, project: projectStore },
+      stores: { user: userStore },
     };
   }
   const effective = await resolveEffectivePluginConfig({
@@ -2116,124 +1731,12 @@ export async function resolveProjectArtifactRenderConfig(options: {
     schema: effective.schema,
     stores: {
       user: effective.stores.user!,
-      project: effective.stores.project!,
     },
   };
 }
 
-async function resolveRedactedLayerValue(options: {
-  key: string;
-  field: PluginConfigSchemaField;
-  source: PluginConfigSource;
-  value: unknown;
-}): Promise<{
-  value?: RedactedPluginConfigValue;
-  issue?: PluginConfigIssue;
-}> {
-  try {
-    const value = validateConfigReadValue(options.key, options.field, options.value);
-    return {
-      value: redactValue(options.field, value),
-    };
-  } catch (error) {
-    return {
-      issue: {
-        type: 'invalid-config',
-        key: options.key,
-        source: options.source,
-        message: error instanceof Error ? error.message : String(error),
-      },
-    };
-  }
-}
-
-export async function resolveProjectScopedPluginConfigView(options: {
-  pluginName?: string;
-  manifest: NormalizedPluginManifest;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<ResolvedProjectScopedPluginConfigView> {
-  const effective = await resolveEffectivePluginConfig(options);
-  const entries: Record<string, ProjectScopedPluginConfigEntryView> = {};
-
-  for (const [key, field] of Object.entries(effective.schema)) {
-    const entry: ProjectScopedPluginConfigEntryView = {
-      key,
-      effectiveValue: effective.redactedValues[key],
-      effectiveSource: effective.sources[key] ?? 'missing',
-    };
-
-    if (field.default !== undefined) {
-      const resolvedDefault = await resolveRedactedLayerValue({
-        key,
-        field,
-        source: 'default',
-        value: field.default,
-      });
-      if (resolvedDefault.value !== undefined) {
-        entry.defaultValue = resolvedDefault.value;
-      }
-    }
-
-    const userPlainEntries = getStoreEntries(effective.stores.user!.values);
-    if (Object.hasOwn(userPlainEntries, key)) {
-      const resolvedUser = await resolveRedactedLayerValue({
-        key,
-        field,
-        source: 'user',
-        value: userPlainEntries[key],
-      });
-      if (resolvedUser.value !== undefined) {
-        entry.userValue = resolvedUser.value;
-      }
-    }
-
-    const projectPlainEntries = getStoreEntries(effective.stores.project!.values);
-    if (Object.hasOwn(projectPlainEntries, key)) {
-      const resolvedProject = await resolveRedactedLayerValue({
-        key,
-        field,
-        source: 'project',
-        value: projectPlainEntries[key],
-      });
-      if (resolvedProject.value !== undefined) {
-        entry.projectValue = resolvedProject.value;
-      }
-    }
-
-    entries[key] = entry;
-  }
-
-  return {
-    pluginName: effective.pluginName,
-    projectRoot: effective.projectRoot,
-    schema: effective.schema,
-    stores: {
-      user: effective.stores.user!,
-      project: effective.stores.project!,
-    },
-    redactedValues: effective.redactedValues,
-    sources: effective.sources,
-    entries,
-    issues: effective.issues,
-    unsupportedLayerOverrides: effective.unsupportedLayerOverrides,
-    ignoredUnknownKeys: effective.ignoredUnknownKeys,
-  };
-}
-
-function toConfigSourceLayer(
-  source: PluginConfigSource | undefined,
-): ConfigFieldEntry['sourceLayer'] {
-  if (source === 'default') {
-    return 'default';
-  }
-  if (source === 'user') {
-    return 'user';
-  }
-  if (source === 'project') {
-    return 'project';
-  }
-  return null;
+function toConfigSourceLayer(source: PluginConfigSource | undefined): ConfigFieldEntry['sourceLayer'] {
+  return source === undefined || source === 'missing' ? null : source;
 }
 
 function configFieldProjection(options: {
@@ -2261,289 +1764,89 @@ function configFieldProjection(options: {
 }
 
 async function buildManifestFieldEntries(options: {
+  context?: Scope;
   plugin: PluginMeta;
   scope: Scope | 'effective';
+  platform?: PlatformTarget;
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<ConfigFieldEntry[]> {
-  const schema = options.plugin.manifest.config?.fields;
-  if (!schema) {
-    return [];
-  }
-
-  const userStore = await readPluginConfigStore({
-    sourceId: options.plugin.sourceId,
-    sourceIdentity: options.plugin.sourceIdentity,
-    logicalIdentity: options.plugin.catalogLogicalIdentity,
-    pluginName: options.plugin.manifest.name,
-    scope: 'user',
-    cwd: options.cwd,
-    env: options.env,
-    schema,
-  });
-  const projectStore = options.scope === 'user'
-    ? undefined
-    : await readPluginConfigStore({
-        sourceId: options.plugin.sourceId,
-        sourceIdentity: options.plugin.sourceIdentity,
-        logicalIdentity: options.plugin.catalogLogicalIdentity,
-        pluginName: options.plugin.manifest.name,
-        scope: 'project',
-        cwd: options.cwd,
-        env: options.env,
-        schema,
-      });
-  assertReadyPluginConfigStore(userStore);
-  if (projectStore) assertReadyPluginConfigStore(projectStore);
-  const userPlainEntries = getStoreEntries(userStore.values);
-  const projectPlainEntries = projectStore ? getStoreEntries(projectStore.values) : {};
   const effective = await resolveEffectivePluginConfig({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
     logicalIdentity: options.plugin.catalogLogicalIdentity,
-    pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
-    targetScope: options.scope === 'user' ? 'user' : 'project',
+    platform: options.platform,
+    targetScope: options.context ?? (options.scope === 'project' ? 'project' : 'user'),
     cwd: options.cwd,
     env: options.env,
   });
-  const userOnlyKeys = codexNativeRefreshKeys(options.plugin.manifest);
-  const projectRemovalFallback = (key: string): ConfigFieldEntry['fallback'] => {
-    const field = schema[key]!;
-    if (Object.hasOwn(userPlainEntries, key)) {
-      const value = userPlainEntries[key] as PluginConfigValue;
-      const validationIssues = validateCorePluginConfigValue(field, value, key);
-      if (validationIssues.length > 0) {
-        return {
-          state: 'invalid',
-          sourceLayer: 'user',
-          issues: validationIssues.map((issue) => ({
-            type: 'invalid-config',
-            key,
-            source: 'user',
-            message: formatPluginConfigIssue(issue),
-          })),
-        };
-      }
-      return {
-        state: 'valid',
-        effectiveValue: redactValue(field, value),
-        sourceLayer: 'user',
-      };
-    }
-    if (field.default === undefined) return { state: 'missing' };
-    const validationIssues = validateCorePluginConfigValue(field, field.default, key);
-    if (validationIssues.length > 0) {
-      return {
-        state: 'invalid',
-        sourceLayer: 'default',
-        issues: validationIssues.map((issue) => ({
-          type: 'invalid-config',
-          key,
-          source: 'default',
-          message: formatPluginConfigIssue(issue),
-        })),
-      };
+  const stored = pluginConfigStoreForProfile(effective.stores.user!, options.platform).values;
+  const fields = await Promise.all(Object.entries(effective.schema).map(async ([key, field]): Promise<ConfigFieldEntry> => {
+    const state = effective.fieldStates[key];
+    const source = effective.sources[key] ?? 'missing';
+    const issues = effective.issues.filter((issue) => issue.key === key);
+    const hasStored = Object.hasOwn(stored, key);
+    const storedSourceLayer = options.platform ? 'platform' as const : 'common' as const;
+    let fallback: ConfigFieldEntry['fallback'];
+    if (hasStored) {
+      const inherited = { ...stored };
+      delete inherited[key];
+      const withoutOverride = await resolveEffectivePluginConfigFromStores({
+        manifest: options.plugin.manifest,
+        platform: options.platform,
+        projectRoot: effective.projectRoot,
+        stores: { user: replacePluginConfigStoreLayer(effective.stores.user!, inherited, options.platform) },
+        referenceContext: effective.referenceContext,
+      });
+      const fallbackIssues = withoutOverride.issues.filter((issue) => issue.key === key);
+      const fallbackSource = withoutOverride.sources[key];
+      fallback = fallbackSource === 'missing' || fallbackSource === undefined
+        ? { state: 'missing' }
+        : fallbackIssues.length
+          ? { state: 'invalid', sourceLayer: fallbackSource, issues: fallbackIssues }
+          : { state: 'valid', sourceLayer: fallbackSource, effectiveValue: withoutOverride.redactedValues[key] };
     }
     return {
-      state: 'valid',
-      effectiveValue: redactValue(field, field.default as PluginConfigValue),
-      sourceLayer: 'default',
-    };
-  };
-  const effectiveFieldState = (key: string): Pick<ConfigFieldEntry,
-    'valueState' | 'effectiveValue' | 'sourceLayer'
-    | 'value' | 'source' | 'matchedPreset' | 'valid' | 'issues'
-    | 'invalidOverride' | 'fallback'> => {
-    const source = effective.sources[key];
-    const sourceLayer = toConfigSourceLayer(source);
-    const field = schema[key]!;
-    const fieldIssues = effective.issues.filter((entry) => entry.key === key);
-    const fieldState = effective.fieldStates[key];
-    const fallback = options.scope === 'project'
-      ? projectRemovalFallback(key)
-      : fieldState?.fallback
-        ? {
-            state: 'valid' as const,
-            effectiveValue: fieldState.fallback.redactedValue,
-            sourceLayer: fieldState.fallback.source,
-          }
-        : undefined;
-    if (source === undefined || source === 'missing') {
-      return {
-        valueState: fieldIssues.length > 0 ? 'invalid' : 'default',
-        effectiveValue: null,
-        sourceLayer: null,
-        ...configFieldProjection({ field, source: 'missing', issues: fieldIssues }),
-      };
-    }
-    const issue = fieldIssues.find((entry) => entry.source === source);
-    return {
-      valueState: issue ? 'invalid' : source === 'default' ? 'default' : 'configured',
-      effectiveValue: issue ? null : effective.redactedValues[key] ?? null,
-      sourceLayer,
-      ...(fieldState?.invalidOverride ? {
-        invalidOverride: {
-          sourceLayer: fieldState.invalidOverride.source,
-          issues: fieldState.invalidOverride.issues,
-        },
-      } : {}),
-      ...(fallback ? { fallback } : {}),
-      ...configFieldProjection({
-        field,
-        value: issue ? undefined : effective.values[key],
-        source,
-        issues: fieldIssues,
-      }),
-    };
-  };
-
-  const fields: ConfigFieldEntry[] = [];
-  for (const [key, field] of Object.entries(schema)) {
-    const canSet = options.scope !== 'project'
-      || (!userOnlyKeys.has(key) && field.sensitive !== true);
-    const base: ConfigFieldEntry = {
       key,
       title: field.title ?? key,
       kind: 'manifest',
       reserved: false,
-      writable: canSet,
-      canSet,
-      canUnset: options.scope === 'user'
-        ? Object.hasOwn(userPlainEntries, key)
-        : options.scope === 'project' && Object.hasOwn(projectPlainEntries, key),
-      valueState: 'default',
-      effectiveValue: null,
-      sourceLayer: null,
-      ...configFieldProjection({ field }),
+      writable: true,
+      canSet: true,
+      canUnset: hasStored,
+      valueState: issues.length ? 'invalid' : source === 'default' || source === 'missing' ? 'default' : 'configured',
+      effectiveValue: effective.redactedValues[key] ?? null,
+      sourceLayer: toConfigSourceLayer(source),
+      ...(hasStored ? { storedSourceLayer, ...(validateCorePluginConfigValue(field, stored[key], key).length
+        ? {} : { storedValue: redactValue(field, stored[key]!) }) } : {}),
+      ...(state?.invalidOverride ? { invalidOverride: { sourceLayer: state.invalidOverride.source, issues: state.invalidOverride.issues } } : {}),
+      ...(fallback ? { fallback } : {}),
+      ...configFieldProjection({ field, value: effective.values[key], source, issues }),
     };
-
-    if (options.scope === 'user') {
-      if (Object.hasOwn(userPlainEntries, key)) {
-        try {
-          const value = validateConfigReadValue(key, field, userPlainEntries[key]);
-          fields.push({
-            ...base,
-            valueState: 'configured',
-            effectiveValue: redactValue(field, value),
-            sourceLayer: 'user',
-            storedValue: redactValue(field, value),
-            storedSourceLayer: 'user',
-            ...configFieldProjection({ field, value, source: 'user' }),
-          });
-        } catch {
-          fields.push({
-            ...base,
-            valueState: 'invalid',
-            sourceLayer: 'user',
-            source: 'user',
-            storedSourceLayer: 'user',
-            valid: false,
-            issues: [{ type: 'invalid-config', key, source: 'user' }],
-          });
-        }
-        continue;
-      }
-      if (field.default !== undefined) {
-        try {
-          const value = validateConfigReadValue(key, field, field.default);
-          fields.push({
-            ...base,
-            effectiveValue: redactValue(field, value),
-            sourceLayer: 'default',
-            ...configFieldProjection({ field, value, source: 'default' }),
-          });
-        } catch {
-          fields.push({
-            ...base,
-            valueState: 'invalid',
-            sourceLayer: 'default',
-            source: 'default',
-            valid: false,
-            issues: [{ type: 'invalid-config', key, source: 'default' }],
-          });
-        }
-        continue;
-      }
-      fields.push(base);
-      continue;
-    }
-
-    let storedProjectValue: {
-      storedValue?: RedactedPluginConfigValue;
-      storedSourceLayer: 'project';
-    } | undefined;
-    if (options.scope === 'project' && Object.hasOwn(projectPlainEntries, key)) {
-      try {
-        const value = validateConfigReadValue(key, field, projectPlainEntries[key]);
-        storedProjectValue = {
-          storedValue: redactValue(field, value),
-          storedSourceLayer: 'project',
-        };
-      } catch {
-        storedProjectValue = { storedSourceLayer: 'project' };
-      }
-    }
-
-    fields.push({ ...base, ...effectiveFieldState(key), ...storedProjectValue });
+  }));
+  for (const key of Object.keys(stored).filter((key) => !Object.hasOwn(effective.schema, key)).sort()) {
+    const source = options.platform ? 'platform' as const : 'common' as const;
+    fields.push({ key, title: key, kind: 'manifest', reserved: false, writable: false, canSet: false, canUnset: true,
+      valueState: 'configured', effectiveValue: '[redacted]', sourceLayer: source, storedSourceLayer: source,
+      value: '[redacted]', source, matchedPreset: null, valid: false, issues: [] });
   }
-
   return fields;
 }
 
 async function buildLegacyStoreFieldEntries(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  logicalIdentity?: string;
-  pluginName: string;
-  scope: Scope | 'effective';
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
+  sourceId?: string; sourceIdentity?: string; logicalIdentity?: string; pluginName: string;
+  scope: Scope | 'effective'; platform?: PlatformTarget; cwd: string; env?: NodeJS.ProcessEnv;
 }): Promise<ConfigFieldEntry[]> {
-  const locations = options.scope === 'effective'
-    ? [
-        { scope: 'user' as const, sourceLayer: 'user' as const },
-        { scope: 'project' as const, sourceLayer: 'project' as const },
-      ]
-    : [{
-        scope: options.scope,
-        sourceLayer: options.scope === 'user' ? 'user' as const : 'project' as const,
-      }];
-  const fields = new Map<string, ConfigFieldEntry>();
-  for (const location of locations) {
-    const store = await readPluginConfigStore({
-      sourceId: options.sourceId,
-      sourceIdentity: options.sourceIdentity,
-      logicalIdentity: options.logicalIdentity,
-      pluginName: options.pluginName,
-      scope: location.scope,
-      cwd: options.cwd,
-      env: options.env,
-    });
-    for (const key of Object.keys(store.values)) {
-      fields.set(key, {
-        key,
-        title: key,
-        kind: 'manifest',
-        reserved: false,
-        writable: false,
-        canSet: false,
-        canUnset: false,
-        valueState: 'configured',
-        effectiveValue: '[redacted]',
-        sourceLayer: location.sourceLayer,
-        value: '[redacted]',
-        source: location.sourceLayer,
-        matchedPreset: null,
-        valid: true,
-        issues: [],
-      });
-    }
-  }
-  return [...fields.values()].sort((left, right) => left.key.localeCompare(right.key));
+  const store = await readPluginConfigStore({ ...options, scope: 'user' });
+  const source = options.platform ? 'platform' as const : 'common' as const;
+  return Object.keys(store.values).sort().map((key) => ({ key, title: key, kind: 'manifest', reserved: false,
+    writable: false, canSet: false, canUnset: true, valueState: 'configured', effectiveValue: '[redacted]',
+    sourceLayer: source, value: '[redacted]', source, matchedPreset: null, valid: true, issues: [] }));
 }
 
 export async function resolvePluginConfigSchemaAccess(options: {
+  platform?: PlatformTarget;
   pluginName: string;
   currentPlugin?: PluginMeta | null;
   currentPluginError?: Error | null;
@@ -2569,11 +1872,14 @@ export async function resolvePluginConfigSchemaAccess(options: {
     schema: createConfigSchemaEvidenceFromCurrentCatalog(
       options.currentPlugin,
       await calculateConfigSchemaManifestDigestForPlugin(options.currentPlugin),
+      options.platform,
     ),
   };
 }
 
 export async function resolveConfigRead(options: {
+  context?: Scope;
+  platform?: PlatformTarget;
   sourceId?: string;
   sourceIdentity?: string;
   logicalIdentity?: string;
@@ -2584,11 +1890,13 @@ export async function resolveConfigRead(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedConfigRead> {
+  if (options.context) await resolveWorkContext({ cwd: options.cwd, context: options.context });
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const schemaAccess = await resolvePluginConfigSchemaAccess({
     pluginName,
     currentPlugin: options.plugin,
     currentPluginError: options.pluginError,
+    platform: options.platform,
     scope: options.scope,
     cwd: options.cwd,
     env: options.env,
@@ -2598,6 +1906,8 @@ export async function resolveConfigRead(options: {
   const manifestFields = schemaAccess.plugin
     ? await buildManifestFieldEntries({
         plugin: schemaAccess.plugin,
+        context: options.context,
+        platform: options.platform,
         scope: options.scope,
         cwd: options.cwd,
         env: options.env,
@@ -2608,16 +1918,19 @@ export async function resolveConfigRead(options: {
         logicalIdentity: options.logicalIdentity,
         pluginName,
         scope: options.scope,
+        platform: options.platform,
         cwd: options.cwd,
         env: options.env,
       });
 
   return {
     pluginName,
+    platform: options.platform,
+    context: options.context ?? 'user',
     scope: options.scope,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     ...(schemaAccess.plugin?.manifest.config?.fields
-      ? { fieldDefinitions: schemaAccess.plugin.manifest.config.fields }
+      ? { fieldDefinitions: compilePluginConfigDefinition(schemaAccess.plugin.manifest.config, options.platform).fields }
       : {}),
     fields: manifestFields,
   };
@@ -2666,13 +1979,15 @@ export function summarizeEffectivePluginConfig(
 
 export function createPluginConfigSchemaIdentity(
   manifest: NormalizedPluginManifest,
+  platform?: PlatformTarget,
 ): string {
   const hash = crypto
     .createHash('sha256')
     .update(JSON.stringify({
       name: manifest.name,
       version: manifest.version,
-      config: manifest.config ?? null,
+      platform: platform ?? null,
+      config: manifest.config ? compilePluginConfigDefinition(manifest.config, platform) : null,
     }))
     .digest('hex');
   return `${manifest.name}:${hash}`;
@@ -2721,9 +2036,9 @@ export function createPluginConfigFormModel(options: {
   initialScope: Scope;
   allowedScopes?: Scope[];
 }): PluginConfigFormModel {
-  const schema = options.manifest.config?.fields;
+  const schema = options.effective.schema;
   if (!schema) {
-    throw new Error(`Plugin "${options.pluginName ?? options.manifest.name}" does not declare an AW config schema.`);
+    throw new PluginConfigSchemaResolutionError('configSchemaUnavailable', `Plugin "${options.pluginName ?? options.manifest.name}" does not declare an AW config schema.`);
   }
 
   const requiredKeys = [...new Set(
@@ -2753,8 +2068,8 @@ export function createPluginConfigFormModel(options: {
 
   return {
     pluginName: options.pluginName ?? options.manifest.name,
-    allowedScopes: options.allowedScopes ?? ['user', 'project'],
-    initialScope: options.initialScope,
+    allowedScopes: ['user'],
+    initialScope: 'user',
     requiredKeys,
     fields,
   };
@@ -2801,29 +2116,26 @@ export function formatPluginConfigSetRecoveryCommand(
   pluginName: string,
   key: string,
   field: PluginConfigSchemaField,
-  scope: Scope,
+  context: Scope,
+  platform?: PlatformTarget,
 ): string {
-  return field.sensitive === true
-    ? `aw config set ${pluginName} ${key} --scope user --value-stdin`
-    : `aw config set ${pluginName} ${key} --scope ${scope} --value-json '<json>'`;
+  const command = `aw plugin config set ${pluginName} ${key} --context ${context}`
+    + (platform ? ` --platform ${platform}` : '');
+  return field.sensitive === true ? `${command} --value-stdin` : `${command} --value-json '<json>'`;
 }
 
 function formatRequiredConfigSetCommands(
   pluginName: string,
   issues: PluginConfigIssue[],
-  defaultScope: Scope,
+  context: Scope,
   schema: PluginConfigSchema['fields'],
+  platform?: PlatformTarget,
 ): string {
   const commands = new Set<string>();
   for (const issue of issues) {
-    const scope = issue.source === 'user' || issue.source === 'project'
-      ? issue.source
-      : defaultScope;
     const field = schema[issue.key];
-    if (!field) continue;
-    commands.add(formatPluginConfigSetRecoveryCommand(pluginName, issue.key, field, scope));
+    if (field) commands.add(formatPluginConfigSetRecoveryCommand(pluginName, issue.key, field, context, platform));
   }
-
   return [...commands].map((command) => `\`${command}\``).join(' 或 ');
 }
 
@@ -2843,8 +2155,8 @@ export async function preflightRequiredPluginConfigs(options: {
 
   for (const target of options.targets) {
     const pluginName = target.pluginName ?? target.manifest.name;
-    const identity = target.schemaSourceIdentity ?? createPluginConfigSchemaIdentity(target.manifest);
-    const dedupeKey = `${pluginName}\0${identity}`;
+    const identity = target.schemaSourceIdentity ?? createPluginConfigSchemaIdentity(target.manifest, target.platform);
+    const dedupeKey = `${pluginName}\0${target.platform ?? 'common'}\0${identity}`;
     if (visited.has(dedupeKey)) {
       continue;
     }
@@ -2855,12 +2167,13 @@ export async function preflightRequiredPluginConfigs(options: {
       continue;
     }
 
-    let effective = await resolveEffectivePluginConfig({
+    const effective = await resolveEffectivePluginConfig({
       sourceId: target.sourceId,
       sourceIdentity: target.sourceIdentity,
       logicalIdentity: target.logicalIdentity,
       pluginName,
       manifest: target.manifest,
+      platform: target.platform,
       cwd: options.cwd,
       env: options.context.env,
     });
@@ -2873,10 +2186,11 @@ export async function preflightRequiredPluginConfigs(options: {
 
     const details = blockingIssues.map((issue) => issue.key).join(', ');
     const setCommands = formatRequiredConfigSetCommands(
-      pluginName,
+      target.sourceId ? `${target.sourceId}/${pluginName}` : pluginName,
       blockingIssues,
       options.defaultScope,
-      target.manifest.config.fields,
+      effective.schema,
+      target.platform,
     );
     throw new Error(
       `${pluginName} requires valid AW config before install/upgrade: ${details}. ` +

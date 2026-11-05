@@ -16,104 +16,63 @@ function capture() {
 }
 
 describe('CLI entry', () => {
-  it('publishes the write commands plus sync, status, and config', async () => {
+  it('publishes demand and recovery commands under plugin', async () => {
     const output = capture();
-    expect(await runCli(['--help'], { io: output.io })).toBe(0);
-    for (const command of [
-      'install',
-      'reinstall',
-      'uninstall',
-      'cleanup',
-      'sync',
-      'intent',
-      'targets',
-      'status',
-      'config',
-      'plugin',
-      'skill',
-      'review',
-    ]) {
-      expect(output.stdout()).toContain(command);
+    expect(await runCli(['plugin', '--help'], { io: output.io })).toBe(0);
+    for (const command of ['install', 'remove', 'cleanup', 'sync', 'intent', 'targets', 'status', 'config']) {
+      expect(output.stdout()).toMatch(new RegExp(`^\\s+${command}\\b`, 'mu'));
     }
-    expect(output.stdout()).not.toMatch(/^\s+project\s/mu);
+    expect(output.stdout()).not.toMatch(/^\s+(reinstall|uninstall|project)\b/mu);
   });
 
-  it('requires a scope and supports exact repeated Agent selection', async () => {
+  it('publishes joint sync with execution filters and rebuild', async () => {
     const help = capture();
-    expect(await runCli(['sync', '--help'], { io: help.io })).toBe(0);
-    expect(help.stdout()).toContain('--all');
-    expect(help.stdout()).toContain('--scope <scope>');
-    expect(help.stdout()).toContain('--target <agent>');
+    expect(await runCli(['plugin', 'sync', '--help'], { io: help.io })).toBe(0);
+    expect(help.stdout()).toContain('--context <context>');
+    expect(help.stdout()).toContain('--target <target>');
+    expect(help.stdout()).toContain('--rebuild');
     expect(help.stdout()).toContain('--yes');
-    expect(help.stdout()).toContain('--allow-managed-codex-install');
+    expect(help.stdout()).not.toContain('--scope');
+    expect(help.stdout()).not.toMatch(/--all(?:\s|,|$)/u);
     expect(help.stdout()).not.toContain('--platform');
+    expect(help.stdout()).not.toContain('--dependency-scope');
+  });
 
-    const missing = capture();
-    expect(await runCli(['sync', '--all', '--json'], { interactive: false, io: missing.io }))
-      .toBe(2);
-    expect(JSON.parse(missing.stdout())).toMatchObject({
-      kind: 'aw-recovery', scope: null, errors: [{ code: 'invalidArguments',
-        message: expect.stringContaining('--scope') }],
+  it.each(['install', 'remove', 'cleanup', 'sync'])(
+    'publishes managed Codex authorization on %s', async (command) => {
+      const output = capture();
+      expect(await runCli(['plugin', command, '--help'], { io: output.io })).toBe(0);
+      expect(output.stdout()).toContain('--allow-managed-codex-install');
     });
 
-    const removed = capture();
-    expect(await runCli(['sync', '--all', '--scope', 'user', '-p', 'both'], {
-      interactive: false, io: removed.io,
-    })).toBe(2);
-    expect(removed.stderr()).toContain("unknown option '-p'");
-  });
-
-  it.each(['install', 'reinstall', 'uninstall', 'cleanup'])(
-    'publishes managed Codex authorization on %s',
-    async (command) => {
-      const output = capture();
-      expect(await runCli([command, '--help'], { io: output.io })).toBe(0);
-      expect(output.stdout()).toContain('--allow-managed-codex-install');
-    },
-  );
-
-  it('publishes one-time dependency placement on recovery commands that can install', async () => {
+  it('keeps install targets in the saved policy and physical cleanup explicit', async () => {
     const install = capture();
-    expect(await runCli(['install', '--help'], { io: install.io })).toBe(0);
-    expect(install.stdout()).toContain('--dependency-scope');
-
-    const sync = capture();
-    expect(await runCli(['sync', '--help'], { io: sync.io })).toBe(0);
-    expect(sync.stdout()).toContain('--dependency-scope');
-
-    const uninstall = capture();
-    expect(await runCli(['uninstall', '--help'], { io: uninstall.io })).toBe(0);
-    expect(uninstall.stdout()).not.toContain('--dependency-scope');
+    expect(await runCli(['plugin', 'install', '--help'], { io: install.io })).toBe(0);
+    expect(install.stdout()).toContain('--scope');
+    expect(install.stdout()).not.toContain('--target');
+    expect(install.stdout()).not.toContain('--dependency-scope');
+    const cleanup = capture();
+    expect(await runCli(['plugin', 'cleanup', '--help'], { io: cleanup.io })).toBe(0);
+    for (const flag of ['--scope', '--target', '--yes', '--force']) expect(cleanup.stdout()).toContain(flag);
   });
 
   it('publishes preApply timeout only on commands that can run preApply', async () => {
-    for (const command of [
-      ['install'],
-      ['sync'],
-      ['reinstall'],
-      ['config', 'set'],
-      ['config', 'unset'],
-      ['config', 'reset'],
-    ]) {
+    for (const command of [['install'], ['sync'], ['config', 'set'], ['config', 'unset'], ['config', 'reset'], ['config', 'apply']]) {
       const output = capture();
-      expect(await runCli([...command, '--help'], { io: output.io })).toBe(0);
+      expect(await runCli(['plugin', ...command, '--help'], { io: output.io })).toBe(0);
       expect(output.stdout()).toContain('--script-timeout');
     }
-    for (const command of [['cleanup'], ['uninstall']]) {
+    for (const command of ['cleanup', 'remove']) {
       const output = capture();
-      expect(await runCli([...command, '--help'], { io: output.io })).toBe(0);
+      expect(await runCli(['plugin', command, '--help'], { io: output.io })).toBe(0);
       expect(output.stdout()).not.toContain('--script-timeout');
     }
   });
 
-  it('publishes explicit authorization for deleted-plugin cleanup', async () => {
+  it('keeps explicit retirement authorization', async () => {
     const output = capture();
-    expect(await runCli(['cleanup', '--help'], { io: output.io })).toBe(0);
-    expect(output.stdout()).toContain('--yes');
-    expect(output.stdout()).toContain('--force');
-    const retire = capture();
-    expect(await runCli(['intent', 'retire', '--help'], { io: retire.io })).toBe(0);
-    expect(retire.stdout()).toContain('--delete-config');
+    expect(await runCli(['plugin', 'intent', 'retire', '--help'], { io: output.io })).toBe(0);
+    expect(output.stdout()).toContain('--delete-config');
   });
 
   it('asks once at the first interactive managed Codex acquisition', async () => {
@@ -158,7 +117,6 @@ describe('CLI entry', () => {
     for (const [command, expected] of [
       [['plugin', 'init'], 'nearest ancestor from current directory'],
       [['plugin', 'validate'], 'nearest ancestor from plugin directory'],
-      [['plugin', 'status'], 'nearest ancestor from current directory'],
       [['catalog', 'init'], 'then Git worktree root'],
       [['catalog', 'build'], 'nearest ancestor from current directory'],
       [['catalog', 'publish', 'plan'], 'otherwise sole remote'],
@@ -229,94 +187,24 @@ describe('CLI entry', () => {
   it('rejects legacy cleanup flags at Commander parsing', async () => {
     const output = capture();
     expect(await runCli([
-      'cleanup', 'git-commit', '--scope', 'user', '--target', 'codex', '--dependency-index',
+      'plugin', 'cleanup', 'git-commit', '--scope', 'user', '--target', 'codex', '--dependency-index',
     ], { io: output.io })).toBe(2);
     expect(output.stderr()).toContain("unknown option '--dependency-index'");
   });
 
-  it.each([
-    ['install'],
-    ['uninstall'],
-    ['reinstall'],
-    ['cleanup'],
-  ])('requires a scope before starting the non-interactive %s write path', async (command) => {
-    const output = capture();
-    expect(await runCli([command], { interactive: false, io: output.io })).toBe(2);
-    expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain("required option '--scope <scope>'");
-    expect(output.stdout()).not.toContain('\u001B[');
-  });
-
-  it.each([
-    ['list'],
-    ['get'],
-  ])('prints copyable plain usage when non-interactive config %s arguments are missing', async (command) => {
-    const output = capture();
-    expect(await runCli(['config', command], { interactive: false, io: output.io })).toBe(1);
-    expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain(`Usage: aw config ${command}`);
-    expect(output.stderr()).not.toContain('\u001B[');
-  });
-
-  it.each([
-    ['set'],
-    ['unset'],
-    ['reset'],
-  ])('prints usage before starting the non-interactive config %s mutation path', async (command) => {
-    const output = capture();
-    expect(await runCli(['config', command], { interactive: false, io: output.io })).toBe(1);
-    expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain(`Usage: aw config ${command}`);
-    expect(output.stderr()).not.toContain('\u001B[');
-  });
-
-  it.each([
-    {
-      command: 'install',
-      argv: ['install', '--json'],
-      usage: 'Usage: aw install',
-      receiptCommand: 'install',
-      stderr: '',
-    },
-    {
-      command: 'config:set',
-      argv: ['config', 'set', '--json'],
-      usage: 'Usage: aw config set',
-      receiptCommand: 'config:set',
-      stderr: 'usage',
-    },
-  ])('does not start a TUI for incomplete $command', async ({
-    argv,
-    usage,
-    receiptCommand,
-    stderr,
-  }) => {
-    const output = capture();
-    expect(await runCli(argv, { interactive: true, io: output.io }))
-      .toBe(receiptCommand === 'config:set' ? 1 : 2);
-    expect(JSON.parse(output.stdout())).toMatchObject(receiptCommand === 'config:set' ? {
-      ok: false, command: receiptCommand, receiptSchemaVersion: 7,
-      overallState: 'failed', configWrite: 'notStarted',
-      errors: [{ code: 'invalidArguments', message: expect.stringContaining(usage) }],
-    } : {
-      schemaVersion: 1, kind: 'aw-recovery', command: receiptCommand, ok: false,
-      errors: [{ code: 'invalidArguments', message: expect.stringContaining('--scope') }],
+  it.each(['install', 'remove', 'cleanup'])(
+    'rejects incomplete %s arguments without starting the TUI', async (command) => {
+      const output = capture();
+      expect(await runCli(['plugin', command, '--json'], { interactive: true, io: output.io })).toBe(2);
+      expect(JSON.parse(output.stdout())).toMatchObject({ ok: false, errors: [{ code: 'invalidArguments' }] });
+      expect(output.stderr()).toBe('');
     });
-    if (stderr === 'usage') expect(output.stderr()).toContain(usage);
-    else expect(output.stderr()).toBe(stderr);
-  });
 
-  it.each([
-    { name: 'write CI', argv: ['install'] },
-    { name: 'config CI', argv: ['config', 'set'] },
-  ])('fails closed without starting a TUI for $name', async ({ argv, name }) => {
-    const output = capture();
-    expect(await runCli(argv, {
-      interactive: true,
-      env: { ...process.env, CI: '1' },
-      io: output.io,
-    })).toBe(name === 'write CI' ? 2 : 1);
-    expect(`${output.stdout()}${output.stderr()}`).toContain(name === 'write CI' ? '--scope' : 'Usage:');
-    expect(`${output.stdout()}${output.stderr()}`).not.toContain('\u001B[');
-  });
+  it.each(['schema', 'get', 'set', 'unset', 'reset'])(
+    'rejects incomplete config %s arguments without starting the TUI', async (command) => {
+      const output = capture();
+      expect(await runCli(['plugin', 'config', command, '--json'], { interactive: true, io: output.io })).toBe(2);
+      expect(JSON.parse(output.stdout())).toMatchObject({ ok: false, errors: [{ code: 'invalidArguments' }] });
+      expect(output.stdout()).not.toContain('\u001B[');
+    });
 });

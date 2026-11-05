@@ -75,7 +75,7 @@ describe('ConsoleAppV4', () => {
     />);
     expect(instance.lastFrame()).toContain('正在检查插件状态');
     await nextTurn(3);
-    expect(instance.lastFrame()).toContain('插件清单');
+    expect(instance.lastFrame()).toContain('Agent 管理');
 
     await input(instance, '?');
     expect(instance.lastFrame()).toContain('当前页快捷键');
@@ -94,7 +94,7 @@ describe('ConsoleAppV4', () => {
     [60, 18],
   ] as const)('keeps every G03 shortcut meaning and the single close focus visible at %ix%i', async (columns, rows) => {
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => configPage(pluginId, layer)),
     });
     await value.load();
     const screens = new Set<ConsoleV4ScreenId>();
@@ -105,7 +105,7 @@ describe('ConsoleAppV4', () => {
     />);
     await nextTurn(2);
     await input(instance, '\u001B[B');
-    expect(instance.lastFrame()).toContain('› 插件清单');
+    expect(instance.lastFrame()).toContain('› 项目插件');
 
     await input(instance, '?');
     const readHelp = async (): Promise<string> => {
@@ -137,16 +137,16 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, '\r');
     expect(instance.lastFrame()).not.toContain('当前页快捷键');
-    expect(instance.lastFrame()).toContain('› 插件清单');
+    expect(instance.lastFrame()).toContain('› 项目插件');
     await input(instance, '?');
     instance.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 50));
     await nextTurn(2);
     expect(instance.lastFrame()).not.toContain('当前页快捷键');
-    expect(instance.lastFrame()).toContain('› 插件清单');
+    expect(instance.lastFrame()).toContain('› 项目插件');
     await input(instance, '?', '?');
     expect(instance.lastFrame()).not.toContain('当前页快捷键');
-    expect(instance.lastFrame()).toContain('› 插件清单');
+    expect(instance.lastFrame()).toContain('› 项目插件');
 
     value.push({ name: 'pluginList', mode: 'browse' });
     await nextTurn(2);
@@ -182,13 +182,13 @@ describe('ConsoleAppV4', () => {
     value.replace({
       name: 'configFields',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
     });
     await nextTurn(3);
     await input(instance, '?');
     const configHelp = await readHelp();
     expect(configHelp).not.toContain('s 查看汇总');
-    expect(configHelp).toContain('u 恢复继承');
+    expect(configHelp).toContain('u 恢复默认值');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
     await input(instance, '?');
   });
@@ -238,23 +238,23 @@ describe('ConsoleAppV4', () => {
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
   });
 
-  it('keeps the same-scope target selection after Back and confirms Ctrl-C from help', async () => {
+  it('keeps local Agents after Back and confirms discarding the selection from help', async () => {
     const exit = vi.fn();
     const value = controller();
     value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
     await nextTurn(3);
-
-    await focusAction(instance, '安装');
-    await input(instance, '\r', '\r', 'a', '\r');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'installPlacement', pluginId: 'official/agent-lab' });
-    await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'installTargets', pluginId: 'official/agent-lab' });
-    expect(instance.lastFrame()).toContain('[x] Codex');
-    expect(exit).not.toHaveBeenCalled();
-
-    await input(instance, '?', '\u0003');
+    await focusAction(instance, '添加插件…');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'installTargets', pluginId: 'official/agent-lab' });
+    expect(instance.lastFrame()).toContain('◆ Codex');
+    expect(instance.lastFrame()).toContain('◆ Claude Code');
+    await escape(instance);
+    expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
+    await focusAction(instance, '添加插件…');
+    await input(instance, '\r', '?', '\u0003');
     expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(value.externalDrafts).toEqual([]);
     expect(exit).not.toHaveBeenCalled();
     await input(instance, '\u001B[B', '\r');
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });

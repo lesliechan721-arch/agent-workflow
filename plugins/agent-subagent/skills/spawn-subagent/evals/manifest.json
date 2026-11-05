@@ -5,12 +5,14 @@
   },
   "profiles": {
     "project-default": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "agent-subagent": {}
       }
     },
     "project-dev-build": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "agent-subagent": {},
@@ -18,12 +20,14 @@
       }
     },
     "user-default": {
+      "platform": "codex",
       "scope": "user",
       "plugins": {
         "agent-subagent": {}
       }
     },
     "project-nondefault": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "agent-subagent": {
@@ -47,6 +51,7 @@
       }
     },
     "user-nondefault": {
+      "platform": "codex",
       "scope": "user",
       "plugins": {
         "agent-subagent": {
@@ -70,6 +75,7 @@
       }
     },
     "user-custom": {
+      "platform": "codex",
       "scope": "user",
       "plugins": {
         "agent-subagent": {
@@ -91,6 +97,7 @@
       }
     },
     "project-composition": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "agent-subagent": {},

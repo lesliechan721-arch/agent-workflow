@@ -151,11 +151,11 @@ describe('unified plugin detail subject', () => {
       const loaded: TuiStatusLoadResult = { payload: payload([target('user'), target('project')]),
         pluginSummaries: summaries, targetRevisions: [revision('user', '2.0.0'), revision('project', '2.0.0')] };
       const current: ScopedInventoryLoadResult = { scope: 'user', intent: { state: 'valid' },
-        selection: { agents: ['claude-code'], preferences: 'valid' }, inventory: [], extraObserved: [],
+        selection: { agents: ['claude'], preferences: 'valid' }, inventory: [], extraObserved: [],
         errors: [], allSatisfied: true, nativeSnapshot: { payload: payload(change === 'removed' ? [] : [target('user')]),
           pluginSummaries: [{ ...summaries[0]!, displayName: 'Current', version: '3.0.0' }],
           targetRevisions: change === 'updated' ? [revision('user', '3.0.0')] : [], dependencyOverviews: [] } };
-      if (change !== 'removed') current.extraObserved = [{ pluginId, agent: 'claude-code', scope: 'user',
+      if (change !== 'removed') current.extraObserved = [{ pluginId, agent: 'claude', scope: 'user',
         delivery: { kind: 'native', platform: 'claude' },
         observation: change === 'updated' ? 'verified' : 'unknown',
         content: change === 'updated' ? 'satisfied' : change }];

@@ -3,12 +3,12 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { getPluginConfigDependencyKeys } from './plugin-config.js';
-import { formatMarketplaceProductsForError, supportsPlatform } from './platform-support.js';
+import { compilePluginConfigDefinition, getPluginConfigDependencyKeys } from './plugin-config.js';
+import { formatManifestPlatformsForError, supportsPlatform } from './platform-support.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
 import { normalizeNativeToolClosure, type NativeToolClosure } from './native-tools.js';
 import type {
-  ArtifactState, CodexSkillDelivery, NormalizedPluginManifest, PlatformName, Scope,
+  ArtifactState, NormalizedPluginManifest, PlatformName, Scope,
 } from './types.js';
 
 export interface CommandLaunch {
@@ -59,7 +59,7 @@ export interface ManagedCommandArtifactTargetDefinition {
   id: string; target: 'aw.command-set' | 'aw.command-package'; kind: 'commandSet' | 'commandPackage';
   surface: ManagedCommandArtifactSurface; platform?: PlatformName; scopes: Scope[];
   states: ArtifactState[]; refreshKeys: string[]; producer: ManagedCommandProducerRef;
-  set?: string; packageKey?: string; delivery?: CodexSkillDelivery;
+  set?: string; packageKey?: string;
 }
 export interface CommandSetArtifact {
   id: string; target: 'aw.command-set'; kind: 'commandSet'; platform?: PlatformName; distribution?: never;
@@ -360,26 +360,31 @@ export function replaceManagedCommandPlaceholders(value: string, resolve: (refer
 export function validateManagedCommandManifest(manifest: NormalizedPluginManifest): void {
   const managed = manifest.managedCommands;
   if (!managed) return;
-  const validateKeys = (keys: string[], field: string): void => {
+  const validateKeys = (keys: string[], field: string, platform?: PlatformName): void => {
     if (keys.length === 0) return;
-    if (!manifest.config || manifest.config.schemaVersion !== 4) throw new Error(`Invalid ${field}: requires Config v4.`);
-    for (const key of getPluginConfigDependencyKeys(manifest.config, keys)) {
-      if (manifest.config.fields[key]?.sensitive === true) throw new Error(`Invalid ${field}: sensitive config dependency is not permitted.`);
+    if (!manifest.config) throw new Error(`Invalid ${field}: requires a config definition.`);
+    const config = compilePluginConfigDefinition(manifest.config, platform);
+    if (config.schemaVersion !== 4) throw new Error(`Invalid ${field}: requires Config v4 or v5.`);
+    for (const key of getPluginConfigDependencyKeys(config, keys)) {
+      if (config.fields[key]?.sensitive === true) throw new Error(`Invalid ${field}: sensitive config dependency is not permitted.`);
     }
   };
   for (const item of managed.packages) validateKeys(item.refreshKeys, `managedCommands.packages.${item.key}.refreshKeys`);
   for (const item of managed.sets) {
-    if (item.mode === 'dynamic') validateKeys(item.refreshKeys, `managedCommands.sets.${item.set}.refreshKeys`);
     const producer = item.producer;
+    let platform: PlatformName | undefined;
     if (producer.kind === 'package') {
       if (!managed.packages.some((pkg) => pkg.key === producer.packageKey)) throw new Error(`Invalid managedCommands set ${item.set}: unknown package producer.`);
     } else if (producer.kind === 'artifact') {
       const targets = (manifest.artifacts?.targets ?? []).filter((target) => target.id === producer.artifactId);
       if (targets.length !== 1 || !['codex.skill', 'claude.skill'].includes(targets[0]!.target)) throw new Error(`Invalid managedCommands set ${item.set}: artifact producer must uniquely identify a platform Skill.`);
+      platform = targets[0]!.target === 'claude.skill' ? 'claude' : 'codex';
     } else {
-      if (!supportsPlatform(manifest, producer.platform)) throw new Error(`Invalid managedCommands set ${item.set}: static Skill producer requires ${producer.platform.toUpperCase()} support, but ${formatMarketplaceProductsForError(manifest)}.`);
+      platform = producer.platform;
+      if (!supportsPlatform(manifest, producer.platform)) throw new Error(`Invalid managedCommands set ${item.set}: static Skill producer requires ${producer.platform.toUpperCase()} support, but ${formatManifestPlatformsForError(manifest)}.`);
       if (!manifest.skills || (manifest.artifacts?.targets ?? []).some((target) => target.platform === producer.platform && target.skillKey === producer.skillKey)) throw new Error(`Invalid managedCommands set ${item.set}: expected a static Skill producer.`);
     }
+    if (item.mode === 'dynamic') validateKeys(item.refreshKeys, `managedCommands.sets.${item.set}.refreshKeys`, platform);
   }
   if ((managed.packages.some((item) => item.render) || managed.sets.some((item) => item.mode === 'dynamic')) && !manifest.scripts?.artifacts?.render) {
     throw new Error('Invalid managedCommands: dynamic command targets require scripts.artifacts.render.');
@@ -405,7 +410,8 @@ export function getManagedCommandArtifactTargets(manifest: NormalizedPluginManif
       result.push({ ...base, platform: set.producer.platform, surface: { kind: 'platform', platform: set.producer.platform }, scopes: ['user'] });
     } else {
       const target = manifest.artifacts!.targets!.find((item) => item.id === (producer as Extract<ManagedCommandProducerRef, { kind: 'artifact' }>).artifactId)!;
-      result.push({ ...base, platform: target.platform!, surface: { kind: 'platform', platform: target.platform! }, scopes: target.delivery?.mode === 'codex-native' ? ['user'] : [...target.scopes], ...(target.delivery ? { delivery: target.delivery } : {}) });
+      const platform = target.target === 'claude.skill' ? 'claude' : 'codex';
+      result.push({ ...base, platform, surface: { kind: 'platform', platform }, scopes: ['user'] });
     }
   }
   return result;

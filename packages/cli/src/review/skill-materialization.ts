@@ -67,6 +67,10 @@ export async function prepareSkillPluginBundle(options: {
       bundleRoot,
       bundlePlugin: {
         ...activePrepared.plugin,
+        sourceId: options.plugin.sourceId,
+        sourceIdentity: options.plugin.sourceIdentity,
+        catalogLogicalIdentity: options.plugin.catalogLogicalIdentity,
+        pluginId: options.plugin.pluginId,
         rootDir: bundleRoot,
         manifestPath,
         manifest,
@@ -120,7 +124,7 @@ export async function prepareIsolatedSkillCommandReferences(options: {
           : undefined;
         if (producerRef.kind === 'static-skill' && producerRef.platform !== options.platform
           || producerRef.kind === 'artifact' && (declaration?.platform !== options.platform
-            || declaration.delivery?.mode !== 'codex-native' && !declaration.scopes.includes(consumer.scope))) {
+            || declaration.target !== 'codex.skill' && declaration.target !== 'claude.skill' && !declaration.scopes.includes(consumer.scope))) {
           throw new Error('commandReferenceInvalid: the producer is unavailable on this platform and scope.');
         }
         if (producerRef.kind === 'package') {
@@ -166,7 +170,7 @@ export async function prepareIsolatedSkillCommandReferences(options: {
             referencePlugins: options.plugins,
             platform: options.platform,
             scope: producer.scope,
-            ...(declaration?.delivery?.mode === 'codex-native' ? { configScope: 'user' as const } : {}),
+            ...((declaration?.target === 'codex.skill' || declaration?.target === 'claude.skill') ? { configScope: 'user' as const } : {}),
             event: 'materialize', cwd: options.cwd, commandEnv: options.env,
             requestedArtifactIds, previousArtifacts: [], scriptTimeoutMs: options.scriptTimeoutMs,
           });

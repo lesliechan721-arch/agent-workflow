@@ -1,9 +1,11 @@
 import path from 'node:path';
 
-import type { ScopeContext } from '../intent/scope-context.js';
-import { canonicalizePathThroughExistingAncestorSync, readEnvironmentValue, resolveUserHome } from '../utils/state-paths.js';
+import { isPortablePlatformTarget, type PortablePlatformTarget } from '@lesliechan721/aw-plugin-core';
 
-export type PortableAgent = 'codex' | 'cursor' | 'claude-code';
+import type { ScopeContext } from '../intent/scope-context.js';
+import { canonicalizePathThroughExistingAncestorSync, resolveUserHome } from '../utils/state-paths.js';
+
+export type PortableAgent = PortablePlatformTarget;
 
 interface PortableLayoutEnvironment {
   platform?: NodeJS.Platform;
@@ -11,12 +13,11 @@ interface PortableLayoutEnvironment {
   canonicalizePath?: (value: string) => string;
 }
 
-/** skills@1.5.23 uses the canonical .agents root for Codex and Cursor copy installs. */
+/** Fixed consumer directories. Native targets never use this writer. */
 export function portableRecoveryLayout(context: ScopeContext, options: PortableLayoutEnvironment = {}): {
   cwd: string;
   scope: 'user' | 'project';
   generationRoot: string;
-  lockPath: string;
   targetPath(agent: PortableAgent, skill: string): string;
   targetRoot(agent: PortableAgent): string;
 } {
@@ -26,31 +27,40 @@ export function portableRecoveryLayout(context: ScopeContext, options: PortableL
   const canonicalizePath = options.canonicalizePath ?? canonicalizePathThroughExistingAncestorSync;
   const absolute = (value: string): boolean => paths.isAbsolute(value)
     && (platform !== 'win32' || !/^[/\\](?![/\\])/u.test(value));
-  const claudeOverride = readEnvironmentValue(env, 'CLAUDE_CONFIG_DIR', platform)?.trim();
-  const xdgState = readEnvironmentValue(env, 'XDG_STATE_HOME', platform);
-  if (scope !== 'user' && scope !== 'project') throw new Error('portableEnvironmentUnsupported');
-  if (!absolute(executionCwd)) throw new Error('portableEnvironmentUnsupported');
+  if ((scope !== 'user' && scope !== 'project') || !absolute(executionCwd)
+    || !absolute(targetHomes.home)) throw new Error('portableEnvironmentUnsupported');
   if (scope === 'user') {
-    const sameHome = (value: string, expected: string): boolean => absolute(value)
-      && canonicalizePath(value) === expected;
-    if (!sameHome(resolveUserHome(env, platform, options.systemHome), targetHomes.home)
-      || (claudeOverride && !absolute(claudeOverride))
-      || (xdgState && !sameHome(xdgState, targetHomes.xdgState))) {
+    let home: string;
+    try { home = resolveUserHome(env, platform, options.systemHome); }
+    catch { throw new Error('portableEnvironmentUnsupported'); }
+    if (!absolute(home) || canonicalizePath(home) !== targetHomes.home) {
       throw new Error('portableEnvironmentUnsupported');
     }
   }
-  const canonical = scope === 'user' ? paths.join(targetHomes.home, '.agents') : paths.join(executionCwd, '.agents');
-  const claude = scope === 'user'
-    ? claudeOverride ? canonicalizePath(claudeOverride) : paths.join(targetHomes.home, '.claude')
-    : paths.join(executionCwd, '.claude');
-  const targetRoot = (agent: PortableAgent): string => agent === 'claude-code' ? claude : canonical;
-  const lockPath = scope === 'project' ? paths.join(executionCwd, 'skills-lock.json')
-    : xdgState
-      ? paths.join(targetHomes.xdgState, 'skills', '.skill-lock.json')
-      : paths.join(canonical, '.skill-lock.json');
+  const relativeRoots: Record<PortableAgent, string[]> = scope === 'user' ? {
+    antigravity: ['.gemini', 'config', 'skills'],
+    cursor: ['.cursor', 'skills'],
+    opencode: ['.config', 'opencode', 'skills'],
+    pi: ['.pi', 'agent', 'skills'],
+    generic: ['.agents', 'skills'],
+  } : {
+    antigravity: ['.agents', 'skills'],
+    cursor: ['.cursor', 'skills'],
+    opencode: ['.opencode', 'skills'],
+    pi: ['.pi', 'skills'],
+    generic: ['.agents', 'skills'],
+  };
+  const targetRoot = (agent: PortableAgent): string => {
+    if (!isPortablePlatformTarget(agent)) throw new Error('portableInvalidAgentSelection');
+    return paths.join(scope === 'user' ? targetHomes.home : executionCwd, ...relativeRoots[agent]);
+  };
   return {
-    cwd: executionCwd, scope, generationRoot: context.generationRoot, lockPath,
-    targetRoot,
-    targetPath: (agent, skill) => paths.join(targetRoot(agent), 'skills', skill),
+    cwd: executionCwd, scope, generationRoot: context.generationRoot, targetRoot,
+    targetPath: (agent, skill) => {
+      if (skill.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(skill)) {
+        throw new Error('portableSkillInvalid');
+      }
+      return paths.join(targetRoot(agent), skill);
+    },
   };
 }

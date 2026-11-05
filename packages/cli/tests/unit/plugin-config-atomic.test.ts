@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe('plugin config atomic writes', () => {
-  it('writes the exact schema 5 namespaced envelope with source binding', async () => {
+  it('writes the exact schema 6 namespaced envelope with source binding', async () => {
     const fixture = await makeFixture();
     const options = {
       sourceId: 'official',
@@ -54,16 +54,17 @@ describe('plugin config atomic writes', () => {
     };
     await writePluginConfigStore({ ...options, values: { enabled: true } });
     await expect(fs.readJson(resolvePluginConfigStorePath(options))).resolves.toEqual({
-      schemaVersion: 5,
+      schemaVersion: 6,
       sourceId: options.sourceId,
       binding: { kind: 'source', sourceIdentity: options.sourceIdentity },
       pluginName: options.pluginName,
-      values: { enabled: true },
+      common: { enabled: true },
+      platforms: {},
     });
   });
 
   it.each(['user', 'project'] as const)(
-    'keeps a v4 %s store unchanged until explicit reset, then writes empty v5',
+    'keeps an old user document unchanged in %s context until explicit reset',
     async (scope) => {
       const fixture = await makeFixture();
       const options = {
@@ -97,10 +98,10 @@ describe('plugin config atomic writes', () => {
       await expect(fs.readFile(filePath, 'utf8')).resolves.toBe(oldContent);
 
       await resetPluginConfigStore(options);
-      await writePluginConfigStore({ ...options, values: {} });
+      await writePluginConfigStore({ ...options, values: { enabled: false } });
       await expect(fs.readJson(filePath)).resolves.toMatchObject({
-        schemaVersion: 5,
-        values: {},
+        schemaVersion: 6, common: { enabled: false }, platforms: {},
+        binding: { kind: 'source', sourceIdentity: options.sourceIdentity },
       });
     },
   );
@@ -232,27 +233,30 @@ describe('plugin config atomic writes', () => {
         sourceId: 'official',
         sourceIdentity: `sha256:${'f'.repeat(64)}`,
         pluginName: 'invalid-projection',
-        values: { mode: 'safe' },
+        common: { mode: 'safe' },
+        platforms: {},
       }),
     },
     {
       code: 'identityMismatch',
       content: JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         sourceId: 'other',
         binding: { kind: 'source', sourceIdentity: `sha256:${'f'.repeat(64)}` },
         pluginName: 'invalid-projection',
-        values: { mode: 'safe' },
+        common: { mode: 'safe' },
+        platforms: {},
       }),
     },
     {
       code: 'invalidValues',
       content: JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         sourceId: 'official',
         binding: { kind: 'source', sourceIdentity: `sha256:${'f'.repeat(64)}` },
         pluginName: 'invalid-projection',
-        values: { mode: { nested: { deeper: { rejected: true } } } },
+        common: { mode: { nested: { deeper: { rejected: true } } } },
+        platforms: {},
       }),
     },
   ])('projects $code without rewriting the invalid store', async ({ code, content }) => {
@@ -292,11 +296,12 @@ describe('plugin config atomic writes', () => {
       exists: true,
       state: 'ready',
       issues: [],
-      schemaVersion: 5,
+      schemaVersion: 6,
       sourceId: 'other',
       binding: { kind: 'source', sourceIdentity: options.sourceIdentity },
       pluginName: options.pluginName,
-      values: { mode: 'safe' },
+      common: { mode: 'safe' },
+      platforms: {},
     });
 
     await expect(readPluginConfigStore(options)).resolves.toMatchObject({
@@ -324,9 +329,25 @@ describe('plugin config atomic writes', () => {
     await expect(writePluginConfigStore({ ...options, values: { next: true } }))
       .rejects.toThrow('injected rename failure');
 
-    await expect(fs.readJson(filePath)).resolves.toEqual({ old: true });
+    await expect(fs.readJson(filePath)).resolves.toEqual({ schemaVersion: 6, common: { old: true }, platforms: {} });
     expect((await fs.readdir(path.dirname(filePath))).filter((entry) => entry.includes('.tmp-')))
       .toEqual([]);
+  });
+
+  // Test Value Gate: a failed partial reset must not fall through to whole-document recovery deletion.
+  it('retains every profile when a selected-layer reset cannot commit', async () => {
+    const fixture = await makeFixture();
+    const options = { pluginName: 'reset-atomic-test', scope: 'user' as const, cwd: fixture.cwd, env: fixture.env };
+    await writePluginConfigStore({ ...options, values: { enabled: true } });
+    await writePluginConfigStore({ ...options, platform: 'codex', values: { enabled: false } });
+    await writePluginConfigStore({ ...options, platform: 'claude', values: { enabled: true } });
+    const filePath = resolvePluginConfigStorePath(options);
+    const before = await fs.readFile(filePath, 'utf8');
+    setAtomicConfigBeforeRenameHookForTests(async () => { throw new Error('injected reset commit failure'); });
+
+    await expect(resetPluginConfigStores({ ...options, platform: 'codex' })).rejects.toThrow('Cannot reset');
+    expect(await fs.readFile(filePath, 'utf8')).toBe(before);
+    expect((await fs.readdir(path.dirname(filePath))).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
   });
 
   it('does not overwrite existing keys when an existence probe hides an operational error', async () => {
@@ -423,7 +444,7 @@ describe('plugin config atomic writes', () => {
     await expect(writePluginConfigStore({ ...options, values: { committed: true } }))
       .resolves.toMatchObject({ path: filePath });
     rejectPostCommitIo = false;
-    await expect(fs.readJson(filePath)).resolves.toEqual({ committed: true });
+    await expect(fs.readJson(filePath)).resolves.toEqual({ schemaVersion: 6, common: { committed: true }, platforms: {} });
     expect((await fs.readdir(path.dirname(filePath))).filter((entry) => entry.includes('.tmp-')))
       .toEqual([]);
   });
@@ -467,11 +488,12 @@ describe('plugin config atomic writes', () => {
     const foreignOptions = { ...base, pluginName: 'foreign-store' };
     const foreignPath = resolvePluginConfigStorePath(foreignOptions);
     await fs.outputJson(foreignPath, {
-      schemaVersion: 5,
+      schemaVersion: 6,
       sourceId: 'someone-else',
       binding: { kind: 'source', sourceIdentity: base.sourceIdentity },
       pluginName: foreignOptions.pluginName,
-      values: { retained: true },
+      common: { retained: true },
+      platforms: {},
     });
     await expect(readPluginConfigStore(foreignOptions)).resolves.toMatchObject({
       state: 'invalid',
@@ -482,7 +504,7 @@ describe('plugin config atomic writes', () => {
     await expect(fs.readdir(path.dirname(foreignPath))).resolves.not.toContain('config.json.backup');
   });
 
-  it('resets only the project shared store and leaves the removed local path untouched', async () => {
+  it('resets the user document from project context and preserves historical project files', async () => {
     const fixture = await makeFixture();
     const base = {
       sourceId: 'official',
@@ -493,6 +515,8 @@ describe('plugin config atomic writes', () => {
       env: fixture.env,
     };
     const sharedPath = resolvePluginConfigStorePath({ ...base, access: 'write' });
+    const oldProjectPath = path.join(fixture.cwd, '.agent-workflows', 'plugin-config', 'official', base.pluginName, 'config.json');
+    await fs.outputJson(oldProjectPath, { retained: true });
     const localPath = path.join(fixture.cwd, '.agent-workflows', 'plugin-config.local', 'official', base.pluginName, 'config.json');
     await fs.outputJson(sharedPath, {
       schemaVersion: 3,
@@ -512,6 +536,7 @@ describe('plugin config atomic writes', () => {
     await expect(resetPluginConfigStores(base)).resolves.toHaveLength(1);
     await expect(fs.pathExists(sharedPath)).resolves.toBe(false);
     await expect(fs.pathExists(localPath)).resolves.toBe(true);
+    await expect(fs.readJson(oldProjectPath)).resolves.toEqual({ retained: true });
   });
 
   it('rejects target and parent symlinks without changing external files', async () => {
@@ -597,6 +622,6 @@ describe('plugin config atomic writes', () => {
       .rejects.toThrow('real directory');
     await expect(fs.readFile(externalSameNamePath, 'utf8')).resolves.toBe('{"external":true}\n');
     await expect(fs.pathExists(movedTemporaryPath)).resolves.toBe(true);
-    await expect(fs.readJson(path.join(movedParent, 'config.json'))).resolves.toEqual({ old: true });
+    await expect(fs.readJson(path.join(movedParent, 'config.json'))).resolves.toEqual({ schemaVersion: 6, common: { old: true }, platforms: {} });
   });
 });

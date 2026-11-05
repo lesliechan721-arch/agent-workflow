@@ -19,7 +19,7 @@ vi.mock('../../src/portable/recovery.js', async (importOriginal) => ({
 }));
 vi.mock('../../src/utils/plugin-config.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/utils/plugin-config.js')>(),
-  resetPluginConfigStore: backend.resetConfig,
+  deletePluginConfigStore: backend.resetConfig,
 }));
 
 import { executeRetire, prepareRetire, runRetire } from '../../src/recovery/retirement.js';
@@ -27,7 +27,6 @@ import { addRoot, observeIntent } from '../../src/intent/intent-store.js';
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { SkillsCliError } from '../../src/portable/skills-cli.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { resolveManagedCommand, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 
@@ -54,16 +53,16 @@ beforeEach(() => {
 });
 
 describe('retire strong state and residue', () => {
-  // Test Value Gate: locked retirement rechecks must preserve cleanup failure and keep the declaration intact.
-  it('preserves cleanup failure from the locked residue recheck', async () => {
+  // Test Value Gate: unavailable locked observations must keep the declaration intact.
+  it('keeps the declaration when the locked residue recheck is unavailable', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
     const runtime = { inventoryCatalogSourceReferences: async () =>
       ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) };
     const plan = await prepareRetire({ ...options, selector: 'local/demo', targets: ['cursor'], yes: true }, runtime);
-    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const failure = new Error('observation unavailable');
     backend.portable.mockRejectedValue(failure);
-    await expect(executeRetire(plan, runtime)).rejects.toBe(failure);
+    expect((await executeRetire(plan, runtime)).blockers).toContainEqual(expect.objectContaining({ code: 'operationReviewStale' }));
     expect((await observeIntent(options)).value.roots).toEqual([{ pluginId: 'local/demo' }]);
     expect(backend.execute).not.toHaveBeenCalled();
   });
@@ -81,11 +80,11 @@ describe('retire strong state and residue', () => {
     expect((await observeIntent(options)).value.roots).toEqual([{ pluginId: 'local/demo' }]);
   });
 
-  it('keeps a declared root and override when the healthy Active belongs to another logical source', async () => {
+  it('keeps a declared root and exclusion when the healthy Active belongs to another logical source', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:old-source');
-    await writePreferences(options, { schemaVersion: 1, kind: 'aw-deployment-preferences', agents: [],
-      dependencyScopeOverrides: [{ pluginId: 'local/demo', platform: 'codex', scope: 'user' }] });
+    await writePreferences(options, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: [],
+      exclusions: [{ plugin: 'local/demo', target: 'codex' }] });
     const beforeIntent = await observeIntent(options);
     const beforePreferences = await observePreferences(options);
 
@@ -152,7 +151,7 @@ describe('retire strong state and residue', () => {
         ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
     });
     expect(result).toMatchObject({ ok: false, declarationChanged: true, configChanged: deleted });
-    expect(result.recoveryActions).toContain('aw intent retire local/demo --scope user --target codex --target cursor');
+    expect(result.recoveryActions).toContain('aw plugin intent retire local/demo --scope user --target codex --target cursor');
     expect(result.recoveryActions.some((action) => action.includes(physicalPath) && action.includes('AW 不自动删除')))
       .toBe(true);
     expect(result.recoveryActions.join('\n')).not.toContain('--delete-config');
@@ -161,8 +160,8 @@ describe('retire strong state and residue', () => {
   it('reviews only observed strong-state changes before retirement writes', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
-    await writePreferences(options, { schemaVersion: 1, kind: 'aw-deployment-preferences', agents: [],
-      dependencyScopeOverrides: [{ pluginId: 'local/demo', platform: 'codex', scope: 'user' }] });
+    await writePreferences(options, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: [],
+      exclusions: [{ plugin: 'local/demo', target: 'codex' }] });
     backend.inspect.mockImplementation(async () => ({ ...removedEvidence(),
       configTargets: [{ scope: 'user', kind: 'file', fingerprint: 'sha256:config' }] }));
     const runtime = { inventoryCatalogSourceReferences: async () =>
@@ -180,8 +179,8 @@ describe('retire strong state and residue', () => {
     'rejects Portable residue that %s after Review', async (change) => {
       const options = location();
       await addRoot(options, 'local/demo', 'sha256:logical');
-      await writePreferences(options, { schemaVersion: 1, kind: 'aw-deployment-preferences', agents: ['cursor'],
-        dependencyScopeOverrides: [{ pluginId: 'local/demo', platform: 'codex', scope: 'user' }] });
+      await writePreferences(options, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['cursor'],
+        exclusions: [{ plugin: 'local/demo', target: 'codex' }] });
       backend.inspect.mockImplementation(async () => ({ ...removedEvidence(),
         configTargets: [{ scope: 'user', kind: 'file', fingerprint: 'sha256:config' }] }));
       const absent = { state: 'absent', targets: [], blockers: [] };
@@ -213,8 +212,8 @@ describe('retire strong state and residue', () => {
   it('stops output cleanup after an optional config deletion fails, keeping prior commits visible', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
-    await writePreferences(options, { schemaVersion: 1, kind: 'aw-deployment-preferences', agents: [],
-      dependencyScopeOverrides: [{ pluginId: 'local/demo', platform: 'codex', scope: 'user' }] });
+    await writePreferences(options, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: [],
+      exclusions: [{ plugin: 'local/demo', target: 'codex' }] });
     backend.resetConfig.mockRejectedValue(new Error('configResetTargetUnsupported: unsafe node'));
     const result = await runRetire({ ...options, selector: 'local/demo', deleteConfig: true, yes: true,
       targets: ['codex'] }, { inventoryCatalogSourceReferences: async () =>
@@ -225,7 +224,7 @@ describe('retire strong state and residue', () => {
       expect.objectContaining({ code: 'configResetTargetUnsupported' }),
     ]));
     expect(result.intent.roots).toEqual([]);
-    expect((await observePreferences(options)).value.dependencyScopeOverrides).toEqual([]);
+    expect((await observePreferences(options)).value.exclusions).toEqual([]);
     expect(backend.execute).not.toHaveBeenCalled();
   });
 
@@ -291,7 +290,7 @@ describe('retire strong state and residue', () => {
       platforms: ['codex', 'claude'], plugins: ['local/demo'], warnings: [], receiptTargets: [] });
 
     const result = await runRetire({ ...options, selector: 'local/demo',
-      targets: ['codex', 'claude-code'], yes: true }, {
+      targets: ['codex', 'claude'], yes: true }, {
       inventoryCatalogSourceReferences: async () =>
         ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
     });
@@ -301,7 +300,7 @@ describe('retire strong state and residue', () => {
     ]);
     expect(result.targetResults.find((target) => target.agent === 'codex')?.blockers)
       .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'sharedNativePreserved' })]));
-    expect(result.targetResults.find((target) => target.agent === 'claude-code')).toMatchObject({
+    expect(result.targetResults.find((target) => target.agent === 'claude')).toMatchObject({
       execution: 'applied', blockers: [],
     });
   });
@@ -432,7 +431,7 @@ describe('retire managed command results', () => {
       remainingTargets: [expect.objectContaining({ pluginId: 'local/demo', agent: 'codex' })] });
     expect(result.errors).toContainEqual(expect.objectContaining({ code: 'commandBindingInvalid', pluginId: 'local/demo' }));
     expect(result.recoveryActions).toContain(recoveryAction);
-    expect(result.recoveryActions).toContain('aw intent retire local/demo --scope user --target codex');
+    expect(result.recoveryActions).toContain('aw plugin intent retire local/demo --scope user --target codex');
   });
 
   it.each([
@@ -451,14 +450,14 @@ describe('retire managed command results', () => {
       })), platforms: ['codex', 'claude'], plugins: ['local/demo'], warnings: [],
       receiptTargets: [], commandResults: [failed] });
 
-    const result = await runRetire({ ...options, selector: 'local/demo', targets: ['codex', 'claude-code'], yes: true },
+    const result = await runRetire({ ...options, selector: 'local/demo', targets: ['codex', 'claude'], yes: true },
       { inventoryCatalogSourceReferences });
 
     expect(result).toMatchObject({ ok: false, declarationChanged: true,
       commandResults: [failed] });
     expect(result.remainingTargets).toEqual(codexFailed
       ? [expect.objectContaining({ agent: 'codex' })] : []);
-    expect(result.targetResults.find((target) => target.agent === 'claude-code'))
+    expect(result.targetResults.find((target) => target.agent === 'claude'))
       .toMatchObject({ execution: 'applied', blockers: [] });
     expect(result.targetResults.find((target) => target.agent === 'codex')).toMatchObject(codexFailed
       ? { execution: 'failed', blockers: [expect.objectContaining({ code: 'nativeRetireFailed' })] }

@@ -6,7 +6,7 @@ import type { IntentObservation } from '../intent/intent-store.js';
 export interface RecoveryDiagnostic { code: string; message: string; pluginId?: string }
 export type RecoveryDelivery =
   | { kind: 'native'; platform: 'codex' | 'claude' }
-  | { kind: 'agent-skills'; provider: 'skills-cli'; agentId: string };
+  | { kind: 'agent-skills'; provider: 'aw'; agentId: string };
 export interface RecoveryTarget {
   pluginId: string;
   agent: AgentId;
@@ -16,8 +16,12 @@ export interface RecoveryTarget {
   observation: 'verified' | 'missing' | 'unknown';
   content?: 'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown';
   blockers: RecoveryDiagnostic[];
+  reasons?: RecoveryDiagnostic[];
   requiredBy: string[];
   relation?: 'root' | 'dependency' | 'residue';
+  requirementScope?: Scope;
+  providerScope?: Scope;
+  satisfaction?: 'installed' | 'inherited-user' | 'unsupported' | 'excluded' | 'pending' | 'unknown';
   recoveryActions?: string[];
   backend?: unknown;
 }
@@ -26,6 +30,9 @@ export interface RecoveryReceipt {
   kind: 'aw-recovery';
   scope: Scope;
   command: string;
+  coverage?: { scopes: Scope[]; projectRoot?: string };
+  allSatisfied?: boolean | null;
+  inSync?: boolean | null;
   ok: boolean;
   intent: { state: IntentObservation['state']; digest?: string; roots: string[] | null };
   requestedRoots: string[];

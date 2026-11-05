@@ -3,6 +3,15 @@
   "name": "browser-use",
   "version": "0.1.0",
   "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
+  "platforms": [
+    "codex",
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "generic"
+  ],
   "skills": "./skills",
   "scripts": {
     "preApply": {
@@ -19,11 +28,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX",
-        "CLAUDE"
-      ]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {

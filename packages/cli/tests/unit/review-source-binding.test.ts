@@ -33,13 +33,13 @@ function manifest(name: string): PluginManifestSource {
     version: '0.1.0',
     description: `${name} binding fixture.`,
     skills: './skills',
+    platforms: ['codex'],
     marketplace: {
       category: 'test',
       strict: true,
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        products: ['CODEX'],
       },
     },
   }

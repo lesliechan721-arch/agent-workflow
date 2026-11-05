@@ -214,8 +214,8 @@ export function failedWriteCommandResult(
       errorCode,
       ...(errorCode === 'exclusiveOwnerEvidenceInvalid' && result.target.pluginId ? {
         recoveryActions: [
-          `run aw cleanup ${result.target.pluginId} --target ${result.target.platform === 'claude' ? 'claude-code' : 'codex'} --scope ${result.target.scope} --force`,
-          `then run aw reinstall ${result.target.pluginId} --target ${result.target.platform === 'claude' ? 'claude-code' : 'codex'} --scope ${result.target.scope}`,
+          `run aw plugin cleanup ${result.target.pluginId} --target ${result.target.platform} --scope ${result.target.scope} --force`,
+          `then run aw plugin sync ${result.target.pluginId} --target ${result.target.platform} --context ${result.target.scope} --rebuild`,
         ],
       } : errorCode === 'forceCleanupPathUnavailable' ? {
         recoveryActions: [

@@ -72,7 +72,7 @@ export async function writeNodeScriptFixture(repoRootPath: string): Promise<void
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath);
 
-  manifest.marketplace.policy.products = ['CLAUDE'];
+  manifest.platforms = ['claude'];
   delete manifest.apps;
   manifest.scripts = {
     preApply: {
@@ -192,7 +192,7 @@ export async function writeNodeScriptFixture(repoRootPath: string): Promise<void
       '',
       `await writeFile(generatedTestUrl, ${JSON.stringify(generatedTestSource)}, "utf8");`,
       'manifest.description = "Built smoke description";',
-      'manifest.marketplace.policy.products = ["CODEX"];',
+      'manifest.platforms = ["codex"];',
       'manifest.scripts.tests.node = ["./scripts/generated.test.mjs"];',
       'await writeFile(manifestUrl, `${JSON.stringify(manifest, null, 2)}\\n`, "utf8");',
       '',

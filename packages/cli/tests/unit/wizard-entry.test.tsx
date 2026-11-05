@@ -24,13 +24,13 @@ beforeEach(() => {
 });
 
 describe('scoped write command entry', () => {
-  // Test Value Gate: a complete CLI request must reach the coordinator with the exact selected scope and Agent.
+  // Test Value Gate: CLI arguments must reach the coordinator; invalid input must fail before coordination or a wizard.
   it('routes complete cleanup arguments without mounting a wizard', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const captured = createCapturedCliIo();
     const launch = vi.fn();
     const exitCode = await runCli([
-      'cleanup', 'team/demo', '--scope', 'user', '--target', 'codex', '--force', '--json',
+      'plugin', 'cleanup', 'team/demo', '--scope', 'user', '--target', 'codex', '--force', '--json',
     ], { cwd: isolation.layout.fixtureCwd, env: isolation.env,
       interactive: true, io: captured.io, tuiRunner: { launch } as never });
     expect(exitCode).toBe(0);
@@ -43,14 +43,34 @@ describe('scoped write command entry', () => {
     }), expect.any(Object));
   });
 
-  it('rejects an omitted scope before calling the coordinator', async () => {
+  it('routes installation with declaration scope and work context without target selection', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const captured = createCapturedCliIo();
+    const launch = vi.fn();
+    const result = await runCli([
+      'plugin', 'install', 'team/demo', '--scope', 'user', '--context', 'user', '--json',
+    ], { cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      interactive: true, io: captured.io, tuiRunner: { launch } as never });
+    expect(result).toBe(0);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({
+      kind: 'aw-recovery', command: 'install', ok: true,
+    });
+    expect(runRecovery).toHaveBeenCalledWith('install', ['team/demo'], expect.objectContaining({
+      scope: 'user', context: 'user', targets: undefined,
+    }), expect.any(Object));
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('rejects an omitted cleanup scope before calling the coordinator', async () => {
+    const isolation = getCurrentSourceTestIsolation();
     const captured = createCapturedCliIo();
     const result = await runCli([
-      'install', 'team/demo', '--target', 'codex', '--json',
-    ], { interactive: false, io: captured.io });
+      'plugin', 'cleanup', 'team/demo', '--target', 'codex', '--json',
+    ], { cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      interactive: false, io: captured.io });
     expect(result).toBe(2);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      kind: 'aw-recovery', scope: null, command: 'install', ok: false,
+      kind: 'aw-recovery', scope: null, command: 'cleanup', ok: false,
       errors: [{ code: 'invalidArguments' }],
     });
     expect(runRecovery).not.toHaveBeenCalled();
@@ -68,15 +88,19 @@ describe('scoped write command entry', () => {
     })]);
   });
 
-  it('requires a scope for a parameter-missing non-TTY write', async () => {
+  it('rejects missing install selectors before mounting a non-TTY wizard', async () => {
+    const isolation = getCurrentSourceTestIsolation();
     const captured = createCapturedCliIo();
     const launch = vi.fn();
-    const exitCode = await runCli(['install'], {
+    const exitCode = await runCli(['plugin', 'install'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
       interactive: true, io: captured.io, tuiRunner: { launch } as never,
     });
     expect(exitCode).toBe(2);
     expect(captured.readStdout()).toBe('');
-    expect(captured.readStderr()).toContain("required option '--scope <scope>'");
+    expect(captured.readStderr()).toContain("missing required argument 'plugins'");
     expect(launch).not.toHaveBeenCalled();
+    expect(runRecovery).not.toHaveBeenCalled();
   });
 });

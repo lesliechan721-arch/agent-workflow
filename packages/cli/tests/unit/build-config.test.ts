@@ -217,83 +217,54 @@ describe('buildConfig validation', () => {
     })).toThrow('unknown reserved provider "@aw/cli"');
   });
 
-  it('keeps native runtime file defaults and accepts explicit portable distribution projection', () => {
-    const native = validatePluginManifest('/tmp/plugin', {
-      ...baseManifest,
-      buildConfig: {
-        skillRuntimeFiles: [{
-          skill: 'native-skill',
-          target: 'references/native.txt',
-          source: './native.txt',
-        }],
-      },
+  it('keeps omitted runtime selectors and accepts a concrete Portable platform projection', () => {
+    const common = validatePluginManifest('/tmp/plugin', {
+      ...baseManifest, buildConfig: { skillRuntimeFiles: [{
+        skill: 'common-skill', target: 'references/common.txt', source: './common.txt',
+      }] },
     });
-    expect(native.buildConfig?.skillRuntimeFiles?.[0]?.distributions).toBeUndefined();
-
+    expect(common.buildConfig?.skillRuntimeFiles?.[0]?.platforms).toBeUndefined();
     const portable = validatePluginManifest('/tmp/plugin', {
-      ...baseManifest,
-      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-      distributions: { agentSkills: { skills: './portable-skills' } },
-      buildConfig: {
-        skillRuntimeFiles: [{
-          skill: 'portable-skill',
-          target: 'references/portable.txt',
-          distributions: ['agent-skills'],
-          source: './portable.txt',
-        }],
-      },
+      ...baseManifest, platforms: ['generic'], skills: './skills',
+      buildConfig: { skillRuntimeFiles: [{ skill: 'portable-skill', target: 'references/portable.txt',
+        platforms: ['generic'], source: './portable.txt' }] },
     });
-    expect(portable.buildConfig?.skillRuntimeFiles?.[0]).toMatchObject({
-      distributions: ['agent-skills'],
-    });
+    expect(portable.buildConfig?.skillRuntimeFiles?.[0]?.platforms).toEqual(['generic']);
   });
 
-  it('requires an agent-skills distribution declaration for portable dynamic targets', () => {
+  it('requires a concrete Portable platform on a dynamic Skill target', () => {
+    const target = { id: 'portable', distribution: 'agent-skills', target: 'agent-skills.skill',
+      scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'portable' };
     expect(() => validatePluginManifest('/tmp/plugin', {
-      ...baseManifest,
-      artifacts: {
-        targets: [{
-          id: 'portable',
-          distribution: 'agent-skills',
-          target: 'agent-skills.skill',
-          scopes: ['user'],
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'portable',
-        }],
-      },
-    })).toThrow('require distributions.agentSkills');
+      ...baseManifest, platforms: ['generic'], artifacts: { targets: [target] },
+    })).toThrow('/artifacts/targets/0');
+    expect(validatePluginManifest('/tmp/plugin', {
+      ...baseManifest, platforms: ['generic'], artifacts: { targets: [{ ...target, platform: 'generic' }] },
+    }).artifacts?.targets?.[0]?.platform).toBe('generic');
   });
 
-  it('defers portable native inventory checks and accepts a declared native capability', () => {
+  it('accepts a Portable-only declaration without Native inventory', () => {
     expect(validatePluginManifest('/tmp/plugin', {
-      ...baseManifest,
-      extensions: {},
-      distributions: { agentSkills: { skills: './portable-skills' } },
-    }).distributions?.agentSkills?.skills).toBe('./portable-skills');
-
-    expect(validatePluginManifest('/tmp/plugin', {
-      ...baseManifest,
-      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-      distributions: { agentSkills: { skills: './portable-skills' } },
-    }).distributions?.agentSkills?.skills).toBe('./portable-skills');
+      ...baseManifest, platforms: ['cursor'], skills: './skills',
+    }).platforms).toEqual(['cursor']);
   });
 
-  it('accepts the portable distribution without a dedicated AW feature floor', () => {
+  it('accepts canonical platform selectors in the current explicit manifest version', () => {
     expect(validatePluginManifest('/tmp/plugin', {
-      ...baseManifest,
-      schemaVersion: 3,
-      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-      distributions: { agentSkills: { skills: './portable-skills' } },
-    }).distributions?.agentSkills?.skills).toBe('./portable-skills');
+      ...baseManifest, platforms: ['pi'], skills: './skills',
+      buildConfig: { generatedSkillRuntimeFiles: [{
+        skill: 'portable', target: 'references/options.json', platforms: ['pi'],
+      }] },
+    }).buildConfig?.generatedSkillRuntimeFiles?.[0]?.platforms).toEqual(['pi']);
   });
 
-  it('rejects unsafe portable distribution paths', () => {
+  it('rejects removed Portable roots and unsafe unified Skill paths', () => {
     expect(() => validatePluginManifest('/tmp/plugin', {
-      ...baseManifest,
-      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-      distributions: { agentSkills: { skills: '../portable-skills' } },
-    })).toThrow('/distributions/agentSkills/skills must match pattern');
+      ...baseManifest, distributions: { agentSkills: { skills: './portable-skills' } },
+    })).toThrow('Remove distributions.agentSkills');
+    expect(() => validatePluginManifest('/tmp/plugin', {
+      ...baseManifest, platforms: ['generic'], skills: '../skills',
+    })).toThrow('/skills must match pattern');
   });
 
   it('accepts only an explicit deterministic build cache declaration with a Node build', () => {
@@ -363,10 +334,10 @@ describe('buildConfig validation', () => {
         generatedSkillRuntimeFiles: [{
           skill: 'demo',
           target: 'references/generated.md',
-          platforms: ['codex'],
+          platforms: ['agent-skills'],
         }],
       },
-      error: '/buildConfig/generatedSkillRuntimeFiles/0 must NOT have additional properties',
+      error: '/buildConfig/generatedSkillRuntimeFiles/0/platforms/0',
     },
   ])('rejects an unsafe catalog runtime projection manifest', ({ buildConfig, error }) => {
     expect(() => validatePluginManifest('/tmp/plugin', {

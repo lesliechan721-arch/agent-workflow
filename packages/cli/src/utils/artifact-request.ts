@@ -5,7 +5,7 @@ import type {
   PluginArtifactTargetDefinition,
   Scope,
 } from '../types.js';
-import { getManagedCommandArtifactTargets } from '@lesliechan721/aw-plugin-core/manifest';
+import { compilePluginConfigDefinition, getManagedCommandArtifactTargets, type PlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 
 export type ArtifactRequestDeclaration = PluginArtifactTargetDefinition | (ManagedCommandArtifactTargetDefinition & {
   distribution?: undefined;
@@ -17,7 +17,13 @@ export type ArtifactRequestDeclaration = PluginArtifactTargetDefinition | (Manag
 });
 
 export function artifactRequestDeclarations(manifest: NormalizedPluginManifest): ArtifactRequestDeclaration[] {
-  return [...(manifest.artifacts?.targets ?? []).map((target) => target.delivery?.mode === 'codex-native' && manifest.managedCommands?.sets.some((set) => set.producer.kind === 'artifact' && set.producer.artifactId === target.id) ? { ...target, scopes: ['user'] as Scope[] } : target), ...getManagedCommandArtifactTargets(manifest)];
+  return [...(manifest.artifacts?.targets ?? []).map((target) => isNativeSkillTarget(target)
+    ? { ...target, scopes: ['user'] as Scope[] }
+    : target), ...getManagedCommandArtifactTargets(manifest)];
+}
+
+export function isNativeSkillTarget(target: Pick<ArtifactRequestDeclaration, 'target'>): boolean {
+  return target.target === 'codex.skill' || target.target === 'claude.skill';
 }
 
 export function artifactDeclarationSurface(target: ArtifactRequestDeclaration): ArtifactRenderSurfaceName | undefined {
@@ -39,8 +45,8 @@ export function requiresNonSensitiveArtifactInput(target: Pick<ArtifactRequestDe
     || target.target === 'aw.command-package';
 }
 
-function sensitiveConfigKeys(manifest: NormalizedPluginManifest): Set<string> {
-  return new Set(Object.entries(manifest.config?.fields ?? {})
+function sensitiveConfigKeys(manifest: NormalizedPluginManifest, platform?: PlatformTarget): Set<string> {
+  return new Set(Object.entries(manifest.config ? compilePluginConfigDefinition(manifest.config, platform).fields : {})
     .filter(([, field]) => field.sensitive === true)
     .map(([key]) => key));
 }
@@ -55,8 +61,9 @@ function usesSensitiveConfig(
 function assertSafeArtifactRequestMix(
   manifest: NormalizedPluginManifest,
   declarations: readonly ArtifactRequestDeclaration[],
+  platform?: PlatformTarget,
 ): void {
-  const sensitiveKeys = sensitiveConfigKeys(manifest);
+  const sensitiveKeys = sensitiveConfigKeys(manifest, platform);
   if (declarations.some(requiresNonSensitiveArtifactInput)
     && declarations.some((target) => !requiresNonSensitiveArtifactInput(target) && usesSensitiveConfig(target, sensitiveKeys))) {
     throw new Error(
@@ -71,11 +78,16 @@ export function resolveAwDeliveredArtifactIds(options: {
   scope: Scope;
 }): string[] {
   return artifactRequestDeclarations(options.manifest)
-    .filter((target) =>
-      artifactDeclarationSurface(target) === options.platform
+    .filter((target) => {
+      const producer = 'producer' in target ? target.producer : undefined;
+      return artifactDeclarationSurface(target) === options.platform
       && target.scopes.includes(options.scope)
       && !('producer' in target && target.producer.kind === 'static-skill')
-      && target.delivery?.mode !== 'codex-native')
+      && !isNativeSkillTarget(target)
+      && !(producer?.kind === 'artifact'
+        && options.manifest.artifacts?.targets?.some((skill) =>
+          skill.id === producer.artifactId && isNativeSkillTarget(skill)));
+    })
     .map((target) => target.id);
 }
 
@@ -90,7 +102,8 @@ export function resolveAwDeliveredArtifactRequestBatches(options: {
     requested.has(target.id)
     && artifactDeclarationSurface(target) === options.platform
     && target.scopes.includes(options.scope));
-  const sensitiveKeys = sensitiveConfigKeys(options.manifest);
+  const sensitiveKeys = sensitiveConfigKeys(options.manifest,
+    options.platform === 'managed-commands' || options.platform === 'agent-skills' ? undefined : options.platform);
   const nonSensitiveIds = declarations.filter(requiresNonSensitiveArtifactInput).map((target) => target.id);
   const otherTargets = declarations.filter((target) => !requiresNonSensitiveArtifactInput(target));
   if (nonSensitiveIds.length === 0
@@ -142,7 +155,8 @@ export function resolveArtifactRequest(options: {
   }
 
   const declarations = allowedDeclarations.filter((target) => requested.has(target.id));
-  assertSafeArtifactRequestMix(options.manifest, declarations);
+  assertSafeArtifactRequestMix(options.manifest, declarations,
+    options.platform === 'managed-commands' || options.platform === 'agent-skills' ? undefined : options.platform);
   return {
     requestedArtifactIds: declarations.map((target) => target.id),
     declarations,

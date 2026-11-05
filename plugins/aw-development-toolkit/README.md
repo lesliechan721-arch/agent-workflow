@@ -3,10 +3,11 @@
 为 AW 插件及其 Skill 提供来源解析、开发、验证和物化方法，维护 Catalog，并通过手动入口发布。依赖 `agent-content-toolkit` 和 `agent-skill-toolkit`。
 
 ```bash
-aw install aw-development-toolkit --scope user --target codex
+aw plugin targets set codex
+aw plugin install aw-development-toolkit --scope user
 ```
 
-也支持 Claude Code，可改用 `--target claude-code`。需要当前 PATH 中兼容的公开 AW CLI；不要求第三方项目具有本仓库的私有脚本目录。
+也支持 Claude Code，可先运行 `aw plugin targets set claude`，再执行安装。需要当前 PATH 中兼容的公开 AW CLI；不要求第三方项目具有本仓库的私有脚本目录。
 
 | Skill | 适用任务 |
 | --- | --- |
@@ -15,7 +16,7 @@ aw install aw-development-toolkit --scope user --target codex
 
 分析 AW Skill 的职责时可以只读源码；检查实际平台内容时核对匹配的 final，缺少时按任务授权准备隔离副本。准备可能运行必要的 build/renderer，明确的静态读取限制优先。
 
-为通用方法准备完整包使用 `aw review prepare`；导出标准 Agent Skills 使用显式 Portable 声明与 `aw skill materialize`。两种用途分别核对其 source、配置和实际产物，不要求先创建 Eval。
+为通用方法准备完整包使用 `aw review prepare`；导出标准 Agent Skills 使用 `aw skill materialize --platform`，明确选择具体 Portable 平台并核对插件支持集合。两种用途分别核对其 source、配置和实际产物，不要求先创建 Eval。
 
 Skill 内容设计使用通用 Author。用户显式启动的 Reviewer 与 Simplifier 可采用 AW 来源和物化方法，仍各自负责质量判断、候选与接受标准。采用 AW 方法不会自动运行专项工作流或模型 Eval。报告按当前任务交付，不作为插件发布门禁。
 

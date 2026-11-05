@@ -8,8 +8,12 @@ import { CONFIG_KEYS, SKILL_CONFIG_KEYS, renderArtifactPlan } from './render-art
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const ids = ['codex-explore-skill', 'codex-advisor-skill'];
+const sourceManifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
+const defaultValues = Object.fromEntries(Object.entries(sourceManifest.config.fields)
+  .filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default]));
 function context(values = {}) {
-  return { platform: 'codex', scope: 'user', requestedArtifactIds: ids, config: { values },
+  return { platform: 'codex', scope: 'user', requestedArtifactIds: ids,
+    config: { values: { ...structuredClone(defaultValues), ...values } },
     artifactSources: ids.map((id) => {
       const staged = path.join(root, '.agents-plugin/artifact-sources/codex', id, '0');
       return { id, target: 'codex.skill', sourceDirs: [existsSync(staged) ? staged : path.join(root, 'skills', id.replace(/-skill$/, ''))] };
@@ -32,6 +36,9 @@ function rows(plan, id, prefix = '| 档位 |') {
 // Test Value Gate: specialist configuration must retain its defaults and directly reference the provider registry.
 test('keeps specialist native requirements and same-source provider references', async () => {
   const manifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
+  assert.equal(manifest.config.schemaVersion, 5);
+  assert.deepEqual(manifest.platforms, ['codex']);
+  assert.equal(Object.hasOwn(manifest.marketplace.policy, 'products'), false);
   assert.deepEqual(manifest.dependencies, ['agent-subagent']);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.plugin-config-cross-plugin-value-ref.v1'));
   assert.deepEqual(new Set(Object.keys(manifest.config.fields)), new Set(CONFIG_KEYS));
@@ -53,6 +60,7 @@ test('keeps specialist native requirements and same-source provider references',
   assert.equal(manifest.nativeTools, undefined);
   assert.deepEqual(manifest.artifacts.targets.map((target) => target.id),
     ['codex-explore-skill', 'codex-explore-role', 'codex-advisor-skill', 'codex-advisor-role']);
+  for (const target of manifest.artifacts.targets) assert.equal(Object.hasOwn(target, 'delivery'), false);
 });
 
 // Test Value Gate: rendering must preserve optional external settings and custom ordering without exposing provider config.
@@ -80,4 +88,9 @@ test('renders only specialist profiles and preserves optional external fields', 
   for (const advisorAdvancedProfile of [{}, { model: 'incomplete' }, null]) {
     await assert.rejects(renderArtifactPlan(context({ advisorAdvancedProfile })));
   }
+  await assert.rejects(renderArtifactPlan({ ...context(), platform: undefined }));
+  await assert.rejects(renderArtifactPlan({ ...context(), platform: 'claude' }));
+  const incomplete = context();
+  delete incomplete.config.values.advisorGeneralProfile;
+  await assert.rejects(renderArtifactPlan(incomplete), /Missing resolved config value: advisorGeneralProfile/);
 });

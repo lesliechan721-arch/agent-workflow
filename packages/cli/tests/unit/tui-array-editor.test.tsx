@@ -4,6 +4,7 @@ import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { writePreferences } from '../../src/intent/deployment-preferences.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { TuiController, type OperationIntent } from '../../src/tui/controller.js';
@@ -40,7 +41,7 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'array-source');
   const v4 = fieldKey === 'subagentCommands' || fieldKey === 'advisorProfile';
   await createCatalogSnapshotFixture(sourceRoot, 'arrays', [], 'array fixture', (manifest) => {
-    manifest.config = { schemaVersion: v4 ? 4 : 3, fields: {
+    manifest.config = { schemaVersion: 5, fields: {
       labels: { type: 'array', title: '检查标签', items: { type: 'string', validation: { minLength: 1 } }, default: ['security', 'tests'], validation: { minItems: 1, uniqueItems: true } },
       pipeline: { type: 'array', title: '模型顺序', items: { type: 'object', properties: {
         model: { type: 'string', title: '模型', required: true },
@@ -67,12 +68,15 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
       const profile = definition.fields.advisorProfile!;
       if (profile.type !== 'object') throw new Error('Expected object fixture');
       definition.fields.advisorProfile = { ...profile, title: '角色', default: { executor: 'demo' } };
-      manifest.config = definition;
+      manifest.config = { ...definition, schemaVersion: 5 };
     }
   });
   const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+  await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+    schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['codex'], exclusions: [],
+  });
   const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
   mocks.status.mockResolvedValue({
     payload: { schemaVersion: 8, catalog: { configDigest: configured.digest, compositeDigest: 'sha256:composite', primarySourceId: 'team', sources: [] }, filters: { plugins: [], platform: 'both', cwd: isolation.layout.fixtureCwd }, targets: [], errors: [] },
@@ -85,18 +89,41 @@ async function setup(fieldKey = 'labels', size = { columns: 60, rows: 18 }) {
   dependencies.prepareReviewEvidence = async (intent, ...args) => { captured.push(intent); return prepare(intent, ...args); };
   const controller = new TuiController(dependencies);
   await controller.load();
-  controller.push({ name: 'configFields', pluginId: 'team/arrays', layer: { scope: 'effective' } });
-  controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { scope: 'effective' }, fieldKey, editor: fieldKey === 'advisorProfile' ? 'object' : 'array', ...(fieldKey === 'fixed' ? { mode: 'choices' as const } : {}) });
+  controller.push({ name: 'configFields', pluginId: 'team/arrays', layer: { profile: 'codex' } });
+  controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { profile: 'codex' }, fieldKey, editor: fieldKey === 'advisorProfile' ? 'object' : 'array', ...(fieldKey === 'fixed' ? { mode: 'choices' as const } : {}) });
   const ui = render(<ConsoleAppV4 controller={controller} size={size} />);
-  if (fieldKey === 'advisorProfile') {
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain('当前项目'), { timeout: 5000 });
+  await vi.waitFor(() => {
+    const frame = ui.lastFrame();
+    if (fieldKey === 'fixed') expect(frame).toContain('第一方案');
+    else if (fieldKey === 'advisorProfile') expect(frame).toContain('使用此完整对象');
+    else {
+      expect(frame).toContain('添加一项');
+      // The add action is visible before initial rows load; a real first row proves editing is ready.
+      if (fieldKey !== 'empty') expect(frame).toMatch(/\b01 {2}\S/u);
+      else expect(frame).toContain('0 项');
+    }
+  }, { timeout: 5000 });
+  if (fieldKey === 'empty') {
+    // An empty list has no initial row. A cancelled new-item edit proves readiness without creating a draft.
     await keys(ui, '\r');
+    await vi.waitFor(() => {
+      expect(controller.snapshot.router.current.route).toMatchObject({
+        name: 'configFieldEditor', editor: 'string', arrayItem: { rowId: undefined },
+      });
+      expect(ui.lastFrame()).toContain('新增项');
+    });
+    await keys(ui, esc);
+    await vi.waitFor(() => {
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', editor: 'array' });
+      expect(ui.lastFrame()).toContain('0 项');
+      expect(controller.externalDrafts).toHaveLength(0);
+    });
   }
-  await vi.waitFor(() => expect(ui.lastFrame()).toContain(fieldKey === 'fixed' ? '第一方案' : fieldKey === 'advisorProfile' ? '使用此完整对象' : '添加一项'), { timeout: 5000 });
-  const store = async (scope: 'user' | 'project') => {
+  const store = async (profile: 'common' | 'codex') => {
+    const platform = profile === 'common' ? undefined : profile;
     const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/arrays', apply: false,
-      groups: [{ scope, updates: v4 ? { subagentCommands: [] } : { labels: ['safe'] } }] });
-    return readPluginConfigStore({ sourceId: 'team', sourceIdentity: evidence.source!.sourceIdentity, logicalIdentity: evidence.source!.logicalIdentity, pluginName: 'arrays', scope, cwd: isolation.layout.fixtureCwd, env: isolation.env });
+      groups: [{ scope: 'user', platform, updates: v4 ? { subagentCommands: [] } : { labels: ['safe'] } }] });
+    return readPluginConfigStore({ sourceId: 'team', sourceIdentity: evidence.source!.sourceIdentity, logicalIdentity: evidence.source!.logicalIdentity, pluginName: 'arrays', scope: 'user', platform, cwd: isolation.layout.fixtureCwd, env: isolation.env });
   };
   const record = async (name: string) => {
     if (!process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) return;
@@ -115,7 +142,7 @@ describe('array editor with real config runtime', () => {
     expect(ui.lastFrame()).toContain('确认分支切换');
     expect(ui.lastFrame()).toContain('mode = "bundle"');
     expect(ui.lastFrame()).toContain('command = "/bin/example"');
-    expect((await store('project')).exists).toBe(false);
+    expect((await store('codex')).exists).toBe(false);
     await keys(ui, esc);
     expect(controller.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', editor: 'object' });
     await keys(ui, '\r', '\r', '\r', '\r');
@@ -124,10 +151,10 @@ describe('array editor with real config runtime', () => {
     expect(ui.lastFrame()).toContain('workspace');
     await keys(ui, '\r');
     expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'array' });
-    await keys(ui, 'c', '\r');
+    await keys(ui, 'c');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
     await keys(ui, 's');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'), { timeout: 5000 });
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
     const intent = captured.at(-1)!;
     expect(intent).toMatchObject({ groups: [{ updates: { subagentCommands: [{
       key: 'demo', title: '演示', adapter: 'codex', args: ['--engine', 'api'], env: { EMPTY: '' }, envFrom: { TOKEN: 'HOST_TOKEN' },
@@ -137,33 +164,33 @@ describe('array editor with real config runtime', () => {
       key: 'demo', title: '演示', adapter: 'codex', args: ['--engine', 'api'], env: { EMPTY: '' }, envFrom: { TOKEN: 'HOST_TOKEN' },
     }]);
     expect(intent.groups[0]!.changes![0]!.after).toContain('"args":["--engine","api"]');
-    expect((await store('project')).exists).toBe(false);
-    await keys(ui, '\r');
-    await vi.waitFor(() => expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' }), { timeout: 5000 });
-    expect((await store('project')).values.subagentCommands).toEqual(intent.groups[0]!.updates!.subagentCommands);
+    expect(controller.snapshot.activeReview).toBeUndefined();
+    await keys(ui, esc);
+    expect((await store('codex')).values.subagentCommands).toEqual(intent.groups[0]!.updates!.subagentCommands);
   });
 
   it.each([{ columns: 60, rows: 18 }, { columns: 80, rows: 24 }])('edits argv and environment entries as typed containers and saves whole values at $columns x $rows', async (size) => {
     const { ui, controller, store } = await setup('subagentCommands', size);
     await keys(ui, '\r', down, down, down, '\r', '\r');
     expect(ui.lastFrame()).toContain('实际后端 argv');
-    await keys(ui, '\r', '\u0015', '  --literal=${VALUE}  ', '\r', 'a', '\r', '\r');
+    await keys(ui, '\r', '\u0015', '  --literal=${VALUE}  ', '\r');
+    await vi.waitFor(() => expect(ui.lastFrame()).not.toContain('编辑列表项'));
+    await keys(ui, 'a', '\r', '\r');
     expect(ui.lastFrame()).toContain('空字符串');
     await keys(ui, 'c', down, '\r', '\r', '\r', 'literal-value', '\r', 'a', '\r', 'NEW_ENV', '\r', '\r', 'c');
     expect(controller.snapshot.router.current.route, ui.lastFrame()).toMatchObject({ name: 'configFieldEditor', editor: 'object' });
-    await keys(ui, down, '\r', '\r', '\r', '\u0015', 'NEW_HOST_TOKEN', '\r', 'c', 'c', 'c', '\r');
+    await keys(ui, down, '\r', '\r', '\r', '\u0015', 'NEW_HOST_TOKEN', '\r', 'c', 'c', 'c');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
     await keys(ui, 's');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name, ui.lastFrame()).toBe('review'), { timeout: 5000 });
-    expect((await store('project')).exists).toBe(false);
-    await keys(ui, '\r');
-    await vi.waitFor(() => expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' }), { timeout: 5000 });
-    const saved = await store('project');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
+    expect(controller.snapshot.activeReview).toBeUndefined();
+    await keys(ui, esc);
+    const saved = await store('codex');
     expect(saved.values.subagentCommands).toEqual([{
       key: 'demo', title: '演示', adapter: 'custom', mode: 'bundle', command: '/bin/example', entrypoint: '/tmp/entry.mjs',
       args: ['  --literal=${VALUE}  ', 'api', ''], env: { EMPTY: 'literal-value', NEW_ENV: '' }, envFrom: { TOKEN: 'NEW_HOST_TOKEN' },
     }]);
-    expect((await fs.readJson(saved.path)).schemaVersion).toBe(5);
+    expect((await fs.readJson(saved.path)).schemaVersion).toBe(6);
   });
 
   it('cancels row, nested container, parent object and complete-array working copies independently', async () => {
@@ -181,7 +208,7 @@ describe('array editor with real config runtime', () => {
     await keys(ui, '\r', '\u0015', 'discard-array', '\r', 'c', 'c', esc);
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
     expect(controller.externalDrafts).toHaveLength(0);
-    expect((await store('project')).exists).toBe(false);
+    expect((await store('codex')).exists).toBe(false);
   });
 
   it('rejects an invalid environment key in the real KV editor before it enters the parent draft', async () => {
@@ -217,10 +244,10 @@ describe('array editor with real config runtime', () => {
     await keys(ui, esc);
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
     expect(ui.lastFrame()).not.toContain('放弃');
-    controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { scope: 'effective' }, fieldKey: 'empty', editor: 'array' });
+    controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { profile: 'codex' }, fieldKey: 'empty', editor: 'array' });
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('添加一项'), { timeout: 5000 });
     await keys(ui, 'c');
-    expect(controller.snapshot.router.current.route.name).toBe('configLayer');
+    expect(controller.snapshot.router.current.route.name).toBe('configFields');
   });
 
   it('restores item order without making a draft and recalculates invalid duplicate indices after deletion', async () => {
@@ -230,7 +257,7 @@ describe('array editor with real config runtime', () => {
     await keys(ui, 'a', down, '\r', down, '\r', 'c');
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
     expect(ui.lastFrame()).not.toContain('待保存');
-    controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { scope: 'effective' }, fieldKey: 'labels', editor: 'array' });
+    controller.push({ name: 'configFieldEditor', pluginId: 'team/arrays', layer: { profile: 'codex' }, fieldKey: 'labels', editor: 'array' });
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('添加一项'), { timeout: 5000 });
     await keys(ui, down, down, '\r', 'tests', '\r');
     expect(ui.lastFrame()).toContain('第 3 项');
@@ -264,15 +291,14 @@ describe('array editor with real config runtime', () => {
     await keys(ui, down, '\r', '\u0015', 'discard', esc);
     expect(ui.lastFrame()).toContain('docs');
     expect(ui.lastFrame()).toContain('tests');
-    expect((await store('project')).exists).toBe(false);
+    expect((await store('codex')).exists).toBe(false);
     await keys(ui, 'c');
-    expect(controller.snapshot.router.current.route.name).toBe('configLayer');
-    await keys(ui, '\r');
+    expect(controller.snapshot.router.current.route.name).toBe('configFields');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
     await keys(ui, 's');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'), { timeout: 5000 });
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
     expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [{ updates: { labels: ['docs', 'tests'] } }] });
-    expect((await store('project')).exists).toBe(false);
+    expect((await store('codex')).values.labels).toEqual(['docs', 'tests']);
   });
 
   it.each([{ columns: 60, rows: 18 }, { columns: 80, rows: 24 }])('reuses object property editors and cancels an object at $columns x $rows', async (size) => {
@@ -312,15 +338,15 @@ describe('array editor with real config runtime', () => {
     expect(ui.lastFrame()).not.toContain('添加一项');
     expect(ui.lastFrame()).not.toContain('自定义');
     await keys(ui, down, '\r');
-    expect(controller.snapshot.router.current.route.name).toBe('configLayer');
+    expect(controller.snapshot.router.current.route.name).toBe('configFields');
   });
 
   it('retains the previous overview draft when a reopened list is cancelled', async () => {
     const { ui, controller, captured } = await setup();
-    await keys(ui, '\r', '\u0015', 'docs', '\r', 'c', '\r');
+    await keys(ui, '\r', '\u0015', 'docs', '\r', 'c');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
     await keys(ui, '\r', '\r', '\u0015', 'discard', '\r', esc, 's');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'), { timeout: 5000 });
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
     expect(captured.at(-1)).toMatchObject({ groups: [{ updates: { labels: ['docs', 'tests'] } }] });
   });
 
@@ -330,16 +356,16 @@ describe('array editor with real config runtime', () => {
     expect(ui.lastFrame()).toContain('空列表');
     await keys(ui, 'c');
     expect(controller.snapshot.router.current.route).toMatchObject({ editor: 'array' });
-    expect((await store('project')).exists).toBe(false);
+    expect((await store('codex')).exists).toBe(false);
     await record('min-items-error');
   });
 
   it('shows full ordered before and after lists for duplicate objects without guessing item identity', async () => {
     const { ui, controller, captured } = await setup('repeat');
-    await keys(ui, down, down, 'a', down, '\r', '\r', 'c', '\r');
+    await keys(ui, down, down, 'a', down, '\r', '\r', 'c');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
     await keys(ui, 's');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'), { timeout: 5000 });
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
     const intent = captured.at(-1)!;
     if (intent.kind !== 'configSaveBatch') throw new Error('Expected config batch');
     expect(intent.groups[0]!.updates!.repeat).toEqual([{ model: 'same' }, { model: 'last' }, { model: 'same' }]);
@@ -348,35 +374,42 @@ describe('array editor with real config runtime', () => {
     expect(intent.groups[0]!.changes![0]!.children).toBeUndefined();
   });
 
-  it.each([{ columns: 60, rows: 18 }, { columns: 80, rows: 24 }])('writes the edited array through Controller and the real v5 writer at $columns x $rows', async (size) => {
+  it.each([{ columns: 60, rows: 18 }, { columns: 80, rows: 24 }])('writes the edited array through Controller and the real v6 writer at $columns x $rows', async (size) => {
     const { ui, controller, store, record } = await setup('labels', size);
-    await keys(ui, '\r', '\u0015', 'docs', '\r', 'c', '\r');
+    await keys(ui, '\r');
+    await vi.waitFor(() => expect(controller.snapshot.router.current.route).toMatchObject({
+      name: 'configFieldEditor', editor: 'string', arrayItem: { rowId: expect.any(String) },
+    }));
+    await keys(ui, '\u0015', 'docs', '\r');
+    await vi.waitFor(() => expect(controller.snapshot.router.current.route).toMatchObject({
+      name: 'configFieldEditor', editor: 'array',
+    }));
+    await keys(ui, 'c');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
     await keys(ui, 's');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'), { timeout: 5000 });
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain('只保存'), { timeout: 5000 });
-    await record('review');
-    await keys(ui, '\r');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('result'), { timeout: 5000 });
-    expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' });
-    await record('result');
-    const saved = await store('project');
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('已保存，是否更新插件？'), { timeout: 5000 });
+    expect(controller.snapshot.activeReview).toBeUndefined();
+    await record('saved');
+    await keys(ui, esc);
+    expect(controller.snapshot.router.current.route.name).toBe('configFields');
+    const saved = await store('codex');
     expect(saved.values.labels).toEqual(['docs', 'tests']);
     const envelope = await fs.readJson(saved.path);
-    expect(envelope.schemaVersion).toBe(5);
-    expect(envelope.values).toEqual({ labels: ['docs', 'tests'] });
+    expect(envelope.schemaVersion).toBe(6);
+    expect(envelope.common).toEqual({});
+    expect(envelope.platforms).toEqual({ codex: { labels: ['docs', 'tests'] } });
   });
 
   it('rejects an old working list after an external complete-value change', async () => {
     const { ui, controller, dependencies, isolation, store } = await setup();
-    await keys(ui, '\r', '\u0015', 'docs', '\r', 'c', '\r');
+    await keys(ui, '\r', '\u0015', 'docs', '\r', 'c');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('待保存'), { timeout: 5000 });
-    const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/arrays', apply: false, groups: [{ scope: 'project', updates: { labels: ['external'] } }] });
-    await writePluginConfigStore({ sourceId: 'team', sourceIdentity: evidence.source!.sourceIdentity, logicalIdentity: evidence.source!.logicalIdentity, pluginName: 'arrays', scope: 'project', values: { labels: ['external'] }, cwd: isolation.layout.fixtureCwd, env: isolation.env });
+    const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/arrays', apply: false, groups: [{ scope: 'user', platform: 'codex', updates: { labels: ['external'] } }] });
+    await writePluginConfigStore({ sourceId: 'team', sourceIdentity: evidence.source!.sourceIdentity, logicalIdentity: evidence.source!.logicalIdentity, pluginName: 'arrays', scope: 'user', platform: 'codex', values: { labels: ['external'] }, cwd: isolation.layout.fixtureCwd, env: isolation.env });
     await keys(ui, 's');
-    await vi.waitFor(() => expect(controller.snapshot.reviewPreparation?.state).toBe('failed'), { timeout: 5000 });
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('设置未保存'), { timeout: 5000 });
     expect(controller.snapshot.activeReview).toBeUndefined();
-    expect((await store('project')).values.labels).toEqual(['external']);
+    expect((await store('codex')).values.labels).toEqual(['external']);
 
   });
 });

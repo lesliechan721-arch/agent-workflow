@@ -7,6 +7,7 @@ import { addRoot, resolveIntentPath } from '../../src/intent/intent-store.js';
 import { createScopeContext } from '../../src/intent/scope-context.js';
 import { demandNativeProjection, readDemand, readIntentReferences, resolveDelivery } from '../../src/recovery/demand.js';
 import type { NormalizedPluginManifest } from '../../src/types.js';
+import { pluginConfigTargetRenderScopes } from '../../src/utils/plugin-config-impact.js';
 import { getClaudeHome, getCodexHome, resolveAwHome } from '../../src/utils/state-paths.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -14,55 +15,74 @@ function manifest(): NormalizedPluginManifest {
   return {
     schemaVersion: 3, name: 'demo', version: '1.0.0', description: 'demo', skills: './skills',
     marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-    distributions: { agentSkills: { skills: './portable' } },
   };
 }
 
 describe('scoped demand and execution context', () => {
-  it('chooses delivery by explicit scope and Agent without fallback on runtime health', () => {
+  it('uses Native skills on Codex and Claude and the AW writer on other targets', () => {
     const plugin = manifest();
     for (const scope of ['user', 'project'] as const) {
       expect(resolveDelivery(plugin, 'codex', scope)).toEqual({ kind: 'native', platform: 'codex' });
-      expect(resolveDelivery(plugin, 'claude-code', scope)).toEqual({ kind: 'native', platform: 'claude' });
+      expect(resolveDelivery(plugin, 'claude', scope)).toEqual({ kind: 'native', platform: 'claude' });
       expect(resolveDelivery(plugin, 'cursor', scope)).toEqual({
-        kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor',
+        kind: 'agent-skills', provider: 'aw', agentId: 'cursor',
       });
     }
     plugin.slashCommands = './commands';
-    expect(resolveDelivery(plugin, 'codex', 'project')?.kind).toBe('agent-skills');
-    delete plugin.distributions;
+    expect(resolveDelivery(plugin, 'codex', 'project')).toBeUndefined();
+    plugin.platforms = ['codex', 'claude'];
     expect(resolveDelivery(plugin, 'cursor', 'project')).toBeUndefined();
   });
 
-  // Test Value Gate: a Claude Native target that is not applicable to the requested scope must not hide Portable.
-  it('uses Claude dynamic target scopes when choosing Native versus Portable', () => {
+  // Test Value Gate: capability checks must select the same concrete target and
+  // scope as materialization, without turning a disabled result into a new gate.
+  it.each([
+    ['cursor', 'agent-skills.skill', 'user', 'present', 'user', true],
+    ['cursor', 'agent-skills.skill', 'user', 'present', 'project', false],
+    ['pi', 'agent-skills.skill', 'project', 'present', 'project', false],
+    ['codex', 'codex.skill', 'project', 'present', 'project', false],
+    ['cursor', 'agent-skills.skill', 'project', 'disabled', 'project', true],
+  ] as const)('matches Cursor delivery to %s %s %s/%s for %s (%s)', (
+    platform, target, declaredScope, state, scope, supported,
+  ) => {
     const plugin = manifest();
     delete plugin.skills;
-    plugin.marketplace.policy.products = ['CLAUDE'];
-    plugin.artifacts = { targets: [{
-      id: 'project-skill', platform: 'claude', scopes: ['project'], target: 'claude.skill',
-      states: ['present'], refreshKeys: [], skillKey: 'project-skill',
-    }] };
+    plugin.artifacts = { targets: [{ id: 'dynamic', platform, target,
+      scopes: [declaredScope], states: [state], refreshKeys: [], skillKey: 'dynamic' }] };
 
-    expect(resolveDelivery(plugin, 'claude-code', 'user')).toEqual({
-      kind: 'agent-skills', provider: 'skills-cli', agentId: 'claude-code',
-    });
-    expect(resolveDelivery(plugin, 'claude-code', 'project')).toEqual({ kind: 'native', platform: 'claude' });
-    plugin.artifacts.targets![0]!.scopes = ['user'];
-    expect(resolveDelivery(plugin, 'claude-code', 'user')).toEqual({ kind: 'native', platform: 'claude' });
-    delete plugin.distributions;
-    expect(resolveDelivery({ ...plugin, artifacts: { targets: [{
-      ...plugin.artifacts.targets![0]!, scopes: ['project'],
-    }] } }, 'claude-code', 'user')).toBeUndefined();
+    expect(resolveDelivery(plugin, 'cursor', scope)).toEqual(supported
+      ? { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }
+      : undefined);
   });
 
-  it('does not treat Claude product eligibility as Native scope applicability by itself', () => {
+  // Test Value Gate: project activation must retain Native delivery and the shared user producer profile.
+  it('keeps Claude dynamic skills Native with a shared user producer in either activation scope', () => {
     const plugin = manifest();
     delete plugin.skills;
-    delete plugin.distributions;
-    plugin.marketplace.policy.products = ['CLAUDE'];
+    plugin.platforms = ['claude'];
+    plugin.artifacts = { targets: [{
+      id: 'project-skill', platform: 'claude', scopes: ['project'], target: 'claude.skill',
+      states: ['present'], refreshKeys: ['mode'], skillKey: 'project-skill',
+    }] };
 
-    expect(resolveDelivery(plugin, 'claude-code', 'user')).toBeUndefined();
+    const rootDir = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    const meta = { manifest: plugin, rootDir, manifestPath: path.join(rootDir, '.agents-plugin/plugin.json') };
+    for (const declaredScope of ['project', 'user'] as const) {
+      plugin.artifacts.targets![0]!.scopes = [declaredScope];
+      for (const scope of ['user', 'project'] as const) {
+        expect(resolveDelivery(plugin, 'claude', scope)).toEqual({ kind: 'native', platform: 'claude' });
+        expect(pluginConfigTargetRenderScopes(meta, { pluginName: 'demo', platform: 'claude', scope }))
+          .toEqual(['user']);
+      }
+    }
+  });
+
+  it('does not treat Claude platform support as a deployable Native component', () => {
+    const plugin = manifest();
+    delete plugin.skills;
+    plugin.platforms = ['claude'];
+
+    expect(resolveDelivery(plugin, 'claude', 'user')).toBeUndefined();
   });
 
   it('retains source references with no Agents or available Catalog and uses a protocol-free Native view', async () => {
@@ -74,8 +94,7 @@ describe('scoped demand and execution context', () => {
     expect(demand.preferences.state).toBe('absent');
     expect(await readIntentReferences(location)).toEqual(['team/demo']);
     const native = demandNativeProjection(demand);
-    expect(native).toEqual({ roots: [{ pluginId: 'team/demo', platforms: ['codex', 'claude'] }],
-      dependencyScopeOverrides: [] });
+    expect(native).toEqual({ roots: [], dependencyScopeOverrides: [] });
     expect(native).not.toHaveProperty('schemaVersion');
     expect(native).not.toHaveProperty('kind');
   });
@@ -91,7 +110,7 @@ describe('scoped demand and execution context', () => {
     expect(demand.roots).toBeNull();
     expect(demand.errors[0]?.message).toContain(file);
     expect(demand.errors[0]?.message).toContain('备份');
-    expect(demand.errors[0]?.message).toContain('aw intent add');
+    expect(demand.errors[0]?.message).toContain('aw plugin intent add');
     expect(await fs.readFile(file, 'utf8')).toBe(bytes);
   });
 

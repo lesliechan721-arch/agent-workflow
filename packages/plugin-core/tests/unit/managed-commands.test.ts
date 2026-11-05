@@ -86,15 +86,13 @@ describe('managed commands author contract', () => {
       await fs.writeFile(path.join(root, 'render.mjs'), '');
       const raw = manifest({
         skills: './skills',
-        marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CLAUDE'] } },
+        platforms: ['claude'],
         scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
         managedCommands: { sets: [{ set: 'review', producer: { kind: 'static-skill', platform: 'codex', skillKey: 'review' }, mode, ...(mode === 'static' ? { entries: [] } : { refreshKeys: [] }) }] },
       });
       await expect(validateSourcePluginManifest(root, raw)).rejects.toThrow(/support/u);
-      for (const products of [['CODEX'], undefined]) {
-        const normalized = await validateSourcePluginManifest(root, { ...raw, marketplace: {
-          category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', ...(products ? { products } : {}) },
-        } });
+      for (const platforms of [['codex'], undefined]) {
+        const normalized = await validateSourcePluginManifest(root, { ...raw, platforms });
         expect(getManagedCommandArtifactTargets(normalized)).toMatchObject(mode === 'static' ? [] : [
           { id: 'command-set.review', platform: 'codex', surface: { kind: 'platform', platform: 'codex' }, scopes: ['user'] },
         ]);
@@ -102,7 +100,7 @@ describe('managed commands author contract', () => {
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
-  it('uses shared user requests for native static sets while Claude owned Skill sets keep their declared scope', () => {
+  it('uses shared user requests for static and dynamic Native Skill command sets', () => {
     const normalized = validatePluginManifest('/test/plugin', manifest({
       skills: './skills',
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
@@ -115,8 +113,38 @@ describe('managed commands author contract', () => {
     expect(getManagedCommandArtifactTargets(normalized)).toMatchObject([
       { id: 'command-set.codex-native', platform: 'codex', scopes: ['user'] },
       { id: 'command-set.claude-native', platform: 'claude', scopes: ['user'] },
-      { id: 'command-set.owned', platform: 'claude', scopes: ['project'] },
+      { id: 'command-set.owned', platform: 'claude', scopes: ['user'] },
     ]);
+  });
+
+  it('compiles v5 refresh keys for Native Skill producers and the common command package', () => {
+    const raw = manifest({
+      platforms: ['codex', 'claude'], skills: './skills',
+      config: { schemaVersion: 5, fields: { option: { type: 'string' } }, platforms: {
+        codex: { fields: { option: { type: 'string', sensitive: true } } },
+        claude: { fields: { platformOnly: { type: 'boolean' } } },
+      } },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      artifacts: { targets: [{ id: 'native', platform: 'codex', target: 'codex.skill', skillKey: 'owned',
+        scopes: ['user'], states: ['present'], refreshKeys: [] }] },
+    });
+    expect(() => validatePluginManifest('/test/plugin', { ...raw, managedCommands: {
+      packages: [{ ...packages[0], render: true, refreshKeys: ['option'] }], sets: [
+        { set: 'common', producer: { kind: 'package', packageKey: 'tools' }, mode: 'dynamic', refreshKeys: ['option'] },
+        { set: 'claude', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'review' }, mode: 'dynamic', refreshKeys: ['platformOnly'] },
+      ],
+    } })).not.toThrow();
+    for (const producer of [
+      { kind: 'static-skill', platform: 'codex', skillKey: 'review' },
+      { kind: 'artifact', artifactId: 'native' },
+    ]) {
+      expect(() => validatePluginManifest('/test/plugin', { ...raw, managedCommands: { sets: [{
+        set: 'sensitive', producer, mode: 'dynamic', refreshKeys: ['option'],
+      }] } })).toThrow(/sensitive config dependency/u);
+    }
+    expect(() => validatePluginManifest('/test/plugin', { ...raw, managedCommands: {
+      packages: [{ ...packages[0], render: true, refreshKeys: ['platformOnly'] }],
+    } })).toThrow(/Unknown config key "platformOnly"/u);
   });
 
   it('rejects unknown fields and invalid cross-declaration inputs at the public manifest boundary', () => {

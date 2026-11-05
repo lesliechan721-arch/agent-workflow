@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
+import { resolveSupportedPlatforms } from '@lesliechan721/aw-plugin-core/manifest';
 
 import {
   stageCatalogArtifacts,
@@ -171,8 +172,15 @@ export async function bundlePlugins(
         strictRequirements: options.strictRequirements,
       },
     );
-    await removeGeneratedEmptyDirectories(bundledPluginRoot, (result.plugin.manifest.managedCommands?.packages ?? [])
-      .map((entry) => path.resolve(bundledPluginRoot, entry.sourceDir)));
+    const preservedRoots = [
+      ...(result.plugin.manifest.managedCommands?.packages ?? []).map((entry) => entry.sourceDir),
+      ...Object.values(result.platformManifests).flatMap((manifest) => manifest.skills ?? []),
+      ...[...resolveSupportedPlatforms(result.plugin.manifest)]
+        .filter((platform) => platform !== 'codex' && platform !== 'claude' && result.plugin.manifest.skills)
+        .map((platform) => `./${platform}/skills`),
+    ];
+    await removeGeneratedEmptyDirectories(bundledPluginRoot, preservedRoots
+      .map((relativePath) => path.resolve(bundledPluginRoot, relativePath)));
     bundledPlugins.push(result.plugin);
     runtimeProjection[result.plugin.manifest.name] = result.runtimeProjection;
 

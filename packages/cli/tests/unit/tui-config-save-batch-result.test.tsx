@@ -10,7 +10,9 @@ import {
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
-import type { ConfigPageViewModel } from '../../src/tui/model.js';
+import type { ConfigPageViewModel, ConfigReadOptions } from '../../src/tui/model.js';
+
+import { chooseConfigProfile, chooseConfigSave, openConfigSave } from '../helpers/tui-console-app-input.js';
 
 afterEach(() => cleanup());
 
@@ -19,7 +21,7 @@ const pluginId = 'team/demo';
 function status(): TuiStatusLoadResult {
   return {
     payload: {
-      schemaVersion: 7,
+      schemaVersion: 8,
       catalog: {
         primarySourceId: 'team', configDigest: 'sha256:config', compositeDigest: 'sha256:composite',
         sources: [{
@@ -45,11 +47,11 @@ function evidence(intent: OperationIntent): OperationEvidence {
     return {
       catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
       configBatch: { groups: intent.groups.map((group) => ({
-        scope: group.scope,
-        targetFingerprint: `sha256:${group.scope}`,
+        scope: 'user', platform: group.platform,
+        targetFingerprint: `sha256:${group.platform ?? 'common'}`,
         config: {
-          scope: group.scope, storeDigest: `sha256:store:${group.scope}`,
-          impactState: 'known', affectedTargets: [{ platform: 'codex', scope: group.scope }],
+          scope: 'user', platform: group.platform, context: intent.context ?? 'user', storeDigest: `sha256:store:${group.platform ?? 'common'}`,
+          impactState: 'known', affectedTargets: [{ platform: group.platform ?? 'codex', scope: intent.context ?? 'user' }],
         },
       })) },
     };
@@ -64,20 +66,21 @@ function evidence(intent: OperationIntent): OperationEvidence {
   };
 }
 
-function configPage(layer: ConfigPageViewModel['layer']): ConfigPageViewModel {
+function configPage(options: ConfigReadOptions): ConfigPageViewModel {
+  const profile = options.platform ?? 'common';
+  const context = options.context ?? 'user';
   return {
-    pluginId,
-    layer,
+    pluginId, profile, context, layer: { profile, context },
     storedCount: 0,
     presets: [],
     groups: [{
       id: 'main', title: '常用', advanced: false, fields: [{
         key: 'mode', title: '运行模式', type: 'string', definition: { type: 'string' },
-        displayValue: layer.scope === 'effective' ? '默认' : '未设置',
+        displayValue: '默认',
         required: false, sensitive: false, writable: true, canSet: true, canUnset: false,
         dirty: false, inherited: true, configured: false, sourceLabel: '插件默认',
         effectiveDisplayValue: '默认', effectiveSourceLabel: '插件默认', effectiveValue: 'default',
-        draftValue: layer.scope === 'effective' ? 'default' : undefined,
+        draftValue: 'default',
         allowCustom: true, advanced: false,
       }],
     }],
@@ -144,7 +147,7 @@ describe('TUI config save batch result', () => {
     });
     await value.load();
     const review = await value.buildOperationReview({
-      kind: 'configSave', pluginId, scope: 'user', projectLayer: 'shared', apply: true,
+      kind: 'configSave', pluginId, scope: 'user', apply: true,
       updates: { mode: 'fast' }, changes: [{ key: 'mode', title: '模式', before: 'safe', after: 'fast' }],
     });
     expect(review.configImpact?.affectedTargetCount).toBe(1);
@@ -178,190 +181,112 @@ describe('TUI config save batch result', () => {
     await input(instance, '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route).toEqual({
-      name: 'configFields', pluginId, layer: { scope: 'effective' },
+      name: 'configFields', pluginId, layer: { profile: 'common' },
     });
     expect(instance.lastFrame()).toContain('插件设置');
     expect(instance.lastFrame()).not.toContain('正在检查可用保存位置');
   });
 
-  it('keeps a target-cancelled value private and discards only that candidate', async () => {
+  it('keeps an editor-cancelled value private and discards only that candidate', async () => {
     const captured: OperationIntent[] = [];
-    const dependencies: TuiControllerDependencies = {
+    const value = new TuiController({
       loadStatus: vi.fn().mockResolvedValue(status()),
-      captureEvidence: vi.fn(async (intent: OperationIntent) => {
-        captured.push(intent);
-        return evidence(intent);
-      }),
+      captureEvidence: vi.fn(async (intent) => { captured.push(intent); return evidence(intent); }),
       executeIntent: vi.fn(),
-      getConfigPage: vi.fn(async (_pluginId, layer) => configPage(layer)),
-    };
-    const value = new TuiController(dependencies);
-    await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
+      getConfigPage: vi.fn(async (_pluginId, options) => configPage(options)),
+    });
+    await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-
-    await input(instance, '\r', 'candidate-only', '\r');
-    expect(value.snapshot.router.current.route.name).toBe('configLayer');
+    await nextTurn(5);
+    await input(instance, '\r', '\u0015', 'candidate-only');
     expect(JSON.stringify(value.snapshot)).not.toContain('candidate-only');
-
-    await escape(instance);
-    expect(value.snapshot.router.current.route.name).toBe('configFieldEditor');
-    expect(instance.lastFrame()).toContain('candidate-only');
-    expect(JSON.stringify(value.snapshot)).not.toContain('candidate-only');
-
     await escape(instance);
     expect(value.snapshot.router.current.route.name).toBe('configFields');
-    expect(instance.lastFrame()).not.toContain('查看保存汇总');
+    expect(instance.lastFrame()).not.toContain('candidate-only');
+    expect(instance.lastFrame()).not.toContain('项待保存');
+    expect(captured).toEqual([]);
   });
 
-  it('keeps drafts for the same field in two scopes and submits project before user', async () => {
+  it('keeps same-name drafts in two portable profiles and stores both in the user document', async () => {
     const captured: OperationIntent[] = [];
-    const dependencies: TuiControllerDependencies = {
+    const value = new TuiController({
       loadStatus: vi.fn().mockResolvedValue(status()),
-      captureEvidence: vi.fn(async (intent: OperationIntent) => {
-        captured.push(intent);
-        return evidence(intent);
+      captureEvidence: vi.fn(async (intent) => { captured.push(intent); return evidence(intent); }),
+      executeIntent: vi.fn(async (intent) => {
+        if (intent.kind !== 'configSaveBatch') throw new Error('unexpected intent');
+        return { status: 'succeeded', groups: intent.groups.map((group) => ({
+          scope: 'user', platform: group.platform, status: 'succeeded', configSaved: true,
+          applyRequested: false, applyStatus: 'notRequested',
+        })) };
       }),
-      executeIntent: vi.fn(),
-      getConfigPage: vi.fn(async (_pluginId, layer) => configPage(layer)),
-    };
-    const value = new TuiController(dependencies);
-    await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-
-    await input(instance, '\r', '\u0015', 'project-value', '\r', '\r');
-
-    await input(instance, '\r', '\u0015', 'user-value', '\r', '\u001b[B', '\r');
-    expect(instance.lastFrame()).toContain('project-value');
-    expect(instance.lastFrame()).toContain('待保存到当前项目、个人默认');
-    expect(instance.lastFrame()).toContain('保存设置（2）');
-
-    await input(instance, 's', '\u001b[B', '\r');
-    expect(captured.at(-1)).toMatchObject({
-      kind: 'configSaveBatch', apply: false,
-      groups: [
-        { scope: 'project', updates: { mode: 'project-value' } },
-        { scope: 'user', updates: { mode: 'user-value' } },
-      ],
+      getConfigPage: vi.fn(async (_pluginId, options) => configPage(options)),
     });
-  });
-
-  it('keeps the failed user draft after a successful project apply retry', async () => {
-    const captured: OperationIntent[] = [];
-    const dependencies: TuiControllerDependencies = {
-      loadStatus: vi.fn().mockResolvedValue(status()),
-      captureEvidence: vi.fn(async (intent: OperationIntent) => {
-        captured.push(intent);
-        return evidence(intent);
-      }),
-      executeIntent: vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch'
-        ? {
-            status: 'partial',
-            groups: [{
-              scope: 'project', status: 'failed', configSaved: true,
-              applyRequested: true, applyStatus: 'failed', errorCode: 'configApplyFailed',
-            }, {
-              scope: 'user', status: 'failed', configSaved: false,
-              applyRequested: true, applyStatus: 'notRequested', errorCode: 'configWriteFailed',
-            }],
-          }
-        : {
-            configWrite: 'succeeded', overallState: 'succeeded',
-            apply: { state: 'succeeded', targetResults: [] },
-          }),
-      getConfigPage: vi.fn(async (_pluginId, layer) => configPage(layer)),
-    };
-    const value = new TuiController(dependencies);
-    await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
+    await value.load(); value.push({ name: 'pluginDetail', pluginId });
+    value.beginConfigFlow(pluginId, { platform: 'cursor', context: 'project' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-
-    await input(instance, '\r', '\u0015', 'project-value', '\r', '\r');
-    await input(instance, '\r', '\u0015', 'user-value', '\r', '\u001b[B', '\r');
-    await input(instance, 's');
-    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
-    const batchReview = value.snapshot.activeReview;
-    expect(batchReview?.operationKind).toBe('configSaveBatch');
-    await value.executeOperation(batchReview!.reviewToken);
-    await nextTurn(4);
-    expect(instance.lastFrame()).toContain('当前项目');
-    expect(instance.lastFrame()).toContain('已保存 · 应用失败');
-    expect(instance.lastFrame()).toContain('个人默认');
-    expect(instance.lastFrame()).toContain('保存失败');
-
-    await input(instance, '\r');
     await nextTurn(5);
-    const retryReview = value.snapshot.activeReview;
-    expect(retryReview?.operationKind).toBe('configSave');
-    expect(captured.at(-1)).toMatchObject({
-      kind: 'configSave', scope: 'project', retryApply: true, updates: {}, removeKeys: [],
-    });
-    await value.executeOperation(retryReview!.reviewToken);
-    await nextTurn(4);
-    expect(value.externalDrafts).toEqual([
-      expect.objectContaining({ kind: 'configDraft', owner: pluginId }),
-    ]);
+    await input(instance, '\r', '\u0015', 'cursor-value', '\r');
+    await chooseConfigProfile(instance, value, 'generic');
+    await input(instance, '\r', '\u0015', 'generic-value', '\r');
+    expect(instance.lastFrame()).not.toContain('cursor-value');
+    await openConfigSave(instance, value);
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', apply: false, context: 'project', groups: [
+      { scope: 'user', platform: 'cursor', updates: { mode: 'cursor-value' } },
+      { scope: 'user', platform: 'generic', updates: { mode: 'generic-value' } },
+    ] });
+    await chooseConfigSave(instance, value, 'apply');
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSave', apply: true, retryApply: true, targets: ['cursor', 'generic'], updates: {} });
   });
 
-  it('shows each scope result and retries only apply for the saved failed-apply scope', async () => {
+  it('keeps the failed Claude draft after applying an already saved Codex profile', async () => {
     const captured: OperationIntent[] = [];
-    const dependencies: TuiControllerDependencies = {
+    const value = new TuiController({
       loadStatus: vi.fn().mockResolvedValue(status()),
-      captureEvidence: vi.fn(async (intent: OperationIntent) => {
-        captured.push(intent);
-        return evidence(intent);
-      }),
-      executeIntent: vi.fn(async (intent: OperationIntent) => {
-        if (intent.kind === 'configSaveBatch') {
-          return {
-            status: 'partial',
-            groups: [{
-              scope: 'project', status: 'failed', configSaved: false,
-              applyRequested: true, applyStatus: 'notRequested', errorCode: 'configWriteFailed',
-            }, {
-              scope: 'user', status: 'failed', configSaved: true,
-              applyRequested: true, applyStatus: 'failed', errorCode: 'configApplyFailed',
-            }],
-          };
-        }
-        return {
-          configWrite: 'succeeded', overallState: 'succeeded',
-          apply: { state: 'succeeded', targetResults: [] },
-        };
-      }),
-    };
-    const value = new TuiController(dependencies);
-    await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
-    const review = await value.buildOperationReview({
-      kind: 'configSaveBatch', pluginId, apply: true,
-      groups: [{ scope: 'project', updates: { mode: 'strict' } }, {
-        scope: 'user', updates: { token: 'secret' }, sensitiveKeys: ['token'],
-      }],
+      captureEvidence: vi.fn(async (intent) => { captured.push(intent); return evidence(intent); }),
+      executeIntent: vi.fn(async (intent) => intent.kind === 'configSaveBatch' ? {
+        status: 'partial', groups: [
+          { scope: 'user', platform: 'codex', status: 'succeeded', configSaved: true, applyRequested: false, applyStatus: 'notRequested' },
+          { scope: 'user', platform: 'claude', status: 'failed', configSaved: false, applyRequested: false, applyStatus: 'notRequested', errorCode: 'configWriteFailed' },
+        ],
+      } : { configWrite: 'succeeded', overallState: 'succeeded', apply: { state: 'succeeded', targetResults: [] } }),
+      getConfigPage: vi.fn(async (_pluginId, options) => configPage(options)),
     });
-    await value.executeOperation(review.reviewToken);
-
+    await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId, { platform: 'codex' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(3);
-    expect(instance.lastFrame()).toContain('当前项目');
-    expect(instance.lastFrame()).toContain('保存失败');
-    expect(instance.lastFrame()).toContain('个人默认');
-    expect(instance.lastFrame()).toContain('已保存 · 应用失败');
-    expect(instance.lastFrame()).toContain('重试应用');
+    await nextTurn(5);
+    await input(instance, '\r', '\u0015', 'codex-value', '\r');
+    await chooseConfigProfile(instance, value, 'claude');
+    await input(instance, '\r', '\u0015', 'claude-value', '\r', 's');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('部分设置未保存'));
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('claude-value'));
+    const review = await value.buildOperationReview({ kind: 'configSave', pluginId, platform: 'codex', apply: true, retryApply: true, updates: {} });
+    await value.executeOperation(review.reviewToken); await nextTurn(5);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSave', platform: 'codex', retryApply: true, updates: {} });
+    expect(value.externalDrafts).toEqual([expect.objectContaining({ kind: 'configDraft', owner: pluginId })]);
+  });
 
-    await input(instance, '\r');
-    expect(captured.at(-1)).toEqual(expect.objectContaining({
-      kind: 'configSave', pluginId, scope: 'user', apply: true, retryApply: true,
-      updates: {}, removeKeys: [],
-    }));
-    expect(JSON.stringify(captured.at(-1))).not.toContain('secret');
+  it('shows each profile result and retries only the saved profile whose apply failed', async () => {
+    const captured: OperationIntent[] = [];
+    const value = new TuiController({
+      loadStatus: vi.fn().mockResolvedValue(status()),
+      captureEvidence: vi.fn(async (intent) => { captured.push(intent); return evidence(intent); }),
+      executeIntent: vi.fn(async () => ({ status: 'partial', groups: [
+        { scope: 'user', platform: 'codex', status: 'failed', configSaved: false, applyRequested: true, applyStatus: 'notRequested', errorCode: 'configWriteFailed' },
+        { scope: 'user', platform: 'claude', status: 'failed', configSaved: true, applyRequested: true, applyStatus: 'failed', errorCode: 'configApplyFailed' },
+      ] })),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({ kind: 'configSaveBatch', pluginId, apply: true, groups: [
+      { scope: 'user', platform: 'codex', updates: { mode: 'codex-value' } },
+      { scope: 'user', platform: 'claude', updates: { mode: 'claude-value' } },
+    ] });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await value.executeOperation(review.reviewToken); await nextTurn(5);
+    expect(instance.lastFrame()).toContain('Codex');
+    expect(instance.lastFrame()).toContain('Claude');
+    expect(instance.lastFrame()).toContain('保存失败');
+    expect(instance.lastFrame()).toContain('已保存 · 应用失败');
+    await input(instance, '\r'); await nextTurn(5);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSave', scope: 'user', platform: 'claude', retryApply: true, updates: {}, removeKeys: [] });
   });
 });

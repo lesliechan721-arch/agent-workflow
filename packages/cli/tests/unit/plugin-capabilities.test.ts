@@ -42,16 +42,19 @@ describe('plugin capabilities command', () => {
         conflicts: expect.any(String),
       }),
       expect.objectContaining({
-        field: 'distributions.agentSkills',
-        profiles: 'agent-skills',
-        requires: expect.stringContaining('native capability'),
-        conflicts: expect.stringContaining('Portable-only'),
+        field: 'platforms',
+        acceptedValues: ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic'],
+        profiles: 'codex, claude, antigravity, cursor, opencode, pi, generic',
+        requires: expect.stringContaining('all seven canonical targets'),
       }),
       expect.objectContaining({
-        field: 'distributions.agentSkills.skills',
-        profiles: 'agent-skills static',
+        field: 'skills',
+        profiles: expect.stringContaining('one ./skills source root'),
         requires: expect.stringContaining('production README.md'),
       }),
+    ]));
+    expect(result.capabilities.manifest.map((entry: { field: string }) => entry.field)).not.toEqual(expect.arrayContaining([
+      'distributions.agentSkills', 'distributions.agentSkills.skills', 'marketplace.policy.products',
     ]));
     expect(output.stderr()).toBe('');
   });
@@ -95,6 +98,7 @@ describe('plugin capabilities command', () => {
     ]));
     expect(result.capabilities.artifacts.map((entry: { field: string }) => entry.field)).not.toEqual(expect.arrayContaining([
       'rendererContext.runtimeConfig', 'artifacts.targets[].runtimeConfig.resourceVersion', 'artifacts.targets[].runtimeConfig.artifactIds',
+      'artifacts.targets[].delivery', 'artifacts.targets[].delivery.mode', 'artifacts.targets[].delivery.identity', 'artifacts.targets[].delivery.renderProfile',
     ]));
   });
 

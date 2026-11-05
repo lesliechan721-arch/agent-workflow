@@ -100,7 +100,7 @@ describe('config reference dependency failures in renderer and runtime', () => {
       commandEnv: options.env, requestedArtifactIds: ['selected-skill'] });
     try {
       expect(written.context.config.values).toEqual({ selected: 'built-in' });
-      expect(written.context.config.sources).toEqual({ selected: 'user' });
+      expect(written.context.config.sources).toEqual({ selected: 'common' });
       expect(written.context.config.issues).toEqual([]);
       expect(written.runtimeConfigSnapshots['selected-skill']!.allowedKeys).toEqual(['selected']);
     } finally {

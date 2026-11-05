@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 
-import type { DistributionName, PlatformName } from '../types.js';
+import type { DistributionName, PlatformTarget } from '../types.js';
 
 export const ARTIFACT_SOURCES_ROOT = path.posix.join('.agents-plugin', 'artifact-sources');
 
@@ -25,7 +25,7 @@ export async function resolveCommandSourceDirectory(options: {
 }
 
 export function getArtifactSourceBundleRelativePath(options: {
-  platform?: PlatformName;
+  platform?: PlatformTarget;
   distribution?: DistributionName;
   artifactId: string;
   index: number;

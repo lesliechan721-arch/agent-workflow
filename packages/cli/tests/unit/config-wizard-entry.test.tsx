@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const mocks = vi.hoisted(() => ({
   applyPluginConfigWrite: vi.fn(),
@@ -16,14 +17,17 @@ vi.mock('../../src/utils/plugin-config-write.js', async () => {
 });
 
 describe('config mutation runtime entry', () => {
+  // Test Value Gate: source resolution failure must produce a receipt before any config write or wizard.
   it.each([
-    ['set', ['demo', 'key', '--value-json', '"value"', '--scope', 'user']],
-    ['unset', ['demo', 'key']],
-    ['reset', ['demo', '--scope', 'user', '--yes']],
-  ] as const)('returns a v4 resolver failure for config %s', async (command, args) => {
+    ['set', ['team/demo', 'key', '--value-json', '"value"', '--platform', 'cursor']],
+    ['unset', ['team/demo', 'key']],
+  ] as const)('reports a resolver failure before plugin config %s writes', async (command, args) => {
+    const isolation = getCurrentSourceTestIsolation();
     const captured = createCapturedCliIo();
     const launch = vi.fn();
-    const exitCode = await runCli(['config', command, ...args, '--json'], {
+    const exitCode = await runCli(['plugin', 'config', command, ...args, '--context', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
       interactive: true,
       io: captured.io,
       tuiRunner: { launch } as never,
@@ -33,6 +37,7 @@ describe('config mutation runtime entry', () => {
     expect(JSON.parse(captured.readStdout())).toMatchObject({
       receiptSchemaVersion: 7,
       command: `config:${command}`,
+      plugin: 'team/demo',
       configWrite: 'notStarted',
       ok: false,
       overallState: 'failed',
@@ -42,16 +47,51 @@ describe('config mutation runtime entry', () => {
     expect(mocks.resetPluginConfigWithHelper).not.toHaveBeenCalled();
   });
 
-  it('does not expose a sensitive value in the transition failure', async () => {
-    const secret = 'transition-secret-value';
+  it('requires confirmation before resetting a platform profile outside a TTY', async () => {
+    const isolation = getCurrentSourceTestIsolation();
     const captured = createCapturedCliIo();
-    await runCli([
-      'config', 'set', 'demo', 'token', '--value-json', JSON.stringify(secret), '--scope', 'user', '--json',
+    const launch = vi.fn();
+    const exitCode = await runCli([
+      'plugin', 'config', 'reset', 'team/demo', '--platform', 'generic', '--context', 'user', '--json',
     ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: true,
+      io: captured.io,
+      tuiRunner: { launch } as never,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({
+      command: 'config:reset',
+      configWrite: 'notStarted',
+      ok: false,
+      errors: [{ code: 'invalidArguments' }],
+    });
+    expect(launch).not.toHaveBeenCalled();
+    expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
+    expect(mocks.resetPluginConfigWithHelper).not.toHaveBeenCalled();
+  });
+
+  it('does not expose a sensitive value in a resolver failure', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const secret = 'resolver-secret-value';
+    const captured = createCapturedCliIo();
+    const exitCode = await runCli([
+      'plugin', 'config', 'set', 'team/demo', 'token', '--value-json', JSON.stringify(secret),
+      '--context', 'user', '--platform', 'cursor', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
       interactive: false,
       io: captured.io,
     });
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({
+      command: 'config:set', configWrite: 'notStarted', ok: false,
+    });
     expect(captured.readStdout()).not.toContain(secret);
     expect(captured.readStderr()).not.toContain(secret);
+    expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
   });
 });

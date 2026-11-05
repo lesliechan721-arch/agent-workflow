@@ -21,6 +21,7 @@ import {
   type TuiControllerSnapshot,
 } from '../../src/tui/controller.js';
 import type { PluginMeta } from '../../src/types.js';
+import { agentSettings } from '../helpers/tui-console-app-fixture.js';
 
 afterEach(() => cleanup());
 
@@ -42,6 +43,9 @@ class ProgressControllerStub {
 
   get snapshot(): TuiControllerSnapshot { return this.value; }
   get externalDrafts(): [] { return []; }
+  async readAgentSettings(): Promise<ReturnType<typeof agentSettings>> {
+    return agentSettings(['codex']);
+  }
   subscribe(listener: (snapshot: TuiControllerSnapshot) => void): () => void {
     this.listeners.add(listener);
     listener(this.snapshot);
@@ -221,6 +225,7 @@ describe('real ConsoleAppV4 progress chain', () => {
     };
     const controller = new TuiController({
       loadStatus: vi.fn(async () => status()),
+      readAgentSettings: vi.fn(async () => agentSettings(['codex'])),
       checkSource: vi.fn(),
       captureEvidence: vi.fn().mockResolvedValue(evidence),
       executeIntent: vi.fn(async () => {
@@ -266,7 +271,9 @@ describe('real ConsoleAppV4 progress chain', () => {
 
     expect(frames).toContain('写入平台插件');
     expect(frames).toContain('状态已重新检查');
-    expect(frames).toMatch(/Codex\s+\[所有项目\].*\[✓ 可用\]/u);
+    expect(frames).toMatch(/Codex\s+✓ 可用/u);
+    expect(controller.getPluginDetailSubject('official/real-progress')?.placements)
+      .toContainEqual(expect.objectContaining({ platform: 'codex', scope: 'user', actual: true }));
     expect(controller.snapshot.router.current.route).toEqual({
       name: 'pluginDetail', pluginId: 'official/real-progress',
     });

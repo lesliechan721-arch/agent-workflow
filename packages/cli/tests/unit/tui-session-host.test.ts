@@ -4,7 +4,7 @@ import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js'
 import type { ExternalDraftState, OperationExecuteResult, TuiController, TuiControllerSnapshot } from '../../src/tui/controller.js';
 import { LatestSessionResultHistory, SessionHost } from '../../src/tui/session-host.js';
 import type { OperationHistoryStore } from '../../src/tui/operation-history.js';
-import { SkillsCliError } from '../../src/portable/skills-cli.js';
+import { NativeCliError } from '../../src/utils/native-cli.js';
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -183,7 +183,8 @@ describe('TUI session host', () => {
   // Test Value Gate: a failed read drain must stay explicit and release the transient reload state.
   it('propagates cleanup failure without leaving reload permanently busy', async () => {
     const controller = fakeController();
-    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const failure = new NativeCliError({ invocation: { command: 'codex', args: [] }, reason: 'aborted',
+      exitCode: 1, stdout: '', stderr: '', cleanupError: new Error('child exit unconfirmed') });
     controller.cancelAndWaitForReads.mockRejectedValue(failure);
     const createSession = vi.fn(() => session(controller));
     const host = new SessionHost({ createSession });
@@ -197,7 +198,8 @@ describe('TUI session host', () => {
   // Test Value Gate: queued reload must handle cleanup failure after a successful write without an unhandled rejection.
   it('records cleanup failure from a queued reload and keeps the old session', async () => {
     const controller = fakeController({ write: true });
-    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const failure = new NativeCliError({ invocation: { command: 'codex', args: [] }, reason: 'aborted',
+      exitCode: 1, stdout: '', stderr: '', cleanupError: new Error('child exit unconfirmed') });
     controller.cancelAndWaitForReads.mockRejectedValue(failure);
     const createSession = vi.fn(() => session(controller));
     const host = new SessionHost({ createSession });

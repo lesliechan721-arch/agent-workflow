@@ -13,7 +13,7 @@ vi.mock('../../src/portable/recovery.js', async (importOriginal) => ({
   inspectPortableResidue: vi.fn(async () => ({ state: 'absent', targets: [], blockers: [] })),
 }));
 
-import { executeRecovery, prepareRecovery, runRecovery } from '../../src/recovery/coordinator.js';
+import { executeRecovery, prepareRecovery, prepareScopedRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import type { RebuildCommandResult } from '../../src/commands/rebuild-command.js';
 import type { CommandProducerResult, PlatformName, Scope } from '../../src/types.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
@@ -36,7 +36,7 @@ describe('scoped Native recovery receipt', () => {
       state, commandIds: [], removedCommandIds: [],
       errors: state === 'failed' ? [{ code: 'commandBindingInvalid', message: 'Command binding failed.' }] : [],
       recoveryActions: state === 'failed'
-        ? [`aw reinstall team/${producerPlugin} --target claude-code --scope user --yes`] : [],
+        ? [`aw plugin sync team/${producerPlugin} --target claude --context user --rebuild --yes`] : [],
     };
     native.run.mockImplementation(async (options: { runtime?: { previewOperationPlan?: boolean } }): Promise<RebuildCommandResult> => ({
       platforms: ['claude'], plugins: ['team/demo'], warnings: [],
@@ -54,7 +54,7 @@ describe('scoped Native recovery receipt', () => {
     }));
     const receipt = await runRecovery('cleanup', ['team/demo'], {
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      cliVersion: '1.0.0', targets: ['claude-code'], yes: true,
+      cliVersion: '1.0.0', targets: ['claude'], yes: true,
     }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'claude-cli 99.0.0', stderr: '' }) });
     expect(receipt.ok).toBe(state === 'completed');
     expect(receipt.commandResults).toEqual([producer]);
@@ -129,7 +129,7 @@ describe('scoped Native recovery receipt', () => {
     });
     const plan = await prepareRecovery('cleanup', ['team/demo'], {
       scope, cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      cliVersion: '1.0.0', targets: ['codex', 'claude-code'], yes: true,
+      cliVersion: '1.0.0', targets: ['codex', 'claude'], yes: true,
     }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'fixture 99.0.0', stderr: '' }) });
     // The receipt unit supplies the already-read manifest; native execution is the mocked boundary.
     plan.demand.plugins = [plugin];
@@ -137,10 +137,10 @@ describe('scoped Native recovery receipt', () => {
     expect(receipt.ok).toBe(false);
     expect(receipt.commandResults).toEqual([producer]);
     expect(receipt.recoveryActions).toContain(producer.recoveryActions[0]);
-    const affected = mismatch ? [] : platforms.map((platform) => platform === 'claude' ? 'claude-code' : platform);
+    const affected = mismatch ? [] : platforms.map((platform) => platform === 'claude' ? 'claude' : platform);
     expect(receipt.remainingTargets.map((target) => target.agent).sort()).toEqual([...affected].sort());
     for (const target of receipt.targetResults) {
-      expect(target).toMatchObject(affected.includes(target.agent as 'codex' | 'claude-code')
+      expect(target).toMatchObject(affected.includes(target.agent as 'codex' | 'claude')
         ? { execution: 'partial', blockers: [{ code: 'commandResourceInvalid' }] }
         : { execution: 'applied', blockers: [] });
     }
@@ -177,12 +177,12 @@ describe('scoped Native recovery receipt', () => {
     });
     const receipt = await runRecovery('cleanup', ['team/demo'], {
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      cliVersion: '1.0.0', targets: ['codex', 'claude-code'], yes: true,
+      cliVersion: '1.0.0', targets: ['codex', 'claude'], yes: true,
     }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'fixture 99.0.0', stderr: '' }) });
     expect(receipt.ok).toBe(false);
     expect(receipt.commandResults).toEqual([producer]);
     expect(receipt.remainingTargets).toEqual([expect.objectContaining({ agent: 'codex' })]);
-    expect(receipt.targetResults.find((target) => target.agent === 'claude-code'))
+    expect(receipt.targetResults.find((target) => target.agent === 'claude'))
       .toMatchObject({ execution: 'applied', blockers: [] });
   });
 
@@ -210,13 +210,13 @@ describe('scoped Native recovery receipt', () => {
     });
     const receipt = await runRecovery('cleanup', ['team/demo'], {
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      cliVersion: '1.0.0', targets: ['codex', 'claude-code'], yes: true,
+      cliVersion: '1.0.0', targets: ['codex', 'claude'], yes: true,
     }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'fixture 99.0.0', stderr: '' }) });
     expect(receipt.ok).toBe(false);
-    expect(receipt.remainingTargets).toEqual([expect.objectContaining({ agent: 'claude-code' })]);
+    expect(receipt.remainingTargets).toEqual([expect.objectContaining({ agent: 'claude' })]);
     expect(receipt.targetResults.find((target) => target.agent === 'codex'))
       .toMatchObject({ execution: 'applied', blockers: [] });
-    expect(receipt.targetResults.find((target) => target.agent === 'claude-code'))
+    expect(receipt.targetResults.find((target) => target.agent === 'claude'))
       .toMatchObject({ execution: 'failed', blockers: [{ code: 'writeFailed' }] });
   });
 
@@ -249,14 +249,15 @@ describe('scoped Native recovery receipt', () => {
       }),
     }));
 
-    const receipt = await runRecovery(command, ['team/demo'], {
+    const plan = await prepareScopedRecovery(command, ['team/demo'], {
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      cliVersion: '1.0.0', targets: ['claude-code'], yes: true,
+      cliVersion: '1.0.0', targets: ['claude'], yes: true,
     }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'claude-cli 99.0.0', stderr: '' }) });
+    const receipt = await executeRecovery(plan);
 
     expect(receipt.ok).toBe(true);
     expect(receipt.targetResults).toEqual([expect.objectContaining({
-      pluginId: 'team/demo', agent: 'claude-code', execution: 'applied', content, observation,
+      pluginId: 'team/demo', agent: 'claude', execution: 'applied', content, observation,
     })]);
   });
 });

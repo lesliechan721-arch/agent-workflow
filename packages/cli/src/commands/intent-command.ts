@@ -3,8 +3,8 @@ import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { resolvePartialCatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import { addIntentRoot, calculateIntentDigest, createEmptyIntent, type PluginIntent } from '../intent/intent-codec.js';
-import { observeIntent, removeRoot, writeIntent, resolveIntentPath } from '../intent/intent-store.js';
+import { addIntentRoot, calculateIntentDigest, createEmptyIntent, removeIntentRoot, type PluginIntent } from '../intent/intent-codec.js';
+import { observeIntent, writeIntent, resolveIntentPath } from '../intent/intent-store.js';
 import { observePreferences, selectAgents, resolvePreferencesPath } from '../intent/deployment-preferences.js';
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
 import type { RecoveryDiagnostic, RecoveryReceipt } from '../recovery/receipt.js';
@@ -130,15 +130,26 @@ export async function intentAdd(options: IntentCommandOptions & { selectors: rea
   return intentReceipt('intent:add', options, await addRequirements(options));
 }
 
-export async function intentRemove(options: IntentCommandOptions & { selector: string }): Promise<RecoveryReceipt> {
-  let root: string;
-  try { root = exactId(options.selector); }
-  catch { return intentReceipt('intent:remove', options, { changed: false, roots: [options.selector], errors: [diagnostic('invalidArguments')] }); }
+export async function intentRemove(options: IntentCommandOptions & {
+  selector?: string; selectors?: readonly string[];
+}): Promise<RecoveryReceipt> {
+  const requested = options.selectors ?? (options.selector ? [options.selector] : []);
+  let roots: string[];
   try {
-    const saved = await removeRoot(options, root);
-    return intentReceipt('intent:remove', options, { changed: saved.changed, roots: [root], errors: [] });
+    if (!requested.length) throw new Error('invalidArguments');
+    roots = [...new Set(requested.map(exactId))];
+  } catch { return intentReceipt('intent:remove', options, { changed: false, roots: [...requested], errors: [diagnostic('invalidArguments')] }); }
+  try {
+    const saved = await withAwHomeMutationLock({ env: options.env, token: options.token, action: async (token) => {
+      const current = await observeIntent(options);
+      if (current.state !== 'valid' && current.state !== 'absent') throw new Error('pluginIntentStateInvalid');
+      let next = current.state === 'valid' ? current.value : createEmptyIntent();
+      for (const root of roots) next = removeIntentRoot(next, root);
+      return writeIntent({ ...options, token }, next);
+    } });
+    return intentReceipt('intent:remove', options, { changed: saved.changed, roots, errors: [] });
   } catch (error) {
-    return intentReceipt('intent:remove', options, { changed: false, roots: [root], errors: [diagnostic(errorCode(error, 'pluginIntentStateInvalid'))] });
+    return intentReceipt('intent:remove', options, { changed: false, roots, errors: [diagnostic(errorCode(error, 'pluginIntentStateInvalid'))] });
   }
 }
 

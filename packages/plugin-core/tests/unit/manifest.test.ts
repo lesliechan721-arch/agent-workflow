@@ -196,39 +196,6 @@ describe('plugin manifest v3 structure', () => {
     }))).toThrow(PluginManifestStructureError)
   })
 
-  it('enforces codex.skill delivery', () => {
-    const target = {
-      id: 'dynamic', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-      states: ['present'], refreshKeys: ['userOnly'], skillKey: 'dynamic',
-    }
-    const config = {
-      fields: {
-        userOnly: { type: 'string' },
-        shared: { type: 'string' },
-      },
-    }
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3, config, artifacts: { targets: [target] },
-    }))).toThrow(/delivery/u)
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3, config,
-      artifacts: { targets: [{ ...target, delivery: { mode: 'aw-extension' } }] },
-    }))).not.toThrow()
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3, config,
-      artifacts: { targets: [{ ...target, delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' } }] },
-    }))).not.toThrow()
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3, config,
-      artifacts: { targets: [{
-        ...target,
-        target: 'claude.skill',
-        platform: 'claude',
-        delivery: { mode: 'aw-extension' },
-      }] },
-    }))).toThrow(/additional properties/u)
-  })
-
   it('requires artifact IDs to be unique only within overlapping surface scopes', () => {
     const codexInstruction = {
       id: 'shared-id', platform: 'codex', scopes: ['user'],
@@ -242,7 +209,7 @@ describe('plugin manifest v3 structure', () => {
       schemaVersion: 3,
       marketplace: {
         category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       artifacts: { targets: [codexInstruction, codexRole] },
     }))).toThrow(/duplicate artifact id "shared-id" for surface\/scope "codex:user"/u)
@@ -251,7 +218,7 @@ describe('plugin manifest v3 structure', () => {
       schemaVersion: 3,
       marketplace: {
         category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX', 'CLAUDE'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       artifacts: { targets: [
         codexInstruction,
@@ -266,7 +233,7 @@ describe('plugin manifest v3 structure', () => {
   it('requires codex-native IDs and Skill keys to be globally unique across scopes', () => {
     const nativeTarget = {
       id: 'native-id', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-      delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+
       states: ['present'], refreshKeys: [], skillKey: 'native-skill',
     }
     const nativeManifest = (
@@ -276,14 +243,14 @@ describe('plugin manifest v3 structure', () => {
       schemaVersion: 3,
       marketplace: {
         category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       artifacts: { targets: [nativeTarget, { ...nativeTarget, scopes: secondScopes, ...second }] },
     })
     expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({ skillKey: 'other-skill' })))
-      .toThrow(/duplicate codex-native artifact id "native-id" in the shared projection/u)
+      .toThrow(/duplicate artifact id "native-id"/u)
     expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({ id: 'other-id' })))
-      .toThrow(/duplicate codex-native skillKey "native-skill" in the shared projection/u)
+      .toThrow(/duplicate dynamic skill owner "codex:user:native-skill"/u)
     expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({
       id: 'other-id', skillKey: 'other-skill',
     }, ['user']))).not.toThrow()
@@ -292,20 +259,20 @@ describe('plugin manifest v3 structure', () => {
   it.each([
     ['codex-native', {
       id: 'native-id', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-      delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+
       states: ['present'], refreshKeys: ['secret'], skillKey: 'native-skill',
     }, 'codexNativeRenderSensitiveRefreshKey'],
     ['Codex AW extension', {
       id: 'codex-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-      delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: ['secret'],
+      states: ['present'], refreshKeys: ['secret'],
       skillKey: 'codex-skill',
-    }, 'skillRenderSensitiveRefreshKey'],
+    }, 'codexNativeRenderSensitiveRefreshKey'],
     ['Claude', {
       id: 'claude-skill', platform: 'claude', scopes: ['user'], target: 'claude.skill',
       states: ['present'], refreshKeys: ['secret'], skillKey: 'claude-skill',
     }, 'skillRenderSensitiveRefreshKey'],
     ['portable', {
-      id: 'portable-skill', distribution: 'agent-skills', scopes: ['user'],
+      id: 'portable-skill', platform: 'generic', distribution: 'agent-skills', scopes: ['user'],
       target: 'agent-skills.skill', states: ['present'], refreshKeys: ['secret'],
       skillKey: 'portable-skill',
     }, 'skillRenderSensitiveRefreshKey'],
@@ -315,10 +282,9 @@ describe('plugin manifest v3 structure', () => {
       marketplace: {
         category: 'workflow', strict: true,
         policy: {
-          installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX', 'CLAUDE'],
+          installation: 'AVAILABLE', authentication: 'ON_INSTALL',
         },
       },
-      distributions: { agentSkills: { skills: './portable' } },
       config: { fields: { secret: { type: 'string', sensitive: true } } },
       artifacts: { targets: [target] },
     }))).toThrow(new RegExp(`^${errorCode}:`, 'u'))
@@ -329,54 +295,13 @@ describe('plugin manifest v3 structure', () => {
       schemaVersion: 3,
       marketplace: {
         category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       config: { fields: { secret: { type: 'string', sensitive: true } } },
       artifacts: { targets: [{
         id: 'role-id', platform: 'codex', scopes: ['user'], target: 'codex.agentRole',
         states: ['present'], refreshKeys: ['secret'], roleKey: 'sensitive-role',
       }] },
-    }))).not.toThrow()
-  })
-
-  it('requires all shared Codex native components to declare the same scope set', () => {
-    const nativeTarget = (id: string, scopes: string[]) => ({
-      id, platform: 'codex', scopes, target: 'codex.skill',
-      delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-      states: ['present'], refreshKeys: [], skillKey: `${id}-skill`,
-    })
-    const codexMarketplace = {
-      category: 'workflow', strict: true,
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
-    }
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
-      marketplace: codexMarketplace,
-      artifacts: { targets: [
-        nativeTarget('first', ['user']),
-        nativeTarget('second', ['project']),
-      ] },
-    }))).toThrow(/^codexSharedNativeScopeMismatch:/u)
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
-      marketplace: codexMarketplace,
-      skills: './skills',
-      artifacts: { targets: [nativeTarget('first', ['user'])] },
-    }))).toThrow(/^codexSharedNativeScopeMismatch:/u)
-
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
-      marketplace: codexMarketplace,
-      artifacts: { targets: [
-        nativeTarget('first', ['user']),
-        nativeTarget('second', ['user']),
-      ] },
-    }))).not.toThrow()
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
-      marketplace: codexMarketplace,
-      skills: './skills',
-      artifacts: { targets: [nativeTarget('first', ['user', 'project'])] },
     }))).not.toThrow()
   })
 
@@ -416,13 +341,13 @@ describe('plugin manifest v3 structure', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
+
         },
       },
     }],
     ['portable Skill collection', {
       mcpServers: './mcp.json',
-      distributions: { agentSkills: { skills: './portable/.git/skills' } },
+      skills: './skills/.git/skills',
     }],
     ['plugin script', {
       scripts: { node: { build: { runner: 'node', path: './tools/node_modules/build.mjs' } } },

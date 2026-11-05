@@ -32,7 +32,7 @@ Artifact runtime import 按当前 target 的 artifactId 和声明 name 从 conte
 
 ## Skill 文件与生成文件
 
-`skillRuntimeFiles` 的每项指定 skill、target，并选择本插件 source 或 provider import。静态 Skill 的 target 只位于 references、assets 或 scripts，不覆盖已经存在的目标。通过 platforms 与 distributions 选择实际投影；字段省略和组合语义见 平台投影（`references/platform-projection.md`）。
+`skillRuntimeFiles` 的每项指定 skill、target，并选择本插件 source 或 provider import。静态 Skill 的 target 只位于 references、assets 或 scripts，不覆盖已经存在的目标。通过 platforms 选择实际投影；字段省略和组合语义见 平台投影（`references/platform-projection.md`）。
 
 `generatedSkillRuntimeFiles` 声明 build 应生成的精确文件，不执行复制，也不建立安装依赖。source 校验可以接受已声明但尚未生成的目标；最终包必须包含真实普通文件及完整引用闭包。不要用声明替代生成结果，或用宽泛路径掩盖缺失文件。
 

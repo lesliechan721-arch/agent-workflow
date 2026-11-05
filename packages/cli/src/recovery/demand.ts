@@ -18,7 +18,7 @@ import { createEmptyNativeDemandView, type NativeDemandView } from '../utils/nat
 import { supportsPlatform } from '../utils/platform-support.js';
 import type { Delivery, Diagnostic } from './types.js';
 
-function claudeNativeApplicable(manifest: NormalizedPluginManifest, scope: Scope): boolean {
+function claudeNativeApplicable(manifest: NormalizedPluginManifest): boolean {
   const staticSurface = Boolean(
     manifest.skills
     || manifest.slashCommands
@@ -35,7 +35,7 @@ function claudeNativeApplicable(manifest: NormalizedPluginManifest, scope: Scope
     && target.target === 'claude.skill'
     && target.states.includes('present'));
   if (dynamicTargets.length > 0) {
-    return dynamicTargets.some((target) => target.scopes.includes(scope));
+    return true;
   }
   return false;
 }
@@ -54,6 +54,8 @@ export interface DemandSnapshot {
   preferences: PreferencesObservation;
   roots: DemandRoot[] | null;
   plugins: PluginMeta[];
+  targetRequirements?: Array<{ pluginId: string; target: AgentId }>;
+  userProviders?: Partial<Record<AgentId, string[]>>;
   errors: Diagnostic[];
   catalogOperationContext?: CatalogOperationContext;
 }
@@ -62,6 +64,7 @@ export interface ReadDemandOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   intent?: IntentObservation;
+  preferences?: PreferencesObservation;
   catalogOperationContext?: CatalogOperationContext;
   signal?: AbortSignal;
 }
@@ -70,17 +73,19 @@ export interface ReadDemandOptions {
 export function resolveDelivery(
   manifest: NormalizedPluginManifest, agent: AgentId, scope: Scope,
 ): Delivery | undefined {
-  const platform = agent === 'claude-code' ? 'claude' : agent === 'codex' ? 'codex' : undefined;
+  const platform = agent === 'claude' ? 'claude' : agent === 'codex' ? 'codex' : undefined;
   if (platform && supportsPlatform(manifest, platform)) {
     const surface = platform === 'codex' ? analyzeCodexSurface(manifest) : undefined;
     const applicable = platform === 'claude'
-      ? claudeNativeApplicable(manifest, scope)
+      ? claudeNativeApplicable(manifest)
       : surface!.unsupportedKinds.length === 0
         && surface!.components.some((component) => component.scopes.includes(scope));
     if (applicable) return { kind: 'native', platform };
   }
-  if (manifest.distributions?.agentSkills) {
-    return { kind: 'agent-skills', provider: 'skills-cli', agentId: agent };
+  if (!platform && supportsPlatform(manifest, agent) && (manifest.skills
+    || manifest.artifacts?.targets?.some((target) => target.target === 'agent-skills.skill'
+      && target.platform === agent && target.scopes.includes(scope)))) {
+    return { kind: 'agent-skills', provider: 'aw', agentId: agent };
   }
   return undefined;
 }
@@ -88,7 +93,7 @@ export function resolveDelivery(
 export async function readDemand(options: ReadDemandOptions): Promise<DemandSnapshot> {
   options.signal?.throwIfAborted();
   const [intent, preferences] = await Promise.all([
-    options.intent ?? observeIntent(options), observePreferences(options),
+    options.intent ?? observeIntent(options), options.preferences ?? observePreferences(options),
   ]);
   const errors: Diagnostic[] = [];
   if (intent.state !== 'absent' && intent.state !== 'valid') {
@@ -96,7 +101,7 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
       state: intent.state, filePath: await resolveIntentPath(options) }));
   }
   if (preferences.state === 'invalid' || preferences.state === 'unreadable') {
-    errors.push(describeStrongStateProblem({ kind: 'preferences', scope: options.scope,
+    errors.push(describeStrongStateProblem({ kind: 'preferences', scope: 'user',
       state: preferences.state, filePath: await resolvePreferencesPath(options) }));
   }
   const roots: DemandRoot[] | null = intent.state === 'absent' ? []
@@ -180,16 +185,22 @@ export function demandNativeProjection(demand: DemandSnapshot): NativeDemandView
     throw new Error(`${demand.preferences.code}: preferences cannot be read.`);
   }
   const view = createEmptyNativeDemandView();
+  const preferences = demand.preferences.state === 'valid' ? demand.preferences.value : undefined;
   view.roots = (demand.roots ?? []).flatMap((root) => {
     const platforms: PlatformName[] = root.plugin
       ? (['codex', 'claude'] as const).filter((platform) => resolveDelivery(
-          root.plugin!.manifest, platform === 'claude' ? 'claude-code' : 'codex', demand.scope,
+          root.plugin!.manifest, platform, demand.scope,
         )?.kind === 'native')
       : ['codex', 'claude'];
-    return platforms.length ? [{ pluginId: root.pluginId, platforms }] : [];
+    const selected = platforms.filter((platform) => preferences?.targets.includes(platform)
+      && !preferences.exclusions.some((entry) => entry.plugin === root.pluginId && entry.target === platform)
+      && !(demand.scope === 'project' && demand.userProviders?.[platform]?.includes(root.pluginId))
+      && (!demand.targetRequirements || demand.targetRequirements.some((entry) => entry.pluginId === root.pluginId && entry.target === platform)));
+    return selected.length ? [{ pluginId: root.pluginId, platforms: selected }] : [];
   });
-  view.dependencyScopeOverrides = demand.preferences.state === 'valid'
-    ? demand.preferences.value.dependencyScopeOverrides : [];
+  view.dependencyScopeOverrides = demand.scope === 'project'
+    ? (['codex', 'claude'] as const).flatMap((platform) => (demand.userProviders?.[platform] ?? [])
+      .map((pluginId) => ({ pluginId, platform, scope: 'user' as const }))) : [];
   return view;
 }
 

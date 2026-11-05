@@ -14,7 +14,7 @@ import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
 
 // Test Value Gate: real prepared files, command substitutions, and permission mutations must reach installation Review.
 describe('prepared managed command Review', () => {
-  it.each(['static-native', 'static-claude', 'owned-codex', 'owned-claude'] as const)('shows %s commands and exact permission changes', async (kind) => {
+  it.each(['static-codex', 'static-claude', 'dynamic-codex', 'dynamic-claude'] as const)('shows %s commands and exact permission changes', async (kind) => {
     const isolated = await createIsolatedTestEnv();
     try {
       const platform = kind.endsWith('claude') ? 'claude' : 'codex';
@@ -30,13 +30,12 @@ describe('prepared managed command Review', () => {
         'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
       };
       await fs.outputJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), {
-        schemaVersion: 3, name: 'review-commands', version: '1.0.0', description: 'Prepared Review fixture.',
+        schemaVersion: 3, platforms: ['codex', 'claude'], name: 'review-commands', version: '1.0.0', description: 'Prepared Review fixture.',
         requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
         marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
         ...(native ? { skills: './skills' } : {
           scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
           artifacts: { targets: [{ id: 'provider', target: `${platform}.skill`, platform, scopes: ['user'],
-            ...(platform === 'codex' ? { delivery: { mode: 'aw-extension' } } : {}),
             states: ['present'], refreshKeys: [], skillKey: 'provider' }] },
         }),
         managedCommands: { sets: [{ set: 'tools', producer, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'scripts/tool.mjs', args: ['--fixed', 'value'] }] }] },
@@ -49,11 +48,9 @@ describe('prepared managed command Review', () => {
         await fs.outputFile(path.join(pluginRoot, 'render.mjs'), `const files=${JSON.stringify(files)}; console.log(JSON.stringify({version:2,artifacts:[{id:'provider',target:'${platform}.skill',kind:'skill',platform:'${platform}',state:'present',skillKey:'provider',refreshKeys:[],content:{files}}]}));\n`);
       }
       let plugin: PluginMeta = { ...await readPluginManifest(pluginRoot), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'fixture/review-commands' };
-      if (native) {
-        const bundleRoot = path.join(isolated.layout.fixtureCwd, 'bundle');
-        await bundleLocalPlugin(plugin, bundleRoot, { commandEnv: isolated.env });
-        plugin = { ...await readPluginManifest(bundleRoot, { mode: 'bundle' }), sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginId: plugin.pluginId };
-      }
+      const bundleRoot = path.join(isolated.layout.fixtureCwd, 'bundle');
+      await bundleLocalPlugin(plugin, bundleRoot, { commandEnv: isolated.env });
+      plugin = { ...await readPluginManifest(bundleRoot, { mode: 'bundle' }), sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginId: plugin.pluginId };
       const context: RebuildExecutionContext = { ...createCommandExecutionContext({ env: isolated.env,
         nativeCliRunner: async () => ({ exitCode: 0, stdout: '{"installed":[],"available":[]}', stderr: '' }) }), codexManager: SYSTEM_CODEX_MANAGER };
       const scope = kind === 'static-claude' ? 'project' : 'user';

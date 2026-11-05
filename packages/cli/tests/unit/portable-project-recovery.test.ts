@@ -1,341 +1,212 @@
 import path from 'node:path';
 
+import type { PortablePlatformTarget } from '@lesliechan721/aw-plugin-core';
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopeContext } from '../../src/intent/scope-context.js';
-import { removeRoot } from '../../src/intent/intent-store.js';
 import { writeAwSourceBinding } from '../../src/review/source-binding.js';
 import { portableJsonDigest, portableSkillTreeDigest } from '../../src/portable/historical-materialization.js';
-import { executePortableRecovery, inspectPortableExtraInstalled, inspectPortableRecovery, inspectPortableResidue, preparePortableRecovery } from '../../src/portable/recovery.js';
-import { readRecoveryStatus } from '../../src/recovery/status.js';
+import { executePortableRecovery, inspectPortableExtraInstalled, inspectPortableRecovery, inspectPortableResidue,
+  preparePortableCleanup, preparePortableRecovery } from '../../src/portable/recovery.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
-import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
+import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import * as skillsCli from '../../src/portable/skills-cli.js';
 
-const state = vi.hoisted(() => ({ content: 'first', extraFile: '', builds: 0, scope: 'project' as 'project' | 'user' }));
+const state = vi.hoisted(() => ({ content: 'first', builds: 0, catalogUnavailable: false,
+  skills: [{ name: 'alpha', providerPluginId: 'team/root' }] }));
 vi.mock('../../src/portable/materializer.js', () => ({
-  resolvePortableCatalogBindingInput: async () => ({ source: {
-    kind: 'catalog-snapshot', sourceId: 'team', catalogSourceIdentity: portableJsonDigest('catalog'),
-    logicalIdentity: 'team-catalog', snapshotDigest: portableJsonDigest('snapshot'), workspaceIdentity: 'workspace',
-    workspaceSourceIdentity: portableJsonDigest('workspace'),
-  }, subject: { plugin: 'root' }, profile: { kind: 'portable', id: `agent-skills-${state.scope}`, scope: state.scope, inputDigest: portableJsonDigest(state.content) } }),
+  resolvePortableCatalogBindingInput: async (options: { platform: PortablePlatformTarget; scope: 'user' | 'project' }) => {
+    if (state.catalogUnavailable) throw new Error('Catalog unavailable');
+    return { source: { kind: 'catalog-snapshot', sourceId: 'team', catalogSourceIdentity: portableJsonDigest('catalog'),
+      logicalIdentity: 'team-catalog', snapshotDigest: portableJsonDigest(state.content + JSON.stringify(state.skills)),
+      workspaceIdentity: 'workspace', workspaceSourceIdentity: portableJsonDigest('workspace') },
+    subject: { plugin: 'root' }, profile: { kind: 'portable', platform: options.platform,
+      id: `${options.platform}-${options.scope}`, scope: options.scope,
+      inputDigest: portableJsonDigest({ content: state.content, platform: options.platform, scope: options.scope }) } };
+  },
 }));
 vi.mock('../../src/portable/commands.js', () => ({
-  materializePortableSkillsToDirectory: async (options: { out: string }) => {
+  materializePortableSkillsToDirectory: async (options: { out: string; platform: PortablePlatformTarget; scope: 'user' | 'project' }) => {
     state.builds += 1;
-    const skill = path.join(options.out, 'skills', 'alpha');
-    await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: alpha\ndescription: alpha\n---\n${state.content}`);
-    if (state.extraFile) await fs.outputFile(path.join(skill, state.extraFile), 'extra');
+    await fs.ensureDir(path.join(options.out, 'skills'));
+    const selectedSkills = [];
+    for (const candidate of state.skills) {
+      const skill = path.join(options.out, 'skills', candidate.name);
+      await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${candidate.name}\ndescription: Test\n---\n${state.content} ${options.platform}`);
+      await fs.outputFile(path.join(skill, 'README.md'), 'Complete Portable skill.');
+      selectedSkills.push({ ...candidate, filesDigest: await portableSkillTreeDigest(skill),
+        configDigest: portableJsonDigest({ platform: options.platform, provider: candidate.providerPluginId }) });
+    }
     const { resolvePortableCatalogBindingInput } = await import('../../src/portable/materializer.js');
-    const binding = await resolvePortableCatalogBindingInput({} as never);
-    await writeAwSourceBinding({ rootDir: options.out, ...binding, artifacts: [
-      { kind: 'portable-skill', plugin: 'root', skill: 'alpha', path: 'skills/alpha' },
-    ] });
-    const selectedSkills = [{ name: 'alpha', providerPluginId: 'team/root', filesDigest: await portableSkillTreeDigest(skill) }];
+    const binding = await resolvePortableCatalogBindingInput(options as never);
+    await writeAwSourceBinding({ rootDir: options.out, ...binding, artifacts: selectedSkills.map((candidate) => ({
+      kind: 'portable-skill' as const, plugin: candidate.providerPluginId.split('/')[1]!, skill: candidate.name,
+      path: `skills/${candidate.name}`,
+    })) });
     const outputDigest = portableJsonDigest(selectedSkills.map((entry) => [entry.name, entry.filesDigest]));
     await fs.writeJson(path.join(options.out, '.aw-materialization.json'), {
-      schemaVersion: 1, receiptSchemaVersion: 5, command: 'skill:materialize', scope: state.scope,
+      schemaVersion: 1, receiptSchemaVersion: 5, command: 'skill:materialize', platform: options.platform, scope: options.scope,
       plugin: { id: 'team/root', sourceId: 'team', sourceIdentity: binding.source.catalogSourceIdentity },
-      config: { pluginConfigDigest: binding.profile.inputDigest }, selectedSkills, outputDigest, materializationDigest: outputDigest,
+      dependencies: [...new Set(state.skills.map((entry) => entry.providerPluginId).filter((id) => id !== 'team/root'))],
+      config: { pluginConfigDigest: binding.profile.inputDigest }, selectedSkills, outputDigest, materializationDigest: portableJsonDigest({ platform: options.platform, scope: options.scope, skills: selectedSkills.map((entry) => [entry.name, entry.filesDigest]) }),
     });
   },
 }));
 
-async function fixture() {
+async function fixture(scope: 'user' | 'project' = 'project', agents: PortablePlatformTarget[] = ['cursor']) {
   const isolated = getCurrentSourceTestIsolation();
   const cwd = path.join(isolated.env.AW_HOME!, 'project');
-  const bin = path.join(isolated.env.AW_HOME!, 'bin');
   await fs.ensureDir(path.join(cwd, '.git'));
-  await fs.ensureDir(bin);
-  const log = path.join(cwd, 'calls.jsonl');
-  await fs.writeFile(path.join(bin, 'skills'), `#!/usr/bin/env node
-const fs = require('node:fs'); const path = require('node:path');
-const args = process.argv.slice(2); const cwd = process.cwd();
-fs.appendFileSync(process.env.PROVIDER_LOG, JSON.stringify(args) + '\\n');
-if(args[0] === '--version') { console.log('1.5.23'); process.exit(0); }
-let lock = {version:1, skills:{}}; try { lock=JSON.parse(fs.readFileSync('skills-lock.json')); } catch {}
-if(args[0] === 'list') {
- if(process.env.SUSPEND_LIST) { fs.writeFileSync(process.env.SUSPEND_LIST, String(process.pid)); setInterval(() => {}, 1000); return; }
- if(process.env.FAIL_LIST) process.exit(2);
- if(args.includes('--global')) {
-  const other=path.join(process.env.HOME,'.agents/skills/beta');
-  console.log(JSON.stringify(fs.existsSync(other) ? [{name:'beta',path:other,scope:'global',agents:['Codex'],source:null}] : []));
-  process.exit(0);
- }
- const root = path.join(cwd,'.agents/skills/alpha');
- const claude = path.join(cwd,'.claude/skills/alpha');
- console.log(JSON.stringify(fs.existsSync(root)||fs.existsSync(claude) ? [{name:'alpha',path:fs.existsSync(root)?root:claude,
- scope:process.env.WRONG_SCOPE?'global':'project', agents:process.env.PROVIDER_AGENTS?JSON.parse(process.env.PROVIDER_AGENTS):[...(fs.existsSync(root)?['Codex','Cursor']:[]),...(fs.existsSync(claude)?['Claude Code']:[])],
- source:lock.skills.alpha?.source}] : [])); process.exit(0);
+  const context = await createScopeContext({ scope, cwd, env: isolated.env });
+  return { scope, context, selector: 'team/root', cliVersion: '1.0.0', agents, env: context.env };
 }
-if(args[0] === 'add') {
- const source=args[1]; const agent=args[args.indexOf('--agent')+1];
- const target=path.join(cwd, agent==='claude-code'?'.claude':'.agents','skills','alpha');
- fs.rmSync(target,{force:true,recursive:true}); fs.mkdirSync(path.dirname(target),{recursive:true});
- fs.cpSync(path.join(source,'skills','alpha'),target,{recursive:true});
- lock.skills.alpha={source,sourceType:'local',computedHash:'provider-hash'};
- fs.writeFileSync('skills-lock.json',JSON.stringify(lock)); process.exit(0);
+async function apply(options: Awaited<ReturnType<typeof fixture>>, extra: { authorizeUpdate?: boolean; action?: 'reinstall' } = {}) {
+  return withAwHomeMutationLock({ env: options.env, action: async (token) =>
+    executePortableRecovery({ prepared: await preparePortableRecovery(options), token, ...extra }) });
 }
-process.exit(2);
-`);
-  await fs.chmod(path.join(bin, 'skills'), 0o755);
-  const env = { ...isolated.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PROVIDER_LOG: log };
-  const context = await createScopeContext({ scope: 'project', cwd, env });
-  return { scope: 'project' as const, context, selector: 'team/root', cwd, cliVersion: '1.0.0',
-    agents: ['codex', 'cursor'] as const, env, log };
-}
-async function addCalls(log: string) {
-  return (await fs.readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((args) => args[0] === 'add');
-}
-beforeEach(() => { state.content = 'first'; state.extraFile = ''; state.builds = 0; state.scope = 'project'; });
+beforeEach(() => { state.content = 'first'; state.builds = 0; state.catalogUnavailable = false;
+  state.skills = [{ name: 'alpha', providerPluginId: 'team/root' }]; });
 
-describe('project Portable recovery', () => {
-  // Test Value Gate: provider cleanup failure must escape root, extra and residue observation fallbacks before cancellation.
-  it.each([
-    ['root', false], ['root', true], ['extra', false], ['extra', true], ['residue', false], ['residue', true],
-  ] as const)('preserves cleanup failure in %s observation with cancellation %s', async (kind, cancelled) => {
-    const value = await fixture();
-    const options = { ...value, agents: [...value.agents] };
-    await preparePortableRecovery(options);
-    const abort = new AbortController();
-    const failure = new skillsCli.SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
-    const list = vi.spyOn(skillsCli, 'listInstalledSkills').mockImplementation(async () => {
-      if (cancelled) abort.abort();
-      throw failure;
-    });
-    try {
-      const inspect = kind === 'root' ? inspectPortableRecovery
-        : kind === 'extra' ? inspectPortableExtraInstalled : inspectPortableResidue;
-      await expect(inspect({ ...options, signal: abort.signal })).rejects.toBe(failure);
-    } finally {
-      list.mockRestore();
-      await value.context.dispose();
-    }
+describe('AW Portable recovery', () => {
+  // Test Value Gate: two independent consumer profiles must not write the same project directory.
+  it('rejects shared project paths before materialization or publishing', async () => {
+    const options = await fixture('project', ['antigravity', 'generic']);
+    expect((await preparePortableRecovery(options)).blockers).toEqual(['portableOutputConflict']);
+    expect(state.builds).toBe(0);
+    expect(await fs.pathExists(path.join(options.context.executionCwd, '.agents', 'skills'))).toBe(false);
   });
 
-  // Test Value Gate: Portable inventory cancellation must stop the provider process and escape incomplete-coverage fallbacks.
-  it.each(['root', 'extra'] as const)('propagates cancellation from a pending Portable %s inventory read', async (kind) => {
-    const value = await fixture();
-    await preparePortableRecovery({ ...value, agents: [...value.agents] });
-    const startedPath = path.join(value.cwd, 'pending-list.pid');
-    const pendingContext = await createScopeContext({ scope: 'project', cwd: value.cwd,
-      env: { ...value.env, SUSPEND_LIST: startedPath } });
-    const abort = new AbortController();
-    let pid: number | undefined;
-    let observation: Promise<unknown> | undefined;
-    try {
-      observation = kind === 'root'
-        ? inspectPortableRecovery({ ...value, context: pendingContext, agents: [...value.agents], signal: abort.signal })
-        : readRecoveryStatus({ scope: 'project', cwd: value.cwd, env: pendingContext.env,
-          nativeObservations: [], signal: abort.signal });
-      let failure: unknown;
-      void observation.catch((error) => { failure = error; });
-      await vi.waitFor(async () => expect(await fs.pathExists(startedPath)).toBe(true));
-      pid = Number(await fs.readFile(startedPath, 'utf8'));
-      abort.abort();
-      await vi.waitFor(() => expect(failure).toMatchObject({ name: 'AbortError' }));
-      await vi.waitFor(() => expect(() => process.kill(pid!, 0)).toThrow());
-    } finally {
-      abort.abort();
-      if (pid) { try { process.kill(pid); } catch { /* The cancelled provider has already stopped. */ } }
-      await observation?.catch(() => undefined);
-      await pendingContext.dispose();
-      await value.context.dispose();
-    }
-  });
-  it('reports Project Portable extras from verified provider source evidence', async () => {
-    const fixtureValue = await fixture();
-    const options = { ...fixtureValue, agents: [...fixtureValue.agents] };
-    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      expect((await executePortableRecovery({ prepared: await preparePortableRecovery(options), token })).execution)
-        .toBe('applied');
-    } });
-    const observed = await inspectPortableExtraInstalled({
-      scope: 'project', context: options.context, env: options.env,
-    });
-    expect(observed.complete).toBe(true);
-    expect(observed.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/root', skill: 'alpha', agent: 'codex',
-        observation: 'verified', content: 'satisfied' }),
-      expect.objectContaining({ pluginId: 'team/root', skill: 'alpha', agent: 'cursor',
-        observation: 'verified', content: 'satisfied' }),
-    ]));
-    const intentLocation = { scope: 'project' as const, cwd: options.cwd, env: options.env };
-    await writeIntentFixture(intentLocation, { roots: [{ pluginId: 'team/root' }], agents: ['cursor'] });
-    await removeRoot(intentLocation, 'team/root');
-    const status = await readRecoveryStatus({ ...intentLocation, nativeObservations: [] });
-    expect(status.inventory).toEqual([]);
-    expect(status.coverage).toEqual({ native: true, portable: true });
-    expect(status.extraObserved).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/root', agent: 'cursor', scope: 'project',
-        delivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: 'cursor' },
-        observation: 'verified', content: 'satisfied' }),
-    ]));
-    const missingProviderEnv = { ...options.env, PATH: '' };
-    const missingProviderContext = await createScopeContext({
-      scope: 'project', cwd: options.cwd, env: missingProviderEnv,
-    });
-    expect(await inspectPortableExtraInstalled({
-      scope: 'project', context: missingProviderContext, env: missingProviderEnv,
-    })).toEqual({ targets: [], complete: false });
-    expect((await readRecoveryStatus({
-      scope: 'project', cwd: options.cwd, env: missingProviderEnv, nativeObservations: [],
-    })).coverage).toEqual({ native: true, portable: false });
-  });
-
-  it('does not turn unsupported User Portable observation into residue without AW evidence', async () => {
-    const fixtureValue = await fixture();
-    const userContext = await createScopeContext({ scope: 'user', cwd: fixtureValue.cwd, env: fixtureValue.env });
-    try {
-      const unsupported = { ...userContext,
-        env: { ...userContext.env, HOME: path.join(fixtureValue.cwd, 'different-home') } };
-      const options = { scope: 'user' as const, context: unsupported, selector: 'team/root',
-        env: unsupported.env, agents: ['codex' as const] };
-      expect(await inspectPortableResidue(options)).toEqual({ state: 'absent', targets: [], blockers: [] });
-      await fs.ensureDir(path.join(userContext.generationRoot, portableJsonDigest('team/root').slice(7)));
-      expect(await inspectPortableResidue(options)).toEqual({
-        state: 'unknown', targets: [], blockers: ['portableObservationFailed'], unknownAgents: ['codex'],
-      });
-    } finally { await userContext.dispose(); }
-  });
-  it('ignores an unrelated global Skill after the selected User Portable output was removed', async () => {
-    const fixtureValue = await fixture();
-    state.scope = 'user';
-    const context = await createScopeContext({ scope: 'user', cwd: fixtureValue.cwd, env: fixtureValue.env });
-    try {
-      const options = { scope: 'user' as const, context, selector: 'team/root',
-        env: context.env, cliVersion: '1.0.0', agents: ['codex' as const] };
-      await preparePortableRecovery(options);
-      await fs.outputFile(path.join(context.env.HOME!, '.agents/skills/beta/SKILL.md'), 'unrelated');
-      expect(await inspectPortableResidue(options)).toEqual({ state: 'absent', targets: [], blockers: [] });
-    } finally { await context.dispose(); }
-  });
-
-  it('ignores a verified Claude-only residue for Codex selection but retains unknown associations', async () => {
-    const fixtureValue = await fixture();
-    const options = { ...fixtureValue, agents: ['claude-code' as const] };
-    const prepared = await preparePortableRecovery(options);
-    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      expect((await executePortableRecovery({ prepared, token })).execution).toBe('applied');
-    } });
-    expect((await inspectPortableResidue({ ...options, agents: ['claude-code'] })).state).toBe('present');
-    expect(await inspectPortableResidue({ ...options, agents: ['codex'] })).toEqual({ state: 'absent', targets: [], blockers: [] });
-    for (const agents of [[], ['Unrecognized Agent']]) {
-      const env = { ...options.env, PROVIDER_AGENTS: JSON.stringify(agents) };
-      const context = await createScopeContext({ scope: 'project', cwd: options.cwd, env });
-      expect(await inspectPortableResidue({ ...options, context, agents: ['codex'], env }))
-        .toEqual({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'], unknownAgents: ['codex'] });
-    }
-    expect(await addCalls(options.log)).toHaveLength(1);
-    expect(await fs.pathExists(path.join(options.cwd, '.claude/skills/alpha/SKILL.md'))).toBe(true);
-    expect(await fs.pathExists(path.join(options.cwd, '.agents/skills/alpha'))).toBe(false);
-  });
-  it('retains an uncertain Claude residue beside a verified Codex residue', async () => {
-    const fixtureValue = await fixture();
-    const options = { ...fixtureValue, agents: ['codex' as const] };
-    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      expect((await executePortableRecovery({ prepared: await preparePortableRecovery(options), token })).execution)
-        .toBe('applied');
-    } });
-    await fs.copy(path.join(options.cwd, '.agents/skills/alpha'), path.join(options.cwd, '.claude/skills/alpha'));
-    await fs.appendFile(path.join(options.cwd, '.claude/skills/alpha/SKILL.md'), '\nmodified');
-    const residue = await inspectPortableResidue({ ...options, agents: ['codex', 'claude-code'] });
-    expect(residue.state).toBe('present');
-    expect(residue.targets.map((target) => target.agent)).toEqual(['codex']);
-    expect(residue.unknownAgents).toEqual(['claude-code']);
-  });
-  it('static inspection never materializes; shared paths install once and subsequent recovery is a file no-op', async () => {
-    const fixtureValue = await fixture();
-    const options = { ...fixtureValue, agents: [...fixtureValue.agents] };
+  // Test Value Gate: status must stay read-only and per-target candidates must never share content or credentials.
+  it('inspects without building, writes each concrete target, and then performs a file no-op', async () => {
+    const options = await fixture('project', ['cursor', 'pi']);
     expect((await inspectPortableRecovery(options)).blockers).toEqual(['needs-preparation']);
     expect(state.builds).toBe(0);
-    const prepared = await preparePortableRecovery(options);
-    expect(prepared.targets.map((target) => target.observation)).toEqual(['absent', 'absent']);
-    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      expect((await executePortableRecovery({ prepared, token })).execution).toBe('applied');
-      const before = await fs.stat(path.join(options.cwd, '.agents/skills/alpha/SKILL.md'));
-      const again = await preparePortableRecovery(options);
-      expect((await executePortableRecovery({ prepared: again, token })).execution).toBe('no-op');
-      expect((await fs.stat(path.join(options.cwd, '.agents/skills/alpha/SKILL.md'))).mtimeMs).toBe(before.mtimeMs);
-    } });
-    expect(await addCalls(options.log)).toHaveLength(1);
+    expect((await apply(options)).execution).toBe('applied');
+    expect(state.builds).toBe(2);
+    const cursor = path.join(options.context.executionCwd, '.cursor', 'skills', 'alpha', 'SKILL.md');
+    const pi = path.join(options.context.executionCwd, '.pi', 'skills', 'alpha', 'SKILL.md');
+    expect(await fs.readFile(cursor, 'utf8')).toContain('cursor');
+    expect(await fs.readFile(pi, 'utf8')).toContain('pi');
+    const before = (await fs.stat(cursor)).mtimeMs;
+    expect((await apply(options)).execution).toBe('no-op');
+    expect((await fs.stat(cursor)).mtimeMs).toBe(before);
+    expect(await fs.pathExists(path.join(options.context.executionCwd, 'skills-lock.json'))).toBe(false);
   });
-  it('updates only a fully verified historical generation and keeps unrelated lock entries', async () => {
-    const fixtureValue = await fixture(); const options = { ...fixtureValue, agents: [...fixtureValue.agents] };
-    await fs.writeJson(path.join(options.cwd, 'skills-lock.json'), {version:1,skills:{foreign:{source:'foreign',sourceType:'local',computedHash:'keep'}}});
+
+  // Test Value Gate: healthy old content and user-damaged content are repairable only through an authorized update.
+  it('reports stale and damaged output separately and repairs the selected deployment', async () => {
+    const options = await fixture();
+    await apply(options);
+    state.content = 'second';
+    let prepared = await preparePortableRecovery(options);
+    expect(prepared.targets).toMatchObject([{ observation: 'drifted', contentState: 'stale', ownership: 'aw' }]);
     await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      await executePortableRecovery({ prepared: await preparePortableRecovery(options), token });
-      state.content = 'second';
-      const prepared = await preparePortableRecovery(options);
-      expect(prepared.targets.map((target) => target.observation)).toEqual(['drifted', 'drifted']);
-      expect((await executePortableRecovery({ prepared, token })).blockers).toEqual(['portableUpdateAuthorizationRequired']);
+      expect((await executePortableRecovery({ prepared, token })).blockers).toContain('portableUpdateAuthorizationRequired');
       expect((await executePortableRecovery({ prepared, token, authorizeUpdate: true })).execution).toBe('applied');
     } });
-    expect((await fs.readJson(path.join(options.cwd,'skills-lock.json'))).skills.foreign.computedHash).toBe('keep');
+    await fs.remove(path.join(prepared.targets[0]!.physicalPath, 'README.md'));
+    prepared = await preparePortableRecovery(options);
+    expect(prepared.targets[0]).toMatchObject({ observation: 'drifted', contentState: 'damaged' });
+    expect((await apply(options, { authorizeUpdate: true })).execution).toBe('applied');
   });
-  it('reinstalls once and reuses only verified matching batch footprints for later consumers', async () => {
-    const fixtureValue = await fixture(); const options = { ...fixtureValue, agents: [...fixtureValue.agents] };
-    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      await executePortableRecovery({ prepared: await preparePortableRecovery(options), token });
-      const prepared = await preparePortableRecovery(options);
-      const first = await executePortableRecovery({ prepared, token, action: 'reinstall' });
-      expect(first.execution).toBe('applied');
-      expect(await addCalls(options.log)).toHaveLength(2);
-      const completedFootprints = first.targets.map(({ physicalPath, expectedDigest, providerPluginId }) => ({
-        physicalPath, expectedDigest, providerPluginId, logicalIdentity: prepared.logicalIdentity,
-      }));
-      const before = await fs.stat(path.join(options.cwd, '.agents/skills/alpha/SKILL.md'));
-      const reused = await executePortableRecovery({ prepared: await preparePortableRecovery(options),
-        token, action: 'reinstall', completedFootprints });
-      expect(reused.execution).toBe('no-op');
-      expect(reused.targets.map((target) => target.execution)).toEqual(['no-op', 'no-op']);
-      expect(await addCalls(options.log)).toHaveLength(2);
-      expect((await fs.stat(path.join(options.cwd, '.agents/skills/alpha/SKILL.md'))).mtimeMs).toBe(before.mtimeMs);
-      const mismatched = await executePortableRecovery({ prepared: await preparePortableRecovery(options),
-        token, action: 'reinstall', completedFootprints: completedFootprints.map((entry) => ({ ...entry, logicalIdentity: 'other-source' })) });
-      expect(mismatched.execution).toBe('applied');
-      expect(await addCalls(options.log)).toHaveLength(3);
-    } });
-  });
-  it.each(['bad-lock', 'failed-list', 'filtered-file'])('blocks %s before add', async (kind) => {
-    const fixtureValue = await fixture(); const options = { ...fixtureValue, agents: [...fixtureValue.agents] };
-    if(kind==='bad-lock') await fs.writeFile(path.join(options.cwd,'skills-lock.json'), '{broken');
-    if(kind==='failed-list') { Object.assign(options.env,{FAIL_LIST:'1'});
-      options.context = await createScopeContext({ scope: 'project', cwd: options.cwd, env: options.env }); }
-    if(kind==='filtered-file') state.extraFile='metadata.json';
+
+  // Test Value Gate: updating one deployment removes its obsolete owned Skill while unrelated residual deployments remain.
+  it('removes obsolete Skills in the updated deployment without collecting independent residue', async () => {
+    const options = await fixture();
+    state.skills.push({ name: 'old-root', providerPluginId: 'team/root' }, { name: 'independent', providerPluginId: 'team/independent' });
+    await apply(options);
+    const root = path.join(options.context.executionCwd, '.cursor', 'skills');
+    state.skills = [{ name: 'alpha', providerPluginId: 'team/root' }];
+    state.content = 'new';
     const prepared = await preparePortableRecovery(options);
-    expect(prepared.blockers.length).toBeGreaterThan(0);
-    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      expect((await executePortableRecovery({ prepared, token })).outputsMayHaveChanged).toBe(false);
-    } });
-    if(await fs.pathExists(options.log)) expect(await addCalls(options.log)).toHaveLength(0);
+    expect(prepared.targets).toEqual(expect.arrayContaining([expect.objectContaining({ skill: 'old-root', disposition: 'remove' })]));
+    expect(prepared.targets.some((target) => target.skill === 'independent')).toBe(false);
+    expect((await apply(options, { authorizeUpdate: true })).execution).toBe('applied');
+    expect(await fs.pathExists(path.join(root, 'old-root'))).toBe(false);
+    expect(await fs.pathExists(path.join(root, 'independent'))).toBe(true);
   });
-  it('rejects Review drift before writing and never removes unsupported backend outputs', async () => {
-    const fixtureValue = await fixture(); const options = { ...fixtureValue, agents: [...fixtureValue.agents] };
+
+  // Test Value Gate: removing the final Skill still needs an empty candidate and bounded old-output cleanup.
+  it('can update a deployment to an empty Skill set', async () => {
+    const options = await fixture();
+    await apply(options);
+    state.skills = [];
     const prepared = await preparePortableRecovery(options);
-    await fs.outputFile(path.join(options.cwd, '.agents/skills/alpha/SKILL.md'), 'foreign');
-    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      expect((await executePortableRecovery({ prepared, token })).blockers).toEqual(['operationReviewStale']);
-      expect((await executePortableRecovery({ prepared, token, action:'cleanup' })).blockers).toEqual(['backend-action-unsupported']);
-    } });
-    expect(await addCalls(options.log)).toHaveLength(0);
+    expect(prepared.targets).toMatchObject([{ skill: 'alpha', disposition: 'remove' }]);
+    expect((await apply(options, { authorizeUpdate: true })).execution).toBe('applied');
+    expect(await fs.pathExists(path.join(options.context.executionCwd, '.cursor', 'skills', 'alpha'))).toBe(false);
   });
-  it.each(['scope', 'tampered', 'missing-generation'])('preserves %s installed evidence instead of overwriting it', async (kind) => {
-    const fixtureValue = await fixture(); const options = { ...fixtureValue, agents: [...fixtureValue.agents] };
+
+  // Test Value Gate: project provider assignment must filter user-provided dependencies after complete materialization validation.
+  it('does not create a project copy for a provider assigned to the user', async () => {
+    state.skills.push({ name: 'dependency', providerPluginId: 'team/dependency' });
+    const options = { ...await fixture(), excludedPluginIds: ['team/dependency'] };
+    const prepared = await preparePortableRecovery(options);
+    expect(prepared.targets.map((target) => target.providerPluginId)).toEqual(['team/root']);
+    expect((await apply(options)).execution).toBe('applied');
+    expect(await fs.pathExists(path.join(options.context.executionCwd, '.cursor', 'skills', 'dependency'))).toBe(false);
+    const changed = await preparePortableRecovery({ ...options, excludedPluginIds: [] });
+    expect(changed.evidenceDigest).not.toBe(prepared.evidenceDigest);
+  });
+
+  // Test Value Gate: offline cleanup must work without current Catalog, schema, generation or renderer in both scopes.
+  it.each(['user', 'project'] as const)('cleans %s owned output offline and preserves foreign content', async (scope) => {
+    const options = await fixture(scope);
+    await apply(options);
+    const installed = (await inspectPortableRecovery(options)).targets[0]!.physicalPath;
+    const foreign = path.join(path.dirname(installed), 'foreign');
+    await fs.outputFile(path.join(foreign, 'SKILL.md'), 'hand managed');
+    await fs.remove(options.context.generationRoot);
+    state.catalogUnavailable = true;
+    const builds = state.builds;
+    const prepared = await preparePortableCleanup(options);
+    expect(prepared.targets).toMatchObject([{ skill: 'alpha', ownership: 'aw', disposition: 'remove' }]);
+    expect((await inspectPortableRecovery(prepared.options)).evidenceDigest).toBe(prepared.evidenceDigest);
     await withAwHomeMutationLock({ env: options.env, action: async (token) => {
-      const original = await preparePortableRecovery(options);
-      await executePortableRecovery({ prepared: original, token });
-      if (kind === 'scope') { Object.assign(options.env, { WRONG_SCOPE: '1' });
-        options.context = await createScopeContext({ scope: 'project', cwd: options.cwd, env: options.env }); }
-      if (kind === 'tampered') await fs.appendFile(path.join(options.cwd, '.agents/skills/alpha/SKILL.md'), '\nUser change');
-      if (kind === 'missing-generation') await fs.remove(original.generation);
-      state.content = 'new-content';
-      const next = await preparePortableRecovery(options);
-      expect(next.targets.every((target) => ['unknown', 'conflict'].includes(target.observation))).toBe(true);
-      expect((await executePortableRecovery({ prepared: next, token, authorizeUpdate: true })).outputsMayHaveChanged).toBe(false);
+      expect((await executePortableRecovery({ prepared, token, action: 'cleanup' })).execution).toBe('applied');
     } });
-    expect(await addCalls(options.log)).toHaveLength(1);
+    expect(state.builds).toBe(builds);
+    expect(await fs.pathExists(installed)).toBe(false);
+    expect(await fs.readFile(path.join(foreign, 'SKILL.md'), 'utf8')).toBe('hand managed');
+    expect(await inspectPortableResidue(options)).toEqual({ state: 'absent', targets: [], blockers: [] });
+  });
+
+  // Test Value Gate: damaged weak metadata has a narrow force recovery, and marker identity corruption never authorizes removal.
+  it('uses force only for complete owned identities and reports unknown marker corruption', async () => {
+    const options = await fixture();
+    await apply(options);
+    const installed = (await inspectPortableRecovery(options)).targets[0]!.physicalPath;
+    const markerPath = path.join(installed, SKILL_OWNER_MARKER);
+    const marker = await fs.readJson(markerPath);
+    delete marker.configDigest;
+    await fs.writeJson(markerPath, marker);
+    const normal = await preparePortableCleanup(options);
+    expect(normal.blockers).toContain('portableOwnerDamaged');
+    const forced = await preparePortableCleanup({ ...options, force: true });
+    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
+      expect((await executePortableRecovery({ prepared: forced, token, action: 'cleanup', force: true })).execution).toBe('applied');
+    } });
+    await apply(options);
+    await fs.writeFile(markerPath, '{broken');
+    expect((await inspectPortableResidue(options)).state).toBe('unknown');
+    const invalid = await preparePortableCleanup({ ...options, force: true });
+    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
+      expect((await executePortableRecovery({ prepared: invalid, token, action: 'cleanup', force: true })).execution).toBe('not-run');
+    } });
+    expect(await fs.pathExists(installed)).toBe(true);
+  });
+
+  // Test Value Gate: current marker observation must detect Review drift; owned extras are visible in User and Project scopes.
+  it.each(['user', 'project'] as const)('observes %s extras and rejects changed review evidence', async (scope) => {
+    const options = await fixture(scope);
+    await apply(options);
+    expect(await inspectPortableExtraInstalled(options)).toMatchObject({ complete: true,
+      targets: [expect.objectContaining({ pluginId: 'team/root', agent: 'cursor', observation: 'verified' })] });
+    const prepared = await preparePortableCleanup(options);
+    await fs.appendFile(path.join(prepared.targets[0]!.physicalPath, 'README.md'), 'after review');
+    await withAwHomeMutationLock({ env: options.env, action: async (token) => {
+      expect((await executePortableRecovery({ prepared, token, action: 'cleanup' })).blockers).toEqual(['operationReviewStale']);
+    } });
   });
 });

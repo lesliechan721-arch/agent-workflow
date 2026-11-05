@@ -169,12 +169,12 @@ describe('ConsoleAppV4', () => {
         projectIntentTarget({ pluginName: 'review-gate', platform: 'codex', state: 'ready' }),
       ]);
       loaded.scopedRecovery = { project: { scope: 'project', intent: { state: 'valid' },
-        selection: { agents: ['codex', 'claude-code'], preferences: 'valid' },
+        selection: { agents: ['codex', 'claude'], preferences: 'valid' },
         inventory: [{ pluginId: 'official/agent-lab', source: 'official', sourceState: 'ready', blockers: [],
           targetResults: [{ pluginId: 'official/agent-lab', agent: 'codex', scope: 'project',
             delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run', observation: 'unknown',
-            content: 'conflict', blockers: [{ code: 'blocked', message: '受阻' }], requiredBy: [] },
-          { pluginId: 'official/agent-lab', agent: 'claude-code', scope: 'project',
+            content: 'conflict', blockers: [{ code: 'sourceUnavailable', message: '来源当前不可用。' }], requiredBy: [] },
+          { pluginId: 'official/agent-lab', agent: 'claude', scope: 'project',
             delivery: { kind: 'native', platform: 'claude' }, execution: 'not-run', observation: 'missing',
             content: 'drifted', blockers: [], requiredBy: [] }] },
         { pluginId: 'official/review-gate', source: 'official', sourceState: 'ready', blockers: [],
@@ -188,15 +188,22 @@ describe('ConsoleAppV4', () => {
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
       await nextTurn(2);
       const frames = [acceptanceTraceStep(instance, { columns, rows }, 'mixed root')];
-      expect(frames[0]!.frame).toContain('总体状态 [! 受阻]');
-      expect(frames[0]!.frame).toContain('Codex [当前项目]');
+      expect(frames[0]!.frame).toContain('[■ 当前项目]');
       const allFacts = [frames[0]!.frame];
-      for (let page = 0; page < 4 && !allFacts.join('\n').includes('Claude Code [当前项目]'); page += 1) {
-        await input(instance, '\u001B[6~');
-        allFacts.push(instance.lastFrame() ?? '');
+      for (let line = 0; line < 8 && (!allFacts.join('\n').includes('Claude Code] 待同步')
+        || !allFacts.join('\n').includes('插件来源不可用')); line += 1) {
+        await input(instance, '\u001B[B');
+        const step = acceptanceTraceStep(instance, { columns, rows }, `mixed facts ${line + 1}`);
+        frames.push(step);
+        allFacts.push(step.frame);
       }
-      expect(allFacts.join('\n')).toContain('Claude Code [当前项目]');
+      expect(allFacts.join('\n')).toContain('[! Codex] 受阻');
+      expect(allFacts.join('\n')).toContain('插件来源不可用');
+      expect(allFacts.join('\n')).toContain('[↻ Claude Code] 待同步');
       expect(value.listScopedInventoryRoots('project')).toHaveLength(2);
+      const mixedRoot = value.listScopedInventoryRoots('project').find((root) => root.pluginId === 'official/agent-lab')!;
+      expect(mixedRoot.targets).toHaveLength(2);
+      expect(mixedRoot.targets.every((entry) => entry.scope === 'project')).toBe(true);
       await input(instance, '/', 'review', '\r');
       expect(instance.lastFrame()).toContain('review-gate');
       expect(instance.lastFrame()).not.toContain('agent-lab');

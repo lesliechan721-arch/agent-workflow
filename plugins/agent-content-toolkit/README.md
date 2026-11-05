@@ -3,7 +3,8 @@
 为 Agent 指令提供共同的写作与评价方法，帮助减少重复规则、弱指针和不必要的上下文负担。
 
 ```bash
-aw install agent-content-toolkit --scope user --target codex
+aw plugin targets set codex
+aw plugin install agent-content-toolkit --scope user
 ```
 
 也支持 Claude Code，可改用 `--target claude-code`。包含 `agent-content`，用于 AGENTS.md、CLAUDE.md、prompt、role instructions 和 reference。

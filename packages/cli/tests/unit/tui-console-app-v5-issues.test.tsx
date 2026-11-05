@@ -35,6 +35,23 @@ import { acceptanceTraceStep, focusAction, input, nextTurn, type AcceptanceTrace
 
 afterEach(() => cleanup());
 
+async function readScopedDetails(instance: ReturnType<typeof render>): Promise<string> {
+  await input(instance, 'd');
+  const frames: string[] = [];
+  for (let page = 0; page < 20; page += 1) {
+    const frame = instance.lastFrame() ?? '';
+    frames.push(frame);
+    const pager = frame.match(/(\d+)\s*\/\s*(\d+)/u);
+    expect(pager).not.toBeNull();
+    if (pager![1] === pager![2]) {
+      await input(instance, 'd');
+      return frames.join('\n');
+    }
+    await input(instance, '\u001B[C');
+  }
+  throw new Error('The technical details did not reach the last page.');
+}
+
 function mixedScopeConflictTarget(
   pluginName: string,
   sourceId = 'official',
@@ -62,12 +79,12 @@ function mixedScopeConflictTarget(
     {
       command: 'uninstall',
       scope: 'user',
-      description: `运行 aw uninstall ${sourceId}/${pluginName} --platform codex --scope user，再运行 aw sync ${sourceId}/${pluginName} --platform codex --scope project。`,
+      description: `运行 aw plugin intent remove ${sourceId}/${pluginName} --scope user，再运行 aw plugin cleanup ${sourceId}/${pluginName} --target codex --scope user，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context project。`,
     },
     {
       command: 'uninstall',
       scope: 'project',
-      description: `运行 aw uninstall ${sourceId}/${pluginName} --platform codex --scope project，再运行 aw sync ${sourceId}/${pluginName} --platform codex --scope user。`,
+      description: `运行 aw plugin intent remove ${sourceId}/${pluginName} --scope project，再运行 aw plugin cleanup ${sourceId}/${pluginName} --target codex --scope project，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context user。`,
     },
   ];
   return value;
@@ -229,7 +246,10 @@ describe('ConsoleAppV4', () => {
       allTechnicalPages += instance.lastFrame() ?? '';
     }
     expect(allTechnicalPages).toContain('建议 1');
-    expect(allTechnicalPages).toContain('运行 aw status --json，记录公开错误 code。');
+    const manualSteps = allTechnicalPages.split('\n').filter((line) => /建议 \d+:/u.test(line))
+      .map((line) => line.replace(/^.*?建议 \d+:\s*/u, '').replace(/\s*│\s*$/u, ''))
+      .join('').replace(/\s/gu, '');
+    expect(manualSteps).toContain('运行awpluginstatus--json，记录公开错误code。');
     expect(allTechnicalPages).toContain('备份相关 AW 配置。');
     expect(allTechnicalPages).toContain('按技术详情使用受支持命令或人工处理。');
     expect(allTechnicalPages).toContain('再次运行状态检查。');
@@ -487,7 +507,7 @@ describe('ConsoleAppV4', () => {
     value.push({
       name: 'configFields',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(4);
@@ -696,7 +716,7 @@ describe('ConsoleAppV4', () => {
     const loaded = loadResult();
     const value = controller({
       loadStatus: vi.fn().mockResolvedValue(loaded),
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => configPage(pluginId, layer)),
     });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
@@ -713,7 +733,7 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'effective' },
+      name: 'configFields', pluginId: 'team-tools/review-gate', layer: { profile: 'common' },
     });
   });
 
@@ -1021,9 +1041,15 @@ describe('ConsoleAppV4', () => {
       selectors: ['official/retired-tool'],
       exactTargets: [{ pluginId: 'official/retired-tool', agent: 'codex' }],
     }), expect.any(AbortSignal));
-    expect(instance.lastFrame()).toContain('范围：个人（所有项目）');
-    expect(instance.lastFrame()).toContain('需求变更（计划）：无');
+    expect(instance.lastFrame()).toContain('所有项目');
+    expect(instance.lastFrame()).toContain('− 移除 retired-tool（official）');
     expect(instance.lastFrame()).not.toContain('/private/aw-home/managed/retired-tool.md');
+    const details = await readScopedDetails(instance);
+    expect(details).toContain('范围：个人（所有项目）');
+    expect(details).toContain('需求变更（计划）：无');
+    expect(details).toContain('official/retired-tool · Codex [个人] · 原生');
+    expect(details).not.toContain('/private/aw-home/managed/retired-tool.md');
+    expect(executeScopedTask).not.toHaveBeenCalled();
 
     const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
     await input(instance, 'y');
@@ -1060,7 +1086,11 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     expect(instance.lastFrame()).toContain('恢复结果');
     expect(instance.lastFrame()).not.toContain('/Users/private');
-    expect(instance.lastFrame()).toContain('操作未完成');
+    expect(instance.lastFrame()).toContain('当前无法完成，请查看详情');
+    const details = await readScopedDetails(instance);
+    expect(details).toContain('recoveryFailed');
+    expect(details).not.toContain('/Users/private');
+    expect(value.dependencies.executeScopedTask).toHaveBeenCalledTimes(1);
     expect(value.listUserIssues().some((entry) => entry.issueId === selected.issueId)).toBe(true);
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({ name: 'issueDetail', issueId: selected.issueId });

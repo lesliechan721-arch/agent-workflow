@@ -1,4 +1,4 @@
-import { type ScopedTaskRequest, scopedPlan, placement } from '../helpers/tui-console-app-fixture.js';
+import { type ScopedTaskRequest, scopedPlan, scopedReceipt, placement } from '../helpers/tui-console-app-fixture.js';
 import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +15,7 @@ import { TuiController, type TuiControllerDependencies, type TuiStatusLoadResult
 
 vi.mock('../../src/tui/clipboard.js', () => ({ copyToClipboard: vi.fn() }));
 
-import { controller, dependencyLoadResult, dependencyOverview, evidence, loadResult, platformLoadResult, setAllPlacementsAbsent, target, updatePlacement } from '../helpers/tui-console-app-fixture.js';
+import { agentSettings, controller, dependencyLoadResult, dependencyOverview, evidence, loadResult, platformLoadResult, setAllPlacementsAbsent, target, updatePlacement } from '../helpers/tui-console-app-fixture.js';
 
 import {
   acceptanceTraceStep,
@@ -49,6 +49,40 @@ function capabilityUnsupportedLoadResult(): TuiStatusLoadResult {
     missingCapabilities: ['aw.future-feature.v1'],
   }];
   return loaded;
+}
+
+function portableDetailFixture(scopes: Array<'user' | 'project'>) {
+  const pluginId = 'official/agent-lab';
+  const loaded = loadResult();
+  loaded.payload.targets = [];
+  loaded.pluginSummaries = [{ ...loaded.pluginSummaries[0]!, supportedTargets: { codex: [], claude: [] } }];
+  loaded.dependencyOverviews = [];
+  loaded.portablePluginIds = [pluginId];
+  loaded.projectRoot = '/workspace';
+  loaded.scopedRecovery = {};
+  for (const scope of ['user', 'project'] as const) {
+    loaded.scopedRecovery[scope] = { scope, intent: { state: scopes.includes(scope) ? 'valid' : 'absent' },
+      selection: { agents: ['cursor'], preferences: 'valid' }, inventory: scopes.includes(scope) ? [{
+        pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: [{
+          pluginId, agent: 'cursor', scope, delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+          execution: 'no-op', observation: 'verified', content: 'satisfied',
+          blockers: [], requiredBy: [], relation: 'root',
+        }],
+      }] : [], errors: [], allSatisfied: true, coverage: { native: true, portable: true } };
+  }
+  const settings = agentSettings(['cursor']);
+  settings.plugins = [{ pluginId, scopes, supportedTargets: ['cursor'] }];
+  return { pluginId, loaded, settings };
+}
+
+function portableDetailPlan(request: ScopedTaskRequest) {
+  const receipt = scopedReceipt(request);
+  if (request.kind === 'recovery') {
+    receipt.selection.agents = ['cursor'];
+    receipt.requestedTargets = request.selectors.map((pluginId) => ({ pluginId, agent: 'cursor', scope: request.scope,
+      delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' } }));
+  }
+  return scopedPlan(request, receipt);
 }
 
 describe('ConsoleAppV4', () => {
@@ -227,7 +261,7 @@ describe('ConsoleAppV4', () => {
     },
   );
 
-  it('shows the stable primary root cause on an installed plugin row', async () => {
+  it('keeps an installed plugin row compact and makes its primary problem reachable', async () => {
     const loaded = loadResult();
     const consumer = loaded.payload.targets.find((entry) =>
       entry.pluginId === 'team-tools/review-gate' && entry.platform === 'codex');
@@ -240,6 +274,9 @@ describe('ConsoleAppV4', () => {
       rootIssueCode: 'artifactCollision',
       severity: 'warning',
     }] });
+    loaded.payload.targets = [consumer!];
+    loaded.pluginSummaries = loaded.pluginSummaries.filter((entry) => entry.pluginId === consumer!.pluginId)
+      .map((entry) => ({ ...entry, configIssues: [] }));
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     value.push({ name: 'pluginList', mode: 'installed' }, { installFilter: 'installed' });
@@ -248,6 +285,11 @@ describe('ConsoleAppV4', () => {
 
     expect(instance.lastFrame()).not.toContain('artifactCollision');
     expect(instance.lastFrame()).toContain('团队发布审查、证据检查与发布门禁');
+    expect(instance.lastFrame()).toContain('↻ Codex');
+    await input(instance, '\r');
+    await focusAction(instance, '查看处理建议');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('issueDetail');
     expect(instance.lastFrame()).toContain('AW 不会覆盖或删除');
     instance.unmount();
   });
@@ -283,9 +325,9 @@ describe('ConsoleAppV4', () => {
     }
     expect(detail.match(/团队发布审查、证据检查与发布门禁/gu)).toHaveLength(1);
     expect(detail.match(/team-tools/gu) ?? []).toHaveLength(1);
-    expect(detail.match(/目录版本 0\.4\.2/gu)).toHaveLength(1);
-    expect(detail.match(/Codex \[所有项目\] 安装版本/gu)).toHaveLength(1);
-    expect(detail.match(/Claude Code \[当前项目\] 安装版本/gu)).toHaveLength(1);
+    expect(detail.match(/最新版本 0\.4\.2/gu)).toHaveLength(1);
+    expect(detail.match(/Codex\s+✓ 可用\s+所有项目\s+—/gu)).toHaveLength(1);
+    expect(detail.match(/Claude Code\s+✓ 可用\s+当前项目\s+—/gu)).toHaveLength(1);
     expect(detail).not.toContain('重新安装');
     expect(detail).not.toContain('同步已保存');
 
@@ -322,18 +364,17 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     const frame = instance.lastFrame() ?? '';
 
-    expect(frame).toContain('Codex [所有项目]');
-    expect(frame).toContain('Codex [当前项目]');
-    expect(frame).toMatch(/Codex \[所有项目\][^\n]*\[✓ 可用\]/u);
-    expect(frame).toMatch(/Codex \[当前项目\][^\n]*\[✓ 可用\]/u);
+    expect(frame).toMatch(/Agent\s+状态\s+位置\s+版本/u);
+    expect(frame).toMatch(/Codex\s+✓ 可用\s+所有项目\s+—/u);
+    expect(frame).toMatch(/Codex\s+✓ 可用\s+当前项目\s+—/u);
     expect(frame.match(/依赖关系/gu)).toHaveLength(1);
   });
 
   it.each([
-    ['ready', 'needsSync', ['Codex [所有项目] 安装版本 未确认 [✓ 可用]', 'Codex [当前项目] 安装版本 未确认 [↻ 待同步]']],
-    ['needsSync', 'ready', ['Codex [所有项目] 安装版本 未确认 [↻ 待同步]', 'Codex [当前项目] 安装版本 未确认 [✓ 可用]']],
-    ['ready', 'absent', ['Codex [所有项目] 安装版本 未确认 [✓ 可用]']],
-    ['needsSync', 'needsSync', ['Codex [所有项目] 安装版本 未确认 [↻ 待同步]', 'Codex [当前项目] 安装版本 未确认 [↻ 待同步]']],
+    ['ready', 'needsSync', ['Codex ✓ 可用 所有项目 —', 'Codex ↻ 待同步 当前项目 —']],
+    ['needsSync', 'ready', ['Codex ↻ 待同步 所有项目 —', 'Codex ✓ 可用 当前项目 —']],
+    ['ready', 'absent', ['Codex ✓ 可用 所有项目 —']],
+    ['needsSync', 'needsSync', ['Codex ↻ 待同步 所有项目 —', 'Codex ↻ 待同步 当前项目 —']],
   ] as const)('keeps scoped Status v8 conclusions for user=%s and project=%s', async (
     userState, projectState, expected,
   ) => {
@@ -365,7 +406,7 @@ describe('ConsoleAppV4', () => {
     const frame = instance.lastFrame() ?? '';
 
     for (const text of expected) expect(frame.replace(/ +/gu, ' ')).toContain(text);
-    if (projectState === 'absent') expect(frame).not.toContain('Codex [当前项目]');
+    if (projectState === 'absent') expect(frame).not.toMatch(/Codex[^\n]*当前项目/u);
     expect(frame).not.toContain('所有项目、当前项目需要同步');
   });
 
@@ -401,8 +442,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
 
-    expect((instance.lastFrame() ?? '').replace(/ +/gu, ' ')).toContain('Codex [所有项目] 安装版本 未确认 [↻ 待同步]');
-    expect((instance.lastFrame() ?? '').replace(/ +/gu, ' ')).toContain('Codex [当前项目] 安装版本 未确认 [↻ 待同步]');
+    expect((instance.lastFrame() ?? '').replace(/ +/gu, ' ')).toContain('Codex ↻ 待同步 所有项目 —');
+    expect((instance.lastFrame() ?? '').replace(/ +/gu, ' ')).toContain('Codex ↻ 待同步 当前项目 —');
   });
 
   it('does not copy one scoped collision to the ready Status v8 scope', async () => {
@@ -440,12 +481,12 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     const frame = instance.lastFrame() ?? '';
 
-    expect((frame).replace(/ +/gu, ' ')).toContain('Codex [所有项目] 安装版本 未确认 [✓ 可用]');
-    expect((frame).replace(/ +/gu, ' ')).toContain('Codex [当前项目] 安装版本 未确认 [! 受阻]');
+    expect(frame.replace(/ +/gu, ' ')).toContain('Codex ✓ 可用 所有项目 —');
+    expect(frame.replace(/ +/gu, ' ')).toContain('Codex ! 受阻 当前项目 —');
   });
 
   it.each([[60, 18], [80, 24]] as const)(
-    'keeps four scoped platform conclusions and all detail actions reachable at %ix%i',
+    'keeps Agent table facts and all detail actions reachable by continuous scrolling at %ix%i',
     async (columns, rows) => {
     const loaded = loadResult();
     loaded.pluginSummaries = loaded.pluginSummaries.filter((entry) =>
@@ -506,20 +547,26 @@ describe('ConsoleAppV4', () => {
 
     expect(first).not.toContain('完整基本信息');
     let conclusionFrames = instance.lastFrame() ?? '';
-    for (let page = 0; page < 10; page += 1) {
-      await input(instance, '\u001b[6~');
+    for (let row = 0; row < 16; row += 1) {
+      await input(instance, '\u001b[B');
       conclusionFrames += `\n${instance.lastFrame() ?? ''}`;
     }
-    expect(conclusionFrames).toContain('Codex');
-    expect(conclusionFrames.replace(/ +/gu, ' ')).toContain('Codex [所有项目] 安装版本 未确认 [✓ 可用]');
-    expect(conclusionFrames.replace(/ +/gu, ' ')).toContain('Codex [当前项目] 安装版本 未确认 [↻ 待同步]');
+    const facts = conclusionFrames.replace(/ +/gu, ' ');
+    expect(facts).toMatch(/Codex ✓ 可用 [^\n]*—/u);
+    expect(facts).toMatch(/Codex ↻ 待同步 [^\n]*—/u);
     const second = instance.lastFrame() ?? '';
-    expect(conclusionFrames).toContain('Claude Code');
-    expect((conclusionFrames).replace(/ +/gu, ' ')).toContain('Claude Code [所有项目] 安装版本 0.2.1 [! 受阻]');
-    expect((conclusionFrames).replace(/ +/gu, ' ')).toContain('Claude Code [当前项目] 安装版本 0.2.1 [✓ 可用]');
+    expect(facts).toMatch(/Claude Code ! 受阻 [^\n]*0\.2\.1 ↑/u);
+    expect(facts).toMatch(/Claude Code ✓ 可用 [^\n]*0\.2\.1 ↑/u);
+    if (columns >= 80) {
+      expect(facts).toContain('Codex ✓ 可用 所有项目 —');
+      expect(facts).toContain('Codex ↻ 待同步 当前项目 —');
+      expect(facts).toContain('Claude Code ! 受阻 所有项目 0.2.1 ↑');
+      expect(facts).toContain('Claude Code ✓ 可用 当前项目 0.2.1 ↑');
+    }
+    expect(conclusionFrames).not.toMatch(/第\s*\d+\s*页/u);
     expect(second).toContain('›');
     expect(second.split('\n').length).toBeLessThanOrEqual(rows);
-    trace.push(acceptanceTraceStep(instance, size, '详情原页显示全部范围', ['PgDn']));
+    trace.push(acceptanceTraceStep(instance, size, '连续阅读全部 Agent 状态', ['ArrowDown']));
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
 
     const focusedActions = new Set<string>();
@@ -554,7 +601,8 @@ describe('ConsoleAppV4', () => {
       expect(instance.lastFrame()).toContain('? Codex');
       expect(instance.lastFrame()).toMatch(/搜索 [^\n]*\[\/\]/u);
       await input(instance, '\r');
-      expect((instance.lastFrame() ?? '').replace(/ +/gu, ' ')).toContain('使用位置 [? 未确认]');
+      expect(instance.lastFrame()).toContain('尚无安装结果');
+      expect(instance.lastFrame()).not.toContain('✓ 可用');
       expect(instance.lastFrame()).not.toContain('尚未安装');
       expect(instance.lastFrame()).toContain('Esc 返回');
     },
@@ -577,9 +625,177 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
 
-    expect(instance.lastFrame()).toContain('已保存设置 所有项目');
-    expect((instance.lastFrame() ?? '').replace(/ +/gu, ' ')).toContain('使用位置 [? 未确认]');
-    expect(instance.lastFrame()).not.toContain('[✓ 可用]');
+    expect(instance.lastFrame()).toContain('插件设置');
+    expect(instance.lastFrame()).toContain('○ 尚未添加');
+    expect(instance.lastFrame()).toContain('尚无安装结果');
+    expect(instance.lastFrame()).not.toContain('✓ 可用');
+  });
+
+  // Test Value Gate: an install must use saved targets and ask only where to record the requested root.
+  it.each(['user', 'project'] as const)('prepares an install after selecting only the %s Intent scope', async (selectedScope) => {
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
+    const executeScopedTask = vi.fn();
+    const captureEvidence = vi.fn();
+    const loaded = dependencyLoadResult();
+    loaded.projectRoot = '/workspace';
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded),
+      prepareScopedTask, executeScopedTask, captureEvidence });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    await focusAction(instance, '添加插件…');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('选择使用范围');
+    expect(instance.lastFrame()).toContain('将安装到');
+    expect(instance.lastFrame()).toContain('◆ Codex');
+    expect(instance.lastFrame()).toContain('◆ Claude Code');
+    expect(instance.lastFrame()).not.toContain('选择 Agent');
+    await focusAction(instance, selectedScope === 'user' ? '■ 所有项目' : '■ 当前项目');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(prepareScopedTask).toHaveBeenCalledExactlyOnceWith({ kind: 'recovery', command: 'install',
+      scope: selectedScope, selectors: ['official/agent-lab'] }, expect.any(AbortSignal));
+    expect(captureEvidence).not.toHaveBeenCalled();
+    expect(executeScopedTask).not.toHaveBeenCalled();
+  });
+
+  // Test Value Gate: an empty target policy must preserve browsing and a separate setup path without preparing a write.
+  it('disables adding with no targets and opens Agent management as a separate action', async () => {
+    const prepareScopedTask = vi.fn();
+    const executeIntent = vi.fn();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+      readAgentSettings: vi.fn(async () => agentSettings([])), prepareScopedTask, executeIntent,
+      previewAgentSettings: vi.fn(async () => ({ blocked: false, reasons: [], conflicts: [], counts: {} })),
+    });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+    expect(instance.lastFrame()).toContain('欢迎使用 AW');
+    await escape(instance);
+    expect(instance.lastFrame()).toContain('添加插件…');
+    expect(instance.lastFrame()).toContain('请先选择 Agent');
+    expect(instance.lastFrame()).toContain('打开 Agent 管理');
+    await focusAction(instance, '打开 Agent 管理');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('选择这台电脑上使用的 Agent');
+    expect(prepareScopedTask).not.toHaveBeenCalled();
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  // Test Value Gate: direct roots can edit their own target exclusions; installed dependencies cannot acquire that authority.
+  it.each([true, false])('offers plugin Agent management only when it is a direct root: %s', async (direct) => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    const settings = agentSettings();
+    if (direct) {
+      settings.plugins = [{ pluginId: 'official/agent-lab', scopes: ['user'], supportedTargets: ['codex', 'claude'] }];
+      loaded.scopedRecovery = { user: { scope: 'user', intent: { state: 'valid' },
+        selection: { agents: ['codex', 'claude'], preferences: 'valid' }, inventory: [{
+          pluginId: 'official/agent-lab', source: 'official', sourceState: 'ready', blockers: [],
+          targetResults: [{ pluginId: 'official/agent-lab', agent: 'codex', scope: 'user',
+            delivery: { kind: 'native', platform: 'codex' }, execution: 'no-op', observation: 'verified',
+            content: 'satisfied', blockers: [], requiredBy: [], relation: 'root' }],
+        }], errors: [], allSatisfied: true } };
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded),
+      readAgentSettings: vi.fn(async () => settings),
+      previewAgentSettings: vi.fn(async () => ({ blocked: false, reasons: [], conflicts: [], counts: {} })),
+    });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+    if (direct) {
+      expect(instance.lastFrame()).toContain('■ 所有项目');
+      await focusAction(instance, 'Agent 管理');
+      await input(instance, '\r');
+      expect(instance.lastFrame()).toContain('选择 agent-lab 在哪些 Agent 中使用');
+    } else {
+      let frames = instance.lastFrame() ?? '';
+      for (let row = 0; row < 20; row += 1) {
+        await input(instance, '\u001B[B');
+        frames += `\n${instance.lastFrame() ?? ''}`;
+      }
+      expect(frames).not.toContain('Agent 管理');
+      expect(frames).toContain('内容详情');
+      expect(frames).toContain('卸载');
+    }
+  });
+
+  // Test Value Gate: actual Portable output must expose recovery through the same scope plan as Native output, without Native target guessing.
+  it.each(['user', 'project'] as const)('prepares Portable-only %s sync and uninstall without executing', async (selectedScope) => {
+    const fixture = portableDetailFixture([selectedScope]);
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => portableDetailPlan(request));
+    const executeScopedTask = vi.fn();
+    const executeIntent = vi.fn();
+    const captureEvidence = vi.fn();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(fixture.loaded),
+      readAgentSettings: vi.fn(async () => fixture.settings), prepareScopedTask,
+      executeScopedTask, executeIntent, captureEvidence });
+    await value.load();
+    expect(value.getPluginDetailSubject(fixture.pluginId)?.placements).toMatchObject([
+      { agent: 'cursor', scope: selectedScope, delivery: 'agent-skills', actual: true },
+    ]);
+    const nativeTargets = vi.spyOn(value, 'listPluginWriteBatchTargets');
+    value.push({ name: 'pluginDetail', pluginId: fixture.pluginId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    expect(instance.lastFrame()).toMatch(/Cursor\s+✓ 可用/u);
+    await focusAction(instance, '同步并修复…');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(prepareScopedTask).toHaveBeenCalledExactlyOnceWith({ kind: 'recovery', command: 'sync',
+      scope: selectedScope, selectors: [fixture.pluginId] }, expect.any(AbortSignal));
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    await escape(instance);
+    prepareScopedTask.mockClear();
+    await focusAction(instance, '卸载');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(prepareScopedTask).toHaveBeenCalledExactlyOnceWith({ kind: 'recovery', command: 'uninstall',
+      scope: selectedScope, selectors: [fixture.pluginId] }, expect.any(AbortSignal));
+    expect(nativeTargets.mock.calls.filter(([action]) => action === 'uninstall')).toEqual([]);
+    expect(captureEvidence).not.toHaveBeenCalled();
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  // Test Value Gate: two actual Portable scopes require an explicit choice, and preparing removal cannot remove the other scope.
+  it.each(['user', 'project'] as const)('selects only the %s scope when uninstalling a Portable plugin present in both scopes', async (selectedScope) => {
+    const fixture = portableDetailFixture(['user', 'project']);
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => portableDetailPlan(request));
+    const executeScopedTask = vi.fn();
+    const executeIntent = vi.fn();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(fixture.loaded),
+      readAgentSettings: vi.fn(async () => fixture.settings), prepareScopedTask, executeScopedTask, executeIntent });
+    await value.load();
+    const otherScope = selectedScope === 'user' ? 'project' : 'user';
+    const retained = value.snapshot.scopedInventories[otherScope];
+    const retainedPlacements = value.getPluginDetailSubject(fixture.pluginId)?.placements
+      .filter((placement) => placement.scope === otherScope);
+    value.push({ name: 'pluginDetail', pluginId: fixture.pluginId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+    await focusAction(instance, '卸载');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('选择卸载范围');
+    expect(instance.lastFrame()).toContain('保留其他范围仍需要的内容');
+    expect(instance.lastFrame()).toContain('所有项目');
+    expect(instance.lastFrame()).toContain('当前项目');
+    expect(prepareScopedTask).not.toHaveBeenCalled();
+    await focusAction(instance, selectedScope === 'user' ? '所有项目' : '当前项目');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(prepareScopedTask).toHaveBeenCalledExactlyOnceWith({ kind: 'recovery', command: 'uninstall',
+      scope: selectedScope, selectors: [fixture.pluginId] }, expect.any(AbortSignal));
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    expect(executeIntent).not.toHaveBeenCalled();
+    expect(value.snapshot.scopedInventories[otherScope]).toEqual(retained);
+    expect(value.getPluginDetailSubject(fixture.pluginId)?.placements
+      .filter((placement) => placement.scope === otherScope)).toEqual(retainedPlacements);
+    await escape(instance);
+    expect(value.snapshot.scopedInventories[otherScope]).toEqual(retained);
   });
 
   it('prepares an unchanged eligible update from plugin detail once', async () => {
@@ -1191,7 +1407,7 @@ describe('ConsoleAppV4', () => {
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
       await nextTurn(2);
       const home = instance.lastFrame() ?? '';
-      for (const label of ['插件', '插件清单', '插件来源']) expect(home).toContain(label);
+      for (const label of ['插件', '项目插件', '插件来源', 'Agent 管理']) expect(home).toContain(label);
       expect(home.match(/›/gu)).toHaveLength(1);
       await input(instance, '?');
       expect(value.snapshot.router.depth).toBe(1);
@@ -1310,7 +1526,8 @@ describe('ConsoleAppV4', () => {
 
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('team-tools');
-    expect(frame).toContain('[○ Codex]');
+    expect(frame).toContain('? Codex');
+    expect(frame).toContain('○ 尚未添加');
     expect(frame).not.toContain(displayName);
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
   });
@@ -1410,7 +1627,6 @@ describe('ConsoleAppV4', () => {
 
     expect(visibleCounts[0]).toBeLessThan(visibleCounts[1]!);
     expect(visibleCounts[1]).toBeLessThan(visibleCounts[2]!);
-    expect(visibleCounts[2]).toBe(8);
   });
 
   it('keeps the focused item visible in a 60x18 viewport and opens that exact item', async () => {
@@ -1510,7 +1726,7 @@ describe('ConsoleAppV4', () => {
       await focusAction(instance, label);
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
-      expect(frame).toContain('↑↓ 选择动作');
+      expect(frame).toContain('↑↓ 连续阅读与选择');
       expect(frame.match(/›/gu)).toHaveLength(1);
     }
   });
@@ -1537,7 +1753,7 @@ describe('ConsoleAppV4', () => {
       await focusAction(instance, label);
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
-      expect(frame).toContain('↑↓ 选择动作');
+      expect(frame).toContain('↑↓ 连续阅读与选择');
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(24);
     }
@@ -1573,7 +1789,9 @@ describe('ConsoleAppV4', () => {
     expect(value.listUserIssues()).toEqual([]);
     await input(instance, 'f');
     expect(instance.lastFrame()).toContain('Agent Lab');
-    expect(instance.lastFrame()).toContain('[○ Codex]');
+    expect(instance.lastFrame()).toContain('? Codex');
+    expect(instance.lastFrame()).toContain('○ 尚未添加');
+    expect(instance.lastFrame()).not.toContain('✓ Codex');
   });
 
   it('restores list focus by entity ID after a reload changes row order', async () => {
@@ -1657,7 +1875,7 @@ describe('ConsoleAppV4', () => {
     });
   });
 
-  it.each([[60, 18], [80, 24]] as const)('review repair exposes common detail actions on first screen at %ix%i', async (columns, rows) => {
+  it.each([[60, 18], [80, 24]] as const)('keeps detail facts and actions on one continuous page at %ix%i', async (columns, rows) => {
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()) });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
@@ -1665,20 +1883,23 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     const frame = instance.lastFrame() ?? '';
     expect(frame).not.toContain('› Agent Lab');
-    expect(frame).toContain('› 安装');
-    expect(frame).toContain('安装');
+    expect(frame).toContain('› 添加插件…');
     expect(frame).toContain('内容详情');
     expect(frame).toContain('0.4.2');
     expect(frame).toContain('official');
-    expect(frame.replace(/ +/gu, ' ')).toContain('使用位置 [? 未确认]');
+    expect(frame).toContain('○ 尚未添加');
+    expect(frame).toContain('尚无安装结果');
     const trace = [acceptanceTraceStep(instance, { columns, rows }, 'detail information', [])];
     await input(instance, '\u001B[C');
-    expect(instance.lastFrame()).toContain('› 安装');
-    trace.push(acceptanceTraceStep(instance, { columns, rows }, 'information page with action focus', ['ArrowRight']));
+    expect(instance.lastFrame()).toBe(frame);
+    trace.push(acceptanceTraceStep(instance, { columns, rows }, 'right keeps the same detail', ['ArrowRight']));
     await input(instance, '\u001B[D');
-    expect(instance.lastFrame()).toContain('› 安装');
+    expect(instance.lastFrame()).toBe(frame);
     expect(instance.lastFrame()).not.toContain('› Agent Lab');
-    trace.push(acceptanceTraceStep(instance, { columns, rows }, 'detail information return', ['ArrowLeft']));
+    trace.push(acceptanceTraceStep(instance, { columns, rows }, 'left keeps the same detail', ['ArrowLeft']));
+    await focusAction(instance, '依赖关系');
+    expect(instance.lastFrame()).toContain('↑↓ 连续阅读与选择');
+    expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
     await writeAcceptanceTrace(`b04/detail-${columns}x${rows}`, trace);
   });
 
@@ -1696,7 +1917,8 @@ describe('ConsoleAppV4', () => {
       const titleLine = frame.split('\n').find((line) => line.includes('╭─ ›'));
       expect(titleLine).toContain('Agent Lab');
       expect(titleLine).not.toContain('official');
-      expect(frame.split('\n').find((line) => line.includes('Codex') && line.includes('official'))).toBeDefined();
+      expect(frame.split('\n').find((line) => line.includes('Codex'))).toBeDefined();
+      expect(frame.split('\n').find((line) => line.includes('official'))).toBeDefined();
       expect(frame).toContain('…');
       expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
       return frame;
@@ -1711,18 +1933,21 @@ describe('ConsoleAppV4', () => {
     trace.push(acceptanceTraceStep(instance, size, 'long purpose batch card', ['a', 'a', 'm']));
     await input(instance, '\r');
     expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
-    let pages = instance.lastFrame() ?? '';
+    let frames = instance.lastFrame() ?? '';
     trace.push(acceptanceTraceStep(instance, size, 'detail long first', ['Enter']));
-    for (let page = 0; page < 30 && !pages.replace(/\s/gu, '').includes('用途完整末尾'); page += 1) {
-      await input(instance, '\u001B[C');
-      pages += `\n${instance.lastFrame() ?? ''}`;
-      trace.push(acceptanceTraceStep(instance, size, `detail long page ${page + 2}`, ['right']));
+    for (let row = 0; row < 80 && !frames.replace(/[\s│]/gu, '').includes('用途完整末尾'); row += 1) {
+      await input(instance, '\u001B[B');
+      frames += `\n${instance.lastFrame() ?? ''}`;
+      trace.push(acceptanceTraceStep(instance, size, `detail long row ${row + 2}`, ['ArrowDown']));
     }
-    expect(pages.replace(/\s/gu, '')).toContain('用途完整末尾');
+    expect(frames.replace(/[\s│]/gu, '')).toContain('用途完整末尾');
+    expect(frames).not.toMatch(/第\s*\d+\s*页/u);
+    await focusAction(instance, '内容详情');
+    expect(instance.lastFrame()).toContain('› 内容详情');
     await writeAcceptanceTrace(`b04/long-detail-${columns}x${rows}`, trace);
   });
 
-  it.each([[60, 18], [80, 24]] as const)('shows the complete short plugin purpose on its first page at %ix%i', async (columns, rows) => {
+  it.each([[60, 18], [80, 24]] as const)('shows a short plugin purpose with one current version and source at %ix%i', async (columns, rows) => {
     const loaded = loadResult();
     const purpose = '帮助用户检查代理插件的安装位置和当前状态，并说明每个范围内已经确认的结果。';
     loaded.pluginSummaries[0]!.description = purpose;
@@ -1734,9 +1959,10 @@ describe('ConsoleAppV4', () => {
     const frame = instance.lastFrame() ?? '';
     expect(frame.replace(/[\s│]/gu, '')).toContain(purpose.replace(/\s/gu, ''));
     expect(frame).not.toContain('完整基本信息');
-    expect(frame.match(/目录版本/gu)).toHaveLength(1);
     expect(frame.match(/\[official\]/gu)).toHaveLength(1);
     expect(frame).toContain('╭');
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B');
+    expect(instance.lastFrame()?.match(/最新版本/gu)).toHaveLength(1);
   });
 
   it.each([[60, 18], [80, 24]] as const)(

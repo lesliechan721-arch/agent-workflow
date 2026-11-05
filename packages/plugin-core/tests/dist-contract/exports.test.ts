@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_CATALOG_WORKSPACE_VERSION,
   getAwCapabilityRegistry,
+  PLATFORM_TARGETS,
   resolvePluginConfigObjectProperties,
   type PluginConfigObjectField,
 } from '@lesliechan721/aw-plugin-core'
@@ -25,11 +26,29 @@ import {
   getPluginCommandId,
   getManagedCommandArtifactTargets,
   validatePluginManifest,
+  resolveSupportedPlatforms,
+  compilePluginConfigDefinition,
 } from '@lesliechan721/aw-plugin-core/manifest'
 
 const require = createRequire(import.meta.url)
 
 describe('public package exports', () => {
+  it('ships canonical platform targets and platform config compilation through package exports', () => {
+    const manifest = validatePluginManifest('/plugin', {
+      schemaVersion: 3, name: 'platform-config', version: '1.0.0', description: 'Platform contract',
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      platforms: ['cursor', 'pi'],
+      config: { schemaVersion: 5, fields: { agent: { type: 'string', default: 'common' } }, platforms: {
+        cursor: { fields: { agent: { type: 'string', default: 'Cursor' } } },
+      } },
+    })
+    expect(PLATFORM_TARGETS).toEqual(['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic'])
+    expect([...resolveSupportedPlatforms(manifest)]).toEqual(['cursor', 'pi'])
+    expect(compilePluginConfigDefinition(manifest.config, 'cursor').fields.agent?.default).toBe('Cursor')
+    expect(compilePluginConfigDefinition(manifest.config, 'pi').fields.agent?.default).toBe('common')
+    expect(getAwCapabilityRegistry()).toContain('aw.plugin-config.v5')
+  })
+
   it('ships managed command normalization, target projection and identity through the published package', () => {
     const manifest = validatePluginManifest('/plugin', {
       schemaVersion: 3, name: 'managed-tools', version: '1.0.0', description: 'Managed tools',
@@ -64,7 +83,7 @@ describe('public package exports', () => {
     expect(() => assertPluginManifestStructure({ ...manifest, config: { ...config, schemaVersion: 3 } })).toThrow()
     expect(getAwCapabilityRegistry()).toContain('aw.plugin-config.v4')
     expect(getPluginAuthoringCapabilitySurface('config').entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: 'config.schemaVersion', acceptedValues: [3, 4] }),
+      expect.objectContaining({ field: 'config.schemaVersion', acceptedValues: [3, 4, 5] }),
     ]))
   })
   it('publishes the v3 reader, schema and budget constants through package exports', () => {

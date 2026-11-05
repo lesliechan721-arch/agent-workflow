@@ -5,6 +5,7 @@ import { normalizeProducerIdentity, type ProducerIdentity } from '@lesliechan721
 
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import { resolveAwHomeCanonical } from './state-paths.js';
+import { CLAUDE_NATIVE_RENDER_RECEIPT_PATH, parseClaudeNativeRenderReceipt } from './claude-native-render-receipt.js';
 
 function invalid(message: string): never {
   throw new Error(`commandOwnerMismatch: ${message}`);
@@ -44,8 +45,8 @@ export async function resolveClaudeNativeSkillRoot(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<string> {
   const producer = normalizeProducerIdentity(options.producer);
-  if (producer.kind !== 'static-skill' || producer.platform !== 'claude' || producer.scope !== 'user' || producer.projectRoot !== null) {
-    invalid('Claude native static commands require a shared user producer.');
+  if (!['static-skill', 'artifact'].includes(producer.kind) || producer.platform !== 'claude' || producer.scope !== 'user' || producer.projectRoot !== null) {
+    invalid('Claude native commands require a shared user Skill producer.');
   }
   const awHome = await resolveAwHomeCanonical(options.env);
   const marketplacesRoot = path.join(awHome, 'marketplaces');
@@ -63,7 +64,16 @@ export async function resolveClaudeNativeSkillRoot(options: {
   const platformManifest = await readManifest(path.join(pluginRoot, '.claude-plugin', 'plugin.json'));
   if (sourceManifest.name !== producer.pluginName || platformManifest.name !== producer.pluginName) invalid('The Claude native manifests identify another plugin.');
   const relativeRoot = await resolveClaudeSkillsRelativeRoot(pluginRoot);
-  const skillRoot = path.join(pluginRoot, ...relativeRoot.split('/'), producer.key);
+  let skillKey = producer.key;
+  if (producer.kind === 'artifact') {
+    const receiptPath = path.join(pluginRoot, CLAUDE_NATIVE_RENDER_RECEIPT_PATH);
+    const receipt = parseClaudeNativeRenderReceipt(await readManifest(receiptPath));
+    const target = receipt.targets.find((entry) => entry.id === producer.key);
+    if (receipt.logicalPluginId !== `${producer.sourceId}/${producer.pluginName}`
+      || receipt.sourceIdentity !== producer.sourceIdentity || !target) invalid('The Claude native render receipt identifies another producer.');
+    skillKey = target.skillKey;
+  }
+  const skillRoot = path.join(pluginRoot, ...relativeRoot.split('/'), skillKey);
   await assertSkillDirectory(skillRoot);
   return skillRoot;
 }

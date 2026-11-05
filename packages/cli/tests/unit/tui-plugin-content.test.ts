@@ -34,6 +34,7 @@ function plugin(rootDir: string, manifest: Partial<PluginMeta['manifest']>): Plu
       schemaVersion: 3,
       name: 'demo',
       version: '2.4.0',
+      platforms: ['codex', 'claude'],
       description: 'Demo.',
       marketplace: {
         category: 'workflow',
@@ -58,7 +59,7 @@ describe('TUI plugin content projection', () => {
       fs.outputFile(path.join(root, 'codex', 'skills', 'helper.txt'), 'not a skill'),
       fs.outputFile(path.join(root, 'claude', 'skills', 'inspect', 'SKILL.md'), skill('Inspect safely.', 'CLAUDE-BODY-SECRET')),
       fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'), '---\ndescription: Deploy summary.\n---\nCOMMAND-BODY-SECRET\n'),
-      fs.outputFile(path.join(root, 'agent-skills', 'skills', 'portable', 'SKILL.md'), skill('Portable check.', 'PORTABLE-BODY-SECRET')),
+      fs.outputFile(path.join(root, 'generic', 'skills', 'portable', 'SKILL.md'), skill('Portable check.', 'PORTABLE-BODY-SECRET')),
       fs.outputJson(path.join(root, 'codex', '.mcp.json'), { mcpServers: { repository: { command: 'private-command' } } }),
       fs.outputJson(path.join(root, 'claude', '.mcp.json'), { mcpServers: { repository: { command: 'private-command' } } }),
       fs.outputJson(path.join(root, 'codex', '.app.json'), { apps: { dashboard: { name: 'Private app detail' } } }),
@@ -72,7 +73,7 @@ describe('TUI plugin content projection', () => {
         slashCommands: './commands.json',
         mcpServers: './.mcp.json',
         apps: './.app.json',
-        distributions: { agentSkills: { skills: './agent-skills/skills' } },
+        platforms: ['codex', 'claude', 'generic'],
       }),
     });
 
@@ -145,7 +146,7 @@ describe('TUI plugin content projection', () => {
       fs.outputFile(path.join(root, 'codex', 'skills', 'deploy', 'SKILL.md'),
         '# COMMAND-BODY-SECRET\n'),
       fs.ensureDir(path.join(root, 'claude', 'skills')),
-      fs.outputFile(path.join(root, 'agent-skills', 'skills', 'deploy', 'SKILL.md'),
+      fs.outputFile(path.join(root, 'generic', 'skills', 'deploy', 'SKILL.md'),
         '---\nname: deploy\ndescription: Independent portable Skill.\n---\nPORTABLE-BODY-SECRET\n'),
       fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'),
         '---\ndescription: Claude command summary.\n---\nCOMMAND-BODY-SECRET\n'),
@@ -154,7 +155,7 @@ describe('TUI plugin content projection', () => {
       pluginId: 'official/demo', catalogVersion: '9.1.0',
       plugin: plugin(root, {
         skills: './skills', slashCommands: './commands',
-        distributions: { agentSkills: { skills: './agent-skills/skills' } },
+        platforms: ['codex', 'claude', 'generic'],
       }),
     });
 
@@ -176,7 +177,7 @@ describe('TUI plugin content projection', () => {
       pluginId: 'official/demo', catalogVersion: '9.1.0',
       plugin: plugin(root, {
         skills: './skills', slashCommands: './commands',
-        distributions: { agentSkills: { skills: './agent-skills/skills' } },
+        platforms: ['codex', 'claude', 'generic'],
       }),
     });
     expect(withClaudeSkill.items).toMatchObject([
@@ -197,7 +198,7 @@ describe('TUI plugin content projection', () => {
       fs.ensureDir(path.join(root, 'claude', 'skills')),
       fs.outputFile(path.join(root, 'claude', 'commands', 'deploy.md'),
         '---\ndescription: Claude command summary.\n---\nCOMMAND-BODY-SECRET\n'),
-      fs.outputFile(path.join(root, 'agent-skills', 'skills', 'deploy', 'SKILL.md'),
+      fs.outputFile(path.join(root, 'generic', 'skills', 'deploy', 'SKILL.md'),
         '---\nname: deploy\ndescription: Portable Skill.\n---\nPORTABLE-BODY-SECRET\n'),
     ]);
     await fs.symlink(path.join(outside, 'private.md'),
@@ -206,7 +207,7 @@ describe('TUI plugin content projection', () => {
       pluginId: 'official/demo', catalogVersion: '9.1.0',
       plugin: plugin(root, {
         skills: './skills', slashCommands: './commands',
-        distributions: { agentSkills: { skills: './agent-skills/skills' } },
+        platforms: ['codex', 'claude', 'generic'],
       }),
     });
 
@@ -255,15 +256,15 @@ describe('TUI plugin content projection', () => {
     // Risk: real Codex commands have no Claude directory and their SKILL.md is body-only.
     const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
       '..', 'fixtures', 'codex-project-repo-managed', 'plugins', 'slashCommands-only');
-    for (const [scenario, products, expectedTools] of [
-      ['claude', ['CLAUDE'], ['Claude Code']],
-      ['codex', ['CODEX'], ['Codex']],
-      ['dual', ['CLAUDE', 'CODEX'], ['Codex', 'Claude Code']],
+    for (const [scenario, platforms, expectedTools] of [
+      ['claude', ['claude'], ['Claude Code']],
+      ['codex', ['codex'], ['Codex']],
+      ['dual', ['codex', 'claude'], ['Codex', 'Claude Code']],
     ] as const) {
       const output = await fs.mkdtemp(path.join(os.tmpdir(), `aw-tui-command-${scenario}-`));
       roots.push(output);
       const source = await readPluginManifest(sourceRoot);
-      source.manifest.marketplace.policy.products = [...products];
+      source.manifest.platforms = [...platforms];
       const bundleRoot = path.join(output, 'bundle');
       await bundleLocalPlugin(source, bundleRoot);
       const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
@@ -290,7 +291,7 @@ describe('TUI plugin content projection', () => {
     await fs.copy(sourceRoot, markerSource);
     const markerManifestPath = path.join(markerSource, '.agents-plugin', 'plugin.json');
     const markerManifest = await fs.readJson(markerManifestPath);
-    markerManifest.marketplace.policy.products = ['CODEX'];
+    markerManifest.platforms = ['codex'];
     await fs.writeJson(markerManifestPath, markerManifest);
     const commandSource = path.join(markerSource, 'slash-commands', 'review.md');
     const commandText = await fs.readFile(commandSource, 'utf8');
@@ -317,7 +318,7 @@ describe('TUI plugin content projection', () => {
     const manifestPath = path.join(sourceDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.skills = './skills';
-    manifest.marketplace.policy.products = ['CODEX'];
+    manifest.platforms = ['codex'];
     await fs.writeJson(manifestPath, manifest);
     await fs.outputFile(path.join(sourceDir, 'skills', 'ordinary', 'SKILL.md'),
       '---\nname: ordinary\ndescription: Ordinary Skill summary.\n---\nPRIVATE-SKILL-BODY\n');
@@ -352,7 +353,7 @@ describe('TUI plugin content projection', () => {
       const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-marker-'));
       roots.push(output);
       const source = await readPluginManifest(sourceRoot);
-      source.manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+      source.manifest.platforms = ['codex', 'claude'];
       const bundleRoot = path.join(output, 'bundle');
       await bundleLocalPlugin(source, bundleRoot);
       const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
@@ -392,7 +393,7 @@ describe('TUI plugin content projection', () => {
       const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-output-'));
       roots.push(output);
       const source = await readPluginManifest(sourceRoot);
-      source.manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+      source.manifest.platforms = ['codex', 'claude'];
       const bundleRoot = path.join(output, 'bundle');
       await bundleLocalPlugin(source, bundleRoot);
       const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
@@ -424,7 +425,7 @@ describe('TUI plugin content projection', () => {
   });
 
   it('keeps mixed native and Agent Skills evidence when a real command output is damaged', async () => {
-    // Risk: an orphan Codex directory may be a Skill, while a same-name Agent Skill is independent.
+    // Risk: damaged command output can erase independent content in the same multi-platform bundle.
     const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
       '..', 'fixtures', 'codex-project-repo-managed', 'plugins', 'slashCommands-only');
     for (const damage of ['claudeMissing', 'codexUnsafe', 'fileRulesClaudeMissing'] as const) {
@@ -434,23 +435,22 @@ describe('TUI plugin content projection', () => {
       await fs.copy(sourceRoot, sourceDir);
       const manifestPath = path.join(sourceDir, '.agents-plugin', 'plugin.json');
       const manifest = await fs.readJson(manifestPath);
+      manifest.skills = './skills';
       if (damage === 'fileRulesClaudeMissing') {
         manifest.buildConfig.fileRules = { codex: { include: ['skills/**'], exclude: [] } };
-      } else {
-        manifest.skills = './skills';
       }
-      manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
-      manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+      manifest.platforms = ['codex', 'claude', 'generic'];
       await fs.writeJson(manifestPath, manifest);
       await Promise.all([
-        fs.outputFile(path.join(sourceDir, 'agent-skills', 'skills', 'review', 'SKILL.md'),
-          '---\nname: review\ndescription: Portable review summary.\n---\nPRIVATE-PORTABLE-BODY\n'),
-        fs.outputFile(path.join(sourceDir, 'agent-skills', 'skills', 'review', 'README.md'),
+        fs.outputFile(path.join(sourceDir, 'skills', 'portable-review', 'SKILL.md'),
+          '---\nname: portable-review\ndescription: Portable review summary.\n---\nPRIVATE-PORTABLE-BODY\n'),
+        fs.outputFile(path.join(sourceDir, 'skills', 'portable-review', 'README.md'),
           'Portable review Skill.\n'),
       ]);
       if (damage !== 'fileRulesClaudeMissing') {
         await fs.outputFile(path.join(sourceDir, 'skills', 'ordinary', 'SKILL.md'),
           '---\nname: ordinary\ndescription: Ordinary Skill summary.\n---\nPRIVATE-SKILL-BODY\n');
+        await fs.outputFile(path.join(sourceDir, 'skills', 'ordinary', 'README.md'), 'Ordinary Skill.\n');
       }
       const bundleRoot = path.join(output, 'bundle');
       await bundleLocalPlugin(await readPluginManifest(sourceDir), bundleRoot);
@@ -461,7 +461,7 @@ describe('TUI plugin content projection', () => {
       expect(healthy.coverage).toBe('complete');
       if (damage !== 'fileRulesClaudeMissing') {
         expect(healthy.items).toContainEqual(expect.objectContaining({
-          id: 'skill:ordinary', type: 'skill', tools: ['Codex', 'Claude Code'],
+          id: 'skill:ordinary', type: 'skill', tools: ['Codex', 'Claude Code', 'Agent Skills'],
           description: 'Ordinary Skill summary.', descriptionState: 'available',
         }));
       }
@@ -481,13 +481,13 @@ describe('TUI plugin content projection', () => {
       if (damage !== 'fileRulesClaudeMissing') {
         expect(overview.items).toContainEqual(expect.objectContaining({
           id: 'skill:ordinary', name: 'ordinary', type: 'skill',
-          tools: ['Codex', 'Claude Code'],
+          tools: ['Codex', 'Claude Code', 'Agent Skills'],
           description: 'Ordinary Skill summary.',
         }));
       }
       expect(overview.items).toContainEqual(expect.objectContaining({
-        id: 'skill:review', name: 'review', type: 'skill',
-        tools: ['Codex', 'Agent Skills'],
+        id: 'skill:portable-review', name: 'portable-review', type: 'skill',
+        tools: ['Codex', 'Claude Code', 'Agent Skills'],
         description: 'Portable review summary.',
       }));
       if (damage === 'codexUnsafe') {
@@ -516,7 +516,7 @@ describe('TUI plugin content projection', () => {
     const manifestPath = path.join(sourceDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.skills = './skills';
-    manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+    manifest.platforms = ['codex', 'claude'];
     await fs.writeJson(manifestPath, manifest);
     await fs.outputFile(path.join(sourceDir, 'skills', 'ordinary', 'SKILL.md'),
       '---\nname: ordinary\ndescription: Ordinary Skill summary.\n---\nPRIVATE-SKILL-BODY\n');
@@ -549,7 +549,7 @@ describe('TUI plugin content projection', () => {
     const output = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-tui-command-metadata-'));
     roots.push(output);
     const source = await readPluginManifest(sourceRoot);
-    source.manifest.marketplace.policy.products = ['CODEX'];
+    source.manifest.platforms = ['codex'];
     const bundleRoot = path.join(output, 'bundle');
     await bundleLocalPlugin(source, bundleRoot);
     const bundle = await readPluginManifest(bundleRoot, { mode: 'bundle' });
@@ -648,7 +648,6 @@ describe('TUI plugin content projection', () => {
           {
             id: 'dynamic-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
             kind: 'skill', states: ['present'], refreshKeys: [],
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
             skillKey: 'dynamic',
           },
           {
@@ -685,7 +684,6 @@ describe('TUI plugin content projection', () => {
         {
           id: 'dynamic-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
           kind: 'skill', states: ['present'], refreshKeys: [], skillKey: 'dynamic',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         },
       ] } }),
     });

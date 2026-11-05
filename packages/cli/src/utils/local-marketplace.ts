@@ -13,14 +13,14 @@ import { canonicalizePathThroughExistingAncestor } from './state-paths.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { normalizeMarketplaceProductToken } from './platform-support.js';
 import {
-  CODEX_NATIVE_RENDER_RECEIPT_PATH,
-  parseCodexNativeRenderReceipt,
-  serializeCodexNativeRenderReceipt,
-  type CodexNativeRenderReceipt,
-} from './codex-native-render-receipt.js';
+  nativeSkillRenderReceiptPath,
+  parseNativeSkillRenderReceipt,
+  serializeNativeSkillRenderReceipt,
+  type NativeSkillRenderReceipt,
+} from './claude-native-render-receipt.js';
 import { calculateCodexNativeRenderPayloadDigest } from './catalog-digests.js';
 import { createCodexSkillStagingTreeContentDigest } from './codex-skill-staging.js';
-import { readDynamicSkillTree } from './dynamic-skill-tree.js';
+import { createDynamicSkillTreeContentDigest, readDynamicSkillTree } from './dynamic-skill-tree.js';
 
 const SOURCE_IDENTITY_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
@@ -341,15 +341,13 @@ async function assertTreeHasNoSymlinks(root: string): Promise<void> {
 
 class CodexNativeProjectionNotReusableError extends Error {}
 
-function nativeCodexTargets(manifest: Record<string, unknown>): Array<{ id: string; skillKey: string }> {
+function nativeSkillTargets(manifest: Record<string, unknown>, platform: PlatformName): Array<{ id: string; skillKey: string }> {
   const targets = (manifest.artifacts as { targets?: unknown[] } | undefined)?.targets ?? [];
   if (!Array.isArray(targets)) return [];
   return targets.flatMap((target) => {
     if (!isRecord(target)
-      || target.platform !== 'codex'
-      || target.target !== 'codex.skill'
-      || !isRecord(target.delivery)
-      || target.delivery.mode !== 'codex-native'
+      || target.platform !== platform
+      || target.target !== `${platform}.skill`
       || typeof target.id !== 'string'
       || typeof target.skillKey !== 'string') return [];
     return [{ id: target.id, skillKey: target.skillKey }];
@@ -387,18 +385,18 @@ async function readProjectionJson(
   }
 }
 
-async function readValidatedCodexProjection(options: {
+async function readValidatedNativeProjection(options: {
   sourceRoot: string; pluginName: string; sourceId: string; sourceIdentity: string;
-}): Promise<CodexNativeRenderReceipt> {
+}, platform: PlatformName): Promise<NativeSkillRenderReceipt> {
   const pluginRoot = path.join(options.sourceRoot, 'plugins', options.pluginName);
-  const platformManifest = await readProjectionJson(options.sourceRoot, path.join(pluginRoot, '.codex-plugin', 'plugin.json'));
+  const platformManifest = await readProjectionJson(options.sourceRoot, path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'));
   if (platformManifest.name !== options.pluginName) throw new Error('codexNativeProjectionIdentityMismatch: plugin identity does not match its marketplace path.');
-  const skillsRelative = normalizePluginRelativeDirectory(platformManifest.skills, 'codex/skills');
+  const skillsRelative = normalizePluginRelativeDirectory(platformManifest.skills, `${platform}/skills`);
   if (!skillsRelative) throw new Error('codexNativeProjectionUnsafe: Codex Skills root is unsafe.');
-  const receiptPath = path.join(pluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH);
+  const receiptPath = path.join(pluginRoot, nativeSkillRenderReceiptPath(platform));
   if (!await inspectMarketplacePath(options.sourceRoot, receiptPath, 'file')) throw new CodexNativeProjectionNotReusableError();
-  let receipt: CodexNativeRenderReceipt;
-  try { receipt = parseCodexNativeRenderReceipt(await fs.readFile(receiptPath, 'utf8')); }
+  let receipt: NativeSkillRenderReceipt;
+  try { receipt = parseNativeSkillRenderReceipt(platform, await fs.readFile(receiptPath, 'utf8')); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code) throw error;
     throw new CodexNativeProjectionNotReusableError();
@@ -409,18 +407,19 @@ async function readValidatedCodexProjection(options: {
   // The other platform may have updated the common bundle metadata. The installed
   // Codex manifest and verified receipt retain this platform's actual version and targets.
   if (platformManifest.version !== receipt.pluginVersion) throw new CodexNativeProjectionNotReusableError();
-  const emptyDigest = createCodexSkillStagingTreeContentDigest({ skillKey: 'empty', files: {} });
+  const contentDigest = platform === 'codex' ? createCodexSkillStagingTreeContentDigest : createDynamicSkillTreeContentDigest;
+  const emptyDigest = contentDigest({ skillKey: 'empty', files: {} });
   for (const target of receipt.targets) {
     const skillRoot = path.join(pluginRoot, ...skillsRelative.split('/'), target.skillKey);
     const stats = await inspectMarketplacePath(options.sourceRoot, skillRoot, 'directory');
     if (stats) await assertRegularProjectionTree(skillRoot, true);
     let tree;
-    try { tree = stats ? await readDynamicSkillTree(skillRoot, 'codex.skill') : null; }
+    try { tree = stats ? await readDynamicSkillTree(skillRoot, `${platform}.skill`) : null; }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code) throw error;
       throw new CodexNativeProjectionNotReusableError();
     }
-    if ((stats && !tree) || (tree ? createCodexSkillStagingTreeContentDigest(tree) : emptyDigest) !== target.artifactDigest) throw new CodexNativeProjectionNotReusableError();
+    if ((stats && !tree) || (tree ? contentDigest(tree) : emptyDigest) !== target.artifactDigest) throw new CodexNativeProjectionNotReusableError();
   }
   if (await calculateCodexNativeRenderPayloadDigest(pluginRoot) !== receipt.payloadDigest) throw new CodexNativeProjectionNotReusableError();
   return receipt;
@@ -433,27 +432,27 @@ async function preserveMarketplacePluginProjection(options: {
   const stagingPluginRoot = path.join(options.stagingRoot, 'plugins', options.pluginName);
   const sourceManifest = await readProjectionJson(options.sourceRoot, path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'));
   const stagingManifest = await readProjectionJson(options.stagingRoot, path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json'));
-  if (sourceManifest.name !== options.pluginName || stagingManifest.name !== options.pluginName) throw new Error(`${nativeCodexTargets(sourceManifest).length ? 'codexNativeProjectionIdentityMismatch' : 'marketplaceProjectionIdentityMismatch'}: plugin identity does not match its marketplace path.`);
+  if (sourceManifest.name !== options.pluginName || stagingManifest.name !== options.pluginName) throw new Error(`${nativeSkillTargets(sourceManifest, 'codex').length ? 'codexNativeProjectionIdentityMismatch' : 'marketplaceProjectionIdentityMismatch'}: plugin identity does not match its marketplace path.`);
   await assertRegularProjectionTree(sourcePluginRoot);
   await assertRegularProjectionTree(stagingPluginRoot);
-  let receipt: CodexNativeRenderReceipt | undefined;
-  if (nativeCodexTargets(sourceManifest).length || await inspectMarketplacePath(options.sourceRoot, path.join(sourcePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH), 'file')) {
-    receipt = await readValidatedCodexProjection(options);
-  } else {
-    for (const platform of ['codex', 'claude']) {
-      const manifestPath = path.join(sourcePluginRoot, `.${platform}-plugin`, 'plugin.json');
-      if (!await inspectMarketplacePath(options.sourceRoot, manifestPath, 'file')) continue;
-      const manifest = await readProjectionJson(options.sourceRoot, manifestPath);
-      if (manifest.name !== options.pluginName) throw new Error('marketplaceProjectionIdentityMismatch: plugin identity does not match its marketplace path.');
-      assertStrictSemVer(manifest.version, 'preserved platform plugin version');
+  const receipts: NativeSkillRenderReceipt[] = [];
+  for (const platform of ['codex', 'claude'] as const) {
+    const manifestPath = path.join(sourcePluginRoot, `.${platform}-plugin`, 'plugin.json');
+    if (!await inspectMarketplacePath(options.sourceRoot, manifestPath, 'file')) continue;
+    const manifest = await readProjectionJson(options.sourceRoot, manifestPath);
+    if (manifest.name !== options.pluginName) throw new Error('marketplaceProjectionIdentityMismatch: plugin identity does not match its marketplace path.');
+    assertStrictSemVer(manifest.version, 'preserved platform plugin version');
+    if (nativeSkillTargets(sourceManifest, platform).length
+      || await inspectMarketplacePath(options.sourceRoot, path.join(sourcePluginRoot, nativeSkillRenderReceiptPath(platform)), 'file')) {
+      receipts.push(await readValidatedNativeProjection(options, platform));
     }
   }
   await fs.remove(stagingPluginRoot);
   await fs.copy(sourcePluginRoot, stagingPluginRoot, { dereference: false });
-  if (receipt && await calculateCodexNativeRenderPayloadDigest(stagingPluginRoot) !== receipt.payloadDigest) throw new CodexNativeProjectionNotReusableError();
+  for (const receipt of receipts) if (await calculateCodexNativeRenderPayloadDigest(stagingPluginRoot) !== receipt.payloadDigest) throw new CodexNativeProjectionNotReusableError();
 }
 
-export interface PreservedPlatformReceipt { pluginName: string; receipt: CodexNativeRenderReceipt }
+export interface PreservedPlatformReceipt { pluginName: string; receipt: NativeSkillRenderReceipt }
 
 async function preserveUnrequestedMarketplacePlatforms(options: {
   sourceRoot: string; stagingRoot: string; pluginName: string; sourceId: string; sourceIdentity: string;
@@ -490,10 +489,10 @@ async function preserveUnrequestedMarketplacePlatforms(options: {
         if (retainedRoot === requestedRoot || retainedRoot.startsWith(`${requestedRoot}/`) || requestedRoot.startsWith(`${retainedRoot}/`)) throw new Error('marketplaceProjectionInvalid: retained platform resources overlap the requested platform.');
       }
     }
-    const codexReceipt = platform === 'codex' && await inspectMarketplacePath(options.sourceRoot, path.join(sourcePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH), 'file')
-      ? await readValidatedCodexProjection(options) : undefined;
-    if (platform === 'codex' && !codexReceipt) {
-      for (const target of nativeCodexTargets(sourceManifest)) {
+    const nativeReceipt = await inspectMarketplacePath(options.sourceRoot, path.join(sourcePluginRoot, nativeSkillRenderReceiptPath(platform)), 'file')
+      ? await readValidatedNativeProjection(options, platform) : undefined;
+    if (!nativeReceipt) {
+      for (const target of nativeSkillTargets(sourceManifest, platform)) {
         const tree = skillsRelative ? path.join(sourcePluginRoot, ...skillsRelative.split('/'), target.skillKey) : undefined;
         if (tree && await inspectMarketplacePath(options.sourceRoot, tree, 'directory')) throw new Error('codexNativeProjectionDamaged: an installed dynamic Skill has no render receipt; reinstall both platforms.');
       }
@@ -509,7 +508,7 @@ async function preserveUnrequestedMarketplacePlatforms(options: {
           const record = normalizeInstalledCommandProducer(await fs.readJson(absolute));
           const producer = record.producer;
           if (producer.sourceId !== options.sourceId || producer.sourceIdentity !== options.sourceIdentity || producer.pluginName !== options.pluginName || producer.platform !== platform || producer.scope !== 'user' || producer.projectRoot !== null || producer.kind === 'package') throw new Error('commandOwnerMismatch: retained native producer does not match its platform and source.');
-          const skillKey = producer.kind === 'static-skill' ? producer.key : codexReceipt?.targets.find((target) => target.id === producer.key)?.skillKey;
+          const skillKey = producer.kind === 'static-skill' ? producer.key : nativeReceipt?.targets.find((target) => target.id === producer.key)?.skillKey;
           if (!skillsRelative || !skillKey || directory !== path.join(sourcePluginRoot, ...skillsRelative.split('/'), skillKey)) throw new Error('commandOwnerMismatch: retained native producer is outside its exact Skill path.');
           if (!await readDynamicSkillTree(directory, `${platform}.skill`)) throw new Error('commandResourceInvalid: retained native producer has no valid Skill.');
           await validateCommandEntryFiles(directory, record.sets.flatMap((set) => set.entries));
@@ -523,9 +522,10 @@ async function preserveUnrequestedMarketplacePlatforms(options: {
         await validateRecords(source);
       }
     }
-    if (codexReceipt) {
-      receipt = { pluginName: options.pluginName, receipt: codexReceipt };
-      await fs.copy(path.join(sourcePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH), path.join(stagingPluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH));
+    if (nativeReceipt) {
+      receipt = { pluginName: options.pluginName, receipt: nativeReceipt };
+      const receiptPath = nativeSkillRenderReceiptPath(platform);
+      await fs.copy(path.join(sourcePluginRoot, receiptPath), path.join(stagingPluginRoot, receiptPath));
     }
     for (const relative of roots) {
       const source = path.join(sourcePluginRoot, ...relative.split('/'));
@@ -542,7 +542,170 @@ async function preserveUnrequestedMarketplacePlatforms(options: {
 export async function refreshPreservedPlatformReceipt(stagingRoot: string, retained: PreservedPlatformReceipt): Promise<void> {
   const pluginRoot = path.join(stagingRoot, 'plugins', retained.pluginName);
   const payloadDigest = await calculateCodexNativeRenderPayloadDigest(pluginRoot);
-  await fs.outputFile(path.join(pluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH), serializeCodexNativeRenderReceipt({ ...retained.receipt, payloadDigest }), 'utf8');
+  const platform = retained.receipt.kind === 'aw-codex-native-render' ? 'codex' : 'claude';
+  await fs.outputFile(path.join(pluginRoot, nativeSkillRenderReceiptPath(platform)), serializeNativeSkillRenderReceipt({ ...retained.receipt, payloadDigest }), 'utf8');
+}
+
+interface NativePublicationTree {
+  files: Map<string, { content: Buffer; mode: number }>;
+  directories: Set<string>;
+}
+
+async function readNativePublicationTree(root: string): Promise<NativePublicationTree> {
+  const tree: NativePublicationTree = { files: new Map(), directories: new Set() };
+  const visit = async (directory: string, relative: string): Promise<void> => {
+    tree.directories.add(relative);
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(absolute, name);
+      else if (entry.isFile()) tree.files.set(name, {
+        content: await fs.readFile(absolute), mode: (await fs.stat(absolute)).mode & 0o777,
+      });
+      else throw new Error('marketplaceProjectionInvalid: a deferred Native projection contains an unsafe path.');
+    }
+  };
+  if (await fs.pathExists(root)) await visit(root, '');
+  return tree;
+}
+
+function nativePublicationRoots(tree: NativePublicationTree, platform: PlatformName): string[] {
+  const roots = [platform, `.${platform}-plugin`, nativeSkillRenderReceiptPath(platform)];
+  const file = tree.files.get(`.${platform}-plugin/plugin.json`);
+  if (!file) return roots;
+  const manifest = JSON.parse(file.content.toString('utf8')) as Record<string, unknown>;
+  if (manifest.skills !== undefined) {
+    const skills = normalizePluginRelativeDirectory(manifest.skills, `${platform}/skills`);
+    if (!skills || ['codex', 'claude'].some((other) => other !== platform
+      && (skills === other || skills.startsWith(`${other}/`)))
+      || ['.agents-plugin', '.codex-plugin', '.claude-plugin'].some((root) =>
+        skills === root || skills.startsWith(`${root}/`))) {
+      throw new Error('marketplaceProjectionInvalid: deferred Skill resources overlap another platform.');
+    }
+    roots.push(skills);
+  }
+  return roots;
+}
+
+function inPublicationRoots(relative: string, roots: readonly string[]): boolean {
+  return roots.some((root) => relative === root || relative.startsWith(`${root}/`));
+}
+
+async function writeNativePublicationTree(root: string, tree: NativePublicationTree): Promise<void> {
+  const current = await readNativePublicationTree(root);
+  for (const relative of current.files.keys()) {
+    if (!tree.files.has(relative)) await fs.remove(path.join(root, relative));
+  }
+  for (const relative of [...current.directories].sort((left, right) => right.length - left.length)) {
+    if (relative && !tree.directories.has(relative)) await fs.rmdir(path.join(root, relative));
+  }
+  for (const relative of [...tree.directories].sort((left, right) => left.length - right.length)) {
+    await fs.ensureDir(path.join(root, relative));
+  }
+  for (const [relative, file] of tree.files) {
+    const old = current.files.get(relative);
+    if (old?.content.equals(file.content) && old.mode === file.mode) continue;
+    const destination = path.join(root, relative);
+    await fs.outputFile(destination, file.content);
+    await fs.chmod(destination, file.mode);
+  }
+}
+
+export interface DeferredNativeMarketplacePublication {
+  publish(rootDir: string, pluginName: string, platform: PlatformName): Promise<void>;
+}
+
+/** Keep prepared output private until its target passes the execution gates. */
+export async function deferNativeMarketplacePublications(options: {
+  sourceRoot: string; stagingRoot: string; sourceId: string; sourceIdentity: string;
+  marketplaceName: string; requestedPlatforms: ReadonlyMap<string, ReadonlySet<PlatformName>>;
+}): Promise<DeferredNativeMarketplacePublication> {
+  const existing = await readStrictNamespacedMarketplaceRoot({
+    trustedMarketplaceRoot: path.dirname(options.sourceRoot), rootDir: options.sourceRoot,
+    sourceId: options.sourceId, sourceIdentity: options.sourceIdentity, marketplaceName: options.marketplaceName,
+  });
+  const manifestPaths = { codex: '.agents/plugins/marketplace.json', claude: '.claude-plugin/marketplace.json' };
+  const prepared = new Map<string, NativePublicationTree>();
+  const preparedEntries = new Map<string, Record<PlatformName, unknown>>();
+  const stagingManifests = {
+    codex: await readProjectionJson(options.stagingRoot, path.join(options.stagingRoot, manifestPaths.codex)),
+    claude: await readProjectionJson(options.stagingRoot, path.join(options.stagingRoot, manifestPaths.claude)),
+  };
+  for (const pluginId of options.requestedPlatforms.keys()) {
+    const pluginName = pluginId.slice(pluginId.indexOf('/') + 1);
+    const stagingPluginRoot = path.join(options.stagingRoot, 'plugins', pluginName);
+    prepared.set(pluginName, await readNativePublicationTree(stagingPluginRoot));
+    preparedEntries.set(pluginName, { codex: undefined, claude: undefined });
+    for (const platform of ['codex', 'claude'] as const) {
+      const manifest = stagingManifests[platform];
+      if (!Array.isArray(manifest.plugins)) throw new Error('marketplaceProjectionInvalid: marketplace plugins must be an array.');
+      preparedEntries.get(pluginName)![platform] = manifest.plugins.find((entry) => isRecord(entry) && entry.name === pluginName);
+      const sourceManifest = platform === 'codex' ? existing?.agentsManifest : existing?.claudeManifest;
+      const oldEntry = (Array.isArray(sourceManifest?.plugins) ? sourceManifest.plugins : [])
+        .find((entry: unknown) => isRecord(entry) && entry.name === pluginName);
+      manifest.plugins = [...manifest.plugins.filter((entry) => !isRecord(entry) || entry.name !== pluginName),
+        ...(oldEntry ? [oldEntry] : [])];
+    }
+    const sourcePluginRoot = path.join(options.sourceRoot, 'plugins', pluginName);
+    const stats = existing ? await inspectMarketplacePath(options.sourceRoot, sourcePluginRoot, 'directory') : null;
+    if (stats) {
+      const manifest = await readProjectionJson(options.sourceRoot, path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'));
+      if (manifest.name !== pluginName) throw new Error('marketplaceProjectionIdentityMismatch: deferred plugin identity does not match its path.');
+      await writeNativePublicationTree(stagingPluginRoot, await readNativePublicationTree(sourcePluginRoot));
+    } else await fs.remove(stagingPluginRoot);
+  }
+  for (const platform of ['codex', 'claude'] as const) {
+    await fs.writeJson(path.join(options.stagingRoot, manifestPaths[platform]), stagingManifests[platform], { spaces: 2 });
+  }
+  const published = new Set<string>();
+  return { publish: async (rootDir, pluginName, platform) => {
+    const key = `${pluginName}\0${platform}`;
+    if (published.has(key)) return;
+    const candidate = prepared.get(pluginName);
+    if (!candidate) return;
+    const pluginRoot = await assertSafeNamespacedMarketplacePluginRoot(rootDir, pluginName);
+    const current = await readNativePublicationTree(pluginRoot);
+    const other: PlatformName = platform === 'codex' ? 'claude' : 'codex';
+    const preservedRoots = nativePublicationRoots(current, other);
+    const candidateOtherRoots = nativePublicationRoots(candidate, other);
+    const selectedRoots = nativePublicationRoots(candidate, platform);
+    for (const retained of preservedRoots) for (const selected of selectedRoots) {
+      if (retained === selected || retained.startsWith(`${selected}/`) || selected.startsWith(`${retained}/`)) {
+        throw new Error('marketplaceProjectionInvalid: deferred platform resources overlap the selected platform.');
+      }
+    }
+    const preservedReceipts: PreservedPlatformReceipt[] = [];
+    if (current.files.has(nativeSkillRenderReceiptPath(other))) {
+      try {
+        preservedReceipts.push({ pluginName, receipt: await readValidatedNativeProjection({
+          sourceRoot: rootDir, pluginName, sourceId: options.sourceId, sourceIdentity: options.sourceIdentity,
+        }, other) });
+      } catch (error) {
+        // A selected damaged platform remains unchanged until its own repair executes.
+        const requested = options.requestedPlatforms.get(`${options.sourceId}/${pluginName}`);
+        if (!(error instanceof CodexNativeProjectionNotReusableError) || !requested?.has(other)) throw error;
+      }
+    }
+    const tree: NativePublicationTree = {
+      files: new Map([...candidate.files].filter(([relative]) => !inPublicationRoots(relative, [...candidateOtherRoots, ...preservedRoots]))),
+      directories: new Set([...candidate.directories].filter((relative) => !inPublicationRoots(relative, [...candidateOtherRoots, ...preservedRoots]))),
+    };
+    for (const [relative, file] of current.files) if (inPublicationRoots(relative, preservedRoots)) tree.files.set(relative, file);
+    for (const relative of current.directories) if (inPublicationRoots(relative, preservedRoots)) tree.directories.add(relative);
+    await writeNativePublicationTree(pluginRoot, tree);
+    const selectedReceipt = candidate.files.get(nativeSkillRenderReceiptPath(platform));
+    if (selectedReceipt) preservedReceipts.push({ pluginName,
+      receipt: parseNativeSkillRenderReceipt(platform, selectedReceipt.content.toString('utf8')) });
+    for (const receipt of preservedReceipts) await refreshPreservedPlatformReceipt(rootDir, receipt);
+    const manifestPath = path.join(rootDir, manifestPaths[platform]);
+    const manifest = await readProjectionJson(rootDir, manifestPath);
+    if (!Array.isArray(manifest.plugins)) throw new Error('marketplaceProjectionInvalid: marketplace plugins must be an array.');
+    const entry = preparedEntries.get(pluginName)![platform];
+    await fs.writeJson(manifestPath, { ...manifest, plugins: [
+      ...manifest.plugins.filter((value) => !isRecord(value) || value.name !== pluginName), ...(entry ? [entry] : []),
+    ] }, { spaces: 2 });
+    published.add(key);
+  } };
 }
 
 /**
@@ -787,8 +950,6 @@ export async function replayNamespacedCodexSkillOverlays(options: {
       if (!isRecord(target)) return [];
       return target.platform === 'codex'
         && target.target === 'codex.skill'
-        && isRecord(target.delivery)
-        && target.delivery.mode === 'codex-native'
         && Array.isArray(target.scopes)
         && target.scopes.includes('user')
         && typeof target.skillKey === 'string'

@@ -42,12 +42,13 @@ try {
   // Default-runner process-tree tests require host process inspection permission.
 }
 
-async function createPlugin(options: { sensitiveDefault?: string } = {}): Promise<PluginMeta> {
+async function createPlugin(options: { sensitiveValue?: string } = {}): Promise<PluginMeta> {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-pre-apply-'));
   tempDirs.push(rootDir);
   await fs.outputFile(path.join(rootDir, 'scripts', 'preApply.mjs'), 'process.stdin.resume();\n');
-  return {
+  const plugin: PluginMeta = {
     sourceId: 'local',
+    sourceIdentity: `sha256:${'1'.repeat(64)}`,
     pluginId: 'local/demo',
     rootDir,
     manifestPath: path.join(rootDir, '.agents-plugin', 'plugin.json'),
@@ -62,11 +63,19 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       scripts: { preApply: { path: './scripts/preApply.mjs', timeoutMs: 2_000 } },
-      ...(options.sensitiveDefault ? {
-        config: { fields: { token: { type: 'string', sensitive: true, default: options.sensitiveDefault } } },
+      ...(options.sensitiveValue ? {
+        config: { fields: { token: { type: 'string', sensitive: true } } },
       } : {}),
     },
   };
+  if (options.sensitiveValue) {
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+      pluginName: plugin.manifest.name, scope: 'user', cwd: rootDir,
+      env: { AW_HOME: path.join(rootDir, 'aw-home') }, values: { token: options.sensitiveValue },
+    });
+  }
+  return plugin;
 }
 
 async function waitForFile(filePath: string, timeoutMs = 5_000): Promise<void> {
@@ -670,7 +679,7 @@ describe('preApply script', () => {
     'redacts a JSON-escaped sensitive token split across the output limit on %s', async (mode) => {
     const secret = '§pre-apply "cross-boundary"\nsensitive\\token';
     const escaped = JSON.stringify(secret).slice(1, -1);
-    const plugin = await createPlugin({ sensitiveDefault: secret });
+    const plugin = await createPlugin({ sensitiveValue: secret });
     await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
       'let input = "";',
       'process.stdin.setEncoding("utf8");',
@@ -707,7 +716,7 @@ describe('preApply script', () => {
     'does not pull a partial token at the capture limit into a summary after repeated redaction', async () => {
     const secret = 'SENSITIVE_"capture"\nedge\\token';
     const escaped = JSON.stringify(secret).slice(1, -1);
-    const plugin = await createPlugin({ sensitiveDefault: secret });
+    const plugin = await createPlugin({ sensitiveValue: secret });
     await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
       'let input = "";',
       'process.stdin.setEncoding("utf8");',
@@ -764,18 +773,25 @@ describe('preApply script', () => {
     },
   );
 
-  it('uses only user config for a user target', async () => {
-    const plugin = await createPlugin({ sensitiveDefault: 'default-value' });
+  it('uses the actual platform user config and ignores legacy project config', async () => {
+    const plugin = await createPlugin();
+    plugin.manifest.config = { fields: { token: { type: 'string', sensitive: true } } };
     const sourceIdentity = `sha256:${'4'.repeat(64)}`;
     plugin.sourceIdentity = sourceIdentity;
     plugin.catalogLogicalIdentity = 'catalog.example/local';
     const cwd = path.join(plugin.rootDir, 'project');
     const env = { AW_HOME: path.join(plugin.rootDir, 'aw-home') };
     await writePluginConfigStore({
+      sourceId: plugin.sourceId, sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity,
+      pluginName: plugin.manifest.name, scope: 'user', cwd, env, values: { token: 'common-value' },
+    });
+    await writePluginConfigStore({
       sourceId: plugin.sourceId,
       sourceIdentity,
+      logicalIdentity: plugin.catalogLogicalIdentity,
       pluginName: plugin.manifest.name,
       scope: 'user',
+      platform: 'codex',
       cwd,
       env,
       values: { token: 'user-value' },
@@ -785,11 +801,14 @@ describe('preApply script', () => {
       sourceIdentity,
       logicalIdentity: plugin.catalogLogicalIdentity,
       pluginName: plugin.manifest.name,
-      scope: 'project',
+      scope: 'user',
+      platform: 'claude',
       cwd,
       env,
-      values: { token: 'project-value' },
+      values: { token: 'other-platform-value' },
     });
+    await fs.outputFile(path.join(cwd, '.agent-workflows', 'plugin-config', 'local', 'demo', 'config.json'),
+      '{invalid legacy project config');
     let invocation: PluginScriptInvocation | undefined;
     await runPreApplyScript({
       plugin,
@@ -856,7 +875,7 @@ describe('preApply script', () => {
   it('reports timeout and redacts sensitive stderr', async () => {
     const secret = 'secret "value"\npath\\tail';
     const escaped = JSON.stringify(secret).slice(1, -1);
-    const plugin = await createPlugin({ sensitiveDefault: secret });
+    const plugin = await createPlugin({ sensitiveValue: secret });
     const runner: PluginProcessRunner = {
       async run() {
         return { exitCode: null, signal: 'SIGKILL', stdout: '', stderr: escaped, timedOut: true };
@@ -875,7 +894,7 @@ describe('preApply script', () => {
   it('redacts stdout and stderr in a non-zero failure', async () => {
     const secret = 'secret "value"\npath\\tail';
     const escaped = JSON.stringify(secret).slice(1, -1);
-    const plugin = await createPlugin({ sensitiveDefault: secret });
+    const plugin = await createPlugin({ sensitiveValue: secret });
     await expect(runPreApplyScript({
       plugin,
       platform: 'claude',
@@ -897,7 +916,7 @@ describe('preApply script', () => {
   });
 
   it('keeps a typed safe diagnostic for a non-zero preApply exit', async () => {
-    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    const plugin = await createPlugin({ sensitiveValue: 'secret-value' });
     const error = await runPreApplyScript({
       plugin,
       platform: 'codex',
@@ -919,9 +938,14 @@ describe('preApply script', () => {
   });
 
   it('removes private roots and a short embedded secret from public failures', async () => {
-    const plugin = await createPlugin({ sensitiveDefault: 'abc' });
+    const plugin = await createPlugin({ sensitiveValue: 'abc' });
     const cwd = path.join(plugin.rootDir, 'prefixabcSuffix-project');
     const awHome = path.join(plugin.rootDir, 'prefixabcSuffix-aw-home');
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+      pluginName: plugin.manifest.name, scope: 'user', cwd,
+      env: { AW_HOME: awHome }, values: { token: 'abc' },
+    });
     const error = await runPreApplyScript({
       plugin,
       platform: 'claude',
@@ -965,7 +989,7 @@ describe('preApply script', () => {
     'captures and redacts a longer JSON-escaped token across the output limit', async () => {
       const secret = '§\0x';
       const encoded = JSON.stringify(secret).slice(1, -1);
-      const plugin = await createPlugin({ sensitiveDefault: secret });
+      const plugin = await createPlugin({ sensitiveValue: secret });
       await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
         'let input = "";',
         'process.stdin.setEncoding("utf8");',
@@ -1003,8 +1027,13 @@ describe('preApply script', () => {
     const plugin = await createPlugin();
     const secret = `credential-part${plugin.rootDir}`;
     plugin.manifest.config = {
-      fields: { token: { type: 'string', sensitive: true, default: secret } },
+      fields: { token: { type: 'string', sensitive: true } },
     };
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+      pluginName: plugin.manifest.name, scope: 'user', cwd: plugin.rootDir,
+      env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') }, values: { token: secret },
+    });
     const error = await runPreApplyScript({
       plugin,
       platform: 'claude',
@@ -1030,7 +1059,7 @@ describe('preApply script', () => {
   });
 
   it('reports a stable spawn failure without exposing runner diagnostics', async () => {
-    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    const plugin = await createPlugin({ sensitiveValue: 'secret-value' });
     const error = await runPreApplyScript({
       plugin,
       platform: 'claude',
@@ -1043,21 +1072,14 @@ describe('preApply script', () => {
     expect(error.message).toBe('preApply could not start.');
   });
 
-  it('redacts every scalar leaf of a top-level sensitive object from stderr', async () => {
+  it('redacts each sensitive scalar from stderr', async () => {
     const plugin = await createPlugin();
     const sourceIdentity = `sha256:${'8'.repeat(64)}`;
     plugin.sourceIdentity = sourceIdentity;
     plugin.manifest.config = {
       fields: {
-        credentials: {
-          type: 'object',
-          sensitive: true,
-          properties: {
-            token: { type: 'string' },
-            account: { type: 'string' },
-          },
-          additionalProperties: false,
-        },
+        token: { type: 'string', sensitive: true },
+        account: { type: 'string', sensitive: true },
       },
     };
     const env = { AW_HOME: path.join(plugin.rootDir, 'aw-home') };
@@ -1068,7 +1090,7 @@ describe('preApply script', () => {
       scope: 'user',
       cwd: plugin.rootDir,
       env,
-      values: { credentials: { token: 'object-secret', account: 'private-account' } },
+      values: { token: 'object-secret', account: 'private-account' },
     });
     const runner: PluginProcessRunner = {
       async run() {

@@ -54,7 +54,7 @@ async function configureTaskCatalog(): Promise<{
     {
       name: 'native',
       configureManifest: (manifest) => {
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
         manifest.skills = './skills';
         manifest.extensions = undefined;
       },
@@ -102,7 +102,7 @@ async function configureTaskCatalog(): Promise<{
     {
       name: 'native',
       configureManifest: (manifest) => {
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
         manifest.skills = './skills';
         manifest.extensions = undefined;
       },

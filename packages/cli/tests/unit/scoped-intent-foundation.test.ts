@@ -134,40 +134,22 @@ describe('scoped intent foundation', () => {
     finally { read.mockRestore(); }
   });
 
-  it('keeps preferences scoped, rejects User project placement and allows explicit scoped reset', async () => {
+  it('shares one machine policy across scopes and preserves exclusions when changing targets', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const project = await repo('preferences-project');
     const user = { scope: 'user' as const, cwd: project, env: isolation.env };
     const local = { scope: 'project' as const, cwd: project, env: isolation.env };
-    const override = { pluginId: 'team/dependency', platform: 'codex' as const, scope: 'user' as const };
-    expect(() => parsePreferences({ ...createEmptyPreferences(), dependencyScopeOverrides: [
-      { ...override, scope: 'project' },
-    ] }, 'user')).toThrow();
-    expect(parsePreferences({ ...createEmptyPreferences(), dependencyScopeOverrides: [override] }, 'project'))
-      .toMatchObject({ dependencyScopeOverrides: [override] });
-    const projectValue = { ...createEmptyPreferences(), agents: ['codex' as const],
-      dependencyScopeOverrides: [override] };
-    await writePreferences(local, projectValue);
-    await setAgents(user, ['cursor', 'cursor']);
-    expect((await setAgents(local, ['claude-code'])).value.dependencyScopeOverrides).toEqual([override]);
-    const projectFile = await resolvePreferencesPath(local);
-    const projectBytes = await fs.readFile(projectFile);
-    const userFile = await resolvePreferencesPath(user);
-    const userBytes = await fs.readFile(userFile);
-    const intentUser = await resolveIntentPath(user);
-    const intentProject = await resolveIntentPath(local);
-    expect(await fs.pathExists(intentUser)).toBe(false);
-    expect(await fs.pathExists(intentProject)).toBe(false);
-    expect((await observePreferences(user))).toMatchObject({ state: 'valid', value: { agents: ['cursor'] } });
-    expect((await observePreferences(local))).toMatchObject({ state: 'valid',
-      value: { ...projectValue, agents: ['claude-code'] } });
-    expect(await fs.readFile(projectFile)).toEqual(projectBytes);
+    const exclusions = [{ plugin: 'team/dependency', target: 'codex' as const }];
+    expect(() => parsePreferences({ ...createEmptyPreferences(), dependencyScopeOverrides: [] })).toThrow();
+    await writePreferences(local, { ...createEmptyPreferences(), targets: ['codex'], exclusions });
+    expect((await setAgents(user, ['cursor', 'cursor'])).value).toMatchObject({ targets: ['cursor'], exclusions });
+    expect(await resolvePreferencesPath(local)).toBe(await resolvePreferencesPath(user));
+    expect(await observePreferences(local)).toMatchObject({ state: 'valid', value: { targets: ['cursor'], exclusions } });
+    expect(await fs.pathExists(await resolveIntentPath(user))).toBe(false);
+    expect(await fs.pathExists(await resolveIntentPath(local))).toBe(false);
     await resetTargets(user);
-    expect(await fs.readFile(projectFile)).toEqual(projectBytes);
-    expect(await fs.readFile(userFile)).not.toEqual(userBytes);
-    expect(selectAgents({ preferences: { state: 'absent' } })).toEqual({
-      agents: [], origin: 'none', preferences: 'absent',
-    });
+    expect(await observePreferences(local)).toMatchObject({ value: createEmptyPreferences() });
+    expect(selectAgents({ preferences: { state: 'absent' } })).toEqual({ agents: [], origin: 'none', preferences: 'absent' });
   });
 
   it('preserves legacy kind bytes; only explicit reset replaces invalid preferences', async () => {
@@ -187,7 +169,7 @@ describe('scoped intent foundation', () => {
     expect(await observePreferences(local)).toMatchObject({ state: 'valid', value: createEmptyPreferences() });
   });
 
-  it('keeps linked worktree preferences independent and rejects Project use outside a repository', async () => {
+  it('shares machine preferences between linked worktrees and rejects Project Intent outside a repository', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const main = path.join(isolation.layout.fixtureCwd, 'worktree-main');
     const linked = path.join(isolation.layout.fixtureCwd, 'worktree-linked');
@@ -200,11 +182,11 @@ describe('scoped intent foundation', () => {
     await git(main, ['worktree', 'add', '--quiet', '--detach', linked]);
     const first = { scope: 'project' as const, cwd: main, env: isolation.env };
     const second = { scope: 'project' as const, cwd: linked, env: isolation.env };
-    expect(await resolvePreferencesPath(first)).not.toBe(await resolvePreferencesPath(second));
+    expect(await resolvePreferencesPath(first)).toBe(await resolvePreferencesPath(second));
     await setAgents(first, ['codex']);
     await setAgents(second, ['cursor']);
-    expect(await observePreferences(first)).toMatchObject({ value: { agents: ['codex'] } });
-    expect(await observePreferences(second)).toMatchObject({ value: { agents: ['cursor'] } });
+    expect(await observePreferences(first)).toMatchObject({ value: { targets: ['cursor'] } });
+    expect(await observePreferences(second)).toMatchObject({ value: { targets: ['cursor'] } });
     const ordinary = path.join(isolation.layout.fixtureCwd, 'no-repo');
     await fs.ensureDir(ordinary);
     await expect(resolveIntentPath({ scope: 'project', cwd: ordinary, env: isolation.env }))

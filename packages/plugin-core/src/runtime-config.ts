@@ -1,4 +1,4 @@
-import { getPluginConfigDependencyKeys, validatePluginConfigCandidate } from './plugin-config.js';
+import { compilePluginConfigDefinition, getPluginConfigDependencyKeys, validatePluginConfigCandidate } from './plugin-config.js';
 import type { PluginConfigSchema, PluginConfigValue, Scope, PlatformName, PluginConfigReferenceContext } from './types.js';
 
 export const AW_RUNTIME_CONFIG_BINDING_PATH = '.aw-runtime-config.json';
@@ -41,15 +41,23 @@ export function createRuntimeConfigSnapshot(options: {
   values: Record<string, PluginConfigValue>;
   referenceContext?: PluginConfigReferenceContext;
 }): RuntimeConfigSnapshot {
+  const definition = compilePluginConfigDefinition(options.definition, options.installedIdentity.platform);
+  if (options.referenceContext?.platform !== undefined
+    && options.referenceContext.platform !== options.installedIdentity.platform) {
+    throw new Error('runtimeConfigInvalid: Reference context must use the installed platform.');
+  }
+  const referenceContext = options.referenceContext === undefined ? undefined : {
+    ...options.referenceContext, platform: options.installedIdentity.platform,
+  };
   const allowedKeys = [...new Set(options.declaration.keys)].sort();
-  const closure = getPluginConfigDependencyKeys(options.definition, allowedKeys, options.referenceContext);
+  const closure = getPluginConfigDependencyKeys(definition, allowedKeys, referenceContext);
   for (const key of closure) {
-    const field = options.definition.fields[key];
+    const field = definition.fields[key];
     if (!field || ('sensitive' in field && field.sensitive === true)) {
       throw new Error('runtimeConfigKeyDenied: Runtime config requires declared non-sensitive fields.');
     }
   }
-  if (validatePluginConfigCandidate(options.definition, options.values, allowedKeys, options.referenceContext).length > 0) {
+  if (validatePluginConfigCandidate(definition, options.values, allowedKeys, referenceContext).length > 0) {
     throw new Error('runtimeConfigInvalid: Effective runtime config is invalid; sync or reinstall after fixing config.');
   }
   return {

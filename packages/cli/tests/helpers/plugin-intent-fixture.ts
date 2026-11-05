@@ -4,26 +4,48 @@ import { observeIntent, writeIntent, type IntentLocation } from '../../src/inten
 import {
   createEmptyPreferences,
   observePreferences,
+  normalizeAgents,
   writePreferences,
   type AgentId,
+  type DeploymentExclusion,
 } from '../../src/intent/deployment-preferences.js';
-import type { DependencyScopeOverride } from '../../src/types.js';
 
-// Tests can specify target Agents beside roots, but the files always use the v3 contract.
+// Root platform lists are fixture shorthand for one machine policy. They never
+// create per-scope preferences or dependency placement overrides.
 export interface FixtureIntentState {
   schemaVersion?: number;
   kind?: string;
   sources?: PluginIntent['sources'];
   roots: Array<{ pluginId: string; platforms?: readonly string[] }>;
-  agents?: readonly AgentId[];
-  dependencyScopeOverrides?: DependencyScopeOverride[];
+  targets?: readonly AgentId[];
+  exclusions?: readonly DeploymentExclusion[];
+  agents?: readonly string[];
+  dependencyScopeOverrides?: readonly unknown[];
   managed?: unknown;
 }
 
 const toAgent = (platform: string): AgentId =>
-  platform === 'claude' ? 'claude-code' : platform as AgentId;
+  normalizeAgents([platform === 'claude-code' ? 'claude' : platform])[0]!;
 
 export async function writeIntentFixture(location: IntentLocation, state: FixtureIntentState) {
+  if (state.dependencyScopeOverrides?.length) {
+    throw new Error('Fixture dependencyScopeOverrides was removed. Declare user and project roots to test automatic placement.');
+  }
+  const observed = await observePreferences(location);
+  if (observed.state === 'invalid' || observed.state === 'unreadable') {
+    throw new Error(`Invalid fixture preferences: ${observed.state}`);
+  }
+  const current = observed.state === 'valid' ? observed.value : createEmptyPreferences();
+  const requested = state.targets ?? state.agents?.map(toAgent);
+  const targets = normalizeAgents(requested ?? [...current.targets, ...state.roots.flatMap((root) =>
+    (root.platforms ?? []).map(toAgent))]);
+  const selectedRoots = new Set(state.roots.filter((root) => root.platforms !== undefined).map((root) => root.pluginId));
+  const exclusions = state.exclusions ?? [
+    ...current.exclusions.filter((entry) => !selectedRoots.has(entry.plugin)),
+    ...state.roots.flatMap((root) => root.platforms === undefined ? [] : targets
+      .filter((target) => !root.platforms!.map(toAgent).includes(target))
+      .map((target) => ({ plugin: root.pluginId, target }))),
+  ];
   const generations = await readCatalogGenerationState(location.env);
   const sources = Object.fromEntries(state.roots.map(({ pluginId }) => {
     const sourceId = pluginId.split('/')[0]!;
@@ -36,13 +58,11 @@ export async function writeIntentFixture(location: IntentLocation, state: Fixtur
     sources,
     roots: state.roots.map(({ pluginId }) => ({ pluginId })),
   };
-  const agents = [...new Set(state.agents ?? state.roots.flatMap((root) =>
-    (root.platforms ?? []).map(toAgent)))];
   const written = await writeIntent(location, intent);
   await writePreferences(location, {
     ...createEmptyPreferences(),
-    agents,
-    dependencyScopeOverrides: state.dependencyScopeOverrides ?? [],
+    targets,
+    exclusions: [...exclusions],
   });
   return written.value;
 }
@@ -58,13 +78,13 @@ export async function readIntentFixture(location: IntentLocation): Promise<Fixtu
     throw new Error(`Invalid fixture preferences: ${preferences.state}`);
   }
   const value = intent.state === 'valid' ? intent.value : createEmptyIntent();
-  const agents = preferences.state === 'valid' ? preferences.value.agents : [];
+  const policy = preferences.state === 'valid' ? preferences.value : createEmptyPreferences();
   return {
     ...value,
     roots: value.roots.map((root) => ({ ...root,
-      platforms: agents.map((agent) => agent === 'claude-code' ? 'claude' : agent),
+      platforms: policy.targets.filter((target) => !policy.exclusions.some((entry) =>
+        entry.plugin === root.pluginId && entry.target === target)),
     })),
-    dependencyScopeOverrides: preferences.state === 'valid'
-      ? preferences.value.dependencyScopeOverrides : [],
+    dependencyScopeOverrides: [],
   };
 }

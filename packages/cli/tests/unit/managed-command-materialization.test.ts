@@ -4,10 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { resolveCommandSourceDirectory } from '../../src/utils/artifact-sources.js';
-import { managedCommandProducerIdentity, prepareManagedCommandPackage, prepareManagedCommandPackageFiles,
+import { discoverInstalledPluginManagedCommandPackages, managedCommandProducerIdentity, prepareManagedCommandPackage, prepareManagedCommandPackageFiles,
   syncPluginManagedCommandPackage } from '../../src/utils/managed-command-materialization.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { listManagedCommands } from '../../src/utils/managed-command-store.js';
+import { listManagedCommands, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
 import { createDefaultPluginProcessRunner, defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
 import { terminateProcessTree } from '../../src/utils/process-tree.js';
@@ -122,6 +122,34 @@ describe('managed command package materialization', () => {
       expect(identities[0]).toMatchObject({ kind: 'static-skill', platform, scope: 'user', projectRoot: null });
       expect(identities).toEqual([identities[0], identities[0], identities[0]]);
     }
+  });
+
+  // Test Value Gate: a retained project package must not block user config apply outside a repository.
+  it('discovers user packages outside a repository without including retained or declared project packages', async () => {
+    const pluginRoot = path.dirname(sourceRoot);
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3, name: 'discovery-scope', version: '1.0.0', description: 'Package scope fixture.',
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      managedCommands: { packages: [
+        { key: 'user-tools', scope: 'user', platforms: ['codex'], sourceDir: './tools' },
+        { key: 'project-tools', scope: 'project', platforms: ['codex'], sourceDir: './tools' },
+      ] },
+    });
+    const plugin = { ...await readPluginManifest(pluginRoot), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
+    await syncManagedCommandPackage({
+      producer: { sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name,
+        kind: 'package', key: 'project-tools', platform: null, scope: 'project', projectRoot: isolated.layout.fixtureCwd },
+      sourceDirectory: sourceRoot, sets: [], env: isolated.env,
+    });
+    const outside = path.join(isolated.layout.rootDir, 'outside');
+    await fs.ensureDir(outside);
+    const discovered = await discoverInstalledPluginManagedCommandPackages({
+      plugin, scope: 'user', cwd: outside, env: isolated.env,
+      platformTargets: [{ platform: 'codex', scope: 'user' }],
+    });
+    expect(discovered.errors).toEqual([]);
+    expect(discovered.packages.map((entry) => entry.packageKey)).toEqual(['user-tools']);
+    expect(discovered.packages[0]!.producer).toMatchObject({ scope: 'user', platform: null, projectRoot: null });
   });
 
   // Protects readonly source preparation, complete resources, and absence of real command publication.

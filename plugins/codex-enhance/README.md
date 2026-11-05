@@ -5,7 +5,8 @@
 ## 安装
 
 ```bash
-aw install codex-enhance --scope user --target codex
+aw plugin targets set codex
+aw plugin install codex-enhance --scope user
 ```
 
 安装同时满足同 source 的 `agent-subagent` 依赖。项目启用复用个人层配置，不产生独立项目执行配置。

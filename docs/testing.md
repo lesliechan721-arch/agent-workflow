@@ -59,7 +59,7 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | Smoke | 见下方命令表 | 真实 build、stage、pack、fetch 和插件脚本产物 |
 | Native qualification | `pnpm qualification:codex-project-native` | 显式验证精确 Codex CLI 的 shared native 与 project activation 行为；不进入普通测试或构建 |
 | Native performance qualification | `pnpm qualification:codex-native-performance` | 显式验证精确 Codex CLI 的 scoped list、隔离本地安装和中位数预算；不进入普通测试或构建 |
-| Portable provider qualification | `pnpm qualification:project-skills-provider` | 在隔离 HOME、XDG、Agent homes 和项目中验证固定 `skills@1.5.23` 的 Project/User copy、list、lock 和失败行为；不进入普通测试或构建 |
+| 历史 Portable provider qualification | `pnpm qualification:project-skills-provider` | 仅保留旧第三方 provider 的历史资格，不证明当前 AW 自有 writer 或客户端加载行为 |
 | Windows Job qualification | `pnpm qualification:windows-job` | 在真实 Windows x64/arm64 主机验证 Eval 与插件两种 Job；tag 发布 smoke 必须运行，普通本地 test/build 不运行 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Model eval | 见[插件维护指南](plugin-maintenance.md) | 需要模型理解、判断、路由或完成任务的语义合同；不进入普通 CI |
@@ -74,7 +74,7 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm test:smoke` | 运行完整 smoke suite |
 | `pnpm test:smoke:build` | 等价于 `pnpm test:dist`；校验正式 build 产物，并证明官方入口使用 `--strict-requirements` 语义 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
-| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin --scope project --target codex --target claude-code`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
+| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → plugin targets set cursor → plugin install source/plugin --scope project`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `两个 Windows 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:release:automation` | 在已有正式 build 后验证精确 source tag、临时 bare remote、artifact 恢复与真实 smoke harness 边界；不访问官方发布目标 |
@@ -86,7 +86,7 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm test:qualification:codex-native-performance:harness` | 使用 fake executable 验证两个版本的参数、隔离、缺失 binary 和报告合同；不提供真实性能证据 |
 | `pnpm qualification:codex-native-performance` | 使用显式提供的精确 `0.151.0` 或 `0.153.0` binary，运行五次本地 native plugin 安装并输出 schema 1 JSON report |
 | `pnpm test:qualification:project-skills-provider:harness` | 使用 fake provider 验证资格 runner 本身；不提供真实安装或加载证据 |
-| `pnpm qualification:project-skills-provider` | 使用固定 `skills@1.5.23` 对本地合成 Skill 运行隔离 Project/User 真实 provider 资格；测试结果需记录固定版本、OS、scope、Agent、lock、输出树与未覆盖组合 |
+| `pnpm qualification:project-skills-provider` | 历史 provider 资格；当前产品使用 AW writer，新测试覆盖真实复制、归属、stale、冲突、离线清理与部分失败，客户端加载须另做精确平台资格 |
 | `pnpm test:qualification:windows-job:harness` | 在非 Windows 主机验证 Eval/plugin qualification 的生产接线、失败和收尾合同；不提供 Windows 支持证据 |
 | `pnpm qualification:windows-job` | 在真实 Windows 主机执行两种 Job 的全部 17 项必需检查，包含 stdio、退出码、快速成功、root/parent/helper 退出、后代、生产 timeout/abort、名称碰撞和 ready 失败；mock 和非 Windows 运行不提供此证据 |
 

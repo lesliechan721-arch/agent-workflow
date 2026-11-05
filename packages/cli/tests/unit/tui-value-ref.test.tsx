@@ -2,7 +2,9 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { normalizePluginConfigDefinition, type PluginConfigValue, type Scope } from '@lesliechan721/aw-plugin-core';
+import { normalizePluginConfigDefinition, type PluginConfigValue } from '@lesliechan721/aw-plugin-core';
+import type { ConfigProfileKey } from '../../src/tui/model.js';
+import { writePreferences } from '../../src/intent/deployment-preferences.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { TuiController, type OperationIntent } from '../../src/tui/controller.js';
@@ -12,7 +14,7 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { focusAction, input, nextTurn, chooseConfigSave, escape } from '../helpers/tui-console-app-input.js';
+import { focusAction, input, nextTurn, chooseConfigSave, openConfigSave, escape } from '../helpers/tui-console-app-input.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const mocks = vi.hoisted(() => ({ status: vi.fn() }));
@@ -25,7 +27,7 @@ const ref = { type: 'string', valueRef: { field: 'registry', key: 'key', label: 
 const entry = (key: string, label = 'Same') => ({ key, label });
 function definition(provider?: string) {
   const reference = provider ? { ...ref, valueRef: { ...ref.valueRef, plugin: provider } } : ref;
-  return normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
+  return normalizePluginConfigDefinition({ schemaVersion: 5, fields: {
     registry: { type: 'array', title: '来源', default: [entry('A')], choices: { allowCustom: true, presets: [
       { id: 'add', title: '加入 B', value: [entry('A'), entry('B')] },
       { id: 'change', title: '修改 A', value: [entry('A', 'Changed'), entry('B')] },
@@ -44,7 +46,7 @@ function definition(provider?: string) {
     empty: { type: 'string', title: '空候选', valueRef: { field: 'registry', key: 'key' }, validation: { pattern: '^Z', maxLength: 100 } },
   } });
 }
-async function setup(initial: Partial<Record<Scope, Record<string, PluginConfigValue>>> = {}, external = false) {
+async function setup(initial: Partial<Record<ConfigProfileKey, Record<string, PluginConfigValue>>> = {}, external = false) {
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'references');
   const config = definition(external ? 'provider' : undefined);
@@ -56,7 +58,7 @@ async function setup(initial: Partial<Record<Scope, Record<string, PluginConfigV
   if (external) {
     const providerRoot = `${sourceRoot}-provider`;
     await createCatalogSnapshotFixture(providerRoot, 'provider', [], 'provider fixture', (manifest) => {
-      manifest.config = normalizePluginConfigDefinition({ schemaVersion: 4, fields: { registry: config.fields.registry } });
+      manifest.config = normalizePluginConfigDefinition({ schemaVersion: 5, fields: { registry: config.fields.registry } });
     });
     await fs.copy(path.join(providerRoot, 'plugins/provider'), path.join(sourceRoot, 'plugins/provider'));
     for (const file of ['catalog-manifest.json', '.agents/plugins/marketplace.json', '.claude-plugin/marketplace.json']) {
@@ -68,7 +70,7 @@ async function setup(initial: Partial<Record<Scope, Record<string, PluginConfigV
       await fs.writeJson(path.join(sourceRoot, file), target);
     }
     await createCatalogSnapshotFixture(otherRoot, 'provider', [], 'other provider', (manifest) => {
-      manifest.config = normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
+      manifest.config = normalizePluginConfigDefinition({ schemaVersion: 5, fields: {
         registry: { ...config.fields.registry, default: [entry('OTHER')] },
       } });
     });
@@ -91,61 +93,76 @@ async function setup(initial: Partial<Record<Scope, Record<string, PluginConfigV
   const dependencies = createTuiControllerDependencies(createCliExecutionContext({ cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false }));
   const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/refs', apply: false, groups: [{ scope: 'user', updates: { registry: [] } }] });
   const storeOptions = { sourceId: 'team', sourceIdentity: evidence.source!.sourceIdentity, logicalIdentity: evidence.source!.logicalIdentity, pluginName: 'refs', cwd: isolation.layout.fixtureCwd, env: isolation.env };
-  for (const scope of ['user', 'project'] as const) if (initial[scope]) await writePluginConfigStore({ ...storeOptions, scope, values: initial[scope]! });
+  for (const profile of ['common', 'codex'] as const) if (initial[profile]) await writePluginConfigStore({
+    ...storeOptions, scope: 'user', ...(profile === 'common' ? {} : { platform: profile }), values: initial[profile]!,
+  });
+  await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+    schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['codex'], exclusions: [],
+  });
+  let pendingReferences = 0;
+  const readReferences = dependencies.getConfigReferenceContext!;
+  dependencies.getConfigReferenceContext = async (...args) => {
+    pendingReferences += 1;
+    try { return await readReferences(...args); }
+    finally { pendingReferences -= 1; }
+  };
+  const waitReferences = async () => {
+    await nextTurn(4);
+    await vi.waitFor(() => expect(pendingReferences).toBe(0), { timeout: 5000 });
+    await nextTurn(4);
+  };
   const captured: OperationIntent[] = [];
   const prepare = dependencies.prepareReviewEvidence!;
   dependencies.prepareReviewEvidence = async (intent, ...args) => { captured.push(intent); return prepare(intent, ...args); };
   const controller = new TuiController(dependencies);
   await controller.load();
-  controller.push({ name: 'configFields', pluginId: 'team/refs', layer: { scope: 'effective' } });
+  controller.push({ name: 'configFields', pluginId: 'team/refs', layer: { profile: 'common' } });
   const ui = render(<ConsoleAppV4 controller={controller} size={{ columns: 100, rows: 36 }} />);
   await vi.waitFor(() => expect(ui.lastFrame()).toContain('引用列表'));
-  const open = async (fieldKey: string, scope: Scope) => {
-    controller.push({ name: 'configFieldEditor', pluginId: 'team/refs', layer: { scope: 'effective' }, fieldKey, editor: config.fields[fieldKey]!.type });
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configLayer'));
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain(scope === 'user' ? '个人默认' : '当前项目'), { timeout: 5000 });
-    await focusAction(ui, scope === 'user' ? '个人默认' : '当前项目');
-    await input(ui, '\r');
-    await vi.waitFor(() => expect(controller.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', layer: { scope } }));
-    await vi.waitFor(() => expect(ui.lastFrame()).not.toContain('正在读取'));
+  const open = async (fieldKey: string, profile: ConfigProfileKey) => {
+    controller.push({ name: 'configFieldEditor', pluginId: 'team/refs', layer: { profile }, fieldKey, editor: config.fields[fieldKey]!.type }, { focusIndex: 0, scrollOffset: 0 });
+    await vi.waitFor(() => expect(controller.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', layer: { profile } }));
+    await vi.waitFor(() => expect(ui.lastFrame()?.split('\n')[0]?.trim()).toBe(`AW / 引用测试 / 设置 / ${config.fields[fieldKey]!.title}`));
+    await waitReferences();
+    await vi.waitFor(() => {
+      expect(ui.lastFrame()).not.toContain('正在读取');
+      expect(ui.lastFrame()).not.toContain('仅可删除旧值');
+    });
     await nextTurn(4);
+    if (config.fields[fieldKey]!.type === 'array') await focusAction(ui, '01');
   };
   const choose = async (label: string) => { await vi.waitFor(() => expect(ui.lastFrame()).toContain(label), { timeout: 5000 }); await focusAction(ui, label); await input(ui, '\r'); await nextTurn(4); };
   const stageSource = async (label: string) => {
-    controller.push({ name: 'configFieldEditor', pluginId: 'team/refs', layer: { scope: 'effective' }, fieldKey: 'registry', editor: 'array', mode: 'choices' });
+    controller.push({ name: 'configFieldEditor', pluginId: 'team/refs', layer: { profile: 'common' }, fieldKey: 'registry', editor: 'array', mode: 'choices' }, { focusIndex: 0, scrollOffset: 0 });
     await vi.waitFor(() => expect(ui.lastFrame()).toContain(label));
     await choose(label);
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain('个人默认'));
-    await choose('个人默认');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
   };
   const save = async () => {
-    await vi.waitFor(async () => {
-      if (controller.snapshot.router.current.route.name === 'configFields') await input(ui, 's');
-      expect(controller.snapshot.router.current.route.name, ui.lastFrame()).toBe('review');
-    }, { timeout: 5000 });
+    await waitReferences();
+    await openConfigSave(ui, controller);
     await chooseConfigSave(ui, controller, 'only');
-    await input(ui, '\r');
-    await vi.waitFor(() => expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' }), { timeout: 5000 });
   };
-  const context = async (scope: Scope, updates: Record<string, PluginConfigValue> = {}, removes: string[] = []) =>
-    controller.getConfigReferenceContext('team/refs', scope, { updates, removes });
-  return { ui, controller, open, choose, context, captured, config, stageSource, save,
+  const profileOptions = (profile: ConfigProfileKey) => profile === 'common' ? {} : { platform: profile };
+  const context = async (profile: ConfigProfileKey, updates: Record<string, PluginConfigValue> = {}, removes: string[] = []) =>
+    controller.getConfigReferenceContext('team/refs', profileOptions(profile), { updates, removes });
+  return { ui, controller, open, choose, context, captured, config, stageSource, save, waitReferences,
     writeProvider: (values: Record<string, PluginConfigValue>) => writePluginConfigStore({ ...storeOptions, pluginName: 'provider', scope: 'user', values }),
-    store: (scope: Scope) => readPluginConfigStore({ ...storeOptions, scope }) };
+    store: (profile: ConfigProfileKey) => readPluginConfigStore({ ...storeOptions, scope: 'user', ...profileOptions(profile) }) };
+
 }
 
-describe('scope-aware value reference choices', () => {
+describe('profile-aware value reference choices', () => {
   it('opens the exact provider and refreshes saved choices while preserving consumer drafts and the editor anchor', async () => {
     const { ui, controller, open, choose, save, captured, store } = await setup({
-      user: { registry: [entry('LOCAL')] },
+      common: { registry: [entry('LOCAL')] },
     }, true);
-    await open('selected', 'user');
+    await open('selected', 'common');
     expect(ui.lastFrame()).toContain('provider.registry');
     expect(ui.lastFrame()).not.toContain('Same (LOCAL)');
     expect(ui.lastFrame()).not.toContain('Same (OTHER)');
     await choose('Same (A)');
-    await open('list', 'user');
+    await open('list', 'common');
     await input(ui, '\r');
     const anchor = controller.snapshot.router.currentFrameId;
     await choose('编辑来源 provider.registry');
@@ -154,8 +171,7 @@ describe('scope-aware value reference choices', () => {
     }));
     expect(controller.externalDrafts).toContainEqual(expect.objectContaining({ owner: 'team/refs' }));
     await choose('加入 B');
-    await choose('个人默认');
-    expect((await store('user')).values.selected).toBeUndefined();
+    expect((await store('common')).values.selected).toBeUndefined();
     await save();
     expect(captured.at(-1)).toMatchObject({ pluginId: 'team/provider' });
     await escape(ui);
@@ -166,16 +182,18 @@ describe('scope-aware value reference choices', () => {
     expect(captured.at(-1)).toMatchObject({ pluginId: 'team/refs', groups: [{ scope: 'user', updates: {
       selected: 'A', list: ['B'],
     } }] });
-    expect((await store('user')).values).toMatchObject({ selected: 'A', list: ['B'] });
+    expect((await store('common')).values).toMatchObject({ selected: 'A', list: ['B'] });
   });
 
   it('revalidates restored nested working values and rejects a confirmed draft after provider keys disappear', async () => {
     const { ui, controller, open, choose, writeProvider, captured, store } = await setup({}, true);
-    await open('selected', 'user');
+    await open('selected', 'common');
     await choose('Same (A)');
-    await open('branch', 'user');
+    await open('branch', 'common');
     await choose('list');
-    await input(ui, '\r', '\r');
+    await choose('修改值');
+    await focusAction(ui, '01');
+    await input(ui, '\r');
     await choose('Same (A)');
     await input(ui, '\r');
     const anchor = controller.snapshot.router.currentFrameId;
@@ -192,134 +210,125 @@ describe('scope-aware value reference choices', () => {
     expect(controller.snapshot.router.current.route.name).toBe('configObjectPropertyEditor');
     await escape(ui);
     await escape(ui);
-    await escape(ui);
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain('有未保存修改无法继续使用'));
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('请先放弃失效草稿'));
+    if (ui.lastFrame()?.includes('放弃未保存修改？')) await input(ui, '\r');
     await input(ui, 's');
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
     expect(captured).toEqual([]);
-    expect((await store('user')).exists).toBe(false);
+    expect((await store('common')).exists).toBe(false);
   });
 
-  it('uses writer scope inheritance, confirmed set/unset and complete invalid sources', async () => {
-    const { context } = await setup({ user: { registry: [entry('U')] }, project: { registry: [entry('P')] } });
+  it('uses profile inheritance, confirmed set/unset and complete invalid sources', async () => {
+    const { context } = await setup({ common: { registry: [entry('U')] }, codex: { registry: [entry('P')] } });
     const choices = (value: Awaited<ReturnType<typeof context>>) => Object.values(value.selections)[0]!.choices.map((choice) => choice.value);
-    expect(choices(await context('user', { registry: [entry('B')] }))).toEqual(['native', 'B']);
-    expect(choices(await context('project'))).toEqual(['native', 'P']);
-    expect(choices(await context('project', {}, ['registry']))).toEqual(['native', 'U']);
-    expect(choices(await context('user', {}, ['registry']))).toEqual(['native', 'A']);
-    const invalid = await context('user', { registry: [entry('A'), entry('A')] });
+    expect(choices(await context('common', { registry: [entry('B')] }))).toEqual(['native', 'B']);
+    expect(choices(await context('codex'))).toEqual(['native', 'P']);
+    expect(choices(await context('codex', {}, ['registry']))).toEqual(['native', 'U']);
+    expect(choices(await context('common', {}, ['registry']))).toEqual(['native', 'A']);
+    const invalid = await context('common', { registry: [entry('A'), entry('A')] });
     expect(Object.values(invalid.selections)[0]).toMatchObject({ choices: [], issues: expect.arrayContaining([expect.objectContaining({ code: 'uniqueBy' })]) });
   });
 
-  it('chooses a layer before a scalar and saves the key without asking the layer twice', async () => {
-    const { ui, controller, open, choose, captured, store } = await setup({ user: { registry: [entry('A'), entry('a')] }, project: { registry: [entry('P')], selected: 'P' } });
-    await open('selected', 'user');
+  it('saves common references while preserving the platform override', async () => {
+    const { ui, controller, open, choose, captured, store, waitReferences } = await setup({ common: { registry: [entry('A'), entry('a')] }, codex: { registry: [entry('P')], selected: 'P' } });
+    await open('selected', 'common');
     expect(ui.lastFrame()).toContain('Same (A)');
     expect(ui.lastFrame()).toContain('Same (a)');
     expect(ui.lastFrame()).not.toContain('Same (P)');
-    expect(ui.lastFrame()).toContain('当前项目被覆盖');
     await choose('Same (a)');
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
-    await vi.waitFor(async () => {
-      if (controller.snapshot.router.current.route.name === 'configFields') await input(ui, 's');
-      expect(controller.snapshot.router.current.route.name, ui.lastFrame()).toBe('review');
-    }, { timeout: 5000 });
+    await waitReferences();
+    await openConfigSave(ui, controller);
     expect(captured.at(-1)).toMatchObject({ groups: [{ scope: 'user', updates: { selected: 'a' } }] });
     await chooseConfigSave(ui, controller, 'only');
-    await input(ui, '\r');
-    await vi.waitFor(() => expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' }));
-    expect((await store('user')).values.selected).toBe('a');
-    expect((await store('project')).values.selected).toBe('P');
+    expect((await store('common')).values.selected).toBe('a');
+    expect((await store('codex')).values.selected).toBe('P');
   });
 
   it('uses cross-plugin selectors in scalar arrays, KV values, object arrays and branch leaves', async () => {
-    const { ui, controller, open, choose, captured } = await setup({}, true);
-    await open('list', 'project');
+    const { ui, controller, open, choose, captured, waitReferences } = await setup({}, true);
+    await open('list', 'codex');
     await input(ui, '\r');
     await choose('Same (A)');
     await input(ui, 'c');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
-    await open('map', 'project');
-    await input(ui, '\r', '\r');
+    await open('map', 'codex');
+    await choose('primary');
+    await choose('修改值');
     await choose('Same (A)');
     await input(ui, 'c');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
-    await open('records', 'project');
-    await input(ui, '\r', '\r', '\r');
+    await open('records', 'codex');
+    await input(ui, '\r');
+    await choose('selected');
+    await choose('修改值');
     await choose('Same (A)');
     await input(ui, 'c', 'c');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
-    await open('branch', 'project');
+    await open('branch', 'codex');
     await choose('list');
-    await input(ui, '\r', '\r');
+    await choose('修改值');
+    await focusAction(ui, '01');
+    await input(ui, '\r');
     await choose('Same (A)');
     await input(ui, 'c');
     await choose('map');
-    await input(ui, '\r', '\r');
+    await choose('修改值');
+    await choose('primary');
     await choose('Same (A)');
     await input(ui, 'c', 'c');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
-    await vi.waitFor(async () => {
-      if (controller.snapshot.router.current.route.name === 'configFields') await input(ui, 's');
-      expect(controller.snapshot.router.current.route.name, ui.lastFrame()).toBe('review');
-    }, { timeout: 5000 });
+    await waitReferences();
+    await openConfigSave(ui, controller);
     expect(captured.at(-1)).toMatchObject({ groups: [{ updates: {
       list: ['A'], map: { primary: 'A' }, records: [{ selected: 'A' }],
       branch: { mode: 'x', list: ['A'], map: { primary: 'A' } },
     } }] });
   });
 
-  it('retains the working array when changing scope and recomputes the available keys', async () => {
-    const { ui, controller, open, choose, captured } = await setup({
-      user: { registry: [entry('U')], list: ['U'] }, project: { registry: [entry('P')], list: ['P'] },
+  it('keeps confirmed array drafts separate and resolves reference choices in the selected profile', async () => {
+    const { ui, open, choose, save, store } = await setup({
+      common: { registry: [entry('U')], list: ['U'] }, codex: { registry: [entry('P')], list: ['P'] },
     });
-    await open('list', 'user');
+    await open('list', 'common');
     expect(ui.lastFrame()).toContain('U');
     await input(ui, '\r');
     await choose('native');
-    await escape(ui);
-    expect(controller.snapshot.router.current.route.name).toBe('configLayer');
-    await choose('当前项目');
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain('native'));
+    await input(ui, 'c');
+    await open('list', 'codex');
+    expect(ui.lastFrame()).toContain('P');
     await input(ui, '\r');
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('Same (P)'));
     expect(ui.lastFrame()).not.toContain('Same (U)');
     await choose('native');
     await input(ui, 'c');
-    await vi.waitFor(async () => {
-      if (controller.snapshot.router.current.route.name === 'configFields') await input(ui, 's');
-      expect(controller.snapshot.router.current.route.name, ui.lastFrame()).toBe('review');
-    }, { timeout: 5000 });
-    expect(captured.at(-1)).toMatchObject({ groups: [{ scope: 'project', updates: { list: ['native'] } }] });
+    await save();
+    expect((await store('common')).values.list).toEqual(['native']);
+    expect((await store('codex')).values.list).toEqual(['native']);
   });
 
-  it('ends confirmed object working copies while preserving an unconfirmed object during scope selection', async () => {
+  it('cancels an unconfirmed platform object while retaining the confirmed common object draft', async () => {
     const { ui, controller, open, choose, save, store } = await setup({
-      user: { registry: [entry('A'), entry('P')], map: { primary: 'native' } },
-      project: { map: { primary: 'P', secondary: 'P' } },
+      common: { registry: [entry('A'), entry('P')], map: { primary: 'native' } },
+      codex: { map: { primary: 'P', secondary: 'P' } },
     });
-    await open('map', 'user');
+    await open('map', 'common');
     await choose('primary');
     await choose('修改值');
     await choose('Same (A)');
     await input(ui, 'c');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
 
-    await open('map', 'project');
+    await open('map', 'codex');
     expect(ui.lastFrame()).toContain('secondary');
     await choose('primary');
     await choose('修改值');
     await choose('native');
     await escape(ui);
-    expect(controller.snapshot.router.current.route.name).toBe('configLayer');
-    await choose('个人默认');
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain('secondary'));
-    expect(ui.lastFrame()).toContain('native');
-    await escape(ui);
-    await escape(ui);
+    expect(controller.snapshot.router.current.route.name).toBe('configFields');
 
-    await open('map', 'project');
+    await open('map', 'codex');
     expect(ui.lastFrame()).toContain('secondary');
     await choose('primary');
     await choose('修改值');
@@ -327,68 +336,68 @@ describe('scope-aware value reference choices', () => {
     await choose('native');
     await input(ui, 'c');
     await save();
-    expect((await store('user')).values.map).toEqual({ primary: 'A' });
-    expect((await store('project')).values.map).toEqual({ primary: 'native', secondary: 'P' });
+    expect((await store('common')).values.map).toEqual({ primary: 'A' });
+    expect((await store('codex')).values.map).toEqual({ primary: 'native', secondary: 'P' });
   });
 
   it('reports empty choices and an invalid old value without accepting arbitrary input', async () => {
-    const { ui, controller, open, choose } = await setup({ user: { selected: 'gone' } });
-    await open('selected', 'user');
+    const { ui, controller, open, choose } = await setup({ common: { selected: 'gone' } });
+    await open('selected', 'common');
     expect(ui.lastFrame()).toContain('gone');
     expect(ui.lastFrame()).toContain('已失效');
     await input(ui, 'arbitrary');
     await choose('Same (A)');
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
-    await open('empty', 'user');
+    await open('empty', 'common');
     expect(ui.lastFrame()).toContain('没有可选值');
     await input(ui, 'Z-anything', '\r');
     expect(controller.snapshot.router.current.route.name).toBe('configFieldEditor');
   });
 
-  it('offers confirmed same-layer additions and requires saving user B before a project reference can choose B', async () => {
+  it('offers confirmed same-layer additions and requires saving common B before a platform reference can choose B', async () => {
     const { ui, controller, open, choose, stageSource, save, store, captured } = await setup();
     await stageSource('加入 B');
-    await open('selected', 'user');
+    await open('selected', 'common');
     await choose('Same (B)');
-    await open('selected', 'project');
+    await open('selected', 'codex');
     expect(ui.lastFrame()).not.toContain('Same (B)');
     expect(ui.lastFrame()).toContain('请先保存来源配置');
-    await escape(ui); await escape(ui);
+    await escape(ui);
     await save();
     expect(captured.at(-1)).toMatchObject({ groups: [{ scope: 'user', updates: { registry: [entry('A'), entry('B')], selected: 'B' } }] });
-    expect((await store('user')).values.selected).toBe('B');
-    controller.push({ name: 'configFields', pluginId: 'team/refs', layer: { scope: 'effective' } });
+    expect((await store('common')).values.selected).toBe('B');
+    controller.push({ name: 'configFields', pluginId: 'team/refs', layer: { profile: 'common' } });
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('引用列表'));
-    await open('selected', 'project');
+    await open('selected', 'codex');
     await choose('Same (B)');
     await save();
-    expect((await store('project')).values.selected).toBe('B');
+    expect((await store('codex')).values.selected).toBe('B');
   });
 
-  it('keeps the source-save path available when a later user source edit affects a project reference draft', async () => {
+  it('keeps the source-save path available when a later common source edit affects a platform reference draft', async () => {
     const { ui, controller, open, choose, stageSource, save, store } = await setup();
-    await open('selected', 'project');
+    await open('selected', 'codex');
     await choose('Same (A)');
     await stageSource('修改 A');
-    await vi.waitFor(() => expect(ui.lastFrame()).toContain('取消跨层引用草稿'));
+    await vi.waitFor(() => expect(ui.lastFrame()).toContain('取消相关引用草稿'));
     await input(ui, 's');
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
     expect(ui.lastFrame()).toContain('请先保存来源配置');
-    await choose('取消跨层引用草稿，保留来源修改');
+    await choose('取消相关引用草稿');
     await save();
-    expect((await store('user')).values.registry).toEqual([entry('A', 'Changed'), entry('B')]);
-    expect((await store('project')).exists).toBe(false);
+    expect((await store('common')).values.registry).toEqual([entry('A', 'Changed'), entry('B')]);
+    expect((await store('codex')).values).toEqual({});
   });
 
-  it('blocks actual cross-layer entry dependencies but permits include values, project overrides and unrelated changes', async () => {
+  it('blocks actual cross-layer entry dependencies but permits include values, platform overrides and unrelated changes', async () => {
     const { context, config } = await setup();
-    const drafts = { user: { updates: { registry: [entry('A', 'Changed'), entry('B')] }, removes: [] }, project: { updates: { selected: 'A' }, removes: [] } };
-    const contexts = { user: await context('user', drafts.user.updates), project: await context('project', drafts.project.updates) };
-    expect(configCrossLayerDependencies(config.fields, drafts, contexts)).toEqual([{ key: 'selected', source: 'registry' }]);
-    expect(configCrossLayerDependencies(config.fields, { ...drafts, project: { updates: { selected: 'native' }, removes: [] } }, contexts)).toEqual([]);
-    const unrelated = { ...drafts, user: { updates: { registry: [entry('A'), entry('B')] }, removes: [] } };
-    expect(configCrossLayerDependencies(config.fields, unrelated, { ...contexts, user: await context('user', unrelated.user.updates) })).toEqual([]);
-    const override = { ...drafts, project: { updates: { registry: [entry('A')], selected: 'A' }, removes: [] } };
-    expect(configCrossLayerDependencies(config.fields, override, { ...contexts, project: await context('project', override.project.updates) })).toEqual([]);
+    const drafts = { common: { updates: { registry: [entry('A', 'Changed'), entry('B')] }, removes: [] }, codex: { updates: { selected: 'A' }, removes: [] } };
+    const contexts = { common: await context('common', drafts.common.updates), codex: await context('codex', drafts.codex.updates) };
+    expect(configCrossLayerDependencies({ common: config.fields, codex: config.fields }, drafts, contexts)).toEqual([{ profile: 'codex', key: 'selected', source: 'registry' }]);
+    expect(configCrossLayerDependencies({ common: config.fields, codex: config.fields }, { ...drafts, codex: { updates: { selected: 'native' }, removes: [] } }, contexts)).toEqual([]);
+    const unrelated = { ...drafts, common: { updates: { registry: [entry('A'), entry('B')] }, removes: [] } };
+    expect(configCrossLayerDependencies({ common: config.fields, codex: config.fields }, unrelated, { ...contexts, common: await context('common', unrelated.common.updates) })).toEqual([]);
+    const override = { ...drafts, codex: { updates: { registry: [entry('A')], selected: 'A' }, removes: [] } };
+    expect(configCrossLayerDependencies({ common: config.fields, codex: config.fields }, override, { ...contexts, codex: await context('codex', override.codex.updates) })).toEqual([]);
   });
 });

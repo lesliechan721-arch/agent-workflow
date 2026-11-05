@@ -8,13 +8,13 @@ import { createRebuildIntegration, type RebuildExecutionContext } from '../../sr
 import { executeRebuildOperation } from '../../src/commands/rebuild-operations.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { cleanupWriteCommand } from '../../src/commands/write-commands.js';
-import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import type { CatalogResolution, PlatformName, PluginMeta, RebuildCommand } from '../../src/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { listManagedCommands, listManagedCommandPackages, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { runManagedCommand } from '../../src/utils/managed-command-runtime.js';
 import { syncPluginManagedCommandPackage } from '../../src/utils/managed-command-materialization.js';
 import { SYSTEM_CODEX_MANAGER } from '../../src/utils/native-cli.js';
+import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { buildRebuildReceiptJson, renderRebuildReceipt } from '../../src/output/command-receipt.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
@@ -22,14 +22,20 @@ import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/
 import { git } from '../helpers/catalog-source-fixture.js';
 import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
+import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
+import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 
 describe('managed command plugin lifecycle', () => {
   let isolated: IsolatedTestEnvironment;
   let pluginRoot: string;
   let capturePath: string;
+  let codexRuntime: Awaited<ReturnType<typeof createCodexNativeTestRuntime>>;
+  let claudeRuntime: Awaited<ReturnType<typeof createClaudeNativeTestRuntime>>;
   const sourceIdentity = `sha256:${'a'.repeat(64)}`;
   const baseManifest = {
     schemaVersion: 3, name: 'managed-lifecycle', version: '1.0.0', description: 'Lifecycle fixture.',
+    platforms: ['codex', 'claude'],
     requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
     scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
@@ -46,19 +52,32 @@ describe('managed command plugin lifecycle', () => {
     pluginRoot = path.join(isolated.layout.fixtureCwd, 'plugin');
     capturePath = path.join(isolated.layout.fixtureCwd, 'capture.json');
     isolated.env.CAPTURE_FILE = capturePath;
+    await fs.ensureDir(isolated.layout.awHomeDir);
+    codexRuntime = await createCodexNativeTestRuntime(isolated);
+    claudeRuntime = await createClaudeNativeTestRuntime(isolated);
   });
   afterEach(async () => { await isolated.cleanup(); });
 
   async function readFixture(): Promise<PluginMeta> {
-    return { ...await readPluginManifest(pluginRoot), sourceId: 'fixture', sourceIdentity, pluginId: 'fixture/managed-lifecycle' };
+    const sourceRoot = path.join(isolated.layout.fixtureCwd, 'catalog-source');
+    const copiedRoot = path.join(sourceRoot, 'plugins', 'managed-lifecycle');
+    await fs.remove(copiedRoot);
+    await fs.copy(pluginRoot, copiedRoot);
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'marketplace-source.json'), {
+      owner: { name: 'Fixture', url: 'https://example.invalid/fixture' },
+      interface: { displayName: 'Fixture' }, catalog: { version: '1.0.0' },
+    });
+    const catalogRoot = path.join(isolated.layout.fixtureCwd, `catalog-${crypto.randomUUID()}`);
+    await bundlePlugins({ repoRoot: sourceRoot, outputRoot: catalogRoot });
+    return { ...await readPluginManifest(path.join(catalogRoot, 'plugins', 'managed-lifecycle'), { mode: 'bundle' }),
+      sourceId: 'fixture', sourceIdentity, pluginId: 'fixture/managed-lifecycle' };
   }
   function integrationFor(env = isolated.env) {
     const context: RebuildExecutionContext = {
-      ...createCommandExecutionContext({ env, nativeCliRunner: async (invocation) => {
-        if (invocation.args.includes('--version')) return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
-        if (invocation.args.includes('--json')) return { exitCode: 0, stdout: '{"installed":[],"available":[]}', stderr: '' };
-        throw new Error('AW-owned fixture must not mutate a native plugin.');
-      } }),
+      ...createCommandExecutionContext({ env, nativeCliRunner: async (invocation) =>
+        invocation.command.includes('claude')
+          ? claudeRuntime.nativeCliRunner(invocation)
+          : codexRuntime.nativeCliRunner(invocation) }),
       codexManager: SYSTEM_CODEX_MANAGER,
     };
     return { integration: createRebuildIntegration({ context }), context };
@@ -66,7 +85,8 @@ describe('managed command plugin lifecycle', () => {
   async function build(plugin: PluginMeta, command: RebuildCommand, platform: PlatformName, integration: ReturnType<typeof createRebuildIntegration>) {
     return integration.buildTarget({ plugin, command, platform, scope: 'user', cwd: isolated.layout.fixtureCwd,
       sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginId: plugin.pluginId,
-      catalog: { rootDir: isolated.layout.fixtureCwd, source: 'local' } as CatalogResolution });
+      marketplaceRoot: path.join(isolated.layout.awHomeDir, 'marketplaces', 'fixture'), marketplaceName: 'aw-fixture',
+      catalog: { rootDir: path.dirname(path.dirname(plugin.rootDir)), source: 'local' } as CatalogResolution });
   }
   async function execute(plugin: PluginMeta, command: RebuildCommand, env = isolated.env) {
     const { integration, context } = integrationFor(env);
@@ -91,7 +111,7 @@ describe('managed command plugin lifecycle', () => {
   // binding or replaces the owned Skill. Only the identity hash is controlled.
   it('preserves the artifact command and Skill when refresh identities collide', async () => {
     const manifest = (key: string) => ({ ...baseManifest,
-      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' }, scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'provider' }] },
+      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'provider' }] },
       managedCommands: { sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'provider' }, mode: 'static', entries: [{ key, runner: 'node', entry: 'scripts/tool.mjs' }] }] },
     });
     const files = { ...skillFiles, 'SKILL.md': '---\nname: provider\ndescription: Lifecycle fixture.\n---\nFixture.\n' };
@@ -143,7 +163,7 @@ describe('managed command plugin lifecycle', () => {
   it('installs, runs, refreshes, reinstalls, empties, and cleans an artifact command producer', async () => {
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), { ...baseManifest,
       config: { schemaVersion: 4, fields: { revision: { type: 'string', default: 'v1' }, empty: { type: 'boolean', default: false } } },
-      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' }, scopes: ['user'], states: ['present'], refreshKeys: ['revision', 'empty'], skillKey: 'provider' }] },
+      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', scopes: ['user'], states: ['present'], refreshKeys: ['revision', 'empty'], skillKey: 'provider' }] },
       managedCommands: { sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'provider' }, mode: 'dynamic', refreshKeys: ['revision', 'empty'] }] },
     });
     await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
@@ -160,12 +180,13 @@ describe('managed command plugin lifecycle', () => {
     const installed = await execute(plugin, 'install');
     const command = (await listManagedCommands(isolated.env)).commands[0]!;
     expect(command).toMatchObject({ availability: 'ready', name: 'tools/run/default' });
-    const skillAction = installed.target.operationActions!.find((action) => action.kind === 'writeOwnedArtifact' && action.artifactKind === 'skill-directory')!;
-    expect(skillAction.kind).toBe('writeOwnedArtifact');
-    if (skillAction.kind !== 'writeOwnedArtifact') throw new Error('Missing Skill action.');
-    expect(await fs.readFile(path.join(skillAction.path, 'SKILL.md'), 'utf8')).toContain(`aw command run ${command.id} -- check`);
+    expect(installed.target.operationActions).toContainEqual(expect.objectContaining({
+      kind: 'materializeNativeSkill', platform: 'codex', scope: 'user', skillKey: 'provider',
+    }));
+    const skillRoot = command.resourceRoot!;
+    expect(await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).toContain(`aw command run ${command.id} -- check`);
     expect(await runManagedCommand({ id: command.id, args: ['user argument'], cwd: isolated.layout.fixtureCwd, cliEntry: import.meta.filename, env: isolated.env })).toBe(0);
-    expect(await fs.readJson(capturePath)).toEqual({ args: ['v1', 'user argument'], cwd: skillAction.path });
+    expect(await fs.readJson(capturePath)).toEqual({ args: ['v1', 'user argument'], cwd: skillRoot });
     await writePluginConfigStore({ sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name, scope: 'user', cwd: isolated.layout.fixtureCwd, env: isolated.env, values: { revision: 'v2' } });
     await execute(plugin, 'sync');
     expect((await listManagedCommands(isolated.env)).commands.map((entry) => entry.id)).toEqual([command.id]);
@@ -177,14 +198,15 @@ describe('managed command plugin lifecycle', () => {
     expect((await listManagedCommands(isolated.env)).commands).toEqual([]);
     await expect(resolveManagedCommand(command.id, isolated.env)).rejects.toMatchObject({ code: 'commandNotFound' });
     await execute(plugin, 'cleanup');
-    expect(await fs.pathExists(skillAction.path)).toBe(false);
+    expect(await fs.pathExists(skillRoot)).toBe(true);
+    await expect(resolveManagedCommand(command.id, isolated.env)).rejects.toMatchObject({ code: 'commandNotFound' });
   });
 
-  // Claude's native static sharing must not merge the independently owned dynamic Skill scopes.
-  it('keeps Claude AW-owned dynamic command producers independent in user and project scope', async () => {
+  // Both activation scopes consume one Native shared-user Skill command producer.
+  it('shares the Claude Native command producer across user and project activation', async () => {
     await git(isolated.layout.fixtureCwd, ['init']);
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), { ...baseManifest,
-      marketplace: { ...baseManifest.marketplace, policy: { ...baseManifest.marketplace.policy, products: ['CLAUDE'] } },
+      platforms: ['claude'],
       artifacts: { targets: [{ id: 'provider', platform: 'claude', target: 'claude.skill', scopes: ['user', 'project'], states: ['present'], refreshKeys: [], skillKey: 'provider' }] },
       managedCommands: { sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'provider' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'scripts/tool.mjs' }] }] },
     });
@@ -192,28 +214,28 @@ describe('managed command plugin lifecycle', () => {
     const plugin = await readFixture();
     const { integration } = integrationFor();
     const common = { plugin, platform: 'claude' as const, cwd: isolated.layout.fixtureCwd,
-      catalog: { rootDir: isolated.layout.fixtureCwd, source: 'local' } as CatalogResolution };
+      marketplaceRoot: path.join(isolated.layout.awHomeDir, 'marketplaces', 'fixture'), marketplaceName: 'aw-fixture',
+      catalog: { rootDir: path.dirname(path.dirname(plugin.rootDir)), source: 'local' } as CatalogResolution };
     for (const scope of ['user', 'project'] as const) {
       const target = await integration.buildTarget({ ...common, scope, command: 'install' });
-      await integration.driver.writeArtifacts(target);
+      const result = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
+      expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     }
     const commands = (await listManagedCommands(isolated.env)).commands;
-    expect(commands).toHaveLength(2);
-    const user = commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.scope === 'user')!;
-    const project = commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.scope === 'project')!;
-    expect(user.id).not.toBe(project.id);
-    expect(user.resourceRoot).not.toBe(project.resourceRoot);
+    expect(commands).toHaveLength(1);
+    const user = commands[0]!;
+    expect(user.owner).toMatchObject({ kind: 'plugin', producer: { platform: 'claude', scope: 'user' } });
     const cleanup = await integration.buildTarget({ ...common, scope: 'project', command: 'cleanup' });
     const result = await executeRebuildOperation({ command: 'cleanup', target: cleanup, driver: integration.driver });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect((await listManagedCommands(isolated.env)).commands.map((command) => command.id)).toEqual([user.id]);
-    expect(await runManagedCommand({ id: user.id, args: ['user-still-independent'], cwd: isolated.layout.fixtureCwd, cliEntry: import.meta.filename, env: isolated.env })).toBe(0);
+    expect(await runManagedCommand({ id: user.id, args: ['user-still-active'], cwd: isolated.layout.fixtureCwd, cliEntry: import.meta.filename, env: isolated.env })).toBe(0);
   });
 
-  // Protects executable source modes across the real bundle, operation snapshot, owned writer, and runner.
-  it.skipIf(process.platform === 'win32')('runs an executable sourceDir command after installation and reinstall', async () => {
+  // Protects executable modes and shared Native resources when offline cleanup removes only activation.
+  it.skipIf(process.platform === 'win32')('keeps a shared Native sourceDir command runnable after reinstall and offline activation cleanup', async () => {
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), { ...baseManifest,
-      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' }, scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'provider', sourceDirs: ['./skills/provider'] }] },
+      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'provider', sourceDirs: ['./skills/provider'] }] },
       managedCommands: { sets: [{ set: 'shell', producer: { kind: 'artifact', artifactId: 'provider' }, mode: 'static', entries: [{ key: 'run', runner: 'executable', entry: 'scripts/run.sh', args: ['preserved-mode'] }] }] },
     });
     for (const [relative, content] of Object.entries(skillFiles)) {
@@ -222,10 +244,8 @@ describe('managed command plugin lifecycle', () => {
     await fs.outputFile(path.join(pluginRoot, 'skills', 'provider', 'scripts', 'run.sh'), '#!/bin/sh\nprintf "%s" "$1" > "$CAPTURE_FILE"\n');
     await fs.chmod(path.join(pluginRoot, 'skills', 'provider', 'scripts', 'run.sh'), 0o755);
     await fs.outputFile(path.join(pluginRoot, 'render.mjs'), "console.log(JSON.stringify({version:2,artifacts:[{id:'provider',target:'codex.skill',kind:'skill',platform:'codex',state:'present',skillKey:'provider',refreshKeys:[],content:{files:{}}}]}));\n");
-    const sourcePlugin = await readFixture();
-    const bundleRoot = path.join(isolated.layout.fixtureCwd, 'bundle');
-    await bundleLocalPlugin(sourcePlugin, bundleRoot, { commandEnv: isolated.env });
-    const plugin = { ...await readPluginManifest(bundleRoot, { mode: 'bundle' }), sourceId: 'fixture', sourceIdentity, pluginId: 'fixture/managed-lifecycle' };
+    const plugin = await readFixture();
+    const bundleRoot = path.dirname(path.dirname(plugin.rootDir));
     for (const command of ['install', 'reinstall'] as const) {
       await execute(plugin, command);
       const installed = (await listManagedCommands(isolated.env)).commands[0]!;
@@ -237,10 +257,27 @@ describe('managed command plugin lifecycle', () => {
     await fs.remove(pluginRoot);
     await fs.remove(bundleRoot);
     const cleaned = await cleanupFixture({ catalogBootstrapError: new Error('Catalog is offline for this recovery test.'), codexManager: SYSTEM_CODEX_MANAGER,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: '{"installed":[],"available":[]}', stderr: '' }) });
+      nativeCliRunner: codexRuntime.nativeCliRunner });
     expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
-    expect(cleaned.commandResults?.flatMap((result) => result.removedCommandIds)).toContain(installedId);
-    expect((await listManagedCommands(isolated.env)).commands).toEqual([]);
+    const remaining = (await listManagedCommands(isolated.env)).commands;
+    expect(cleaned.commandResults?.flatMap((result) => result.removedCommandIds)).toEqual([]);
+    expect(remaining.map((command) => command.id)).toEqual([installedId]);
+    expect(remaining[0]).toMatchObject({ availability: 'ready', owner: { kind: 'plugin', producer: {
+      kind: 'artifact', platform: 'codex', scope: 'user', projectRoot: null,
+      sourceId: 'fixture', sourceIdentity, pluginName: 'managed-lifecycle', key: 'provider',
+    } } });
+    const publicConfig = await readCodexConfigFile(path.join(isolated.env.CODEX_HOME!, 'config.toml'));
+    expect(publicConfig.snapshot.plugins['managed-lifecycle@aw-fixture']?.enabled).toBe(false);
+    expect(codexRuntime.installed.get('managed-lifecycle@aw-fixture')).toBe(plugin.manifest.version);
+    const nativeSkillRoot = path.join(isolated.layout.awHomeDir, 'marketplaces', 'fixture',
+      'plugins', 'managed-lifecycle', 'codex', 'skills', 'provider');
+    await expect(fs.pathExists(path.join(nativeSkillRoot, 'SKILL.md'))).resolves.toBe(true);
+    await expect(fs.readJson(path.join(nativeSkillRoot, '.aw-command-producer.json'))).resolves.toMatchObject({
+      producer: remaining[0]!.owner.kind === 'plugin' ? remaining[0]!.owner.producer : undefined,
+    });
+    expect(await runManagedCommand({ id: installedId, args: [], cwd: isolated.layout.fixtureCwd,
+      cliEntry: import.meta.filename, env: isolated.env })).toBe(0);
+    expect(await fs.readFile(capturePath, 'utf8')).toBe('preserved-mode');
   });
 
   // Protects exact partial renderer requests and retention from verified producer content, including old launch values.
@@ -294,7 +331,7 @@ describe('managed command plugin lifecycle', () => {
     const tracePath = path.join(isolated.layout.fixtureCwd, 'renderer-contexts.jsonl');
     await fs.outputFile(path.join(pluginRoot, 'tools', 'tool.mjs'), tool);
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), { ...baseManifest,
-      artifacts: { targets: ['codex', 'claude'].map((platform) => ({ id: `${platform}-consumer`, platform, target: `${platform}.skill`, ...(platform === 'codex' ? { delivery: { mode: 'aw-extension' } } : {}), scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: `${platform}-consumer` })) },
+      artifacts: { targets: ['codex', 'claude'].map((platform) => ({ id: `${platform}-consumer`, platform, target: `${platform}.skill`, scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: `${platform}-consumer` })) },
       managedCommands: { packages: [{ key: 'shared', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './tools', render: true }], sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'shared' }, mode: 'dynamic', refreshKeys: [] }] },
     });
     await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
@@ -313,13 +350,13 @@ describe('managed command plugin lifecycle', () => {
         const result = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
         expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
       } else {
-        // This fixture covers the AW-owned Skill writer; native Claude installation has separate fake-native tests.
-        await integration.driver.writeArtifacts(target);
+        const result = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
+        expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
       }
     }
     const traces = (await fs.readFile(tracePath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
     const packageTraces = traces.filter((entry) => (entry.surface as {kind:string}).kind === 'aw');
-    expect(packageTraces).toEqual([{ surface: { kind: 'aw', name: 'managed-commands' }, commandSources: [{ packageKey: 'shared', sourceDir: path.join(pluginRoot, 'tools') }] }]);
+    expect(packageTraces).toEqual([{ surface: { kind: 'aw', name: 'managed-commands' }, commandSources: [{ packageKey: 'shared', sourceDir: path.join(plugin.rootDir, 'tools') }] }]);
     expect(context.commandResults?.filter((entry) => entry.producer.kind === 'package')).toHaveLength(1);
     const command = (await listManagedCommands(isolated.env)).commands[0]!;
     expect(command.owner).toMatchObject({ kind: 'plugin', producer: { platform: null, scope: 'user' } });

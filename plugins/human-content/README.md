@@ -5,7 +5,8 @@
 安装到 Codex 和 Claude Code：
 
 ```bash
-aw install human-content --scope user --target codex --target claude-code
+aw plugin targets set codex claude
+aw plugin install human-content --scope user
 ```
 
 例如：

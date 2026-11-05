@@ -31,8 +31,7 @@ export type PermissionCommands = (string | ManagedCommandPermission)[]
  */
 export type ArtifactTarget = ({
 id: string
-platform?: ("codex" | "claude")
-distribution?: "agent-skills"
+platform: "codex"
 scopes: ("user" | "project")[]
 target: "codex.skill"
 kind?: ("instruction" | "codexRole" | "skill")
@@ -40,7 +39,6 @@ projectManagedKind?: ("skill" | "mcpServer" | "instruction" | "permission" | "ho
 states: ("present" | "disabled")[]
 refreshKeys: StringArray
 requiresCodexProjectConfig?: boolean
-delivery: CodexSkillDelivery
 roleKey?: string
 skillKey?: string
 sourceDirs?: StringArray
@@ -48,10 +46,9 @@ runtimeImports?: ArtifactRuntimeImports
 runtimeConfig?: RuntimeConfig
 } | {
 id: string
-platform?: ("codex" | "claude")
-distribution?: "agent-skills"
+platform: "codex"
 scopes: ("user" | "project")[]
-target: ("codex.developerInstructionsBlock" | "codex.agentRole" | "claude.skill" | "agent-skills.skill")
+target: ("codex.developerInstructionsBlock" | "codex.agentRole")
 kind?: ("instruction" | "codexRole" | "skill")
 projectManagedKind?: ("skill" | "mcpServer" | "instruction" | "permission" | "hook" | "agent")
 states: ("present" | "disabled")[]
@@ -62,17 +59,37 @@ skillKey?: string
 sourceDirs?: StringArray
 runtimeImports?: ArtifactRuntimeImports
 runtimeConfig?: RuntimeConfig
-})
-/**
- * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "codexSkillDelivery".
- */
-export type CodexSkillDelivery = ({
-mode: "codex-native"
-identity: "shared"
-renderProfile: "user"
 } | {
-mode: "aw-extension"
+id: string
+platform: "claude"
+scopes: ("user" | "project")[]
+target: "claude.skill"
+kind?: ("instruction" | "codexRole" | "skill")
+projectManagedKind?: ("skill" | "mcpServer" | "instruction" | "permission" | "hook" | "agent")
+states: ("present" | "disabled")[]
+refreshKeys: StringArray
+requiresCodexProjectConfig?: boolean
+roleKey?: string
+skillKey?: string
+sourceDirs?: StringArray
+runtimeImports?: ArtifactRuntimeImports
+runtimeConfig?: RuntimeConfig
+} | {
+id: string
+platform: ("antigravity" | "cursor" | "opencode" | "pi" | "generic")
+distribution: "agent-skills"
+scopes: ("user" | "project")[]
+target: "agent-skills.skill"
+kind?: ("instruction" | "codexRole" | "skill")
+projectManagedKind?: ("skill" | "mcpServer" | "instruction" | "permission" | "hook" | "agent")
+states: ("present" | "disabled")[]
+refreshKeys: StringArray
+requiresCodexProjectConfig?: boolean
+roleKey?: string
+skillKey?: string
+sourceDirs?: StringArray
+runtimeImports?: ArtifactRuntimeImports
+runtimeConfig?: RuntimeConfig
 })
 export type Capabilities = string[]
 /**
@@ -154,7 +171,7 @@ fallback: CommandName
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "config".
  */
-export type Config = (ConfigV2 | ConfigV3 | ConfigV4)
+export type Config = (ConfigV2 | ConfigV3 | ConfigV4 | ConfigV5)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configField".
@@ -256,6 +273,7 @@ schemaVersion: 3
 name: string
 version: Semver
 description: string
+platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "generic")[]
 /**
  * @maxItems 64
  */
@@ -265,7 +283,6 @@ skills?: PluginPath
 slashCommands?: PluginPath
 mcpServers?: PluginPath
 apps?: PluginPath
-distributions?: Distributions
 marketplace: Marketplace
 interface?: Interface
 extensions?: Extensions
@@ -287,15 +304,6 @@ capabilities?: string[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "distributions".
- */
-export interface Distributions {
-agentSkills?: {
-skills?: PluginPath
-}
-}
-/**
- * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "marketplace".
  */
 export interface Marketplace {
@@ -305,7 +313,6 @@ strict: boolean
 policy: {
 installation: ("AVAILABLE" | "NOT_AVAILABLE" | "INSTALLED_BY_DEFAULT")
 authentication: ("ON_INSTALL" | "ON_USE")
-products?: string[]
 }
 }
 /**
@@ -538,8 +545,13 @@ vars: {
 include: StringArray
 }
 fileRules?: {
-claude?: FileRules
 codex?: FileRules
+claude?: FileRules
+antigravity?: FileRules
+cursor?: FileRules
+opencode?: FileRules
+pi?: FileRules
+generic?: FileRules
 }
 manifestOverrides?: {
 claude?: {
@@ -566,15 +578,14 @@ env: string
 skillRuntimeFiles?: {
 skill: string
 target: string
-platforms?: ("codex" | "claude")[]
-distributions?: ("agent-skills")[]
+platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "generic")[]
 source?: string
 import?: ImportReference
 }[]
 generatedSkillRuntimeFiles?: {
 skill: string
 target: string
-distributions?: ("agent-skills")[]
+platforms?: ("codex" | "claude" | "antigravity" | "cursor" | "opencode" | "pi" | "generic")[]
 }[]
 }
 /**
@@ -582,8 +593,13 @@ distributions?: ("agent-skills")[]
  * via the `definition` "platformTemplateValue".
  */
 export interface PlatformTemplateValue {
-claude: (string | boolean)
-codex: (string | boolean)
+codex?: (string | boolean)
+claude?: (string | boolean)
+antigravity?: (string | boolean)
+cursor?: (string | boolean)
+opencode?: (string | boolean)
+pi?: (string | boolean)
+generic?: (string | boolean)
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -1165,32 +1181,15 @@ missing: string
  * via the `definition` "configV4".
  */
 export interface ConfigV4 {
-fields: {
-[k: string]: ConfigV4Field
-}
-presentation?: {
-groups?: {
-id: string
-title: string
-description?: string
-fields: StringArray
-advanced?: boolean
-}[]
-summaries?: {
-[k: string]: ConfigJoinSummary
-}
-fieldViews?: {
-[k: string]: ({
-summary: string
-} | {
-itemSummary: string
-})
-}
-}
+fields: Fields
+presentation?: Presentation
 schemaVersion: 4
 definitions?: {
 [k: string]: ConfigV4Field
 }
+}
+export interface Fields {
+[k: string]: ConfigV4Field
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -1546,4 +1545,55 @@ title?: string
 description?: string
 default?: (ConfigScalar | ConfigV4ArrayValue | ConfigV4ObjectValue)
 required?: boolean
+}
+export interface Presentation {
+groups?: {
+id: string
+title: string
+description?: string
+fields: StringArray
+advanced?: boolean
+}[]
+summaries?: {
+[k: string]: ConfigJoinSummary
+}
+fieldViews?: {
+[k: string]: ({
+summary: string
+} | {
+itemSummary: string
+})
+}
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configV5".
+ */
+export interface ConfigV5 {
+fields: Fields
+presentation?: Presentation
+schemaVersion: 5
+definitions?: {
+[k: string]: ConfigV4Field
+}
+platforms?: {
+codex?: ConfigPlatformProfile
+claude?: ConfigPlatformProfile
+antigravity?: ConfigPlatformProfile
+cursor?: ConfigPlatformProfile
+opencode?: ConfigPlatformProfile
+pi?: ConfigPlatformProfile
+generic?: ConfigPlatformProfile
+}
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configPlatformProfile".
+ */
+export interface ConfigPlatformProfile {
+definitions?: {
+[k: string]: ConfigV4Field
+}
+fields?: Fields
+presentation?: Presentation
 }

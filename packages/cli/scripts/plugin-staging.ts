@@ -46,7 +46,7 @@ export {
   scanNodeImportContract,
 } from '../src/utils/plugin-script-contract.js';
 export {
-  formatMarketplaceProductsForError,
+  formatManifestPlatformsForError,
   formatSupportedPlatforms,
   resolveSupportedPlatforms,
 } from '../src/utils/platform-support.js';

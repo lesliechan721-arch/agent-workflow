@@ -5,12 +5,14 @@
   },
   "profiles": {
     "project-default": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "git-toolkit": {}
       }
     },
     "user-default": {
+      "platform": "codex",
       "scope": "user",
       "plugins": {
         "git-toolkit": {}

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let manifestRoot = root;
 let skillsRoot = path.join(root, 'skills');
+let bundled = false;
 if (process.env.AW_PLUGIN_CONTEXT) {
   const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
   assert.equal(context.event, 'test');
@@ -14,6 +15,7 @@ if (process.env.AW_PLUGIN_CONTEXT) {
   assert.ok(['codex', 'claude'].includes(context.platform));
   manifestRoot = context.plugin.rootDir;
   skillsRoot = path.join(context.plugin.rootDir, context.platform, 'skills');
+  bundled = true;
 }
 
 test('public package and self-contained reading resources are present', async () => {
@@ -21,12 +23,15 @@ test('public package and self-contained reading resources are present', async ()
   assert.equal(m.schemaVersion, 3);
   assert.equal(m.name, 'human-content');
   assert.equal(m.skills, './skills');
-  // Portable dependency consumers require this declaration in the built bundle.
-  assert.equal(typeof m.distributions?.agentSkills?.skills, 'string');
-  const portableRoot = path.resolve(manifestRoot, m.distributions.agentSkills.skills);
-  assert.ok(portableRoot.startsWith(`${manifestRoot}${path.sep}`));
-  for (const relative of ['SKILL.md', 'README.md', 'references/faithful-presentation.md']) {
-    await access(path.join(portableRoot, 'explain-for-review', relative));
+  assert.deepEqual(m.platforms, ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic']);
+  assert.equal(Object.hasOwn(m, 'distributions'), false);
+  const runtimeRoots = bundled ? m.platforms.map((platform) => path.join(manifestRoot, platform, 'skills'))
+    : [path.resolve(manifestRoot, m.skills)];
+  for (const runtimeRoot of runtimeRoots) {
+    assert.ok(runtimeRoot.startsWith(`${manifestRoot}${path.sep}`));
+    for (const relative of ['SKILL.md', 'README.md', 'references/faithful-presentation.md']) {
+      await access(path.join(runtimeRoot, 'explain-for-review', relative));
+    }
   }
   assert.deepEqual(m.interface.capabilities, ['Skills']);
   const names = await readdir(skillsRoot);

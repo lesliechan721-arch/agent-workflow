@@ -1,4 +1,5 @@
 import type { ConfigReferenceContext, ConfigReferenceDraft } from './config-references.js';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 import crypto from 'node:crypto';
 
 import type {
@@ -11,10 +12,10 @@ import type {
   CommandProducerResult,
   DependencyScopeOverride,
   PlatformName,
+  PlatformTarget,
   Scope,
 } from '../types.js';
 import type { PortableReview, PortableInstallReceipt, PortableRetryReview } from '../portable/commands.js';
-import { SkillsCliError } from '../portable/skills-cli.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -51,6 +52,9 @@ import { buildOperationResultModel } from '../commands/operation-planner.js';
 import { buildOperationReviewProjection } from './operation-review-planner.js';
 import {
   type ConfigPageViewModel,
+  type ConfigProfileOptions,
+  type ConfigReadOptions,
+  type ConfigProfileKey,
   type ConfigGroupViewModel,
   buildTuiViewModel,
   dependencyPlacementTargets,
@@ -307,7 +311,8 @@ export interface ConfigOperationChange {
 
 export interface ConfigSaveBatchGroup {
   editEvidence?: Record<string, import('./model.js').ConfigEditEvidence>;
-  scope: Scope;
+  scope?: 'user';
+  platform?: PlatformTarget;
   updates?: Record<string, unknown>;
   removeKeys?: string[];
   sensitiveKeys?: string[];
@@ -316,7 +321,8 @@ export interface ConfigSaveBatchGroup {
 }
 
 export interface ConfigSaveBatchGroupResult {
-  scope: Scope;
+  scope: 'user';
+  platform?: PlatformTarget;
   status: 'succeeded' | 'failed';
   configSaved: boolean;
   applyRequested: boolean;
@@ -328,6 +334,12 @@ export interface ConfigSaveBatchGroupResult {
 export interface ConfigSaveBatchExecutionResult {
   status: 'succeeded' | 'partial' | 'failed';
   groups: ConfigSaveBatchGroupResult[];
+}
+
+export interface ConfigDraftSaveResult {
+  status: 'succeeded' | 'partial' | 'failed';
+  savedProfiles: ConfigProfileKey[];
+  failedProfiles: Array<{ profile: ConfigProfileKey; errorCode?: string }>;
 }
 
 export interface IssueOrigin {
@@ -381,10 +393,14 @@ export type OperationIntent =
   | {
       kind: 'configSave';
       pluginId: string;
-      scope: Scope;
+      scope?: 'user';
+      platform?: PlatformTarget;
+      context?: Scope;
       apply: boolean;
+      targets?: PlatformTarget[];
       scriptTimeoutMs?: number;
       retryApply?: true;
+      editEvidence?: Record<string, import('./model.js').ConfigEditEvidence>;
       updates?: Record<string, unknown>;
       removeKeys?: string[];
       sensitiveKeys?: string[];
@@ -394,6 +410,7 @@ export type OperationIntent =
   | {
       kind: 'configSaveBatch';
       pluginId: string;
+      context?: Scope;
       apply: boolean;
       scriptTimeoutMs?: number;
       groups: ConfigSaveBatchGroup[];
@@ -401,7 +418,9 @@ export type OperationIntent =
   | {
       kind: 'configReset';
       pluginId: string;
-      scope: Scope;
+      scope?: 'user';
+      platform?: PlatformTarget;
+      context?: Scope;
       expectedStoreState?: 'invalid';
       changes?: ConfigOperationChange[];
     }
@@ -428,12 +447,18 @@ export type OperationIntent =
   | { kind: 'catalogStorePrune' };
 
 export interface ConfigOperationEvidence {
-  scope: Scope;
+  scope: 'user';
+  platform?: PlatformTarget;
+  context?: Scope;
   schemaIdentity?: string;
   storeDigest: string;
   impactState?: 'known' | 'unknown';
   noEffectiveChange?: true;
-  affectedTargets: Array<{ pluginName?: string; platform: PlatformName; scope: Scope }>;
+  affectedTargets: Array<{ pluginName?: string; platform: PlatformTarget; scope: Scope }>;
+  applyEvidence?: unknown;
+  applyChanges?: string[];
+  applyWarnings?: string[];
+  applyBlockers?: Array<{ code: string; message: string }>;
   commandPackages?: PluginConfigMutationImpact['affectedCommandPackages'];
   preApplyAuthorization?: PreApplyAuthorizationTarget[];
   sharedNativeRenderTargets?: Array<{ id: string; pluginName?: string; skillKey: string; refreshKeys: string[]; platform?: PlatformName }>;
@@ -475,7 +500,8 @@ export interface OperationEvidence {
   config?: ConfigOperationEvidence;
   configBatch?: {
     groups: Array<{
-      scope: Scope;
+      scope: 'user';
+      platform?: PlatformTarget;
       config: ConfigOperationEvidence;
       targetFingerprint: string;
     }>;
@@ -483,7 +509,9 @@ export interface OperationEvidence {
   resetTarget?: {
     sourceId: string;
     pluginName: string;
-    scope: Scope;
+    scope: 'user';
+    platform?: PlatformTarget;
+    context?: Scope;
     kind: 'absent' | 'regularFile' | 'symbolicLink' | 'directory';
     fingerprint: string;
   };
@@ -705,10 +733,20 @@ export interface OperationResultSummary {
   configApplied?: boolean;
   configApplySkippedReason?: 'invalidConfig';
   configScope?: Scope;
+  configPlatform?: PlatformTarget;
+  configContext?: Scope;
+  configTargets?: Array<{
+    pluginId?: string;
+    platform: PlatformTarget;
+    scope: Scope;
+    state: 'completed' | 'kept' | 'failed' | 'skipped';
+    errorCode?: string;
+  }>;
   configApplyRetryAvailable?: boolean;
   configRetryApply?: boolean;
   configGroups?: Array<{
     scope: Scope;
+    platform?: PlatformTarget;
     configSaved: boolean;
     applyRequested: boolean;
     applyStatus: ConfigSaveBatchGroupResult['applyStatus'];
@@ -846,6 +884,11 @@ export interface SourceReferenceSummaryViewModel {
 }
 
 export interface TuiControllerDependencies {
+  readAgentSettings?: () => Promise<import('./agent-settings.js').AgentSettings>;
+  previewAgentSettings?: (preferences: import('../intent/deployment-preferences.js').DeploymentPreferences,
+    pluginId?: string) => Promise<import('./agent-settings.js').AgentSettingsPreview>;
+  saveAgentSettings?: (request: Parameters<typeof import('./agent-settings.js').saveAgentSettings>[1]) =>
+    Promise<import('./agent-settings.js').AgentSettings>;
   beginCatalogSession?: (options?: {
     reuseValidatedGenerations?: boolean;
   }) => void;
@@ -855,7 +898,7 @@ export interface TuiControllerDependencies {
     scope: Scope;
     kind: 'recovery'; command?: RecoveryCommand; selectors: string[];
     exactTargets?: Array<{ pluginId: string; agent: AgentId }>;
-    targets?: AgentId[]; force?: boolean; refresh?: boolean;
+    targets?: AgentId[]; force?: boolean; refresh?: boolean; retireUnselectedTargets?: boolean;
     dependencyScopeOverrides?: DependencyScopeOverride[];
     saveDependencyScopeOverrides?: boolean; scriptTimeoutMs?: number;
   } | { scope: Scope; kind: 'targets'; action: 'set' | 'reset'; agents: string[] }
@@ -898,20 +941,20 @@ export interface TuiControllerDependencies {
   ) => Promise<unknown>;
   getConfigGroups?: (
     pluginId: string,
-    layer: { scope: Scope },
+    options: ConfigReadOptions,
     signal: AbortSignal,
   ) => Promise<ConfigGroupViewModel[]>;
   getConfigPage?: (
     pluginId: string,
-    layer: { scope: Scope | 'effective' },
+    options: ConfigReadOptions,
     signal: AbortSignal,
   ) => Promise<ConfigPageViewModel>;
   getConfigReferenceContext?: (
-    pluginId: string, scope: Scope, draft: ConfigReferenceDraft, signal: AbortSignal,
+    pluginId: string, options: ConfigProfileOptions, draft: ConfigReferenceDraft, signal: AbortSignal,
   ) => Promise<ConfigReferenceContext>;
   getConfigResetAvailability?: (
     pluginId: string,
-    layer: { scope: Scope },
+    options: ConfigProfileOptions,
     signal: AbortSignal,
   ) => Promise<ConfigResetAvailability>;
   logError?: (
@@ -1052,8 +1095,10 @@ function canonicalPluginWriteTaskTargets(
 }
 
 function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
-  if (intent.kind === 'configSave' && intent.retryApply && !intent.apply) {
-    return { ...intent, apply: true };
+  if (intent.kind === 'configSave' || intent.kind === 'configReset' || intent.kind === 'configSaveBatch') {
+    return { ...intent, context: intent.context ?? 'user',
+      ...(intent.kind === 'configSave' ? { scope: 'user' as const,
+        apply: intent.retryApply ? true : intent.apply } : {}) };
   }
   if (intent.kind === 'pluginWriteTask') {
     return { ...intent, targets: canonicalPluginWriteTaskTargets(intent.targets) };
@@ -1571,7 +1616,7 @@ export class TuiController {
     promise: Promise<OperationExecuteResult>;
   }>();
   readonly #pendingReads = new Set<Promise<unknown>>();
-  #readCleanupError?: SkillsCliError | NativeCliError;
+  #readCleanupError?: NativeCliError;
   readonly #pluginContent = new Map<string, PluginContentOverview>();
   readonly #pluginContentInflight = new Map<string, Promise<void>>();
   #pluginContentEpoch = 0;
@@ -1615,6 +1660,7 @@ export class TuiController {
     | { kind: 'recoveryReview'; plan: ScopedTuiPlan }
     | { kind: 'targets'; changed: boolean; agents: AgentId[] }
   > };
+  #configSaveInflight?: Promise<ConfigDraftSaveResult>;
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
   #recoverablePortableDraft?: TuiControllerSnapshot['portableDraft'];
@@ -1754,7 +1800,8 @@ export class TuiController {
   }
 
   get hasActiveWrite(): boolean {
-    return this.#inflightOperations.size > 0 || this.#scopedTaskInflight !== undefined;
+    return this.#inflightOperations.size > 0 || this.#scopedTaskInflight !== undefined
+      || this.#configSaveInflight !== undefined;
   }
 
   get retiring(): boolean {
@@ -1835,10 +1882,9 @@ export class TuiController {
 
   #trackRead<T>(promise: Promise<T>): Promise<T> {
     const tracked = promise.catch(async (error: unknown) => {
-      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed'
-        || error instanceof NativeCliError && error.cleanupError) {
+      if (error instanceof NativeCliError && error.cleanupError) {
         this.#readCleanupError ??= error;
-        await this.#logErrorSafe(error, error instanceof SkillsCliError ? error.code : issueCode(error));
+        await this.#logErrorSafe(error, issueCode(error));
       }
       throw error;
     });
@@ -1859,6 +1905,7 @@ export class TuiController {
         [
           ...[...this.#inflightOperations.values()].map((operation) => operation.promise),
           ...(this.#scopedTaskInflight ? [this.#scopedTaskInflight.promise] : []),
+          ...(this.#configSaveInflight ? [this.#configSaveInflight] : []),
         ],
       );
     }
@@ -2004,7 +2051,9 @@ export class TuiController {
           stage,
           fallbackCode: code,
           sensitiveValues,
-          ...(intent && 'pluginId' in intent && 'platform' in intent && intent.platform !== 'both'
+          ...(intent && 'pluginId' in intent && 'platform' in intent
+            && (intent.platform === 'codex' || intent.platform === 'claude')
+            && (intent.scope === 'user' || intent.scope === 'project')
             ? { target: { pluginId: intent.pluginId, platform: intent.platform, scope: intent.scope } }
             : {}),
         })],
@@ -2142,6 +2191,11 @@ export class TuiController {
       portablePluginIds: this.#status.portablePluginIds,
       configStoreInventory: this.#status.configStoreInventory,
     });
+    for (const issue of this.#viewModel.issues) {
+      // Cross-scope recovery needs separate Intent, cleanup, and sync reviews.
+      issue.actions = issue.actions.filter((action) =>
+        action.id !== 'keepProjectScope' && action.id !== 'keepUserScope');
+    }
     for (const scope of ['user', 'project'] as const) {
       const recovery = this.#status.scopedRecovery?.[scope];
       if (!recovery) {
@@ -2581,6 +2635,24 @@ export class TuiController {
     }
   }
 
+  async readAgentSettings(): Promise<import('./agent-settings.js').AgentSettings> {
+    if (!this.dependencies.readAgentSettings) throw new Error('agentSettingsUnavailable');
+    return this.#trackRead(this.dependencies.readAgentSettings());
+  }
+
+  async previewAgentSettings(preferences: import('../intent/deployment-preferences.js').DeploymentPreferences,
+    pluginId?: string): Promise<import('./agent-settings.js').AgentSettingsPreview> {
+    if (!this.dependencies.previewAgentSettings) throw new Error('agentSettingsUnavailable');
+    return this.#trackRead(this.dependencies.previewAgentSettings(preferences, pluginId));
+  }
+
+  async saveAgentSettings(request: Parameters<typeof import('./agent-settings.js').saveAgentSettings>[1]):
+    Promise<import('./agent-settings.js').AgentSettings> {
+    this.#assertAcceptingActions();
+    if (this.hasActiveWrite || !this.dependencies.saveAgentSettings) throw new Error('agentSettingsUnavailable');
+    return this.dependencies.saveAgentSettings(request);
+  }
+
   cancelScopedPreparation(): void { this.#scopedPreparationAbort?.abort(); }
 
   async discardScopedPlan(plan: ScopedTuiPlan): Promise<void> {
@@ -2685,10 +2757,6 @@ export class TuiController {
         selectedSkills: [],
       }, signal)),
     })));
-    const cleanupFailure = prepared.find((entry): entry is PromiseRejectedResult =>
-      entry.status === 'rejected' && entry.reason instanceof SkillsCliError
-      && entry.reason.code === 'portableSkillsCliCleanupFailed');
-    if (cleanupFailure) throw cleanupFailure.reason;
     const available = prepared.flatMap((entry) =>
       entry.status === 'fulfilled' && entry.value.evidence.portable ? [entry.value] : []);
     if (available.length === 0) {
@@ -2978,12 +3046,12 @@ export class TuiController {
     this.#publish();
   }
 
-  beginConfigFlow(pluginId: string): void {
+  beginConfigFlow(pluginId: string, options: ConfigProfileOptions = {}): void {
     this.#router.beginConfigFlow(pluginId);
     this.#router.push({
       name: 'configFields',
       pluginId,
-      layer: { scope: 'effective' },
+      layer: { profile: options.platform ?? 'common', context: options.context ?? 'user' },
     });
     this.#publish();
   }
@@ -3002,8 +3070,9 @@ export class TuiController {
     if (this.#activeReview) this.#tickets.delete(this.#activeReview.reviewToken);
     this.#activeReview = undefined;
     this.#router.beginFlow('configEdit', route, this.#router.snapshot.currentFrameId, current.context);
-    this.#router.push({ name: 'configFields', pluginId, layer: { scope: 'effective' } });
-    this.#router.push({ name: 'configFieldEditor', pluginId, layer: { scope: 'effective' }, fieldKey, editor: 'array', mode: 'choices' });
+    const layer = ('layer' in route ? route.layer : undefined) ?? { profile: 'common' as const, context: 'user' as const };
+    this.#router.push({ name: 'configFields', pluginId, layer });
+    this.#router.push({ name: 'configFieldEditor', pluginId, layer, fieldKey, editor: 'array', mode: 'choices' });
     this.#publish();
   }
 
@@ -3018,9 +3087,7 @@ export class TuiController {
       name: 'configUnavailable',
       pluginId,
       storedScopes: plugin.savedConfigScopes,
-      ...(plugin.savedConfigScopes.length === 1
-        ? { layer: { scope: plugin.savedConfigScopes[0]! } }
-        : {}),
+      layer: { profile: 'common', context: 'user' },
       diagnosticCode: 'catalogSourceUnavailable',
       diagnosticStage: 'read-config',
     });
@@ -3041,11 +3108,11 @@ export class TuiController {
         '来源恢复只能从不可用的设置流程开始。',
       );
     }
-    const layer = route.layer?.scope ?? route.resumeRoute?.layer.scope ?? 'effective';
+    const layer = route.layer ?? route.resumeRoute?.layer ?? { profile: 'common' as const, context: 'user' as const };
     const returnTarget: ConfigResumeRoute = route.resumeRoute ?? {
       name: 'configFields',
       pluginId: route.pluginId,
-      layer: { scope: layer },
+      layer,
     };
     this.#router.beginFlow('sourceRecovery', returnTarget, undefined, route.resumeContext);
     this.#router.push({ name: 'sourceDetail', sourceId });
@@ -3063,8 +3130,8 @@ export class TuiController {
     };
     try {
       const prepared = await this.prepareScopedTask({ kind: 'recovery', command: 'cleanup',
-        scope, selectors: [pluginId], targets: [platform === 'claude' ? 'claude-code' : 'codex'],
-        exactTargets: [{ pluginId, agent: platform === 'claude' ? 'claude-code' : 'codex' }], force: true });
+        scope, selectors: [pluginId], targets: [platform === 'claude' ? 'claude' : 'codex'],
+        exactTargets: [{ pluginId, agent: platform === 'claude' ? 'claude' : 'codex' }], force: true });
       if (prepared.kind !== 'recovery') return undefined;
       try {
         const candidate = prepared.plan.nativeGroups.flatMap((group) =>
@@ -3081,7 +3148,7 @@ export class TuiController {
   }
 
   startForceCleanupReview(candidate: ForceCleanupCandidate): Promise<ScopedTuiPlan> {
-    const agent = candidate.platform === 'claude' ? 'claude-code' : 'codex';
+    const agent = candidate.platform === 'claude' ? 'claude' : 'codex';
     return this.prepareScopedTask({ kind: 'recovery', command: 'cleanup',
       scope: candidate.scope, selectors: [candidate.pluginId], targets: [agent],
       exactTargets: [{ pluginId: candidate.pluginId, agent }], force: true });
@@ -3579,6 +3646,8 @@ export class TuiController {
   }): PluginListItemViewModel[] {
     const query = options.query?.trim().toLocaleLowerCase('en');
     const actualScopes = new Map<string, Set<Scope>>();
+    const portableObservedScopes = new Set<Scope>();
+    const uncertainPortablePlugins = new Set<string>();
     const statusTargets = flattenStatusTargets(this.#status?.payload.targets ?? []);
     const targetsByPlugin = new Map<string, StatusScopedTarget[]>();
     for (const target of statusTargets) {
@@ -3598,14 +3667,37 @@ export class TuiController {
       scopes.add(target.scope);
       actualScopes.set(target.pluginId, scopes);
     }
+    for (const inventory of Object.values(this.#scopedInventories)) {
+      if (inventory.coverage?.portable) {
+        for (const scope of inventory.coverage.scopes ?? [inventory.scope]) portableObservedScopes.add(scope);
+      }
+      for (const root of [...inventory.declaredRoots, ...inventory.extraInstalledRoots]) {
+        for (const plugin of [root, ...root.dependencies]) {
+          for (const target of plugin.targets) {
+            if (target.delivery !== 'agent-skills') continue;
+            if (target.actual !== true) {
+              if (target.observation !== 'known') uncertainPortablePlugins.add(plugin.pluginId);
+              continue;
+            }
+            const scopes = actualScopes.get(plugin.pluginId) ?? new Set<Scope>();
+            scopes.add(target.scope);
+            actualScopes.set(plugin.pluginId, scopes);
+          }
+        }
+      }
+    }
+    const portableAbsenceObserved = portableObservedScopes.has('user')
+      && (!this.#status?.projectRoot || portableObservedScopes.has('project'));
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
       && (options.installFilter !== 'installed'
         || (actualScopes.get(plugin.pluginId)?.size ?? 0) > 0)
       && (options.installFilter !== 'uninstalled'
         || plugin.aggregateStatus === 'available'
-          && (targetsByPlugin.get(plugin.pluginId)?.length ?? 0) > 0
-          && targetsByPlugin.get(plugin.pluginId)!.every((target) => target.state === 'absent')
+          && ((targetsByPlugin.get(plugin.pluginId)?.length ?? 0) > 0
+            || plugin.portableSkills && portableAbsenceObserved)
+          && (targetsByPlugin.get(plugin.pluginId) ?? []).every((target) => target.state === 'absent')
+          && !uncertainPortablePlugins.has(plugin.pluginId)
           && (actualScopes.get(plugin.pluginId)?.size ?? 0) === 0)
       && (options.installFilter !== 'project'
         || actualScopes.get(plugin.pluginId)?.has('project') === true)
@@ -4176,7 +4268,7 @@ export class TuiController {
 
   async getConfigGroups(
     pluginId: string,
-    layer: { scope: Scope },
+    options: ConfigReadOptions,
   ): Promise<ConfigGroupViewModel[]> {
     this.#assertAcceptingActions();
     if (!this.dependencies.getConfigGroups) {
@@ -4184,14 +4276,14 @@ export class TuiController {
     }
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigGroups(
       pluginId,
-      structuredClone(layer),
+      structuredClone(options),
       this.#abort.signal,
     )));
   }
 
   async getConfigPage(
     pluginId: string,
-    layer: { scope: Scope | 'effective' },
+    options: ConfigReadOptions,
     signal?: AbortSignal,
   ): Promise<ConfigPageViewModel> {
     this.#assertAcceptingActions();
@@ -4203,20 +4295,68 @@ export class TuiController {
       : this.#abort.signal;
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigPage(
       pluginId,
-      structuredClone(layer),
+      structuredClone(options),
       combined,
     )));
   }
 
   async getConfigReferenceContext(
-    pluginId: string, scope: Scope, draft: ConfigReferenceDraft, signal?: AbortSignal,
+    pluginId: string, options: ConfigProfileOptions, draft: ConfigReferenceDraft, signal?: AbortSignal,
   ): Promise<ConfigReferenceContext> {
     this.#assertAcceptingActions();
     if (!this.dependencies.getConfigReferenceContext) return { selections: {} };
     const combined = signal ? AbortSignal.any([this.#abort.signal, signal]) : this.#abort.signal;
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigReferenceContext(
-      pluginId, scope, structuredClone(draft), combined,
+      pluginId, structuredClone(options), structuredClone(draft), combined,
     )));
+  }
+
+  async saveConfigDraft(
+    request: Extract<OperationIntent, { kind: 'configSave' | 'configSaveBatch' }>,
+    signal?: AbortSignal,
+  ): Promise<ConfigDraftSaveResult> {
+    this.#assertAcceptingActions();
+    if (this.hasActiveWrite) throw new TuiOperationBlockedError('writeInProgress', '另一个写操作仍在执行。');
+    if (request.apply || request.kind === 'configSave' && request.retryApply) {
+      throw new TuiOperationBlockedError('configSaveOnlyRequired', '此入口只保存配置。请单独准备插件更新。');
+    }
+    const intent = normalizeOperationIntent(structuredClone(request)) as typeof request;
+    const combined = signal ? AbortSignal.any([this.#abort.signal, signal]) : this.#abort.signal;
+    const promise = (async (): Promise<ConfigDraftSaveResult> => {
+      try {
+        this.#validateReviewIntent(intent);
+        const evidence = await this.#prepareReviewEvidence(intent, combined);
+        combined.throwIfAborted();
+        const execution = await this.dependencies.executeIntent(intent, evidence, combined);
+        if (intent.kind === 'configSaveBatch') {
+          const batch = execution as ConfigSaveBatchExecutionResult;
+          return {
+            status: batch.status,
+            savedProfiles: batch.groups.filter((group) => group.configSaved).map((group) => group.platform ?? 'common'),
+            failedProfiles: batch.groups.filter((group) => !group.configSaved).map((group) => ({
+              profile: group.platform ?? 'common',
+              ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
+            })),
+          };
+        }
+        const saved = typeof execution === 'object' && execution !== null
+          && (execution as { configWrite?: unknown }).configWrite === 'succeeded';
+        return { status: saved ? 'succeeded' : 'failed', savedProfiles: saved ? [intent.platform ?? 'common'] : [],
+          failedProfiles: saved ? [] : [{ profile: intent.platform ?? 'common', errorCode: 'configWriteUnconfirmed' }] };
+      } catch (error) {
+        await this.#logOperationError(error, issueCode(error), intent);
+        throw new TuiOperationBlockedError(issueCode(error), sanitizeDiagnosticText(
+          error instanceof Error ? error.message : '设置未保存。', [], collectOperationSensitiveValues(intent),
+        ));
+      }
+    })();
+    this.#configSaveInflight = promise;
+    this.#publish();
+    try { return cloneFrozen(await promise); }
+    finally {
+      if (this.#configSaveInflight === promise) this.#configSaveInflight = undefined;
+      this.#publish();
+    }
   }
 
   async previewConfigSaveImpact(
@@ -4238,7 +4378,7 @@ export class TuiController {
 
   async getConfigResetAvailability(
     pluginId: string,
-    layer: { scope: Scope },
+    options: ConfigProfileOptions,
   ): Promise<ConfigResetAvailability> {
     this.#assertAcceptingActions();
     if (!this.dependencies.getConfigResetAvailability) {
@@ -4249,7 +4389,7 @@ export class TuiController {
     }
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigResetAvailability(
       pluginId,
-      structuredClone(layer),
+      structuredClone(options),
       this.#abort.signal,
     )));
   }
@@ -4619,7 +4759,7 @@ export class TuiController {
     const configImpact: OperationReviewModel['configImpact'] = configEvidence ? {
       state: configEvidence.some((group) => group.impactState !== 'known') ? 'unknown' : 'known',
       affectedTargetCount: new Set(configEvidence.flatMap((group) => group.affectedTargets
-        .map((target) => `${target.platform}\0${target.scope}`))).size
+        .map((target) => `${target.pluginName ?? ''}\0${target.platform}\0${target.scope}`))).size
         + new Set(configEvidence.flatMap((group) => (group.commandPackages ?? [])
           .map((target) => target.packageId))).size,
     } : undefined;
@@ -5101,7 +5241,7 @@ export class TuiController {
           verification: 'issueStillPresent',
         });
       }
-      if (ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset') {
+      if ((ticket.intent.kind === 'configSave' && !ticket.intent.retryApply) || ticket.intent.kind === 'configReset') {
         const configWrite = typeof execution === 'object' && execution !== null
           ? (execution as { configWrite?: unknown }).configWrite
           : undefined;
@@ -5182,7 +5322,7 @@ export class TuiController {
       };
       const configResultNeedsAttention = result.state === 'succeeded' && (result.summary.messages?.some((message) =>
         message.startsWith('警告：')
-        || message === '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。') ?? false);
+        || message === '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。') ?? false);
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
         || ticket.intent.kind === 'configReset')
         && this.#portableRepreparePluginId === ticket.intent.pluginId
@@ -5272,7 +5412,7 @@ export class TuiController {
                 ? '设置已保存，但后续应用失败。'
                 : '设置已保存，但后续步骤未完成。',
           pluginId: ticket.intent.pluginId,
-          configScope: ticket.intent.scope,
+          configScope: 'user', configPlatform: ticket.intent.platform, configContext: ticket.intent.context ?? 'user',
           ...(ticket.intent.kind === 'configSave' && ticket.intent.apply
             ? { configApplyRetryAvailable: true } : {}),
           elapsedMs,
@@ -5911,6 +6051,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         : false,
       configGroups: batch.groups.map((group) => ({
         scope: group.scope,
+        platform: group.platform,
         configSaved: group.configSaved,
         applyRequested: group.applyRequested,
         applyStatus: group.applyStatus,
@@ -5922,7 +6063,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         : []),
       messages: [
         ...batch.groups.map((group) => {
-          const label = group.scope === 'project' ? '当前项目' : '个人默认';
+          const label = group.platform ? `${group.platform} 平台配置` : '公共配置';
           return group.configSaved
             ? `${label}已保存${group.errorCode === 'invalidConfig'
               ? '，但当前配置无效，未应用'
@@ -5931,7 +6072,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         }),
         ...publicWarnings.map((warning) => `警告：${warning}`),
         ...(otherProjectsMayRequireSync
-          ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']
+          ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。']
           : []),
       ],
     };
@@ -5951,12 +6092,12 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       const target = typeof entry.target === 'object' && entry.target !== null
         ? entry.target as Record<string, unknown>
         : entry;
-      if ((target.platform !== 'codex' && target.platform !== 'claude')
+      if (!isPlatformTarget(target.platform)
         || (target.scope !== 'user' && target.scope !== 'project')
         || (entry.state !== 'completed' && entry.state !== 'failed' && entry.state !== 'skipped')) return [];
       return [{
         ...(typeof target.pluginId === 'string' ? { pluginId: target.pluginId } : {}),
-        platform: target.platform as PlatformName,
+        platform: target.platform,
         scope: target.scope as Scope,
         state: entry.state === 'skipped' || entry.action === 'skipped' ? 'skipped' as const
           : entry.state === 'failed' ? 'failed' as const
@@ -5985,13 +6126,12 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
           typeof warning === 'string'
           && warning.startsWith('projectConfigShareabilityUnverified:'))
       : [];
-    const otherProjectsMayRequireSync = intent.scope === 'user'
-      && typeof execution === 'object' && execution !== null
+    const otherProjectsMayRequireSync = typeof execution === 'object' && execution !== null
       && (execution as { otherProjectsMayRequireSync?: unknown }).otherProjectsMayRequireSync === true;
     const publicMessages = [
       ...publicWarnings.map((warning) => `警告：${warning}`),
       ...(otherProjectsMayRequireSync
-        ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']
+        ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。']
         : []),
     ];
     const partial = overallState === 'partial'
@@ -6008,7 +6148,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       message: invalidConfig ? '设置已保存，但没有应用。当前配置仍无效。'
         : failed || partial ? '设置已保存，但插件内容重新应用失败或部分失败。' : '操作已完成。',
       pluginId: intent.pluginId,
-      configScope: intent.scope,
+      configScope: 'user', configPlatform: intent.platform, configContext: intent.context ?? 'user',
       configApplyRetryAvailable: intent.kind === 'configSave'
         && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable'),
       ...(intent.kind === 'configSave' && intent.retryApply ? { configRetryApply: true } : {}),
@@ -6028,7 +6168,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
               ? { quarantineBasename } : {}),
           }
         : {}),
-      ...(targets.length > 0 ? { targets } : {}),
+      ...(targets.length > 0 ? { configTargets: targets } : {}),
       ...(commandResults.length > 0 ? { commandResults,
         recoveryActions: [...new Set(commandResults.flatMap((result) => result.recoveryActions))] } : {}),
     };

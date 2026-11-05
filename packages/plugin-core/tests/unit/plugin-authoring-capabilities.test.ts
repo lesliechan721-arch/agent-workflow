@@ -51,8 +51,8 @@ describe('plugin authoring capability structure registry', () => {
       .toEqual(schema.$defs.configStringValidation.properties.format.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].platforms'))
       .toEqual(schema.$defs.buildConfig.properties.skillRuntimeFiles.items.properties.platforms.items.enum)
-    expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].distributions'))
-      .toEqual([schema.$defs.buildConfig.properties.skillRuntimeFiles.items.properties.distributions.items.const])
+    expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.generatedSkillRuntimeFiles[].platforms'))
+      .toEqual(schema.$defs.buildConfig.properties.generatedSkillRuntimeFiles.items.properties.platforms.items.enum)
     expect([...getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].target')].sort())
       .toEqual(schema.$defs.artifactTarget.oneOf.flatMap(
         (entry: { properties: { target: { const?: string; enum?: string[] } } }) =>
@@ -62,10 +62,7 @@ describe('plugin authoring capability structure registry', () => {
       .toEqual(schema.$defs.artifactTarget.oneOf[0].properties.scopes.items.enum)
     expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].states'))
       .toEqual(schema.$defs.artifactTarget.oneOf[0].properties.states.items.enum)
-    expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].delivery.mode'))
-      .toEqual(schema.$defs.codexSkillDelivery.oneOf.map(
-        (entry: { properties: { mode: { const: string } } }) => entry.properties.mode.const,
-      ))
+
   })
 
   it('publishes preApply timeout and hook values from their Core contracts', () => {
@@ -88,19 +85,7 @@ describe('plugin authoring capability structure registry', () => {
         }),
         expect.objectContaining({ field: 'artifacts.targets[].id', required: true }),
         expect.objectContaining({ field: 'artifacts.targets[].refreshKeys', required: true }),
-        expect.objectContaining({ field: 'artifacts.targets[].delivery', required: 'for codex.skill' }),
-        {
-          field: 'artifacts.targets[].delivery.identity',
-          type: 'literal shared',
-          required: 'when delivery.mode is codex-native',
-          acceptedValues: ['shared'],
-        },
-        {
-          field: 'artifacts.targets[].delivery.renderProfile',
-          type: 'literal user',
-          required: 'when delivery.mode is codex-native',
-          acceptedValues: ['user'],
-        },
+        expect.objectContaining({ field: 'artifacts.targets[].platform', required: true }),
         expect.objectContaining({ field: 'artifacts.targets[].skillKey', required: 'for Skill targets' }),
       ]))
   })

@@ -6,6 +6,7 @@ import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { agentSettings } from '../helpers/tui-console-app-fixture.js';
 import { TuiController, type OperationEvidence, type OperationIntent, type TuiControllerSnapshot,
   type TuiStatusLoadResult } from '../../src/tui/controller.js';
 import type { PluginDetailPlacement, PluginDetailSubject } from '../../src/tui/plugin-detail.js';
@@ -124,6 +125,7 @@ class PlatformControllerStub {
       viewModel: { plugins: [this.plugin], dependencyOverviews: [] },
     } as unknown as TuiControllerSnapshot;
   }
+  async readAgentSettings() { return agentSettings(); }
   get externalDrafts(): [] { return []; }
   subscribe(listener: (snapshot: TuiControllerSnapshot) => void): () => void {
     this.listeners.add(listener);
@@ -230,7 +232,7 @@ describe('platform maintenance v8', () => {
         if (intent.kind === 'catalogGeneration') activated = true;
         return { overallState: 'succeeded', targetResults: [] };
       });
-      const controller = new TuiController({ loadStatus: async () => sourceRecoveryStatus(activated),
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: async () => sourceRecoveryStatus(activated),
         captureEvidence, executeIntent });
       await controller.load();
       controller.push({ name: 'platform', pluginId, platform: 'claude' });
@@ -340,8 +342,9 @@ describe('platform maintenance v8', () => {
     'returns to the same platform write action after Review preparation fails at %ix%i', async (columns, rows) => {
       const prepareScopedTask = vi.fn().mockRejectedValue(new Error('evidenceUnavailable'));
       const executeIntent = vi.fn();
-      const controller = new TuiController({ loadStatus: async () => sourceRecoveryStatus(true),
-        prepareScopedTask, executeIntent });
+      const executeScopedTask = vi.fn();
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: async () => sourceRecoveryStatus(true),
+        prepareScopedTask, executeIntent, executeScopedTask });
       await controller.load();
       controller.push({ name: 'platform', pluginId, platform: 'claude' });
       const size = { columns, rows };
@@ -349,7 +352,12 @@ describe('platform maintenance v8', () => {
       await input(instance, '', '');
       await focusAction(instance, '重新安装所有项目位置');
       await input(instance, '\r');
-      await vi.waitFor(() => expect(instance.lastFrame()).toContain('evidenceUnavailable'));
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('暂时无法核实现场，请重新检查'));
+      expect(executeScopedTask).not.toHaveBeenCalled();
+      await input(instance, 'd');
+      expect(checkedFrame(instance, size)).toContain('evidenceUnavailable');
+      expect(executeScopedTask).not.toHaveBeenCalled();
+      await input(instance, 'd');
       await input(instance, '\u001b');
       await new Promise((resolve) => setTimeout(resolve, 100));
       const returned = checkedFrame(instance, size);
@@ -361,8 +369,9 @@ describe('platform maintenance v8', () => {
         && request.command === 'reinstall' && request.scope === 'user'
         && request.selectors?.join(',') === pluginId
         && request.exactTargets?.[0]?.pluginId === pluginId
-        && request.exactTargets?.[0]?.agent === 'claude-code')).toBe(true);
+        && request.exactTargets?.[0]?.agent === 'claude')).toBe(true);
       expect(executeIntent).not.toHaveBeenCalled();
+      expect(executeScopedTask).not.toHaveBeenCalled();
       await writeAcceptanceTrace('platform-review-return', size, { returned });
     },
   );

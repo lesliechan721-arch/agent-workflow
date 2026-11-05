@@ -5,6 +5,7 @@ import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { agentSettings } from '../helpers/tui-console-app-fixture.js';
 import { TuiController, type TuiStatusLoadResult } from '../../src/tui/controller.js';
 import { ConfigTile, configTileHeight } from '../../src/tui/components.js';
 import type { RecoveryInventoryInput } from '../../src/tui/scoped-inventory.js';
@@ -30,9 +31,9 @@ function data(): TuiStatusLoadResult {
 
 function scopedProjectRoots(pluginIds: string[]): RecoveryInventoryInput {
   return { scope: 'project', intent: { state: 'valid' },
-    selection: { agents: ['claude-code'], preferences: 'valid' },
+    selection: { agents: ['claude'], preferences: 'valid' },
     inventory: pluginIds.map((pluginId) => ({ pluginId, source: pluginId.split('/')[0]!,
-      sourceState: 'ready', blockers: [], targetResults: [{ pluginId, agent: 'claude-code',
+      sourceState: 'ready', blockers: [], targetResults: [{ pluginId, agent: 'claude',
         scope: 'project', delivery: { kind: 'native', platform: 'claude' },
         execution: 'not-run', observation: 'unknown', content: 'unknown', blockers: [], requiredBy: [] }] })),
     extraObserved: [], errors: [], allSatisfied: null };
@@ -88,7 +89,7 @@ function frame(instance: ReturnType<typeof render>, size: { columns: number; row
 describe('v8.4 page contracts', () => {
   it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
     'keeps help readable without changing the underlying list or its focus at $columns x $rows', async (size) => {
-      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(projectActionsData()),
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(projectActionsData()),
         captureEvidence: vi.fn(), executeIntent: vi.fn() });
       await controller.load(); controller.push({ name: 'pluginList', mode: 'browse' });
       const instance = render(<ConsoleAppV4 controller={controller} size={size}
@@ -117,7 +118,7 @@ describe('v8.4 page contracts', () => {
     loaded.configuredSources = [{ id: 'official', type: 'path', primary: true, path: '/catalog', autoCheck: true }];
     loaded.payload.catalog.sources = [{ id: 'official', identity: 'source', type: 'path', primary: true,
       requestedRef: 'path', freshness: 'active' }];
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(loaded),
       captureEvidence: vi.fn(), executeIntent: vi.fn() });
     await controller.load(); controller.push({ name: 'sourceDetail', sourceId: 'official' });
     const size = { columns: 60, rows: 18 };
@@ -137,7 +138,7 @@ describe('v8.4 page contracts', () => {
     const loaded = data();
     const pluginId = `source${'x'.repeat(60)}/demo`;
     loaded.scopedRecovery = { project: scopedProjectRoots([pluginId]) };
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(loaded),
       captureEvidence: vi.fn(), executeIntent: vi.fn() });
     await controller.load();
     controller.push({ name: 'pluginDetail', pluginId });
@@ -154,14 +155,14 @@ describe('v8.4 page contracts', () => {
   });
 
   it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
-    'pages readonly plugin information without moving action focus at $columns x $rows', async (size) => {
+    'scrolls plugin information before moving action focus at $columns x $rows', async (size) => {
       const loaded = data();
       loaded.projectIntent = { state: 'ready', roots: [] };
       loaded.pluginSummaries = [{ pluginId: 'official/demo', pluginName: 'demo', displayName: 'Demo',
         description: Array.from({ length: 96 }, (_, index) => `用途行 ${index + 1}`).join('\n'),
         version: '1.0.0', supportedTargets: { claude: ['project'], codex: [] }, configFieldCount: 0 }];
       const executeIntent = vi.fn();
-      const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(loaded),
         captureEvidence: vi.fn(), executeIntent });
       await controller.load(); controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
       const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
@@ -171,18 +172,28 @@ describe('v8.4 page contracts', () => {
       expect(first).not.toContain('› Demo');
       const focusedAction = first.split('\n').find((line) => line.includes('› '))?.trim();
       expect(focusedAction).toBeTruthy();
-      expect(first).toContain('1 /');
+      expect(first).toContain('↑↓ 连续阅读与选择');
+      expect(first).not.toMatch(/\d+ \/ \d+/u);
+      await input(instance, '\u001b[C');
+      await input(instance, '\u001b[D');
+      expect(frame(instance, size)).toBe(first);
       let seen = first;
       for (let index = 0; index < 30; index += 1) {
-        await input(instance, '\u001b[C');
+        await input(instance, '\u001b[B');
         const current = frame(instance, size);
         expect(current.split('\n').find((line) => line.includes('› '))?.trim()).toBe(focusedAction);
+        expect(current).not.toMatch(/\d+ \/ \d+/u);
         seen += current;
+        if (current.includes('最新版本 1.0.0') && !current.includes('后面还有信息')) break;
       }
       expect(seen).toContain('用途行 96');
-      expect(seen).toContain('目录版本 1.0.0');
-      await input(instance, '\u001b[D');
-      expect(frame(instance, size)).not.toContain('› Demo');
+      expect(seen).toContain('最新版本 1.0.0');
+      const bottom = frame(instance, size);
+      await input(instance, '\u001b[A');
+      expect(frame(instance, size)).not.toBe(bottom);
+      expect(frame(instance, size)).toContain(focusedAction!);
+      await input(instance, '\u001b[6~');
+      expect(frame(instance, size)).toContain('最新版本 1.0.0');
       for (let index = 0; index < 8 && !frame(instance, size).includes('› 更多操作'); index += 1) {
         await input(instance, '\u001b[B');
       }
@@ -207,7 +218,7 @@ describe('v8.4 page contracts', () => {
       platform: 'claude' as const, scope: 'user' as const, cwd: '/tmp/项目长名称', version: '1.0.0',
       state: 'absent' as const, components: [], reasons: [], recoveryActions: [],
     }));
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(loaded),
       captureEvidence: vi.fn(), executeIntent: vi.fn() });
     await controller.load(); controller.push({ name: 'pluginList', mode: 'browse' });
     const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
@@ -229,26 +240,25 @@ describe('v8.4 page contracts', () => {
   });
 
   it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
-    'keeps three domain cards and unresolved scoped roots reachable at $columns x $rows', async (size) => {
+    'keeps four home entries and unresolved project plugins reachable at $columns x $rows', async (size) => {
       const loadStatus = vi.fn().mockImplementation(async () => data());
       const loadScopedStatus = vi.fn().mockResolvedValue({ ...scopedProjectRoots(['missing/工具一', 'missing/工具二']),
         nativeSnapshot: { payload: data().payload, pluginSummaries: data().pluginSummaries,
           targetRevisions: [], dependencyOverviews: [] } });
       const executeIntent = vi.fn();
       const captureEvidence = vi.fn();
-      const controller = new TuiController({ loadStatus, loadScopedStatus, executeIntent, captureEvidence });
+      const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus, loadScopedStatus, executeIntent, captureEvidence });
       await controller.load();
       const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
       await tick();
       const home = frame(instance, size);
-      expect(home.match(/╭/gu)).toHaveLength(3);
-      expect(home).toContain('插件清单');
+      expect(home.match(/╭/gu)).toHaveLength(4);
+      for (const entry of ['插件', '项目插件', '插件来源', 'Agent 管理']) expect(home).toContain(entry);
+      expect(home).toContain('当前项目  项目长名称');
       expect(home).not.toContain('没有待同步提醒');
       await input(instance, '\u001b[B');
       await input(instance, '\r');
-      expect(controller.snapshot.router.current.route.name).toBe('intentScopes');
-      await input(instance, '\u001b[B');
-      await input(instance, '\r');
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'intentInventory', scope: 'project' });
       await vi.waitFor(() => expect(loadScopedStatus).toHaveBeenCalledWith('project', expect.anything()));
       expect(controller.snapshot.router.current.route.name).toBe('intentInventory');
       const project = frame(instance, size);
@@ -288,7 +298,7 @@ describe('v8.4 page contracts', () => {
     loaded.payload.targets = [{ pluginId: 'official/tool', pluginName: 'tool', sourceId: 'official', sourceIdentity: 'source',
       platform: 'claude', scope: 'user', cwd: '/tmp/项目长名称', version: '1.0.0', state: 'ready',
       components: [{ kind: 'ownership', key: 'skill', state: 'present' }], reasons: [], recoveryActions: [] }];
-    const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence: vi.fn(), executeIntent: vi.fn() });
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence: vi.fn(), executeIntent: vi.fn() });
     await controller.load();
     controller.push({ name: 'pluginList', mode: 'browse' }, { installFilter: 'installed' });
     const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 60, rows: 18 }} />);

@@ -235,11 +235,12 @@ describe('public AW_HOME mutation command lock', () => {
       'demo',
       'config.json',
     ))).resolves.toEqual({
-      schemaVersion: 5,
+      schemaVersion: 6,
       sourceId: 'team',
       binding: { kind: 'source', sourceIdentity: oldIdentity },
       pluginName: 'demo',
-      values: { mode: 'safe' },
+      common: { mode: 'safe' },
+      platforms: {},
     });
   });
 });

@@ -32,7 +32,7 @@ import {
 import { TuiRouter } from '../../src/tui/router.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import type { PortableInstallReceipt } from '../../src/portable/commands.js';
-import { SkillsCliError } from '../../src/portable/skills-cli.js';
+import type { PlatformTarget } from '../../src/types.js';
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
 import { bindNativeCliRunnerSignal, NativeCliError } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -115,9 +115,10 @@ describe('TuiController session retirement', () => {
     }
   });
 
-  // Test Value Gate: a session drain must report provider cleanup failure instead of declaring reads safely stopped.
-  it('reports unconfirmed Skills cleanup while draining cancelled status reads', async () => {
-    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+  // Test Value Gate: a session drain must report native cleanup failure instead of declaring reads safely stopped.
+  it('reports unconfirmed native cleanup while draining cancelled status reads', async () => {
+    const failure = new NativeCliError({ invocation: { command: 'codex', args: [] }, reason: 'aborted',
+      exitCode: 1, stdout: '', stderr: '', cleanupError: new Error('child exit unconfirmed') });
     const value = new TuiController(dependencies({ loadStatus: (signal) =>
       new Promise<TuiStatusLoadResult>((_resolve, reject) => {
         signal.addEventListener('abort', () => reject(failure), { once: true });
@@ -130,12 +131,13 @@ describe('TuiController session retirement', () => {
 
   // Test Value Gate: cleanup failure from a finished read must remain visible to a later session drain.
   it('retains and reports cleanup failure after a status read has settled', async () => {
-    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const failure = new NativeCliError({ invocation: { command: 'codex', args: [] }, reason: 'aborted',
+      exitCode: 1, stdout: '', stderr: '', cleanupError: new Error('child exit unconfirmed') });
     const logError = vi.fn();
     const value = new TuiController(dependencies({ loadStatus: async () => { throw failure; }, logError }));
     await value.load();
     await expect(value.cancelAndWaitForReads()).rejects.toBe(failure);
-    expect(logError).toHaveBeenCalledWith(failure, 'portableSkillsCliCleanupFailed', undefined);
+    expect(logError).toHaveBeenCalledWith(failure, 'nativeCliFailed', undefined);
   });
 
   // Test Value Gate: cancelling Review must not hide a late cleanup failure or allow later retirement to succeed.
@@ -152,32 +154,17 @@ describe('TuiController session retirement', () => {
     await nextTurn();
     expect(captureEvidence).toHaveBeenCalledOnce();
     controller.back();
-    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
+    const failure = new NativeCliError({ invocation: { command: 'codex', args: [] }, reason: 'aborted',
+      exitCode: 1, stdout: '', stderr: '', cleanupError: new Error('child exit unconfirmed') });
     reject(failure);
     await nextTurn();
-    expect(logError).toHaveBeenCalledWith(failure, failure.code, undefined);
-    await expect(controller.cancelAndWaitForReads()).rejects.toBe(failure);
-  });
-
-  // Test Value Gate: one available scope must not hide another scope's unconfirmed provider cleanup.
-  it('fails Portable preparation when another scope cannot confirm cleanup', async () => {
-    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
-    const controller = new TuiController(dependencies({
-      loadStatus: async () => ({ payload: status(), pluginSummaries: summaries(['official', 'demo']),
-        portablePluginIds: ['official/demo'] }),
-      captureEvidence: async (intent) => {
-        if (intent.kind === 'portableInstall' && intent.scope === 'user') throw failure;
-        return portableEvidence(portableReceipt());
-      },
-    }));
-    await controller.load();
-    await expect(controller.preparePortableInstall('official/demo')).rejects.toBe(failure);
+    expect(logError).toHaveBeenCalledWith(failure, 'nativeCliFailed', undefined);
     await expect(controller.cancelAndWaitForReads()).rejects.toBe(failure);
   });
 
   it.each([false, true])('shows the shared Claude static config impact with project activation when apply=%s', (apply) => {
     const review = buildOperationReviewProjection({
-      intent: { kind: 'configSave', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', apply,
+      intent: { kind: 'configSave', pluginId: 'official/demo', scope: 'user', apply,
         updates: { mode: 'fast' }, changes: [{ key: 'mode', title: '模式', before: 'safe', after: 'fast' }] },
       evidence: { ...baseEvidence, config: { scope: 'user', storeDigest: 'fixture',
         affectedTargets: [{ platform: 'claude', scope: 'project' }],
@@ -186,13 +173,13 @@ describe('TuiController session retirement', () => {
     expect(review.requiresConfirmation).toBe(apply);
     expect(review.changes).toContainEqual(expect.objectContaining({
       title: apply ? '重新生成 provider 原生 Skill' : 'Claude Code 由平台共用的内容待同步',
-      description: apply ? '配置来源为个人默认；更新 Claude Code 由平台共用的内容会影响所有启用项目。' : '个人默认已保存；原生 Skill 尚未重新生成。',
+      description: apply ? '配置来源为用户配置；更新 Claude Code 由平台共用的内容会影响所有启用项目。' : '用户配置已保存；原生 Skill 尚未重新生成。',
     }));
     expect(review.changes.some((entry) => entry.title === '当前项目 Agent role 继续使用当前项目配置')).toBe(false);
   });
   it('keeps the shared Claude impact visible when retrying config apply', () => {
     const review = buildOperationReviewProjection({
-      intent: { kind: 'configSave', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', apply: true, retryApply: true },
+      intent: { kind: 'configSave', pluginId: 'official/demo', scope: 'user', apply: true, retryApply: true },
       evidence: { ...baseEvidence, config: { scope: 'user', storeDigest: 'fixture',
         affectedTargets: [{ platform: 'claude', scope: 'project' }],
         sharedNativeRenderTargets: [{ id: 'command-set.tools', skillKey: 'provider', refreshKeys: ['mode'], platform: 'claude' }] } },
@@ -293,7 +280,7 @@ describe('TuiController session retirement', () => {
     await Promise.resolve();
     value.beginRetirement();
 
-    await expect(value.getConfigPage('official/demo', { scope: 'user' }))
+    await expect(value.getConfigPage('official/demo', { context: 'user' }))
       .rejects.toMatchObject({ name: 'AbortError' });
     await expect(value.executeOperation('missing')).resolves.toMatchObject({
       state: 'blocked', code: 'sessionRetiring',
@@ -1036,11 +1023,14 @@ const baseEvidence: OperationEvidence = {
   targetFingerprint: 'sha256:target',
 };
 
-function defaultConfigEvidence(scope: 'user' | 'project'): OperationEvidence {
+function defaultConfigEvidence(
+  context: 'user' | 'project' = 'user',
+  platform?: PlatformTarget,
+): OperationEvidence {
   return {
     ...baseEvidence,
     config: {
-      scope,
+      scope: 'user', context, ...(platform ? { platform } : {}),
       storeDigest: 'sha256:store',
       impactState: 'known',
       affectedTargets: [],
@@ -1055,7 +1045,7 @@ function dependencies(overrides: Partial<TuiControllerDependencies> = {}): TuiCo
       pluginSummaries: summaries(['official', 'demo']),
     }),
     captureEvidence: vi.fn(async (intent: OperationIntent) => intent.kind === 'configSave'
-      ? defaultConfigEvidence(intent.scope) : baseEvidence),
+      ? defaultConfigEvidence(intent.context ?? 'user', intent.platform) : baseEvidence),
     executeIntent: vi.fn().mockResolvedValue({ ok: true }),
     createToken: vi.fn()
       .mockReturnValueOnce('operation-1')
@@ -1459,7 +1449,7 @@ describe('TUI v4 router and ViewModel', () => {
         name: 'configUnavailable',
         pluginId: 'removed/demo',
         storedScopes: ['user'],
-        layer: { scope: 'user' },
+        layer: { profile: 'common', context: 'user' },
         diagnosticCode: 'catalogSourceUnavailable',
         diagnosticStage: 'read-config',
       });
@@ -1737,6 +1727,25 @@ describe('TUI v4 router and ViewModel', () => {
     }), 'codex')[0]?.id).toBe('sync');
   });
 
+  // Test Value Gate: a scope-conflict menu must bind the public cleanup command to the typed scope and canonical platform.
+  it.each(['codex', 'claude'] as const)('recognizes canonical %s cleanup recovery without changing its scope', (platform) => {
+    const description = `运行 aw plugin cleanup official/demo --target ${platform} --scope project，再运行 aw plugin sync official/demo --target ${platform} --context user。`;
+    const plugin = menuPlugin({ supportedPlatforms: [platform], installedPlacements: [{
+      platform, state: 'installed', scope: 'project', health: 'error', actualState: 'blocked',
+      recovery: [
+        { command: 'uninstall', scope: 'project', description },
+        { command: 'uninstall', scope: 'user', description },
+        { command: 'uninstall', scope: 'project', description: description.replace(
+          `--target ${platform}`, `--target ${platform === 'codex' ? 'claude' : 'codex'}`) },
+      ],
+    }] });
+    expect(buildPlatformActions(plugin, platform)).toEqual([
+      { id: 'resolveScopeConflict', pluginId: 'official/demo', platform,
+        scope: 'project', keepScope: 'user', description },
+      { id: 'technical' },
+    ]);
+  });
+
   it('keeps pure-native scope overlap legal and consumes real scoped uninstall recovery for mixed conflict', () => {
     const pureNative = target({ scope: 'project', state: 'present' });
     pureNative.placements[0]!.components.push(
@@ -1801,12 +1810,12 @@ describe('TUI v4 router and ViewModel', () => {
         {
           command: 'uninstall' as const,
           scope: 'user' as const,
-          description: '运行 aw uninstall official/demo --target codex --scope user，再运行 aw sync official/demo --target codex --scope project。',
+          description: '运行 aw plugin intent remove official/demo --scope user，再运行 aw plugin cleanup official/demo --target codex --scope user，最后 aw plugin sync official/demo --target codex --context project。',
         },
         {
           command: 'uninstall' as const,
           scope: 'project' as const,
-          description: '运行 aw uninstall official/demo --target codex --scope project，再运行 aw sync official/demo --target codex --scope user。',
+          description: '运行 aw plugin intent remove official/demo --scope project，再运行 aw plugin cleanup official/demo --target codex --scope project，最后 aw plugin sync official/demo --target codex --context user。',
         },
       ],
     };
@@ -2399,9 +2408,9 @@ describe('TUI v4 router and ViewModel', () => {
 
   it('projects manifest order, presentation groups, choices, and private values safely', () => {
     const fields = [
-      { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'user' as const, storedValue: 'strict', storedSourceLayer: 'user' as const },
-      { key: 'rules', title: '规则', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: '/Users/private/rules.json', sourceLayer: 'local' as const, storedValue: '/Users/private/rules.json', storedSourceLayer: 'local' as const },
-      { key: 'token', title: '令牌', kind: 'manifest' as const, reserved: false, writable: true, canSet: true, valueState: 'configured' as const, effectiveValue: 'sk-private', sourceLayer: 'user' as const, storedValue: 'sk-private', storedSourceLayer: 'user' as const },
+      { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'common' as const, storedValue: 'strict', storedSourceLayer: 'common' as const },
+      { key: 'rules', title: '规则', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: '/Users/private/rules.json', sourceLayer: 'common' as const, storedValue: '/Users/private/rules.json', storedSourceLayer: 'common' as const },
+      { key: 'token', title: '令牌', kind: 'manifest' as const, reserved: false, writable: true, canSet: true, valueState: 'configured' as const, effectiveValue: 'sk-private', sourceLayer: 'common' as const, storedValue: 'sk-private', storedSourceLayer: 'common' as const },
     ];
     const page = buildConfigPage({
       pluginId: 'official/demo',
@@ -2425,7 +2434,7 @@ describe('TUI v4 router and ViewModel', () => {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level'] }],
         },
       },
-      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
+      read: { pluginName: 'demo', scope: 'user', fields },
     });
 
     expect(page.groups.map((group) => [group.title, group.fields.map((field) => field.key)])).toEqual([
@@ -2455,24 +2464,24 @@ describe('TUI v4 router and ViewModel', () => {
       && !Object.hasOwn(field, 'choices'))).toBe(true);
 
     const projectPage = buildConfigPage({
-      pluginId: 'official/demo',
+      pluginId: 'official/demo', context: 'project',
       schema: { fields: { token: { type: 'string', sensitive: true } } },
       read: {
-        pluginName: 'demo', scope: 'project', projectLayer: 'shared',
+        pluginName: 'demo', scope: 'user',
         fields: [fields[2]!],
       },
     });
     expect(projectPage.groups[0]!.fields[0]).toMatchObject({
       sensitive: true,
-      writable: false,
-      canSet: false,
+      writable: true,
+      canSet: true,
     });
     expect(JSON.stringify(projectPage)).not.toContain('sk-private');
 
     const fallback = buildConfigPage({
       pluginId: 'official/demo',
       schema: { fields: { level: { type: 'string' }, rules: { type: 'string' }, token: { type: 'string', sensitive: true } } },
-      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
+      read: { pluginName: 'demo', scope: 'user', fields },
     });
     expect(fallback.groups).toHaveLength(1);
     expect(fallback.groups[0]!.title).toBe('插件设置');
@@ -2489,10 +2498,10 @@ describe('TUI v4 router and ViewModel', () => {
           ],
         },
       },
-      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [fields[0]!, {
+      read: { pluginName: 'demo', scope: 'user', fields: [fields[0]!, {
         key: 'model', title: '模型', kind: 'manifest', reserved: false, writable: true,
-        valueState: 'configured', effectiveValue: 'review-v2', sourceLayer: 'user',
-        storedValue: 'review-v2', storedSourceLayer: 'user',
+        valueState: 'configured', effectiveValue: 'review-v2', sourceLayer: 'common',
+        storedValue: 'review-v2', storedSourceLayer: 'common',
       }] },
     });
     expect(fieldAdvanced.groups.map((group) => [group.id, group.title, group.advanced,
@@ -2501,34 +2510,31 @@ describe('TUI v4 router and ViewModel', () => {
       ['advanced', '高级设置', true, ['model']],
     ]);
 
-    const layeredField = {
+    const inheritedField = {
       ...fields[0]!,
       effectiveValue: 'fast',
-      sourceLayer: 'project' as const,
-      storedValue: 'strict',
-      storedSourceLayer: 'user' as const,
+      sourceLayer: 'common' as const,
+      storedValue: undefined,
+      storedSourceLayer: undefined,
     };
     const editable = buildConfigPage({
       pluginId: 'official/demo',
       schema: { fields: { level: { type: 'string' } } },
-      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [{
-        ...layeredField,
-        effectiveValue: 'strict',
-        sourceLayer: 'user',
-      }] },
-      effectiveRead: { pluginName: 'demo', scope: 'effective', projectLayer: 'shared', fields: [layeredField] },
+      read: { pluginName: 'demo', scope: 'user', platform: 'codex', fields: [inheritedField] },
+      effectiveRead: { pluginName: 'demo', scope: 'effective', platform: 'codex', fields: [inheritedField] },
     });
     const effective = buildConfigPage({
       pluginId: 'official/demo',
       schema: { fields: { level: { type: 'string' } } },
-      read: { pluginName: 'demo', scope: 'effective', projectLayer: 'shared', fields: [layeredField] },
+      read: { pluginName: 'demo', scope: 'effective', platform: 'codex', fields: [inheritedField] },
     });
     expect(editable.groups[0]!.fields[0]).toMatchObject({
-      displayValue: 'strict', value: 'strict', configured: true, sourceLabel: '本层已设置',
-      effectiveDisplayValue: 'fast', effectiveValue: 'fast', effectiveSourceLabel: '当前项目',
+      displayValue: '未设置', configured: false, inherited: true, sourceLabel: '继承',
+      effectiveDisplayValue: 'fast', effectiveValue: 'fast', effectiveSourceLabel: '公共配置',
     });
+    expect(editable.groups[0]!.fields[0]).not.toHaveProperty('value');
     expect(effective.groups[0]!.fields[0]).toMatchObject({
-      displayValue: 'fast', value: 'fast', configured: true, sourceLabel: '当前项目',
+      displayValue: 'fast', value: 'fast', configured: true, sourceLabel: '公共配置',
     });
   });
 
@@ -2541,9 +2547,9 @@ describe('TUI v4 router and ViewModel', () => {
       writable: true,
       valueState: 'configured' as const,
       effectiveValue: value,
-      sourceLayer: 'user' as const,
+      sourceLayer: 'common' as const,
       storedValue: value,
-      storedSourceLayer: 'user' as const,
+      storedSourceLayer: 'common' as const,
     });
     const page = buildConfigPage({
       pluginId: 'official/demo',
@@ -2641,9 +2647,9 @@ describe('TUI v4 router and ViewModel', () => {
           writable: true,
           valueState: 'configured',
           effectiveValue: { region: 'west', token: '[redacted]' },
-          sourceLayer: 'user',
+          sourceLayer: 'common',
           value: { region: 'west', token: '[redacted]' },
-          source: 'user',
+          source: 'common',
           matchedPreset: 'service-a',
           valid: true,
           issues: [],
@@ -2656,15 +2662,17 @@ describe('TUI v4 router and ViewModel', () => {
     expect(field).toMatchObject({
       type: 'object',
       displayValue: '已设置',
-      draftValue: { region: 'west', token: 'secret' },
     });
+    expect(field).not.toHaveProperty('draftValue');
+    expect(field).not.toHaveProperty('value');
+    expect(field).not.toHaveProperty('effectiveValue');
     expect(field).not.toHaveProperty('matchedPresetId');
     expect(field.displayValue).not.toContain('Service');
     expect(field.displayValue).not.toContain('自定义');
     expect(field.displayValue).not.toContain('secret');
   });
 
-  it('matches a raw inherited object preset for a project override and precomputes redacted unset changes', () => {
+  it('uses the common object fallback for a platform override and precomputes redacted unset changes', () => {
     const schema = {
       fields: {
         credentials: {
@@ -2684,7 +2692,7 @@ describe('TUI v4 router and ViewModel', () => {
         },
       },
     };
-    const entry = (scope: 'user' | 'project', value: { token: string; region: string }) => ({
+    const entry = (source: 'common' | 'platform', value: { token: string; region: string }) => ({
       key: 'credentials',
       title: 'credentials',
       kind: 'manifest' as const,
@@ -2692,40 +2700,40 @@ describe('TUI v4 router and ViewModel', () => {
       writable: true,
       valueState: 'configured' as const,
       effectiveValue: value,
-      sourceLayer: scope,
+      sourceLayer: source,
       storedValue: value,
-      storedSourceLayer: scope,
+      storedSourceLayer: source,
     });
-    const userRaw = { token: 'inherited-secret', region: 'west' };
-    const projectRaw = { token: 'current-secret', region: 'east' };
+    const commonRaw = { token: 'inherited-secret', region: 'west' };
+    const platformRaw = { token: 'current-secret', region: 'east' };
     const page = buildConfigPage({
       pluginId: 'official/demo',
       schema,
       read: {
         pluginName: 'demo',
-        scope: 'project',
-        fields: [entry('project', { token: '[redacted]', region: 'east' })],
+        scope: 'user', platform: 'codex',
+        fields: [entry('platform', { token: '[redacted]', region: 'east' })],
       },
       effectiveRead: {
         pluginName: 'demo',
-        scope: 'effective',
-        fields: [entry('project', { token: '[redacted]', region: 'east' })],
+        scope: 'effective', platform: 'codex',
+        fields: [entry('platform', { token: '[redacted]', region: 'east' })],
       },
       layerReads: {
-        user: {
+        common: {
           pluginName: 'demo',
           scope: 'user',
-          fields: [entry('user', { token: '[redacted]', region: 'west' })],
+          fields: [entry('common', { token: '[redacted]', region: 'west' })],
         },
-        project: {
+        codex: {
           pluginName: 'demo',
-          scope: 'project',
-          fields: [entry('project', { token: '[redacted]', region: 'east' })],
+          scope: 'user', platform: 'codex',
+          fields: [entry('platform', { token: '[redacted]', region: 'east' })],
         },
       },
-      rawValues: { credentials: projectRaw },
-      rawLayerValues: { user: { credentials: userRaw }, project: { credentials: projectRaw } },
-      effectiveRawValues: { credentials: projectRaw },
+      rawValues: { credentials: platformRaw },
+      rawLayerValues: { common: { credentials: commonRaw }, codex: { credentials: platformRaw } },
+      effectiveRawValues: { credentials: platformRaw },
     });
     const field = page.groups[0]!.fields[0]!;
 
@@ -2739,7 +2747,7 @@ describe('TUI v4 router and ViewModel', () => {
     expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('inherited-secret');
   });
 
-  it('projects an invalid user fallback instead of a schema default after project removal', () => {
+  it('projects an invalid common fallback instead of a schema default after platform override removal', () => {
     const schema = {
       fields: {
         mode: { type: 'string' as const, default: 'safe' },
@@ -2750,7 +2758,7 @@ describe('TUI v4 router and ViewModel', () => {
       schema,
       read: {
         pluginName: 'demo',
-        scope: 'project',
+        scope: 'user', platform: 'codex',
         fields: [{
           key: 'mode',
           title: 'mode',
@@ -2759,23 +2767,23 @@ describe('TUI v4 router and ViewModel', () => {
           writable: true,
           valueState: 'configured',
           effectiveValue: 'fast',
-          sourceLayer: 'project',
+          sourceLayer: 'platform',
           storedValue: 'fast',
-          storedSourceLayer: 'project',
+          storedSourceLayer: 'platform',
           fallback: {
             state: 'invalid',
-            sourceLayer: 'user',
-            issues: [{ type: 'invalid-config', key: 'mode', source: 'user' }],
+            sourceLayer: 'common',
+            issues: [{ type: 'invalid-config', key: 'mode', source: 'common' }],
           },
           value: 'fast',
-          source: 'project',
+          source: 'platform',
           matchedPreset: null,
           valid: true,
           issues: [],
         }],
       },
       layerReads: {
-        user: {
+        common: {
           pluginName: 'demo',
           scope: 'user',
           fields: [{
@@ -2786,23 +2794,23 @@ describe('TUI v4 router and ViewModel', () => {
             writable: true,
             valueState: 'invalid',
             effectiveValue: null,
-            sourceLayer: 'user',
-            storedSourceLayer: 'user',
+            sourceLayer: 'common',
+            storedSourceLayer: 'common',
             value: null,
-            source: 'user',
+            source: 'common',
             matchedPreset: null,
             valid: false,
-            issues: [{ type: 'invalid-config', key: 'mode', source: 'user' }],
+            issues: [{ type: 'invalid-config', key: 'mode', source: 'common' }],
           }],
         },
       },
-      rawLayerValues: { user: { mode: 'invalid-user-secret' } },
+      rawLayerValues: { common: { mode: 'invalid-user-secret' } },
     });
     const field = page.groups[0]!.fields[0]!;
 
     expect(field.fallbackDisplayValue).toContain('值无效');
     expect(field.fallbackDisplayValue).toContain('应用会被阻止');
-    expect(field.fallbackSourceLabel).toBe('个人默认');
+    expect(field.fallbackSourceLabel).toBe('公共配置');
     expect(field.fallbackDisplayValue).not.toContain('safe');
     expect(JSON.stringify(field)).not.toContain('invalid-user-secret');
   });
@@ -2837,7 +2845,7 @@ describe('TUI v4 router and ViewModel', () => {
           writable: true,
           valueState: 'configured',
           effectiveValue: { account: '[redacted]' },
-          sourceLayer: 'user',
+          sourceLayer: 'common',
         }],
       },
       effectiveRawValues: { credentials: { account: 'secret-a' } },
@@ -3014,7 +3022,7 @@ describe('TUI v4 router and ViewModel', () => {
       pluginAction: 'cleanup',
       title: '强制清理插件',
       description: expect.stringContaining('依赖者会变为不完整'),
-      equivalentCommand: 'aw cleanup official/toolkit --scope user --target codex --force',
+      equivalentCommand: 'aw plugin cleanup official/toolkit --scope user --target codex --force',
       changes: expect.arrayContaining([
         expect.objectContaining({ kind: 'warning', title: '跳过依赖保护' }),
       ]),
@@ -3749,7 +3757,7 @@ describe('TUI v4 router and ViewModel', () => {
           pluginId: 'team/configured',
           description: 'config fixture',
           configIssues: [{
-            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'common',
           }],
         },
         {
@@ -3757,7 +3765,7 @@ describe('TUI v4 router and ViewModel', () => {
           pluginId: 'official/source-configured',
           description: 'source config fixture',
           configIssues: [{
-            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'common',
           }],
         },
       ],
@@ -3922,7 +3930,7 @@ describe('TUI v4 router and ViewModel', () => {
         pluginName: 'offline',
         pluginId: 'official/offline',
         description: 'offline fixture',
-        configIssues: [{ scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
+        configIssues: [{ scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'common' }],
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
@@ -3980,13 +3988,13 @@ describe('TUI v4 router and ViewModel', () => {
     }));
   });
 
-  it('keeps config issue type and layer while isolating a safe per-plugin read diagnostic', () => {
+  it('keeps config issue type, profile, and context while isolating a safe per-plugin read diagnostic', () => {
     const view = buildTuiViewModel({
       status: status(),
       pluginSummaries: [
         {
           pluginName: 'invalid', pluginId: 'official/invalid', description: 'invalid',
-          configIssues: [{ scope: 'project', type: 'invalid-config', key: 'mode', title: '模式', source: 'project' }],
+          configIssues: [{ scope: 'project', platform: 'codex', type: 'invalid-config', key: 'mode', title: '模式', source: 'platform' }],
         },
         {
           pluginName: 'unreadable', pluginId: 'official/unreadable', description: 'unreadable',
@@ -3997,8 +4005,8 @@ describe('TUI v4 router and ViewModel', () => {
 
     expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')).toMatchObject({
       title: 'invalid · 设置值无效',
-      configLayer: { scope: 'project' },
-      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'project', scope: 'project' }],
+      configLayer: { profile: 'codex', context: 'project' },
+      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'platform', scope: 'project', platform: 'codex' }],
       diagnostic: {
         technical: { code: 'invalid-config', stage: 'validate-config' },
       },
@@ -4658,6 +4666,33 @@ describe('TUI Catalog freshness session overlay', () => {
 });
 
 describe('TUI v4 Review safety', () => {
+  // Test Value Gate: the public equivalent command must remain executable after the plugin CLI entry migration.
+  it.each([
+    ['install', 'aw plugin install official/demo --scope project --script-timeout 12000'],
+    ['sync', 'aw plugin sync official/demo --context project --target claude --script-timeout 12000'],
+    ['refreshAndSync', 'aw plugin sync official/demo --context project --target claude --refresh --script-timeout 12000'],
+    ['reinstall', 'aw plugin sync official/demo --context project --target claude --rebuild --script-timeout 12000'],
+    ['uninstall', 'aw plugin remove official/demo --scope project'],
+    ['cleanup', 'aw plugin cleanup official/demo --scope project --target claude --force'],
+  ] as const)('renders the public plugin command for %s', (action, expected) => {
+    const review = buildOperationReviewProjection({
+      intent: { kind: 'pluginWrite', action, pluginId: 'official/demo', platform: 'claude', scope: 'project',
+        scriptTimeoutMs: 12_000, force: true,
+        dependencyScopeOverrides: [{ pluginId: 'official/toolkit', platform: 'claude', scope: 'user' }] },
+      evidence: baseEvidence,
+    });
+    expect(review.equivalentCommand).toBe(expected);
+  });
+
+  it('renders both cleanup targets as separate commands with one physical target each', () => {
+    const review = buildOperationReviewProjection({
+      intent: { kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/demo',
+        platform: 'both', scope: 'user', force: true }, evidence: baseEvidence,
+    });
+    expect(review.equivalentCommand).toBe('aw plugin cleanup official/demo --scope user --target codex --force'
+      + ' && aw plugin cleanup official/demo --scope user --target claude --force');
+  });
+
   it('finishes nested source recovery at the exact config editor route with the parent draft flow active', async () => {
     const candidate = {
       sourceId: 'official',
@@ -4693,7 +4728,7 @@ describe('TUI v4 Review safety', () => {
     const resumeRoute = {
       name: 'configFieldEditor' as const,
       pluginId: 'official/demo',
-      layer: { scope: 'user' as const },
+      layer: { profile: 'common' as const, context: 'user' as const },
       fieldKey: 'mode',
       editor: 'string' as const,
     };
@@ -4701,7 +4736,7 @@ describe('TUI v4 Review safety', () => {
       name: 'configUnavailable',
       pluginId: 'official/demo',
       overviewFrameId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common', context: 'user' },
       resumeRoute,
       resumeContext: { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 },
       diagnosticCode: 'catalogSourceUnavailable',
@@ -5212,7 +5247,7 @@ describe('TUI v4 Review safety', () => {
       },
     });
     expect(review.equivalentCommand).toBe(
-      'aw install official/root --scope user --target codex --script-timeout 300000 --yes',
+      'aw plugin install official/root --scope user --script-timeout 300000 --yes',
     );
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
       state: 'blocked',
@@ -5987,13 +6022,12 @@ describe('TUI v4 Review safety', () => {
     controller.push({
       name: 'configFields',
       pluginId: 'official/demo',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common', context: 'user' },
     });
     const review = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'official/demo',
       scope: 'user',
-      projectLayer: 'shared',
       apply: true,
       updates: { mode: 'strict' },
     });
@@ -6007,7 +6041,7 @@ describe('TUI v4 Review safety', () => {
         message: '设置已保存，但插件内容重新应用失败或部分失败。',
         configScope: 'user',
         configApplyRetryAvailable: true,
-        targets: [
+        configTargets: [
           expect.objectContaining({ platform: 'codex', state: 'completed' }),
           expect.objectContaining({ platform: 'claude', state: 'failed' }),
         ],
@@ -6017,14 +6051,13 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.activeReview).toBeUndefined();
   });
 
-  it('projects only the stable project shareability warning into the config result', async () => {
+  it('keeps config profile and context metadata while excluding private diagnostics', async () => {
     const controller = new TuiController(dependencies({
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
         overallState: 'succeeded',
         apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
         warnings: [
-          'projectConfigShareabilityUnverified: Git evidence unavailable.',
           'private diagnostic /Users/example',
         ],
       }),
@@ -6032,29 +6065,30 @@ describe('TUI v4 Review safety', () => {
     controller.push({
       name: 'configFields',
       pluginId: 'official/demo',
-      layer: { scope: 'project', projectLayer: 'shared' },
+      layer: { profile: 'codex', context: 'project' },
     });
     const review = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'official/demo',
-      scope: 'project',
-      projectLayer: 'shared',
+      scope: 'user', context: 'project', platform: 'codex',
       apply: false,
       updates: { mode: 'strict' },
     });
 
     const result = await controller.executeOperation(review.reviewToken);
 
-    expect(result.summary.messages).toEqual([
-      '警告：projectConfigShareabilityUnverified: Git evidence unavailable.',
-    ]);
+    expect(result.summary).toMatchObject({
+      configScope: 'user', configPlatform: 'codex', configContext: 'project',
+    });
+    expect(result.summary.messages).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain('/Users/example');
   });
 
   it.each([
-    ['user', true, ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']],
+    ['user', true, ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。']],
     ['project', false, []],
-  ] as const)('projects the safe other-project sync fact for %s scope', async (
-    scope,
+  ] as const)('projects the safe other-project sync fact for %s context', async (
+    context,
     otherProjectsMayRequireSync,
     messages,
   ) => {
@@ -6070,13 +6104,12 @@ describe('TUI v4 Review safety', () => {
     controller.push({
       name: 'configFields',
       pluginId: 'official/demo',
-      layer: { scope, projectLayer: 'shared' },
+      layer: { profile: 'common', context },
     });
     const review = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'official/demo',
-      scope,
-      projectLayer: 'shared',
+      scope: 'user', context,
       apply: false,
       updates: { mode: 'strict' },
     });
@@ -6097,13 +6130,12 @@ describe('TUI v4 Review safety', () => {
     controller.push({
       name: 'configFields',
       pluginId: 'official/demo',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common', context: 'user' },
     });
     const review = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'official/demo',
       scope: 'user',
-      projectLayer: 'shared',
       apply: true,
       updates: { mode: 'strict' },
     });
@@ -6136,7 +6168,7 @@ describe('TUI v4 Review safety', () => {
       }),
     }));
     const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user',
     });
 
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
@@ -6167,10 +6199,10 @@ describe('TUI v4 Review safety', () => {
     await controller.load();
     controller.push({
       name: 'configUnavailable', pluginId: 'official/demo',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common', context: 'user' },
     });
     const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user',
     });
 
     expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
@@ -6214,7 +6246,7 @@ describe('TUI v4 Review safety', () => {
     await controller.load();
     controller.push({ name: 'configUnavailable', pluginId: 'official/demo' });
     const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user',
     });
 
     expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
@@ -6292,7 +6324,7 @@ describe('TUI v4 Review safety', () => {
     await controller.load();
     controller.push({ name: 'configUnavailable', pluginId: 'official/demo' });
     const staleReview = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user',
     });
 
     await expect(controller.executeOperation(staleReview.reviewToken)).resolves.toMatchObject({ state: 'stale' });
@@ -6330,7 +6362,7 @@ describe('TUI v4 Review safety', () => {
     }));
     await controller.load();
     const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user',
     });
 
     expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
@@ -6354,7 +6386,6 @@ describe('TUI v4 Review safety', () => {
       kind: 'configSave',
       pluginId: 'official/demo',
       scope: 'user',
-      projectLayer: 'shared',
       apply: true,
       updates: { mode: 'strict' },
     });
@@ -6385,13 +6416,12 @@ describe('TUI v4 Review safety', () => {
     controller.push({
       name: 'configFields',
       pluginId: 'official/demo',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common', context: 'user' },
     });
     const review = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'official/demo',
       scope: 'user',
-      projectLayer: 'shared',
       apply: true,
       updates: { mode: 'strict' },
     });
@@ -6442,7 +6472,7 @@ describe('TUI v4 Review safety', () => {
     }));
     await controller.load();
     const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user',
     });
 
     const result = await controller.executeOperation(review.reviewToken);
@@ -6649,7 +6679,6 @@ describe('TUI v4 Review safety', () => {
         ...baseEvidence,
         config: {
           scope: 'user',
-          projectLayer: 'shared',
           schemaIdentity: 'sha256:schema',
           storeDigest: 'sha256:store',
           affectedTargets: [],
@@ -6660,7 +6689,6 @@ describe('TUI v4 Review safety', () => {
       kind: 'configSave',
       pluginId: 'official/demo',
       scope: 'user',
-      projectLayer: 'shared',
       apply: false,
       updates: { token: secret },
       sensitiveKeys: ['token'],
@@ -6683,12 +6711,11 @@ describe('TUI v4 Review safety', () => {
     ['user only', 'user', [
       { platform: 'claude', scope: 'user' },
     ], ['Claude Code · 所有项目']],
-  ] as const)('uses evidence-owned affected targets for a %s config Review', async (_label, scope, affectedTargets, labels) => {
+  ] as const)('uses evidence-owned affected targets for a %s config Review', async (_label, context, affectedTargets, labels) => {
     const evidence: OperationEvidence = {
       ...baseEvidence,
       config: {
-        scope,
-        projectLayer: 'shared',
+        scope: 'user', context,
         schemaIdentity: 'sha256:schema',
         storeDigest: 'sha256:store',
         affectedTargets: [...affectedTargets],
@@ -6699,8 +6726,7 @@ describe('TUI v4 Review safety', () => {
     }));
 
     const review = await controller.buildOperationReview({
-      kind: 'configSave', pluginId: 'official/demo', scope,
-      projectLayer: 'shared', apply: true, updates: { mode: 'safe' },
+      kind: 'configSave', pluginId: 'official/demo', scope: 'user', context, apply: true, updates: { mode: 'safe' },
       changes: [{ key: 'mode', title: '模式', before: '旧值', after: '新值' }],
     });
 
@@ -6710,8 +6736,8 @@ describe('TUI v4 Review safety', () => {
   });
 
   it.each([
-    [false, ['Codex 由平台共用的内容待同步'], '个人默认已保存；动态 Skill 尚未重新生成。'],
-    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为个人默认；更新 Codex 由平台共用的内容会影响所有启用项目。'],
+    [false, ['Codex 由平台共用的内容待同步'], '用户配置已保存；动态 Skill 尚未重新生成。'],
+    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为用户配置；更新 Codex 由平台共用的内容会影响所有启用项目。'],
   ] as const)('describes shared native render impact when apply=%s', async (apply, impactTitles, description) => {
     const evidence: OperationEvidence = {
       ...baseEvidence,
@@ -6734,8 +6760,7 @@ describe('TUI v4 Review safety', () => {
     }));
 
     const review = await controller.buildOperationReview({
-      kind: 'configSave', pluginId: 'official/enhance', scope: 'user',
-      projectLayer: 'shared', apply, updates: { exploreWait: 15 },
+      kind: 'configSave', pluginId: 'official/enhance', scope: 'user', apply, updates: { exploreWait: 15 },
       changes: [{ key: 'exploreWait', title: '等待窗口', before: '10', after: '15' }],
     });
 
@@ -6743,7 +6768,7 @@ describe('TUI v4 Review safety', () => {
       .map((change) => change.title)).toEqual(impactTitles);
     expect(review.changes).toContainEqual(expect.objectContaining({ description }));
     expect(review.changes).toContainEqual(expect.objectContaining({
-      title: '当前项目 Agent role 继续使用当前项目配置', kind: 'keep',
+      title: apply ? '保留所有项目和当前项目的启用位置' : '当前由平台共用的内容和启用位置保持不变', kind: 'keep',
     }));
     expect(review).toMatchObject({
       requiresConfirmation: apply,
@@ -6774,8 +6799,7 @@ describe('TUI v4 Review safety', () => {
       }));
 
       const review = await controller.buildOperationReview({
-        kind: 'configSave', pluginId: 'official/enhance', scope: 'user',
-        projectLayer: 'shared', apply, updates: { exploreWait: 15 },
+        kind: 'configSave', pluginId: 'official/enhance', scope: 'user', apply, updates: { exploreWait: 15 },
         changes: [{ key: 'exploreWait', title: '等待窗口', before: '10', after: '15' }],
       });
 
@@ -6792,7 +6816,7 @@ describe('TUI v4 Review safety', () => {
       captureEvidence: vi.fn().mockResolvedValue({
         ...baseEvidence,
         config: {
-          scope: 'project',
+          scope: 'user', platform: 'codex', context: 'project',
           schemaIdentity: 'sha256:schema',
           storeDigest: 'sha256:store',
           impactState: 'known',
@@ -6803,8 +6827,7 @@ describe('TUI v4 Review safety', () => {
     }));
 
     const review = await controller.buildOperationReview({
-      kind: 'configSave', pluginId: 'official/enhance', scope: 'project',
-      projectLayer: 'shared', apply: true, removeKeys: ['exploreWait'],
+      kind: 'configSave', pluginId: 'official/enhance', scope: 'user', platform: 'codex', context: 'project', apply: true, removeKeys: ['exploreWait'],
       changes: [{ key: 'exploreWait', title: '等待窗口', before: '15', after: '15' }],
     });
 
@@ -6835,7 +6858,6 @@ describe('TUI v4 Review safety', () => {
 
     const review = await controller.buildOperationReview({
       kind: 'configReset', pluginId: 'official/enhance', scope: 'user',
-      projectLayer: 'shared',
     });
 
     expect(review.changes).toContainEqual(expect.objectContaining({
@@ -6901,7 +6923,6 @@ describe('TUI v4 Review safety', () => {
       kind: 'configSave',
       pluginId: 'official/demo',
       scope: 'user',
-      projectLayer: 'shared',
       apply: false,
       updates: { token: secret },
       sensitiveKeys: ['token'],
@@ -7010,11 +7031,12 @@ describe('TUI v4 Review safety', () => {
     const route = {
       name: 'configFields' as const,
       pluginId: 'official/demo',
-      layer: { scope: 'project' as 'project' | 'user' },
+      layer: { profile: 'codex' as 'codex' | 'common', context: 'project' as 'project' | 'user' },
     };
     router.push(route);
-    route.layer.scope = 'user';
-    expect(router.snapshot.current.route).toMatchObject({ layer: { scope: 'project' } });
+    route.layer.profile = 'common';
+    route.layer.context = 'user';
+    expect(router.snapshot.current.route).toMatchObject({ layer: { profile: 'codex', context: 'project' } });
 
     const loaded = {
       payload: status({ sources: [source('official', { type: 'path' })] }),
@@ -7040,7 +7062,6 @@ describe('TUI v4 Review safety', () => {
       kind: 'configSave' as const,
       pluginId: 'official/demo',
       scope: 'user' as const,
-      projectLayer: 'shared' as const,
       apply: false,
       updates: { mode: 'safe' },
     };
@@ -7100,7 +7121,7 @@ describe('TUI v4 Review safety', () => {
       clearCurrent: vi.fn(),
     } as unknown as RebuildProgressFeed);
     const review = await controller.buildOperationReview({
-      kind: 'configSave', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', apply: false, updates: { mode: 'safe' },
+      kind: 'configSave', pluginId: 'official/demo', scope: 'user', apply: false, updates: { mode: 'safe' },
     });
     const result = await controller.executeOperation(review.reviewToken);
 

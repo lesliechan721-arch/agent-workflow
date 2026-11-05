@@ -436,7 +436,7 @@ describe('artifact plan validation', () => {
       scope: 'project',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
-    })).not.toThrow();
+    })).toThrow('is not declared for codex/project');
   });
 
   it('rejects missing returns, missing disabled refresh keys, role name drift, and reserved config_file', () => {
@@ -589,7 +589,7 @@ describe('artifact plan validation', () => {
       manifest,
       plan: createSkillPlan(),
       platform: 'codex',
-      scope: 'project',
+      scope: 'user',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     });
@@ -608,7 +608,7 @@ describe('artifact plan validation', () => {
       manifest,
       plan: missingSkillKeyPlan,
       platform: 'codex',
-      scope: 'project',
+      scope: 'user',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     })).toThrow('skillKey');
@@ -622,7 +622,7 @@ describe('artifact plan validation', () => {
       manifest,
       plan: mismatchedSkillKeyPlan,
       platform: 'codex',
-      scope: 'project',
+      scope: 'user',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     })).toThrow('expected "codex-explore"');
@@ -639,7 +639,7 @@ describe('artifact plan validation', () => {
       manifest,
       plan: unexpectedPathPlan,
       platform: 'codex',
-      scope: 'project',
+      scope: 'user',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     })).toThrow('unexpected field "path"');
@@ -653,7 +653,7 @@ describe('artifact plan validation', () => {
       manifest,
       plan: missingFilesPlan,
       platform: 'codex',
-      scope: 'project',
+      scope: 'user',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     })).toThrow('content.files');
@@ -671,7 +671,7 @@ describe('artifact plan validation', () => {
       manifest,
       plan: invalidFileContentPlan,
       platform: 'codex',
-      scope: 'project',
+      scope: 'user',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     })).toThrow('expected a string');
@@ -693,7 +693,7 @@ describe('artifact plan validation', () => {
         }],
       },
       platform: 'codex',
-      scope: 'project',
+      scope: 'user',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
     });
@@ -882,7 +882,7 @@ describe('artifact plan validation', () => {
     expect(objectChildDigest).not.toBe(objectBaseDigest);
   });
 
-  it('keeps user-scope digests stable when project config changes', async () => {
+  it('keeps platform digests stable when another platform config changes', async () => {
     const root = await makeTempRoot('aw-artifact-plan-digest-');
     const cwd = path.join(root, 'repo');
     const awHome = path.join(root, 'aw-home');
@@ -901,7 +901,8 @@ describe('artifact plan validation', () => {
     });
     await writePluginConfigStore({
       pluginName: manifest.name,
-      scope: 'project',
+      scope: 'user',
+      platform: 'claude',
       cwd,
       env,
       values: {
@@ -911,6 +912,7 @@ describe('artifact plan validation', () => {
 
     const userConfigBefore = await resolveArtifactRenderConfig({
       manifest,
+      platform: 'codex',
       scope: 'user',
       cwd,
       env,
@@ -926,7 +928,8 @@ describe('artifact plan validation', () => {
 
     await writePluginConfigStore({
       pluginName: manifest.name,
-      scope: 'project',
+      scope: 'user',
+      platform: 'claude',
       cwd,
       env,
       values: {
@@ -937,6 +940,7 @@ describe('artifact plan validation', () => {
 
     const userConfigAfter = await resolveArtifactRenderConfig({
       manifest,
+      platform: 'codex',
       scope: 'user',
       cwd,
       env,
@@ -950,7 +954,7 @@ describe('artifact plan validation', () => {
       rendererDigest: 'sha256:renderer-a',
     }).artifacts[0]?.configDigest;
 
-    expect(userConfigAfter.sources.explorerModel).toBe('user');
+    expect(userConfigAfter.sources.explorerModel).toBe('common');
     expect(userConfigAfter.values.explorerModel).toBe('gpt-5.4-mini');
     expect(userDigestAfter).toBe(userDigestBefore);
   });

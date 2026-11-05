@@ -10,6 +10,8 @@ import type {
   DynamicArtifactKind,
   ManagedArtifactId,
   PlatformName,
+  PlatformTarget,
+  PortablePlatformTarget,
   ProducerIdentity,
   PluginId,
   PluginVersion,
@@ -19,10 +21,10 @@ import type {
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 export type ArtifactSurface =
-  | { kind: 'platform'; name: PlatformName }
+  | { kind: 'platform'; name: PlatformTarget }
   | { kind: 'distribution'; name: DistributionName }
   | { kind: 'aw'; name: 'managed-commands' };
-export type ArtifactRenderSurfaceName = PlatformName | DistributionName | 'managed-commands';
+export type ArtifactRenderSurfaceName = PlatformTarget | DistributionName | 'managed-commands';
 
 export interface CommandProducerResult {
   producer: ProducerIdentity;
@@ -345,7 +347,7 @@ export interface ReceiptTargetResult {
 export interface ConfigApplyTargetIdentity {
   pluginName: string;
   pluginId?: PluginId;
-  platform: PlatformName;
+  platform: PlatformTarget;
   scope: Scope;
 }
 
@@ -406,27 +408,27 @@ export interface ConfigFieldEntry {
   canUnset: boolean;
   valueState: ConfigValueState;
   effectiveValue: unknown | null;
-  sourceLayer: 'default' | 'user' | 'project' | null;
+  sourceLayer: 'default' | 'common' | 'platform' | null;
   storedValue?: unknown;
-  storedSourceLayer?: 'user' | 'project';
+  storedSourceLayer?: 'common' | 'platform';
   invalidOverride?: {
-    sourceLayer: 'default' | 'user' | 'project';
+    sourceLayer: 'default' | 'common' | 'platform';
     issues: unknown[];
   };
   fallback?:
     | {
         state: 'valid';
         effectiveValue: unknown;
-        sourceLayer: 'default' | 'user' | 'project';
+        sourceLayer: 'default' | 'common' | 'platform';
       }
     | {
         state: 'invalid';
-        sourceLayer: 'default' | 'user' | 'project';
+        sourceLayer: 'default' | 'common' | 'platform';
         issues: unknown[];
       }
     | { state: 'missing' };
   value: unknown | null;
-  source: 'default' | 'user' | 'project' | 'missing';
+  source: 'default' | 'common' | 'platform' | 'missing';
   matchedPreset: string | null;
   valid: boolean;
   issues: unknown[];
@@ -445,7 +447,7 @@ export interface ConfigReceiptFieldEntry {
 
 export const CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION = 7;
 
-export type ConfigMutationCommand = 'config:set' | 'config:unset' | 'config:reset';
+export type ConfigMutationCommand = 'config:set' | 'config:edit' | 'config:unset' | 'config:reset' | 'config:apply';
 
 export interface ConfigMutationReceiptBase<
   Command extends ConfigMutationCommand = ConfigMutationCommand,
@@ -459,6 +461,7 @@ export interface ConfigMutationReceiptBase<
 
 export interface ConfigSchemaEvidence {
   source: 'currentCatalog';
+  platform?: import('@lesliechan721/aw-plugin-core/manifest').PlatformTarget;
   identity: string;
   pluginVersion: PluginVersion;
   manifestDigest: string;
@@ -476,6 +479,7 @@ export interface PortableSkillCandidate {
   relation: PortablePluginRelation;
   dynamic: boolean;
   filesDigest: string;
+  configDigest?: string;
 }
 
 export interface ArtifactPlanBase {
@@ -487,7 +491,7 @@ export type ArtifactPlan = ArtifactPlanBase;
 
 export interface ArtifactPlanArtifactBase {
   id: ManagedArtifactId;
-  platform?: PlatformName;
+  platform?: PlatformTarget;
   distribution?: DistributionName;
   target: ArtifactTarget;
   kind: DynamicArtifactKind;
@@ -539,6 +543,7 @@ export interface ClaudeSkillArtifact extends ArtifactPlanArtifactBase {
 }
 
 export interface AgentSkillsSkillArtifact extends ArtifactPlanArtifactBase {
+  platform: PortablePlatformTarget;
   distribution: 'agent-skills';
   target: 'agent-skills.skill';
   kind: 'skill';

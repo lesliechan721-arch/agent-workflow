@@ -372,8 +372,7 @@ function validateDesiredTarget(target: DesiredTarget): void {
   const desiredComponentSet = new Set(desiredComponents);
   const sharedNativeSkillKeys = new Set((target.plugin.manifest.artifacts?.targets ?? [])
     .filter((artifactTarget) => artifactTarget.platform === 'codex'
-      && artifactTarget.target === 'codex.skill'
-      && artifactTarget.delivery?.mode === 'codex-native')
+      && artifactTarget.target === 'codex.skill')
     .map((artifactTarget) => artifactTarget.skillKey));
   let nativeCount = 0;
   for (const component of target.ownedComponents) {

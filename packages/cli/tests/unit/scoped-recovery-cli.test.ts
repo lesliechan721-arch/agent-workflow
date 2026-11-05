@@ -1,8 +1,6 @@
 import path from 'node:path';
-
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
-
 import { runCli } from '../../src/index.js';
 import { addRoot, resolveIntentPath } from '../../src/intent/intent-store.js';
 import { observePreferences, resolvePreferencesPath } from '../../src/intent/deployment-preferences.js';
@@ -16,22 +14,18 @@ async function location(name: string) {
   await fs.ensureDir(cwd);
   return { cwd, env: isolation.env };
 }
-
 async function jsonCommand(args: string[], options: Awaited<ReturnType<typeof location>>) {
   const captured = createCapturedCliIo();
   const exitCode = await runCli([...args, '--json'], { ...options, interactive: false, io: captured.io });
   return { exitCode, value: JSON.parse(captured.readStdout()), stderr: captured.readStderr() };
 }
-
 async function fileTree(root: string): Promise<Record<string, string>> {
   const entries: Record<string, string> = {};
   async function walk(directory: string) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const full = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        entries[`${path.relative(root, full)}/`] = '';
-        await walk(full);
-      } else if (entry.isFile()) entries[path.relative(root, full)] = (await fs.readFile(full)).toString('base64');
+      if (entry.isDirectory()) { entries[`${path.relative(root, full)}/`] = ''; await walk(full); }
+      else if (entry.isFile()) entries[path.relative(root, full)] = (await fs.readFile(full)).toString('base64');
       else entries[path.relative(root, full)] = await fs.readlink(full);
     }
   }
@@ -39,135 +33,110 @@ async function fileTree(root: string): Promise<Record<string, string>> {
   return entries;
 }
 
-describe('explicit scoped recovery CLI', () => {
+// Test Value Gate: argv errors must fail before strong configuration or output writes.
+describe('plugin work context CLI', () => {
   it.each([
-    ['intent', 'list'], ['targets', 'list'], ['targets', 'set', 'codex'],
-    ['status'], ['sync', '--all'], ['install', 'team/demo'],
-    ['reinstall', 'team/demo'], ['uninstall', 'team/demo'], ['cleanup', 'team/demo'],
-  ])('rejects missing scope for %s without choosing a write location', async (...args) => {
-    const options = await location('scope-required');
+    ['plugin', 'intent', 'list'], ['plugin', 'intent', 'remove', 'team/demo'],
+    ['plugin', 'cleanup', 'team/demo', '--target', 'codex'],
+    ['plugin', 'cleanup', 'team/demo', '--scope', 'user'],
+    ['plugin', 'sync', '--scope', 'user'], ['plugin', 'status', '--scope', 'user'],
+    ['plugin', 'targets', 'set', 'codex', '--scope', 'user'],
+    ['plugin', 'install', 'team/demo', '--target', 'codex'],
+    ['plugin', 'install', 'team/demo', '--scope', 'project', '--context', 'user'],
+    ['plugin', 'remove', 'team/demo', '--scope', 'project', '--context', 'user'],
+    ['plugin', 'targets', 'set'], ['plugin', 'targets', 'set', 'codex', '--none'],
+    ['plugin', 'targets', 'set', 'claude-code'], ['plugin', 'targets', 'set', 'gemini'],
+    ['plugin', 'targets', 'exclude', 'team/demo', '--target', 'agent-skills'],
+    ['plugin', 'sync', '--check', '--rebuild'], ['plugin', 'sync', '--check', '--refresh'],
+    ['install', 'team/demo'], ['reinstall', 'team/demo'], ['uninstall', 'team/demo'],
+  ])('rejects invalid or retired arguments without writes: %s', async (...args) => {
+    const options = await location('invalid-arguments');
     const before = await fileTree(options.env.AW_HOME!);
     const result = await jsonCommand(args, options);
     expect(result.exitCode).toBe(2);
-    expect(result.value).toMatchObject({ ok: false, scope: null,
-      errors: [{ code: 'invalidArguments' }] });
+    expect(result.value).toMatchObject({ ok: false, errors: [{ code: 'invalidArguments' }] });
     expect(await fileTree(options.env.AW_HOME!)).toEqual(before);
-  });
-
-  it.each([
-    ['project', 'status'],
-    ['install', 'team/demo', '--scope', 'user', '-p', 'codex'],
-    ['sync', '--all', '--scope', 'user', '--platform', 'both'],
-  ])('rejects retired commands and gives replacement guidance', async (...args) => {
-    const result = await jsonCommand(args, await location('removed-entry'));
-    expect(result.exitCode).toBe(2);
-    expect(result.value.errors[0]).toMatchObject({ code: 'invalidArguments',
-      message: expect.stringContaining('aw intent') });
-  });
-
-  it('saves user targets outside a repository without creating project files', async () => {
-    const options = await location('plain-directory');
-    const result = await jsonCommand(['targets', 'set', 'cursor', 'codex', 'cursor', '--scope', 'user'], options);
-    expect(result.exitCode).toBe(0);
-    expect(result.value).toMatchObject({ kind: 'aw-recovery', scope: 'user', preferencesChanged: true,
-      declarationChanged: false, configChanged: false, outputsMayHaveChanged: false,
-      selection: { agents: ['codex', 'cursor'] } });
-    expect(await observePreferences({ ...options, scope: 'user' })).toMatchObject({ state: 'valid',
-      value: { kind: 'aw-deployment-preferences', agents: ['codex', 'cursor'] } });
     expect(await fs.readdir(options.cwd)).toEqual([]);
   });
 
-  it('removes only the explicit scope declaration even when called inside a project', async () => {
+  it('saves one canonical policy and clears targets while preserving declarations and outputs', async () => {
+    const options = await location('one-policy');
+    await git(options.cwd, ['init', '--quiet']);
+    await addRoot({ ...options, scope: 'user' }, 'team/demo', 'team-identity');
+    await addRoot({ ...options, scope: 'project' }, 'team/demo', 'team-identity');
+    const paths = await Promise.all(['user', 'project'].map((scope) => resolveIntentPath({ ...options, scope: scope as 'user' | 'project' })));
+    const before = await Promise.all(paths.map((file) => fs.readFile(file)));
+    const output = path.join(options.cwd, 'keep.txt');
+    await fs.writeFile(output, 'existing output');
+    const set = await jsonCommand(['plugin', 'targets', 'set', 'cursor', 'codex', 'cursor'], options);
+    expect(set.exitCode).toBe(0);
+    expect(set.value).toMatchObject({ preferencesChanged: true, declarationChanged: false, outputsMayHaveChanged: false,
+      policy: { schemaVersion: 2, targets: ['codex', 'cursor'], exclusions: [] } });
+    expect((await jsonCommand(['plugin', 'targets', 'set', '--none'], options)).exitCode).toBe(0);
+    expect(await observePreferences({ ...options, scope: 'user' })).toMatchObject({ state: 'valid', value: { targets: [], exclusions: [] } });
+    expect(await Promise.all(paths.map((file) => fs.readFile(file)))).toEqual(before);
+    expect(await fs.readFile(output, 'utf8')).toBe('existing output');
+  });
+
+  it('rejects install with no targets before saving a root', async () => {
+    const options = await location('targets-required');
+    const result = await jsonCommand(['plugin', 'install', 'team/demo'], options);
+    expect(result.exitCode).toBe(1);
+    expect(result.value.errors).toContainEqual(expect.objectContaining({ code: 'targetsNotConfigured' }));
+    expect(await fs.pathExists(await resolveIntentPath({ ...options, scope: 'user' }))).toBe(false);
+  });
+
+  it('validates all removal IDs and changes only the selected declaration', async () => {
     const options = await location('separate-demands');
     await git(options.cwd, ['init', '--quiet']);
     await addRoot({ ...options, scope: 'user' }, 'team/demo', 'team-identity');
     await addRoot({ ...options, scope: 'project' }, 'team/demo', 'team-identity');
     const userPath = await resolveIntentPath({ ...options, scope: 'user' });
-    const original = await fs.readFile(userPath);
-    const result = await jsonCommand(['intent', 'remove', 'team/demo', '--scope', 'project'], options);
-    expect(result.exitCode).toBe(0);
-    expect(result.value).toMatchObject({ scope: 'project', declarationChanged: true,
-      intent: { roots: [] }, outputsMayHaveChanged: false });
-    expect(await fs.readFile(userPath)).toEqual(original);
+    const projectPath = await resolveIntentPath({ ...options, scope: 'project' });
+    const user = await fs.readFile(userPath);
+    const project = await fs.readFile(projectPath);
+    const invalid = await jsonCommand(['plugin', 'intent', 'remove', 'team/demo', 'invalid', '--scope', 'project'], options);
+    expect(invalid.exitCode).toBe(2);
+    expect(await fs.readFile(projectPath)).toEqual(project);
+    const removed = await jsonCommand(['plugin', 'intent', 'remove', 'team/demo', '--scope', 'project'], options);
+    expect(removed.exitCode).toBe(0);
+    expect(removed.value).toMatchObject({ scope: 'project', declarationChanged: true, intent: { roots: [] } });
+    expect(await fs.readFile(userPath)).toEqual(user);
   });
 
-  it('preserves legacy preference bytes until an explicit reset of that scope', async () => {
+  it('preserves legacy preferences until the user repairs strong state', async () => {
     const options = await location('legacy-preferences');
-    const preferencesPath = await resolvePreferencesPath({ ...options, scope: 'user' });
+    const filename = await resolvePreferencesPath({ ...options, scope: 'user' });
     const original = '{ "schemaVersion": 1, "kind": "aw-project-preferences", "agents": [] }\n';
-    await fs.outputFile(preferencesPath, original);
-    const rejected = await jsonCommand(['targets', 'set', 'codex', '--scope', 'user'], options);
-    expect(rejected.exitCode).toBe(1);
-    expect(await fs.readFile(preferencesPath, 'utf8')).toBe(original);
-    const reset = await jsonCommand(['targets', 'reset', '--scope', 'user'], options);
-    expect(reset.exitCode).toBe(0);
-    expect(await observePreferences({ ...options, scope: 'user' })).toMatchObject({ state: 'valid',
-      value: { agents: [], dependencyScopeOverrides: [] } });
-  });
-
-  it('reports the exact legacy user file and leaves it unchanged', async () => {
-    const options = await location('legacy-user-intent');
-    const filename = await resolveIntentPath({ ...options, scope: 'user' });
-    const original = '{ "schemaVersion": 2, "kind": "aw-plugin-intents", "roots": [] }\n';
     await fs.outputFile(filename, original);
-    const result = await jsonCommand(['intent', 'list', '--scope', 'user'], options);
-    expect(result.exitCode).toBe(1);
-    expect(result.value.intent).toMatchObject({ state: 'unsupported-version', roots: null });
-    expect(JSON.stringify(result.value)).toContain(filename);
-    expect(JSON.stringify(result.value)).toContain('备份');
+    expect((await jsonCommand(['plugin', 'targets', 'set', 'codex'], options)).exitCode).toBe(1);
     expect(await fs.readFile(filename, 'utf8')).toBe(original);
   });
 
-  it('deduplicates repeated one-time targets without saving preferences', async () => {
-    const options = await location('repeated-targets');
-    const result = await jsonCommand(['sync', '--all', '--check', '--scope', 'user',
-      '--target', 'cursor', '--target', 'codex', '--target', 'cursor'], options);
-    expect(result.exitCode).toBe(0);
-    expect(result.value.selection).toMatchObject({ agents: ['codex', 'cursor'], origin: 'argument' });
-    expect(await observePreferences({ ...options, scope: 'user' })).toEqual({ state: 'absent' });
-  });
-
-  it('keeps empty status and check read-only, including persistent runtime and lock paths', async () => {
-    const options = await location('readonly-empty');
+  it('defaults to the current project while explicit user context remains neutral and read-only', async () => {
+    const options = await location('context-selection');
+    await git(options.cwd, ['init', '--quiet']);
     const before = await fileTree(options.env.AW_HOME!);
-    const status = await jsonCommand(['status', '--scope', 'user'], options);
-    expect(status.exitCode).toBe(0);
-    expect(status.value).toMatchObject({ kind: 'aw-recovery-status', scope: 'user', allSatisfied: true });
-    const check = await jsonCommand(['sync', '--all', '--check', '--scope', 'user'], options);
+    const project = await jsonCommand(['plugin', 'status'], options);
+    expect(project.exitCode).toBe(0);
+    expect(project.value.coverage).toMatchObject({ scopes: ['user', 'project'], projectRoot: options.cwd });
+    const user = await jsonCommand(['plugin', 'status', '--context', 'user'], options);
+    expect(user.exitCode).toBe(0);
+    expect(user.value.coverage.scopes).toEqual(['user']);
+    expect(user.value.coverage.projectRoot).toBeUndefined();
+    const check = await jsonCommand(['plugin', 'sync', '--check', '--context', 'user'], options);
     expect(check.exitCode).toBe(0);
-    expect(check.value).toMatchObject({ kind: 'aw-recovery', scope: 'user', ok: true,
-      declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false });
+    expect(check.value).toMatchObject({ declarationChanged: false, preferencesChanged: false,
+      configChanged: false, outputsMayHaveChanged: false });
     expect(await fileTree(options.env.AW_HOME!)).toEqual(before);
-    expect(await fs.readdir(options.cwd)).toEqual([]);
   });
 
-  it('reports a native inventory read error with no declared roots', async () => {
-    const options = await location('unreadable-empty-inventory');
-    await fs.outputFile(path.join(options.env.AW_HOME!, 'plugin-config'), 'not a directory');
-    const status = await jsonCommand(['status', '--scope', 'user'], options);
-    expect(status.exitCode).toBe(1);
-    expect(status.value).toMatchObject({ kind: 'aw-recovery-status', ok: false,
-      inventory: [], allSatisfied: true, errors: [expect.objectContaining({ code: 'stateInventoryFailed' })] });
-    expect(JSON.stringify(status.value)).not.toContain('not a directory');
-    const check = await jsonCommand(['sync', '--all', '--check', '--scope', 'user'], options);
-    expect(check.exitCode).toBe(1);
-    expect(check.value).toMatchObject({ kind: 'aw-recovery', ok: false,
-      errors: [expect.objectContaining({ code: 'stateInventoryFailed' })] });
-  });
-
-  it('rejects invalid check combinations before any preparation', async () => {
-    const options = await location('invalid-check');
+  it('rejects explicit project context outside a project without writes', async () => {
+    const options = await location('no-project');
     const before = await fileTree(options.env.AW_HOME!);
-    for (const args of [
-      ['sync', '--all', '--check', '--refresh', '--scope', 'user'],
-      ['sync', 'team/demo', '--all', '--scope', 'user'],
-      ['sync', '--scope', 'user'],
-      ['targets', 'set', 'both', '--scope', 'user'],
-    ]) {
-      const result = await jsonCommand(args, options);
-      expect(result.exitCode).toBe(2);
-      expect(result.value.errors[0].code).toBe('invalidArguments');
-    }
+    const result = await jsonCommand(['plugin', 'status', '--context', 'project'], options);
+    expect(result.exitCode).toBe(1);
+    expect(result.value.errors).toContainEqual(expect.objectContaining({ code: 'projectRootUnavailable' }));
     expect(await fileTree(options.env.AW_HOME!)).toEqual(before);
   });
 });

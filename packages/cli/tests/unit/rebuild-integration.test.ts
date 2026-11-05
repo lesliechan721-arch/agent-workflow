@@ -166,26 +166,30 @@ async function writeClaudeNativeState(options: {
   materializedMarketplace?: boolean;
   includeEnabled?: boolean;
   enabledValue?: boolean | readonly string[];
+  marketplaceName?: string;
+  marketplaceRoot?: string;
 }): Promise<void> {
   const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
   const awHome = options.env.AW_HOME!;
-  const source = options.canonical === false ? path.join(path.dirname(awHome), 'foreign') : awHome;
+  const marketplaceName = options.marketplaceName ?? 'aw';
+  const marketplaceRoot = options.marketplaceRoot ?? awHome;
+  const source = options.canonical === false ? path.join(path.dirname(awHome), 'foreign') : marketplaceRoot;
   const sourceDescriptor = { source: 'directory', path: source };
   const projectPath = options.scope === 'project'
     ? await resolveClaudeProjectKey(options.cwd)
     : undefined;
   if (options.installed) {
-    await fs.ensureDir(path.join(awHome, 'plugins', options.pluginName));
+    await fs.ensureDir(path.join(marketplaceRoot, 'plugins', options.pluginName));
   }
   const includeEnabled = options.includeEnabled ?? options.installed;
   await fs.outputJson(paths.settingsPath, {
     ...(options.declaredMarketplace === false
       ? {}
-      : { extraKnownMarketplaces: { aw: { source: sourceDescriptor } } }),
+      : { extraKnownMarketplaces: { [marketplaceName]: { source: sourceDescriptor } } }),
     ...(includeEnabled
       ? {
           enabledPlugins: {
-            [`${options.pluginName}@aw`]: options.enabledValue ?? true,
+            [`${options.pluginName}@${marketplaceName}`]: options.enabledValue ?? true,
           },
         }
       : {}),
@@ -193,7 +197,7 @@ async function writeClaudeNativeState(options: {
   await fs.outputJson(paths.knownMarketplacesPath, options.materializedMarketplace === false
     ? {}
     : {
-        aw: {
+        [marketplaceName]: {
           source: sourceDescriptor,
           installLocation: source,
           lastUpdated: new Date(0).toISOString(),
@@ -201,7 +205,7 @@ async function writeClaudeNativeState(options: {
       });
   await fs.outputJson(paths.installedPluginsPath, {
     plugins: options.installed ? {
-      [`${options.pluginName}@aw`]: [{
+      [`${options.pluginName}@${marketplaceName}`]: [{
         scope: options.scope,
         ...(projectPath ? { projectPath } : {}),
         version: options.pluginVersion,
@@ -1259,13 +1263,13 @@ describe('rebuild adapter integration', () => {
         version: '1.2.3',
         description: 'rebuild integration fixture',
         schemaVersion: 3,
+        platforms: ['claude'],
         marketplace: {
           category: 'test',
           strict: true,
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CLAUDE'],
           },
         },
         extensions: {
@@ -1416,13 +1420,13 @@ describe('rebuild adapter integration', () => {
         version: '1.0.0',
         description: 'read-only inspection fixture',
         schemaVersion: 3,
+        platforms: ['claude'],
         marketplace: {
           category: 'test',
           strict: true,
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CLAUDE'],
           },
         },
         extensions: {
@@ -2105,7 +2109,6 @@ describe('rebuild adapter integration', () => {
               platform: 'codex',
               scopes: ['project'],
               target: 'codex.skill',
-              delivery: { mode: 'aw-extension' },
               states: ['present', 'disabled'],
               refreshKeys: [],
               skillKey: 'optional-skill',
@@ -2134,7 +2137,6 @@ describe('rebuild adapter integration', () => {
               platform: 'codex',
               scopes: ['project'],
               target: 'codex.skill',
-              delivery: { mode: 'aw-extension' },
               states: ['disabled'],
               refreshKeys: [],
               skillKey: 'disabled-only',
@@ -2167,11 +2169,13 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
       readOnlyInspectionPlan: true,
     });
-    expect(target.desiredOwnedComponents).toEqual([]);
+    expect(target.desiredOwnedComponents?.some((component) => component.kind === 'skill-directory')).toBe(false);
     expect(target.optionalOwnedComponents?.map((component) => component.identity.artifactKey))
-      .toEqual(expect.arrayContaining(['optional-skill', 'optional-role', 'developer-instructions']));
+      .toEqual(expect.arrayContaining(['optional-role', 'developer-instructions']));
     expect(target.optionalOwnedComponents?.map((component) => component.identity.artifactKey))
       .not.toContain('disabled-only');
+    expect(target.optionalOwnedComponents?.map((component) => component.identity.artifactKey))
+      .not.toContain('optional-skill');
   });
 
   it.each(['project', 'user'] as const)(
@@ -2207,8 +2211,7 @@ describe('rebuild adapter integration', () => {
               id: 'native-skill',
               platform: 'codex',
               target: 'codex.skill',
-              delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-              scopes: [scope],
+              scopes: ['user'],
               states: ['present'],
               refreshKeys: ['mode'],
               skillKey: 'native-skill',
@@ -2220,7 +2223,11 @@ describe('rebuild adapter integration', () => {
       await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
         "import fs from 'node:fs';",
         `fs.writeFileSync(${JSON.stringify(rendererMarker)}, 'ran');`,
-        "console.log(JSON.stringify({ version: 2, artifacts: [] }));",
+        "console.log(JSON.stringify({ version: 2, artifacts: [{ id: 'native-skill', kind: 'skill', platform: 'codex', target: 'codex.skill', state: 'present', skillKey: 'native-skill', refreshKeys: ['mode'], content: { files: {",
+        "  'SKILL.md': '---\\nname: native-skill\\ndescription: Native Skill.\\n---\\nBody.\\n',",
+        "  'README.md': '# Native Skill\\n',",
+        "  'agents/openai.yaml': 'policy:\\n  allow_implicit_invocation: true\\n',",
+        "} } }] }));",
       ].join('\n'));
       if (scope === 'project') {
         await fs.outputFile(path.join(
@@ -2260,7 +2267,10 @@ describe('rebuild adapter integration', () => {
       expect(target.desiredOwnedComponents?.some((component) =>
         component.kind === 'skill-directory'
         && component.identity.artifactKey === 'native-skill')).toBe(false);
-      expect(await fs.pathExists(rendererMarker)).toBe(false);
+      expect(await fs.pathExists(rendererMarker)).toBe(true);
+      expect(target.operationActions).toContainEqual(expect.objectContaining({
+        kind: 'materializeNativeSkill', artifactId: 'native-skill', platform: 'codex', scope: 'user',
+      }));
       expect(await fs.pathExists(scope === 'project'
         ? path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'native-skill')
         : path.join(isolation.layout.codexHomeDir, 'skills', 'native-skill'))).toBe(false);
@@ -2284,13 +2294,13 @@ describe('rebuild adapter integration', () => {
           scope: oppositeScope,
         },
       });
-      const failedBeforeCleanup = await executeRebuildOperation({
+      const failedAfterCleanup = await executeRebuildOperation({
         command: 'install',
         target,
         driver: integration.driver,
       });
-      expect(failedBeforeCleanup.status).toBe('failed');
-      await expect(fs.pathExists(oppositeLegacySkillRoot)).resolves.toBe(true);
+      expect(failedAfterCleanup.status).toBe('failed');
+      await expect(fs.pathExists(oppositeLegacySkillRoot)).resolves.toBe(false);
 
       const userLegacySkillRoot = path.join(userSkillsRoot, 'native-skill');
       const projectLegacySkillRoot = path.join(projectSkillsRoot, 'native-skill');
@@ -2381,7 +2391,7 @@ describe('rebuild adapter integration', () => {
     await writePluginConfigStore({
       sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
       logicalIdentity: plugin.catalogLogicalIdentity,
-      pluginName: plugin.manifest.name, scope: 'project', cwd, env: isolation.env,
+      pluginName: plugin.manifest.name, scope: 'user', platform: 'codex', cwd, env: isolation.env,
       values: { instruction: 'second instruction' },
     });
     expect(await build()).toBe('second instruction');
@@ -2394,8 +2404,9 @@ describe('rebuild adapter integration', () => {
     // A newly sensitive value must also block output reused from this operation.
     await writePluginConfigStore({
       sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
-      pluginName: plugin.manifest.name, scope: 'user', cwd, env: isolation.env,
-      values: { token: 'second instruction' },
+      logicalIdentity: plugin.catalogLogicalIdentity,
+      pluginName: plugin.manifest.name, scope: 'user', platform: 'codex', cwd, env: isolation.env,
+      values: { instruction: 'second instruction', token: 'second instruction' },
     });
     await expect(build()).rejects.toThrow('artifactRendererSensitiveConfigExposed');
     expect((await fs.readFile(callsPath, 'utf8')).trim().split('\n')).toHaveLength(4);
@@ -2426,7 +2437,7 @@ describe('rebuild adapter integration', () => {
         artifacts: { targets: [
           {
             id: 'safe-skill', platform: 'codex', target: 'codex.skill',
-            delivery: { mode: 'aw-extension' }, scopes: ['user'], states: ['present'],
+            scopes: ['user'], states: ['present'],
             refreshKeys: [], skillKey: 'safe-skill',
           },
           {
@@ -2490,20 +2501,23 @@ describe('rebuild adapter integration', () => {
         previousArtifacts: [],
       },
     ]);
-    expect(target.artifacts.map((artifact) => artifact.target))
-      .toEqual(expect.arrayContaining(['codex.skill', 'codex.agentRole']));
+    expect(target.artifacts.map((artifact) => artifact.target)).toContain('codex.agentRole');
+    expect(target.artifacts.some((artifact) => artifact.target === 'codex.skill')).toBe(false);
+    expect(target.operationActions).toContainEqual(expect.objectContaining({
+      kind: 'materializeNativeSkill', platform: 'codex', scope: 'user', artifactId: 'safe-skill',
+    }));
   });
 
   it.each([
-    { platform: 'claude' as const, delivery: 'direct' as const, leak: 'path' as const },
-    { platform: 'claude' as const, delivery: 'direct' as const, leak: 'content' as const },
-    { platform: 'codex' as const, delivery: 'direct' as const, leak: 'path' as const },
-    { platform: 'codex' as const, delivery: 'direct' as const, leak: 'content' as const },
+    { platform: 'claude' as const, leak: 'path' as const },
+    { platform: 'claude' as const, leak: 'content' as const },
+    { platform: 'codex' as const, leak: 'path' as const },
+    { platform: 'codex' as const, leak: 'content' as const },
   ])(
-    'rejects sensitive config in $platform $delivery dynamic Skill sourceDirs $leak before writing',
-    async ({ platform, delivery, leak }) => {
+    'rejects sensitive config in $platform native dynamic Skill sourceDirs $leak before writing',
+    async ({ platform, leak }) => {
       const isolation = getCurrentSourceTestIsolation();
-      const name = `sensitive-${platform}-${delivery}-${leak}`;
+      const name = `sensitive-${platform}-native-${leak}`;
       const secret = `${name}-secret`;
       const sourcePluginRoot = path.join(isolation.layout.rootDir, `${name}-source`);
       const targetName = `${platform}.skill`;
@@ -2512,13 +2526,13 @@ describe('rebuild adapter integration', () => {
         version: '1.0.0',
         description: 'Sensitive final Skill tree fixture.',
         schemaVersion: 3,
+        platforms: [platform],
         marketplace: {
           category: 'test',
           strict: true,
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            ...(delivery === 'native' ? { products: ['CODEX'] } : {}),
           },
         },
         config: { fields: { token: { type: 'string', sensitive: true } } },
@@ -2527,9 +2541,6 @@ describe('rebuild adapter integration', () => {
           id: 'dynamic-skill',
           platform,
           target: targetName,
-          ...(delivery === 'native'
-            ? { delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' } }
-            : platform === 'codex' ? { delivery: { mode: 'aw-extension' } } : {}),
           scopes: ['user'],
           states: ['present'],
           refreshKeys: [],
@@ -2603,37 +2614,21 @@ describe('rebuild adapter integration', () => {
         platform,
         scope: 'user',
         cwd: isolation.layout.fixtureCwd,
+        marketplaceName: 'aw-team',
+        marketplaceRoot: path.join(isolation.layout.awHomeDir, 'marketplaces', 'team'),
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
       });
 
-      let failure: unknown;
-      if (delivery === 'native') {
-        const target = await build();
-        const result = await executeRebuildOperation({
-          command: 'install', target, driver: integration.driver,
-        });
-        expect(result.status).toBe('failed');
-        failure = result.failures[0]?.message;
-      } else {
-        failure = await build().then(() => undefined, (error: unknown) => error);
-      }
-      expect(String(failure)).toContain('artifactRendererSensitiveConfigExposed');
+      const failure = await build().then((target) => integration.prepareNativeMarketplaceGroup(target))
+        .then(() => undefined, (error: unknown) => error);
+      expect(String(failure)).toContain('codexNativeRenderSensitiveValue');
       expect(String(failure)).not.toContain(secret);
-      expect(String(failure)).not.toContain(leakedRelativePath);
-      const outputRoot = platform === 'claude'
-        ? path.join(isolation.layout.claudeHomeDir, 'skills', 'dynamic-skill')
-        : delivery === 'native'
-          ? path.join(
-              isolation.layout.awHomeDir,
-              'plugins',
-              name,
-              'codex',
-              'skills',
-              'dynamic-skill',
-              leakedRelativePath,
-            )
-          : path.join(isolation.layout.codexHomeDir, 'skills', 'dynamic-skill');
+      if (leak === 'path') expect(String(failure)).not.toContain(leakedRelativePath);
+      const outputRoot = path.join(
+        isolation.layout.awHomeDir, 'marketplaces', 'team', 'plugins', name,
+        platform, 'skills', 'dynamic-skill',
+      );
       await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
     },
   );
@@ -3363,8 +3358,8 @@ describe('rebuild adapter integration', () => {
     },
   );
 
-  // Test Value Gate: the shipped shared source must materialize a valid, owned
-  // Claude Skill in each scope through the same install and cleanup lifecycle.
+  // Test Value Gate: the shipped source must keep its resource closure inside
+  // one shared Native package for both activation scopes and preserve it on cleanup.
   it.each(['user', 'project'] as const)('installs Agent Subagent for Claude in %s scope', async (scope) => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
@@ -3373,6 +3368,9 @@ describe('rebuild adapter integration', () => {
       stubCodexFileSelection: true,
     });
     const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'agent-subagent'), { mode: 'bundle' });
+    const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+    const marketplaceName = 'aw-team';
+    await fs.ensureDir(isolation.layout.awHomeDir);
     const integration = createRebuildIntegration({
       context: createCommandExecutionContext({
         env: isolation.env,
@@ -3382,6 +3380,7 @@ describe('rebuild adapter integration', () => {
               cwd: isolation.layout.fixtureCwd, env: isolation.env,
               pluginName: plugin.manifest.name, pluginVersion: plugin.manifest.version,
               scope, installed: invocation.args[1] === 'install',
+              marketplaceRoot, marketplaceName,
             });
           }
           return { exitCode: 0, stdout: '', stderr: '' };
@@ -3390,18 +3389,22 @@ describe('rebuild adapter integration', () => {
     });
     const target = await integration.buildTarget({
       plugin, platform: 'claude', scope, cwd: isolation.layout.fixtureCwd,
+      marketplaceRoot, marketplaceName,
       command: 'install', catalog: { rootDir: catalogRoot, source: 'local' },
     });
-    expect(target.artifacts.filter((artifact) => artifact.target === 'claude.skill').map((artifact) => artifact.id))
-      .toEqual(['spawn-subagent-claude-skill']);
+    expect(target.artifacts.some((artifact) => artifact.target === 'claude.skill')).toBe(false);
+    expect(target.operationActions).toContainEqual(expect.objectContaining({
+      kind: 'materializeNativeSkill', platform: 'claude', scope: 'user', artifactId: 'spawn-subagent-claude-skill',
+    }));
     const installed = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
     expect(installed.status, JSON.stringify(installed.failures)).toBe('succeeded');
-    const skillRoot = path.join(resolveClaudePaths(isolation.layout.fixtureCwd, scope, isolation.env).configDir, 'skills', 'spawn-subagent');
+    const skillRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team',
+      'plugins', 'agent-subagent', 'claude', 'skills', 'spawn-subagent');
     const content = await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
     expect(parseSkillFrontmatter(content)).toMatchObject({ frontmatter: { name: 'spawn-subagent' }, errors: [] });
-    expect(await readSkillOwnerMarker({ skillRoot, allowedRoot: path.dirname(skillRoot) })).toMatchObject({
-      plugin: 'agent-subagent', platform: 'claude', scope,
-    });
+    await expect(readSkillOwnerMarker({ skillRoot, allowedRoot: path.dirname(skillRoot) })).resolves.toBeNull();
+    await expect(fs.pathExists(path.join(resolveClaudePaths(isolation.layout.fixtureCwd, scope, isolation.env).configDir,
+      'skills', 'spawn-subagent'))).resolves.toBe(false);
     for (const resource of [
       'references/execution-profiles.md', 'references/external-delegation.md',
       'assets/task-instructions.md', 'scripts/subagent.mjs', 'scripts/runtime/store.mjs',
@@ -3411,11 +3414,12 @@ describe('rebuild adapter integration', () => {
     expect(content).not.toContain('{{aw.command');
     const cleanupTarget = await integration.buildTarget({
       plugin, platform: 'claude', scope, cwd: isolation.layout.fixtureCwd,
+      marketplaceRoot, marketplaceName,
       command: 'cleanup', catalog: { rootDir: catalogRoot, source: 'local' },
     });
     const cleanup = await executeRebuildOperation({ command: 'cleanup', target: cleanupTarget, driver: integration.driver });
     expect(cleanup.status, JSON.stringify(cleanup.failures)).toBe('succeeded');
-    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
   });
 
   it('does not inspect old project static Skills and preserves foreign role registrations', async () => {

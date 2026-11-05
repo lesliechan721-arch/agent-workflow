@@ -22,7 +22,7 @@
 - `version`：单插件稳定 artifact 版本。
 - `requires.aw.capabilities`：插件显式要求的 AW capability ID；插件版本只标识 artifact。
 
-`aw.plugin-recovery.v1` 是 CLI 的 User 与 Project 统一恢复能力。普通插件只要按现有 Manifest 声明 Native 或 `distributions.agentSkills` 交付即可参与解析；只有插件自己的生产内容直接调用 `aw intent`、`aw targets` 或带显式 `--scope` 的恢复命令时，才需声明该 capability。旧 `aw.project-recovery.v1` 不再受支持。
+`aw.plugin-recovery.v1` 表示统一恢复能力。插件顶层 `platforms` 是唯一支持集合：缺省或空数组表示七平台；显式集合只允许 codex、claude、antigravity、cursor、opencode、pi、generic。依赖支持集合必须覆盖消费者，完整链在作者与消费入口校验。旧 products、distributions、distribution selector 与 artifact delivery 被拒绝。生产内容调用 `aw plugin intent/targets/install/sync` 等恢复入口时声明该 capability。
 
 字段、类型、required 条件和 accepted values 通过当前 CLI 查询：
 
@@ -32,9 +32,9 @@ aw plugin capabilities --surface manifest --json
 
 其它 surface 以当前 CLI 帮助为准。不要从 development plugin 文档缓存字段表。
 
-## Config Definition v4 合同
+## Config Definition v5 合同
 
-Manifest 配置在 `config` 中显式声明 `schemaVersion: 4`，使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。字段支持 string、number、boolean、fixed object、KV object 和受约束的一维 array；叶级容器与条件对象的规则见下文。null、混合类型数组及任意递归容器无效。
+Manifest 配置在 `config` 中声明 `schemaVersion: 5`，公共 definitions/fields/presentation 放在 `common`，平台替换放在 `platforms.<target>`。先按名称替换完整 definition、顶层 field 与可选整份 presentation，再展开 $ref；不能先规范化公共定义。公共及每个分支都须有效，平台分支不能削弱敏感保护。未指定项继承，替换字段未声明 default 时不继承公共 default。字段支持 string、number、boolean、fixed object、KV object 和受约束的一维 array，保留既有限值。
 
 `definitions` 和本地 `$ref` 用于复用配置定义。引用只允许 `#/config/definitions/Name`，名称遵守字段安全标识规则，拒绝 `__proto__`、`constructor`、`prototype`。引用处只可覆盖 title、description、default、required；覆盖后的 default 按完整字段约束验证。子属性可引用非敏感标量定义，但不能带 default；动态 KV child 不能带 required。
 
@@ -44,23 +44,50 @@ Manifest 配置在 `config` 中显式声明 `schemaVersion: 4`，使用 `config.
 
 摘要最多 4 段，separator 最多 8 个 Unicode code point，path 最多 128 个字符，显示摘要最多 256 个 Unicode code point。Core 的 `PLUGIN_CONFIG_SUMMARY_MAX_*` 常量公开这些上限。终端呈现清除 ANSI、OSC、C0/C1 和危险双向控制字符。过长摘要或未选中的属性使 `ValuePresentation.complete` 为 false，完整值仍可读取；dirty、preset 匹配、Review diff 和 hash 不使用摘要。没有摘要声明时，界面显示真实属性值，并保留完整读取入口。
 
-配置定义要求 `aw.plugin-config.v4`；摘要另使用 `aw.plugin-config-summary.v1`，数组字段派生 `aw.plugin-config-array.v1`。编译 bundle 保留 requirements，Catalog index 只携带 requirements 与 digest。Store v5 保存原字段名与 JSON 值，不存 ref、summary、preset ID 或编辑 rowId。展示 metadata 变化也改变 schema identity、manifest/bundle digest 和 Review 证据。
+配置定义要求 `aw.plugin-config.v5`；摘要另使用 `aw.plugin-config-summary.v1`，数组字段派生 `aw.plugin-config-array.v1`。编译 bundle 保留 requirements，Catalog index 只携带 requirements 与 digest。Store v6 保存原字段名与 JSON 值，不存 ref、summary、preset ID 或编辑 rowId。展示 metadata 变化也改变 schema identity、manifest/bundle digest 和 Review 证据。
 
 ```json
 {
-  "schemaVersion": 4,
-  "definitions": {
-    "profile": {
-      "type": "object",
-      "properties": { "model": { "type": "string", "required": true } }
+  "schemaVersion": 5,
+  "common": {
+    "definitions": {
+      "profile": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true
+          }
+        }
+      }
+    },
+    "fields": {
+      "agent": {
+        "$ref": "#/config/definitions/profile",
+        "default": {
+          "model": "local"
+        }
+      }
+    },
+    "presentation": {
+      "summaries": {
+        "model": {
+          "kind": "join",
+          "parts": [
+            {
+              "path": "/model"
+            }
+          ],
+          "separator": "/",
+          "missing": "未设置"
+        }
+      },
+      "fieldViews": {
+        "agent": {
+          "summary": "model"
+        }
+      }
     }
-  },
-  "fields": {
-    "agent": { "$ref": "#/config/definitions/profile", "default": { "model": "local" } }
-  },
-  "presentation": {
-    "summaries": { "model": { "kind": "join", "parts": [{ "path": "/model" }], "separator": "/", "missing": "未设置" } },
-    "fieldViews": { "agent": { "summary": "model" } }
   }
 }
 ```
@@ -69,29 +96,31 @@ Manifest 配置在 `config` 中显式声明 `schemaVersion: 4`，使用 `config.
 
 `sensitive: true` 只用于顶层 string 字段，且 sensitive 字段不得声明 default 或 choices。number、boolean、object、array、array item、fixed object child 和 KV `additionalProperties` child 都不得声明 sensitive。`object` 必须选择一种互斥模式。fixed object 必须声明 `properties`，且 `additionalProperties` 省略或为 `false`；KV object 不得声明 `properties`，且必须用一个 scalar child schema 声明 `additionalProperties`。禁止把 fixed 与 KV 混合。固定 child 用 `required: true` 表示必填；所有 child 都不能声明 default，KV child 也不能声明 required。`validation` 支持 `minProperties`、`maxProperties` 和复用 string 校验的 `key`。对象最多有 32 个属性。Core 提供 canonical object preset 匹配和结构化校验 issue；CLI 和控制台支持标量及一层 object 的完整编辑。
 
-`type: "array"` 必须给出单一 `items` schema，允许 string、number、boolean、fixed object 或 KV object。items 可引用本地 definitions，展开后仍遵守叶级容器边界；items 本身不能声明 default、required、sensitive，fixed object item 的属性可 required。数组级 default 和 choices 是完整数组，allowCustom=false 禁止自定义增删改排。`validation.minItems/maxItems` 是非负整数，最大 128 项，未声明 max 也受此限制；每个数组完整值的规范化紧凑 JSON UTF-8 编码最多 262144 字节，对象元素仍最多 32 属性。`uniqueItems` 默认 false，true 时重复值报错，不静默去重；对象 key 顺序不影响相等，数组顺序影响相等。`[]` 可覆盖非空默认，unset 不等于空数组，required 不代表非空。`fieldViews.<field>.itemSummary` 可引用一个针对 fixed-object 元素的 join summary；KV 元素使用安全对象预览。CLI 用完整 JSON set/unset，TUI 在本地列表中增删改排，确认整列后选一次保存范围，不提供 index 写入命令。
+`type: "array"` 必须给出单一 `items` schema，允许 string、number、boolean、fixed object 或 KV object。items 可引用本地 definitions，展开后仍遵守叶级容器边界；items 本身不能声明 default、required、sensitive，fixed object item 的属性可 required。数组级 default 和 choices 是完整数组，allowCustom=false 禁止自定义增删改排。`validation.minItems/maxItems` 是非负整数，最大 128 项，未声明 max 也受此限制；每个数组完整值的规范化紧凑 JSON UTF-8 编码最多 262144 字节，对象元素仍最多 32 属性。`uniqueItems` 默认 false，true 时重复值报错，不静默去重；对象 key 顺序不影响相等，数组顺序影响相等。`[]` 可覆盖非空默认，unset 不等于空数组，required 不代表非空。`fieldViews.<field>.itemSummary` 可引用一个针对 fixed-object 元素的 join summary；KV 元素使用安全对象预览。CLI 用完整 JSON set/unset，TUI 在本地列表中增删改排，确认整列后保留在当前 profile 草稿，不提供 index 写入命令。
 
 对象数组可以用 `validation.uniqueBy` 指定一个已声明的标量属性。重复属性值会使整个候选无效，属性值保持原类型和大小写。非敏感标量可以声明 `valueRef: { field, key, label?, include? }`：`field` 是另一顶层对象数组，`key` 是同类型标量属性，`label` 是可选展示属性，`include` 是允许的静态内置值。静态值同时保留，源数组不能使用同值的 key。引用只使用固定字段和一层属性；保存、有效配置读取与 apply 都校验依赖闭包。删除仍被引用的 key 会失败，可先新增 key，再切换引用，最后删除旧 key。调用者得到的字段仍受原允许 keys 限制。两项能力分别要求 `aw.plugin-config-unique-by.v1` 和 `aw.plugin-config-value-ref.v1`。
 
-Config Definition v4 的 valueRef 还可指定 `plugin`，例如 `{ "plugin": "agent-subagent", "field": "subagentCommands", "key": "key", "include": ["native"] }`。这需要 `aw.plugin-config-cross-plugin-value-ref.v1`。provider 必须是本插件的显式直接 dependencies，并位于同一 Catalog source；只接受插件名，不接受 source/plugin、路径或自引用。省略 plugin 保持本地引用。provider 的字段、key、label、敏感依赖和完整数组继续通过同一 Core 校验。单 manifest 结构检查不要求 provider 字段出现在本插件，取得依赖定义后的关联校验仍是完整作者验证和 Catalog 验证的必要步骤。
+Config Definition v5 的 valueRef 还可指定 `plugin`，例如 `{ "plugin": "agent-subagent", "field": "subagentCommands", "key": "key", "include": ["native"] }`。这需要 `aw.plugin-config-cross-plugin-value-ref.v1`。provider 必须是本插件的显式直接 dependencies，并位于同一 Catalog source；只接受插件名，不接受 source/plugin、路径或自引用。省略 plugin 保持本地引用。provider 的字段、key、label、敏感依赖和完整数组继续通过同一 Core 校验。单 manifest 结构检查不要求 provider 字段出现在本插件，取得依赖定义后的关联校验仍是完整作者验证和 Catalog 验证的必要步骤。
 
-TUI 根据 valueRef 动态显示 include 与当前来源数组的选项，无需再声明重复的 choices。未提供 label 时显示 key，提供 label 时同时显示 key 以区分同名项；保存值始终是 key。静态 choices、const 和 validation 继续限制可选集合。引用字段先确定合法保存层，本地选项可使用该层草稿；跨插件选项只取来源插件已保存的有效值，并遵守来源自己的 user-only 规则。先保存来源，再编辑消费方。来源导航返回后重读候选并重验旧草稿。无可选值、失效原值或完整来源无效时显示插件/字段诊断与修复入口。
+TUI 的 Tab 切换公共/平台 profile，左右切换字段组；引用候选来自同 profile 的已保存有效值。跨插件先保存 provider，再编辑 consumer。来源导航返回后重读候选并重验草稿。common 与平台草稿分别保留，不能借另一未保存页虚构有效候选。
 
-普通保存来源时，AW 检查同 Active source 的消费方，拒绝破坏当前可检查层中此前有效的实际引用；user 修改覆盖 user 和当前 cwd 的 project，project 修改只覆盖当前项目，包括已有配置但未安装的消费方。已有无关问题不阻止添加候选或修复来源。整层 reset 是恢复入口，允许提交并报告消费方失效；其它项目下次读取时重新校验。保存不更新安装产物，显式 apply 使用当前可见且已有使用意图的依赖目标，不自动启用消费方。
+普通保存先检查当前授权来源视图中此前有效的引用，包括未安装 consumer。common 修改检查公共和已知相关平台，平台修改只检查对应平台；context 决定授权来源与已有输出范围，不产生项目值层。已有无关问题不妨碍修复；reset 可清除覆盖并准确报告失效。保存后独立 apply 只刷新已存在输出，缺失提示 sync。
 
 离线 Review、Eval 和 renderer fixture 使用同次 Workspace/snapshot 的依赖定义，依赖值来自 defaults 与显式非敏感覆盖，不能读取真实 AW_HOME。`aw review prepare --config` 使用 `{plugin: {field: value}}`，可同时提供消费方 profile 和 provider 注册表。只准备消费方 Skill 时仍校验 provider，但不额外物化其 Skill。相关覆盖、默认值和定义进入现有来源绑定证据，改变后须重新准备。
 
-AW 只提供 `default < user < project` 两个持久写入层。所有新 namespaced Store 使用 schemaVersion 5，包括只含标量、对象或空 values 的配置；旧格式显示 schemaVersionUnsupported 并保留原文件。user 配置绑定 source identity；project 配置绑定 Catalog logical identity，所以 Git URL、SSH/HTTPS transport 或 path source 的变化不改变同一 Catalog 的项目配置身份。sensitive 字段只允许 user scope。project 写入若无法由 Git 验证可共享性，会返回 `projectConfigShareabilityUnverified` warning；明确被 ignore 时以 `projectConfigIgnored` 拒绝写入。object 和 array 值按顶层字段完整覆盖，不深合并或拼接列表。字符串 validation format 只支持 `identifier`、`slug`、`semver`、`url`、`hostname` 和 `email`；Config 不提供文件系统 path、file 或 directory format，也不解析 realpath 或建立 project artifact path boundary。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --value-stdin | --preset <id>)`。sensitive 字段拒绝 `--value-json` 和 `--preset`；非交互或 JSON 模式必须使用 `--scope user --value-stdin`，并按 EOF 原样读取 UTF-8。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的 `scripts/aw-config.mjs` 读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config；helper 保持敏感值脱敏，不读取持久 store，也不维护第二份字段 validator。user/project 层诊断使用 `aw config get/list --scope ...`。
+用户 Store v6 在同一 source/plugin 身份下保存 `common` 与 `platforms`。有效配置为 `defaults(compileSchema(P)) < common < platforms[P]`，按顶层键存在覆盖；对象、数组整体替换，false、0、空串与空数组均有效。项目没有配置值文件；历史文件保留但不读取。common 成为最终值却不符合平台 schema 时明确失败；合法平台覆盖可遮蔽它。未知值保留供 unset/reset，不能静默退回默认。
+
+CLI 使用 `aw plugin config set <plugin> <field> [--platform <target>] [--context user|project] (--value-json <json> | --value-stdin | --preset <id>)`。省略 platform 编辑 common。敏感值只经安全输入，不接受 argv 明文；JSON/非交互使用 --value-stdin。作者 helper 只读取 AW_PLUGIN_CONTEXT 中已校验的有效配置，不读取 Store 或另建校验器。
 
 ### 条件对象与常量
 
-声明 `config.schemaVersion: 4` 后，固定对象可使用有限 `variants`，非敏感标量可声明 `const`，固定对象的属性可使用叶级标量数组或标量 KV 对象。顶层对象数组的固定元素同样支持这些属性。该合同使用 definitions、局部引用、choices、valueRef、uniqueBy、presentation、scope 和既有限值；不开放任意递归容器。
+声明 `config.schemaVersion: 5` 后，固定对象可使用有限 `variants`，非敏感标量可声明 `const`，固定对象的属性可使用叶级标量数组或标量 KV 对象。顶层对象数组的固定元素同样支持这些属性。该合同使用 definitions、局部引用、choices、valueRef、uniqueBy、presentation、scope 和既有限值；不开放任意递归容器。
 
 `variants.discriminator` 指向当前对象 common properties 中已声明的 own string 属性。`cases` 将字符串映射到 `{ properties }` 分支；分支不能覆盖 common 属性。可选 `missing` 指向一个已有 case，只在选择字段缺失时使用；可选 `otherwise` 为其它合法值提供 `{ properties }`。选择值仍须通过 choices 和 valueRef 校验。没有匹配分支时拒绝候选，不猜测默认值；所有分支在 schema 读取时都必须有效。
 
 `const` 必须匹配标量类型及校验条件。显式值不同则报错；省略时可显示常量，但不会将它写入强配置。`required` 仍独立生效。TUI 从相同分支合同显示属性和固定值；叶级数组与 KV 使用结构化编辑。切换分支只改变草稿，保存 Review 显示移除的属性和实际保留值；取消保留原配置。无交互写入不清理错误字段，而是拒绝整个候选。
 
-v4 要求 `aw.plugin-config.v4`。先交付支持该 capability 的 CLI，再分发使用它的插件。Manifest v3、Store v5、Catalog v7 和 installed-runtime-config v2 是独立合同。Store 保存完整原始顶层值，不保存 UI rowId、派生命令路径或环境引用的解析值。分支、常量和呈现元数据均属于 schema identity，变化后需重新取得 Review 证据。
+v4 要求 `aw.plugin-config.v5`。先交付支持该 capability 的 CLI，再分发使用它的插件。Manifest v3、Store v6、Catalog v7 和 installed-runtime-config v2 是独立合同。Store 保存完整原始顶层值，不保存 UI rowId、派生命令路径或环境引用的解析值。分支、常量和呈现元数据均属于 schema identity，变化后需重新取得 Review 证据。
 
 ### 已安装配置读取
 
@@ -110,15 +139,15 @@ const runtime = await readRuntimeConfig({
 
 返回值包含 `installedIdentity`、请求获准的 `effectiveValues` 和 `resourceRoot`。schema 2 生效资源保存 installed identity、allowed keys、effective values 和本产物需要的来源元数据。reader 无须 `AW_PLUGIN_CONTEXT`，从真实调用位置检查本产物的格式、来源、作用域和安全路径；不读取最新 store，不遍历其他 Skill，也不核验资源树或角色正文。保存但未 apply 的配置不改变返回值；apply 部分成功时，各可用产物按自身内容工作。消费脚本仍须校验本次使用的 profile、命令和输入。
 
-缺失或损坏的本产物配置、未知格式、越权 keys、不安全路径或可观察身份冲突会拒绝调用，并提供修正配置、sync/reinstall 恢复。生效资源是可重建的弱状态，不能改变 ownership、status 或 cleanup 的安装判断。旧 `resourceVersion`、`artifactIds`、v1 binding 和 `expectedRevision` 不再兼容。作者须仅保留 keys、声明新 capability，并先使用支持 v2 的 CLI，再通过正常 build/sync/reinstall 更新已安装 helper；Manifest v3 和 Store v5 不变。
+缺失或损坏的本产物配置、未知格式、越权 keys、不安全路径或可观察身份冲突会拒绝调用，并提供修正配置、sync/reinstall 恢复。生效资源是可重建的弱状态，不能改变 ownership、status 或 cleanup 的安装判断。旧 `resourceVersion`、`artifactIds`、v1 binding 和 `expectedRevision` 不再兼容。作者须仅保留 keys、声明新 capability，并先使用支持 v2 的 CLI，再通过正常 build/sync/reinstall 更新已安装 helper；Manifest v3 和 Store v6 不变。
 
-字段覆盖不符合当前 schema 时，AW 保留该层值供用户修改或 unset，但 runtime 不使用低层 fallback 继续运行；fallback 只用于解释删除后的恢复结果。删除 project 覆盖后若会暴露无效 user 值，fallback 是 `invalid`，不能用 schema default 代替。结构损坏的 store 必须整层 reset。Config Mutation Receipt v7 的 `configWrite: succeeded` 说明强配置已经越过 commit point；之后的解析、target discovery、target validation 或 apply 失败使用 `overallState: partial` 和 discriminated `apply` 报告，不回滚已保存设置。每个 target 按自己的 platform 和 scope 验证，健康 target 可以继续 apply，无效 target 报告 `skipped/invalidConfig`。reset receipt 用 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory` 说明实际处理结果，目录隔离只公开 basename。
+字段覆盖不符合当前 schema 时，AW 保留该层值供用户修改或 unset，但 runtime 不使用低层 fallback 继续运行；fallback 只用于解释删除后的恢复结果。删除平台覆盖后若会暴露无效 common 值，fallback 是 `invalid`，不能用 schema default 代替。结构损坏的 store 必须整层 reset。Config Mutation Receipt v7 的 `configWrite: succeeded` 说明强配置已经越过 commit point；之后的解析、target discovery、target validation 或 apply 失败使用 `overallState: partial` 和 discriminated `apply` 报告，不回滚已保存设置。每个 target 按自己的 platform 和 scope 验证，健康 target 可以继续 apply，无效 target 报告 `skipped/invalidConfig`。reset receipt 用 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory` 说明实际处理结果，目录隔离只公开 basename。
 
 已安装 Author 在开始工作时运行 `aw self check --from <skill-root> --json`。CLI 优先读取同层 `aw-plugin-requirements.json` runtime receipt，再回退到 Manifest；`missingCapabilities` 非空时停止。`aw plugin requirements <plugin-directory> --json` 分开报告 declared、derived、detected 和 effective requirements。`requires.aw.capabilities` 只声明生产行为真正需要的最小集合，不能用 CLI 版本字符串替代 capability compatibility。
 
 同一 Catalog source 内的运行时依赖只在 manifest `dependencies` 中声明，值为裸插件名。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。依赖集合、缺失节点和环由 Catalog 作者聚合验证；本指南只定义单插件声明。
 
-Codex native target 的 `refreshKeys` 是 user-only。遗留 project override 会保留但不参与 effective value。Status 报告非阻断 `configLayerUnsupported` warning，TUI 只允许删除该旧值。
+Codex Native target 的 `refreshKeys` 使用 Codex profile 的编译配置。值只保存在用户 Store v6 的 common 或 platforms.codex；项目仅是读取与 apply 上下文，旧项目值文件不参与解析。
 
 ## 单插件作者闭环
 
@@ -197,23 +226,23 @@ Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输
 
 每个 `buildConfig.runtimeExports[]` 必须使用 `{ name, source, requires: { aw: { capabilities: [] } } }`。Provider 作者显式声明该 export 的完整 runtime capability 集合；空数组合法。Core 只规范化、排序、去重并计算稳定 capability set digest，不扫描 export 内容推断 metadata。`skillRuntimeFiles.import` 和 artifact `runtimeImports` 把实际使用 export 的 capability 合并到 consumer 最终 bundle、Catalog entry 和每个 Skill receipt；`buildImports` 不传播。Consumer 自有 `skillRuntimeFiles.source` 和 `generatedSkillRuntimeFiles` 继续由顶层 `requires.aw.capabilities` 负责。
 
-Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
+Portable Skill 从统一 skills 来源和具体平台动态 target 生成，不要求虚构 Native 能力。作者导出用 `aw skill materialize --platform <antigravity|cursor|opencode|pi|generic> --scope <user|project> --out <dir>`，消费者安装用 `aw plugin install`。完整依赖闭包先校验，--skill 只过滤最终选择；无第三方 provider 安装入口。
 
-独立审核源 Skill 时，使用 `aw review inspect <target> --json` 取得默认的精简 review 导航；已有来源凭据通过 `--materialization <path>` 传入。需要 final 时使用 `aw review prepare <plugin-or-source-skill> --platform <codex|claude|agent-skills> --scope <user|project> --out <new-dir> --json`，可加 `--skill` 和 `--config` 选择本次输入。它无需 Eval，配置仅取 manifest 默认值与合法非敏感覆盖，在隔离环境执行必要 build/renderer，不安装插件。inspection 回执使用 schema 2，view 为 review；取证完成不代表质量或发布通过。
+独立审核源 Skill 时，使用 `aw review inspect <target> --json` 取得默认的精简 review 导航；已有来源凭据通过 `--materialization <path>` 传入。需要 final 时使用 `aw review prepare <plugin-or-source-skill> --platform <codex|claude|antigravity|cursor|opencode|pi|generic> --scope <user|project> --out <new-dir> --json`，可加 `--skill` 和 `--config` 选择本次输入。它无需 Eval，配置仅取 manifest 默认值与合法非敏感覆盖，在隔离环境执行必要 build/renderer，不安装插件。inspection 回执使用 schema 2，view 为 review；取证完成不代表质量或发布通过。
 
 `aw skill materialize`、`aw skill eval prepare` 和 `aw review prepare` 均返回 `sourceBindingPath`，指向被测 Skill 外的 schema 2 `aw-source-binding.json`。它把本次 source 或 Catalog snapshot、profile 输入和实际产物绑定，供后续 inspection 只读核验。该文件不替代 EvalSpec/Audit/Result，也不证明语义质量。缺失、过期或 v1 凭据均需通过对应入口在新目录重新准备，不原地迁移或手工补写 digest。inspection v2 提供当前 source 到 final 的导航。
 
-Eval Manifest v1 profile 的 `plugins` 对象选择参与插件，并为每个插件提供公共非敏感配置。可选 `configByScope` 使用 `{ "user": { "plugin-name": {} }, "project": { "plugin-name": {} } }`；其中插件必须已在 `plugins` 中声明。每个 scope 覆盖按顶层字段替换，未写字段继承公共配置。普通 artifact 和 role 使用 profile 的 `scope`；共享 `codex-native` Skill 始终使用合并后的 user 配置。`prepare` 将这些实际输入写入隔离 config store，并把有效配置摘要绑定到 source binding；它不安装插件或启动模型。
+Eval Manifest v1 的每个 profile 必须显式声明七平台之一的 `platform`，与 backend/executor 分开。`plugins` 配置按该平台 schema 校验。scope 仅描述材料使用上下文，Native shared-user 包体不把消费平台改成公共 profile。来源绑定包含具体平台与有效输入，不能跨 target 复用；未知 backend 能力不会因材料平台而自动获得。
 
-本次准备可用 `--config-file <file>` 传入同形的插件配置 map，按顶层字段覆盖选定 profile 的公共及 scope 值。文件必须是普通文件；插件必须已被选中，字段不得敏感。来源绑定保存实际覆盖，输出提交前复查输入。此入口可为独立运行包提供已经安装的绝对 adapter 路径，不在 source profile 保存机器专属占位路径。
+本次准备可用 `--config-file <file>` 提供已选插件的非敏感配置 map，按顶层字段覆盖选定平台值。文件须为普通文件，来源绑定保存实际覆盖，输出提交前复核。机器专属 adapter 路径只放此次显式输入，不写入 source profile。
 
 renderer 的结构化 stdout 保持完整 JSON，最大为 16 MiB；超限时 AW 停止本次进程树并拒绝产物。诊断摘要仍有独立的 64 KiB 上限和脱敏。已声明 runtimeConfig 的 Skill 源脚本可导入该 Skill 的 `scripts/aw-runtime-config.mjs`；源码和 bundle 检查识别这个注入合同，最终读取脚本仍由 AW 提供。其它缺失导入继续失败。
 
-每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。所有 `codex.skill` delivery、`claude.skill` 和 `agent-skills.skill` 的 `refreshKeys` 都不得引用 sensitive config；非 Skill target 可以读取 sensitive config。native target 使用 user 配置 profile；与其 `refreshKeys` 匹配的字段只能在 user scope 写入，project scope 的 set 会被拒绝。user 配置中与 `refreshKeys` 匹配的变更会刷新投影，空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。同一插件 identity 的所有 Codex native 组件必须使用完全相同的 scope 集；静态 Skill、MCP、Hook 和 App 固定为 `{project,user}`，dynamic native 使用声明 scopes，slash command 不参与该规则。
+Codex 与 Claude 的静态/动态 Skill 固定进入 Native 包，声明 delivery 无效。共享包体使用用户物理身份，仍读取各自平台配置；项目 activation 独立管理。Portable `agent-skills.skill` 必须声明五个 Portable canonical platform 之一，不使用 distribution。所有 Skill refreshKeys 与运行时 keys 均禁止敏感依赖；平台 target 按该平台编译配置校验。动态与静态 Skill 名字冲突仍拒绝。
 
 AW 为 Codex native dynamic projection 生成 `.agents-plugin/aw-codex-native-render.json`，插件源码和 renderer 不得声明该保留文件。schema 1 receipt 只记录规范化 identity 和 digest，不记录原始 config；所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，即使 scopes 不重叠也不能复用。`configDigest` 聚合 validated artifact 的 per-target config digest，`renderInputDigest` 绑定 source、plugin version、renderer digest 和规范化 target config/artifact digest。动态 payload digest 排除该 receipt 和 AW owner marker，规范化 `.codex-plugin/plugin.json` 的 version，但绑定 renderer 产生的真实 skills projection；静态 shared native digest 继续规范化 Codex-managed skills。AW 会检查完整 user effective config 中至少 8 个 Unicode code point 的 sensitive string 原文和 JSON 转义形态；该阈值只减少短值误报，不表示 secret 强度，日志仍脱敏所有长度。receipt 只有在 AW 生成或内容验证后，才从精确路径的扫描中排除；不得按 basename 通配。命中时停止，不改变 live marketplace、Codex registration 或 activation。receipt 是可删除、可重建的现场证据，不是作者维护的 ledger。
 
-renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution/AW surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。同一 surface/scope 同时有 Skill 和读取 sensitive config 的非 Skill target 时，AW 把它们分成两个请求；两个请求读取同一份不可变 `previousArtifacts`，每个 `ArtifactPlan` 必须精确匹配该批 ID。`config.schema/values/sources/issues` 和 `changedConfigKeys` 只含本次 target `refreshKeys` 的并集。`commandSources` 在所有 context 中存在（默认 []），只提供本次命令 target 涉及包的已核验只读 sourceDir；AW surface 设置 AW_PLUGIN_SURFACE=managed-commands，不设置 platform/distribution。`artifactSources` 按 manifest 顺序提供当前 surface/scope 全部 Skill target 的真实 `sourceDirs`，即使该 Skill 未在本批请求中；renderer 可用这些路径复用静态资源，但不能据此读取更多配置或返回更多产物。不要猜测 bundle 的私有目录布局。context 不提供 config store 路径；renderer 的三个 `AW_*_HOME` 和 context home 路径都指向本次请求的临时目录。该输入隔离不是 OS sandbox。配置 helper 只支持 effective context 读取，缺少 `AW_PLUGIN_CONTEXT` 或显式 user/project 读取都会失败。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
+renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/AW surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 Native shared projection 使用上段更严格的全局唯一规则。同一 surface/scope 同时有 Skill 和读取 sensitive config 的非 Skill target 时，AW 把它们分成两个请求；两个请求读取同一份不可变 `previousArtifacts`，每个 `ArtifactPlan` 必须精确匹配该批 ID。`config.schema/values/sources/issues` 和 `changedConfigKeys` 只含本次 target `refreshKeys` 的并集。`commandSources` 在所有 context 中存在（默认 []），只提供本次命令 target 涉及包的已核验只读 sourceDir；AW surface 设置 AW_PLUGIN_SURFACE=managed-commands，不设置 platform。`artifactSources` 按 manifest 顺序提供当前 surface/scope 全部 Skill target 的真实 `sourceDirs`，即使该 Skill 未在本批请求中；renderer 可用这些路径复用静态资源，但不能据此读取更多配置或返回更多产物。不要猜测 bundle 的私有目录布局。context 不提供 config store 路径；renderer 的三个 `AW_*_HOME` 和 context home 路径都指向本次请求的临时目录。该输入隔离不是 OS sandbox。配置 helper 只支持 effective context 读取，缺少 `AW_PLUGIN_CONTEXT` 或显式 user/project 读取都会失败。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
 
 插件可以声明 executable build/test/preApply code、hooks、MCP servers、Apps、config 和 artifacts。preApply 只用于安装前环境校验或安装外部系统工具，必须幂等；它不能替代 manifest dependencies 或 build-time Node bundle。AW 验证声明并保护 ownership；请求级临时 home 是输入隔离，不是 OS sandbox。需要 context 的 preApply 必须完整读取 stdin 后再决定结果；不需要 context 的脚本可以直接成功退出。preApply 必须在返回前等待自己的全部后代退出，不得 daemonize 或遗留后台任务；AW 会在正常退出、超时和中断后清理本次脚本进程树，清理无法确认时 preApply 失败。安装或执行前必须把 executable source 和 trust boundary 作为受信任代码评审。
 
@@ -221,7 +250,7 @@ renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 targe
 
 日常 source 修改是否改变 plugin `version`，由目标 workspace 的版本策略和 `aw plugin status` 证据决定。不要为生成 bundle 自动提高版本。Catalog 版本选择、publish plan/apply、version-scoped publication journal、pending repo、remote branch/tag 和 recovery 由 [Catalog 作者指南](catalog-authoring.md)定义。
 
-单插件生成输出是弱状态，可重新运行 `aw plugin build`。安装结果失败时使用 receipt、`aw status`、`aw reinstall` 或安全的 `aw cleanup` 恢复；`cleanup --force` 只用于可证明为专属 AW-owned 的损坏输出，不删除 foreign/shared 内容。
+单插件生成输出是弱状态，可重新运行 `aw plugin build`。安装结果失败时使用 receipt、`aw plugin status`、`aw plugin sync --rebuild` 或安全的 `aw plugin cleanup` 恢复；`cleanup --force` 只用于可证明为专属 AW-owned 的损坏输出，不删除 foreign/shared 内容。
 
 ## Related documents
 

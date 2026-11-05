@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -6,30 +7,30 @@ import { describe, expect, it, vi } from 'vitest';
 import * as nativeStatus from '../../src/commands/status-v6.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { targetsSet } from '../../src/commands/targets-command.js';
-import { createEmptyPreferences, resolvePreferencesPath } from '../../src/intent/deployment-preferences.js';
+import { createEmptyPreferences, resolvePreferencesPath, setTargets, type AgentId } from '../../src/intent/deployment-preferences.js';
 import { resolveIntentPath } from '../../src/intent/intent-store.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { checkRecovery, readRecoveryStatus } from '../../src/recovery/status.js';
 import { readDemand } from '../../src/recovery/demand.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-type Agent = 'codex' | 'claude-code' | 'cursor';
+const PORTABLE_TARGETS = ['antigravity', 'cursor', 'generic', 'opencode', 'pi'] as const;
+type Agent = AgentId;
 
 async function fixture(plugins: Array<{
   name: string;
   dependencies?: string[];
   native?: boolean;
-  nativeArtifactOnly?: boolean;
-  nativeSkill?: string;
   portableSkill?: string;
-  portableCodexSwitch?: boolean;
   configurable?: boolean;
 }>, scope: 'user' | 'project' = 'project') {
   const isolation = getCurrentSourceTestIsolation();
@@ -38,173 +39,153 @@ async function fixture(plugins: Array<{
   await fs.ensureDir(cwd);
   await git(cwd, ['init', '--quiet']);
   for (const plugin of plugins) {
-    const portableSkill = plugin.portableSkill ?? plugin.name;
-    const skill = path.join(sourceRoot, 'plugins', plugin.name, 'agent-skills', 'skills', portableSkill);
+    const name = plugin.portableSkill ?? plugin.name;
+    const pluginRoot = path.join(sourceRoot, 'plugins', plugin.name);
+    const skill = path.join(pluginRoot, 'skills', name);
     await fs.outputFile(path.join(skill, 'SKILL.md'),
-      `---\nname: ${portableSkill}\ndescription: ${portableSkill} fixture\n---\n${portableSkill}\n`);
+      `---\nname: ${name}\ndescription: ${name} fixture\n---\n${name}\n`);
     await fs.outputFile(path.join(skill, 'README.md'), `# ${plugin.name}\n`);
-    if (plugin.native && !plugin.nativeArtifactOnly && !plugin.nativeSkill) await fs.outputFile(path.join(sourceRoot, 'plugins', plugin.name, 'skills', plugin.name, 'SKILL.md'),
-      `---\nname: ${plugin.name}\ndescription: Native fixture\n---\nNative.\n`);
-    if (plugin.nativeSkill) await fs.outputFile(path.join(sourceRoot, 'plugins', plugin.name, 'scripts', 'render.mjs'), [
-      'import { readFile } from "node:fs/promises";',
-      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-      `console.log(JSON.stringify({ version: 2, artifacts: [{ id: "dynamic-skill", kind: "skill", platform: context.platform, target: "codex.skill", state: "present", refreshKeys: [], skillKey: ${JSON.stringify(plugin.nativeSkill)}, content: { files: { "SKILL.md": ${JSON.stringify(`---\nname: ${plugin.nativeSkill}\ndescription: Native fixture\n---\nNative.\n`)}, "README.md": "Native.\\n", "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n" } } }] }));`,
-    ].join('\n'));
+    for (const target of PORTABLE_TARGETS) {
+      await fs.copy(path.join(pluginRoot, 'skills'), path.join(pluginRoot, target, 'skills'));
+    }
   }
   await createDependencyCatalogSnapshotFixture(sourceRoot, plugins.map((plugin) => ({
     name: plugin.name,
     ...(plugin.dependencies ? { dependencies: plugin.dependencies } : {}),
     configureManifest: (manifest) => {
-      manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
-      if (plugin.portableCodexSwitch) {
-        manifest.extensions!.instructions![0]!.agentOverrides = { codex: null };
-      }
-      if (!plugin.native) manifest.marketplace.policy.products = plugin.portableCodexSwitch
-        ? ['CODEX', 'CLAUDE'] : ['CODEX'];
+      manifest.platforms = [...PORTABLE_TARGETS, ...(plugin.native ? ['codex', 'claude'] as const : [])];
+      manifest.skills = './skills';
       if (plugin.native) manifest.extensions = {
         instructions: [{ name: 'native', title: 'Native', content: 'Native.' }],
       };
-      if (plugin.native && !plugin.nativeArtifactOnly && !plugin.nativeSkill) manifest.skills = './skills';
-      if (plugin.nativeSkill) {
-        manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
-        manifest.artifacts = { targets: [{ id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: plugin.nativeSkill }] };
-      }
-      if (plugin.configurable) manifest.config = { fields: { mode: { type: 'string' } } };
+      else delete manifest.extensions;
+      if (plugin.configurable) manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string' } }, platforms: {} };
     },
   })));
-  const entries = [];
-  for (const plugin of plugins) {
-    const pluginRoot = path.join(sourceRoot, 'plugins', plugin.name);
-    const manifest = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    await fs.outputJson(path.join(pluginRoot, 'agent-skills', 'skills', plugin.portableSkill ?? plugin.name, 'aw-plugin-requirements.json'),
-      createAwPluginRequirementsReceipt({ name: plugin.name, version: '1.0.0' },
-        manifest.manifest.requires?.aw.capabilities ?? []));
-    entries.push(await createCatalogManifestV7Entry(manifest, pluginRoot));
-  }
-  const catalogPath = path.join(sourceRoot, 'catalog-manifest.json');
-  await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries });
+  await rebuildCatalogEntries(sourceRoot, plugins.map((plugin) => plugin.name));
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
     expectedDigest: snapshot.digest, env: isolation.env,
   });
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
-  const generated = await fs.readJson(path.join(sourceRoot, '.aw-generated.json')) as { workspaceIdentity: string };
   const intentPath = await resolveIntentPath({ scope, cwd, env: isolation.env });
-  const intent = {
-    schemaVersion: 3, kind: 'aw-plugin-intents',
-    sources: { team: { logicalIdentity: generated.workspaceIdentity } },
+  await writeIntentFixture({ scope, cwd, env: isolation.env }, {
     roots: plugins.filter((plugin) => plugin.name !== 'shared').map((plugin) => ({ pluginId: `team/${plugin.name}` })),
-  };
-  await fs.outputFile(intentPath, `  ${JSON.stringify(intent, null, 2)}\n`);
-  const bin = path.join(isolation.layout.fixtureCwd, 'fake-skills-bin');
-  const log = path.join(isolation.layout.fixtureCwd, 'skills-calls.jsonl');
-  await fs.ensureDir(bin);
-  await fs.writeFile(path.join(bin, 'skills'), `#!/usr/bin/env node
-const fs = require('node:fs'); const path = require('node:path');
-const args = process.argv.slice(2); const cwd = process.cwd();
-const global=args.includes('--global');
-const targetRoot=global?process.env.HOME:cwd;
-const claudeRoot=global?(process.env.CLAUDE_CONFIG_DIR||path.join(targetRoot,'.claude')):path.join(cwd,'.claude');
-fs.appendFileSync(process.env.RECOVERY_SKILLS_LOG, JSON.stringify(args) + '\\n');
-if (args[0] === '--version') { console.log('1.5.23'); process.exit(0); }
-let lock = {version:1,skills:{}};
-try { lock=JSON.parse(fs.readFileSync(path.join(cwd,'skills-lock.json'))); } catch {}
-if (args[0] === 'list') {
- const rows = [];
- const queried=args.includes('--agent')?args[args.indexOf('--agent')+1]:null;
- const names=global?[...new Set([path.join(targetRoot,'.agents','skills'),path.join(claudeRoot,'skills')].flatMap(root=>fs.existsSync(root)?fs.readdirSync(root):[]))]:Object.keys(lock.skills);
- for (const name of names) {
-  const shared=path.join(targetRoot,'.agents','skills',name);
-  const claude=path.join(claudeRoot,'skills',name);
-  const dest=queried==='claude-code'?claude:queried?shared:fs.existsSync(shared)?shared:claude;
-  const agents=[...(fs.existsSync(shared)&&queried!=='claude-code'?['Codex','Cursor']:[]),...(fs.existsSync(claude)&&(!queried||queried==='claude-code')?['Claude Code']:[])];
-  if (fs.existsSync(dest)) rows.push({name,path:dest,scope:global?'global':'project',agents,source:global?null:lock.skills[name].source});
- }
- console.log(JSON.stringify(rows)); process.exit(0);
-}
-if (args[0] === 'add') {
- const source=args[1], name=args[args.indexOf('--skill')+1], agent=args[args.indexOf('--agent')+1];
-if (process.env.RECOVERY_FAIL_SKILL === name) {
- if (process.env.RECOVERY_BAD_LOCK_ON_FAIL_SKILL) fs.writeFileSync(path.join(cwd,'skills-lock.json'),'{broken');
- process.exit(2);
-}
- const dest=agent==='claude-code'?path.join(claudeRoot,'skills',name):path.join(targetRoot,'.agents','skills',name);
- fs.mkdirSync(path.dirname(dest),{recursive:true});
- if (process.env.RECOVERY_PARTIAL_SKILL === name) {
-  fs.rmSync(dest,{recursive:true,force:true});
-  fs.mkdirSync(dest,{recursive:true});
-  fs.copyFileSync(path.join(source,'skills',name,'SKILL.md'),path.join(dest,'SKILL.md')); process.exit(2);
- }
- fs.cpSync(path.join(source,'skills',name),dest,{recursive:true});
- lock.skills[name]={source,sourceType:'local',computedHash:'fixture'};
- if(!global) fs.writeFileSync(path.join(cwd,'skills-lock.json'),JSON.stringify(lock));
- process.exit(process.env.RECOVERY_FAIL_AFTER_COPY_SKILL === name ? 2 : 0);
-}
-process.exit(2);
-`);
-  await fs.chmod(path.join(bin, 'skills'), 0o755);
-  const env = { ...isolation.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, RECOVERY_SKILLS_LOG: log };
-  return { cwd, sourceRoot, intentPath, log, env,
-    options: (targets?: Agent[]) => ({ scope, cwd, env,
+    targets: ['cursor'],
+  });
+  return { cwd, sourceRoot, intentPath, env: isolation.env, scope,
+    options: (targets?: Agent[]) => ({ scope, context: scope, cwd, env: isolation.env,
       cliVersion: '1.0.0', ...(targets ? { targets } : {}), all: true, yes: true }),
   };
 }
 
-async function addCalls(log: string): Promise<string[][]> {
-  if (!await fs.pathExists(log)) return [];
-  return (await fs.readFile(log, 'utf8')).trim().split('\n').filter(Boolean)
-    .map((line) => JSON.parse(line) as string[]).filter((args) => args[0] === 'add');
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+async function rebuildCatalogEntries(sourceRoot: string, names: string[]): Promise<void> {
+  const entries = [];
+  for (const name of names) {
+    const pluginRoot = path.join(sourceRoot, 'plugins', name);
+    const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+    const receipt = createAwPluginRequirementsReceipt({ name, version: '1.0.0' }, plugin.manifest.requires?.aw.capabilities ?? []);
+    for (const target of PORTABLE_TARGETS) {
+      const root = path.join(pluginRoot, target, 'skills');
+      for (const skill of await fs.readdir(root)) await fs.outputJson(path.join(root, skill, 'aw-plugin-requirements.json'), receipt);
+    }
+    entries.push(await createCatalogManifestV7Entry(plugin, pluginRoot));
+  }
+  const catalogPath = path.join(sourceRoot, 'catalog-manifest.json');
+  await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries });
+}
+
+function portableRoot(setup: Pick<Fixture, 'cwd' | 'env'>, target: typeof PORTABLE_TARGETS[number], scope: 'user' | 'project' = 'project'): string {
+  const roots = scope === 'user' ? {
+    antigravity: '.gemini/config/skills', cursor: '.cursor/skills', generic: '.agents/skills',
+    opencode: '.config/opencode/skills', pi: '.pi/agent/skills',
+  } : {
+    antigravity: '.agents/skills', cursor: '.cursor/skills', generic: '.agents/skills',
+    opencode: '.opencode/skills', pi: '.pi/skills',
+  };
+  return path.join(scope === 'user' ? setup.env.HOME! : setup.cwd, roots[target]);
+}
+
+// Compare discoverable output bytes, including the AW ownership marker, across recovery operations.
+async function portableOutputSnapshot(setup: Pick<Fixture, 'cwd' | 'env'>): Promise<string[]> {
+  const files: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    if (!await fs.pathExists(directory)) return;
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const location = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(location);
+      else if (entry.isFile()) files.push(`${location}:${crypto.createHash('sha256').update(await fs.readFile(location)).digest('hex')}`);
+    }
+  };
+  for (const scope of ['user', 'project'] as const) {
+    for (const root of new Set(PORTABLE_TARGETS.map((target) => portableRoot(setup, target, scope)))) await visit(root);
+  }
+  return files.sort();
+}
+
+async function nativeRuntime(setup: Fixture) {
+  const native = await createCodexNativeTestRuntime({ env: setup.env, layout: { fixtureCwd: setup.cwd } });
+  return {
+    nativeCliRunner: native.nativeCliRunner,
+    codexManagerResolver: async () => ({
+      kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [] as string[],
+    }),
+  };
 }
 
 describe('scoped recovery integration', () => {
-  it('passes selected roots to Native status so an unrelated inventory error cannot fail User --check', async () => {
-    const setup = await fixture([{ name: 'alpha', native: true }, { name: 'beta', native: true }]);
-    await writeIntentFixture({ scope: 'user', cwd: setup.cwd, env: setup.env }, {
-      roots: [{ pluginId: 'team/alpha' }, { pluginId: 'team/beta' }], agents: ['claude-code'],
-    });
+  it('reads complete Native inventory before filtering a User check and retains an unreadable inventory error', async () => {
+    const setup = await fixture([{ name: 'alpha', native: true }, { name: 'beta', native: true }], 'user');
+    await setTargets(setup.options(), ['claude']);
     const native = vi.spyOn(nativeStatus, 'statusCommandV8').mockImplementation(async (input) => ({
       payload: { schemaVersion: 8, catalog: { primarySourceId: 'team', configDigest: 'config',
         compositeDigest: 'catalog', sources: [] },
       filters: { plugins: input.plugins ?? [], platform: 'both', cwd: input.cwd }, targets: [],
-      errors: input.plugins?.includes('team/beta') || !input.plugins
-        ? [{ code: 'stateInventoryFailed', message: 'beta inventory unreadable' }] : [] },
+      errors: [{ code: 'stateInventoryFailed', message: 'Native inventory unreadable' }] },
       nativeObservations: [{ pluginId: 'team/alpha', platform: 'claude', content: 'satisfied', blockers: [] }],
       nativeExtraObserved: [],
     }) as never);
     try {
-      const options = { scope: 'user' as const, cwd: setup.cwd, env: setup.env, targets: ['claude-code'] };
-      expect((await checkRecovery(['team/alpha'], options)).ok).toBe(true);
-      expect(native).toHaveBeenCalledWith(expect.objectContaining({ plugins: ['team/alpha'] }));
-      expect((await checkRecovery([], { ...options, all: true })).errors)
-        .toContainEqual(expect.objectContaining({ code: 'stateInventoryFailed' }));
+      const checked = await checkRecovery(['team/alpha'], { ...setup.options(), all: false });
+      expect(checked.ok).toBe(false);
+      expect(checked.requestedRoots).toEqual(['team/alpha']);
+      expect(checked.errors).toContainEqual(expect.objectContaining({ code: 'stateInventoryFailed' }));
+      expect(native).toHaveBeenCalledWith(expect.objectContaining({ scope: 'user' }));
+      expect(native.mock.calls.every(([input]) => input.plugins === undefined)).toBe(true);
+      expect(await portableOutputSnapshot(setup)).toEqual([]);
     } finally { native.mockRestore(); }
   });
-  it.each([false, true])('limits User sync --check observation errors to selected roots and dependencies (dependency=%s)', async (dependsOnBeta) => {
-    const setup = await fixture([{ name: 'alpha', native: true,
-      ...(dependsOnBeta ? { dependencies: ['beta'] } : {}) }, { name: 'beta', native: true }]);
-    await writeIntentFixture({ scope: 'user', cwd: setup.cwd, env: setup.env }, {
-      roots: [{ pluginId: 'team/alpha' }, { pluginId: 'team/beta' }], agents: ['claude-code'],
-    });
-    const options = { scope: 'user' as const, cwd: setup.cwd, env: setup.env,
-      targets: ['claude-code'], nativeObservations: [{ pluginId: 'team/alpha', platform: 'claude' as const,
-        content: 'satisfied' as const, blockers: [] }] };
+
+  // Test Value Gate: a selected root must include its dependencies without turning another root into its requirement.
+  it.each([false, true])('checks only the selected root closure while retaining complete User inventory (dependency=%s)', async (dependsOnBeta) => {
+    const setup = await fixture([{ name: 'alpha', ...(dependsOnBeta ? { dependencies: ['beta'] } : {}) },
+      { name: 'beta' }], 'user');
+    const options = { ...setup.options(), all: false, nativeObservations: [] };
+    expect((await runRecovery('sync', ['team/alpha'], options)).ok).toBe(true);
+    await fs.remove(path.join(portableRoot(setup, 'cursor', 'user'), 'beta'));
+    const before = await portableOutputSnapshot(setup);
     const alpha = await checkRecovery(['team/alpha'], options);
     expect(alpha.requestedRoots).toEqual(['team/alpha']);
-    expect(alpha.errors.map((error) => error.pluginId)).toEqual(dependsOnBeta ? ['team/beta'] : []);
     expect(alpha.ok).toBe(!dependsOnBeta);
+    expect(alpha.intent.roots).toEqual(['team/alpha', 'team/beta']);
+    expect(alpha.coverage?.scopes).toEqual(['user']);
     expect((await checkRecovery(['team/beta'], options)).ok).toBe(false);
     expect((await checkRecovery([], { ...options, all: true })).ok).toBe(false);
+    expect(await portableOutputSnapshot(setup)).toEqual(before);
   });
+
   // Test Value Gate: unreadable demand and a missing Agent selection must never appear as an empty success.
   it('keeps no-target, empty and invalid declarations distinct', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
+    await setTargets(setup.options(), []);
     const before = await fs.readFile(setup.intentPath);
     const missing = await runRecovery('sync', [], setup.options());
     expect(missing).toMatchObject({ kind: 'aw-recovery', scope: 'project', ok: false,
       intent: { roots: ['team/alpha'] }, requestedRoots: ['team/alpha'] });
-    expect(missing.blockers.map((entry) => entry.code)).toContain('localTargetsRequired');
+    expect(missing.blockers.map((entry) => entry.code)).toContain('targetsNotConfigured');
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
 
     await fs.writeJson(setup.intentPath, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
@@ -213,377 +194,209 @@ describe('scoped recovery integration', () => {
     });
     await fs.writeFile(setup.intentPath, '{broken');
     const invalid = await runRecovery('sync', [], setup.options());
-    expect(invalid).toMatchObject({ ok: false, intent: { state: 'invalid', roots: null } });
+    expect(invalid).toMatchObject({ ok: false, intent: { state: 'invalid' } });
     expect(invalid.blockers.map((entry) => entry.code)).toContain('pluginIntentStateInvalid');
-    expect(await addCalls(setup.log)).toEqual([]);
+    expect(await portableOutputSnapshot(setup)).toEqual([]);
   });
 
   // Test Value Gate: Native failure cannot silently install a Portable copy.
   it('retains Native delivery when the Native tool fails', async () => {
     const setup = await fixture([{ name: 'alpha', native: true }]);
+    await setTargets(setup.options(), ['codex']);
     const nativeCliRunner = vi.fn(async () => ({ exitCode: 1, stdout: '', stderr: 'failed' }));
-    const result = await runRecovery('sync', [], setup.options(['codex']), {
+    const result = await runRecovery('sync', [], setup.options(), {
       nativeCliRunner, codexManagerResolver: async () => { throw new Error('native-fixture-failure'); },
     });
     expect(result.targetResults).toEqual([expect.objectContaining({
       pluginId: 'team/alpha', agent: 'codex', delivery: { kind: 'native', platform: 'codex' },
     })]);
     expect(result.ok).toBe(false);
-    expect(await addCalls(setup.log)).toEqual([]);
+    expect(await portableOutputSnapshot(setup)).toEqual([]);
   });
 
-  // Test Value Gate: Portable cleanup remains unsupported unless live ownership proves a historical Native output.
-  it('does not invent historical Native cleanup for a pure Portable target', async () => {
+  // Test Value Gate: owned Portable cleanup must preserve foreign files and shared declaration bytes.
+  it('cleans an owned Portable target without inventing a Native cleanup', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
-    const pluginRoot = path.join(setup.sourceRoot, 'plugins', 'alpha');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const rawManifest = await fs.readJson(manifestPath) as Record<string, unknown>;
-    rawManifest.slashCommands = './commands';
-    await fs.writeJson(manifestPath, rawManifest);
-    await fs.outputFile(path.join(pluginRoot, 'commands', 'portable-only.md'), '# Portable-only fixture\n');
-    const catalogPath = path.join(setup.sourceRoot, 'catalog-manifest.json');
-    const catalog = await fs.readJson(catalogPath) as Record<string, unknown>;
-    const updatedManifest = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    await fs.writeJson(catalogPath, {
-      ...catalog,
-      entries: [await createCatalogManifestV7Entry(updatedManifest, pluginRoot)],
-    });
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: setup.env,
-      impactConfirmed: true });
-
-    const result = await runRecovery('cleanup', ['team/alpha'], {
-      ...setup.options(['codex']), all: false,
-    }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }) });
-
+    expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
+    const owned = path.join(portableRoot(setup, 'cursor'), 'alpha');
+    const foreign = path.join(portableRoot(setup, 'cursor'), 'foreign', 'SKILL.md');
+    await fs.outputFile(foreign, 'Foreign.\n');
+    const before = await fs.readFile(setup.intentPath);
+    const nativeCliRunner = vi.fn(async () => ({ exitCode: 1, stdout: '', stderr: 'must not run' }));
+    const result = await runRecovery('cleanup', ['team/alpha'], { ...setup.options(), all: false }, { nativeCliRunner });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.targetResults).toEqual([expect.objectContaining({
-      pluginId: 'team/alpha', agent: 'codex', delivery: expect.objectContaining({ kind: 'agent-skills' }),
+      pluginId: 'team/alpha', agent: 'cursor', delivery: expect.objectContaining({ kind: 'agent-skills', provider: 'aw' }),
+      execution: 'applied', blockers: [],
     })]);
-    expect(result.targetResults[0]?.blockers.map((entry) => entry.code))
-      .toContain('backend-action-unsupported');
-    expect(await addCalls(setup.log)).toEqual([]);
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(await fs.pathExists(owned)).toBe(false);
+    expect(await fs.readFile(foreign, 'utf8')).toBe('Foreign.\n');
+    expect(await fs.readFile(setup.intentPath)).toEqual(before);
   });
 
-  // Test Value Gate: a delivery switch must not install Portable while an owned Native output still exists.
-  it('blocks Native-to-Portable recovery until the historical Native output is cleaned', async () => {
-    const setup = await fixture([{ name: 'alpha', native: true, nativeArtifactOnly: true }]);
-    const nativeRuntime = {
-      nativeCliRunner: async (invocation: { args: string[] }) => invocation.args.includes('--version')
-        ? { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }
-        : invocation.args.includes('--json')
-          ? { exitCode: 0, stdout: JSON.stringify({ installed: [], available: [] }), stderr: '' }
-          : { exitCode: 0, stdout: '', stderr: '' },
-      codexManagerResolver: async () => ({
-        kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [] as string[],
-      }),
-    };
-    const installed = await runRecovery('sync', [], setup.options(['codex']), nativeRuntime);
-    expect(installed.ok, JSON.stringify(installed)).toBe(true);
-
-    const pluginRoot = path.join(setup.sourceRoot, 'plugins', 'alpha');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const rawManifest = await fs.readJson(manifestPath) as Record<string, unknown>;
-    delete rawManifest.extensions;
-    delete rawManifest.skills;
-    rawManifest.slashCommands = './commands';
-    await fs.writeJson(manifestPath, rawManifest);
-    await fs.outputFile(path.join(pluginRoot, 'commands', 'portable-switch.md'), '# Portable switch fixture\n');
-    await fs.outputFile(path.join(pluginRoot, 'codex', 'skills', 'portable-switch', 'SKILL.md'),
-      '---\nname: portable-switch\ndescription: Portable switch fixture\n---\nFixture.\n');
-    await fs.outputFile(path.join(pluginRoot, 'claude', 'commands', 'portable-switch.md'),
-      '# Portable switch fixture\n');
-    const codexProjectionPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
-    await fs.writeJson(codexProjectionPath, { ...await fs.readJson(codexProjectionPath), skills: './codex/skills' });
-    const claudeProjectionPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
-    await fs.writeJson(claudeProjectionPath, { ...await fs.readJson(claudeProjectionPath), commands: './claude/commands' });
-    const catalogPath = path.join(setup.sourceRoot, 'catalog-manifest.json');
-    const catalog = await fs.readJson(catalogPath) as Record<string, unknown>;
-    const updatedManifest = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    await fs.outputJson(path.join(pluginRoot, 'codex', 'skills', 'portable-switch', 'aw-plugin-requirements.json'),
-      createAwPluginRequirementsReceipt({ name: 'alpha', version: '1.0.0' },
-        updatedManifest.manifest.requires?.aw.capabilities ?? []));
-    await fs.writeJson(catalogPath, {
-      ...catalog,
-      entries: [await createCatalogManifestV7Entry(updatedManifest, pluginRoot)],
-    });
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: setup.env,
-      impactConfirmed: true });
-
-    const beforePortableWrites = await addCalls(setup.log);
-    const blocked = await runRecovery('sync', [], setup.options(['codex']), nativeRuntime);
-    expect(blocked.ok).toBe(false);
-    expect(blocked.targetResults).toEqual([expect.objectContaining({
-      pluginId: 'team/alpha', agent: 'codex', delivery: expect.objectContaining({ kind: 'agent-skills' }),
-      execution: 'not-run',
-      blockers: expect.arrayContaining([expect.objectContaining({ code: 'deliverySwitchCleanupRequired' })]),
-    })]);
-    expect(await addCalls(setup.log)).toEqual(beforePortableWrites);
-
-    const cleanupPlan = await prepareRecovery('cleanup', ['team/alpha'], {
-      ...setup.options(['codex']), all: false,
-    }, nativeRuntime);
-    const ownedPaths = cleanupPlan.nativeGroups.flatMap((group) => group.preview.operationPlan?.actions
-      .filter((action) => action.kind === 'removeOwnedArtifact').map((action) => action.path) ?? []);
-    expect(ownedPaths.length).toBeGreaterThan(0);
-    const savedPaths = ownedPaths.map((_, index) => path.join(path.dirname(setup.cwd), 'saved-native', String(index)));
-    for (const [index, ownedPath] of ownedPaths.entries()) await fs.copy(ownedPath, savedPaths[index]!);
-    await cleanupPlan.context.dispose();
-
-    const cleaned = await runRecovery('cleanup', ['team/alpha'], {
-      ...setup.options(['codex']), all: false,
-    }, nativeRuntime);
-    expect(cleaned.ok, JSON.stringify(cleaned)).toBe(true);
-    expect(cleaned.targetResults).toEqual([expect.objectContaining({
-      pluginId: 'team/alpha', agent: 'codex', delivery: { kind: 'native', platform: 'codex' },
-      blockers: [],
-    })]);
-    expect(await addCalls(setup.log)).toEqual(beforePortableWrites);
-
-    const portablePlan = await prepareRecovery('sync', [], setup.options(['codex']), nativeRuntime);
-    expect(portablePlan.receipt.targetResults[0]?.blockers).toEqual([]);
-    for (const [index, ownedPath] of ownedPaths.entries()) await fs.copy(savedPaths[index]!, ownedPath);
-    const stale = await executeRecovery(portablePlan);
-    expect(stale.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
-    expect(stale.outputsMayHaveChanged).toBe(false);
-    expect(await addCalls(setup.log)).toEqual(beforePortableWrites);
-
-    expect((await targetsSet({ scope: 'project', cwd: setup.cwd, env: setup.env,
-      agents: ['codex'] })).ok).toBe(true);
-    const uninstalled = await runRecovery('uninstall', ['team/alpha'], {
-      ...setup.options(), all: false,
-    }, nativeRuntime);
-    expect(uninstalled.ok, JSON.stringify(uninstalled)).toBe(true);
-    expect(uninstalled.targetResults[0]).toMatchObject({
-      delivery: { kind: 'native', platform: 'codex' }, execution: 'applied', blockers: [],
-    });
+  // Test Value Gate: bounded ownership must permit offline cleanup even when strong configuration is damaged.
+  it('cleans owned Portable output offline with damaged local state and preserves its bytes', async () => {
+    const setup = await fixture([{ name: 'alpha', configurable: true }]);
+    const plugin = (await readDemand(setup.options())).roots![0]!.plugin!;
+    await writePluginConfigStore({ sourceId: 'team', sourceIdentity: plugin.sourceIdentity,
+      pluginName: 'alpha', scope: 'user', cwd: setup.cwd, env: setup.env, values: { mode: 'saved' } });
+    expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
+    const preferencesPath = await resolvePreferencesPath(setup.options());
+    const configPath = path.join(setup.env.AW_HOME!, 'plugin-config', 'team', 'alpha', 'config.json');
+    const files = [setup.intentPath, preferencesPath, configPath];
+    await Promise.all(files.map((file) => fs.writeFile(file, '{broken')));
+    const before = await Promise.all(files.map((file) => fs.readFile(file)));
+    await fs.remove(setup.sourceRoot);
+    await fs.remove(path.join(setup.env.AW_HOME!, 'catalog-store'));
+    const result = await runRecovery('cleanup', ['team/alpha'], { ...setup.options(['cursor']), all: false });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'alpha'))).toBe(false);
+    expect(await Promise.all(files.map((file) => fs.readFile(file)))).toEqual(before);
   });
 
-  // Test Value Gate: a Native root must preserve a still-required Portable dependency delivered by another root.
-  it('protects shared Portable dependencies outside the selected root', async () => {
-    const setup = await fixture([{ name: 'alpha', native: true, nativeArtifactOnly: true },
-      { name: 'beta', dependencies: ['alpha'], configurable: true }]);
-    await targetsSet({ scope: 'project', cwd: setup.cwd, env: setup.env, agents: ['codex', 'cursor'] });
+  // Test Value Gate: narrowing a sync cannot remove a dependency still contributed by an unselected root and target.
+  it('protects shared Portable dependencies outside the selected root and target', async () => {
+    const setup = await fixture([{ name: 'alpha' }, { name: 'beta', dependencies: ['alpha'], configurable: true }]);
+    await setTargets(setup.options(), ['cursor', 'pi']);
     const options = { ...setup.options(), all: false };
     expect((await runRecovery('sync', ['team/beta'], { ...options, targets: ['cursor'] })).ok).toBe(true);
-    const portablePath = path.join(setup.cwd, '.agents', 'skills', 'alpha', 'SKILL.md');
-    const bytes = await fs.readFile(portablePath);
-    const writes = await addCalls(setup.log);
-    const nativeRuntime = {
-      nativeCliRunner: async (invocation: { args: string[] }) => invocation.args.includes('--version')
-        ? { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }
-        : invocation.args.includes('--json')
-          ? { exitCode: 0, stdout: JSON.stringify({ installed: [], available: [] }), stderr: '' }
-          : { exitCode: 0, stdout: '', stderr: '' },
-      codexManagerResolver: async () => ({
-        kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [] as string[],
-      }),
-    };
-    const nativeOnly = await runRecovery('sync', ['team/alpha'], { ...options, targets: ['codex'] }, nativeRuntime);
-    expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
-    expect(nativeOnly.targetResults.map((target) => target.agent)).toEqual(['codex']);
-    expect(nativeOnly.recoveryActions).toEqual([]);
-    expect(await fs.readFile(portablePath)).toEqual(bytes);
-    expect(await addCalls(setup.log)).toEqual(writes);
+    const shared = path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md');
+    const consumer = path.join(portableRoot(setup, 'cursor'), 'beta', 'SKILL.md');
+    const before = await Promise.all([fs.readFile(shared), fs.readFile(consumer)]);
+    const independent = await runRecovery('sync', ['team/alpha'], { ...options, targets: ['pi'] });
+    expect(independent.ok, JSON.stringify(independent)).toBe(true);
+    expect(independent.targetResults.map((target) => target.agent)).toEqual(['pi']);
+    expect(await Promise.all([fs.readFile(shared), fs.readFile(consumer)])).toEqual(before);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'beta'))).toBe(false);
 
-    const reviewed = await prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['codex'] }, nativeRuntime);
-    const beta = (await readDemand(options)).roots!.find((root) => root.pluginId === 'team/beta')!.plugin!;
-    await writePluginConfigStore({ sourceId: 'team', sourceIdentity: beta.sourceIdentity,
-      logicalIdentity: beta.catalogLogicalIdentity, pluginName: 'beta', scope: 'project',
-      cwd: setup.cwd, env: setup.env, values: { mode: 'changed' } });
+    const reviewed = await prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['pi'] });
+    await setTargets(setup.options(), ['cursor']);
     const stale = await executeRecovery(reviewed);
     expect(stale.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
     expect(stale.outputsMayHaveChanged).toBe(false);
-    expect(await fs.readFile(portablePath)).toEqual(bytes);
-    expect(await addCalls(setup.log)).toEqual(writes);
-
-    // A new Review must rebuild weak protection evidence without writing unselected Portable targets.
-    const refreshed = await prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['codex'] }, nativeRuntime);
-    const generation = refreshed.portableProtectionGroups.find((group) => group.root === 'team/beta')?.generation;
-    const afterConfigChange = await executeRecovery(refreshed);
-    expect(afterConfigChange.ok, JSON.stringify(afterConfigChange)).toBe(true);
-    expect(afterConfigChange.targetResults.map((target) => target.agent)).toEqual(['codex']);
-    expect(afterConfigChange.recoveryActions).toEqual([]);
-    expect(await fs.readFile(portablePath)).toEqual(bytes);
-    expect(await addCalls(setup.log)).toEqual(writes);
-
-    expect(generation).toBeDefined();
-    await fs.remove(generation!);
-    const afterGenerationLoss = await runRecovery('sync', ['team/alpha'], { ...options, targets: ['codex'] }, nativeRuntime);
-    expect(afterGenerationLoss.ok, JSON.stringify(afterGenerationLoss)).toBe(true);
-    expect(afterGenerationLoss.targetResults.map((target) => target.agent)).toEqual(['codex']);
-    expect(afterGenerationLoss.recoveryActions).toEqual([]);
-    expect(await fs.pathExists(generation!)).toBe(true);
-    expect(await fs.readFile(portablePath)).toEqual(bytes);
-    expect(await addCalls(setup.log)).toEqual(writes);
-  }, 60_000);
-
-  // Test Value Gate: shared provider association must not require deleting another selected Agent's valid output.
-  it.each(['project', ...(process.platform === 'darwin' && process.arch === 'arm64' ? ['user' as const] : [])] as const)(
-    'keeps mixed Native and Portable delivery idempotent with shared provider association (%s)', async (scope) => {
-    const setup = await fixture([{ name: 'dual', native: true, nativeArtifactOnly: true }], scope);
-    const nativeRuntime = {
-      nativeCliRunner: async (invocation: { args: string[] }) => invocation.args.includes('--version')
-        ? { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }
-        : invocation.args.includes('--json')
-          ? { exitCode: 0, stdout: JSON.stringify({ installed: [], available: [] }), stderr: '' }
-          : { exitCode: 0, stdout: '', stderr: '' },
-      codexManagerResolver: async () => ({
-        kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [] as string[],
-      }),
-    };
-    await fs.remove(setup.intentPath);
-    await targetsSet({ scope, cwd: setup.cwd, env: setup.env, agents: ['codex', 'cursor'] });
-    const options = { ...setup.options(), all: false };
-    const installed = await runRecovery('install', ['team/dual'], options, nativeRuntime);
-    expect(installed.ok, JSON.stringify(installed)).toBe(true);
-    expect(installed.targetResults.map(({ agent, delivery }) => [agent, delivery?.kind]))
-      .toEqual([['codex', 'native'], ['cursor', 'agent-skills']]);
-    const portablePath = path.join(scope === 'user' ? setup.env.HOME! : setup.cwd,
-      '.agents', 'skills', 'dual', 'SKILL.md');
-    const portableBytes = await fs.readFile(portablePath);
-    const writes = await addCalls(setup.log);
-    expect(writes.map((args) => args[args.indexOf('--agent') + 1])).toEqual(['cursor']);
-
-    const repeated = await runRecovery('sync', ['team/dual'], options, nativeRuntime);
-    expect(repeated.ok, JSON.stringify(repeated)).toBe(true);
-    expect(repeated.remainingTargets).toEqual([]);
-    expect(repeated.recoveryActions).toEqual([]);
-    expect(repeated.targetResults.every((target) => target.blockers.length === 0)).toBe(true);
-    expect(repeated.targetResults.find((target) => target.agent === 'cursor')?.execution).toBe('no-op');
-    expect(await fs.readFile(portablePath)).toEqual(portableBytes);
-    expect(await addCalls(setup.log)).toEqual(writes);
-
-    for (const narrowed of [
-      { targets: ['codex'] },
-      { exactTargets: [{ pluginId: 'team/dual', agent: 'codex' as const }] },
-    ]) {
-      const nativeOnly = await runRecovery('sync', ['team/dual'], { ...options, ...narrowed }, nativeRuntime);
-      expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
-      expect(nativeOnly.targetResults.map((target) => target.agent)).toEqual(['codex']);
-      expect(nativeOnly.recoveryActions).toEqual([]);
-      expect(await fs.readFile(portablePath)).toEqual(portableBytes);
-      expect(await addCalls(setup.log)).toEqual(writes);
-    }
-    if (scope === 'user') {
-      await fs.appendFile(portablePath, 'external edit');
-      const changedBytes = await fs.readFile(portablePath);
-      const uncertain = await runRecovery('sync', ['team/dual'], { ...options, targets: ['codex'] }, nativeRuntime);
-      expect(uncertain.ok).toBe(false);
-      expect(uncertain.targetResults[0]?.blockers.map((entry) => entry.code))
-        .toContain('deliverySwitchPortableObservationFailed');
-      expect(uncertain.outputsMayHaveChanged).toBe(false);
-      expect(await fs.readFile(portablePath)).toEqual(changedBytes);
-      expect(await addCalls(setup.log)).toEqual(writes);
-    }
+    expect(await Promise.all([fs.readFile(shared), fs.readFile(consumer)])).toEqual(before);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md'))).toBe(true);
   });
 
-  // Test Value Gate: changing delivery must not install Native beside a separately located Portable Skill.
-  it.each([false, true])('blocks Portable-to-Native delivery until the old output is moved (renamed Skill=%s)', async (renamedSkill) => {
-    const setup = await fixture([{ name: 'alpha', portableCodexSwitch: true }]);
-    const nativeRuntime = {
-      nativeCliRunner: async (invocation: { args: string[] }) => invocation.args.includes('--version')
-        ? { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }
-        : invocation.args.includes('--json')
-          ? { exitCode: 0, stdout: JSON.stringify({ installed: [], available: [] }), stderr: '' }
-          : { exitCode: 0, stdout: '', stderr: '' },
-      codexManagerResolver: async () => ({
-        kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [] as string[],
-      }),
-    };
-    const portable = await runRecovery('sync', [], setup.options(['codex']), nativeRuntime);
-    expect(portable.ok, JSON.stringify(portable)).toBe(true);
-    const portablePath = path.join(setup.cwd, '.agents', 'skills', 'alpha');
-    expect(await fs.pathExists(portablePath)).toBe(true);
+  // Test Value Gate: Native refresh and Portable cleanup must preserve each other's valid output.
+  it.each(['project', 'user'] as const)(
+    'keeps mixed Native and Portable delivery idempotent in separate owned directories (%s)', async (scope) => {
+      const setup = await fixture([{ name: 'dual', native: true }], scope);
+      const runtime = await nativeRuntime(setup);
+      await fs.remove(setup.intentPath);
+      await setTargets(setup.options(), ['codex', 'cursor']);
+      const options = { ...setup.options(), all: false };
+      const installed = await runRecovery('install', ['team/dual'], options, runtime);
+      expect(installed.ok, JSON.stringify(installed)).toBe(true);
+      expect(installed.targetResults.map(({ agent, delivery }) => [agent, delivery?.kind]))
+        .toEqual([['codex', 'native'], ['cursor', 'agent-skills']]);
+      const portablePath = path.join(portableRoot(setup, 'cursor', scope), 'dual', 'SKILL.md');
+      const portableBytes = await fs.readFile(portablePath);
+      const writes = await portableOutputSnapshot(setup);
+      const owner = await fs.readJson(path.join(path.dirname(portablePath), SKILL_OWNER_MARKER));
+      expect(owner).toMatchObject({ owner: 'agent-workflows', kind: 'portable-skill', platform: 'cursor', scope });
+      const repeated = await runRecovery('sync', ['team/dual'], options, runtime);
+      expect(repeated.ok, JSON.stringify(repeated)).toBe(true);
+      expect(repeated.remainingTargets).toEqual([]);
+      expect(repeated.targetResults.find((target) => target.agent === 'cursor')?.execution).toBe('no-op');
+      expect(await portableOutputSnapshot(setup)).toEqual(writes);
 
-    const pluginRoot = path.join(setup.sourceRoot, 'plugins', 'alpha');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath) as {
-      extensions: { instructions: Array<{ agentOverrides?: { codex: null } }> };
-    };
+      for (const narrowed of [
+        { targets: ['codex'] },
+        { exactTargets: [{ pluginId: 'team/dual', agent: 'codex' as const }] },
+      ]) {
+        const nativeOnly = await runRecovery('sync', ['team/dual'], { ...options, ...narrowed }, runtime);
+        expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
+        expect(nativeOnly.targetResults.map((target) => target.agent)).toEqual(['codex']);
+        expect(await fs.readFile(portablePath)).toEqual(portableBytes);
+        expect(await portableOutputSnapshot(setup)).toEqual(writes);
+      }
+      await fs.appendFile(portablePath, 'External edit.\n');
+      const changedBytes = await fs.readFile(portablePath);
+      const nativeOnly = await runRecovery('sync', ['team/dual'], { ...options, targets: ['codex'] }, runtime);
+      expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
+      expect(await fs.readFile(portablePath)).toEqual(changedBytes);
+      expect((await checkRecovery(['team/dual'], { ...options, targets: ['cursor'], nativeObservations: [] })).ok).toBe(false);
+      const nativeConfig = scope === 'user'
+        ? path.join(setup.env.AW_CODEX_HOME!, 'config.toml')
+        : path.join(setup.cwd, '.codex', 'config.toml');
+      const nativeConfigBytes = await fs.readFile(nativeConfig);
+      const cleaned = await runRecovery('cleanup', ['team/dual'], { ...options, targets: ['cursor'], force: true }, runtime);
+      expect(cleaned.ok, JSON.stringify(cleaned)).toBe(true);
+      expect(await fs.pathExists(portablePath)).toBe(false);
+      expect(await fs.readFile(nativeConfig)).toEqual(nativeConfigBytes);
+      expect((await runRecovery('sync', ['team/dual'], { ...options, targets: ['codex'] }, runtime)).ok).toBe(true);
+  });
+
+  // Test Value Gate: changing selected targets must preserve prior output while the replacement conflicts.
+  it.each([false, true])('preserves a prior target while foreign output blocks its replacement (renamed Skill=%s)', async (renamedSkill) => {
+    const setup = await fixture([{ name: 'alpha' }]);
+    await setTargets(setup.options(), ['pi']);
+    expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
+    const prior = path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md');
+    const priorBytes = await fs.readFile(prior);
+    const skillName = renamedSkill ? 'current' : 'alpha';
     if (renamedSkill) {
-      await targetsSet({ scope: 'project', cwd: setup.cwd, env: setup.env, agents: ['codex', 'cursor'] });
-      const currentSkill = path.join(pluginRoot, 'agent-skills', 'skills', 'current');
-      await fs.move(path.join(pluginRoot, 'agent-skills', 'skills', 'alpha'), currentSkill);
-      await fs.writeFile(path.join(currentSkill, 'SKILL.md'),
-        '---\nname: current\ndescription: Current Portable fixture\n---\nCurrent.\n');
+      const pluginRoot = path.join(setup.sourceRoot, 'plugins', 'alpha');
+      for (const root of ['skills', ...PORTABLE_TARGETS.map((target) => `${target}/skills`)]) {
+        await fs.move(path.join(pluginRoot, root, 'alpha'), path.join(pluginRoot, root, skillName));
+        await fs.writeFile(path.join(pluginRoot, root, skillName, 'SKILL.md'),
+          `---\nname: ${skillName}\ndescription: Current fixture\n---\nCurrent.\n`);
+      }
+      await rebuildCatalogEntries(setup.sourceRoot, ['alpha']);
+      await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: setup.env, impactConfirmed: true });
     }
-    delete manifest.extensions.instructions[0]!.agentOverrides;
-    await fs.writeJson(manifestPath, manifest);
-    const catalogPath = path.join(setup.sourceRoot, 'catalog-manifest.json');
-    const catalog = await fs.readJson(catalogPath) as Record<string, unknown>;
-    await fs.writeJson(catalogPath, { ...catalog, entries: [
-      await createCatalogManifestV7Entry(await readPluginManifest(pluginRoot, { mode: 'bundle' }), pluginRoot),
-    ] });
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: setup.env,
-      impactConfirmed: true });
-
-    const beforeWrites = await addCalls(setup.log);
-    const blocked = await runRecovery('sync', [], setup.options(['codex']), nativeRuntime);
+    await setTargets(setup.options(), ['cursor']);
+    const replacement = path.join(portableRoot(setup, 'cursor'), skillName);
+    const foreign = path.join(replacement, 'SKILL.md');
+    await fs.outputFile(foreign, 'Foreign replacement.\n');
+    const before = await portableOutputSnapshot(setup);
+    const blocked = await runRecovery('sync', [], setup.options());
     expect(blocked).toMatchObject({ ok: false, outputsMayHaveChanged: false });
-    expect(blocked.targetResults[0]).toMatchObject({
-      delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run',
-    });
-    expect(blocked.targetResults[0]?.blockers.map((entry) => entry.code))
-      .toEqual(['deliverySwitchPortableCleanupRequired']);
-    expect(await fs.pathExists(portablePath)).toBe(true);
-    expect(await addCalls(setup.log)).toEqual(beforeWrites);
-    if (renamedSkill) {
-      const mixed = await prepareRecovery('sync', [], setup.options(), nativeRuntime);
-      expect(mixed.receipt.targetResults.find((target) => target.agent === 'codex')?.blockers.map((entry) => entry.code))
-        .toContain('deliverySwitchPortableCleanupRequired');
-      await mixed.context.dispose();
-    }
+    expect(blocked.targetResults[0]?.blockers.map((entry) => entry.code)).toContain('portableOutputConflict');
+    expect(await portableOutputSnapshot(setup)).toEqual(before);
+    expect(await fs.readFile(prior)).toEqual(priorBytes);
 
-    const lockPath = path.join(setup.cwd, 'skills-lock.json');
-    const lockBytes = await fs.readFile(lockPath);
-    await fs.writeFile(lockPath, '{broken');
-    const uncertain = await prepareRecovery('sync', [], setup.options(['codex']), nativeRuntime);
-    expect(uncertain.receipt.targetResults[0]?.blockers.map((entry) => entry.code))
-      .toContain('deliverySwitchPortableObservationFailed');
-    await uncertain.context.dispose();
-    await fs.writeFile(lockPath, lockBytes);
-
-    await fs.move(portablePath, path.join(setup.cwd, 'saved-portable'));
-    const unblocked = await prepareRecovery('sync', [], setup.options(['codex']), nativeRuntime);
-    expect(unblocked.receipt.targetResults[0]?.blockers.map((entry) => entry.code))
-      .not.toContain('deliverySwitchPortableCleanupRequired');
-    const nativePaths = unblocked.nativeGroups.flatMap((group) =>
-      group.preview.nativeFootprints?.map((footprint) => footprint.path) ?? []);
-    expect(nativePaths.length).toBeGreaterThan(0);
-    expect(nativePaths).not.toContain(portablePath);
-    await fs.move(path.join(setup.cwd, 'saved-portable'), portablePath);
-    const stale = await executeRecovery(unblocked);
+    const saved = path.join(setup.cwd, 'saved-foreign');
+    await fs.move(replacement, saved);
+    const reviewed = await prepareRecovery('sync', [], setup.options());
+    expect(reviewed.receipt.targetResults[0]?.blockers).toEqual([]);
+    await fs.move(saved, replacement);
+    const stale = await executeRecovery(reviewed);
     expect(stale.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
     expect(stale.outputsMayHaveChanged).toBe(false);
-    await fs.move(portablePath, path.join(setup.cwd, 'saved-portable'));
-    const recovered = await runRecovery('sync', [], setup.options(['codex']), nativeRuntime);
+    expect(await fs.readFile(foreign, 'utf8')).toBe('Foreign replacement.\n');
+    await fs.move(replacement, saved);
+    const recovered = await runRecovery('sync', [], setup.options());
     expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
-    expect(recovered.targetResults[0]).toMatchObject({
-      delivery: { kind: 'native', platform: 'codex' }, blockers: [],
-    });
+    expect(await fs.readJson(path.join(replacement, SKILL_OWNER_MARKER)))
+      .toMatchObject({ pluginId: 'team/alpha', platform: 'cursor', skill: skillName });
+    expect(await fs.readFile(prior)).toEqual(priorBytes);
+    expect(await fs.readFile(path.join(saved, 'SKILL.md'), 'utf8')).toBe('Foreign replacement.\n');
   });
 
   // Test Value Gate: changed Review evidence prevents all backend writes.
   it.each(['intent', 'preferences', 'footprint'])('rejects changed %s after Review', async (change) => {
     const setup = await fixture([{ name: 'alpha' }]);
-    const plan = await prepareRecovery('sync', [], setup.options(['cursor']));
+    const plan = await prepareRecovery('sync', [], setup.options());
     expect(plan.receipt.targetResults[0]?.blockers).toEqual([]);
     if (change === 'intent') await fs.appendFile(setup.intentPath, '\n');
     else if (change === 'preferences') {
       const filePath = await resolvePreferencesPath(setup.options());
       await fs.outputFile(filePath, JSON.stringify(createEmptyPreferences()));
-    } else {
-      await fs.outputFile(path.join(setup.cwd, '.agents', 'skills', 'alpha', 'SKILL.md'), 'foreign');
-    }
+    } else await fs.outputFile(path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md'), 'Foreign.\n');
+    const before = await portableOutputSnapshot(setup);
     const result = await executeRecovery(plan);
     expect(result.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
     expect(result.outputsMayHaveChanged).toBe(false);
-    expect(await addCalls(setup.log)).toEqual([]);
+    expect(await portableOutputSnapshot(setup)).toEqual(before);
   });
 
   it.each(['source-config', 'active', 'plugin-config'])(
     'rejects changed %s before the first backend write', async (change) => {
       const setup = await fixture([{ name: 'alpha', configurable: true }]);
-      const plan = await prepareRecovery('sync', [], setup.options(['cursor']));
+      const plan = await prepareRecovery('sync', [], setup.options());
       expect(plan.receipt.targetResults[0]?.blockers).toEqual([]);
       if (change === 'source-config') {
         const snapshot = await readCatalogSourcesConfigSnapshot(setup.env);
@@ -591,26 +404,18 @@ describe('scoped recovery integration', () => {
           { id: 'team', type: 'path', primary: true, path: setup.sourceRoot, autoCheck: false },
         ] }, expectedDigest: snapshot.digest, env: setup.env });
       } else if (change === 'active') {
-        const pluginRoot = path.join(setup.sourceRoot, 'plugins', 'alpha');
-        await fs.writeFile(path.join(pluginRoot, 'README.md'), 'changed bundle\n');
-        const manifestPath = path.join(setup.sourceRoot, 'catalog-manifest.json');
-        const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
-        await fs.writeJson(manifestPath, { ...manifest, entries: [
-          await createCatalogManifestV7Entry(await readPluginManifest(pluginRoot, { mode: 'bundle' }), pluginRoot),
-        ] });
-        await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: setup.env,
-          impactConfirmed: true });
+        await fs.writeFile(path.join(setup.sourceRoot, 'plugins', 'alpha', 'README.md'), 'Changed bundle.\n');
+        await rebuildCatalogEntries(setup.sourceRoot, ['alpha']);
+        await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: setup.env, impactConfirmed: true });
       } else {
-        const plugin = (await readDemand(setup.options(['cursor']))).roots?.[0]?.plugin;
-        expect(plugin).toBeDefined();
-        await writePluginConfigStore({ sourceId: 'team', sourceIdentity: plugin!.sourceIdentity,
-          logicalIdentity: plugin!.catalogLogicalIdentity, pluginName: 'alpha', scope: 'project',
-          cwd: setup.cwd, env: setup.env, values: { mode: 'second' } });
+        const plugin = (await readDemand(setup.options())).roots![0]!.plugin!;
+        await writePluginConfigStore({ sourceId: 'team', sourceIdentity: plugin.sourceIdentity,
+          pluginName: 'alpha', scope: 'user', cwd: setup.cwd, env: setup.env, values: { mode: 'second' } });
       }
       const result = await executeRecovery(plan);
       expect(result.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
       expect(result.outputsMayHaveChanged).toBe(false);
-      expect(await addCalls(setup.log)).toEqual([]);
+      expect(await portableOutputSnapshot(setup)).toEqual([]);
     });
 
   // Test Value Gate: an unavailable source must not stop an independent source from recovering.
@@ -628,42 +433,40 @@ describe('scoped recovery integration', () => {
     ] }, expectedDigest: sourceConfig.digest, env: setup.env });
     await syncCatalogSourceGeneration({ sourceId: 'offline', cliVersion: '1.0.0', env: setup.env });
     const intent = await fs.readJson(setup.intentPath) as {
-      sources: Record<string, { logicalIdentity: string }>;
-      roots: Array<{ pluginId: string }>;
+      sources: Record<string, { logicalIdentity: string }>; roots: Array<{ pluginId: string }>;
     };
     intent.sources.offline = { logicalIdentity: 'fixture:offline-refresh' };
     intent.roots = [{ pluginId: 'team/alpha' }, { pluginId: 'offline/beta' }];
     await fs.writeJson(setup.intentPath, intent);
     const before = await fs.readFile(setup.intentPath);
     await fs.remove(offlineRoot);
-    const result = await runRecovery('sync', [], { ...setup.options(['cursor']), refresh: true });
+    const result = await runRecovery('sync', [], { ...setup.options(), refresh: true });
     expect(result.ok).toBe(false);
-    expect(result.targetResults.find((target) => target.pluginId === 'offline/beta')?.blockers.length)
-      .toBeGreaterThan(0);
-    expect(result.targetResults.find((target) => target.pluginId === 'team/alpha')?.execution)
-      .toBe('applied');
+    expect(result.targetResults.find((target) => target.pluginId === 'offline/beta')?.blockers.length).toBeGreaterThan(0);
+    expect(result.targetResults.find((target) => target.pluginId === 'team/alpha')?.execution).toBe('applied');
     expect(result.remainingTargets.map((target) => target.pluginId)).toContain('offline/beta');
-    await expect(fs.pathExists(path.join(setup.cwd, '.agents', 'skills', 'alpha', 'SKILL.md')))
-      .resolves.toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md'))).toBe(true);
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
   });
 
   // Test Value Gate: exact retry pairs cannot turn into a Cartesian product of roots and Agents.
   it('runs only exact non-rectangular retry pairs and preserves declaration bytes', async () => {
     const setup = await fixture([{ name: 'alpha' }, { name: 'beta' }]);
+    await setTargets(setup.options(), ['cursor', 'pi']);
     const before = await fs.readFile(setup.intentPath);
     const result = await runRecovery('sync', [], {
-      ...setup.options(['cursor', 'claude-code']), exactTargets: [
-        { pluginId: 'team/alpha', agent: 'cursor' },
-        { pluginId: 'team/beta', agent: 'claude-code' },
+      ...setup.options(), exactTargets: [
+        { pluginId: 'team/alpha', agent: 'cursor' }, { pluginId: 'team/beta', agent: 'pi' },
       ],
     });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.targetResults.map(({ pluginId, agent }) => [pluginId, agent])).toEqual([
-      ['team/alpha', 'cursor'], ['team/beta', 'claude-code'],
+      ['team/alpha', 'cursor'], ['team/beta', 'pi'],
     ]);
-    expect((await addCalls(setup.log)).map((args) => [
-      args[args.indexOf('--skill') + 1], args[args.indexOf('--agent') + 1],
-    ])).toEqual([['alpha', 'cursor'], ['beta', 'claude-code']]);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'beta', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'beta'))).toBe(false);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha'))).toBe(false);
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
   });
 
@@ -671,95 +474,100 @@ describe('scoped recovery integration', () => {
     const setup = await fixture([{ name: 'alpha' }]);
     const before = await fs.readFile(setup.intentPath);
     const result = await runRecovery('sync', [], {
-      ...setup.options(['cursor']), exactTargets: [{ pluginId: 'team/misspelled', agent: 'cursor' }],
+      ...setup.options(), exactTargets: [{ pluginId: 'team/misspelled', agent: 'cursor' }],
     });
     expect(result.ok).toBe(false);
     expect(result.blockers.map((entry) => entry.code)).toContain('invalidExactTargets');
     expect(result.outputsMayHaveChanged).toBe(false);
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
-    expect(await addCalls(setup.log)).toEqual([]);
+    expect(await portableOutputSnapshot(setup)).toEqual([]);
   });
 
-  // Test Value Gate: local Agent preferences cannot rewrite shared intent or delete another Agent's output.
+  // Test Value Gate: machine Agent policy cannot rewrite shared Intent or silently delete another target's output.
   it('keeps shared bytes and prior output when local Agent selection changes', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
     const before = await fs.readFile(setup.intentPath);
-    expect((await targetsSet({ scope: 'project', cwd: setup.cwd, env: setup.env,
-      agents: ['cursor'] })).ok).toBe(true);
+    expect((await targetsSet({ cwd: setup.cwd, env: setup.env, targets: ['cursor'] })).ok).toBe(true);
     expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
-    const cursorSkill = path.join(setup.cwd, '.agents', 'skills', 'alpha', 'SKILL.md');
+    const cursorSkill = path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md');
     const cursorBytes = await fs.readFile(cursorSkill);
-    expect((await targetsSet({ scope: 'project', cwd: setup.cwd, env: setup.env,
-      agents: ['claude-code'] })).ok).toBe(true);
+    expect((await targetsSet({ cwd: setup.cwd, env: setup.env, targets: ['pi'] })).ok).toBe(true);
     const second = await runRecovery('sync', [], setup.options());
-    expect(second.selection.agents).toEqual(['claude-code']);
-    expect(second.ok).toBe(true);
+    expect(second.selection.agents).toEqual(['pi']);
+    expect(second.ok, JSON.stringify(second)).toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md'))).toBe(true);
     expect(await fs.readFile(cursorSkill)).toEqual(cursorBytes);
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
   });
 
-  // Test Value Gate: a failed install still records its verified declaration; preparation alone is read-only.
-  it('keeps a new root after no-target and failed install', async () => {
+  // Test Value Gate: missing machine targets reject install before declaration; a later output failure retains its verified root.
+  it('rejects install before declaration without targets and retains a verified root after an output conflict', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
     const installOptions = { ...setup.options(), all: false };
     await fs.remove(setup.intentPath);
-    const planned = await prepareRecovery('install', ['team/alpha'], {
-      ...installOptions, targets: ['cursor'],
-    });
-    expect(planned.declaration).toEqual(['team/alpha']);
+    const planned = await prepareRecovery('install', ['team/alpha'], installOptions);
+    expect(planned.plannedImpact).toMatchObject({ declaration: true });
     expect(await fs.pathExists(setup.intentPath)).toBe(false);
+    expect(await portableOutputSnapshot(setup)).toEqual([]);
     await planned.context.dispose();
+    await setTargets(setup.options(), []);
     const noTarget = await runRecovery('install', ['team/alpha'], installOptions);
-    expect(noTarget.blockers.map((entry) => entry.code)).toContain('localTargetsRequired');
-    expect(noTarget.declarationChanged).toBe(true);
-    expect((await fs.readJson(setup.intentPath)).roots).toEqual([{ pluginId: 'team/alpha' }]);
-    await fs.remove(setup.intentPath);
-    const failed = await runRecovery('install', ['team/alpha'], {
-      ...installOptions, targets: ['cursor'], env: { ...setup.env, RECOVERY_FAIL_SKILL: 'alpha' },
-    });
+    expect(noTarget.blockers.map((entry) => entry.code)).toContain('targetsNotConfigured');
+    expect(noTarget.declarationChanged).toBe(false);
+    expect(await fs.pathExists(setup.intentPath)).toBe(false);
+    expect(await portableOutputSnapshot(setup)).toEqual([]);
+    await setTargets(setup.options(), ['cursor']);
+    const foreign = path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md');
+    await fs.outputFile(foreign, 'Foreign.\n');
+    const failed = await runRecovery('install', ['team/alpha'], installOptions);
     expect(failed.ok).toBe(false);
     expect(failed.declarationChanged).toBe(true);
     expect((await fs.readJson(setup.intentPath)).roots).toEqual([{ pluginId: 'team/alpha' }]);
+    expect(await fs.readFile(foreign, 'utf8')).toBe('Foreign.\n');
   });
 
-  // Test Value Gate: a known missing postcheck remains distinct from a failed global observation.
-  it('reports a failed Portable postcheck as missing only when the provider lock stays readable', async () => {
+  // Test Value Gate: an unreadable owner must remain unknown; retained identity permits bounded damaged-output cleanup.
+  it('distinguishes missing output from unreadable ownership and permits bounded damaged-owner cleanup', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
-    const options = setup.options(['cursor']);
-    const knownMissing = await runRecovery('sync', [], { ...options,
-      env: { ...setup.env, RECOVERY_FAIL_SKILL: 'alpha' },
-    });
-    expect(knownMissing.targetResults).toEqual([expect.objectContaining({
-      pluginId: 'team/alpha', agent: 'cursor', execution: 'failed',
-      content: 'absent', observation: 'missing',
-    })]);
-
-    const unreadable = await runRecovery('sync', [], { ...options,
-      env: { ...setup.env, RECOVERY_FAIL_SKILL: 'alpha', RECOVERY_BAD_LOCK_ON_FAIL_SKILL: '1' },
-    });
-    expect(unreadable.targetResults).toEqual([expect.objectContaining({
-      pluginId: 'team/alpha', agent: 'cursor', observation: 'unknown',
-    })]);
-    expect(unreadable.targetResults[0]?.blockers.map((entry) => entry.code))
-      .toContain('portableProviderLockInvalid');
+    const options = { ...setup.options(), nativeObservations: [] };
+    const missing = await readRecoveryStatus(options);
+    expect(missing.inventory?.[0]?.targetResults[0]).toMatchObject({ content: 'absent', observation: 'missing' });
+    expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
+    const owned = path.join(portableRoot(setup, 'cursor'), 'alpha');
+    const ownerPath = path.join(owned, SKILL_OWNER_MARKER);
+    const owner = await fs.readJson(ownerPath);
+    const before = await fs.readFile(setup.intentPath);
+    await fs.writeFile(ownerPath, '{broken');
+    const unknown = await readRecoveryStatus(options);
+    expect(unknown.inventory?.[0]?.targetResults[0]).toMatchObject({ observation: 'unknown', content: 'unknown' });
+    expect(unknown.inventory?.[0]?.targetResults[0]?.blockers.map((entry) => entry.code)).toContain('portableOwnerInvalid');
+    const unsafe = await runRecovery('cleanup', ['team/alpha'], { ...setup.options(), all: false, force: true });
+    expect(unsafe.ok).toBe(false);
+    expect(await fs.pathExists(owned)).toBe(true);
+    await fs.writeJson(ownerPath, { ...owner, filesDigest: 'damaged' });
+    const foreign = path.join(portableRoot(setup, 'cursor'), 'foreign', 'SKILL.md');
+    await fs.outputFile(foreign, 'Foreign.\n');
+    const cleaned = await runRecovery('cleanup', ['team/alpha'], { ...setup.options(), all: false, force: true });
+    expect(cleaned.ok, JSON.stringify(cleaned)).toBe(true);
+    expect(await fs.pathExists(owned)).toBe(false);
+    expect(await fs.readFile(foreign, 'utf8')).toBe('Foreign.\n');
+    expect(await fs.readFile(setup.intentPath)).toEqual(before);
   });
 
-  // Test Value Gate: all equivalent paths to one repo must show the same Portable status without writes.
+  // Test Value Gate: equivalent paths to one repository must show the same status without modifying outputs or declarations.
   it('observes one satisfied target from root, subdirectory and alias', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
-    await targetsSet({ scope: 'project', cwd: setup.cwd, env: setup.env, agents: ['cursor'] });
     expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
     const subdirectory = path.join(setup.cwd, 'src');
     const alias = path.join(path.dirname(setup.cwd), 'recovery-project-alias');
     await fs.ensureDir(subdirectory);
     await fs.symlink(setup.cwd, alias, process.platform === 'win32' ? 'junction' : 'dir');
     const intentBytes = await fs.readFile(setup.intentPath);
-    const writes = await addCalls(setup.log);
+    const writes = await portableOutputSnapshot(setup);
     const statuses = [];
-    for (const cwd of [setup.cwd, subdirectory, alias]) {
-      statuses.push(await readRecoveryStatus({ scope: 'project', cwd, env: setup.env,
-        cliVersion: '1.0.0', nativeObservations: [] }));
-    }
+    for (const cwd of [setup.cwd, subdirectory, alias]) statuses.push(await readRecoveryStatus({
+      cwd, env: setup.env, cliVersion: '1.0.0', nativeObservations: [],
+    }));
     for (const status of statuses) expect(status).toMatchObject({
       schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: true,
       allSatisfied: true, errors: [], inventory: [{ pluginId: 'team/alpha', targetResults: [{
@@ -768,7 +576,7 @@ describe('scoped recovery integration', () => {
     });
     expect(statuses[1]).toEqual(statuses[0]);
     expect(statuses[2]).toEqual(statuses[0]);
-    expect(await addCalls(setup.log)).toEqual(writes);
+    expect(await portableOutputSnapshot(setup)).toEqual(writes);
     expect(await fs.readFile(setup.intentPath)).toEqual(intentBytes);
   });
 });

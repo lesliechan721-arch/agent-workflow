@@ -1,5 +1,6 @@
 {
   "schemaVersion": 3,
+  "platforms": ["codex"],
   "name": "multi-mcp",
   "version": "0.1.0",
   "description": "Fixture plugin with multiple structured MCP servers.",
@@ -10,8 +11,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": ["CODEX"]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {

@@ -6,8 +6,9 @@ import {
   type PluginConfigValueReference,
   type PluginConfigValue,
   type PluginConfigValidationIssue,
-  type Scope,
+  type PlatformTarget,
 } from '@lesliechan721/aw-plugin-core';
+import type { ConfigProfileKey } from './model.js';
 
 export type ConfigReferenceScalar = PluginConfigScalarField & { valueRef: PluginConfigValueReference };
 
@@ -18,6 +19,7 @@ export interface ConfigReferenceSelection {
   entries: Record<string, string>;
 }
 export interface ConfigReferenceContext {
+  platform?: PlatformTarget;
   selections: Record<string, ConfigReferenceSelection>;
 }
 export interface ConfigReferenceDraft {
@@ -35,12 +37,12 @@ export function configReferenceScalars(field: PluginConfigSchemaField): ConfigRe
     .flatMap((properties) => Object.values(properties).flatMap((child) => configReferenceScalars(child as PluginConfigSchemaField)));
 }
 
-export function configReferenceKey(scalar: PluginConfigScalarField): string {
-  return JSON.stringify({ ...scalar, default: undefined });
+export function configReferenceKey(scalar: PluginConfigScalarField, platform?: PlatformTarget): string {
+  return JSON.stringify({ profile: platform ?? 'common', field: { ...scalar, default: undefined } });
 }
 
 export function configReferenceSelection(context: ConfigReferenceContext | undefined, scalar: PluginConfigScalarField): ConfigReferenceSelection {
-  return context?.selections[configReferenceKey(scalar)] ?? {
+  return context?.selections[configReferenceKey(scalar, context.platform)] ?? {
     choices: [], issues: [], source: 'missing', entries: {},
   };
 }
@@ -76,23 +78,28 @@ export function configReferenceValues(field: PluginConfigSchemaField, value: unk
 }
 
 export function configCrossLayerDependencies(
-  fields: Record<string, PluginConfigSchemaField>,
-  drafts: Partial<Record<Scope, ConfigReferenceDraft>>,
-  contexts: Partial<Record<Scope, ConfigReferenceContext>>,
-): Array<{ key: string; source: string }> {
-  if (!drafts.user || !drafts.project || !contexts.user || !contexts.project) return [];
-  return Object.entries(drafts.project.updates).flatMap(([key, value]) => {
-    const field = fields[key];
-    if (!field) return [];
-    return configReferenceValues(field, value).flatMap(({ scalar, value }) => {
-      const ref = scalar.valueRef!;
-      if (ref.plugin) return [];
-      if (ref.include?.includes(value) || !(Object.hasOwn(drafts.user!.updates, ref.field) || drafts.user!.removes.includes(ref.field))) return [];
-      const project = configReferenceSelection(contexts.project, scalar);
-      const user = configReferenceSelection(contexts.user, scalar);
-      if (project.source === 'project') return [];
-      const identity = JSON.stringify(value);
-      return project.entries[identity] !== user.entries[identity] ? [{ key, source: ref.field }] : [];
-    });
-  });
+  fields: Partial<Record<ConfigProfileKey, Record<string, PluginConfigSchemaField>>>,
+  drafts: Partial<Record<ConfigProfileKey, ConfigReferenceDraft>>,
+  contexts: Partial<Record<ConfigProfileKey, ConfigReferenceContext>>,
+): Array<{ profile: ConfigProfileKey; key: string; source: string }> {
+  if (!drafts.common || !contexts.common) return [];
+  const commonDraft = drafts.common;
+  const commonContext = contexts.common;
+  return (Object.entries(drafts) as Array<[ConfigProfileKey, ConfigReferenceDraft]>)
+    .filter(([profile]) => profile !== 'common' && contexts[profile])
+    .flatMap(([profile, draft]) => Object.entries(draft.updates).flatMap(([key, value]) => {
+      const field = fields[profile]?.[key];
+      if (!field) return [];
+      return configReferenceValues(field, value).flatMap(({ scalar, value }) => {
+        const ref = scalar.valueRef!;
+        if (ref.plugin) return [];
+        if (ref.include?.includes(value)
+          || !(Object.hasOwn(commonDraft.updates, ref.field) || commonDraft.removes.includes(ref.field))) return [];
+        const platform = configReferenceSelection(contexts[profile], scalar);
+        const common = configReferenceSelection(commonContext, scalar);
+        if (platform.source === 'platform') return [];
+        const identity = JSON.stringify(value);
+        return platform.entries[identity] !== common.entries[identity] ? [{ profile, key, source: ref.field }] : [];
+      });
+    }));
 }

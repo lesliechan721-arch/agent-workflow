@@ -299,29 +299,30 @@ describe('Catalog source impact inspection', () => {
     expect(JSON.stringify(impact)).not.toContain(isolation.layout.fixtureCwd);
   });
 
-  it('keeps user and current-project config references as separate projections', async () => {
+  it('projects user config profiles as one source reference and ignores historical project config', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const envelope = {
+      schemaVersion: 6,
+      sourceId: 'team',
+      pluginName: 'demo',
+      binding: { kind: 'source', sourceIdentity: `sha256:${'1'.repeat(64)}` },
+      common: { token: 'private-common-token' },
+      platforms: { codex: { token: 'private-codex-token' } },
+    };
+    const historicalProjectPath = `${isolation.layout.fixtureCwd}/.agent-workflows/plugin-config/team/demo/config.json`;
+    const historicalProjectBytes = JSON.stringify({
       schemaVersion: 5,
       sourceId: 'team',
       pluginName: 'demo',
-      values: {},
-    };
+      binding: { kind: 'catalog', logicalIdentity: 'catalog.example/team' },
+      values: { token: 'historical-project-token' },
+    });
     await Promise.all([
       fs.outputJson(
         `${isolation.layout.awHomeDir}/plugin-config/team/demo/config.json`,
-        {
-          ...envelope,
-          binding: { kind: 'source', sourceIdentity: `sha256:${'1'.repeat(64)}` },
-        },
+        envelope,
       ),
-      fs.outputJson(
-        `${isolation.layout.fixtureCwd}/.agent-workflows/plugin-config/team/demo/config.json`,
-        {
-          ...envelope,
-          binding: { kind: 'catalog', logicalIdentity: 'catalog.example/team' },
-        },
-      ),
+      fs.outputFile(historicalProjectPath, historicalProjectBytes),
     ]);
 
     const impact = await inspectCatalogSourceImpact({
@@ -333,9 +334,18 @@ describe('Catalog source impact inspection', () => {
 
     expect(impact.affectedReferences.filter((reference) =>
       reference.category === 'config' && reference.pluginId === 'team/demo')).toEqual([
-      expect.objectContaining({ scope: 'project', projectRecord: 'current' }),
       expect.objectContaining({ scope: 'user' }),
     ]);
+    expect(impact.inventoryComplete).toBe(true);
+    expect(impact.errors).toEqual([]);
+    expect(catalogSourceImpactRequiresConfirmation(impact)).toBe(true);
+    expect(await fs.readFile(historicalProjectPath, 'utf8')).toBe(historicalProjectBytes);
+    const projection = JSON.stringify(impact);
+    expect(projection).not.toContain(isolation.layout.awHomeDir);
+    expect(projection).not.toContain(isolation.layout.fixtureCwd);
+    expect(projection).not.toContain('private-common-token');
+    expect(projection).not.toContain('private-codex-token');
+    expect(projection).not.toContain('historical-project-token');
   });
 
   it('treats an unavailable Active manifest as unknown without known references', async () => {

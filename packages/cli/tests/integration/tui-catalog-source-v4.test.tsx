@@ -3,9 +3,10 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { cleanup, render } from 'ink-testing-library';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
+import { writePreferences } from '../../src/intent/deployment-preferences.js';
 import { ConsoleAppV4, type ConsoleV4ScreenId } from '../../src/tui/console-app-v4.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
@@ -49,6 +50,14 @@ function trackController(controller: TuiController): TuiController {
   activeControllers.add(controller);
   return controller;
 }
+
+beforeEach(async () => {
+  const isolation = getCurrentSourceTestIsolation();
+  // Source workflows start after the machine's Agent selection has been saved.
+  await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
+    schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['codex', 'claude'], exclusions: [],
+  });
+});
 
 afterEach(async () => {
   setTuiControllerRuntimeTestHooksForTests(undefined);
@@ -887,7 +896,9 @@ describe('TUI v4 real catalog source boundary', () => {
       afterCatalogGenerationCandidateResolved: async () => {
         await fs.outputJson(
           path.join(isolation.env.AW_HOME!, 'plugin-config', 'local', 'one', 'config.json'),
-          { schemaVersion: 3, pluginId: 'local/one', values: {} },
+          { schemaVersion: 6, sourceId: 'local', pluginName: 'one',
+            binding: { kind: 'source', sourceIdentity: `sha256:${'3'.repeat(64)}` },
+            common: {}, platforms: {} },
         );
       },
     });
@@ -1687,11 +1698,11 @@ describe('TUI v4 real catalog source boundary', () => {
       env: isolation.env,
     });
     await fs.outputJson(path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'two', 'config.json'), {
-      schemaVersion: 5,
+      schemaVersion: 6,
       sourceId: 'team',
       pluginName: 'two',
       binding: { kind: 'source', sourceIdentity: `sha256:${'3'.repeat(64)}` },
-      values: {},
+      common: {}, platforms: {},
     });
     await fs.outputFile(
       path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'installed_plugins.json'),
@@ -1748,7 +1759,9 @@ describe('TUI v4 real catalog source boundary', () => {
       afterMutationEvidenceCapture: async () => {
         await fs.outputJson(
           path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'two', 'config.json'),
-          { schemaVersion: 3, pluginId: 'team/two', values: {} },
+          { schemaVersion: 6, sourceId: 'team', pluginName: 'two',
+            binding: { kind: 'source', sourceIdentity: `sha256:${'3'.repeat(64)}` },
+            common: {}, platforms: {} },
         );
       },
     });

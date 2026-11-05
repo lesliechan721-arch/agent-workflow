@@ -264,7 +264,7 @@ describe('TUI plugin update evidence', () => {
     controller.dispose();
   });
 
-  it('shows the canonical update count, platform update badge, detail CTA, and update filter', async () => {
+  it('shows the canonical update count, scope capsules, detail CTA, and update filter', async () => {
     const prepareScopedTask = vi.fn(async (request: Parameters<NonNullable<TuiControllerDependencies['prepareScopedTask']>>[0]): Promise<ScopedTuiPlan> => ({
       kind: 'recovery', scope: request.scope,
       plan: { changes: ['更新 official/demo'], warnings: [], nativeGroups: [], portableGroups: [],
@@ -291,8 +291,14 @@ describe('TUI plugin update evidence', () => {
     await nextTurn();
     await nextTurn();
     await nextTurn();
-    expect(instance.lastFrame()).toContain('[✓ Codex ↑]');
+    expect(instance.lastFrame()).toContain('▣ 所有项目 依赖');
+    expect(instance.lastFrame()).toContain('▣ 当前项目 依赖');
     expect(instance.lastFrame()).toContain('更新 1');
+    expect(controller.getPluginOverview('official/demo')?.update.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        platform: 'codex', scope: 'user', installedVersion: '1.0.0', availableVersion: '2.0.0',
+      }),
+    ]));
     expect(controller.listPlugins({ mode: 'installed', installFilter: 'updateAvailable' }))
       .toHaveLength(1);
     instance.stdin.write('f');

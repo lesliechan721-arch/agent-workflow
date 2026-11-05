@@ -10,7 +10,6 @@ import { getCurrentSourceTestIsolation, registerCurrentTestWritableStateRoot } f
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { createTestPnpmInvocation } from '../helpers/pnpm.js';
 import { TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
-import { writeSkillsCliFixture } from '../helpers/skills-cli-fixture.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import {
@@ -924,7 +923,7 @@ describe('pack smoke', () => {
     });
     expect(JSON.parse(capabilities.stdout).capabilities).toContain('aw.plugin-recovery.v1');
     for (const recoveryCommand of [
-      ['intent', '--help'], ['status', '--help'], ['targets', 'set', '--help'],
+      ['plugin', 'intent', '--help'], ['plugin', 'status', '--help'], ['plugin', 'targets', 'set', '--help'],
     ]) {
       await expect(execAw(recoveryCommand, {
         cwd: tempRoot, env: externalAuthoringEnv,
@@ -1033,8 +1032,11 @@ describe('pack smoke', () => {
     });
     const developmentSourceId = developmentSourceReceipt.source.id as string;
     await execFileAsync('git', ['init'], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    await execAw(['plugin', 'targets', 'set', 'codex', '--json'], {
+      cwd: standaloneWorkspace, env: externalAuthoringEnv,
+    });
     const projectInstallBeforeTrust = await execAw([
-      'install', `${developmentSourceId}/packed-build`, '--target', 'codex', '--scope', 'project', '--yes', '--json',
+      'plugin', 'install', `${developmentSourceId}/packed-build`, '--scope', 'project', '--yes', '--json',
     ], {
       cwd: standaloneWorkspace,
       env: externalAuthoringEnv,
@@ -1047,7 +1049,7 @@ describe('pack smoke', () => {
       ok: true,
       command: 'install',
       intent: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
-      selection: { agents: ['codex'], origin: 'argument' },
+      selection: { agents: ['codex'], origin: 'preference' },
       declarationChanged: true,
       targetResults: expect.arrayContaining([expect.objectContaining({
         pluginId: `${developmentSourceId}/packed-build`,
@@ -1068,8 +1070,11 @@ describe('pack smoke', () => {
       'trust_level = "trusted"',
       '',
     ].join('\n'));
+    await execAw(['plugin', 'targets', 'set', 'codex', 'claude', '--json'], {
+      cwd: standaloneWorkspace, env: externalAuthoringEnv,
+    });
     const externalInstall = await execAw([
-      'install', `${developmentSourceId}/packed-build`, '--target', 'codex', '--target', 'claude-code',
+      'plugin', 'install', `${developmentSourceId}/packed-build`,
       '--scope', 'project', '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch(async (error: unknown) => {
       const failure = error as { stdout?: string; stderr?: string };
@@ -1086,7 +1091,7 @@ describe('pack smoke', () => {
       ok: true,
       command: 'install',
       intent: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
-      selection: { agents: expect.arrayContaining(['codex', 'claude-code']), origin: 'argument' },
+      selection: { agents: expect.arrayContaining(['codex', 'claude']), origin: 'preference' },
       declarationChanged: false,
       targetResults: expect.arrayContaining([
         expect.objectContaining({
@@ -1094,7 +1099,7 @@ describe('pack smoke', () => {
           delivery: { kind: 'native', platform: 'codex' }, observation: 'verified',
         }),
         expect.objectContaining({
-          pluginId: `${developmentSourceId}/packed-build`, agent: 'claude-code',
+          pluginId: `${developmentSourceId}/packed-build`, agent: 'claude',
           delivery: { kind: 'native', platform: 'claude' }, observation: 'verified',
         }),
       ]),
@@ -1230,8 +1235,11 @@ describe('pack smoke', () => {
       active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
     });
     expect(sourceSync.stderr).toBe('');
+    await execAw(['plugin', 'targets', 'set', 'codex', '--context', 'user', '--json'], {
+      cwd: tempRoot, env: packedConsumerEnv,
+    });
     const consumedIntent = await execAw([
-      'intent', 'add', 'packed/packed-build', '--scope', 'user', '--json',
+      'plugin', 'intent', 'add', 'packed/packed-build', '--scope', 'user', '--json',
     ], { cwd: tempRoot, env: packedConsumerEnv });
     expect(JSON.parse(consumedIntent.stdout)).toMatchObject({
       kind: 'aw-recovery', scope: 'user', ok: true,
@@ -1239,7 +1247,7 @@ describe('pack smoke', () => {
     });
     expect(await fs.readFile(projectIntentPath, 'utf8')).toBe(projectIntentBeforeUserRecovery);
     const consumedStatus = await execAw([
-      'status', '--scope', 'user', '--json',
+      'plugin', 'status', '--context', 'user', '--json',
     ], { cwd: tempRoot, env: packedConsumerEnv });
     expect(JSON.parse(consumedStatus.stdout)).toMatchObject({
       schemaVersion: 1, kind: 'aw-recovery-status', scope: 'user',
@@ -1293,17 +1301,16 @@ describe('pack smoke', () => {
     const portablePluginRoot = path.join(authorRepo, 'plugins', 'validate-fixture');
     const portableManifestPath = path.join(portablePluginRoot, '.agents-plugin', 'plugin.json');
     const portableManifest = await fs.readJson(portableManifestPath);
-    portableManifest.extensions = {
-      instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
-    };
-    portableManifest.distributions = { agentSkills: { skills: './portable-skills' } };
+    portableManifest.platforms = ['cursor'];
+    portableManifest.skills = './skills';
+    delete portableManifest.extensions;
     await fs.writeJson(portableManifestPath, portableManifest, { spaces: 2 });
     await fs.outputFile(
-      path.join(portablePluginRoot, 'portable-skills', 'packed-portable', 'SKILL.md'),
+      path.join(portablePluginRoot, 'skills', 'packed-portable', 'SKILL.md'),
       '---\nname: packed-portable\ndescription: Packed portable validator fixture.\n---\n\n# Packed portable\n',
     );
     await fs.outputFile(
-      path.join(portablePluginRoot, 'portable-skills', 'packed-portable', 'README.md'),
+      path.join(portablePluginRoot, 'skills', 'packed-portable', 'README.md'),
       '# Packed portable fixture\n',
     );
     const portableValidation = await execAw([
@@ -1317,11 +1324,11 @@ describe('pack smoke', () => {
     const portableCatalog = path.join(tempRoot, 'portable-path-catalog');
     await Promise.all([
       fs.outputFile(
-        path.join(portableCatalog, 'plugins', 'portable-pack', 'agent-skills', 'skills', 'packed-portable', 'SKILL.md'),
+        path.join(portableCatalog, 'plugins', 'portable-pack', 'cursor', 'skills', 'packed-portable', 'SKILL.md'),
         '---\nname: packed-portable\ndescription: Installed tarball command fixture.\n---\n\n# Packed portable\n',
       ),
       fs.outputFile(
-        path.join(portableCatalog, 'plugins', 'portable-pack', 'agent-skills', 'skills', 'packed-portable', 'README.md'),
+        path.join(portableCatalog, 'plugins', 'portable-pack', 'cursor', 'skills', 'packed-portable', 'README.md'),
         '# Installed tarball command fixture\n',
       ),
     ]);
@@ -1331,10 +1338,8 @@ describe('pack smoke', () => {
       [],
       '# Portable pack plugin\n',
       (manifest) => {
-        manifest.extensions = {
-          instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
-        };
-        manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
+        manifest.platforms = ['cursor'];
+        manifest.skills = './skills';
       },
     );
     const catalogPortablePluginRoot = path.join(portableCatalog, 'plugins', 'portable-pack');
@@ -1342,7 +1347,7 @@ describe('pack smoke', () => {
     await fs.outputJson(
       path.join(
         catalogPortablePluginRoot,
-        'agent-skills',
+        'cursor',
         'skills',
         'packed-portable',
         'aw-plugin-requirements.json',
@@ -1361,34 +1366,19 @@ describe('pack smoke', () => {
     await fs.writeJson(portableCatalogManifestPath, portableCatalogManifest, { spaces: 2 });
     const portableCwd = path.join(tempRoot, 'portable-project');
     const portableHome = path.join(tempRoot, 'portable-aw-home');
-    const fakeBin = path.join(tempRoot, 'fake-skills-bin');
-    const fakeLog = path.join(tempRoot, 'fake-skills-log.jsonl');
-    const fakeState = path.join(tempRoot, 'fake-skills-added');
     const materializedOut = path.join(tempRoot, 'materialized-portable');
     await Promise.all([
       fs.ensureDir(portableCwd),
-      fs.ensureDir(fakeBin),
       fs.outputJson(path.join(portableHome, 'catalog-sources.json'), {
         schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: portableCatalog }],
       }),
     ]);
-    const fakeSkills = await writeSkillsCliFixture(fakeBin, [
-      "import fs from 'node:fs';",
-      "const args = process.argv.slice(2);",
-      "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify(args) + '\\n');",
-      "if (args[0] === '--version') { console.log('1.5.23'); process.exit(0); }",
-      "if (args[0] === 'add') { fs.writeFileSync(process.env.FAKE_SKILLS_STATE, 'added'); process.exit(0); }",
-      "if (args[0] === 'list') { console.log(fs.existsSync(process.env.FAKE_SKILLS_STATE) ? JSON.stringify([{name:'packed-portable',agents:['Codex'],scope:'project',path:'/fake/packed-portable'}]) : '[]'); process.exit(0); }",
-      'process.exit(2);',
-    ].join('\n'), externalAuthoringEnv);
     const portableEnv = {
-      ...fakeSkills.env,
+      ...externalAuthoringEnv,
       AW_HOME: portableHome,
       CODEX_HOME: path.join(tempRoot, 'portable-codex-home'),
       CLAUDE_CONFIG_DIR: path.join(tempRoot, 'portable-claude-home'),
-      FAKE_SKILLS_LOG: fakeLog,
-      FAKE_SKILLS_STATE: fakeState,
     };
     const portableSourceSync = await execAw([
       'catalog', 'source', 'sync', 'local', '--json',
@@ -1405,29 +1395,48 @@ describe('pack smoke', () => {
     expect(portableSourceSync.stderr).toBe('');
     await execAw([
       'skill', 'materialize', 'local/portable-pack',
-      '--scope', 'project', '--out', materializedOut,
+      '--platform', 'cursor', '--scope', 'project', '--out', materializedOut,
     ], { cwd: portableCwd, env: portableEnv });
     await expect(fs.readJson(path.join(materializedOut, '.aw-materialization.json')))
       .resolves.toMatchObject({
         schemaVersion: 1,
         plugin: { id: 'local/portable-pack', version: '1.0.0' },
         scope: 'project',
+        platform: 'cursor',
       });
 
-    const installed = await execAw([
-      'skill', 'install', 'local/portable-pack', '--scope', 'project', '--yes', '--json',
-    ], { cwd: portableCwd, env: portableEnv, maxBuffer: 10 * 1024 * 1024 });
-    expect(JSON.parse(installed.stdout)).toMatchObject({
-      ok: true,
-      status: 'succeeded',
-      selectedSkills: [{ name: 'packed-portable', providerPluginId: 'local/portable-pack' }],
+    // Keep the installed tarball's real Portable writer in the external smoke boundary.
+    await execFileAsync('git', ['init'], { cwd: portableCwd, env: portableEnv });
+    await execAw(['plugin', 'targets', 'set', 'cursor', '--context', 'user', '--json'], {
+      cwd: portableCwd, env: portableEnv,
     });
-    const fakeCalls = (await fs.readFile(fakeLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    expect(fakeCalls).toContainEqual(['--version']);
-    expect(fakeCalls).toContainEqual(['list', '--json']);
-    expect(fakeCalls).toContainEqual(expect.arrayContaining([
-      'add', '--skill', 'packed-portable', '--yes',
-    ]));
+    const portableInstall = await execAw([
+      'plugin', 'install', 'local/portable-pack', '--scope', 'project', '--yes', '--json',
+    ], { cwd: portableCwd, env: portableEnv, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(portableInstall.stdout)).toMatchObject({
+      schemaVersion: 1,
+      kind: 'aw-recovery',
+      command: 'install',
+      scope: 'project',
+      ok: true,
+      intent: { state: 'valid', roots: ['local/portable-pack'] },
+      selection: { agents: ['cursor'], origin: 'preference' },
+      targetResults: expect.arrayContaining([expect.objectContaining({
+        pluginId: 'local/portable-pack',
+        agent: 'cursor',
+        scope: 'project',
+        delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+        observation: 'verified',
+      })]),
+    });
+    expect(portableInstall.stderr).toBe('');
+    const installedPortableRoot = path.join(portableCwd, '.cursor', 'skills', 'packed-portable');
+    expect((await fs.lstat(installedPortableRoot)).isSymbolicLink()).toBe(false);
+    expect(await fs.readFile(path.join(installedPortableRoot, 'SKILL.md'), 'utf8'))
+      .toBe(await fs.readFile(path.join(materializedOut, 'skills', 'packed-portable', 'SKILL.md'), 'utf8'));
+    await expect(fs.pathExists(path.join(installedPortableRoot, 'README.md'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(portableCwd, '.codex', 'config.toml'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(portableCwd, '.claude', 'settings.json'))).resolves.toBe(false);
 
     await execAw([
       'plugin',

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
+import { compilePluginConfigDefinition, PLATFORM_TARGETS, PORTABLE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { initCommand } from './commands/init.js';
 import { resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
@@ -35,11 +36,7 @@ import {
   runConsoleController,
 } from './commands/console.js';
 import {
-  runCommandWizard,
-  toWizardCandidates,
   WizardExecutionError,
-  type CommandWizardPluginCandidate,
-  type CommandWizardSelection,
 } from './commands/wizard.js';
 import {
   createCliExecutionContext,
@@ -49,11 +46,9 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult } from './commands/status-v6.js';
 import {
-  resolveConfigReadResolution,
-  resolveConfigWriteScope,
-  parseDependencyScopeOverrides,
+  parseContextValue,
+  parsePlatformTargetValue,
   parseScopeValue,
   resolveScriptTimeoutMs,
 } from './commands/options.js';
@@ -64,28 +59,23 @@ import {
 import { formatWarnings } from './output/reporter.js';
 import { redactString, redactValue } from './output/redact.js';
 import {
-  renderShellCommand,
-} from './output/equivalent-command.js';
-import {
   buildInitReceiptJson,
   renderInitReceipt,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
-import { prepareNativeCliExecution } from './utils/native-cli.js';
 import {
   findConfigFieldEntry,
   formatPluginConfigSetRecoveryCommand,
   listNamespacedPluginConfigStores,
-  listPluginConfigStorePluginNames,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveConfigRead,
 } from './utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
+  applyPluginConfig,
   buildConfigMutationReceipt,
   configWriteStateForError,
-  describeResetAffectedFields,
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
@@ -115,16 +105,11 @@ import {
 import type {
   ConfigFieldEntry,
   ConfigMutationCommand,
-  PlatformSelection,
+  PlatformTarget,
+  PortablePlatformTarget,
   Scope,
 } from './types.js';
-import {
-  installPortableSkills,
-  materializePortableSkillsToDirectory,
-  PortableCommandError,
-  renderPortableReview,
-} from './portable/commands.js';
-import { SkillsCliError } from './portable/skills-cli.js';
+import { materializePortableSkillsToDirectory, PortableCommandError } from './portable/commands.js';
 import {
   createReviewInspectionFailure,
   getReviewInspectionExitCode,
@@ -177,11 +162,12 @@ import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
 import { readRecoveryStatus, checkRecovery } from './recovery/status.js';
 import { intentAdd, intentRemove, intentList } from './commands/intent-command.js';
-import { targetsSet, targetsReset, targetsList } from './commands/targets-command.js';
+import { targetsSet, targetsList, targetsChangeExclusion } from './commands/targets-command.js';
 import { runRecovery } from './recovery/coordinator.js';
 import { runRetire } from './recovery/retirement.js';
 import type { RecoveryReceipt } from './recovery/receipt.js';
 import { normalizeAgents } from './intent/deployment-preferences.js';
+import { resolveWorkContext } from './intent/work-context.js';
 import { registerManagedCommandCli, runManagedCommandCli } from './commands/managed-commands.js';
 
 export type { CliIo } from './commands/runtime.js';
@@ -304,7 +290,9 @@ interface RawDiagnosticsOptions {
 }
 
 interface RawConfigOptions extends RawDiagnosticsOptions {
-  scope?: string;
+  context?: string;
+  platform?: string;
+  target?: string[];
   json?: boolean;
   valueJson?: string;
   valueStdin?: boolean;
@@ -344,20 +332,24 @@ function writeCommandFailure(error: unknown): { code: string; message: string } 
 }
 
 function recoveryRequest(argv: string[]): { command: string; scope: Scope | null; json: boolean } | null {
-  const family = argv[0] ?? '';
-  if (!['intent', 'targets', 'sync', 'install', 'reinstall', 'uninstall', 'cleanup', 'status', 'project'].includes(family)) return null;
+  const nested = argv[0] === 'plugin';
+  const args = nested ? argv.slice(1) : argv;
+  const family = args[0] ?? '';
+  if (nested && ['remove', 'status'].includes(family)
+    && args.some((value) => value === '--workspace-root' || value.startsWith('--workspace-root='))) return null;
+  if (!['intent', 'targets', 'sync', 'install', 'remove', 'reinstall', 'uninstall', 'cleanup', 'status', 'project'].includes(family)) return null;
   let rawScope: string | undefined;
   let json = false;
-  for (let index = 1; index < argv.length; index++) {
-    const value = argv[index]!;
+  for (let index = 1; index < args.length; index++) {
+    const value = args[index]!;
     if (value === '--') break;
-    if (value === '--scope') rawScope = argv[++index];
+    if (value === '--scope') rawScope = args[++index];
     else if (value.startsWith('--scope=')) rawScope = value.slice('--scope='.length);
     else if (value === '--json' || (/^-[ajvyD]+$/u.test(value) && value.includes('j'))) json = true;
-    else if (['--target', '--dependency-scope', '--script-timeout', '--log-file'].includes(value)) index++;
+    else if (['--target', '--context', '--script-timeout', '--log-file'].includes(value)) index++;
   }
   return {
-    command: ['intent', 'targets', 'project'].includes(family) ? `${family}:${argv[1] ?? ''}` : family,
+    command: ['intent', 'targets', 'project'].includes(family) ? `${family}:${args[1] ?? ''}` : family,
     scope: rawScope === 'user' || rawScope === 'project' ? rawScope : null,
     json,
   };
@@ -381,7 +373,6 @@ interface PreparsedConfigMutationJsonRequest {
 
 function scanConfigMutationShortOptions(
   token: string,
-  command: ConfigMutationCommand,
 ): { json: boolean; consumesNextValue: boolean } {
   if (!/^-[^-].*/u.test(token)) return { json: false, consumesNextValue: false };
   let json = false;
@@ -398,7 +389,7 @@ function scanConfigMutationShortOptions(
       json = true;
       continue;
     }
-    if (option === 'v' || option === 'D' || (option === 'y' && command === 'config:reset')) {
+    if (option === 'v' || option === 'D' || option === 'y') {
       continue;
     }
     break;
@@ -408,16 +399,17 @@ function scanConfigMutationShortOptions(
 }
 
 function jsonConfigMutationRequest(argv: string[]): PreparsedConfigMutationJsonRequest | null {
-  if (argv[0] !== 'config' || !['set', 'unset', 'reset'].includes(argv[1] ?? '')) {
+  const args = argv[0] === 'plugin' ? argv.slice(1) : argv;
+  if (args[0] !== 'config' || !['set', 'edit', 'unset', 'reset', 'apply'].includes(args[1] ?? '')) {
     return null;
   }
-  const command = `config:${argv[1]}` as ConfigMutationCommand;
+  const command = `config:${args[1]}` as ConfigMutationCommand;
   let json = false;
   let plugin: string | undefined;
-  const valueOptions = new Set(['--scope', '--value-json', '--preset', '--log-file']);
+  const valueOptions = new Set(['--platform', '--context', '--target', '--value-json', '--preset', '--log-file', '--script-timeout']);
 
-  for (let index = 2; index < argv.length; index += 1) {
-    const token = argv[index]!;
+  for (let index = 2; index < args.length; index += 1) {
+    const token = args[index]!;
     if (token === '--') break;
     if (valueOptions.has(token)) {
       index += 1;
@@ -427,7 +419,7 @@ function jsonConfigMutationRequest(argv: string[]): PreparsedConfigMutationJsonR
       json = true;
       continue;
     }
-    const shortOptions = scanConfigMutationShortOptions(token, command);
+    const shortOptions = scanConfigMutationShortOptions(token);
     if (shortOptions.json) json = true;
     if (shortOptions.consumesNextValue) index += 1;
     if (token.startsWith('-')) continue;
@@ -439,6 +431,19 @@ function jsonConfigMutationRequest(argv: string[]): PreparsedConfigMutationJsonR
     command,
     ...(plugin ? { plugin } : {}),
   };
+}
+
+function jsonConfigReadRequested(argv: readonly string[]): boolean {
+  if (argv[0] !== 'plugin' || argv[1] !== 'config'
+    || !['schema', 'list', 'get'].includes(argv[2] ?? '')) return false;
+  const values = new Set(['--platform', '--context', '--target', '--script-timeout', '--log-file']);
+  for (let index = 3; index < argv.length; index++) {
+    const token = argv[index]!;
+    if (token === '--') break;
+    if (values.has(token)) { index++; continue; }
+    if (token === '--json' || /^-[jvD]+$/u.test(token) && token.includes('j')) return true;
+  }
+  return false;
 }
 
 function configMutationFailure(
@@ -557,175 +562,12 @@ function isWizardAvailable(
   return context.interactive && context.isTty && !context.isCi && rawOptions.json !== true;
 }
 
-function shellCommand(tokens: string[]): string {
-  return renderShellCommand(tokens, 'posix');
-}
-
-function optionTokens(flag: string, value: string | undefined): string[] {
-  return value === undefined ? [] : [flag, value];
-}
-
-function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset'): string {
-  const argumentsByCommand = {
-    list: '<plugin>',
-    get: '<plugin> [key]',
-    set: '<plugin> <field> --scope <project|user> (--value-json <json> | --value-stdin | --preset <id>)',
-    unset: '<plugin> <key>',
-    reset: '<plugin> --scope <project|user> --yes',
-  } as const;
-  return [
-    `config ${command} 命令缺少必要参数。`,
-    `Usage: aw config ${command} ${argumentsByCommand[command]}`,
-    `Example: aw config ${command} example-plugin${command === 'set' ? ' mode --scope user --value-json \'"safe"\'' : command === 'unset' ? ' key' : command === 'reset' ? ' --scope user --yes' : ''}`,
-  ].join('\n');
-}
-
 async function readUtf8Stdin(stdin: NodeJS.ReadableStream): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of stdin as AsyncIterable<string | Buffer | Uint8Array>) {
     chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk));
   }
   return Buffer.concat(chunks).toString('utf8');
-}
-
-interface EquivalentConfigCommandOptions {
-  command: 'list' | 'get' | 'set' | 'unset' | 'reset';
-  plugin: string;
-  key?: string;
-  value?: string;
-  scope?: string;
-  valueJson?: string;
-  preset?: string;
-  confirmed?: boolean;
-}
-
-function equivalentConfigCommand(options: EquivalentConfigCommandOptions): string {
-  return shellCommand(buildEquivalentConfigCommandTokens(options));
-}
-
-function equivalentConfigCommandProjection(
-  resolve: (selection: CommandWizardSelection) => EquivalentConfigCommandOptions,
-): {
-  equivalentCommand: (selection: CommandWizardSelection) => string;
-  equivalentCommandTokens: (selection: CommandWizardSelection) => string[];
-} {
-  return {
-    equivalentCommand: (selection) => equivalentConfigCommand(resolve(selection)),
-    equivalentCommandTokens: (selection) => buildEquivalentConfigCommandTokens(resolve(selection)),
-  };
-}
-
-export function buildEquivalentConfigCommandTokens(
-  options: EquivalentConfigCommandOptions,
-): string[] {
-  return [
-    'aw',
-    'config',
-    options.command,
-    ...optionTokens('--scope', options.scope),
-    ...optionTokens('--value-json', options.valueJson),
-    ...optionTokens('--preset', options.preset),
-    ...(options.confirmed ? ['--yes'] : []),
-    '--',
-    options.plugin,
-    ...(options.key === undefined ? [] : [options.key]),
-    ...(options.value === undefined ? [] : [options.value]),
-  ];
-}
-
-function hasConfigSchemaKeys(candidate: CommandWizardPluginCandidate): boolean {
-  return candidate.configSchema !== undefined && Object.keys(candidate.configSchema).length > 0;
-}
-
-async function loadWizardCandidates(
-  context: CliExecutionContext,
-  rawOptions: { scope?: string; platform?: string },
-): Promise<CommandWizardPluginCandidate[]> {
-  const loaded = await loadConsoleItemsResult({
-    cwd: context.cwd,
-    scope: rawOptions.scope as Scope | undefined,
-    platform: rawOptions.platform as PlatformSelection | undefined,
-  }, context);
-  return toWizardCandidates(loaded.items);
-}
-
-interface ConfigWizardStoreLocation {
-  scope: Scope;
-}
-
-function mergeWizardCandidates(
-  current: CommandWizardPluginCandidate[],
-  stored: CommandWizardPluginCandidate[],
-): CommandWizardPluginCandidate[] {
-  const merged = new Map(current.map((candidate) => [candidate.pluginName, candidate]));
-  for (const candidate of stored) {
-    const existing = merged.get(candidate.pluginName);
-    if (!existing) {
-      merged.set(candidate.pluginName, candidate);
-    } else if (!existing.configSchema) {
-      merged.set(candidate.pluginName, { ...candidate, ...existing });
-    }
-  }
-  return [...merged.values()];
-}
-
-async function loadStoredConfigWizardCandidates(
-  context: CliExecutionContext,
-  locations: ConfigWizardStoreLocation[],
-  options: { includeEmptyStores?: boolean } = {},
-): Promise<CommandWizardPluginCandidate[]> {
-  const legacy = await listPluginConfigStorePluginNames({ cwd: context.cwd, env: context.env });
-  if (legacy.length > 0) {
-    throw new Error('legacyStateUnsupported: legacy bare-name config stores are not supported.');
-  }
-  const storesByPlugin = new Map<string, {
-    sourceId: string;
-    sourceIdentity?: string;
-    keys: Set<string>;
-  }>();
-  for (const location of locations) {
-    const stores = await listNamespacedPluginConfigStores({
-      cwd: context.cwd,
-      env: context.env,
-      scope: location.scope,
-    });
-    for (const store of stores) {
-      const keys = Object.keys(store.values);
-      if (keys.length === 0 && options.includeEmptyStores !== true) continue;
-      const existing = storesByPlugin.get(store.pluginId) ?? {
-        sourceId: store.sourceId,
-        ...(store.binding.kind === 'source'
-          ? { sourceIdentity: store.binding.sourceIdentity }
-          : {}),
-        keys: new Set<string>(),
-      };
-      for (const key of keys) existing.keys.add(key);
-      storesByPlugin.set(store.pluginId, existing);
-    }
-  }
-  return [...storesByPlugin]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([pluginId, store]) => ({
-      pluginName: pluginId,
-      pluginId,
-      sourceId: store.sourceId,
-      ...(store.sourceIdentity ? { sourceIdentity: store.sourceIdentity } : {}),
-      targets: [],
-      configKeys: [...store.keys].sort((left, right) => left.localeCompare(right)),
-    }));
-}
-
-function configReadStoreLocations(rawOptions: RawConfigOptions): ConfigWizardStoreLocation[] {
-  if (rawOptions.scope === 'user') return [{ scope: 'user' }];
-  if (rawOptions.scope === 'project') return [{ scope: 'project' }];
-  return [
-    { scope: 'user' },
-    { scope: 'project' },
-  ];
-}
-
-function overallResultState(value: { overallState: RebuildReceiptOverallState }): 'succeeded' | 'failed' {
-  return value.overallState === 'succeeded' ? 'succeeded' : 'failed';
 }
 
 async function resolveStoredConfigResetIdentity(options: {
@@ -765,16 +607,13 @@ async function resolveStoredConfigResetIdentity(options: {
     pluginName: match!.pluginName,
     pluginId: match!.pluginId,
     sourceId: match!.sourceId,
-    ...(match!.binding.kind === 'source'
-      ? { sourceIdentity: match!.binding.sourceIdentity }
-      : { logicalIdentity: match!.binding.logicalIdentity }),
+    sourceIdentity: match!.binding.sourceIdentity,
   };
 }
 
 async function resolveStoredOnlyConfigIdentity(options: {
   selector: string;
   context: CliExecutionContext;
-  locations: ConfigWizardStoreLocation[];
 }): Promise<{
   pluginName: string;
   pluginId: string;
@@ -784,18 +623,13 @@ async function resolveStoredOnlyConfigIdentity(options: {
 }> {
   const parsed = parsePluginId(options.selector);
   if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
-  const stores = (await Promise.all(options.locations.map((location) =>
-    listNamespacedPluginConfigStores({
-      cwd: options.context.cwd,
-      env: options.context.env,
-      scope: location.scope,
-    })))).flat().filter((store) => store.pluginId === options.selector);
+  const stores = (await listNamespacedPluginConfigStores({
+    cwd: options.context.cwd, env: options.context.env, scope: 'user',
+  })).filter((store) => store.pluginId === options.selector);
   if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
   const sourceBindings = stores.flatMap((store) => store.binding.kind === 'source'
     ? [store.binding.sourceIdentity] : []);
-  const catalogBindings = stores.flatMap((store) => store.binding.kind === 'catalog'
-    ? [store.binding.logicalIdentity] : []);
-  if (new Set(sourceBindings).size > 1 || new Set(catalogBindings).size > 1) {
+  if (new Set(sourceBindings).size > 1) {
     throw new Error(`identityMismatch: ${options.selector} config stores have different bindings.`);
   }
   const currentSource = await withResolvedMultiSourceCatalog({
@@ -815,9 +649,6 @@ async function resolveStoredOnlyConfigIdentity(options: {
   });
   if (sourceBindings[0] && sourceBindings[0] !== currentSource.sourceIdentity) {
     throw new Error(`identityMismatch: ${options.selector} user config does not match the current source identity.`);
-  }
-  if (catalogBindings[0] && catalogBindings[0] !== currentSource.logicalIdentity) {
-    throw new Error(`identityMismatch: ${options.selector} project config does not match the current Catalog logical identity.`);
   }
   return {
     pluginName: parsed.pluginName,
@@ -843,6 +674,7 @@ async function resolveMultiSourceConfigRead(options: {
   const inventory = await inventoryLegacyConfigReferences({
     cwd: options.context.cwd,
     env: options.context.env,
+    scope: options.rawOptions.context === 'project' ? 'project' : 'user',
   });
   assertCatalogSourceReferencesSupported(inventory);
   return withResolvedCatalogPlugin({
@@ -853,13 +685,15 @@ async function resolveMultiSourceConfigRead(options: {
       const result = await resolveConfigRead({
         pluginName: plugin.manifest.name,
         plugin,
-        scope: resolveConfigReadResolution(options.rawOptions.scope),
+        scope: options.rawOptions.context === 'project' ? 'project' : 'user',
+        platform: options.rawOptions.platform as PlatformTarget | undefined,
         cwd: options.context.cwd,
         env: options.context.env,
       });
       if (options.key !== undefined) {
         const field = findConfigFieldEntry(result.fields, options.key);
-        if (!field && plugin.manifest.config?.fields?.[options.key] === undefined) {
+        if (!field && compilePluginConfigDefinition(plugin.manifest.config,
+          options.rawOptions.platform as PlatformTarget | undefined).fields[options.key] === undefined) {
           throw new Error(`Unknown config key "${options.key}".`);
         }
         if (field) result.fields = [field];
@@ -878,7 +712,6 @@ async function resolveMultiSourceConfigRead(options: {
     const stored = await resolveStoredOnlyConfigIdentity({
       selector: options.selector,
       context: options.context,
-      locations: configReadStoreLocations(options.rawOptions),
     });
     const result = await resolveConfigRead({
       sourceId: stored.sourceId,
@@ -886,7 +719,8 @@ async function resolveMultiSourceConfigRead(options: {
       logicalIdentity: stored.logicalIdentity,
       pluginName: stored.pluginName,
       plugin: null,
-      scope: resolveConfigReadResolution(options.rawOptions.scope),
+      scope: options.rawOptions.context === 'project' ? 'project' : 'user',
+        platform: options.rawOptions.platform as PlatformTarget | undefined,
       cwd: options.context.cwd,
       env: options.context.env,
     });
@@ -900,11 +734,15 @@ async function resolveMultiSourceConfigRead(options: {
 }
 
 interface RawRecoveryOptions extends RawDiagnosticsOptions {
+  context?: string;
+  apply?: boolean;
+  none?: boolean;
+  rebuild?: boolean;
   all?: boolean;
   check?: boolean;
   refresh?: boolean;
   scope?: string;
-  target?: string[];
+  target?: string[] | string;
   scriptTimeout?: string;
   json?: boolean;
   force?: boolean;
@@ -1103,13 +941,6 @@ function writeJsonReceipt(write: (text: string) => void, payload: unknown): void
   writeLine(write, JSON.stringify(payload, null, 2));
 }
 
-function configLayerLabel(scope: Scope): string {
-  if (scope === 'user') {
-    return '个人';
-  }
-  return '当前项目';
-}
-
 function writeConfigApplyNotice(
   write: (text: string) => void,
   receipt: {
@@ -1133,7 +964,7 @@ function writeConfigApplyNotice(
         : entry.errorCode
           ? `失败原因：${entry.errorCode}。`
           : '未提供安全失败原因。';
-      const command = `aw reinstall ${receipt.plugin} --target ${entry.target.platform === 'claude' ? 'claude-code' : entry.target.platform} --scope ${entry.target.scope}`;
+      const command = `aw plugin sync ${receipt.plugin} --rebuild --target ${entry.target.platform} --context ${entry.target.scope}`;
       const recovery = entry.errorCode === 'invalidConfig'
         ? ` 请修复无效配置后运行 ${command}。`
         : entry.errorCode === 'preApplyAuthorizationRequired'
@@ -1149,9 +980,9 @@ function writeConfigApplyNotice(
   const targetResults = receipt.apply.targetResults;
   if (receipt.apply.state === 'skipped') {
     const message = receipt.apply.reason === 'noConfigChange'
-      ? '配置内容没有变化，因此没有运行 reinstall。'
+      ? '配置内容没有变化，因此没有刷新输出。'
       : receipt.apply.reason === 'noEffectiveConfigChange'
-        ? '配置存储已更新，但有效配置没有变化，因此没有运行 reinstall。'
+        ? '配置存储已更新，但有效配置没有变化，因此没有刷新输出。'
       : receipt.apply.reason === 'notRequested'
         ? '配置已保存，但未请求应用配置。'
         : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。';
@@ -1168,19 +999,19 @@ function writeConfigApplyNotice(
       ? `${receipt.apply.error.code}：${sanitizeMessage(receipt.apply.error.message)}`
       : `${receipt.apply.reason}：${fallbackMessages[receipt.apply.reason]}`;
     const recovery = receipt.apply.reason === 'invalidConfig'
-      ? '请修复无效配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。'
+      ? '请修复无效配置，再运行 aw plugin sync <source/plugin>。'
       : receipt.apply.reason === 'effectiveConfigUnavailable'
-        ? '请修复配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。'
+        ? '请修复配置，再运行 aw plugin sync <source/plugin>。'
         : receipt.apply.reason === 'schemaUnavailable' || receipt.apply.reason === 'sourceUnavailable'
-          ? '请修复插件来源或配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。'
-          : '请修复来源或配置，再按目标范围运行 aw sync <source/plugin> --scope user|project。';
+          ? '请修复插件来源或配置，再运行 aw plugin sync <source/plugin>。'
+          : '请修复来源或配置，再运行 aw plugin sync <source/plugin>。';
     writeLine(write, `配置已保存，但当前无法应用配置。${detail} ${recovery}`);
     writeTargetFailures();
   } else {
     const completed = targetResults.filter((entry) => entry.state === 'completed').length;
     const failed = targetResults.filter((entry) => entry.state === 'failed').length;
     const skipped = targetResults.filter((entry) => entry.state === 'skipped').length;
-    writeLine(write, `配置已保存。已重装 ${completed} 个当前可见目标；失败 ${failed} 个；跳过 ${skipped} 个。`);
+    writeLine(write, `配置已保存。已刷新 ${completed} 个当前可见目标；失败 ${failed} 个；跳过 ${skipped} 个。`);
     writeTargetFailures();
   }
   writeWarnings(write, receipt.warnings);
@@ -1211,21 +1042,20 @@ function writeConfigReadHuman(
       );
     }
     if (field.kind === 'manifest' && field.valueState === 'invalid') {
-      const sourceScope = field.sourceLayer === 'project'
-        ? 'project'
-        : 'user';
+      const context = resolved.context ?? 'user';
       const definition = resolved.fieldDefinitions?.[field.key];
       if (definition) {
         writeLine(write, `  ${formatPluginConfigSetRecoveryCommand(
           pluginName,
           field.key,
           definition,
-          sourceScope,
+          context,
+          resolved.platform,
         )}`);
       }
-      const scopeOption = ` -s ${sourceScope}`;
-      writeLine(write, `  aw config unset ${pluginName} ${field.key}${scopeOption}`);
-      writeLine(write, `  aw config reset ${pluginName}${scopeOption}`);
+      const profileOptions = ` --context ${context}${resolved.platform ? ` --platform ${resolved.platform}` : ''}`;
+      writeLine(write, `  aw plugin config unset ${pluginName} ${field.key}${profileOptions}`);
+      writeLine(write, `  aw plugin config reset ${pluginName}${profileOptions} --yes`);
     }
   }
 }
@@ -1266,7 +1096,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   const plugin = program
     .command('plugin')
-    .description('Create and validate AW plugin source');
+    .description('Manage plugin demand, outputs, configuration, and author sources');
 
   registerManagedCommandCli(program, () => createActionContext('command', {}), {
     cliEntry: fileURLToPath(import.meta.url),
@@ -1483,8 +1313,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     )
     .addOption(strictValueOption(
       '--platform <platform>',
-      'select codex, claude, or agent-skills',
-      ['codex', 'claude', 'agent-skills'],
+      'select a canonical platform target',
+      PLATFORM_TARGETS,
     ))
     .addOption(strictValueOption(
       '--scope <scope>',
@@ -1554,8 +1384,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     )
     .addOption(strictValueOption(
       '--platform <platform>',
-      'select codex, claude, or agent-skills',
-      ['codex', 'claude', 'agent-skills'],
+      'select a canonical platform target',
+      PLATFORM_TARGETS,
     ).makeOptionMandatory())
     .addOption(strictValueOption(
       '--scope <scope>',
@@ -1593,124 +1423,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   skill
-    .command('install')
-    .description('Install portable Skills through the skills CLI')
-    .argument('<plugin>', 'plugin or source/plugin selector')
-    .requiredOption('-s, --scope <scope>', 'project or user')
-    .option('--skill <name...>', 'install only selected Skill names')
-    .option('--agent <id...>', 'install to explicit Agent IDs')
-    .option('-y, --yes', 'confirm the reviewed install', false)
-    .option('-j, --json', 'emit one receipt v5 JSON object', false)
-    .action(async (selector: string, rawOptions: {
-      scope: string;
-      skill?: string[];
-      agent?: string[];
-      yes?: boolean;
-      json?: boolean;
-    }) => {
-      const context = createActionContext('skill:install', {});
-      const writeFailure = (error: unknown): void => {
-        const capabilityError = error instanceof AwCapabilityUnsupportedError ? error : undefined;
-        const code = capabilityError?.code
-          ?? (error instanceof PortableCommandError || error instanceof SkillsCliError
-          ? error.code
-          : 'portableInstallFailed');
-        writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 5,
-          command: 'skill:install',
-          ok: false,
-          status: 'failed',
-          plugin: { id: selector },
-          scope: rawOptions.scope,
-          selectedSkills: [],
-          ...(rawOptions.skill ? { requestedSkills: rawOptions.skill } : {}),
-          agentMode: rawOptions.agent ? 'explicit' : 'automatic',
-          requestedAgents: rawOptions.agent ?? [],
-          skillsCliVersion: null,
-          collisions: [],
-          dependencies: [],
-          materializationDigest: null,
-          verification: { records: [], missing: [] },
-          warnings: [],
-          failures: [{
-            code,
-            message: capabilityError?.message ?? `${code}: portable Skill 安装未执行。`,
-            ...(capabilityError ? {
-              plugin: capabilityError.plugin,
-              missingCapabilities: capabilityError.missingCapabilities,
-              availableCapabilities: capabilityError.availableCapabilities,
-            } : {}),
-          }],
-        });
-      };
-      if (rawOptions.json && !rawOptions.yes) {
-        writeFailure(new PortableCommandError(
-          'confirmationRequired',
-          '写入型 --json 必须同时使用 --yes。',
-        ));
-        commandExitState.exitCode = 1;
-        return;
-      }
-      try {
-        const receipt = await runActionWithContext(context, () => installPortableSkills({
-          selector,
-          scope: rawOptions.scope,
-          ...(rawOptions.skill ? { requestedSkills: rawOptions.skill } : {}),
-          ...(rawOptions.agent ? { requestedAgents: rawOptions.agent } : {}),
-          yes: rawOptions.yes,
-          cwd: context.cwd,
-          cliVersion: resolveCliVersion(),
-          env: context.env,
-          ...(context.interactive && context.prompt.confirm ? {
-            confirm: async () => context.prompt.confirm!({
-              message: '确认按以上 Review 安装 portable Skills？',
-              defaultValue: false,
-            }),
-          } : {}),
-          ...(!rawOptions.json ? {
-            onReview: (review) => {
-              for (const line of renderPortableReview(review)) writeLine(io.stdout, line);
-            },
-          } : {}),
-        }));
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
-        else if (receipt.ok) writeLine(io.stdout, `portable Skill 安装完成：${receipt.selectedSkills.length} 项。`);
-        else {
-          const sanitize = (value: string): string => redactString(value)
-            .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
-            .replace(/file:\/\/\S+/giu, '[REDACTED PATH]')
-            .replace(/(?:file:\/\/)?(?:\/[\w.@+-]+){2,}/gu, '[REDACTED PATH]')
-            .replace(/[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s\\]*/gu, '[REDACTED PATH]');
-          const lines = new Set<string>();
-          for (const failure of receipt.failures) {
-            lines.add(`${failure.code}: ${sanitize(failure.message)}`);
-          }
-          for (const warning of receipt.warnings) lines.add(`警告：${sanitize(warning)}`);
-          const recoveries = receipt.failures.map((failure) => failure.recovery).filter(Boolean);
-          const recovery = recoveries.find((entry) => entry.includes('aw skill install')
-            && entry.includes('skills remove'))
-            ?? '重新运行 aw skill install；如需清理外部写入，请使用 skills remove。';
-          lines.add(`恢复：${sanitize(recovery)}`);
-          for (const line of lines) writeLine(io.stderr, line);
-        }
-        commandExitState.exitCode = receipt.ok ? 0 : 1;
-      } catch (error) {
-        if (!rawOptions.json) throw error;
-        writeFailure(error);
-        commandExitState.exitCode = 1;
-      }
-    });
-
-  skill
     .command('materialize')
     .description('Write portable Skills to a safe output directory')
     .argument('<plugin>', 'plugin or source/plugin selector')
-    .requiredOption('-s, --scope <scope>', 'project or user')
+    .addOption(strictValueOption('--platform <target>', 'Portable platform target', PORTABLE_PLATFORM_TARGETS).makeOptionMandatory())
+    .addOption(strictValueOption('-s, --scope <scope>', 'artifact scope', ['user', 'project']).makeOptionMandatory())
     .requiredOption('--out <dir>', 'output directory')
     .option('--skill <name...>', 'write only selected Skill names')
     .option('-j, --json', 'emit one receipt v5 JSON object', false)
     .action(async (selector: string, rawOptions: {
       scope: string;
+      platform: PortablePlatformTarget;
       out: string;
       skill?: string[];
       json?: boolean;
@@ -1720,6 +1443,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const receipt = await runActionWithContext(context, () =>
           materializePortableSkillsToDirectory({
             selector,
+            platform: rawOptions.platform,
             scope: rawOptions.scope,
             out: rawOptions.out,
             ...(rawOptions.skill ? { requestedSkills: rawOptions.skill } : {}),
@@ -1733,7 +1457,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (!rawOptions.json) throw error;
         const capabilityError = error instanceof AwCapabilityUnsupportedError ? error : undefined;
         const code = capabilityError?.code
-          ?? (error instanceof PortableCommandError || error instanceof SkillsCliError
+          ?? (error instanceof PortableCommandError
           ? error.code
           : 'portableMaterializeFailed');
         writeJsonReceipt(io.stdout, {
@@ -1742,6 +1466,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ok: false,
           plugin: { id: selector },
           scope: rawOptions.scope,
+          platform: rawOptions.platform,
           out: path.resolve(context.cwd, rawOptions.out),
           selectedSkills: [],
           ...(rawOptions.skill ? { requestedSkills: rawOptions.skill } : {}),
@@ -1805,14 +1530,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill-short-description <text>', 'Skill UI summary (25-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)');
-
-  plugin
-    .command('remove')
-    .description('Remove one committed and unchanged canonical plugin source tree')
-    .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
-    .option('--yes', 'confirm plugin source deletion', false)
-    .option('--json', 'emit one schema 1 JSON object', false);
 
   plugin
     .command('validate')
@@ -1895,15 +1612,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         commandExitState.exitCode = 1;
       }
     });
-
-  plugin
-    .command('status')
-    .description('Show current plugin status or compare against an explicit Git base')
-    .argument('[plugin-name]', 'one explicit plugin name')
-    .option('--all', 'check every current Catalog Workspace plugin', false)
-    .option('--base <git-ref>', 'explicit Git comparison base')
-    .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)');
 
   skill
     .command('validate')
@@ -2349,7 +2057,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           [cwd],
         ));
     writeLine(io.stderr, message);
-    commandExitState.exitCode = 1;
+    commandExitState.exitCode = failure.code === 'invalidArguments' ? 2 : 1;
   };
 
   const withResolvedConfigMutationPlugin = <T>(
@@ -2360,10 +2068,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       awHomeMutationToken: AwHomeMutationToken,
       catalogOperationContext: CatalogOperationContext,
     ) => Promise<T> | T,
-    apply = false,
+    _apply = false,
   ) => (async () => {
     const parsed = parsePluginId(selector);
-    if (apply) await prepareNativeCliExecution({ env: context.env, runner: context.nativeCliRunner });
     return withAwHomeMutationLock({
       env: context.env,
       action: async (awHomeMutationToken) => {
@@ -2810,735 +2517,382 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = result.ok ? 0 : 1;
     });
 
-  const scopedCommand = (command: Command): Command => command
-    .requiredOption('--scope <scope>', 'user or project; required for every inventory operation')
+  const recoveryCommand = (command: Command): Command => command
     .option('-j, --json', 'print one recovery receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file');
+  const scopedCommand = (command: Command): Command => recoveryCommand(command)
+    .addOption(strictValueOption('--scope <scope>', 'requirement or physical scope', ['user', 'project']).makeOptionMandatory());
+  const contextualCommand = (command: Command): Command => recoveryCommand(command)
+    .addOption(strictValueOption('--context <context>', 'user only, or user and current project', ['user', 'project']));
   const recoveryScope = (rawOptions: RawRecoveryOptions): Scope =>
     normalizeWriteRequest(() => parseScopeValue(rawOptions.scope));
   const recoveryTargets = (rawOptions: RawRecoveryOptions) => rawOptions.target === undefined
-    ? undefined : normalizeWriteRequest(() => normalizeAgents(rawOptions.target!));
+    ? undefined : normalizeWriteRequest(() => normalizeAgents(typeof rawOptions.target === 'string' ? [rawOptions.target] : rawOptions.target!));
+  const recoveryContext = (rawOptions: RawRecoveryOptions): Scope | undefined => rawOptions.context === undefined
+    ? undefined : normalizeWriteRequest(() => parseContextValue(rawOptions.context));
   const runRecoveryAction = async (
     command: string,
     rawOptions: RawRecoveryOptions,
-    action: (context: CliExecutionContext, scope: Scope) => Promise<RecoveryReceipt>,
+    action: (context: CliExecutionContext) => Promise<RecoveryReceipt>,
   ): Promise<void> => {
-    const scope = recoveryScope(rawOptions);
     const context = createActionContext(command, rawOptions);
-    const result = await runActionWithContext(context, () => action(context, scope));
+    const result = await runActionWithContext(context, () => action(context));
     if (rawOptions.json) writeJsonReceipt(io.stdout, result);
     else renderRecoveryReceipt(io.stdout, result);
     commandExitState.exitCode = result.ok ? 0
       : result.errors.some((error) => error.code === 'invalidArguments') ? 2 : 1;
   };
+  const showWorkContext = async (context: CliExecutionContext, rawOptions: RawRecoveryOptions) => {
+    if (rawOptions.scope === 'project' && rawOptions.context === 'user') {
+      throw new WriteCommandRequestError('--scope project cannot be combined with --context user.');
+    }
+    const work = await resolveWorkContext({ cwd: context.cwd, context: recoveryContext(rawOptions),
+      ...(rawOptions.scope === undefined ? {} : { scope: recoveryScope(rawOptions) }) });
+    if (!rawOptions.json) writeLine(io.stdout, work.projectRoot
+      ? `工作上下文：用户与当前项目 ${work.projectRoot}` : '工作上下文：仅用户');
+    return work;
+  };
 
-  const intent = program.command('intent').description('Manage independent user or project plugin requirements');
+  const intent = plugin.command('intent').description('Manage user or project plugin requirements');
   scopedCommand(intent.command('add').argument('<plugins...>'))
     .action(async (plugins: string[], rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('intent:add', rawOptions, (context, scope) =>
-        intentAdd({ scope, cwd: context.cwd, env: context.env, selectors: plugins })));
-  scopedCommand(intent.command('remove').argument('<plugin>'))
-    .action(async (plugin: string, rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('intent:remove', rawOptions, (context, scope) =>
-        intentRemove({ scope, cwd: context.cwd, env: context.env, selector: plugin })));
+      runRecoveryAction('intent:add', rawOptions, (context) =>
+        intentAdd({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env, selectors: plugins })));
+  scopedCommand(intent.command('remove').argument('<plugins...>'))
+    .action(async (plugins: string[], rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('intent:remove', rawOptions, (context) =>
+        intentRemove({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env, selectors: plugins })));
   scopedCommand(intent.command('list'))
     .action(async (rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('intent:list', rawOptions, (context, scope) =>
-        intentList({ scope, cwd: context.cwd, env: context.env })));
+      runRecoveryAction('intent:list', rawOptions, (context) =>
+        intentList({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env })));
   scopedCommand(intent.command('retire').argument('<plugin>'))
-    .description('Retire a plugin proven absent from its healthy Catalog, in one scope')
-    .option('--target <agent>', 'limit output changes to this Agent; repeat to select more', collectUniqueOption)
-    .option('--delete-config', 'also delete saved plugin configuration in the selected scope', false)
+    .description('Retire a plugin proven absent from its healthy Catalog')
+    .option('--target <target>', 'limit output changes to a platform target', collectUniqueOption)
+    .option('--delete-config', 'also delete saved user plugin configuration', false)
     .option('-y, --yes', 'confirm the reviewed retirement changes', false)
     .option('--allow-managed-codex-install', 'allow acquisition of the pinned AW-managed Codex runtime', false)
-    .action(async (plugin: string, rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('intent:retire', rawOptions, (context, scope) =>
-        runRetire({ scope, cwd: context.cwd, env: context.env, selector: plugin,
+    .action(async (selector: string, rawOptions: RawRecoveryOptions) =>
+      runRecoveryAction('intent:retire', rawOptions, (context) =>
+        runRetire({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env, selector,
           cliVersion: resolveCliVersion(), targets: recoveryTargets(rawOptions),
           deleteConfig: rawOptions.deleteConfig, yes: rawOptions.yes,
           interactive: isWizardAvailable(context, rawOptions), prompt: context.prompt,
         }, recoveryRuntime(context, rawOptions, true))));
 
-  const targets = program.command('targets').description('Manage local Agent preferences without installing');
-  scopedCommand(targets.command('set').argument('<agents...>'))
-    .action(async (agents: string[], rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('targets:set', rawOptions, (context, scope) =>
-        targetsSet({ scope, cwd: context.cwd, env: context.env,
-          agents: normalizeWriteRequest(() => normalizeAgents(agents)) })));
-  scopedCommand(targets.command('list'))
+  const targets = plugin.command('targets').description('Manage the local platform policy');
+  contextualCommand(targets.command('set').argument('[targets...]'))
+    .option('--none', 'save an empty target set', false)
+    .option('--apply', 'apply the saved target policy in this work context', false)
+    .option('-y, --yes', 'confirm reviewed output changes', false)
+    .action(async (agents: string[], rawOptions: RawRecoveryOptions) => {
+      if (rawOptions.none ? agents.length > 0 : agents.length === 0) {
+        throw new WriteCommandRequestError('Use target IDs or --none, but not both.');
+      }
+      const normalized = normalizeWriteRequest(() => normalizeAgents(agents));
+      await runRecoveryAction('targets:set', rawOptions, async (context) => {
+        await showWorkContext(context, rawOptions);
+        return targetsSet({ cwd: context.cwd, env: context.env, targets: normalized,
+          context: recoveryContext(rawOptions), apply: rawOptions.apply, yes: rawOptions.yes,
+          cliVersion: resolveCliVersion(), runtime: recoveryRuntime(context, rawOptions, true) });
+      });
+    });
+  contextualCommand(targets.command('list'))
     .action(async (rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('targets:list', rawOptions, (context, scope) =>
-        targetsList({ scope, cwd: context.cwd, env: context.env })));
-  scopedCommand(targets.command('reset'))
-    .description('Clear Agent preferences and dependency placement overrides in this scope')
-    .action(async (rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('targets:reset', rawOptions, (context, scope) =>
-        targetsReset({ scope, cwd: context.cwd, env: context.env })));
+      runRecoveryAction('targets:list', rawOptions, (context) =>
+        targetsList({ cwd: context.cwd, env: context.env, context: recoveryContext(rawOptions) })));
+  for (const action of ['exclude', 'include'] as const) {
+    contextualCommand(targets.command(action).argument('<plugin>'))
+      .addOption(strictValueOption('--target <target>', 'one canonical platform target', PLATFORM_TARGETS).makeOptionMandatory())
+      .option('--apply', 'apply the saved exclusion policy in this work context', false)
+      .option('-y, --yes', 'confirm reviewed output changes', false)
+      .action(async (selector: string, rawOptions: RawRecoveryOptions & { target: string }) => {
+        await runRecoveryAction(`targets:${action}`, rawOptions, async (context) => {
+          await showWorkContext(context, rawOptions);
+          return targetsChangeExclusion({ cwd: context.cwd, env: context.env, context: recoveryContext(rawOptions),
+            selector, target: rawOptions.target, excluded: action === 'exclude', apply: rawOptions.apply,
+            yes: rawOptions.yes, cliVersion: resolveCliVersion(), runtime: recoveryRuntime(context, rawOptions, true) });
+        });
+      });
+  }
 
-  for (const command of ['sync', 'install', 'reinstall', 'uninstall', 'cleanup'] as const) {
-    const entry = scopedCommand(program.command(command)
-      .argument(command === 'sync' ? '[plugins...]' : '<plugins...>'))
-      .option('--target <agent>', 'Agent ID: codex, claude-code, cursor; repeat to select more', collectUniqueOption)
-      .option('-y, --yes', 'authorize reviewed scripts, shared replacement, or removal', false)
+  for (const command of ['sync', 'install', 'remove', 'cleanup'] as const) {
+    const entry = command === 'cleanup'
+      ? scopedCommand(plugin.command(command).argument('[plugins...]'))
+      : contextualCommand(plugin.command(command).argument(command === 'sync' ? '[plugins...]' : '<plugins...>'));
+    entry.option('-y, --yes', 'authorize reviewed scripts or output changes', false)
       .option('--allow-managed-codex-install', 'allow acquisition of the pinned AW-managed Codex runtime', false);
+    if (command === 'install' || command === 'remove') entry
+      .addOption(strictValueOption('--scope <scope>', 'requirement document to edit', ['user', 'project']));
+    if (command === 'remove') entry.option('--workspace-root <path>', 'delete plugin source from this explicit Catalog Workspace');
     if (command === 'sync') entry
-      .option('-a, --all', 'select every declared root in this scope', false)
-      .option('--check', 'observe selected requirements without preparing or writing', false)
-      .option('--refresh', 'refresh Catalog sources needed by selected roots before review', false);
-    if (command === 'cleanup') entry.option('--force', 'clean provably owned output despite damaged weak state', false);
-    if (command === 'install' || command === 'sync' || command === 'reinstall') entry
-      .option('--dependency-scope <placement>', 'one-time <source/plugin>[#platform]=<user|project>; repeat as needed', collectUniqueOption)
+      .option('--target <target>', 'limit execution to a canonical platform target', collectUniqueOption)
+      .option('--rebuild', 'rebuild selected desired outputs', false)
+      .option('--check', 'observe without preparing or writing', false)
+      .option('--refresh', 'refresh required Catalog sources before review', false);
+    if (command === 'cleanup') entry
+      .addOption(strictValueOption('--target <target>', 'physical platform target to clean', PLATFORM_TARGETS).makeOptionMandatory())
+      .option('--force', 'clean provably owned output despite damaged weak state', false);
+    if (command === 'install' || command === 'sync') entry
       .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds');
     entry.action(async (plugins: string[], rawOptions: RawRecoveryOptions) => {
-      if (rawOptions.all && plugins.length) throw new WriteCommandRequestError('--all 与插件参数不能同时使用。');
-      if (command === 'sync' && !rawOptions.all && !plugins.length) {
-        throw new WriteCommandRequestError('sync 需要指定插件或 --all。');
+      if (rawOptions.check && (rawOptions.refresh || rawOptions.rebuild)) {
+        throw new WriteCommandRequestError('--check cannot be combined with --refresh or --rebuild.');
       }
-      if (rawOptions.check && rawOptions.refresh) throw new WriteCommandRequestError('--check 与 --refresh 不能同时使用。');
-      await runRecoveryAction(command, rawOptions, (context, scope) => {
+      await runRecoveryAction(command, rawOptions, async (context) => {
+        if (command !== 'cleanup') await showWorkContext(context, rawOptions);
+        const targetValues = typeof rawOptions.target === 'string' ? [rawOptions.target] : rawOptions.target;
         const options = {
-          scope, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
-          targets: recoveryTargets(rawOptions), all: rawOptions.all,
+          ...(rawOptions.scope === undefined ? {} : { scope: recoveryScope(rawOptions) }),
+          context: recoveryContext(rawOptions), cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
+          targets: targetValues === undefined ? undefined : normalizeWriteRequest(() => normalizeAgents(targetValues)),
+          all: command === 'sync' && plugins.length === 0,
           yes: rawOptions.yes, force: rawOptions.force, refresh: rawOptions.refresh,
-          dependencyScopeOverrides: normalizeWriteRequest(() => parseDependencyScopeOverrides(rawOptions.dependencyScope)),
           allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
           scriptTimeoutMs: normalizeWriteRequest(() => resolveScriptTimeoutMs(rawOptions)),
           interactive: isWizardAvailable(context, rawOptions), prompt: context.prompt,
         };
-        return rawOptions.check ? checkRecovery(plugins, options)
-          : runRecovery(command, plugins, options, recoveryRuntime(context, rawOptions, true));
+        const backendCommand = command === 'remove' ? 'uninstall'
+          : command === 'sync' && rawOptions.rebuild ? 'reinstall' : command;
+        const result = rawOptions.check ? await checkRecovery(plugins, options)
+          : await runRecovery(backendCommand, plugins, options, recoveryRuntime(context, rawOptions, true));
+        return { ...result, command };
       });
     });
   }
 
-  const config = program
-    .command('config')
-    .description('Manage AW plugin configuration');
-
-  config
-    .command('list')
-    .argument('[plugin]')
-    .option('-s, --scope <scope>', 'read only project or user config')
-    .option('-j, --json', 'print config as JSON', false)
+  const config = plugin.command('config').description('Manage user common and platform configuration');
+  const configCommand = (command: Command): Command => command
+    .addOption(strictValueOption('--platform <target>', 'configuration platform; omitted means common', PLATFORM_TARGETS))
+    .addOption(strictValueOption('--context <context>', 'definition and reference context', ['user', 'project']))
+    .option('-j, --json', 'print one JSON object', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string | undefined, rawOptions: RawConfigOptions) => {
-      const context = createActionContext('config:list', rawOptions);
-      const outcome = await runActionWithContext(context, async () => {
-        resolveConfigReadResolution(rawOptions.scope);
-        const execute = async (selectedPlugin: string) => resolveMultiSourceConfigRead({
-          selector: selectedPlugin,
-          rawOptions,
-          context,
-        });
-        if (pluginName) return { cancelled: false as const, pluginName, value: await execute(pluginName) };
-        if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('list'));
-        const currentCandidates = await loadWizardCandidates(context, {});
-        const storedCandidates = await loadStoredConfigWizardCandidates(
-          context,
-          configReadStoreLocations(rawOptions),
-        );
-        const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
-        if (candidates.length === 0) {
-          throw new Error('No plugin config candidates exist in the selected location.');
-        }
-        const result = await runCommandWizard(context, {
-          command: 'config:list',
-          candidates,
-          initial: { plugins: [], scope: rawOptions.scope as Scope | undefined },
-          pluginMode: 'single',
-          ...equivalentConfigCommandProjection((selection) => ({
-            command: 'list',
-            plugin: selection.plugins[0]!,
-            scope: rawOptions.scope,
-          })),
-          execute: (selection) => execute(selection.plugins[0]!),
-        });
-        return result.cancelled
-          ? { cancelled: true as const }
-          : { cancelled: false as const, pluginName: result.selection!.plugins[0]!, value: result.value! };
+    .option('--log-file <path>', 'write debug diagnostics to the specified file');
+  const configMutation = (command: Command): Command => configCommand(command)
+    .option('--apply', 'refresh existing affected outputs after saving', false)
+    .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
+    .option('-y, --yes', 'confirm reviewed output changes', false);
+  const configContext = async (context: CliExecutionContext, rawOptions: RawConfigOptions, apply = rawOptions.apply === true) => {
+    const requested = rawOptions.context === undefined ? apply ? undefined : 'user'
+      : normalizeWriteRequest(() => parseContextValue(rawOptions.context));
+    const work = await resolveWorkContext({ cwd: context.cwd, context: requested });
+    if (apply && !rawOptions.json) writeLine(io.stdout, work.projectRoot
+      ? `工作上下文：用户与当前项目 ${work.projectRoot}` : '工作上下文：仅用户');
+    return work;
+  };
+  const configPlatform = (rawOptions: RawConfigOptions): PlatformTarget | undefined => rawOptions.platform === undefined
+    ? undefined : normalizeWriteRequest(() => parsePlatformTargetValue(rawOptions.platform));
+
+  for (const command of ['schema', 'list', 'get'] as const) {
+    const entry = configCommand(config.command(command).argument('<plugin>'));
+    if (command === 'get') entry.argument('[key]');
+    entry.action(async (...args: unknown[]) => {
+      const selector = args[0] as string;
+      const key = command === 'get' ? args[1] as string | undefined : undefined;
+      const rawOptions = args[command === 'get' ? 2 : 1] as RawConfigOptions;
+      const context = createActionContext(`config:${command}`, rawOptions);
+      const work = await configContext(context, rawOptions);
+      const resolved = await runActionWithContext(context, () => resolveMultiSourceConfigRead({
+        selector, key, rawOptions: { ...rawOptions, context: work.context }, context,
+      }));
+      if (rawOptions.json) writeJsonReceipt(io.stdout, {
+        ok: true, configSchemaVersion: 5, command: `config:${command}`,
+        plugin: resolved.pluginName, pluginName: resolved.pluginName, pluginId: resolved.pluginId,
+        sourceId: resolved.sourceId, sourceIdentity: resolved.sourceIdentity,
+        context: work, platform: configPlatform(rawOptions) ?? 'common',
+        ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
+        fields: command === 'schema' ? resolved.result.fieldDefinitions ?? {} : resolved.result.fields,
+        ...(key === undefined ? {} : { key }),
       });
-      if (outcome.cancelled) return;
-      const resolved = outcome.value;
-      const selectedPluginName = resolved.pluginName;
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, {
-          ok: true,
-          configSchemaVersion: 4,
-          command: 'config:list',
-          plugin: selectedPluginName,
-          pluginName: selectedPluginName,
-          pluginId: resolved.pluginId,
-          sourceId: resolved.sourceId,
-          sourceIdentity: resolved.sourceIdentity,
-          scope: rawOptions.scope ?? 'effective',
-          ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
-          fields: resolved.result.fields,
-        });
-      } else {
-        writeConfigReadHuman(io.stdout, resolved.result, resolved.pluginId);
-      }
+      else if (command === 'schema') writeJsonReceipt(io.stdout, resolved.result.fieldDefinitions ?? {});
+      else writeConfigReadHuman(io.stdout, resolved.result, resolved.pluginId);
     });
+  }
 
-  config
-    .command('get')
-    .argument('[plugin]')
-    .argument('[key]')
-    .option('-s, --scope <scope>', 'read only project or user config')
-    .option('-j, --json', 'print config as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string | undefined, key: string | undefined, rawOptions: RawConfigOptions) => {
-      const context = createActionContext('config:get', rawOptions);
-      const outcome = await runActionWithContext(context, async () => {
-        resolveConfigReadResolution(rawOptions.scope);
-        const execute = async (selectedPlugin: string) => resolveMultiSourceConfigRead({
-          selector: selectedPlugin,
-          ...(key === undefined ? {} : { key }),
-          rawOptions,
-          context,
-        });
-        if (pluginName) return { cancelled: false as const, pluginName, value: await execute(pluginName) };
-        if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('get'));
-        const currentCandidates = await loadWizardCandidates(context, {});
-        const storedCandidates = await loadStoredConfigWizardCandidates(
-          context,
-          configReadStoreLocations(rawOptions),
-        );
-        const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
-        if (candidates.length === 0) {
-          throw new Error('No plugin config candidates exist in the selected location.');
-        }
-        const result = await runCommandWizard(context, {
-          command: 'config:get',
-          candidates,
-          initial: { plugins: [], key, scope: rawOptions.scope as Scope | undefined },
-          pluginMode: 'single',
-          ...equivalentConfigCommandProjection((selection) => ({
-            command: 'get',
-            plugin: selection.plugins[0]!,
-            key,
-            scope: rawOptions.scope,
-          })),
-          execute: (selection) => execute(selection.plugins[0]!),
-        });
-        return result.cancelled
-          ? { cancelled: true as const }
-          : { cancelled: false as const, pluginName: result.selection!.plugins[0]!, value: result.value! };
-      });
-      if (outcome.cancelled) return;
-      const resolved = outcome.value;
-      const selectedPluginName = resolved.pluginName;
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, {
-          ok: true,
-          configSchemaVersion: 4,
-          command: 'config:get',
-          plugin: selectedPluginName,
-          pluginName: selectedPluginName,
-          pluginId: resolved.pluginId,
-          sourceId: resolved.sourceId,
-          sourceIdentity: resolved.sourceIdentity,
-          key,
-          scope: rawOptions.scope ?? 'effective',
-          ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
-          fields: resolved.result.fields,
-        });
-      } else {
-        writeConfigReadHuman(io.stdout, resolved.result, resolved.pluginId);
-      }
-    });
-
-  config
-    .command('set')
-    .argument('[plugin]')
-    .argument('[field]')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('--value-json <json>', 'set the field to an exact JSON value')
-    .option('--value-stdin', 'read the exact string value from stdin until EOF', false)
-    .option('--preset <id>', 'set the field to the current manifest preset value')
-    .option('--apply', 'apply the saved config to visible desired placements', false)
-    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
-    .option('-y, --yes', 'confirm preApply and shared Codex native config apply', false)
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (
-      pluginName: string | undefined,
-      key: string | undefined,
-      rawOptions: RawConfigOptions,
-    ) => {
-      if (!pluginName || !key) throw new Error(configCommandUsage('set'));
-      const context = createActionContext('config:set', rawOptions);
-      let outcome;
+  for (const command of ['set', 'edit', 'unset'] as const) {
+    const entry = configMutation(config.command(command).argument('<plugin>'));
+    if (command !== 'edit') entry.argument('<field>');
+    if (command === 'set') entry
+      .option('--value-json <json>', 'set an exact JSON value')
+      .option('--value-stdin', 'read the exact string value until stdin EOF', false)
+      .option('--preset <id>', 'use a declared preset');
+    entry.action(async (...args: unknown[]) => {
+      const selector = args[0] as string;
+      const rawOptions = args[command === 'edit' ? 1 : 2] as RawConfigOptions;
+      let key = command === 'edit' ? undefined : args[1] as string;
+      const context = createActionContext(`config:${command}`, rawOptions);
       try {
-        outcome = await runActionWithContext(context, async () => {
-        const scope = resolveConfigWriteScope(rawOptions.scope);
-        const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
-        const explicitValueCount = [
-          rawOptions.valueJson !== undefined,
-          rawOptions.valueStdin === true,
-          rawOptions.preset !== undefined,
-        ].filter(Boolean).length;
-        if (explicitValueCount > 1
-          || (explicitValueCount === 0
-            && !(context.interactive && context.isTty && !context.isCi && rawOptions.json !== true))) {
-          throw new Error('Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.');
+        const work = await configContext(context, rawOptions);
+        const platform = configPlatform(rawOptions);
+        const scriptTimeoutMs = normalizeWriteRequest(() => resolveScriptTimeoutMs(rawOptions));
+        if (command === 'edit' && (!isWizardAvailable(context, rawOptions) || !context.prompt.select || !context.prompt.input)) {
+          throw new WriteCommandRequestError('config edit requires an interactive terminal. Use config set for scripts.');
         }
-        return withResolvedConfigMutationPlugin(
-            context,
-            pluginName,
-            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        if (!plugin.manifest.config?.fields) {
-          throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
+        const explicitValueCount = [rawOptions.valueJson !== undefined, rawOptions.valueStdin === true,
+          rawOptions.preset !== undefined].filter(Boolean).length;
+        if (command === 'set' && (explicitValueCount > 1 || explicitValueCount === 0
+          && !(context.interactive && context.isTty && !context.isCi && !rawOptions.json))) {
+          throw new WriteCommandRequestError('Use exactly one of --value-json, --value-stdin, or --preset.');
         }
-        const field = plugin.manifest.config.fields[key];
-        if (!field) {
-          throw new Error(`Unknown config key "${key}".`);
+        const receipt = await runActionWithContext(context, () => withResolvedConfigMutationPlugin(
+          context, selector, async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
+            if (!plugin.manifest.config) throw Object.assign(new Error(
+              `configSchemaUnavailable: Plugin "${plugin.manifest.name}" does not declare an AW config schema.`),
+            { code: 'configSchemaUnavailable' });
+            const fields = compilePluginConfigDefinition(plugin.manifest.config, platform).fields;
+            if (command === 'edit') {
+              const selected = await context.prompt.select!({ message: `编辑用户${platform ?? 'common'}配置`,
+                choices: Object.entries(fields).map(([value, field]) => ({ value, label: field.title ?? value })) });
+              if (selected.cancelled || selected.action !== 'select' || selected.value === undefined) return undefined;
+              key = selected.value;
+            }
+            const field = fields[key!];
+            const store = await readPluginConfigStore({ sourceId: source.sourceId,
+              sourceIdentity: source.sourceIdentity, logicalIdentity: source.logicalIdentity,
+              pluginName: plugin.manifest.name, scope: 'user', platform, cwd: context.cwd, env: context.env,
+              schema: fields });
+            if (command === 'unset') {
+              if (!Object.hasOwn(store.values, key!)) throw new WriteCommandRequestError(`Unknown config key "${key}" in the selected layer.`);
+            } else if (!field) throw new WriteCommandRequestError(`Unknown config key "${key}".`);
+            let inputValue: unknown;
+            if (command !== 'unset') {
+              const sensitive = field!.sensitive === true;
+              if (sensitive && (rawOptions.valueJson !== undefined || rawOptions.preset !== undefined)) {
+                throw new Error('sensitiveConfigInputUnsupported: Sensitive config requires --value-stdin.');
+              }
+              if (rawOptions.valueStdin) inputValue = await readUtf8Stdin(context.stdin);
+              else if (sensitive) {
+                if (!context.interactive || !context.isTty || context.isCi || rawOptions.json || !context.prompt.password) {
+                  throw new Error('sensitiveConfigStdinRequired: Use --value-stdin outside an interactive terminal.');
+                }
+                const response = await context.prompt.password({ message: `输入 ${field!.title ?? key}`, mask: true });
+                if (response.cancelled || response.action !== 'select' || response.value === undefined) return undefined;
+                inputValue = response.value;
+              } else if (command === 'edit' || explicitValueCount === 0) {
+                if (!context.prompt.input) throw new WriteCommandRequestError('Use --value-json, --value-stdin, or --preset.');
+                const response = await context.prompt.input({ message: `输入 ${field!.title ?? key} 的 JSON 值`,
+                  defaultValue: JSON.stringify(store.values[key!]) });
+                if (response.cancelled || response.action !== 'select' || response.value === undefined) return undefined;
+                try { inputValue = JSON.parse(response.value) as unknown; }
+                catch { throw new WriteCommandRequestError('Enter a valid JSON value.'); }
+              } else if (rawOptions.valueJson !== undefined) {
+                try { inputValue = JSON.parse(rawOptions.valueJson) as unknown; }
+                catch { throw new WriteCommandRequestError('--value-json must contain valid JSON.'); }
+              } else {
+                const preset = field!.choices?.presets.find((candidate) => candidate.id === rawOptions.preset);
+                if (!preset) throw new WriteCommandRequestError(`Unknown preset "${rawOptions.preset}".`);
+                inputValue = structuredClone(preset.value);
+              }
+            }
+            const writeReceipt = await applyPluginConfigWrite({ plugin, pluginName: plugin.manifest.name,
+              scope: work.context, context: work.context, platform, cliVersion: resolveCliVersion(),
+              cwd: context.cwd, env: context.env, nativeCliRunner: context.nativeCliRunner,
+              rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
+                expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+                ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }) },
+              awHomeMutationToken, request: command === 'unset' ? { removeKeys: [key!] } : { updates: { [key!]: inputValue } },
+              apply: rawOptions.apply === true, sharedNativeApplyConfirmed: rawOptions.yes === true,
+              preApplyConfirmed: rawOptions.yes === true });
+            return buildConfigMutationReceipt(`config:${command}`, {
+              ...writeReceipt, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
+              pluginName: plugin.manifest.name, pluginId, sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
+              context: work, platform: platform ?? 'common',
+              ...(command === 'unset' ? { removedKey: key, existed: true } : {}),
+              affectedFields: [{ key: key!, title: field?.title ?? key!, kind: 'manifest' as const, reserved: false,
+                action: command === 'unset' ? 'unset' as const : 'set' as const, scope: 'user' as const,
+                ...(writeReceipt.staleRemovedKeys?.includes(key!) ? { stale: true as const } : {}) }],
+            });
+          }, rawOptions.apply === true));
+        if (!receipt) return;
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else {
+          writeLine(io.stdout, `已保存 ${receipt.plugin}.${key}（用户 ${platform ?? 'common'} 配置）。`);
+          writeConfigApplyNotice(io.stderr, receipt);
         }
-        const sensitive = field.sensitive === true;
-        if (sensitive && scope !== 'user') {
-          const error = new Error(
-            'sensitiveProjectConfigUnsupported: Sensitive config can only be set in user scope.',
-          ) as Error & { code: string };
-          error.code = 'sensitiveProjectConfigUnsupported';
-          throw error;
-        }
-        if (sensitive && (rawOptions.valueJson !== undefined || rawOptions.preset !== undefined)) {
-          const error = new Error(
-            'sensitiveConfigInputUnsupported: Sensitive config cannot use --value-json or --preset.',
-          ) as Error & { code: string };
-          error.code = 'sensitiveConfigInputUnsupported';
-          throw error;
-        }
-        if (!sensitive && explicitValueCount !== 1) {
-          throw new Error('Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.');
-        }
-        let inputValue: unknown;
-        if (rawOptions.valueStdin === true) {
-          inputValue = await readUtf8Stdin(context.stdin);
-        } else if (sensitive) {
-          if (!(context.interactive && context.isTty && !context.isCi && rawOptions.json !== true)
-            || !context.prompt.password) {
-            const error = new Error(
-              'sensitiveConfigStdinRequired: Use --value-stdin for sensitive config outside an interactive terminal.',
-            ) as Error & { code: string };
-            error.code = 'sensitiveConfigStdinRequired';
-            throw error;
-          }
-          const response = await context.prompt.password({
-            message: `输入 ${field.title ?? key}`,
-            mask: true,
-          });
-          if (response.cancelled || response.action !== 'select' || response.value === undefined) {
-            const error = new Error(
-              'sensitiveConfigInputCancelled: Sensitive config input was cancelled.',
-            ) as Error & { code: string };
-            error.code = 'sensitiveConfigInputCancelled';
-            throw error;
-          }
-          inputValue = response.value;
-        } else if (rawOptions.valueJson !== undefined) {
-          try {
-            inputValue = JSON.parse(rawOptions.valueJson) as unknown;
-          } catch {
-            throw new Error('--value-json must contain valid JSON.');
-          }
-        } else {
-          const preset = field.choices?.presets.find((entry) => entry.id === rawOptions.preset);
-          if (!preset) throw new Error(`Unknown preset "${rawOptions.preset}" for config key "${key}".`);
-          inputValue = structuredClone(preset.value);
-        }
-        const writeReceipt = await applyPluginConfigWrite({
-          plugin,
-          pluginName: plugin.manifest.name,
-          scope,
-          cwd: context.cwd,
-          env: context.env,
-          nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: {
-            ...context,
-            awHomeMutationToken,
-            catalogOperationContext,
-            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
-            ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
-          },
-          awHomeMutationToken,
-          request: {
-            updates: { [key]: inputValue },
-          },
-          apply: rawOptions.apply === true,
-          sharedNativeApplyConfirmed: rawOptions.yes === true,
-          preApplyConfirmed: rawOptions.yes === true,
-        });
-        return buildConfigMutationReceipt('config:set', {
-          ok: writeReceipt.overallState === 'succeeded',
-          ...writeReceipt,
-          plugin: plugin.manifest.name,
-          pluginName: plugin.manifest.name,
-          pluginId,
-          sourceId: source.sourceId,
-          sourceIdentity: source.sourceIdentity,
-          affectedFields: [{
-            key,
-            title: field.title ?? key,
-            kind: 'manifest' as const,
-            reserved: false,
-            action: 'set' as const,
-            scope,
-          }],
-        });
-            },
-            rawOptions.apply === true,
-          );
-        });
+        commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
       } catch (error) {
-        writeConfigMutationFailure('config:set', pluginName, rawOptions.json === true, error);
-        return;
+        writeConfigMutationFailure(`config:${command}`, selector, rawOptions.json === true, error);
       }
-      const receipt = outcome;
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, receipt);
-      } else {
-        writeLine(io.stdout, `已写入 ${receipt.plugin}.${key}（${configLayerLabel(receipt.scope)}配置）。`);
-        writeConfigApplyNotice(io.stderr, receipt);
-      }
-      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
     });
+  }
 
-  config
-    .command('unset')
-    .argument('[plugin]')
-    .argument('[key]')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('--apply', 'apply the saved config to visible desired placements', false)
-    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
-    .option('-y, --yes', 'confirm preApply and shared Codex native config apply', false)
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string | undefined, key: string | undefined, rawOptions: RawConfigOptions) => {
-      const context = createActionContext('config:unset', rawOptions);
-      let outcome;
-      try {
-        outcome = await runActionWithContext(context, async () => {
-        const scope = resolveConfigWriteScope(rawOptions.scope);
-        const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
-        const execute = async (
-          selectedPlugin: string,
-          selectedKey: string,
-          confirmed: boolean,
-        ) =>
-          withResolvedConfigMutationPlugin(
-            context,
-            selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        const store = await readPluginConfigStore({
-          sourceId: source.sourceId,
-          sourceIdentity: source.sourceIdentity,
-          logicalIdentity: source.logicalIdentity,
-          pluginName: plugin.manifest.name,
-          scope,
-          cwd: context.cwd,
-          env: context.env,
-          schema: plugin.manifest.config?.fields,
-        });
-        const existed = Object.hasOwn(store.values, selectedKey);
-        if (!existed) throw new Error(`Unknown config key "${selectedKey}".`);
-        const writeReceipt = await applyPluginConfigWrite({
-          plugin,
-          pluginName: plugin.manifest.name,
-          scope,
-          cwd: context.cwd,
-          env: context.env,
-          nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: {
-            ...context,
-            awHomeMutationToken,
-            catalogOperationContext,
-            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
-            ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
-          },
-          awHomeMutationToken,
-          request: {
-            removeKeys: [selectedKey],
-          },
-          apply: rawOptions.apply === true,
-          sharedNativeApplyConfirmed: confirmed,
-          preApplyConfirmed: rawOptions.yes === true,
-        });
-        return buildConfigMutationReceipt('config:unset', {
-          ok: writeReceipt.overallState === 'succeeded',
-          ...writeReceipt,
-          plugin: plugin.manifest.name,
-          pluginName: plugin.manifest.name,
-          pluginId,
-          sourceId: source.sourceId,
-          sourceIdentity: source.sourceIdentity,
-          removedKey: selectedKey,
-          existed,
-          affectedFields: [{
-            key: selectedKey,
-            title: plugin?.manifest.config?.fields?.[selectedKey]?.title ?? selectedKey,
-            kind: 'manifest' as const,
-            reserved: false,
-            action: 'unset' as const,
-            scope,
-            ...(!plugin.manifest.config?.fields?.[selectedKey] ? { stale: true as const } : {}),
-          }],
-        });
-            },
-            rawOptions.apply === true,
-          );
-        if (pluginName && key) {
-          return {
-            cancelled: false as const,
-            value: await execute(pluginName, key, rawOptions.yes === true),
-          };
-        }
-        if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('unset'));
-        const loadedCurrentCandidates = await loadWizardCandidates(context, {});
-        const currentCandidates = loadedCurrentCandidates.filter(hasConfigSchemaKeys);
-        const candidates = currentCandidates;
-        if (pluginName && !candidates.some((entry) => entry.pluginName === pluginName)) {
-          throw new Error(`Unknown plugin "${pluginName}".`);
-        }
-        if (candidates.length === 0) {
-          throw new Error('No plugin config candidates exist in the selected location.');
-        }
-        const result = await runCommandWizard(context, {
-          command: 'config:unset',
-          candidates,
-          initial: { plugins: pluginName ? [pluginName] : [], key, scope },
-          pluginMode: pluginName ? 'none' : 'single',
-          promptForKey: key === undefined,
-          destructive: true,
-          ...equivalentConfigCommandProjection((selection) => ({
-            command: 'unset',
-            plugin: selection.plugins[0]!,
-            key: selection.key!,
-            scope: selection.scope ?? 'user',
-          })),
-          resultState: overallResultState,
-          execute: (selection) => execute(selection.plugins[0]!, selection.key!, true),
-        });
-        return result.cancelled
-          ? { cancelled: true as const }
-          : { cancelled: false as const, value: result.value! };
-        });
-      } catch (error) {
-        writeConfigMutationFailure('config:unset', pluginName, rawOptions.json === true, error);
-        return;
-      }
-      if (outcome.cancelled) return;
-      const receipt = outcome.value;
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, receipt);
-      } else {
-        writeLine(io.stdout, receipt.existed
-          ? `已删除 ${receipt.plugin}.${receipt.removedKey}（${configLayerLabel(receipt.scope)}配置）。`
-          : `${receipt.plugin}.${receipt.removedKey}（${configLayerLabel(receipt.scope)}配置）原本不存在。`);
-        writeConfigApplyNotice(io.stderr, receipt);
-      }
-      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
-    });
-
-  config
-    .command('reset')
-    .argument('[plugin]')
-    .option('-s, --scope <scope>', 'project or user')
-    .option('--apply', 'apply the saved config to visible desired placements', false)
-    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
-    .option('-y, --yes', 'confirm destructive reset and preApply/shared Codex native config apply', false)
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string | undefined, rawOptions: RawConfigOptions) => {
+  configMutation(config.command('reset').argument('<plugin>'))
+    .action(async (selector: string, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:reset', rawOptions);
-      let outcome;
       try {
-        outcome = await runActionWithContext(context, async () => {
-        const execute = async (
-          selectedPlugin: string,
-          selectedScope: Scope,
-          confirmed: boolean,
-        ) => {
-          const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
-          if (!confirmed) {
-            throw new Error(
-              `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope} --yes\` to delete this store.`,
-            );
+        const work = await configContext(context, rawOptions);
+        const platform = configPlatform(rawOptions);
+        if (!rawOptions.yes) {
+          if (!isWizardAvailable(context, rawOptions) || !context.prompt.confirm) throw new WriteCommandRequestError('config reset requires --yes.');
+          const confirmed = await context.prompt.confirm({ message: `删除 ${selector} 的用户 ${platform ?? 'common'} 覆盖？`, defaultValue: false });
+          if (confirmed.cancelled || confirmed.value !== true) return;
+        }
+        const located = await resolveStoredConfigResetIdentity({ selector, context, scope: 'user' });
+        const resetStore = async (plugin: ResolvedCatalogPlugin['plugin'] | null, pluginError: Error | null) =>
+          resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
+            context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env,
+            nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
+            rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+            sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
+        let started = false;
+        const resetReceipt = await runActionWithContext(context, async () => {
+          try { return await withResolvedCatalogPlugin({ selector: located.pluginId, cliVersion: resolveCliVersion(), env: context.env,
+            consume: ({ plugin }) => { started = true; return resetStore(plugin, null); } }); }
+          catch (error) {
+            if (started) throw error;
+            return resetStore(null, error instanceof Error ? error : new Error(String(error)));
           }
-          const located = await resolveStoredConfigResetIdentity({
-            selector: selectedPlugin,
-            context,
-            scope: selectedScope,
-          });
-          const resetLocatedStore = async (
-            plugin: ResolvedCatalogPlugin['plugin'] | null,
-            pluginError: Error | null,
-          ) => {
-            const affectedFields = await describeResetAffectedFields({
-              sourceId: located.sourceId,
-              sourceIdentity: located.sourceIdentity,
-              logicalIdentity: located.logicalIdentity,
-              pluginName: located.pluginName,
-              plugin,
-              pluginError,
-              scope: selectedScope,
-              cwd: context.cwd,
-              env: context.env,
-            }).catch(() => []);
-            const resetReceipt = await resetPluginConfigWithHelper({
-              sourceId: located.sourceId,
-              sourceIdentity: located.sourceIdentity,
-              logicalIdentity: located.logicalIdentity,
-              pluginName: located.pluginName,
-              scope: selectedScope,
-              cwd: context.cwd,
-              env: context.env,
-              nativeCliRunner: context.nativeCliRunner,
-              plugin,
-              pluginError,
-              apply: rawOptions.apply === true,
-              rebuildRuntime: scriptTimeoutMs === undefined ? undefined : { scriptTimeoutMs },
-              sharedNativeApplyConfirmed: confirmed,
-              preApplyConfirmed: rawOptions.yes === true,
-            });
-            return buildConfigMutationReceipt('config:reset', {
-              ok: resetReceipt.overallState === 'succeeded',
-              ...resetReceipt,
-              plugin: located.pluginName,
-              pluginName: located.pluginName,
-              pluginId: located.pluginId,
-              sourceId: located.sourceId,
-              ...(located.sourceIdentity ? { sourceIdentity: located.sourceIdentity } : {}),
-              affectedFields,
-            });
-          };
-          let resetStarted = false;
-          try {
-            return await withResolvedCatalogPlugin({
-              selector: located.pluginId,
-              cliVersion: resolveCliVersion(),
-              env: context.env,
-              consume: async ({ plugin }) => {
-                resetStarted = true;
-                return resetLocatedStore(plugin, null);
-              },
-            });
-          } catch (error) {
-            if (resetStarted) throw error;
-            return resetLocatedStore(
-              null,
-              error instanceof Error ? error : new Error(String(error)),
-            );
-          }
-        };
-
-        const scope = resolveConfigWriteScope(rawOptions.scope);
-        const needsWizard = pluginName === undefined || rawOptions.yes !== true;
-        if (!needsWizard) {
-          return {
-            cancelled: false as const,
-            value: await execute(pluginName, scope, true),
-          };
-        }
-        if (!isWizardAvailable(context, rawOptions)) {
-          if (!pluginName) throw new Error(configCommandUsage('reset'));
-          return {
-            cancelled: false as const,
-            value: await execute(pluginName, scope, false),
-          };
-        }
-        const currentCandidates = pluginName ? [] : await loadWizardCandidates(context, {});
-        const candidatesByScope = new Map<Scope, CommandWizardPluginCandidate[]>();
-        if (!pluginName && (rawOptions.scope === undefined || scope === 'user')) {
-          candidatesByScope.set('user', mergeWizardCandidates(
-            currentCandidates,
-            await loadStoredConfigWizardCandidates(
-              context,
-              [{ scope: 'user' }],
-              { includeEmptyStores: true },
-            ),
-          ));
-        }
-        if (!pluginName && (rawOptions.scope === undefined || scope === 'project')) {
-          candidatesByScope.set('project', mergeWizardCandidates(
-            currentCandidates,
-            await loadStoredConfigWizardCandidates(
-              context,
-              [{ scope: 'project' }],
-              { includeEmptyStores: true },
-            ),
-          ));
-        }
-        const candidates = mergeWizardCandidates(
-          candidatesByScope.get('user') ?? [],
-          candidatesByScope.get('project') ?? [],
-        );
-        if (!pluginName && candidates.length === 0) {
-          throw new Error('No plugin config candidates exist in the selected location.');
-        }
-        const result = await runCommandWizard(context, {
-          command: 'config:reset',
-          candidates,
-          initial: { plugins: pluginName ? [pluginName] : [], scope },
-          pluginMode: pluginName ? 'none' : 'single',
-          promptForScope: rawOptions.scope === undefined,
-          destructive: true,
-          isPluginVisible: (candidate, selection) => candidatesByScope
-            .get(selection.scope ?? 'user')
-            ?.some((entry) => entry.pluginName === candidate.pluginName) !== false,
-          ...equivalentConfigCommandProjection((selection) => ({
-            command: 'reset',
-            plugin: selection.plugins[0]!,
-            scope: selection.scope ?? 'user',
-            confirmed: true,
-          })),
-          resultState: overallResultState,
-          execute: (selection) => execute(
-            selection.plugins[0]!,
-            selection.scope ?? 'user',
-            true,
-          ),
         });
-        return result.cancelled
-          ? { cancelled: true as const }
-          : { cancelled: false as const, value: result.value! };
-        });
-      } catch (error) {
-        writeConfigMutationFailure('config:reset', pluginName, rawOptions.json === true, error);
-        return;
-      }
-      if (outcome.cancelled) return;
-      const receipt = outcome.value;
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, receipt);
-      } else {
-        writeLine(io.stdout, receipt.deleted
-          ? `已重置 ${receipt.plugin} 的${configLayerLabel(receipt.scope)}配置。`
-          : `${receipt.plugin} 没有可重置的${configLayerLabel(receipt.scope)}配置。`);
-        writeConfigApplyNotice(io.stderr, receipt);
-      }
-      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
+        const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt,
+          ok: resetReceipt.overallState === 'succeeded', ...located, plugin: located.pluginName,
+          context: work, platform: platform ?? 'common' });
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else {
+          writeLine(io.stdout, `已恢复 ${receipt.plugin} 的用户 ${platform ?? 'common'} 默认配置。`);
+          writeConfigApplyNotice(io.stderr, receipt);
+        }
+        commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
+      } catch (error) { writeConfigMutationFailure('config:reset', selector, rawOptions.json === true, error); }
     });
 
-  scopedCommand(program.command('status'))
-    .description('Observe declared requirements and extra installations in one scope')
-    .option('--target <agent>', 'observe this Agent; repeat to select more', collectUniqueOption)
+  contextualCommand(config.command('apply').argument('<plugin>'))
+    .option('--target <target>', 'limit existing-output refresh to this platform target', collectUniqueOption)
+    .option('-y, --yes', 'confirm reviewed output changes', false)
+    .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
+    .action(async (selector: string, rawOptions: RawConfigOptions) => {
+      const context = createActionContext('config:apply', rawOptions);
+      const work = await configContext(context, rawOptions, true);
+      const targets = rawOptions.target?.map((target) => normalizeWriteRequest(() => parsePlatformTargetValue(target)));
+      const receipt = await runActionWithContext(context, () => withResolvedConfigMutationPlugin(context, selector,
+        async ({ plugin, pluginId, source }, awHomeMutationToken) => ({
+          ...await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
+            cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
+            nativeCliRunner: context.nativeCliRunner, sharedNativeApplyConfirmed: rawOptions.yes === true,
+            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
+          command: 'config:apply', plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId,
+          context: work,
+        }), true));
+      const result = buildConfigMutationReceipt('config:apply', { ...receipt,
+        ok: receipt.overallState === 'succeeded' });
+      if (rawOptions.json) writeJsonReceipt(io.stdout, result);
+      else {
+        writeLine(io.stdout, `配置应用：${result.ok ? '完成' : '部分失败'}。`);
+        writeConfigApplyNotice(io.stderr, { ...result, warnings: [] });
+      }
+      commandExitState.exitCode = result.ok ? 0 : 1;
+    });
+
+  contextualCommand(plugin.command('status'))
+    .description('Observe user and current project demand and output state')
     .action(async (rawOptions: RawRecoveryOptions) => {
       const context = createActionContext('status', rawOptions);
+      await showWorkContext(context, rawOptions);
       const result = await runActionWithContext(context, () => readRecoveryStatus({
-        scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env,
-        cliVersion: resolveCliVersion(), targets: recoveryTargets(rawOptions),
+        context: recoveryContext(rawOptions), cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
+        nativeCliRunner: context.nativeCliRunner,
       }));
       if (rawOptions.json) writeJsonReceipt(io.stdout, result);
       else renderRecoveryStatus(io.stdout, result);
@@ -3585,10 +2939,17 @@ export async function runCli(
     ? argv[1] as 'inspect' | 'prepare'
     : null;
   const jsonReviewCommand = reviewCommand !== null && argv.includes('--json');
+  const jsonMaterialize = argv[0] === 'skill' && argv[1] === 'materialize'
+    && (argv.includes('--json') || argv.includes('-j'));
+  const jsonConfigCommand = jsonConfigReadRequested(argv);
+  const explicitWorkspace = argv.some((token) => token === '--workspace-root' || token.startsWith('--workspace-root='));
+  const authoringPluginCommand = argv[0] === 'plugin'
+    && (['build', 'test', 'validate', 'init', 'add-skill'].includes(argv[1] ?? '')
+      || ['remove', 'status'].includes(argv[1] ?? '') && explicitWorkspace);
   const jsonAuthoringCommand = argv.includes('--json')
     && (
       (argv[0] === 'catalog' && ['init', 'context', 'version', 'build', 'validate', 'status', 'publish'].includes(argv[1] ?? ''))
-      || (argv[0] === 'plugin' && ['build', 'test', 'validate', 'status', 'remove'].includes(argv[1] ?? ''))
+      || authoringPluginCommand
       || reviewCommand !== null
     )
     ? `${argv[0]}:${argv[1]}`
@@ -3611,12 +2972,13 @@ export async function runCli(
       validate: 'validate-plugin.mjs',
       status: 'plugin-status.mjs',
     };
-    const authoringScript = argv[0] === 'plugin'
+    const authoringScript = authoringPluginCommand
       ? authoringScriptByCommand[argv[1] ?? '']
       : argv[0] === 'skill' && argv[1] === 'validate'
         ? 'validate-skill.mjs'
         : undefined;
-    if (authoringScript && !argv.includes('--help') && !argv.includes('-h')) {
+    if (authoringScript && ((!argv.includes('--help') && !argv.includes('-h'))
+      || explicitWorkspace && ['remove', 'status'].includes(argv[1] ?? ''))) {
       const authoringArgs = argv.slice(2);
       let authoringEnv = options.env ?? process.env;
       if (
@@ -3725,7 +3087,7 @@ export async function runCli(
     }
     let catalogPublicationActionStarted = false;
     let configMutationActionStarted = false;
-    const programIo = jsonCatalogDevCommand || jsonRecoveryRequest || jsonReviewCommand
+    const programIo = jsonCatalogDevCommand || jsonRecoveryRequest || jsonReviewCommand || jsonMaterialize || jsonConfigCommand
       ? { ...io, stderr: () => undefined }
       : jsonConfigMutation
         ? {
@@ -3768,6 +3130,15 @@ export async function runCli(
       __awCommandExitState?: { exitCode: number };
     }).__awCommandExitState?.exitCode ?? 0;
   } catch (error) {
+    if (jsonMaterialize && error instanceof CommanderError) {
+      if (error.exitCode === 0) return 0;
+      writeJsonReceipt(io.stdout, {
+        receiptSchemaVersion: 5, command: 'skill:materialize', ok: false,
+        selectedSkills: [], dependencies: [], configDigest: null, materializationDigest: null,
+        outputDigest: null, errors: [{ code: 'invalidArguments', message: error.message }],
+      });
+      return 2;
+    }
     if (reviewCommand && error instanceof CommanderError) {
       if (error.exitCode === 0) return 0;
       if (jsonReviewCommand) {
@@ -3802,11 +3173,17 @@ export async function runCli(
       }));
       return 1;
     }
+    if (jsonConfigCommand && !jsonConfigMutation) {
+      if (error instanceof CommanderError && error.exitCode === 0) return 0;
+      const failure = configMutationFailure(error, options.env ?? process.env, options.cwd ?? process.cwd());
+      writeJsonReceipt(io.stdout, { ok: false, command: `config:${argv[2] ?? ''}`, errors: [failure] });
+      return failure.code === 'invalidArguments' ? 2 : 1;
+    }
     if (recovery) {
       if (error instanceof CommanderError && error.exitCode === 0) return 0;
       const failure = writeCommandFailure(error);
       if (argv[0] === 'project' || argv.some((value) => value === '-p' || value === '--platform' || value.startsWith('--platform='))) {
-        failure.message += '\n使用 aw intent、aw targets 或 aw sync/install/reinstall/uninstall/cleanup/status --scope user|project；工具选择使用 --target。';
+        failure.message += '\n使用 aw plugin intent、aw plugin targets 或 aw plugin install/remove/sync/cleanup/status。安装归属使用 --scope；工作上下文使用 --context。';
       }
       if (jsonRecoveryRequest) {
         if (recovery.command === 'status') writeJsonReceipt(io.stdout, {
@@ -3836,7 +3213,14 @@ export async function runCli(
         failure,
       );
       writeLine(io.stderr, failure.message);
-      return 1;
+      return failure.code === 'invalidArguments' ? 2 : 1;
+    }
+    if ((argv[0] === 'plugin' && argv[1] === 'config'
+      || argv[0] === 'skill' && argv[1] === 'materialize')
+      && (error instanceof CommanderError || error instanceof WriteCommandRequestError)) {
+      if (error instanceof CommanderError) return error.exitCode === 0 ? 0 : 2;
+      writeLine(io.stderr, error.message);
+      return 2;
     }
     if (jsonAuthoringCommand === 'catalog:publish' && error instanceof CommanderError) {
       const failure = catalogPublicationFailure({

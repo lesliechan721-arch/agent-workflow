@@ -3,6 +3,10 @@
   "name": "agent-skill-toolkit",
   "version": "0.1.0",
   "description": "创建和维护 Agent Skill；由用户启动单体、工作流和公开能力评审或简化，并独立审核 Skill Eval。",
+  "platforms": [
+    "codex",
+    "claude"
+  ],
   "dependencies": [
     "agent-content-toolkit"
   ],
@@ -12,11 +16,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX",
-        "CLAUDE"
-      ]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {

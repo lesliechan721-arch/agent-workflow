@@ -32,7 +32,7 @@ import { NativeCliError, type NativeCliRunner, setNativeCliRunnerOverrideForTest
 import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
 import { resolveAwHome, resolveClaudePaths, resolveCodexPaths } from '../../src/utils/paths.js';
 import { getCodexHome } from '../../src/utils/state-paths.js';
-import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import {
   createCatalogSnapshotFixture,
   createDependencyCatalogSnapshotFixture,
@@ -180,7 +180,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'cancel-native-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
@@ -213,7 +213,7 @@ describe('status v8 current behavior', () => {
     });
     setNativeCliRunnerOverrideForTests(nativeRunner);
     try {
-      const read = readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd,
+      const read = readRecoveryStatus({ scope: 'user', context: 'user', cwd: isolation.layout.fixtureCwd,
         env: observedEnv, cliVersion: '1.0.0', signal: abort.signal });
       const rejected = read.catch((error: unknown) => error);
       await vi.waitFor(() => expect(started).toBe(true));
@@ -240,8 +240,8 @@ describe('status v8 current behavior', () => {
   it.each([
     { agents: [], savedAgents: [] },
     { agents: ['codex'], savedAgents: ['codex'] },
-    { agents: ['claude-code'], savedAgents: ['claude-code'] },
-    { agents: ['codex'], savedAgents: ['claude-code'], targets: ['codex'] },
+    { agents: ['claude'], savedAgents: ['claude'] },
+    { agents: ['codex'], savedAgents: ['claude'], targets: ['codex'] },
   ])('limits v3 dependency demand to selected Agents $agents with saved $savedAgents', async ({ agents, savedAgents, targets }) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'selected-demand-source');
@@ -256,8 +256,8 @@ describe('status v8 current behavior', () => {
       schemaVersion: 3, kind: 'aw-plugin-intents', sources: { local: { logicalIdentity } },
       roots: [{ pluginId: 'local/top' }],
     });
-    await writePreferences({ scope: 'project', cwd, env }, {
-      schemaVersion: 1, kind: 'aw-deployment-preferences', agents: savedAgents, dependencyScopeOverrides: [],
+    await writePreferences({ scope: 'user', cwd, env }, {
+      schemaVersion: 2, kind: 'aw-deployment-preferences', targets: savedAgents, exclusions: [],
     });
     if (agents.includes('codex')) {
       await fs.copy(path.join(sourceRoot, 'plugins'), path.join(resolveAwHome(env), 'marketplaces', 'local', 'plugins'));
@@ -269,15 +269,15 @@ describe('status v8 current behavior', () => {
     const result = await statusCommandV8({ cwd, env, scope: 'project',
       ...(targets ? { recoverySelection: { targets } } : {}) });
     for (const target of result.payload.targets) {
-      const selected = agents.includes(target.platform === 'claude' ? 'claude-code' : 'codex');
+      const selected = agents.includes(target.platform === 'claude' ? 'claude' : 'codex');
       if (!selected) {
         expect(target.reasons.filter((reason) => reason.code.startsWith('dependency'))).toEqual([]);
         expect(statusTargetIntent(target).enabled).toBe(false);
         expect(target.state).toBe('absent');
       }
     }
-    const recovery = await readRecoveryStatus({ scope: 'project', cwd, env, targets });
-    expect(recovery.selection.agents).toEqual(agents);
+    const recovery = await readRecoveryStatus({ context: 'project', cwd, env });
+    expect(recovery.selection.agents).toEqual(savedAgents);
     expect(recovery.inventory?.map((root) => root.pluginId)).toEqual(['local/top']);
   });
 
@@ -286,7 +286,7 @@ describe('status v8 current behavior', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-status-read-error-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CLAUDE'];
+      manifest.platforms = ['claude'];
       manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
     });
     const { env, logicalIdentity } = await configurePathSource(sourceRoot);
@@ -296,12 +296,12 @@ describe('status v8 current behavior', () => {
       schemaVersion: 3, kind: 'aw-plugin-intents', sources: { local: { logicalIdentity } },
       roots: [{ pluginId: 'local/demo' }],
     });
-    await writePreferences({ scope: 'project', cwd, env }, {
-      schemaVersion: 1, kind: 'aw-deployment-preferences', agents: ['claude-code'], dependencyScopeOverrides: [],
+    await writePreferences({ scope: 'user', cwd, env }, {
+      schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['claude'], exclusions: [],
     });
     const invoke = async () => {
       const captured = createCapturedCliIo();
-      const exit = await runCli(['status', '--scope', 'project', '--json'], {
+      const exit = await runCli(['plugin', 'status', '--context', 'project', '--json'], {
         cwd, env, interactive: false, io: captured.io,
         nativeCliRunner: async () => ({ exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' }),
       });
@@ -318,7 +318,8 @@ describe('status v8 current behavior', () => {
         errors: expect.arrayContaining([expect.objectContaining({ code: 'nativeStateUnreadable' })]),
       });
       expect(failed.stdout).not.toContain('secret-native-state-detail');
-      expect(failed.stdout).not.toContain(cwd);
+      expect(failed.payload.coverage.projectRoot).toBe(cwd);
+      expect(JSON.stringify(failed.payload.inventory)).not.toContain(cwd);
       expect(failed.stderr).toBe('');
     } finally {
       inspect.mockRestore();
@@ -347,10 +348,11 @@ describe('status v8 current behavior', () => {
     const before = await filesystemSnapshot(cwd);
     const status = await readRecoveryStatus({ scope: 'project', cwd, env });
     expect(status).toMatchObject({
-      schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: true, intent: { state: 'valid' },
-      selection: { agents: [], origin: 'none' }, allSatisfied: null, errors: [],
+      schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: false, intent: { state: 'valid' },
+      selection: { agents: [], origin: 'none' }, allSatisfied: false,
+      errors: [expect.objectContaining({ code: 'targetsNotConfigured' })],
       inventory: [{ pluginId: 'local/demo', sourceState: 'ready', targetResults: [],
-        blockers: [{ code: 'localTargetsRequired', message: expect.any(String) }] }],
+        blockers: [] }],
     });
     expect(await filesystemSnapshot(cwd)).toEqual(before);
     const intentPath = path.join(cwd, '.agent-workflows', 'plugin-intents.json');
@@ -364,7 +366,7 @@ describe('status v8 current behavior', () => {
     });
   });
 
-  it('publishes a non-blocking warning for an ignored native project config override', async () => {
+  it('keeps historical project config bytes outside the user common profile', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-config-warning-source');
     await fs.outputFile(
@@ -372,7 +374,7 @@ describe('status v8 current behavior', () => {
       'console.log(JSON.stringify({ version: 2, artifacts: [] }));\n',
     );
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.config = { fields: { mode: { type: 'string', title: '模式', default: 'default' } } };
       manifest.scripts = {
         artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
@@ -383,7 +385,6 @@ describe('status v8 current behavior', () => {
           platform: 'codex',
           scopes: ['user'],
           target: 'codex.skill',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           states: ['present'],
           refreshKeys: ['mode'],
           skillKey: 'native-skill',
@@ -395,10 +396,10 @@ describe('status v8 current behavior', () => {
       sourceId: 'local', sourceIdentity, pluginName: 'demo', scope: 'user',
       cwd: isolation.layout.fixtureCwd, env, values: { mode: 'user' },
     });
-    await writePluginConfigStore({
-      sourceId: 'local', sourceIdentity, logicalIdentity, pluginName: 'demo', scope: 'project',
-      cwd: isolation.layout.fixtureCwd, env, values: { mode: 42 },
-    });
+    const historicalStore = path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-config', 'local', 'demo', 'config.json');
+    await fs.outputJson(historicalStore, { schemaVersion: 5, sourceId: 'local', pluginName: 'demo',
+      binding: { kind: 'catalog', logicalIdentity }, values: { mode: 42 } });
+    const historicalBytes = await fs.readFile(historicalStore);
 
     const result = await statusCommandV8({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env, json: true,
@@ -407,43 +408,36 @@ describe('status v8 current behavior', () => {
 
     expect(result.hasErrors).toBe(false);
     expect(result.payload.targets.every((target) => target.state !== 'blocked')).toBe(true);
-    expect(output.configIssues).toEqual([{
-      pluginId: 'local/demo',
-      pluginName: 'demo',
-      scope: 'project',
-      type: 'configLayerUnsupported',
-      key: 'mode',
-      title: '模式',
-      source: 'project',
-    }]);
+    expect(output.configIssues).toBeUndefined();
+    expect(await fs.readFile(historicalStore)).toEqual(historicalBytes);
   });
 
   it.each([
-    { label: 'an empty product list on Codex', products: [] as string[], platform: 'codex' as const },
-    { label: 'an empty product list on Claude', products: [] as string[], platform: 'claude' as const },
-    { label: 'a lowercase Codex token', products: ['codex'], platform: 'codex' as const },
-    { label: 'a lowercase Claude token', products: ['claude'], platform: 'claude' as const },
+    { label: 'an empty platform list on Codex', platforms: [] as Array<'codex' | 'claude'>, platform: 'codex' as const },
+    { label: 'an empty platform list on Claude', platforms: [] as Array<'codex' | 'claude'>, platform: 'claude' as const },
+    { label: 'an explicit Codex target', platforms: ['codex' as const], platform: 'codex' as const },
+    { label: 'an explicit Claude target', platforms: ['claude' as const], platform: 'claude' as const },
   ])(
     'keeps desired dependency placement and capability blockers visible for $label',
-    async ({ products, platform }) => {
+    async ({ platforms, platform }) => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(
         isolation.layout.fixtureCwd,
-        `product-support-${platform}-${products.join('-') || 'empty'}`,
+        `product-support-${platform}-${platforms.join('-') || 'empty'}`,
       );
       await createDependencyCatalogSnapshotFixture(sourceRoot, [
         {
           name: 'leaf',
           requiredCapabilities: ['aw.future-status-capability.v1'],
           configureManifest: (manifest) => {
-            manifest.marketplace.policy.products = products;
+            manifest.platforms = platforms;
           },
         },
         {
           name: 'root',
           dependencies: ['leaf'],
           configureManifest: (manifest) => {
-            manifest.marketplace.policy.products = products;
+            manifest.platforms = platforms;
           },
         },
       ]);
@@ -533,7 +527,7 @@ describe('status v8 current behavior', () => {
     };
     expect(statusRecovery(base)).toEqual([{
       command: 'manual',
-      description: '共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install local/demo --target codex --scope <user|project> 重建。',
+      description: '共享内容已损坏。先确认本机 Agent 选择，明确 user 或 project 使用范围，再运行 aw plugin install local/demo --scope <user|project> 重建。',
     }]);
     expect(statusRecovery({ ...base, actualEnabled: true })).toEqual([
       {
@@ -543,7 +537,7 @@ describe('status v8 current behavior', () => {
       },
       {
         command: 'manual',
-        description: '共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install local/demo --target codex --scope <user|project> 重建。',
+        description: '共享内容已损坏。先确认本机 Agent 选择，明确 user 或 project 使用范围，再运行 aw plugin install local/demo --scope <user|project> 重建。',
       },
     ]);
   });
@@ -553,7 +547,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'capability-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
@@ -589,7 +583,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'pure-native-intent-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
@@ -627,11 +621,12 @@ describe('status v8 current behavior', () => {
     expect(statusTargetIntent(explicitUser.payload.targets[0]!.placements[0]!))
       .toEqual({ enabled: true, scopes: ['user'], relation: 'root' });
     for (const scope of ['user', 'project'] as const) {
-      const recovery = await readRecoveryStatus({ scope, cwd: isolation.layout.fixtureCwd, env });
+      const recovery = await readRecoveryStatus({ context: scope, cwd: isolation.layout.fixtureCwd, env });
       expect(recovery).toMatchObject({
         scope, intent: { state: 'valid' }, selection: { agents: ['codex'] },
-        inventory: [{ pluginId: 'local/demo', targetResults: [{ agent: 'codex', scope,
-          delivery: { kind: 'native', platform: 'codex' } }] }],
+        inventory: expect.arrayContaining([expect.objectContaining({ pluginId: 'local/demo', targetResults: expect.arrayContaining([
+          expect.objectContaining({ agent: 'codex', scope, delivery: { kind: 'native', platform: 'codex' } }),
+        ]) })]),
       });
     }
     expect(statusTargetSharedNative(target)).toMatchObject({ state: 'unobserved' });
@@ -653,7 +648,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(cwd, 'user-project-isolation-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
@@ -671,7 +666,7 @@ describe('status v8 current behavior', () => {
     expect(result.payload.errors).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'pluginIntentStateInvalid' }),
     ]));
-    const recovery = await readRecoveryStatus({ scope: 'user', cwd, env });
+    const recovery = await readRecoveryStatus({ scope: 'user', context: 'user', cwd, env });
     expect(recovery.intent.state).toBe('valid');
     expect(recovery.inventory?.map((root) => root.pluginId)).toEqual(['local/demo']);
   });
@@ -681,7 +676,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'pure-native-ready-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
@@ -748,7 +743,7 @@ describe('status v8 current behavior', () => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, `claude-orphan-${scope}-source`);
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.marketplace.policy.products = ['CLAUDE'];
+        manifest.platforms = ['claude'];
       });
       const { env } = await configurePathSource(sourceRoot);
       const marketplaceRoot = path.join(resolveAwHome(env), 'marketplaces', 'local');
@@ -805,7 +800,7 @@ describe('status v8 current behavior', () => {
       {
         name: 'leaf',
         configureManifest: (manifest) => {
-          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.platforms = ['codex'];
           manifest.apps = './.app.json';
           delete manifest.extensions;
         },
@@ -814,7 +809,7 @@ describe('status v8 current behavior', () => {
         name: 'root',
         dependencies: ['leaf'],
         configureManifest: (manifest) => {
-          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.platforms = ['codex'];
           manifest.apps = './.app.json';
           delete manifest.extensions;
         },
@@ -959,7 +954,7 @@ describe('status v8 current behavior', () => {
       })]);
       setNativeCliRunnerOverrideForTests(nativeRunner);
       try {
-        const recovery = await readRecoveryStatus({ scope: 'user', cwd,
+        const recovery = await readRecoveryStatus({ scope: 'user', context: 'user', cwd,
           env: { ...env, PATH: binRoot } });
         expect(recovery.inventory).toEqual([]);
         expect(recovery.extraObserved).toEqual(expect.arrayContaining([
@@ -1014,7 +1009,7 @@ describe('status v8 current behavior', () => {
     ].map((definition) => ({
       ...definition,
       configureManifest: (manifest) => {
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
         manifest.apps = './.app.json';
         delete manifest.extensions;
       },
@@ -1220,7 +1215,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-conflict-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
       manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
@@ -1247,7 +1242,7 @@ describe('status v8 current behavior', () => {
     expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(false);
   });
 
-  it('keeps dependency demand within each recovery scope', async () => {
+  it('keeps user-only demand neutral and includes both roots in project recovery', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-conflict-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
@@ -1296,8 +1291,9 @@ describe('status v8 current behavior', () => {
     expect(leaf?.placements.map((placement) => [placement.scope, statusTargetIntent(placement).relation]))
       .toEqual([['project', 'dependency'], ['user', 'dependency']]);
     for (const [scope, root] of [['user', 'local/user-root'], ['project', 'local/project-root']] as const) {
-      const recovery = await readRecoveryStatus({ scope, cwd: isolation.layout.fixtureCwd, env });
-      expect(recovery.inventory?.map((entry) => entry.pluginId)).toEqual([root]);
+      const recovery = await readRecoveryStatus({ context: scope, cwd: isolation.layout.fixtureCwd, env });
+      expect(recovery.inventory?.map((entry) => entry.pluginId)).toEqual(scope === 'user'
+        ? [root] : ['local/user-root', 'local/project-root']);
       expect(recovery.selection.agents).toEqual(['codex']);
     }
   });
@@ -1412,7 +1408,7 @@ describe('status v8 current behavior', () => {
         {
           name: 'leaf',
           configureManifest: (manifest) => {
-            manifest.marketplace.policy.products = ['CODEX'];
+            manifest.platforms = ['codex'];
             manifest.apps = './.app.json';
           },
         },
@@ -1420,7 +1416,7 @@ describe('status v8 current behavior', () => {
           name: 'root',
           dependencies: ['leaf'],
           configureManifest: (manifest) => {
-            manifest.marketplace.policy.products = ['CODEX'];
+            manifest.platforms = ['codex'];
             manifest.extensions = {
               instructions: [{ name: 'root', title: 'Root', content: 'Root.' }],
             };
@@ -1543,7 +1539,7 @@ describe('status v8 current behavior', () => {
       'console.log(JSON.stringify({ version: 2, artifacts: [] }));\n',
     );
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.scripts = {
         artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
       };
@@ -1553,7 +1549,6 @@ describe('status v8 current behavior', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: [],
@@ -1601,21 +1596,20 @@ describe('status v8 current behavior', () => {
       ]));
   });
 
-  it('keeps config-only residue with no Agent selection in extra observations', async () => {
+  it('keeps saved configuration separate from deployable residue when no Agent is selected', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const sourceRoot = path.join(cwd, 'config-only-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo');
     const { env, sourceIdentity, logicalIdentity } = await configurePathSource(sourceRoot);
     await writePluginConfigStore({ sourceId: 'local', sourceIdentity, logicalIdentity,
-      pluginName: 'demo', scope: 'project', cwd, env, values: {} });
+      pluginName: 'demo', scope: 'user', cwd, env, values: { mode: 'stored' } });
 
     const recovery = await readRecoveryStatus({ scope: 'project', cwd, env });
     expect(recovery.inventory).toEqual([]);
-    expect(recovery.extraObserved).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'local/demo', agent: null, scope: 'project',
-        backend: expect.objectContaining({ kind: 'namespacedConfig' }) }),
-    ]));
+    expect(recovery.extraObserved).toEqual([]);
+    expect(await readPluginConfigStore({ sourceId: 'local', sourceIdentity, logicalIdentity,
+      pluginName: 'demo', scope: 'user', cwd, env })).toMatchObject({ values: { mode: 'stored' } });
   });
 
   it('keeps desired intent structured when the Catalog has no active generation', async () => {
@@ -1656,7 +1650,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-drift-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
       manifest.version = '2.0.0';
     });
@@ -1701,7 +1695,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'cache-only-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
@@ -1765,7 +1759,7 @@ describe('status v8 current behavior', () => {
       'policy:\n  allow_implicit_invocation: true\n',
     );
     await createCatalogSnapshotFixture(good, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.skills = './skills';
     });
     await fs.ensureDir(bad);
@@ -1844,7 +1838,7 @@ describe('status v8 current behavior', () => {
       'console.log(JSON.stringify({ version: 2, artifacts: [] }));',
     ].join('\n'));
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.scripts = {
         artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
       };
@@ -1854,7 +1848,6 @@ describe('status v8 current behavior', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present', 'disabled'],
           refreshKeys: [],
@@ -1923,7 +1916,7 @@ describe('status v8 current behavior', () => {
         expect.objectContaining({ kind: 'namespacedOwner' }),
       ]) }),
     })]));
-    const user = await readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd, env });
+    const user = await readRecoveryStatus({ scope: 'user', context: 'user', cwd: isolation.layout.fixtureCwd, env });
     expect(user.inventory).toEqual([]);
     expect(user.extraObserved.map((entry) => entry.pluginId)).not.toContain('local/removed');
     expect(await filesystemSnapshot(skillsRoot)).toEqual(before);
@@ -1941,7 +1934,7 @@ describe('status v8 current behavior', () => {
       platform: 'codex', scope: 'user',
     } });
     await fs.outputFile(path.join(resolveAwHome(env), 'plugin-config'), 'not a directory');
-    const unreadable = await readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd, env });
+    const unreadable = await readRecoveryStatus({ scope: 'user', context: 'user', cwd: isolation.layout.fixtureCwd, env });
     expect(unreadable).toMatchObject({ ok: false, inventory: [], allSatisfied: true,
       errors: [expect.objectContaining({ code: 'stateInventoryFailed' })] });
     expect(unreadable.extraObserved).toEqual(expect.arrayContaining([
@@ -1960,7 +1953,7 @@ describe('status v8 current behavior', () => {
     expect(status.payload.errors).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'pluginIntentStateInvalid' }),
     ]));
-    const user = await readRecoveryStatus({ scope: 'user', cwd, env: { ...isolation.env, PATH: '' } });
+    const user = await readRecoveryStatus({ scope: 'user', context: 'user', cwd, env: { ...isolation.env, PATH: '' } });
     expect(user).toMatchObject({ ok: true, scope: 'user', inventory: [], allSatisfied: true });
   });
 
@@ -2000,7 +1993,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'read-only-codex-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
@@ -2055,7 +2048,7 @@ describe('status v8 current behavior', () => {
     await createDependencyCatalogSnapshotFixture(sourceRoot, pluginNames.map((name) => ({
       name,
       configureManifest: (manifest) => {
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
         manifest.apps = './.app.json';
       },
     })));
@@ -2096,7 +2089,7 @@ describe('status v8 current behavior', () => {
     calls.length = 0;
     setNativeCliRunnerOverrideForTests(withCodexVersion(nativeRunner));
     try {
-      const recovery = await readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd,
+      const recovery = await readRecoveryStatus({ scope: 'user', context: 'user', cwd: isolation.layout.fixtureCwd,
         env: { ...env, PATH: binRoot } });
       expect(recovery.inventory).toHaveLength(20);
       expect(calls.filter((call) => call.args[0] === 'plugin')).toHaveLength(1);
@@ -2110,7 +2103,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'merged-codex-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
@@ -2235,7 +2228,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'registered-codex-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
@@ -2358,7 +2351,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'low-codex-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
@@ -2413,7 +2406,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-low-codex-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);
@@ -2474,7 +2467,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'wrapper-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const configured = await configurePathSource(sourceRoot);
@@ -2545,7 +2538,7 @@ describe('status v8 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-codex-source-identity');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.platforms = ['codex'];
       manifest.apps = './.app.json';
     });
     const { env } = await configurePathSource(sourceRoot);

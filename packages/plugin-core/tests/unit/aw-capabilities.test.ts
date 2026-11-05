@@ -98,8 +98,7 @@ describe('AW capability contracts', () => {
       },
       config: { fields: {} },
       scripts: { preApply: { path: './scripts/pre-apply.mjs' } },
-      artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [] }] },
-      distributions: { agentSkills: { skills: './portable' } },
+      artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', platform: 'codex', states: ['present'], refreshKeys: [] }] },
     }))).toEqual([
       'aw.dynamic-artifacts.v2',
       'aw.plugin-build-config.v1',
@@ -117,7 +116,7 @@ describe('AW capability contracts', () => {
     const capabilities = deriveAwCapabilitiesFromManifest(manifest({
       config: { fields: { displayStyle: { type: 'string' } } },
       artifacts: { targets: [{ id: 'tool', scopes: ['user'], platform: 'codex', target: 'codex.skill',
-        delivery: { mode: 'aw-extension' }, skillKey: 'tool', states: ['present'], refreshKeys: ['displayStyle'],
+        skillKey: 'tool', states: ['present'], refreshKeys: ['displayStyle'],
         runtimeConfig: { keys: ['displayStyle'] },
       }] },
     }))
@@ -305,6 +304,7 @@ describe('AW capability contracts', () => {
     const result = await resolvePluginRequirements({
       pluginRoot,
       manifest: manifest({
+        platforms: ['codex', 'claude'],
         skills: './skills',
         requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
       }),

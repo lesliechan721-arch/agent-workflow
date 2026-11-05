@@ -40,12 +40,22 @@ export class ManagedCommandError extends Error {
     super(message);
   }
 }
+class DamagedCommandBindingError extends ManagedCommandError {
+  constructor() { super('commandBindingInvalid', 'The command binding is not valid JSON.'); }
+}
 export type InstalledCommandSet = InstalledCommandProducer['sets'][number];
 export interface ManagedCommandBinding {
   schemaVersion: 1;
   id: string;
   identity: CommandIdentity;
   resourceRoot: string;
+}
+const bindingRecoveryIdentities = Symbol('verified native command identities');
+export interface ManagedCommandBindingRecoveryEvidence {
+  readonly [bindingRecoveryIdentities]: {
+    readonly root: string;
+    readonly identities: ReadonlyMap<string, CommandIdentity>;
+  };
 }
 export interface ManagedCommandView {
   id: string;
@@ -307,8 +317,46 @@ export async function readInstalledCommandProducer(resourceRoot: string): Promis
 export async function writeInstalledCommandProducer(resourceRoot: string, record: InstalledCommandProducer): Promise<void> {
   await writeJson(resourceRoot, path.join(resourceRoot, COMMAND_PRODUCER_RECORD), normalizeInstalledCommandProducer(record));
 }
+/** Capture the installed Native producer before replacing its canonical payload. */
+export async function captureManagedCommandBindingRecoveryEvidence(options: {
+  producer: ProducerIdentity; resourceRoot: string; env?: NodeJS.ProcessEnv;
+}): Promise<ManagedCommandBindingRecoveryEvidence> {
+  const producer = normalizeProducerIdentity(options.producer);
+  if (producer.kind === 'package' || producer.scope !== 'user' || producer.projectRoot !== null) {
+    fail('commandOwnerMismatch', 'Binding recovery requires an installed shared Native Skill producer.');
+  }
+  const root = await managedCommandRoot(options.env);
+  const resourceRoot = path.resolve(options.resourceRoot);
+  const pluginRoot = path.join(path.dirname(root), 'marketplaces', producer.sourceId, 'plugins', producer.pluginName);
+  await safePath(pluginRoot, resourceRoot);
+  const marker = await fs.lstat(path.join(resourceRoot, '.agent-workflows-owner.json')).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (marker) fail('commandOwnerMismatch', 'Shared Native Skill evidence cannot use a scoped owner marker.');
+  const record = await readInstalledCommandProducer(resourceRoot);
+  if (!equal(record.producer, producer)) fail('commandOwnerMismatch', 'The installed producer does not match the recovery request.');
+  await assertManagedCommandProducerOwnership(producer, resourceRoot, options.env);
+  const identities = new Map<string, CommandIdentity>();
+  for (const set of record.sets) for (const entry of set.entries) {
+    await validateManagedCommandResource(resourceRoot, entry);
+    const identity: CommandIdentity = { schemaVersion: 1, producer, set: set.set, key: entry.key, variant: entry.variant };
+    identities.set(getPluginCommandId(identity), identity);
+  }
+  return { [bindingRecoveryIdentities]: { root, identities } };
+}
 async function readBinding(root: string, id: string): Promise<ManagedCommandBinding> {
-  const value = object(await readJson(root, path.join(root, 'bindings', `${id}.json`), 'commandBindingInvalid'), ['schemaVersion', 'id', 'identity', 'resourceRoot'], 'commandBindingInvalid');
+  const bindingPath = path.join(root, 'bindings', `${id}.json`);
+  await safePath(root, bindingPath);
+  if (!(await fs.lstat(bindingPath)).isFile()) fail('commandBindingInvalid', 'The command binding must be a regular file.');
+  const content = await fs.readFile(bindingPath, 'utf8');
+  let parsed: unknown;
+  try { parsed = JSON.parse(content); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw new DamagedCommandBindingError();
+    throw error;
+  }
+  const value = object(parsed, ['schemaVersion', 'id', 'identity', 'resourceRoot'], 'commandBindingInvalid');
   let identity: CommandIdentity;
   try { identity = normalizeCommandIdentity(value.identity); } catch { fail('commandBindingInvalid', 'The command binding identity is invalid.'); }
   if (value.schemaVersion !== 1 || value.id !== id || getPluginCommandId(identity) !== id || typeof value.resourceRoot !== 'string' || !path.isAbsolute(value.resourceRoot)) fail('commandIdentityConflict', 'The command binding does not match its identity.');
@@ -334,7 +382,11 @@ export async function revokeManagedCommandBindings(producer: ProducerIdentity, e
   }
   return removed;
 }
-async function prepareManagedCommandIdentities(root: string, records: InstalledCommandProducer[]): Promise<Map<string, CommandIdentity>> {
+async function prepareManagedCommandIdentities(
+  root: string,
+  records: InstalledCommandProducer[],
+  bindingRecoveryEvidence: readonly ManagedCommandBindingRecoveryEvidence[] = [],
+): Promise<Map<string, CommandIdentity>> {
   const candidates = new Map<string, CommandIdentity>();
   for (const record of records) for (const set of record.sets) for (const entry of set.entries) {
     const identity: CommandIdentity = { schemaVersion: 1, producer: record.producer, set: set.set, key: entry.key, variant: entry.variant };
@@ -342,9 +394,23 @@ async function prepareManagedCommandIdentities(root: string, records: InstalledC
     const candidate = candidates.get(id);
     if (candidate && !equal(candidate, identity)) fail('commandIdentityConflict', 'commandIdentityConflict: the command ID already belongs to another identity.');
     const existingPath = path.join(root, 'bindings', `${id}.json`);
-    if (await fs.lstat(existingPath).catch(() => null)) {
-      const existing = await readBinding(root, id);
-      if (!equal(existing.identity, identity)) fail('commandIdentityConflict', 'commandIdentityConflict: the command ID already belongs to another identity.');
+    const stats = await fs.lstat(existingPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (stats) {
+      try {
+        const existing = await readBinding(root, id);
+        if (!equal(existing.identity, identity)) fail('commandIdentityConflict', 'commandIdentityConflict: the command ID already belongs to another identity.');
+      } catch (error) {
+        // Only malformed JSON can use the old canonical producer's exact identity.
+        // Path, I/O and readable identity conflicts still stop publication.
+        if (!(error instanceof DamagedCommandBindingError)
+          || !bindingRecoveryEvidence.some((evidence) => {
+            const verified = evidence[bindingRecoveryIdentities];
+            return verified?.root === root && equal(verified.identities.get(id), identity);
+          })) throw error;
+      }
     }
     candidates.set(id, identity);
   }
@@ -352,19 +418,21 @@ async function prepareManagedCommandIdentities(root: string, records: InstalledC
 }
 export async function assertManagedCommandBindingIdentities(options: {
   producers: Array<Pick<InstalledCommandProducer, 'producer' | 'sets' | 'nativeTools'>>; env?: NodeJS.ProcessEnv;
+  bindingRecoveryEvidence?: readonly ManagedCommandBindingRecoveryEvidence[];
 }): Promise<void> {
   if (options.producers.length === 0) return;
   const records = options.producers.map((record) => normalizeInstalledCommandProducer({ schemaVersion: 1, producer: record.producer, sets: record.sets, ...(record.nativeTools ? { nativeTools: record.nativeTools } : {}) }));
-  await prepareManagedCommandIdentities(await managedCommandRoot(options.env), records);
+  await prepareManagedCommandIdentities(await managedCommandRoot(options.env), records, options.bindingRecoveryEvidence);
 }
 export async function publishManagedCommandBindings(options: {
   producer: ProducerIdentity; resourceRoot: string; sets: InstalledCommandSet[]; nativeTools?: NativeToolClosure; env?: NodeJS.ProcessEnv;
+  bindingRecoveryEvidence?: readonly ManagedCommandBindingRecoveryEvidence[];
 }): Promise<string[]> {
   const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer: options.producer, sets: options.sets, ...(options.nativeTools ? { nativeTools: options.nativeTools } : {}) });
   const root = await managedCommandRoot(options.env);
   const resourceRoot = path.resolve(options.resourceRoot);
   for (const set of record.sets) for (const entry of set.entries) await validateManagedCommandResource(resourceRoot, entry);
-  const candidates = await prepareManagedCommandIdentities(root, [record]);
+  const candidates = await prepareManagedCommandIdentities(root, [record], options.bindingRecoveryEvidence);
   if (record.nativeTools) await validateNativeToolClosureFiles(resourceRoot, record.nativeTools);
   await writeInstalledCommandProducer(resourceRoot, record);
   await revokeManagedCommandBindings(record.producer, options.env);

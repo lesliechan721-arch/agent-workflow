@@ -173,12 +173,14 @@ export function renderEvalManifest(pluginName) {
     },
     profiles: {
       'project-default': {
+        platform: 'codex',
         scope: 'project',
         plugins: {
           [pluginName]: {},
         },
       },
       'user-default': {
+        platform: 'codex',
         scope: 'user',
         plugins: {
           [pluginName]: {},

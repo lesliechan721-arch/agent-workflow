@@ -1,5 +1,5 @@
 export {
-  formatMarketplaceProductsForError,
+  formatManifestPlatformsForError,
   formatSupportedPlatforms,
   normalizeMarketplaceProductToken,
   resolveSupportedPlatforms,

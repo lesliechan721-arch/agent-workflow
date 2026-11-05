@@ -3,6 +3,7 @@
   "defaults": {},
   "profiles": {
     "project-default": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {"frontend-design": {}}
     }

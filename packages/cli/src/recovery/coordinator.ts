@@ -13,14 +13,13 @@ import type {
   Scope,
 } from '../types.js';
 import type { CliPrompt } from '../commands/runtime.js';
-import { runRebuildCommand, type RebuildCommandResult, type RebuildCommandRuntime } from '../commands/rebuild-command.js';
+import { runRebuildCommand, type PreApplyAuthorizationTarget, type RebuildCommandResult, type RebuildCommandRuntime } from '../commands/rebuild-command.js';
 import { buildRebuildReceiptJson } from '../output/command-receipt.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, prepareNativeCliExecution } from '../utils/native-cli.js';
-import { portableRecoveryLayout } from '../portable/recovery-layout.js';
-import { SkillsCliError } from '../portable/skills-cli.js';
-import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
+import { portableRecoveryLayout, type PortableAgent } from '../portable/recovery-layout.js';
+import { canonicalizePathThroughExistingAncestor, resolveClaudeProjectKey, resolveCodexProjectKey } from '../utils/state-paths.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import {
   activateCatalogSourceGeneration,
@@ -34,6 +33,7 @@ import {
 } from '../utils/catalog-source-impact.js';
 import {
   preparePortableRecovery,
+  preparePortableCleanup,
   inspectPortableRecovery,
   inspectPortableResidue,
   executePortableRecovery,
@@ -44,18 +44,25 @@ import {
 } from '../portable/recovery.js';
 import { addRequirements } from '../commands/intent-command.js';
 import { readDemand, demandNativeProjection, resolveDelivery, type DemandSnapshot } from './demand.js';
-import { selectAgents, createEmptyPreferences, validateDependencyScopeOverrides, writePreferences,
+import { selectAgents, writePreferences,
   type AgentId, type DeploymentPreferences } from '../intent/deployment-preferences.js';
 import { calculateIntentDigest } from '../intent/intent-codec.js';
 import { observeIntent } from '../intent/intent-store.js';
 import { assertNeutralAncestorChain, createScopeContext, type ScopeContext } from '../intent/scope-context.js';
 import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './receipt.js';
+import { prepareJointRecovery, executeJointRecovery, type JointRecoveryState } from './joint-coordinator.js';
 import { createEmptyNativeDemandView } from '../utils/native-demand.js';
+import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { runPreApplyScript } from '../utils/plugin-scripts.js';
+import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 
 export type RecoveryCommand = 'sync' | 'install' | 'reinstall' | 'uninstall' | 'cleanup';
 export interface RecoveryOptions {
   signal?: AbortSignal;
-  scope: Scope;
+  scope?: Scope;
+  context?: Scope;
+  existingOnly?: boolean;
+  retireUnselectedTargets?: boolean;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   cliVersion: string;
@@ -68,9 +75,15 @@ export interface RecoveryOptions {
   scriptTimeoutMs?: number;
   interactive?: boolean;
   prompt?: CliPrompt;
-  exactTargets?: readonly { pluginId: string; agent: AgentId }[];
+  exactTargets?: readonly { pluginId: string; agent: AgentId; scope?: Scope }[];
+  /** Derived per-operation provider assignments, never a user preference. */
   dependencyScopeOverrides?: InstallCommandOptions['dependencyScopeOverrides'];
-  saveDependencyScopeOverrides?: boolean;
+  demandOverride?: DemandSnapshot;
+  excludedPluginIds?: string[];
+  /** Reviewed scoped activation work for an existing shared Native provider. */
+  nativeActivationOnlyTargets?: Array<{ pluginId: string; platform: PlatformName; scope: Scope }>;
+  /** Preview-only exits which are independently checked by owned cleanup plans. */
+  nativePlannedRetirements?: Array<{ pluginId: string; platform: PlatformName; scope: Scope }>;
 }
 interface NativeTarget {
   pluginId: string;
@@ -102,7 +115,8 @@ export interface RecoverySourceRefresh {
 }
 export interface RecoveryPlan {
   command: RecoveryCommand;
-  options: RecoveryOptions;
+  options: RecoveryOptions & { scope: Scope };
+  joint?: JointRecoveryState;
   receipt: RecoveryReceipt;
   plannedImpact: { declaration: boolean; preferences: boolean; config: boolean; outputs: boolean };
   changes: string[];
@@ -119,6 +133,7 @@ export interface RecoveryPlan {
     platform: PlatformName; fingerprint: string }>;
   portableGroups: PortablePreparation[];
   portableProtectionGroups: PortablePreparation[];
+  preApplyAuthorization?: PreApplyAuthorizationTarget[];
   runtime: RebuildCommandRuntime;
   portableResidues: Array<{ kind: 'cleanup' | 'delivery-switch'; pluginId: string;
     agents: AgentId[]; observation: PortableResidue; retainedTargets?: PortableTarget[] }>;
@@ -127,13 +142,17 @@ export interface RecoveryPlan {
   blockExecution: boolean;
 }
 
+function isPortableAgent(agent: AgentId): agent is PortableAgent {
+  return agent !== 'codex' && agent !== 'claude';
+}
+
 function diagnostic(code: string): RecoveryDiagnostic {
   const messages: Record<string, string> = {
     nativeToolAuthorizationRequired: '原生工具声明有变化，请使用 --yes 或确认当前 Review 后执行。',
-    localTargetsRequired: '已有需求，请先设置本机 Agent 或使用 --target。',
+    localTargetsRequired: '已有需求，请先设置本机 Agent。',
     deliveryUnsupported: '此插件没有适用于所选 Agent 的交付。',
     operationReviewStale: '确认依据已改变，请重新检查并确认。',
-    syncPluginNotDesired: '所选插件尚未声明，请先运行 aw intent add。',
+    syncPluginNotDesired: '所选插件尚未声明，请先运行 aw plugin intent add。',
     syncSelectionRequired: '请指定插件或使用 --all。',
     invalidExactTargets: '精确重试目标不属于当前请求，请重新检查并选择。',
     sourceRefreshFailed: '来源刷新失败，此来源的插件未恢复。',
@@ -161,7 +180,7 @@ function preferenceEvidence(demand: DemandSnapshot): string {
     ? `${demand.preferences.state}:${demand.preferences.rawDigest}` : demand.preferences.state;
 }
 function agentForPlatform(platform: PlatformName): AgentId {
-  return platform === 'claude' ? 'claude-code' : 'codex';
+  return platform;
 }
 function pair(plan: RecoveryPlan, pluginId: string, agent: AgentId): RecoveryTarget | undefined {
   return plan.receipt.targetResults.find((target) => target.pluginId === pluginId && target.agent === agent);
@@ -180,13 +199,13 @@ function completeReceipt(receipt: RecoveryReceipt): RecoveryReceipt {
   receipt.recoveryActions = [...new Set([
     ...(receipt.commandResults ?? []).flatMap((result) => result.recoveryActions),
     ...receipt.blockers.map((entry) => entry.code === 'localTargetsRequired'
-      ? `aw targets set <agent...> --scope ${receipt.scope}` : `aw status --scope ${receipt.scope} --json`),
+      ? `aw plugin targets set <target...>` : `aw plugin status --context ${receipt.scope} --json`),
     ...receipt.remainingTargets.flatMap((target) => {
       const result = receipt.targetResults.find((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent);
       if (result?.recoveryActions?.length) return result.recoveryActions;
       return result?.blockers.some((entry) => entry.code === 'backend-action-unsupported' || entry.code === 'portableObservationFailed')
         ? `检查 ${target.pluginId} 的 Portable 输出及 provider 关联；AW 不支持安全自动删除。`
-        : `aw sync ${target.pluginId} --scope ${receipt.scope} --target ${target.agent}`;
+        : `aw plugin sync ${target.pluginId} --context ${receipt.scope} --target ${target.agent}`;
     }),
   ])];
   return receipt;
@@ -203,12 +222,12 @@ function portableRecoveryActions(plan: RecoveryPlan, pluginId: string,
   targets: readonly (PortableTarget | PortableResidue['targets'][number])[]): string[] {
   return [...new Set(targets.map((target) => {
     const directory = displayPortablePath(plan, target.physicalPath);
-    const shared = target.agent === 'codex' || target.agent === 'cursor'
+    const shared = target.agent === 'generic' || target.agent === 'antigravity'
       ? '该目录可能同时被 Codex 和 Cursor 读取；移开前请确认对两者的影响。' : `该目录供 ${target.agent} 使用。`;
     return `${pluginId}：请检查并备份目录 ${directory}；确认归属后可自行移开。${shared}`
       + (plan.command === 'cleanup' || plan.command === 'uninstall'
-        ? 'AW 不自动删除此 Portable 目录；处理后重新检查状态。'
-        : `然后重试 aw sync ${pluginId} --scope ${plan.options.scope} --target ${target.agent}。`);
+        ? '无法证实该目录的安全删除边界；处理后重新检查状态。'
+        : `然后重试 aw plugin sync ${pluginId} --context ${plan.options.scope} --target ${target.agent}。`);
   }))];
 }
 
@@ -216,7 +235,7 @@ function selectRoots(demand: DemandSnapshot, selectors: readonly string[], all: 
   const roots = demand.roots?.map((root) => root.pluginId) ?? [];
   if (all && selectors.length) throw new Error('syncSelectorConflict');
   if (all) return roots;
-  if (!selectors.length && roots.length) throw new Error('syncSelectionRequired');
+  if (!selectors.length) return roots;
   return [...new Set(selectors.map((selector) => {
     const parsed = parsePluginId(selector);
     const matches = roots.filter((id) => parsed.sourceId ? id === selector
@@ -260,6 +279,9 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
     },
     runtime: {
       ...runtime,
+      preserveLegacyNativeSkills: plan.options.existingOnly === true,
+      nativeActivationOnlyTargets: plan.options.nativeActivationOnlyTargets,
+      nativePlannedRetirements: plan.options.nativePlannedRetirements,
       ...(preview ? { nativeCliRunner: bindNativeCliRunnerSignal(
         runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), runtime.signal) } : {}),
       env: plan.options.env,
@@ -400,20 +422,25 @@ function portableResults(plan: RecoveryPlan, prepared: PortablePreparation): voi
 function portableOutcomes(plan: RecoveryPlan, prepared: PortablePreparation,
   agent: AgentId, outcomes: PortableExecutionTarget[], globalBlockers: string[]): void {
   const target = pair(plan, prepared.options.selector, agent)!;
-  target.execution = outcomes.length > 0 && outcomes.every((entry) => entry.execution === 'no-op') ? 'no-op'
+  const contentOutcomes = outcomes.filter((entry) => entry.disposition !== 'remove');
+  target.execution = prepared.mode === 'cleanup' && outcomes.length === 0 && !globalBlockers.length ? 'no-op' : outcomes.length > 0 && outcomes.every((entry) => entry.execution === 'no-op') ? 'no-op'
     : outcomes.length > 0 && outcomes.every((entry) => ['applied', 'no-op'].includes(entry.execution)) ? 'applied'
     : outcomes.some((entry) => ['applied', 'no-op'].includes(entry.execution)) ? 'partial'
     : outcomes.some((entry) => entry.execution === 'failed') ? 'failed' : 'not-run';
-  target.observation = outcomes.length > 0 && outcomes.every((entry) => entry.observation === 'satisfied')
+  target.observation = contentOutcomes.length > 0 && contentOutcomes.every((entry) => entry.observation === 'satisfied')
     && globalBlockers.length === 0 ? 'verified'
-    : globalBlockers.length === 0 && outcomes.some((entry) => entry.observation === 'absent'
-      || entry.observation === 'drifted') && outcomes.every((entry) => entry.observation !== 'unknown'
+    : globalBlockers.length === 0 && contentOutcomes.some((entry) => entry.observation === 'absent'
+      || entry.observation === 'drifted') && contentOutcomes.every((entry) => entry.observation !== 'unknown'
       && entry.observation !== 'conflict') ? 'missing' : 'unknown';
-  target.content = outcomes.some((entry) => entry.observation === 'conflict') ? 'conflict'
-    : outcomes.some((entry) => entry.observation === 'unknown') ? 'unknown'
-    : outcomes.some((entry) => entry.observation === 'drifted') ? 'drifted'
-    : outcomes.some((entry) => entry.observation === 'absent') ? 'absent'
-    : outcomes.length ? 'satisfied' : 'unknown';
+  target.content = contentOutcomes.some((entry) => entry.observation === 'conflict') ? 'conflict'
+    : contentOutcomes.some((entry) => entry.observation === 'unknown') ? 'unknown'
+    : contentOutcomes.some((entry) => entry.observation === 'drifted') ? 'drifted'
+    : contentOutcomes.some((entry) => entry.observation === 'absent') ? 'absent'
+    : contentOutcomes.length ? 'satisfied' : 'unknown';
+  if (prepared.mode === 'cleanup' && globalBlockers.length === 0
+    && outcomes.every((entry) => entry.observation === 'absent' && entry.blockers.length === 0)) {
+    target.observation = 'missing'; target.content = 'absent';
+  }
   target.backend = outcomes.map((entry) => ({ skill: entry.skill, providerPluginId: entry.providerPluginId,
     requiredBy: portableRequiredBy(plan, prepared, entry), observation: entry.observation,
     ownership: entry.ownership, associatedAgents: entry.associatedAgents,
@@ -421,6 +448,111 @@ function portableOutcomes(plan: RecoveryPlan, prepared: PortablePreparation,
   for (const code of [...globalBlockers, ...outcomes.flatMap((entry) => entry.blockers)]) block(target, code);
   target.recoveryActions = portableRecoveryActions(plan, target.pluginId,
     outcomes.filter((entry) => ['conflict', 'unknown'].includes(entry.observation)));
+}
+
+function portablePluginClosure(plan: RecoveryPlan, prepared: PortablePreparation) {
+  const { sourceId, pluginName } = parsePluginId(prepared.options.selector);
+  return resolvePluginMetaDependencyClosure(plan.demand.plugins.filter((plugin) => plugin.sourceId === sourceId), [pluginName!])
+    .filter((plugin) => !prepared.options.excludedPluginIds?.includes(plugin.pluginId!));
+}
+
+function preparePortablePreApplyAuthorization(plan: RecoveryPlan): void {
+  if (plan.command === 'cleanup' || plan.command === 'uninstall') return;
+  const authorization = new Map<string, PreApplyAuthorizationTarget>();
+  for (const prepared of plan.portableGroups) {
+    for (const plugin of portablePluginClosure(plan, prepared)) {
+      if (!plugin.manifest.scripts?.preApply) continue;
+      for (const platform of prepared.options.agents) {
+        if (pair(plan, prepared.options.selector, platform)?.blockers.length) continue;
+        const target: PreApplyAuthorizationTarget = {
+          pluginId: plugin.pluginId!, pluginName: plugin.manifest.name,
+          sourceId: plugin.sourceId!, sourceIdentity: plugin.sourceIdentity!,
+          platform, scope: plan.options.scope,
+          relation: plugin.pluginId === prepared.options.selector ? 'requested'
+            : plan.demand.plugins.find((entry) => entry.pluginId === prepared.options.selector)?.manifest.dependencies?.includes(plugin.manifest.name)
+              ? 'direct' : 'transitive',
+        };
+        authorization.set([target.pluginId, target.platform, target.scope].join('\0'), target);
+      }
+    }
+  }
+  plan.preApplyAuthorization = [...authorization.values()];
+  plan.changes.push(...plan.preApplyAuthorization.map((target) =>
+    `运行插件 preApply 脚本：${target.pluginId} / ${target.platform} / ${target.scope}。`));
+}
+
+async function executePortablePreApply(plan: RecoveryPlan, prepared: PortablePreparation,
+  agent: PortableAgent, runtime: RebuildCommandRuntime): Promise<string | undefined> {
+  if (prepared.mode === 'cleanup' || plan.command === 'cleanup' || plan.command === 'uninstall') return;
+  const plugins = portablePluginClosure(plan, prepared);
+  const required = plan.preApplyAuthorization?.filter((target) => target.platform === agent
+    && plugins.some((plugin) => plugin.pluginId === target.pluginId)) ?? [];
+  return executePreApplyAuthorization(plan, required, runtime);
+}
+
+async function executePreApplyAuthorization(plan: RecoveryPlan, required: readonly PreApplyAuthorizationTarget[],
+  runtime: RebuildCommandRuntime): Promise<string | undefined> {
+  if (!required.length) return;
+  if (plan.options.yes !== true && runtime.preApplyConfirmed !== true) return 'preApplyAuthorizationRequired';
+  const cache = runtime.preApplyExecutionCache ??= new Map<string, Promise<void>>();
+  for (const target of required) {
+    const plugin = plan.demand.plugins.find((entry) => entry.pluginId === target.pluginId);
+    if (!plugin || plugin.sourceIdentity !== target.sourceIdentity) return 'sourceUnavailable';
+    const context = target.scope === plan.options.scope ? plan.context
+      : await createScopeContext({ scope: target.scope, cwd: plan.context.callerCwd, env: plan.options.env });
+    try {
+      const projectKey = target.scope !== 'project' ? '' : target.platform === 'codex'
+        ? await resolveCodexProjectKey(context.executionCwd) : target.platform === 'claude'
+          ? await resolveClaudeProjectKey(context.executionCwd) : context.projectKey;
+      const key = [target.sourceIdentity, target.pluginId, target.platform, target.scope, projectKey].join('\0');
+      let execution = cache.get(key);
+      if (!execution) {
+        execution = runPreApplyScript({ plugin, platform: target.platform, scope: target.scope,
+          cwd: context.executionCwd, context: { env: context.env },
+          referencePlugins: plan.demand.plugins, scriptTimeoutMs: plan.options.scriptTimeoutMs });
+        cache.set(key, execution);
+      }
+      await execution;
+    }
+    catch (error) {
+      runtime.signal?.throwIfAborted();
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      return readSafeOperationError(error)?.code ?? errorCode(error, 'preApplyFailed');
+    } finally { if (context !== plan.context) await context.dispose(); }
+  }
+}
+
+/** Run the reviewed replacement's hooks before any dependent old-output cleanup. */
+export async function executeRecoveryPreApply(plan: RecoveryPlan, pluginId: string, agent: AgentId,
+  runtime: RebuildCommandRuntime): Promise<string | undefined> {
+  if (plan.command === 'cleanup' || plan.command === 'uninstall') return;
+  if (plan.receipt.nativeToolChanges?.length && plan.options.yes !== true) return 'nativeToolAuthorizationRequired';
+  const target = pair(plan, pluginId, agent);
+  if (!target) return 'preApplyTargetUnavailable';
+  if (target.blockers.length) return target.blockers[0]!.code;
+  if (target.delivery?.kind === 'native') {
+    const platform = target.delivery.platform;
+    try {
+      const authorization = await nativeOperation(plan, [pluginId], platform, true,
+        { ...runtime, resolvePreApplyAuthorization: true }, plan.command, [{ pluginId, platform }]);
+      if (authorization.overallState !== 'succeeded' || !authorization.preApplyAuthorization) {
+        return authorization.targetResults.find((result) => result.errorCode)?.errorCode ?? 'preApplyAuthorizationUnavailable';
+      }
+      const blocked = authorization.dependencyPlan?.targets.find((entry) => entry.action === 'block'
+        && (entry.pluginId === pluginId || entry.requiredBy.includes(pluginId)));
+      if (blocked) return blocked.errorCode ?? 'nativePreparationFailed';
+      return executePreApplyAuthorization(plan, authorization.preApplyAuthorization, runtime);
+    } catch (error) {
+      runtime.signal?.throwIfAborted();
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      return readSafeOperationError(error)?.code ?? errorCode(error, 'nativePreparationFailed');
+    }
+  }
+  if (isPortableAgent(agent)) {
+    const prepared = plan.portableGroups.find((group) => group.options.selector === pluginId
+      && group.options.agents.includes(agent));
+    if (prepared) return executePortablePreApply(plan, prepared, agent, runtime);
+  }
 }
 
 async function checkFootprints(plan: RecoveryPlan): Promise<void> {
@@ -467,24 +599,19 @@ async function checkFootprints(plan: RecoveryPlan): Promise<void> {
     }
   }
   for (const prepared of plan.portableGroups) {
-    if (prepared.options.agents.some((agent) => agent === 'codex' || agent === 'cursor')) {
-      plan.warnings.push(`${prepared.options.selector}：.agents/skills 可能同时被 Codex、Cursor 等 Agent 读取。`);
-    }
     const layout = portableRecoveryLayout(plan.context);
-    plan.changes.push(plan.options.scope === 'user'
-      ? `${prepared.options.selector}：使用 ${layout.generationRoot} 作为 Portable 来源；provider 可能更新所选 Agent 的全局 Skill 目录。读取全局 provider lock ${layout.lockPath} 仅用于观察。`
-      : `${prepared.options.selector}：使用 ${layout.generationRoot} 作为 Portable 来源；provider 可能更新所选 Agent 的项目 Skill 目录和 ${layout.lockPath}。`);
+    plan.changes.push(`${prepared.options.selector}：AW 写入所选 Agent 的 owned Skill 目录；准备目录 ${layout.generationRoot}。`);
   }
 }
 
-export async function prepareRecovery(command: RecoveryCommand, selectors: readonly string[],
-  options: RecoveryOptions, runtime: RebuildCommandRuntime = {}): Promise<RecoveryPlan> {
+export async function prepareScopedRecovery(command: RecoveryCommand, selectors: readonly string[],
+  options: RecoveryOptions & { scope: Scope }, runtime: RebuildCommandRuntime = {}): Promise<RecoveryPlan> {
   options.signal?.throwIfAborted();
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env });
   try {
   options.signal?.throwIfAborted();
   options = { ...options, cwd: context.executionCwd, env: context.env };
-  let demand = await readDemand(options);
+  let demand = options.demandOverride ?? await readDemand(options);
   const refreshFailures = new Map<string, string>();
   const sourceRefreshes: RecoverySourceRefresh[] = [];
   if (options.refresh && command === 'sync') {
@@ -578,7 +705,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
   if (receipt.requestedRoots.length && !receipt.selection.agents.length) receipt.blockers.push(diagnostic('localTargetsRequired'));
   if (!preciseCleanup) receipt.blockers.push(...demand.errors);
   plan.blockExecution = Boolean(proposed?.errors.length)
-    || receipt.blockers.some((entry) => !['localTargetsRequired'].includes(entry.code));
+    || receipt.blockers.length > 0;
   for (const [sourceId, code] of refreshFailures) {
     receipt.blockers.push({ code, message: `${sourceId}：${diagnostic('sourceRefreshFailed').message}` });
   }
@@ -593,13 +720,14 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       if (options.exactTargets
         && !options.exactTargets.some((target) => target.pluginId === pluginId && target.agent === agent)) continue;
       const resolvedDelivery = root?.plugin ? resolveDelivery(root.plugin.manifest, agent, options.scope) ?? null : null;
-      const delivery = resolvedDelivery;
+      const delivery = preciseCleanup ? isPortableAgent(agent)
+        ? { kind: 'agent-skills' as const, provider: 'aw' as const, agentId: agent }
+        : { kind: 'native' as const, platform: agent as 'codex' | 'claude' } : resolvedDelivery;
       receipt.targetResults.push({ pluginId, agent, scope: options.scope, delivery, execution: 'not-run', observation: 'unknown',
         blockers: [...(preciseCleanup ? [] : root?.blockers ?? []).map(diagnostic),
           ...(refreshFailures.has(parsePluginId(pluginId).sourceId!)
             ? [diagnostic(refreshFailures.get(parsePluginId(pluginId).sourceId!)!)] : []),
-          ...((command === 'cleanup' || command === 'uninstall') && delivery?.kind === 'agent-skills'
-            ? [diagnostic('backend-action-unsupported')] : []),
+
           ...(!delivery ? [diagnostic(preciseCleanup ? 'backend-action-unsupported' : 'deliveryUnsupported')] : [])],
         requiredBy: [pluginId] });
     }
@@ -656,7 +784,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
             if (preview.overallState !== 'succeeded' || preview.warnings.length > 0
               || !preview.operationPlan) {
               block(target, 'deliverySwitchObservationFailed');
-              target.recoveryActions = [`检查 ${target.pluginId}/${target.agent} 的 Native 现场后重试 aw sync。`];
+              target.recoveryActions = [`检查 ${target.pluginId}/${target.agent} 的 Native 现场后重试 aw plugin sync。`];
             } else {
               cleanPluginIds.push(target.pluginId);
             }
@@ -665,8 +793,8 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
           block(target, 'deliverySwitchCleanupRequired');
           target.backend = { previousDelivery: { kind: 'native', platform }, cleanupEvidence: evidence };
           target.recoveryActions = [
-            `aw cleanup ${target.pluginId} --scope ${options.scope} --target ${target.agent}`,
-            `aw sync ${target.pluginId} --scope ${options.scope} --target ${target.agent}`,
+            `aw plugin cleanup ${target.pluginId} --scope ${options.scope} --target ${target.agent}`,
+            `aw plugin sync ${target.pluginId} --context ${options.scope} --target ${target.agent}`,
           ];
           plan.changes.push(`先清理 ${target.pluginId}/${target.agent} 的旧 Native 输出，再恢复 Portable。`);
         }
@@ -678,7 +806,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
         if (error instanceof Error && error.name === 'AbortError') throw error;
         for (const target of candidates) {
           block(target, 'deliverySwitchObservationFailed');
-          target.recoveryActions = [`检查 ${target.pluginId}/${target.agent} 的 Native 现场后重试 aw sync。`];
+          target.recoveryActions = [`检查 ${target.pluginId}/${target.agent} 的 Native 现场后重试 aw plugin sync。`];
           plan.warnings.push(`${target.pluginId}/${target.agent}：${errorCode(error, 'deliverySwitchObservationFailed')}。`);
         }
       }
@@ -718,7 +846,7 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       for (const override of preview.dependencyPlan?.scopeOverrides ?? []) {
         if (options.dependencyScopeOverrides?.some((requested) => requested.pluginId === override.pluginId
           && (!requested.platform || requested.platform === override.platform))) {
-          plan.changes.push(`本次依赖范围：${override.pluginId}#${override.platform}=${override.scope}。`);
+          plan.changes.push(`推导的依赖提供位置：${override.pluginId}#${override.platform}=${override.scope}。`);
         }
       }
       plan.warnings.push(...preview.warnings);
@@ -730,119 +858,53 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
       }
     }
   }
-  if (command === 'install' && options.saveDependencyScopeOverrides
-    && options.dependencyScopeOverrides?.length && !plan.blockExecution) {
-    const requested = validateDependencyScopeOverrides(options.dependencyScopeOverrides, options.scope);
-    const resolved = plan.nativeGroups.flatMap((group) => group.preview.dependencyPlan?.scopeOverrides ?? []);
-    if (requested.some((entry) => !resolved.some((candidate) => candidate.pluginId === entry.pluginId
-      && candidate.platform === entry.platform && candidate.scope === entry.scope))) {
-      receipt.blockers.push(diagnostic('dependencyScopeOverrideInvalid'));
-      plan.blockExecution = true;
-    } else {
-      const previous = demand.preferences.state === 'valid' ? demand.preferences.value : createEmptyPreferences();
-      const overrides = validateDependencyScopeOverrides([
-        ...previous.dependencyScopeOverrides.filter((entry) => !requested.some((candidate) =>
-          candidate.pluginId === entry.pluginId && candidate.platform === entry.platform)), ...requested,
-      ], options.scope);
-      if (JSON.stringify(overrides) !== JSON.stringify(previous.dependencyScopeOverrides)) {
-        plan.preferences = { ...previous, dependencyScopeOverrides: overrides };
-        plan.plannedImpact.preferences = true;
-        plan.changes.push(...requested.map((entry) =>
-          `保存 ${options.scope} 依赖偏好：${entry.pluginId}#${entry.platform}=${entry.scope}。`));
-      }
-    }
-  }
   for (const pluginId of receipt.requestedRoots) {
     const agents = receipt.targetResults.filter((target) => target.pluginId === pluginId
-      && !target.blockers.length && target.delivery?.kind === 'agent-skills').map((target) => target.agent);
+      && !target.blockers.length && target.delivery?.kind === 'agent-skills').map((target) => target.agent).filter(isPortableAgent);
     if (!agents.length) continue;
     try {
-      const prepared = await preparePortableRecovery({ scope: options.scope, context, selector: pluginId, agents,
+      const prepared = command === 'cleanup' || command === 'uninstall'
+        ? await preparePortableCleanup({ scope: options.scope, context, selector: pluginId, agents, force: options.force, signal: options.signal })
+        : await preparePortableRecovery({ scope: options.scope, context, selector: pluginId, agents,
         env: options.env, cliVersion: options.cliVersion, signal: options.signal,
-        catalogOperationContext: demand.catalogOperationContext });
+        catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds });
       plan.portableGroups.push(prepared);
     } catch (error) {
-      if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
       options.signal?.throwIfAborted();
       if (error instanceof Error && error.name === 'AbortError') throw error;
       for (const agent of agents) block(pair(plan, pluginId, agent)!, errorCode(error, 'portablePreparationFailed'));
     }
   }
   for (const prepared of plan.portableGroups) portableResults(plan, prepared);
+  preparePortablePreApplyAuthorization(plan);
   if (command !== 'cleanup' && command !== 'uninstall') {
     // Complete scope demand protects copies contributed by unselected roots and their dependencies.
     const desiredAgents = new Set([...receipt.selection.agents,
-      ...(demand.preferences.state === 'valid' ? demand.preferences.value.agents : [])]);
+      ...(demand.preferences.state === 'valid' ? demand.preferences.value.targets : [])]);
     const retainedPortableTargets: PortableTarget[] = [];
     for (const root of demand.roots ?? []) {
-      const portableAgents = [...desiredAgents].filter((agent) => root.plugin
+      const portableAgents = [...desiredAgents].filter(isPortableAgent).filter((agent) => root.plugin
         && resolveDelivery(root.plugin.manifest, agent, options.scope)?.kind === 'agent-skills');
       if (!portableAgents.length) continue;
       try {
         const prepared = plan.portableGroups.find((group) => group.options.selector === root.pluginId
-          && portableAgents.every((agent) => group.options.agents.includes(agent)))
+          && portableAgents.every((agent) => group.options.agents.some((item) => item === agent)))
           ?? await preparePortableRecovery({ scope: options.scope, context, selector: root.pluginId,
             env: options.env, agents: portableAgents, cliVersion: options.cliVersion, signal: options.signal,
-            catalogOperationContext: demand.catalogOperationContext });
+            catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds });
         if (!prepared.globalBlockers.length) {
           retainedPortableTargets.push(...prepared.targets.filter((target) =>
             !target.blocker && ['satisfied', 'drifted'].includes(target.observation)));
           if (!plan.portableGroups.includes(prepared)) plan.portableProtectionGroups.push(prepared);
         }
       } catch (error) {
-        if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
         options.signal?.throwIfAborted();
         if (error instanceof Error && error.name === 'AbortError') throw error;
         // Missing current Portable evidence cannot protect historical residue.
       }
     }
-    for (const pluginId of receipt.requestedRoots) {
-      const candidates = receipt.targetResults.filter((target) => target.pluginId === pluginId
-        && target.blockers.length === 0 && target.delivery?.kind === 'native');
-      if (candidates.length === 0) continue;
-      const agents = candidates.map((target) => target.agent);
-      const retainedTargets = retainedPortableTargets.filter((target) => target.providerPluginId === pluginId);
-      let observation: PortableResidue;
-      try {
-        observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId,
-          env: options.env, agents, retainedTargets, signal: options.signal });
-      } catch (error) {
-        if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
-        options.signal?.throwIfAborted();
-        if (error instanceof Error && error.name === 'AbortError') throw error;
-        observation = { state: 'unknown', targets: [], blockers: ['portableObservationFailed'] };
-      }
-      plan.portableResidues.push({ kind: 'delivery-switch', pluginId, agents, observation, retainedTargets });
-      if (observation.state === 'absent') continue;
-      for (const target of candidates) {
-        const residues = observation.targets.filter((entry) => entry.agent === target.agent);
-        const uncertain = observation.unknownAgents?.includes(target.agent)
-          ?? (observation.blockers.length > 0 && residues.length === 0);
-        if (residues.length === 0 && !uncertain) continue;
-        if (residues.length === 0) {
-          block(target, 'deliverySwitchPortableObservationFailed');
-          target.recoveryActions = [`检查 ${pluginId}/${target.agent} 的 Portable 输出和 provider 关联后重新准备。`];
-        } else {
-          block(target, 'deliverySwitchPortableCleanupRequired');
-          target.backend = { previousDelivery: { kind: 'agent-skills', provider: 'skills-cli', agentId: target.agent },
-            portableResidue: residues };
-          target.recoveryActions = portableRecoveryActions(plan, pluginId, residues);
-        }
-      }
-    }
   }
-  for (const pluginId of command === 'cleanup' || command === 'uninstall' ? receipt.requestedRoots : []) {
-    const agents = receipt.targetResults.filter((target) => target.pluginId === pluginId).map((target) => target.agent);
-    const observation = await inspectPortableResidue({ scope: options.scope, context, selector: pluginId, env: options.env, agents, signal: options.signal });
-    plan.portableResidues.push({ kind: 'cleanup', pluginId, agents, observation });
-    if (observation.state !== 'absent') {
-      plan.warnings.push(`${pluginId}：Portable 输出${observation.state === 'present' ? '仍存在' : '无法确认'}，本次操作不会删除它们。`);
-      for (const target of receipt.targetResults.filter((entry) => entry.pluginId === pluginId)) {
-        target.recoveryActions = [...(target.recoveryActions ?? []), ...portableRecoveryActions(plan, pluginId,
-          observation.targets.filter((entry) => entry.agent === target.agent))];
-      }
-    }
-  }
+
   options.signal?.throwIfAborted();
   await checkFootprints(plan);
   options.signal?.throwIfAborted();
@@ -853,9 +915,9 @@ export async function prepareRecovery(command: RecoveryCommand, selectors: reado
     plan.nativeGroups.some((group) => (group.preview.operationPlan?.actions.length ?? 0) > 0
       && nativeGroupTargets(group).some(({ pluginId, platform }) =>
         pair(plan, pluginId, agentForPlatform(platform))?.blockers.length === 0))
-    || (command !== 'cleanup' && command !== 'uninstall' && plan.portableGroups.some((group) =>
+    || (plan.portableGroups.some((group) =>
       group.targets.some((target) => pair(plan, group.options.selector, target.agent)?.blockers.length === 0
-        && (target.observation === 'absent' || target.observation === 'drifted'
+        && (group.mode === 'cleanup' || target.observation === 'absent' || target.observation === 'drifted'
           || (command === 'reinstall' && target.observation === 'satisfied' && target.ownership === 'aw'))))));
   completeReceipt(receipt);
   return plan;
@@ -929,7 +991,7 @@ export async function activateRecoverySourcesAndReprepare(
   }
 }
 
-export async function executeRecovery(plan: RecoveryPlan,
+export async function executeScopedRecovery(plan: RecoveryPlan,
   execution: { yes?: boolean; runtime?: RebuildCommandRuntime } = {}): Promise<RecoveryReceipt> {
   if (plan.sourceRefreshes.length > 0) {
     const receipt = structuredClone(plan.receipt);
@@ -962,7 +1024,7 @@ export async function executeRecovery(plan: RecoveryPlan,
   return await withAwHomeMutationLock({ env: plan.options.env, token: plan.runtime.awHomeMutationToken,
     action: async (token) => {
       const actualIntent = await observeIntent(plan.options);
-      const current = await readDemand({ ...plan.options, ...(plan.declaration ? { intent: plan.demand.intent } : {}) });
+      const current = await readDemand({ ...plan.options, ...(plan.declaration || plan.options.demandOverride ? { intent: plan.demand.intent } : {}) });
       if (intentEvidence(actualIntent) !== plan.originalIntent || preferenceEvidence(current) !== plan.preferencesEvidence
         || current.catalogOperationContext?.generationSetDigest !== plan.demand.catalogOperationContext?.generationSetDigest) {
         receipt.blockers.push(diagnostic('operationReviewStale'));
@@ -970,12 +1032,12 @@ export async function executeRecovery(plan: RecoveryPlan,
       }
       const previewManager = plan.nativeGroups.map((group) => group.preview.codexManagerPreview)
         .find((entry) => entry?.state === 'system' || entry?.state === 'cached');
-      const session = plan.nativeGroups.length ? await createCodexNativeObservationSession({
+      const session = plan.runtime.codexObservationSession ?? (plan.nativeGroups.length ? await createCodexNativeObservationSession({
         exactCwd: plan.context.executionCwd, env: plan.context.env,
         runner: plan.runtime.nativeCliRunner ?? getDefaultNativeCliRunner(),
         manager: plan.runtime.codexManager ?? (previewManager?.state === 'system' || previewManager?.state === 'cached'
           ? previewManager.manager : undefined),
-      }) : undefined;
+      }) : undefined);
       const nativeRuntime = { ...plan.runtime, awHomeMutationToken: token,
         managedCommandProducerCache: plan.runtime.managedCommandProducerCache
           ?? new Map<string, Promise<CommandProducerResult>>(),
@@ -1028,11 +1090,8 @@ export async function executeRecovery(plan: RecoveryPlan,
       }
       for (const residue of plan.portableResidues) {
         const checked = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
-          selector: residue.pluginId, env: plan.options.env, agents: residue.agents,
-          retainedTargets: residue.retainedTargets }).catch((error) => {
-            if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
-            return undefined;
-          });
+          selector: residue.pluginId, env: plan.options.env, agents: residue.agents.filter(isPortableAgent),
+          retainedTargets: residue.retainedTargets }).catch(() => undefined);
         if (!checked || JSON.stringify(checked) !== JSON.stringify(residue.observation)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return completeReceipt(receipt);
@@ -1080,21 +1139,31 @@ export async function executeRecovery(plan: RecoveryPlan,
       const completedFootprints: Array<{ physicalPath: string; expectedDigest: string; providerPluginId: string; logicalIdentity: string }> = [];
       const failedFootprints: Array<{ logicalIdentity: string; outcome: PortableExecutionTarget }> = [];
       for (const prepared of plan.portableGroups) {
-        const agents = prepared.options.agents.filter((agent) => {
-          if (pair(plan, prepared.options.selector, agent)!.blockers.length) return false;
+        const agents: PortableAgent[] = [];
+        for (const agent of prepared.options.agents) {
+          if (pair(plan, prepared.options.selector, agent)!.blockers.length) continue;
           const outcomes: PortableExecutionTarget[] = prepared.targets.filter((entry) => entry.agent === agent).map((entry) => {
             const failed = failedFootprints.find((failure) => failure.logicalIdentity === prepared.logicalIdentity
               && failure.outcome.physicalPath === entry.physicalPath && failure.outcome.expectedDigest === entry.expectedDigest
               && failure.outcome.providerPluginId === entry.providerPluginId);
             return failed ? { ...failed.outcome, agent } : { ...entry, execution: 'not-run', blockers: [] };
           });
-          if (!outcomes.some((entry) => entry.execution === 'failed')) return true;
-          portableOutcomes(plan, prepared, agent, outcomes, []);
-          return false;
-        });
+          if (outcomes.some((entry) => entry.execution === 'failed')) {
+            portableOutcomes(plan, prepared, agent, outcomes, []);
+            continue;
+          }
+          const preApplyFailure = await executePortablePreApply(plan, prepared, agent, nativeRuntime);
+          if (preApplyFailure) {
+            const target = pair(plan, prepared.options.selector, agent)!;
+            target.execution = 'failed'; block(target, preApplyFailure);
+            target.recoveryActions = [`aw plugin sync ${target.pluginId} --context ${target.scope} --target ${agent} --yes`];
+            continue;
+          }
+          agents.push(agent);
+        }
         if (!agents.length) continue;
         const result = await executePortableRecovery({ prepared, token, authorizeUpdate: plan.options.yes,
-          action: plan.command === 'install' ? 'sync' : plan.command,
+          action: plan.command === 'install' ? 'sync' : plan.command, force: plan.options.force,
           targets: prepared.targets.filter((target) => agents.includes(target.agent)).map(({ skill, agent }) => ({ skill, agent })),
           completedFootprints });
         receipt.outputsMayHaveChanged ||= result.outputsMayHaveChanged;
@@ -1113,10 +1182,10 @@ export async function executeRecovery(plan: RecoveryPlan,
         if (observation.state === 'absent') continue;
         const targets = receipt.targetResults.filter((target) => target.pluginId === pluginId
           && (observation.targets.some((entry) => entry.agent === target.agent)
-            || (observation.unknownAgents?.includes(target.agent)
+            || (observation.unknownAgents?.some((item) => item === target.agent)
               ?? (observation.blockers.length > 0))));
         for (const target of targets) {
-          block(target, observation.unknownAgents?.includes(target.agent)
+          block(target, isPortableAgent(target.agent) && observation.unknownAgents?.some((item) => item === target.agent)
             || !observation.targets.some((entry) => entry.agent === target.agent)
               ? 'portableObservationFailed' : 'backend-action-unsupported');
           if (target.execution === 'applied') target.execution = 'partial';
@@ -1134,7 +1203,7 @@ export async function executeRecovery(plan: RecoveryPlan,
           roots: intent.state === 'valid' ? intent.value.roots.map((root) => root.pluginId) : null };
       }
       return completeReceipt(receipt);
-      } finally { await session?.dispose(); }
+      } finally { if (!plan.runtime.codexObservationSession) await session?.dispose(); }
     } });
   } finally {
     await plan.context.dispose();
@@ -1182,4 +1251,36 @@ export async function runRecovery(command: RecoveryCommand, selectors: readonly 
     return executeRecovery(plan, { yes: true, runtime: { preApplyConfirmed: true } });
   }
   return executeRecovery(plan);
+}
+
+export async function prepareRecovery(command: RecoveryCommand, selectors: readonly string[],
+  options: RecoveryOptions, runtime: RebuildCommandRuntime = {}): Promise<RecoveryPlan> {
+  if (command === 'cleanup') {
+    if (!options.scope) throw new Error('cleanupScopeRequired');
+    return prepareScopedRecovery(command, selectors, { ...options, scope: options.scope }, runtime);
+  }
+  return prepareJointRecovery(command, selectors, options, runtime);
+}
+
+export async function executeRecovery(plan: RecoveryPlan,
+  execution: { yes?: boolean; runtime?: RebuildCommandRuntime } = {}): Promise<RecoveryReceipt> {
+  return plan.joint ? executeJointRecovery(plan, execution) : executeScopedRecovery(plan, execution);
+}
+
+/** Review evidence uses existing backend fingerprints and observation digests; it is not stored state. */
+export function describeRecoveryPlan(plan: RecoveryPlan): unknown {
+  const describe = (child: RecoveryPlan) => ({ scope: child.options.scope, targets: child.receipt.requestedTargets,
+    native: child.nativeGroups.map((group) => group.preview.operationPlan?.planFingerprint),
+    preApplyAuthorization: child.preApplyAuthorization,
+    nativeActivationOnlyTargets: child.options.nativeActivationOnlyTargets,
+    nativePlannedRetirements: child.options.nativePlannedRetirements,
+    portable: child.portableGroups.map((group) => group.evidenceDigest),
+    protectedPortable: child.portableProtectionGroups.map((group) => group.evidenceDigest),
+    residue: child.portableResidues, blockers: child.receipt.blockers,
+    targetBlockers: child.receipt.targetResults.map((target) => target.blockers),
+    environment: { homes: child.context.targetHomes, projectRoot: child.context.projectRoot, awHome: child.context.awHome },
+  });
+  return { inputs: plan.joint?.evidence ?? [plan.originalIntent, plan.preferencesEvidence],
+    command: plan.command, declaration: plan.joint?.declaration, packages: plan.runtime.configApplyPackages ? { targets: plan.runtime.configApplyPackages.targets, evidence: plan.runtime.configApplyPackages.evidence } : undefined, blockers: plan.receipt.blockers,
+    children: (plan.joint?.children ?? [plan]).map(describe) };
 }

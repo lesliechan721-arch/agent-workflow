@@ -35,7 +35,7 @@ async function activeCatalog(location: Awaited<ReturnType<typeof fixture>>) {
 
 async function jsonCommand(args: string[], location: Awaited<ReturnType<typeof fixture>>) {
   const captured = createCapturedCliIo();
-  const exit = await runCli([...args, '--json'], {
+  const exit = await runCli(['plugin', ...args, '--json'], {
     cwd: location.cwd, env: location.env, interactive: false, io: captured.io,
   });
   const stdout = captured.readStdout();
@@ -60,25 +60,26 @@ describe('scoped CLI declaration and preference boundaries', () => {
     } });
   });
 
-  it('resets both local Agent selection and dependency overrides', async () => {
+  it('saves one machine target policy and preserves exclusions when targets are disabled', async () => {
     const location = await fixture('targets-reset');
     await writePreferences(location, { ...createEmptyPreferences(),
-      dependencyScopeOverrides: [{ pluginId: 'team/dependency', platform: 'codex', scope: 'user' }],
+      exclusions: [{ plugin: 'team/dependency', target: 'codex' }],
     });
-    const set = await jsonCommand(['targets', 'set', 'cursor', 'codex', '--scope', 'project'], location);
+    const set = await jsonCommand(['targets', 'set', 'cursor', 'codex', '--context', 'project'], location);
     expect(set).toMatchObject({ exit: 0, stdout: {
       kind: 'aw-recovery', command: 'targets:set', preferencesChanged: true,
       selection: { agents: ['codex', 'cursor'], origin: 'preference' },
     } });
     expect(await observePreferences(location)).toMatchObject({ state: 'valid', value: {
-      dependencyScopeOverrides: [{ pluginId: 'team/dependency' }],
+      schemaVersion: 2, targets: ['codex', 'cursor'], exclusions: [{ plugin: 'team/dependency', target: 'codex' }],
     } });
-    const reset = await jsonCommand(['targets', 'reset', '--scope', 'project'], location);
+    expect(await observePreferences({ ...location, scope: 'user' })).toEqual(await observePreferences(location));
+    const reset = await jsonCommand(['targets', 'set', '--none', '--context', 'project'], location);
     expect(reset).toMatchObject({ exit: 0, stdout: {
-      command: 'targets:reset', preferencesChanged: true, selection: { agents: [] },
+      command: 'targets:set', preferencesChanged: true, selection: { agents: [] },
     } });
     expect(await observePreferences(location)).toMatchObject({ state: 'valid', value: {
-      agents: [], dependencyScopeOverrides: [],
+      targets: [], exclusions: [{ plugin: 'team/dependency', target: 'codex' }],
     } });
   });
 
@@ -106,7 +107,8 @@ describe('scoped CLI declaration and preference boundaries', () => {
   it('resolves a unique install short name to a qualified project root', async () => {
     const location = await fixture('install-short');
     await activeCatalog(location);
-    const result = await jsonCommand(['install', 'demo', '--scope', 'project', '--target', 'codex'], location);
+    await writePreferences(location, { ...createEmptyPreferences(), targets: ['codex'] });
+    const result = await jsonCommand(['install', 'demo', '--scope', 'project', '--yes'], location);
     expect(result.stdout).toMatchObject({
       schemaVersion: 1, kind: 'aw-recovery', scope: 'project', command: 'install',
       declarationChanged: true, intent: { roots: ['team/demo'] }, requestedRoots: ['team/demo'],
@@ -122,15 +124,15 @@ describe('scoped CLI declaration and preference boundaries', () => {
     await fs.outputJson(intentPath, {
       schemaVersion: 2, kind: 'aw-plugin-intents', roots: [], dependencyScopeOverrides: [],
     });
-    const legacy = await jsonCommand(['status', '--scope', 'project'], location);
+    const legacy = await jsonCommand(['status', '--context', 'project'], location);
     expect(legacy).toMatchObject({ exit: 1, stdout: {
       kind: 'aw-recovery-status', scope: 'project', ok: false,
-      intent: { state: 'unsupported-version' }, inventory: null,
+      intent: { state: 'unsupported-version' }, allSatisfied: null,
     } });
     await fs.writeFile(intentPath, '{bad');
-    const invalid = await jsonCommand(['status', '--scope', 'project'], location);
+    const invalid = await jsonCommand(['status', '--context', 'project'], location);
     expect(invalid).toMatchObject({ exit: 1, stdout: {
-      kind: 'aw-recovery-status', ok: false, intent: { state: 'invalid' }, inventory: null,
+      kind: 'aw-recovery-status', ok: false, intent: { state: 'invalid' }, allSatisfied: null,
     } });
   });
 
@@ -139,15 +141,16 @@ describe('scoped CLI declaration and preference boundaries', () => {
     await writeIntent(location, { ...createEmptyIntent(),
       sources: { team: { logicalIdentity: 'logical-team' } }, roots: [{ pluginId: 'team/demo' }],
     });
-    const status = await jsonCommand(['status', '--scope', 'project'], location);
-    expect(status).toMatchObject({ exit: 0, stderr: '', stdout: {
-      schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: true,
-      intent: { state: 'valid' }, allSatisfied: false, errors: [],
+    const status = await jsonCommand(['status', '--context', 'project'], location);
+    expect(status).toMatchObject({ exit: 1, stderr: '', stdout: {
+      schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: false,
+      intent: { state: 'valid' }, allSatisfied: false,
       inventory: [{ pluginId: 'team/demo' }],
       selection: { agents: [], origin: 'none' },
     } });
-    expect((status.stdout.inventory as Array<{ blockers: Array<{ code: string }> }>)[0]!.blockers)
-      .toEqual(expect.arrayContaining([expect.objectContaining({ code: 'localTargetsRequired' })]));
+    expect(status.stdout.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'targetsNotConfigured' }),
+    ]));
   });
 
   it('requires qualified IDs for exact declaration edits in either scope', async () => {

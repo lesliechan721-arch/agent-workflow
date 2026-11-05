@@ -22,7 +22,6 @@ const processTests = [
   'tests/unit/test-command-diagnostics.test.ts',
   'tests/unit/vitest-eval-dependency.test.ts',
   'tests/unit/native-cli.test.ts',
-  'tests/unit/skills-cli-lifecycle.test.ts',
   'tests/unit/plugin-scripts.test.ts',
   'tests/unit/managed-command-materialization.test.ts',
   'tests/unit/artifact-renderer.test.ts',

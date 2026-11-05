@@ -83,10 +83,14 @@ export function Reader(props: {
   columns: number;
   rows: number;
   page?: number;
+  highlightChanges?: boolean;
 }): React.JSX.Element {
   const page = readerPage(props);
   return <Box flexDirection="column" width={props.columns}>
-    {page.lines.map((line, index) => <Text key={page.offset + index}>{line}</Text>)}
+    {page.lines.map((line, index) => <Text key={page.offset + index}
+      color={!props.highlightChanges ? undefined : /^[+✓]/u.test(line) ? tuiTheme.roles.success
+        : /^[−×]/u.test(line) ? tuiTheme.roles.error : /^[!↻]/u.test(line) ? tuiTheme.roles.warning
+          : line.startsWith('?') ? tuiTheme.roles.unknown : undefined}>{line}</Text>)}
     <Pager page={page.page} pageCount={page.pageCount} columns={props.columns} />
   </Box>;
 }

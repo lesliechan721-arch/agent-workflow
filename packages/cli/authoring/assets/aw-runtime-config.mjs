@@ -91,7 +91,7 @@ async function checkNativeReceipt(root, binding) {
   if (binding.nativeReceiptPath === undefined) return;
   if (typeof binding.nativeReceiptPath !== 'string'
     || (binding.nativeReceiptPath !== '.aw-runtime-native-receipt.json'
-      && !/^(?:\.\.\/)+\.agents-plugin\/aw-codex-native-render\.json$/u.test(binding.nativeReceiptPath))) {
+      && !/^(?:\.\.\/)+\.agents-plugin\/aw-(?:codex|claude)-native-render\.json$/u.test(binding.nativeReceiptPath))) {
     fail('runtimeConfigPathUnsafe');
   }
   const receiptFile = await assertPathSafe(path.resolve(root, binding.nativeReceiptPath));
@@ -101,10 +101,10 @@ async function checkNativeReceipt(root, binding) {
   try { receipt = JSON.parse(await fs.readFile(receiptFile, 'utf8')); }
   catch { fail('runtimeConfigBindingInvalid'); }
   const identity = binding.installedIdentity;
-  if (!isRecord(receipt) || receipt.schemaVersion !== 1 || receipt.kind !== 'aw-codex-native-render') {
+  if (!isRecord(receipt) || receipt.schemaVersion !== 1 || !['aw-codex-native-render', 'aw-claude-native-render'].includes(receipt.kind)) {
     fail('runtimeConfigVersionUnsupported');
   }
-  if (identity.platform !== 'codex' || identity.scope !== 'user' || identity.configScope !== 'user'
+  if (receipt.kind !== `aw-${identity.platform}-native-render` || identity.scope !== 'user' || identity.configScope !== 'user'
     || receipt.logicalPluginId !== identity.pluginId || receipt.sourceIdentity !== identity.sourceIdentity
     || receipt.pluginVersion !== identity.pluginVersion || receipt.strategy !== 'shared-user'
     || !Array.isArray(receipt.targets) || !receipt.targets.some((target) => isRecord(target)

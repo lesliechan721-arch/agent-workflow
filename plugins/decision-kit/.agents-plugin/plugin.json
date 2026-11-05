@@ -3,15 +3,19 @@
   "name": "decision-kit",
   "version": "0.1.0",
   "description": "主题对齐、可体验决策与项目领域知识维护；按需组合，保留真实确认与清楚的独立职责。",
+  "platforms": [
+    "codex",
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "generic"
+  ],
   "dependencies": [
     "human-content"
   ],
   "skills": "./skills",
-  "distributions": {
-    "agentSkills": {
-      "skills": "./skills"
-    }
-  },
   "marketplace": {
     "category": "workflow",
     "strict": true,

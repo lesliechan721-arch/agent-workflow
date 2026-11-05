@@ -10,12 +10,11 @@ import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/n
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import { resetPluginConfigStore } from '../utils/plugin-config.js';
+import { deletePluginConfigStore } from '../utils/plugin-config.js';
 import { observeIntent, removeRoot } from '../intent/intent-store.js';
 import { observePreferences, writePreferences, selectAgents } from '../intent/deployment-preferences.js';
 import { assertNeutralAncestorChain, createScopeContext, type ScopeContext } from '../intent/scope-context.js';
 import { inspectPortableResidue, type PortableResidue } from '../portable/recovery.js';
-import { SkillsCliError } from '../portable/skills-cli.js';
 import type { RecoveryReceipt, RecoveryTarget } from './receipt.js';
 
 export interface RetireOptions {
@@ -83,7 +82,7 @@ function finish(receipt: RecoveryReceipt, options: RetireOptions, portable: Port
       : [diagnostic('managedCommandRecoveryFailed')])];
   receipt.ok = !receipt.blockers.length && !receipt.remainingTargets.length && !commandFailures.length;
   const agents = [...new Set(receipt.requestedTargets.map((target) => target.agent))];
-  const retry = `aw intent retire ${options.selector} --scope ${options.scope}`
+  const retry = `aw plugin intent retire ${options.selector} --scope ${options.scope}`
     + agents.map((agent) => ` --target ${agent}`).join('')
     + (options.deleteConfig && !configDeletionCompleted ? ' --delete-config' : '');
   receipt.recoveryActions = [...new Set([
@@ -130,22 +129,22 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
     }
     const requestedAgents = options.targets === undefined ? undefined : selectAgents({ preferences, targets: options.targets }).agents;
     const portable = await inspectPortableResidue({ scope: options.scope, context, selector: options.selector,
-      env: context.env, agents: requestedAgents, signal: options.signal });
+      env: context.env, agents: requestedAgents?.filter((agent) => agent !== 'codex' && agent !== 'claude'), signal: options.signal });
     options.signal?.throwIfAborted();
     const agents = requestedAgents ?? [...new Set([
       ...(removed?.evidence.filter((entry) => entry.plan.actions.length).map((entry) => entry.platform === 'claude'
-        ? 'claude-code' as const : 'codex' as const) ?? []),
+        ? 'claude' as const : 'codex' as const) ?? []),
       ...(removed && (removed.nativeState === 'installed' || removed.nativeState === 'unknown'
         || removed.projectionPresent || removed.activationScopes.length > 0) ? ['codex' as const] : []),
       ...portable.targets.map((entry) => entry.agent),
       ...(portable.unknownAgents ?? []),
     ])];
     const targetResults: RecoveryTarget[] = agents.map((agent) => {
-      const delivery = agent === 'cursor' ? { kind: 'agent-skills' as const, provider: 'skills-cli' as const, agentId: agent }
-        : { kind: 'native' as const, platform: agent === 'claude-code' ? 'claude' as const : 'codex' as const };
-      const portableUnknown = portable.unknownAgents?.includes(agent) ?? portable.state === 'unknown';
+      const delivery = agent !== 'codex' && agent !== 'claude' ? { kind: 'agent-skills' as const, provider: 'aw' as const, agentId: agent }
+        : { kind: 'native' as const, platform: agent === 'claude' ? 'claude' as const : 'codex' as const };
+      const portableUnknown = portable.unknownAgents?.some((item) => item === agent) ?? portable.state === 'unknown';
       const hasPortable = portableUnknown || portable.targets.some((target) => target.agent === agent);
-      const hasNative = agent !== 'cursor' && (removed?.evidence.some((entry) => entry.platform === delivery.platform)
+      const hasNative = delivery.kind === 'native' && (removed?.evidence.some((entry) => entry.platform === (delivery.kind === 'native' ? delivery.platform : undefined))
         || removed?.nativeState === 'installed' || removed?.nativeState === 'unknown'
         || removed?.projectionPresent || (removed?.activationScopes.length ?? 0) > 0);
       return { pluginId: options.selector, agent, scope: options.scope, delivery,
@@ -153,7 +152,7 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
         blockers: hasPortable ? [diagnostic(portableUnknown
           ? 'portableObservationFailed' : 'backend-action-unsupported')] : [], requiredBy: [options.selector],
         relation: 'residue', backend: { native: safeRemovedEvidence(removed?.evidence.find((entry) =>
-          entry.platform === delivery.platform)),
+          entry.platform === (delivery.kind === 'native' ? delivery.platform : undefined))),
           portable: portable.targets.filter((entry) => entry.agent === agent) } };
     });
     const roots = intent.state === 'valid' ? intent.value.roots.map((root) => root.pluginId)
@@ -168,16 +167,16 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
       declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false };
     const plannedImpact = {
       declaration: roots?.includes(options.selector) === true,
-      preferences: preferences.state === 'valid' && preferences.value.dependencyScopeOverrides.some((entry) =>
-        entry.pluginId === options.selector),
+      preferences: preferences.state === 'valid' && preferences.value.exclusions.some((entry) =>
+        entry.plugin === options.selector),
       config: options.deleteConfig === true && removed?.configTargets.some((entry) =>
         entry.scope === options.scope && entry.kind !== 'absent') === true,
       outputs: removed?.evidence.some((entry) => entry.plan.actions.length > 0
-        && agents.includes(entry.platform === 'claude' ? 'claude-code' : 'codex')) === true,
+        && agents.includes(entry.platform === 'claude' ? 'claude' : 'codex')) === true,
     };
     const changes = [
       ...(plannedImpact.declaration ? [`删除 ${options.scope} 声明 ${options.selector}。`] : []),
-      ...(plannedImpact.preferences ? [`删除 ${options.scope} 本地依赖范围覆盖。`] : []),
+      ...(plannedImpact.preferences ? [`删除此插件的本机平台排除。`] : []),
       ...(plannedImpact.config ? [`删除 ${options.scope} 已保存配置。`] : []),
       ...agents.filter((agent) => agent !== 'cursor').map((agent) =>
         `检查并清理 ${options.scope}/${agent} 已验证原生输出。`),
@@ -272,10 +271,7 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
         }
         const portable = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
           selector: plan.options.selector, env: plan.context.env, agents: plan.options.targets === undefined
-            ? undefined : plan.receipt.selection.agents }).catch((error) => {
-              if (error instanceof SkillsCliError && error.code === 'portableSkillsCliCleanupFailed') throw error;
-              return undefined;
-            });
+            ? undefined : plan.receipt.selection.agents.filter((agent) => agent !== 'codex' && agent !== 'claude') }).catch(() => undefined);
         if (!portable || JSON.stringify(portable) !== JSON.stringify(plan.portable)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return finish(receipt, plan.options, plan.portable);
@@ -299,14 +295,14 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
             receipt.declarationChanged = result.changed;
           }
           if (preferences.state === 'valid') {
-            const next = preferences.value.dependencyScopeOverrides.filter((entry) => entry.pluginId !== plan.options.selector);
-            if (next.length !== preferences.value.dependencyScopeOverrides.length) {
-              const result = await writePreferences(location, { ...preferences.value, dependencyScopeOverrides: next });
+            const next = preferences.value.exclusions.filter((entry) => entry.plugin !== plan.options.selector);
+            if (next.length !== preferences.value.exclusions.length) {
+              const result = await writePreferences(location, { ...preferences.value, exclusions: next });
               receipt.preferencesChanged = result.changed;
             }
           }
           if (plan.options.deleteConfig && plan.evidence) {
-            const result = await resetPluginConfigStore({ sourceId: plan.evidence.sourceId,
+            const result = await deletePluginConfigStore({ sourceId: plan.evidence.sourceId,
               sourceIdentity: plan.evidence.sourceIdentity, pluginName: plan.evidence.pluginName,
               scope: plan.options.scope, cwd: plan.context.executionCwd, env: plan.context.env });
             receipt.configChanged = result.deleted;

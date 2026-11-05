@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { preparePluginNativeTools, validateManagedCommandSources } from '@lesliechan721/aw-plugin-core/manifest';
+import { preparePluginNativeTools, validateManagedCommandSources, PLATFORM_TARGETS, type PlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { renderResolvedHooksArtifact } from './hooks.js';
 import { buildGeneratedName } from './shared.js';
@@ -50,12 +50,12 @@ import {
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import {
-  validateRuntimeSkillClosuresRoot,
+  validateRuntimeSkillClosure,
   validateSkillRuntimeProjectionFreshness,
 } from '../utils/runtime-skill-closure.js';
 import {
   AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
-  validatePortableSkillDirectoriesRoot,
+  validatePortableSkillDirectory,
 } from '../utils/dynamic-skill-tree.js';
 import {
   renderClaudeSlashCommand,
@@ -117,11 +117,19 @@ export interface RuntimeImportProvenance {
 }
 
 export interface SkillRuntimeFileProvenance extends RuntimeImportProvenance {
-  platform?: PlatformName;
+  platform: PlatformTarget;
   distribution?: DistributionName;
   skill: string;
   target: string;
   targetDigest: string;
+}
+
+interface PortableRuntimeFileMetadata {
+  platform: PlatformTarget;
+  skill: string;
+  target: string;
+  path: string;
+  digest: string;
 }
 
 interface SkillRuntimeFileProjection {
@@ -289,7 +297,7 @@ function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
 }
 
-function toPlatformRelativePath(value: string, platform: PlatformName): string {
+function toPlatformRelativePath(value: string, platform: PlatformTarget): string {
   return `./${platform}/${stripDotSlash(value)}`;
 }
 
@@ -390,9 +398,9 @@ async function copyFileWithTemplateSupport(
   pluginRoot: string,
   outputRoot: string,
   sourceRelativePath: string,
-  platform: PlatformName,
+  platform: PlatformTarget,
   templatePatterns: string[],
-  templateVars: Record<string, { claude: string | boolean; codex: string | boolean }>,
+  templateVars: Record<string, Partial<Record<PlatformTarget, string | boolean>>>,
 ): Promise<void> {
   const normalizedSource = sourceRelativePath.split(path.sep).join('/');
   const sourcePath = path.join(pluginRoot, normalizedSource);
@@ -469,22 +477,26 @@ async function copyArtifactSourceDirectories(
         sourcePath,
         `artifacts.targets[${targetIndex}].sourceDirs[${sourceIndex}]`,
       );
-      await fs.copy(
-        sourcePath,
-        path.join(outputRoot, getArtifactSourceBundleRelativePath({
-          platform: target.platform,
-          distribution: target.distribution,
-          artifactId: target.id,
-          index: sourceIndex,
-        })),
-        {
-          overwrite: true,
-          dereference: false,
-          filter: (source) =>
-            !isMacOsMetadataName(path.basename(source))
-            && !isSkillAuthorOnlyPath(path.relative(sourcePath, source)),
-        },
-      );
+      const targetRoot = path.join(outputRoot, getArtifactSourceBundleRelativePath({
+        platform: target.platform, distribution: target.distribution, artifactId: target.id, index: sourceIndex,
+      }));
+      await fs.ensureDir(targetRoot);
+      for (const relativePath of await listFilesRecursively(sourcePath)) {
+        if (isSkillAuthorOnlyPath(relativePath)) continue;
+        const sourceRelativePath = path.posix.join(stripDotSlash(sourceDir), relativePath);
+        const excluded = plugin.manifest.buildConfig?.fileRules?.[target.platform]?.exclude ?? [];
+        if (applyFileRules([sourceRelativePath], ['**/*'], excluded).length === 0) continue;
+        const destination = path.join(targetRoot, relativePath);
+        await fs.ensureDir(path.dirname(destination));
+        const templates = plugin.manifest.buildConfig?.templates;
+        if (isTextFile(relativePath) && applyFileRules([sourceRelativePath], templates?.include ?? [], []).length > 0) {
+          await fs.writeFile(destination, renderTemplate(
+            await fs.readFile(path.join(sourcePath, relativePath), 'utf8'), templates?.vars ?? {}, target.platform,
+          ));
+        } else {
+          await fs.copyFile(path.join(sourcePath, relativePath), destination);
+        }
+      }
     }
   }
 }
@@ -502,22 +514,6 @@ async function copyManagedCommandPackages(plugin: PluginMeta, outputRoot: string
     await validateManagedCommandPackageClosure(path.join(outputRoot, relativePath), entries);
   }
   await validateManagedCommandSources(outputRoot, plugin.manifest);
-}
-
-async function copyPortableStaticSkills(plugin: PluginMeta, outputRoot: string): Promise<void> {
-  const skillsPath = plugin.manifest.distributions?.agentSkills?.skills;
-  if (!skillsPath) return;
-  const sourceRoot = path.join(plugin.rootDir, stripDotSlash(skillsPath));
-  const targetRoot = path.join(outputRoot, 'agent-skills', 'skills');
-  await assertArtifactSourceTreePortable(sourceRoot, 'distributions.agentSkills.skills');
-  await fs.copy(sourceRoot, targetRoot, {
-    dereference: false,
-    filter: (source) => {
-      const relative = path.relative(sourceRoot, source).split(path.sep).join('/');
-      return !isMacOsMetadataName(path.basename(source))
-        && !isSkillCollectionAuthorOnlyPath(relative);
-    },
-  });
 }
 
 async function resolveArtifactRuntimeImports(options: {
@@ -575,9 +571,6 @@ async function resolveArtifactRuntimeImports(options: {
       };
     }
   }
-  if (manifest.distributions?.agentSkills?.skills) {
-    manifest.distributions.agentSkills.skills = './agent-skills/skills';
-  }
   return {
     manifest,
     requiredCapabilities: normalizeAwCapabilities(requiredCapabilities),
@@ -611,7 +604,7 @@ async function injectRequirementsReceipts(options: {
     { name: options.plugin.manifest.name, version: options.plugin.manifest.version },
     options.requiredCapabilities,
   );
-  for (const relativeRoot of ['claude/skills', 'codex/skills', 'agent-skills/skills']) {
+  for (const relativeRoot of PLATFORM_TARGETS.map((platform) => `${platform}/skills`)) {
     const skillsRoot = path.join(options.outputRoot, relativeRoot);
     if (!(await fs.pathExists(skillsRoot))) continue;
     for (const entry of await fs.readdir(skillsRoot, { withFileTypes: true })) {
@@ -666,7 +659,7 @@ async function addDeclaredPathFiles(
 
 async function addDeclaredSkillPathFiles(
   plugin: PluginMeta,
-  platform: PlatformName,
+  platform: PlatformTarget,
   relativePath: string | undefined,
   targetFiles: Set<string>,
 ): Promise<string | undefined> {
@@ -676,7 +669,7 @@ async function addDeclaredSkillPathFiles(
     (plugin.manifest.artifacts?.targets ?? [])
       .filter((target) =>
         target.platform === platform &&
-        (target.target === 'codex.skill' || target.target === 'claude.skill') &&
+        (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill') &&
         target.skillKey)
       .map((target) => target.skillKey!),
   );
@@ -717,7 +710,7 @@ function isDeclaredSkillAuthorOnlyFile(plugin: PluginMeta, filePath: string): bo
   }
   for (const target of plugin.manifest.artifacts?.targets ?? []) {
     if (
-      (target.target !== 'codex.skill' && target.target !== 'claude.skill') ||
+      (target.target !== 'codex.skill' && target.target !== 'claude.skill' && target.target !== 'agent-skills.skill') ||
       !target.skillKey
     ) continue;
     const dynamicRoot = `skills/${target.skillKey}`;
@@ -736,14 +729,14 @@ function isDeclaredSkillAuthorOnlyFile(plugin: PluginMeta, filePath: string): bo
 
 function isDynamicSkillSourceFile(
   plugin: PluginMeta,
-  platform: PlatformName,
+  platform: PlatformTarget,
   filePath: string,
 ): boolean {
   const normalizedFile = filePath.split(path.sep).join('/');
   return (plugin.manifest.artifacts?.targets ?? []).some((target) => {
     if (
       target.platform !== platform ||
-      (target.target !== 'codex.skill' && target.target !== 'claude.skill') ||
+      (target.target !== 'codex.skill' && target.target !== 'claude.skill' && target.target !== 'agent-skills.skill') ||
       !target.skillKey
     ) return false;
     return relativePathInside(`skills/${target.skillKey}`, normalizedFile) !== null;
@@ -1244,19 +1237,14 @@ async function assertSkillRuntimeTargetAbsent(
 
 async function assertSkillRuntimeProjectionTargets(plugin: PluginMeta): Promise<void> {
   for (const [index, entry] of (plugin.manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
-    const roots: string[] = [];
-    if (entry.platforms !== undefined || entry.distributions === undefined) {
-      roots.push(path.join(plugin.rootDir, 'skills', entry.skill));
-    }
-    if (entry.distributions?.includes('agent-skills')) {
-      const portableRoot = plugin.manifest.distributions?.agentSkills?.skills;
-      if (!portableRoot) {
-        throw new Error(`Invalid buildConfig.skillRuntimeFiles[${index}].distributions: agent-skills is not declared.`);
-      }
-      roots.push(path.join(plugin.rootDir, stripDotSlash(portableRoot), entry.skill));
-    }
+    const roots = [path.join(plugin.rootDir, stripDotSlash(plugin.manifest.skills ?? './skills'), entry.skill)];
     for (const skillRoot of roots) {
       const skillRootStats = await fs.lstat(skillRoot).catch(() => undefined);
+      if (!skillRootStats) {
+        const platforms = entry.platforms?.length ? entry.platforms : [...resolveSupportedPlatforms(plugin.manifest)];
+        if (platforms.every((platform) => (plugin.manifest.artifacts?.targets ?? []).some((target) =>
+          target.platform === platform && target.target === 'agent-skills.skill' && target.skillKey === entry.skill))) continue;
+      }
       if (!skillRootStats?.isDirectory() || skillRootStats.isSymbolicLink()) {
         throw new Error(
           `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
@@ -1271,17 +1259,45 @@ async function assertSkillRuntimeProjectionTargets(plugin: PluginMeta): Promise<
   }
 }
 
+async function materializeGeneratedPortableSkillRuntimeFiles(
+  plugin: PluginMeta,
+  outputRoot: string,
+  supportedPlatforms: ReadonlySet<PlatformTarget>,
+): Promise<PortableRuntimeFileMetadata[]> {
+  const projections: PortableRuntimeFileMetadata[] = [];
+  for (const [index, entry] of (plugin.manifest.buildConfig?.generatedSkillRuntimeFiles ?? []).entries()) {
+    for (const platform of entry.platforms?.length ? entry.platforms : supportedPlatforms) {
+      const dynamicTarget = (plugin.manifest.artifacts?.targets ?? []).find((target) =>
+        target.platform === platform && target.target === 'agent-skills.skill' && target.skillKey === entry.skill);
+      if (!dynamicTarget) continue;
+      const relativePath = path.posix.join('skills', entry.skill, entry.target);
+      const source = await resolveCanonicalRuntimeSourceIdentity(
+        plugin.rootDir, `./${relativePath}`, `buildConfig.generatedSkillRuntimeFiles[${index}]`,
+      );
+      const stats = await fs.lstat(source.sourceRealPath);
+      if (!stats.isFile() || stats.isSymbolicLink()) {
+        throw new Error(`Invalid buildConfig.generatedSkillRuntimeFiles[${index}]: build did not create regular source "${relativePath}".`);
+      }
+      await copyFileWithTemplateSupport(
+        plugin.rootDir, outputRoot, relativePath, platform,
+        plugin.manifest.buildConfig?.templates?.include ?? [], plugin.manifest.buildConfig?.templates?.vars ?? {},
+      );
+      projections.push({
+        platform, skill: entry.skill, target: entry.target, path: `./${platform}/${relativePath}`,
+        digest: await calculateFileDigest(path.join(outputRoot, platform, relativePath)),
+      });
+    }
+  }
+  return projections;
+}
+
 async function validateGeneratedSkillRuntimeFiles(
   plugin: PluginMeta,
   outputRoot: string,
-  supportedPlatforms: ReadonlySet<PlatformName>,
+  supportedPlatforms: ReadonlySet<PlatformTarget>,
 ): Promise<void> {
   for (const [index, entry] of (plugin.manifest.buildConfig?.generatedSkillRuntimeFiles ?? []).entries()) {
-    const surfaces: string[] = [];
-    if (entry.distributions === undefined) {
-      surfaces.push(...supportedPlatforms);
-    }
-    surfaces.push(...(entry.distributions ?? []));
+    const surfaces = entry.platforms?.length ? entry.platforms : [...supportedPlatforms];
     for (const surface of surfaces) {
       const targetPath = path.join(outputRoot, surface, 'skills', entry.skill, ...entry.target.split('/'));
       const stats = await fs.lstat(targetPath).catch(() => undefined);
@@ -1297,27 +1313,20 @@ async function validateGeneratedSkillRuntimeFiles(
 async function projectSkillRuntimeFiles(options: {
   plugin: PluginMeta;
   outputRoot: string;
-  supportedPlatforms: ReadonlySet<PlatformName>;
+  supportedPlatforms: ReadonlySet<PlatformTarget>;
   resolver?: CatalogRuntimeImportResolver;
 }): Promise<SkillRuntimeFileProjection[]> {
   const projections: SkillRuntimeFileProjection[] = [];
   const claims = new Set<string>();
   for (const [index, entry] of (options.plugin.manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
-    const surfaces: Array<{ platform?: PlatformName; distribution?: DistributionName }> = [];
-    if (entry.platforms !== undefined || entry.distributions === undefined) {
-      surfaces.push(...(entry.platforms ?? [...options.supportedPlatforms]).map((platform) => ({ platform })));
-    }
-    surfaces.push(...(entry.distributions ?? []).map((distribution) => ({ distribution })));
-    for (const surface of surfaces) {
-      const { platform, distribution } = surface;
-      if (platform) {
+    for (const platform of entry.platforms?.length ? entry.platforms : [...options.supportedPlatforms]) {
       if (!options.supportedPlatforms.has(platform)) {
         throw new Error(
           `Invalid buildConfig.skillRuntimeFiles[${index}].platforms: plugin does not support "${platform}".`,
         );
       }
-      }
-      const claim = `${platform ?? distribution}:${entry.skill}/${entry.target}`;
+      const distribution = platform === 'codex' || platform === 'claude' ? undefined : 'agent-skills' as const;
+      const claim = `${platform}:${entry.skill}/${entry.target}`;
       if (claims.has(claim)) {
         throw new Error(`Invalid buildConfig.skillRuntimeFiles: target collision at "${claim}".`);
       }
@@ -1364,7 +1373,7 @@ async function projectSkillRuntimeFiles(options: {
 
       const targetPath = path.join(
         options.outputRoot,
-        platform ?? distribution!,
+        platform,
         'skills',
         entry.skill,
         ...entry.target.split('/'),
@@ -1393,7 +1402,7 @@ async function materializeSkillRuntimeFiles(
 ): Promise<void> {
   for (const projection of projections) {
     if (await fs.pathExists(projection.targetPath)) {
-      const surface = projection.provenance.platform ?? projection.provenance.distribution;
+      const surface = projection.provenance.platform;
       throw new Error(
         `Invalid buildConfig.skillRuntimeFiles: bundle target already exists at "${surface}:${projection.provenance.skill}/${projection.provenance.target}".`,
       );
@@ -1825,12 +1834,13 @@ export async function bundleLocalPlugin(
       resolver: buildPlugin.runtimeContext.resolver,
     });
     const skillRuntimeFiles = skillRuntimeFileProjections.map(({ provenance }) => provenance);
-    const portableRuntimeFiles = skillRuntimeFiles
+    const portableRuntimeFiles: PortableRuntimeFileMetadata[] = skillRuntimeFiles
       .filter((entry) => entry.distribution === 'agent-skills')
       .map((entry) => ({
         skill: entry.skill,
         target: entry.target,
-        path: `./agent-skills/skills/${entry.skill}/${entry.target}`,
+        platform: entry.platform,
+        path: `./${entry.platform}/skills/${entry.skill}/${entry.target}`,
         digest: entry.targetDigest,
         provider: entry.provider,
         providerVersion: entry.providerVersion,
@@ -1859,13 +1869,13 @@ export async function bundleLocalPlugin(
     const bundleManifest = artifactRuntimeProjection.manifest;
 
     await fs.ensureDir(outputRoot);
-    const platformFiles: Partial<Record<PlatformName, Set<string>>> = {};
+    const platformFiles: Partial<Record<PlatformTarget, Set<string>>> = {};
     const platformManifests: Partial<Record<PlatformName, PlatformPluginManifest>> = {};
     const buildConfig = plugin.manifest.buildConfig;
     const templatePatterns = buildConfig?.templates?.include ?? [];
     const templateVars = buildConfig?.templates?.vars ?? {};
     const resolvedSlashCommands = await resolveSlashCommands(plugin.rootDir, plugin.manifest, {
-      targetPlatforms: supportedPlatforms,
+      targetPlatforms: new Set([...supportedPlatforms].filter((platform): platform is PlatformName => platform === 'codex' || platform === 'claude')),
     });
 
     for (const platform of PLATFORM_ORDER) {
@@ -1895,6 +1905,22 @@ export async function bundleLocalPlugin(
         plugin.manifest.mcpServers,
         files,
       );
+    }
+
+    for (const platform of supportedPlatforms) {
+      if (platform === 'codex' || platform === 'claude') {
+        const manifest = platformManifests[platform]!;
+        if ((plugin.manifest.artifacts?.targets ?? []).some((target) =>
+          target.platform === platform && (target.target === 'codex.skill' || target.target === 'claude.skill'))) {
+          manifest.skills = `./${platform}/skills`;
+          await fs.ensureDir(path.join(outputRoot, platform, 'skills'));
+        }
+        continue;
+      }
+      const files = new Set<string>();
+      platformFiles[platform] = files;
+      if (plugin.manifest.skills) await fs.ensureDir(path.join(outputRoot, platform, 'skills'));
+      await addDeclaredSkillPathFiles(plugin, platform, plugin.manifest.skills, files);
     }
 
     const codexManifest = platformManifests.codex;
@@ -1955,63 +1981,25 @@ export async function bundleLocalPlugin(
     const sourceFiles = (await listFilesRecursively(plugin.rootDir)).filter(
       (filePath) => !isDeclaredSkillAuthorOnlyFile(plugin, filePath),
     );
-    if (claudeFiles && buildConfig?.fileRules?.claude) {
-      for (const filePath of applyFileRules(
-        sourceFiles.filter((filePath) => !isDynamicSkillSourceFile(plugin, 'claude', filePath)),
-        buildConfig.fileRules.claude.include,
-        buildConfig.fileRules.claude.exclude,
-      )) {
-        if (
-          resolvedSlashCommands &&
-          filePath === stripDotSlash(resolvedSlashCommands.rootRelativePath)
-        ) {
-          continue;
-        }
-        if (
-          resolvedSlashCommands &&
-          filePath.startsWith(`${stripDotSlash(resolvedSlashCommands.rootRelativePath)}/`)
-        ) {
-          continue;
-        }
-        claudeFiles.add(filePath);
-      }
-    }
-    if (codexFiles && buildConfig?.fileRules?.codex) {
-      for (const filePath of applyFileRules(
-        sourceFiles.filter((filePath) => !isDynamicSkillSourceFile(plugin, 'codex', filePath)),
-        buildConfig.fileRules.codex.include,
-        buildConfig.fileRules.codex.exclude,
-      )) {
-        if (
-          resolvedSlashCommands &&
-          filePath === stripDotSlash(resolvedSlashCommands.rootRelativePath)
-        ) {
-          continue;
-        }
-        if (
-          resolvedSlashCommands &&
-          filePath.startsWith(`${stripDotSlash(resolvedSlashCommands.rootRelativePath)}/`)
-        ) {
-          continue;
-        }
-        codexFiles.add(filePath);
-      }
-    }
-
-    for (const platform of PLATFORM_ORDER) {
+    for (const platform of supportedPlatforms) {
       const files = platformFiles[platform];
-      if (!files) {
-        continue;
+      if (!files) continue;
+      const rules = buildConfig?.fileRules?.[platform];
+      if (rules) {
+        for (const filePath of applyFileRules(
+          sourceFiles.filter((filePath) => !isDynamicSkillSourceFile(plugin, platform, filePath)),
+          rules.include, rules.exclude,
+        )) {
+          const commandsRoot = resolvedSlashCommands && stripDotSlash(resolvedSlashCommands.rootRelativePath);
+          if (commandsRoot && (filePath === commandsRoot || filePath.startsWith(`${commandsRoot}/`))) continue;
+          files.add(filePath);
+        }
+        for (const filePath of [...files]) {
+          if (applyFileRules([filePath], ['**/*'], rules.exclude).length === 0) files.delete(filePath);
+        }
       }
       for (const filePath of files) {
-        await copyFileWithTemplateSupport(
-          plugin.rootDir,
-          outputRoot,
-          filePath,
-          platform,
-          templatePatterns,
-          templateVars,
-        );
+        await copyFileWithTemplateSupport(plugin.rootDir, outputRoot, filePath, platform, templatePatterns, templateVars);
       }
     }
 
@@ -2055,8 +2043,6 @@ export async function bundleLocalPlugin(
 
     await materializeSkillRuntimeFiles(skillRuntimeFileProjections);
 
-    await copyPortableStaticSkills(plugin, outputRoot);
-
     if (await fs.pathExists(path.join(plugin.rootDir, 'README.md'))) {
       await copyBundleRootFile(plugin.rootDir, outputRoot, 'README.md');
     }
@@ -2064,6 +2050,7 @@ export async function bundleLocalPlugin(
       await copyBundleRootFile(plugin.rootDir, outputRoot, filePath);
     }
     await copyArtifactSourceDirectories(plugin, outputRoot);
+    portableRuntimeFiles.push(...await materializeGeneratedPortableSkillRuntimeFiles(plugin, outputRoot, supportedPlatforms));
     await copyManagedCommandPackages(plugin, outputRoot);
     await copyProductionPackageRoot(plugin, outputRoot);
     await materializeArtifactRuntimeImports(artifactRuntimeProjection.projections);
@@ -2096,19 +2083,21 @@ export async function bundleLocalPlugin(
     await validateSkillRuntimeProjectionSources(skillRuntimeFileProjections);
     await validateSkillRuntimeProjectionFreshness(
       outputRoot,
-      skillRuntimeFiles.filter((entry): entry is SkillRuntimeFileProvenance & { platform: PlatformName } =>
-        entry.platform !== undefined),
+      skillRuntimeFiles,
     );
     await validateGeneratedSkillRuntimeFiles(plugin, outputRoot, supportedPlatforms);
     if ((options.runtimeSkillClosureValidation ?? 'current') === 'current') {
-      for (const platform of PLATFORM_ORDER) {
-        const skillsPath = platformManifests[platform]?.skills;
-        if (!skillsPath) continue;
-        await validateRuntimeSkillClosuresRoot(path.join(outputRoot, stripDotSlash(skillsPath)));
-      }
-      if (plugin.manifest.distributions?.agentSkills?.skills) {
-        await validatePortableSkillDirectoriesRoot(path.join(outputRoot, 'agent-skills', 'skills'));
-        await validateRuntimeSkillClosuresRoot(path.join(outputRoot, 'agent-skills', 'skills'));
+      for (const platform of supportedPlatforms) {
+        const root = path.join(outputRoot, platform, 'skills');
+        const dynamicKeys = new Set((plugin.manifest.artifacts?.targets ?? [])
+          .filter((target) => target.platform === platform && target.skillKey !== undefined)
+          .map((target) => target.skillKey!));
+        for (const entry of await fs.readdir(root, { withFileTypes: true }).catch(() => [])) {
+          if (dynamicKeys.has(entry.name)) continue;
+          const skillRoot = path.join(root, entry.name);
+          if (platform !== 'codex' && platform !== 'claude') await validatePortableSkillDirectory(skillRoot);
+          await validateRuntimeSkillClosure(skillRoot);
+        }
       }
     }
     await validateBuildImportProjectionSources(

@@ -1,9 +1,11 @@
+import { PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
 import { Box, Text } from 'ink';
 import type { ReactNode } from 'react';
 import stringWidth from 'string-width';
 
+import { compareStrictSemVer, tryParseStrictSemVer } from '../utils/manifest.js';
 import { ObjectCardFrame } from './components.js';
-import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
+import { agentLabel, platformLabel, scopeLabel, recoveryReason } from './glossary.js';
 import { Pager } from './reader.js';
 import type { PluginDetailPlacement, PluginDetailSubject } from './plugin-detail.js';
 import type { InventoryRoot as ProjectInventoryRoot, InventoryState as ProjectInventoryState,
@@ -11,7 +13,7 @@ import type { InventoryRoot as ProjectInventoryRoot, InventoryState as ProjectIn
 import { tuiTheme, type TuiStatus } from './theme.js';
 import { wrapDisplayText } from './viewport.js';
 
-type CellRole = 'text' | 'muted' | 'platform' | 'status';
+type CellRole = 'text' | 'muted' | 'platform' | 'status' | 'tableStatus';
 interface CardCell { text: string; role: CellRole; status?: TuiStatus }
 interface CardLine { cells: CardCell[] }
 type CardSection = { key: string; offset: number; height: number };
@@ -155,43 +157,56 @@ function pluginFacts(subject: PluginDetailSubject, width: number) {
     addFields(lines, sections, 'definition', width,
       [statusCell('目录定义当前不可用', 'warning', '!')]);
   }
-  addFields(lines, sections, 'catalogVersion', width,
-    [muted('目录版本'), subject.catalogVersion ? plain(subject.catalogVersion) : muted('未确认')]);
-  if (subject.savedConfigScopes.length > 0) {
-    addFields(lines, sections, 'savedConfig', width,
-      [muted('已保存设置'), plain(subject.savedConfigScopes.map(scopeLabel).join('、'))]);
-  }
-  for (const scope of ['user', 'project'] as const) {
-    const declaration = subject.declarations[scope];
-    const scopeName = scope === 'user' ? '个人清单' : '当前项目清单';
-    const state = declaration.state === 'declared' ? '已声明'
-      : declaration.state === 'not-declared' ? '未声明' : '未检查';
-    addFields(lines, sections, `declaration:${scope}`, width,
-      [muted(scopeName), statusCell(state,
-        declaration.state === 'declared' ? 'success' : 'muted',
-        declaration.state === 'declared' ? '✓' : declaration.state === 'not-declared' ? '○' : '?')]);
-    if (declaration.state === 'declared') {
-      addFields(lines, sections, `declaration:${scope}:targets`, width,
-        [muted('本机工具'), plain(declaration.targets === 'empty' ? '未选择'
-          : declaration.targets === 'selected' ? declaration.agents.map(agentLabel).join('、') : '未检查')]);
-      if (declaration.sourceState && declaration.sourceState !== 'ready') {
-        addFields(lines, sections, `declaration:${scope}:source`, width,
-          [muted('来源状态'), plain(declaration.sourceState)]);
-      }
-    }
-  }
+  const badges = (['user', 'project'] as const).flatMap((scope) => {
+    const declared = subject.declarations[scope].state === 'declared';
+    const placements = subject.placements.filter((entry) => entry.scope === scope);
+    if (!declared && !placements.length) return [];
+    const ready = placements.length > 0 && placements.every((entry) => placementHealth({ ...entry, shared: false }).status === 'success');
+    const residue = placements.length > 0 && placements.every((entry) => entry.statusState === 'orphaned');
+    const dependency = !declared && !residue && subject.relations.incoming.some((entry) => entry.declared)
+      && placements.some((entry) => entry.observation === 'known');
+    const suffix = declared ? ready ? '' : ' 待安装' : residue ? ' 可清理' : dependency ? ' 依赖' : ' 未确认';
+    return [statusCell(`${scopeLabel(scope)}${suffix}`,
+      ready && (declared || dependency) ? 'success' : 'warning', declared ? ready ? '■' : '□' : residue ? '!' : dependency ? '▣' : '?')];
+  });
+  addFields(lines, sections, 'scope', width, badges.length ? badges : [muted('○ 尚未添加')]);
+  const showLocation = width >= 76;
+  const pad = (text: string, columns: number): string => text + ' '.repeat(Math.max(0, columns - stringWidth(text)));
+  addFields(lines, sections, 'columns', width, [muted(`${pad('Agent', 14)}${pad('状态', 12)}${showLocation ? pad('位置', 12) : ''}版本`)]);
   for (const placement of subject.placements) {
-    const key = `placement:${placementIdentity(placement)}`;
-    addFields(lines, sections, key, width,
-      placementFields({ ...placement, shared: placement.sharedWithCurrentProject }));
-    if (placement.declared && placement.expectedVersion) {
-      addFields(lines, sections, `${key}:expectedVersion`, width,
-        [muted('声明期望版本'), plain(placement.expectedVersion)]);
+    const health = placementHealth({ ...placement, shared: placement.sharedWithCurrentProject });
+    const label = placement.agent ? agentLabel(placement.agent) : placement.platformLabel;
+    const version = placement.installedVersion ?? '—';
+    const changed = placement.installedVersion && subject.catalogVersion && tryParseStrictSemVer(placement.installedVersion) && tryParseStrictSemVer(subject.catalogVersion)
+      && compareStrictSemVer(placement.installedVersion, subject.catalogVersion) < 0;
+    addFields(lines, sections, `placement:${placementIdentity(placement)}`, width,
+      [plain(pad(label, 13)), { text: pad(`${health.symbol} ${health.label}`, 11), role: 'tableStatus', status: health.status },
+        plain(`${showLocation ? pad(scopeLabel(placement.scope), 12) : ''}${version}`),
+        ...(changed ? [{ text: '↑', role: 'tableStatus' as const, status: 'warning' as const }] : [])]);
+    if (health.status === 'error' || placement.observation === 'unknown') {
+      const reasons: Record<string, string> = {
+        permissionDenied: '没有写入权限', sourceUnavailable: '插件来源不可用',
+        dependencyApplyFailed: '所需插件未完成更新', nativeStateUnreadable: '无法读取 Agent 状态',
+        targetInspectionFailed: '无法确认安装状态', configInvalid: '插件设置需要修正',
+        foreignContent: '目录包含其他内容', ownershipMismatch: '无法确认目录归属',
+      };
+      const reason = placement.reasonCodes.map((code) => reasons[code]).find(Boolean)
+        ?? (placement.observation === 'unknown' ? '无法确认安装状态，请查看技术详情' : '安装受阻，请查看技术详情');
+      addFields(lines, sections, `reason:${placementIdentity(placement)}`, width, [muted(`  └ ${reason}`)]);
     }
   }
-  if (subject.placements.length === 0) {
-    addFields(lines, sections, 'placements', width,
-      [muted('使用位置'), statusCell('未确认', 'muted', '?')]);
+  if (!subject.placements.length) addFields(lines, sections, 'placements', width,
+    subject.selectedAgents?.filter((target) => subject.supportedPlatforms?.includes(target))
+      .map((target) => statusCell(agentLabel(target), 'info', '+')) ?? [muted('尚无安装结果')]);
+  const unselected = subject.selectedAgents ? PLATFORM_TARGETS.filter((target) => !subject.selectedAgents!.includes(target)) : [];
+  if (unselected.length) addFields(lines, sections, 'unselected', width,
+    [muted(`– 本机未启用：${unselected.map(agentLabel).join(' · ')}`)]);
+  addFields(lines, sections, 'catalogVersion', width,
+    [muted('最新版本'), plain(subject.catalogVersion ?? '未确认')]);
+  for (const [kind, relations] of [['依赖', subject.relations.outgoing], ['被依赖', subject.relations.incoming]] as const) {
+    if (relations.length) addFields(lines, sections, kind, width,
+      [muted(kind), ...relations.map((relation) => statusCell(relation.displayName,
+        relation.verified ? 'success' : 'muted', relation.verified ? '✓' : '?'))]);
   }
   return { lines, sections };
 }
@@ -200,58 +215,49 @@ function projectFacts(root: ProjectInventoryRoot, subject: PluginDetailSubject, 
   const lines: CardLine[] = [];
   const sections: CardSection[] = [];
   addIdentityOverflow(lines, sections, subject, width);
-  const overall = projectStates[root.state];
-  addFields(lines, sections, 'overall', width,
-    [muted('总体状态'), statusCell(root.state === 'ready' ? '就绪' : overall.label,
-      overall.status, overall.symbol)]);
   if (root.agentResults) {
-    addFields(lines, sections, 'demand', width,
-      [muted(root.scope === 'user' ? '个人需求' : '项目需求'), plain(root.pluginId)]);
-    if (root.sourceState && root.sourceState !== 'ready') {
-      addFields(lines, sections, 'sourceState', width,
-        [muted('来源'), statusCell(root.sourceState, 'warning', '!')]);
-    }
-    for (const blocker of root.blockers ?? []) {
-      addFields(lines, sections, `blocker:${blocker.code}`, width,
-        [statusCell(blocker.code, 'warning', '!')]);
-    }
+    const declared = root.section === 'declared';
+    const pending = root.agentResults.length > 0 && root.agentResults.every((target) =>
+      target.observation === 'missing' || target.content === 'absent');
+    const residue = subject.placements.some((entry) => entry.scope === root.scope && entry.statusState === 'orphaned');
+    const dependency = !declared && !residue && subject.relations.incoming.some((entry) => entry.declared)
+      && root.agentResults.some((target) => target.observation === 'verified');
+    const suffix = declared ? pending ? ' 待安装' : '' : residue ? ' 可清理' : dependency ? ' 依赖' : ' 未确认';
+    addFields(lines, sections, 'scope', width, [statusCell(`${scopeLabel(root.scope ?? 'project')}${suffix}`,
+      root.state === 'ready' && (declared || dependency) ? 'success' : 'warning',
+      declared ? pending ? '□' : '■' : residue ? '!' : dependency ? '▣' : '?')]);
+    if (root.sourceState && root.sourceState !== 'ready') addFields(lines, sections, 'sourceState', width,
+      [statusCell(root.sourceState === 'missing' ? '插件来源缺失' : '插件来源不可用', 'warning', '!')]);
+    for (const blocker of root.blockers ?? []) addFields(lines, sections, `blocker:${blocker.code}`, width,
+      [statusCell(recoveryReason(blocker.code), 'warning', '!')]);
     for (const target of root.agentResults) {
-      const delivery = target.delivery?.kind === 'native'
-        ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无适用交付';
-      const state: ProjectInventoryState = target.blockers.length > 0 ? 'blocked'
+      const state: ProjectInventoryState = target.blockers.length > 0 || target.content === 'conflict' ? 'blocked'
         : target.observation === 'verified' ? 'ready'
           : target.observation === 'missing' || target.content === 'drifted' ? 'pending' : 'unknown';
-      const health = projectStates[state];
+      const health = target.satisfaction === 'unsupported' || target.reasons?.some((reason) => reason.code === 'deliveryUnsupported')
+        ? { label: '不支持', status: 'muted' as const, symbol: '–' }
+        : target.satisfaction === 'excluded' ? { label: '已关闭', status: 'muted' as const, symbol: '◇' }
+          : projectStates[state];
+      const installed = root.targets.find((entry) => entry.agent === target.agent
+        || !entry.agent && entry.platform === target.agent);
       addFields(lines, sections, `agent:${target.agent}`, width,
-        [{ text: agentLabel(target.agent), role: 'platform' }, muted(`[${root.scope === 'user' ? '个人' : '当前项目'}]`), plain(delivery),
-          statusCell(health.label, health.status, health.symbol)]);
-      for (const blocker of target.blockers) {
-        addFields(lines, sections, `agent:${target.agent}:${blocker.code}`, width,
-          [muted('原因'), plain(blocker.code)]);
-      }
+        [statusCell(agentLabel(target.agent), health.status, health.symbol), plain(health.label),
+          ...(installed?.installedVersion ? [muted(installed.installedVersion)] : [])]);
+      for (const reason of [...target.blockers, ...(target.reasons ?? [])]) addFields(lines, sections,
+        `agent:${target.agent}:${reason.code}`, width, [muted(`  └ ${recoveryReason(reason.code)}`)]);
     }
-    if (root.agentResults.length === 0) {
-      addFields(lines, sections, 'agents', width,
-        [muted('本机 Agent'), root.blockers?.some((blocker) => blocker.code === 'localTargetsRequired')
-          ? statusCell('未选择', 'warning', '!') : statusCell('目标未确认', 'muted', '?')]);
-    }
-    for (const target of root.targets) {
-      const detail = subject.placements.find((placement) => placement.scope === target.scope
-        && (target.agent ? placement.agent === target.agent : placement.platform === target.platform)
-        && (target.delivery ? placement.delivery === target.delivery : true));
-      addFields(lines, sections, `placement:${placementIdentity(fromProjectTarget(target, detail, true))}`, width,
-        placementFields(fromProjectTarget(target, detail, true)));
-    }
-    for (const dependency of root.dependencies) {
-      if (dependency.targets.length === 0) continue;
-      addFields(lines, sections, `dependency:${dependency.pluginId}`, width,
-        [muted('依赖'), plain(dependency.displayName)]);
-      for (const target of dependency.targets) addFields(lines, sections,
-        `dependency:${dependency.pluginId}:${placementIdentity(fromProjectTarget(target))}`,
-        width, placementFields(fromProjectTarget(target)));
-    }
+    if (root.agentResults.length === 0) addFields(lines, sections, 'agents', width,
+      [muted('本机 Agent'), root.blockers?.some((blocker) => blocker.code === 'localTargetsRequired')
+        ? statusCell('未选择', 'warning', '!') : statusCell('目标未确认', 'muted', '?')]);
+    for (const dependency of root.dependencies) addFields(lines, sections, `dependency:${dependency.pluginId}`, width,
+      [muted('依赖'), statusCell(dependency.displayName,
+        dependency.targets.length && dependency.targets.every((target) => target.state === 'ready') ? 'success' : 'muted',
+        dependency.targets.length && dependency.targets.every((target) => target.state === 'ready') ? '✓' : '?')]);
     return { lines, sections };
   }
+  const overall = projectStates[root.state];
+  addFields(lines, sections, 'overall', width,
+    [muted('总体状态'), statusCell(root.state === 'ready' ? '就绪' : overall.label, overall.status, overall.symbol)]);
   for (const target of root.targets) {
     const detail = subject.placements.find((placement) => placement.scope === target.scope
       && (target.agent ? placement.agent === target.agent : placement.platform === target.platform)
@@ -283,7 +289,7 @@ function layout(lines: CardLine[], sections: CardSection[]): EntityCardLayout {
 export function pluginDetailCardLayout(subject: PluginDetailSubject, width: number): EntityCardLayout {
   const { lines, sections } = pluginFacts(subject, width);
   return { headerHeight: 1, factRows: lines.length, fullHeight: lines.length + 2,
-    horizontalPaging: true, sections };
+    horizontalPaging: false, sections };
 }
 
 export function projectRootCardLayout(
@@ -362,10 +368,11 @@ function FactRows(props: {
     {!props.horizontalPaging && window.before ? <Text color={tuiTheme.colors.muted}>↑ 前面还有信息</Text> : null}
     {window.shown.map((line, index) => <Text key={`${props.offset ?? 0}:${index}`}>
       {line.cells.map((cell, cellIndex) => <Text key={cellIndex}
-        color={cell.role === 'status' ? tuiTheme.statusColors[cell.status ?? 'muted']
+        color={cell.role === 'status' || cell.role === 'tableStatus' ? tuiTheme.statusColors[cell.status ?? 'muted']
           : cell.role === 'muted' ? tuiTheme.colors.muted : tuiTheme.colors.text}
         bold={cell.role === 'platform'}>
-        {cell.role === 'status' && props.columns
+        {cell.role === 'status' && props.columns && cellIndex > 0
+          && line.cells.filter((entry) => entry.role === 'status').length === 1
           ? ' '.repeat(Math.max(Number(cellIndex > 0), props.columns
               - line.cells.reduce((sum, entry) => sum + stringWidth(entry.text), 0)
               - Math.max(0, line.cells.length - 2)))
@@ -393,7 +400,7 @@ export function PluginDetailCard(props: {
   return <ObjectCardFrame width={props.width} title={preview(props.subject.displayName, sizes.titleWidth)}
     headerMeta={preview(props.subject.sourceId, Math.max(1, sizes.sourceWidth - 2))}>
     <FactRows lines={lines} offset={props.lineOffset} limit={props.lineLimit}
-      horizontalPaging columns={innerWidth(props.width)} />
+      columns={innerWidth(props.width)} />
   </ObjectCardFrame>;
 }
 

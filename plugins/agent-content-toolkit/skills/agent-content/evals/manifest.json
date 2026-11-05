@@ -3,6 +3,7 @@
   "defaults": {},
   "profiles": {
     "project-default": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "agent-content-toolkit": {},
@@ -10,6 +11,7 @@
       }
     },
     "content-only": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "agent-content-toolkit": {}

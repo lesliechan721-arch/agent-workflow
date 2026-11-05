@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
 import type { CommandExecutionContext } from '../commands/runtime.js';
-import type { DistributionName, NormalizedPluginManifest, PlatformName, PluginConfigValue, PluginMeta, Scope } from '../types.js';
+import type { DistributionName, NormalizedPluginManifest, PlatformTarget, PluginConfigValue, PluginMeta, Scope } from '../types.js';
+import { compilePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 import { redactString } from '../output/redact.js';
 import {
   createWindowsJobInvocation,
@@ -89,7 +90,7 @@ export async function preparePluginScriptDirectories(tempDir: string): Promise<v
 
 export function buildPluginScriptSpawnEnv(options: {
   commandEnv: NodeJS.ProcessEnv; contextPath: string; tempDir: string; plugin: { name: string; version: string };
-  event: string; platform?: PlatformName; distribution?: DistributionName; scope: Scope; bundleRoot: string;
+  event: string; platform?: PlatformTarget; distribution?: DistributionName; scope: Scope; bundleRoot: string;
   isolatedHomes?: { awHome: string; codexHome: string; claudeHome: string };
 }): NodeJS.ProcessEnv {
   const input = options.commandEnv;
@@ -138,8 +139,9 @@ function collectScalarLeafTokens(value: unknown): string[] {
   return Object.values(value).flatMap(collectScalarLeafTokens);
 }
 
-export function collectSensitivePluginConfigValues(manifest: NormalizedPluginManifest, values: Record<string, PluginConfigValue>): string[] {
-  return Object.entries(manifest.config?.fields ?? {}).flatMap(([key, field]) => {
+export function collectSensitivePluginConfigValues(manifest: NormalizedPluginManifest, values: Record<string, PluginConfigValue>, platform?: PlatformTarget): string[] {
+  const fields = manifest.config ? compilePluginConfigDefinition(manifest.config, platform).fields : {};
+  return Object.entries(fields).flatMap(([key, field]) => {
     const value = values[key];
     if (value === undefined) return [];
     if (field.sensitive) return collectScalarLeafTokens(value);
@@ -499,13 +501,13 @@ export const defaultPluginProcessRunner = createDefaultPluginProcessRunner();
 export interface PreApplyContextV1 {
   schemaVersion: 1;
   plugin: { pluginId: string; name: string; version: string; rootDir: string };
-  target: { platform: PlatformName; scope: Scope; projectRoot?: string };
+  target: { platform: PlatformTarget; scope: Scope; projectRoot?: string };
   config: { values: Record<string, PluginConfigValue> };
 }
 
 export async function runPreApplyScript(options: {
   referencePlugins?: readonly PluginMeta[];
-  plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; context: CommandExecutionContext;
+  plugin: PluginMeta; platform: PlatformTarget; scope: Scope; cwd: string; context: Pick<CommandExecutionContext, 'env'>;
   scriptTimeoutMs?: number; runner?: PluginProcessRunner;
 }): Promise<void> {
   const declaration = options.plugin.manifest.scripts?.preApply; if (!declaration) return;
@@ -530,8 +532,8 @@ export async function runPreApplyScript(options: {
   ];
   try {
     const entryPath = await resolveBundledPluginFilePath({ bundleRoot: options.plugin.rootDir, pluginRelativePath: declaration.path, fieldName: 'preApply script' });
-    const effective = options.plugin.manifest.config?.fields
-      ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, targetScope: options.scope, cwd: options.cwd, env: options.context.env, referencePlugins: options.referencePlugins })
+    const effective = options.plugin.manifest.config
+      ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, platform: options.platform, targetScope: options.scope, cwd: options.cwd, env: options.context.env, referencePlugins: options.referencePlugins })
       : { values: {}, issues: [] };
     if (effective.issues.length > 0) throw new Error(`preApply config is invalid for ${options.plugin.manifest.name}.`);
     const payload: PreApplyContextV1 = {
@@ -544,7 +546,7 @@ export async function runPreApplyScript(options: {
     tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-pre-apply-'));
     await preparePluginScriptDirectories(tempDir);
     const env = buildPluginScriptSpawnEnv({ commandEnv: options.context.env, contextPath: '', tempDir, plugin: payload.plugin, event: 'preApply', platform: options.platform, scope: options.scope, bundleRoot: options.plugin.rootDir }); delete env.AW_PLUGIN_CONTEXT;
-    sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
+    sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values, options.platform);
     const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });
     const runOptions = { timeoutMs: resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs, manifestTimeoutMs: declaration.timeoutMs }) };
     const interruptController = new AbortController();

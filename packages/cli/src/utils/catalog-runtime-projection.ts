@@ -1,3 +1,4 @@
+import type { PlatformTarget } from '@lesliechan721/aw-plugin-core';
 import {
   computeAwCapabilitySetDigest,
   normalizeAwCapabilities,
@@ -7,7 +8,6 @@ import {
 
 import type {
   BuildConfigImportReference,
-  PlatformName,
   PluginMeta,
 } from '../types.js';
 import { calculateFileDigest } from './bundle-integrity.js';
@@ -30,7 +30,7 @@ export interface CatalogRuntimeExportResolution {
   requiredCapabilities: string[];
   capabilitySetDigest: string;
   canonicalSource: CanonicalRuntimeSourceIdentity;
-  supportedPlatforms: ReadonlySet<PlatformName>;
+  supportedPlatforms: ReadonlySet<PlatformTarget>;
   virtual: boolean;
 }
 
@@ -39,7 +39,7 @@ export interface CatalogRuntimeImportResolver {
     consumer: PluginMeta;
     reference: BuildConfigImportReference;
     purpose: CatalogRuntimeImportPurpose;
-    platform?: PlatformName;
+    platform?: PlatformTarget;
   }): Promise<CatalogRuntimeExportResolution>;
 }
 

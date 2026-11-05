@@ -7,6 +7,7 @@ import path from 'node:path';
 import type {
   CatalogSource,
   PlatformName,
+  PlatformTarget,
   PluginMeta,
   PluginConfigSchemaField,
   Scope,
@@ -492,6 +493,7 @@ export interface StatusTargetRevision {
 
 interface StatusPluginCapability {
   name: string;
+  platforms?: PlatformTarget[];
   version: string;
   displayName: string;
   shortDescription: string;
@@ -531,14 +533,16 @@ export interface StatusV8PluginSummary {
   description: string;
   version?: string;
   supportedTargets?: Record<PlatformName, Scope[]>;
+  platforms?: PlatformTarget[];
   configFieldCount?: number;
   configSchema?: Record<string, PluginConfigSchemaField>;
   configIssues?: Array<{
     scope: Scope;
+    platform?: PlatformTarget;
     type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath' | 'configLayerUnsupported';
     key: string;
     title: string;
-    source: 'default' | 'user' | 'project' | 'missing';
+    source: 'default' | 'common' | 'platform' | 'user' | 'project' | 'missing';
   }>;
   configDiagnostic?: { scope: Scope; code: 'configReadFailed'; message: string };
   dependencyDirectCount?: number;
@@ -832,7 +836,7 @@ function calculateDesiredTargetStates(options: {
         nodes,
         roots,
         dependencyEdges: edges,
-        scopeOverrides: intent.dependencyScopeOverrides.filter((override) =>
+        scopeOverrides: (intent.dependencyScopeOverrides ?? []).filter((override) =>
           nodeIds.has(override.pluginId)
           && (override.platform === undefined || override.platform === platform)),
       });
@@ -939,7 +943,7 @@ export function statusRecovery(options: {
       }] : []),
       {
         command: 'manual',
-        description: `共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install ${options.pluginId} --target codex --scope <user|project> 重建。`,
+        description: `共享内容已损坏。先确认本机 Agent 选择，明确 user 或 project 使用范围，再运行 aw plugin install ${options.pluginId} --scope <user|project> 重建。`,
       },
     ];
   }
@@ -965,7 +969,7 @@ export function statusRecovery(options: {
         return (options.conflictRoots?.[scope] ?? []).map((rootPluginId) => ({
           command: 'uninstall' as const,
           scope,
-          description: `运行 aw intent remove ${rootPluginId} --scope ${scope}，再运行 aw uninstall ${rootPluginId} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${scope}，最后运行 aw sync ${retainedRoot} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${retainedScope}。`,
+          description: `运行 aw plugin intent remove ${rootPluginId} --scope ${scope}，再运行 aw plugin cleanup ${rootPluginId} --target ${options.platform} --scope ${scope}，最后运行 aw plugin sync ${retainedRoot} --target ${options.platform} --context ${retainedScope}。`,
         }));
       });
     }
@@ -975,19 +979,17 @@ export function statusRecovery(options: {
     return [
       {
         command: 'sync',
-        description: `先移除或重命名 ${collision}，再运行 aw sync ${options.pluginId} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${options.scope ?? 'user'}。cleanup 会保留 foreign 内容，不会删除该冲突。`,
+        description: `先移除或重命名 ${collision}，再运行 aw plugin sync ${options.pluginId} --target ${options.platform} --context ${options.scope ?? 'user'}。cleanup 会保留 foreign 内容，不会删除该冲突。`,
       },
     ];
   }
   if (options.dependencyMoves?.length) {
     const rootScope = options.desired.scopes[0] ?? 'project';
     const removeDependencies = options.dependencyMoves.map((move) =>
-      `aw cleanup ${move.pluginId} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${move.fromScope}`);
-    const dependencyScopes = options.dependencyMoves.map((move) =>
-      `--dependency-scope ${move.pluginId}#${options.platform}=${move.toScope}`);
+      `aw plugin cleanup ${move.pluginId} --target ${options.platform} --scope ${move.fromScope}`);
     return [{
       command: 'manual',
-      description: `先按依赖保护提示依次移除 ${options.dependencyMoves.map((move) => move.pluginId).join('、')} 的所有直接和间接依赖者；若命令报告 dependencyStillRequired，继续处理提示的其他依赖者。再运行 ${removeDependencies.join('，再运行 ')} 移除依赖旧位置。最后逐个按原平台和 scope 重新添加全部已移除 root，并在安装时选择新的依赖 scope；当前 root 的示例命令是 aw install ${options.pluginId} --target ${options.platform === 'claude' ? 'claude-code' : options.platform} --scope ${rootScope} ${dependencyScopes.join(' ')}。`,
+      description: `先按依赖保护提示依次移除 ${options.dependencyMoves.map((move) => move.pluginId).join('、')} 的所有直接和间接依赖者；若命令报告 dependencyStillRequired，继续处理提示的其他依赖者。再运行 ${removeDependencies.join('，再运行 ')} 移除依赖旧位置。最后确认本机 Agent 选择，逐个按原 scope 重新添加全部已移除 root，由联合需求重新确定提供位置；当前 root 的示例命令是 aw plugin install ${options.pluginId} --scope ${rootScope}。`,
     }];
   }
   return [{
@@ -1238,7 +1240,7 @@ async function statusCommandV8InSession(options: {
         preferences: scopedDemand.preferences,
         ...(demandScope === scope ? options.recoverySelection : {}),
       }).agents.flatMap((agent): PlatformName[] => agent === 'codex' ? ['codex']
-        : agent === 'claude-code' ? ['claude'] : []));
+        : agent === 'claude' ? ['claude'] : []));
     } catch { selectedPlatformsByScope.set(demandScope, []); }
   }
   const projectObservationPlatforms = selectedPlatformsByScope.get('project') ?? [];
@@ -1709,6 +1711,8 @@ async function statusCommandV8InSession(options: {
               let configDiagnostic: StatusV8PluginSummary['configDiagnostic'];
               if (plugin.manifest.config?.fields) {
                 const issues = new Map<string, NonNullable<StatusV8PluginSummary['configIssues']>[number]>();
+                for (const platform of ['codex', 'claude'] as const) {
+                if (!supportsPlatform(plugin.manifest, platform)) continue;
                 for (const scope of scopes) {
                   try {
                     const resolved = scope === 'project'
@@ -1718,6 +1722,7 @@ async function statusCommandV8InSession(options: {
                           logicalIdentity: plugin.catalogLogicalIdentity,
                           pluginName: plugin.manifest.name,
                           manifest: plugin.manifest,
+                          platform,
                           cwd: options.cwd,
                           env,
                         })
@@ -1727,6 +1732,7 @@ async function statusCommandV8InSession(options: {
                           logicalIdentity: plugin.catalogLogicalIdentity,
                           pluginName: plugin.manifest.name,
                           manifest: plugin.manifest,
+                          platform,
                           targetScope: 'user',
                           cwd: options.cwd,
                           env,
@@ -1735,22 +1741,24 @@ async function statusCommandV8InSession(options: {
                       const source = issue.source ?? 'missing';
                       const configIssue = {
                         scope,
+                        platform,
                         type: issue.type,
                         key: issue.key,
-                        title: plugin.manifest.config.fields[issue.key]?.title ?? issue.key,
+                        title: resolved.schema[issue.key]?.title ?? issue.key,
                         source,
                       } as NonNullable<StatusV8PluginSummary['configIssues']>[number];
-                      issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                      issues.set(`${platform}\0${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
                     }
                     for (const override of resolved.unsupportedLayerOverrides) {
                       const configIssue = {
                         scope,
+                        platform,
                         type: override.type,
                         key: override.key,
-                        title: plugin.manifest.config.fields[override.key]?.title ?? override.key,
+                        title: resolved.schema[override.key]?.title ?? override.key,
                         source: override.source,
                       } as NonNullable<StatusV8PluginSummary['configIssues']>[number];
-                      issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                      issues.set(`${platform}\0${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
                     }
                   } catch {
                     configDiagnostic ??= {
@@ -1759,6 +1767,7 @@ async function statusCommandV8InSession(options: {
                       message: '插件设置当前不可读。未读取或显示设置值。',
                     };
                   }
+                }
                 }
                 configIssues = [...issues.values()];
               }
@@ -2322,10 +2331,10 @@ async function statusCommandV8InSession(options: {
                     }
                     states[platform]![scope] = {
                       state: liveState,
-                      errors: [...inspected.inspection.errors.map((error) => finalizeTargetError({
+                      errors: [...inspected.inspection.errors.map((error) => projectTargetError({
                         code: 'componentInspectionFailed',
                         message: `${error.label}: ${error.message}`,
-                      }, liveState)), ...collisionErrors, ...dependencyErrors],
+                      }, env, options.cwd, liveState)), ...collisionErrors, ...dependencyErrors],
                       ...(dependencyReadiness.length > 0 ? { dependencyReadiness } : {}),
                       components: inspected.inspection.components.map((component) => {
                             const projectedError = component.collision
@@ -2359,17 +2368,17 @@ async function statusCommandV8InSession(options: {
                         : 'codexActivationDrift'
                       : undefined;
                     const code = configErrorCode
-                      ?? message.split(':', 1)[0]
+                      ?? /^([A-Za-z][A-Za-z0-9]*):/u.exec(message)?.[1]
                       ?? 'targetInspectionFailed';
                     states[platform]![scope] = {
                       state: 'error',
                       components: [],
-                      errors: [finalizeTargetError({
+                      errors: [projectTargetError({
                         code,
                         message: configErrorCode
                           ? `${configErrorCode}: Codex activation state is unreadable.`
                           : message,
-                      }, 'error')],
+                      }, env, options.cwd, 'error')],
                     };
                   }
                 }
@@ -2397,8 +2406,7 @@ async function statusCommandV8InSession(options: {
                 let residueFailed = false;
                 const hasNativeRenderTargets = (plugin.manifest.artifacts?.targets ?? []).some((target) =>
                   target.platform === 'codex'
-                  && target.target === 'codex.skill'
-                  && target.delivery?.mode === 'codex-native');
+                  && target.target === 'codex.skill');
                 const sharedInspection = codexSurface.nativeKinds.length > 0
                   ? await inspectCodexSharedNativeLive({
                       pluginName: entry.name,
@@ -2489,6 +2497,7 @@ async function statusCommandV8InSession(options: {
                 shortDescription: plugin.manifest.interface?.shortDescription
                   ?? plugin.manifest.description,
                 description: plugin.manifest.description,
+                platforms: [...resolveSupportedPlatforms(plugin.manifest)],
                 ...(plugin.manifest.config?.fields
                   ? { configSchema: plugin.manifest.config.fields }
                   : {}),
@@ -3570,6 +3579,7 @@ async function statusCommandV8InSession(options: {
           codex: (['user', 'project'] as const).filter((scope) => entry.targets.codex[scope]),
           claude: (['user', 'project'] as const).filter((scope) => entry.targets.claude[scope]),
         },
+        ...(entry.platforms ? { platforms: entry.platforms } : {}),
         configFieldCount: Object.keys(entry.configSchema ?? {}).length,
         ...(entry.configSchema ? { configSchema: entry.configSchema } : {}),
         ...(entry.configIssues ? { configIssues: entry.configIssues } : {}),

@@ -32,8 +32,10 @@ function isRecord(value) {
 }
 
 async function readInstructions(context, manifest, key) {
-  const id = Object.keys(SKILLS).find((candidate) => SKILLS[candidate] === key);
-  const sourceRoot = await readSkillSourceRoot(context, manifest, id);
+  const target = manifest.artifacts.targets.find((candidate) =>
+    candidate.platform === context.platform && SKILLS[candidate.id] === key);
+  if (!target) throw new Error(`Skill ${key} has no source for ${context.platform}.`);
+  const sourceRoot = await readSkillSourceRoot(context, manifest, target.id);
   return readFile(path.join(sourceRoot, INSTRUCTIONS[key]), 'utf8');
 }
 
@@ -52,14 +54,12 @@ function renderRoleArtifact(id, role, instructions) {
   };
 }
 
-function resolveConfigValues(context, manifest, keys) {
-  const candidates = [context?.config?.values, context?.renderConfig?.values,
-    context?.artifactRenderConfig?.values, context?.configValues];
-  const values = candidates.find(isRecord) ?? {};
-  return Object.fromEntries(keys.flatMap((key) => {
-    if (Object.hasOwn(values, key)) return [[key, values[key]]];
-    const field = manifest.config.fields[key];
-    return Object.hasOwn(field, 'default') ? [[key, field.default]] : [];
+function resolveConfigValues(context, keys) {
+  const values = context?.config?.values;
+  if (!isRecord(values)) throw new Error('Resolved config.values is required.');
+  return Object.fromEntries(keys.map((key) => {
+    if (!Object.hasOwn(values, key)) throw new Error(`Missing resolved config value: ${key}`);
+    return [key, values[key]];
   }));
 }
 
@@ -161,7 +161,7 @@ export async function readArtifactRenderContext() {
 }
 
 export async function renderArtifactPlan(context) {
-  const platform = context?.platform ?? 'codex';
+  const platform = context?.platform;
   if (!['codex', 'claude'].includes(platform)) throw new Error(`Unsupported platform: ${platform}`);
   const ids = context?.requestedArtifactIds;
   if (!Array.isArray(ids) || ids.length === 0 || new Set(ids).size !== ids.length) {
@@ -179,7 +179,7 @@ export async function renderArtifactPlan(context) {
   let config;
   if (skillIds.length > 0) {
     const keys = [...new Set(skillIds.flatMap((id) => SKILL_CONFIG_KEYS[SKILLS[id]]))];
-    config = resolveConfigValues(context, manifest, keys);
+    config = resolveConfigValues(context, keys);
   }
 
   const artifacts = [];

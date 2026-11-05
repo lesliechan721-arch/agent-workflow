@@ -4,6 +4,8 @@ import { promisify } from 'node:util';
 
 import { createRuntimeSkillSnapshot } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
+import { PLATFORM_TARGETS, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
+import { materializePortableSkills } from '../src/portable/materializer.js';
 
 import {
   createRebuildIntegration,
@@ -18,9 +20,10 @@ import {
 } from '../src/review/skill-materialization.js';
 import type { PluginMeta } from '../src/types.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
-import { validateSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js';
+import { validateSkillDirectoriesRoot, validatePortableSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js';
 export interface AwSkillEvalMaterializationProfile {
   id: string;
+  platform: PlatformTarget;
   scope: 'project' | 'user';
   plugins: Array<{
     name: string;
@@ -47,8 +50,12 @@ export interface AwSkillEvalMaterializedSubject {
   root: string;
 }
 
-async function snapshotRuntimeSkills(sourceRoot: string, targetRoot: string): Promise<void> {
-  await validateSkillDirectoriesRoot(sourceRoot, 'codex.skill');
+async function snapshotRuntimeSkills(sourceRoot: string, targetRoot: string, platform: PlatformTarget): Promise<void> {
+  if (platform === 'codex' || platform === 'claude') {
+    await validateSkillDirectoriesRoot(sourceRoot, `${platform}.skill`);
+  } else {
+    await validatePortableSkillDirectoriesRoot(sourceRoot);
+  }
   await fs.ensureDir(targetRoot);
   const entries = await fs.readdir(sourceRoot, { withFileTypes: true });
   for (const entry of entries) {
@@ -131,6 +138,7 @@ async function copyUserMaterializedArtifacts(options: {
   scopeRoot: string;
   env: NodeJS.ProcessEnv;
   pluginNames: string[];
+  platform: PlatformTarget;
 }): Promise<string> {
   const materializedRoot = path.join(options.scopeRoot, 'materialized');
   const skillsRoot = path.join(materializedRoot, '.agents', 'skills');
@@ -139,21 +147,21 @@ async function copyUserMaterializedArtifacts(options: {
       options.env.AW_HOME!,
       'plugins',
       pluginName,
-      'codex',
+      options.platform,
       'skills',
     );
     if (await fs.pathExists(runtimeSkillsRoot)) {
-      await snapshotRuntimeSkills(runtimeSkillsRoot, skillsRoot);
+      await snapshotRuntimeSkills(runtimeSkillsRoot, skillsRoot, options.platform);
     }
   }
 
-  const codexHome = options.env.CODEX_HOME!;
+  const codexHome = options.platform === 'claude' ? options.env.CLAUDE_CONFIG_DIR! : options.env.CODEX_HOME!;
   if (await fs.pathExists(codexHome)) {
     const codexSkillsRoot = path.join(codexHome, 'skills');
     if (await fs.pathExists(codexSkillsRoot)) {
-      await snapshotRuntimeSkills(codexSkillsRoot, skillsRoot);
+      await snapshotRuntimeSkills(codexSkillsRoot, skillsRoot, options.platform);
     }
-    await fs.copy(codexHome, path.join(materializedRoot, '.codex'), {
+    await fs.copy(codexHome, path.join(materializedRoot, options.platform === 'claude' ? '.claude' : '.codex'), {
       overwrite: true,
       dereference: false,
       filter: (source) => {
@@ -167,50 +175,55 @@ async function copyUserMaterializedArtifacts(options: {
   return materializedRoot;
 }
 
-async function materializeCodexSkills(options: {
+async function materializeProfileSkills(options: {
   prepared: PreparedSkillPluginBundle;
   plugins: readonly PluginMeta[];
   profile: AwSkillEvalMaterializationProfile;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const declarations = options.prepared.bundlePlugin.manifest.artifacts?.targets ?? [];
-  const sourceRoot = path.join(options.prepared.bundleRoot, 'codex', 'skills');
+  const platform = options.profile.platform;
+  const plugin = options.prepared.bundlePlugin;
+  const declarations = plugin.manifest.artifacts?.targets ?? [];
+  const staticRoot = path.join(options.prepared.bundleRoot, platform, 'skills');
+  const staticSkills = await fs.readdir(staticRoot, { withFileTypes: true }).catch(() => []);
+  const dynamicKeys = new Set(declarations.filter((target) => target.platform === platform && target.skillKey !== undefined)
+    .map((target) => target.skillKey!));
+  const skills = [
+    ...staticSkills.filter((entry) => entry.isDirectory() && !dynamicKeys.has(entry.name)).map((entry) => ({ skill: entry.name, targetId: null })),
+    ...declarations.filter((target) => target.platform === platform && target.skillKey !== undefined
+      && (target.target === 'codex.skill' || target.target === 'claude.skill'
+        || target.target === 'agent-skills.skill' && target.scopes.includes(options.profile.scope)))
+      .map((target) => ({ skill: target.skillKey!, targetId: target.id })),
+  ];
+  if (skills.length === 0) return;
   const targetRoot = options.profile.scope === 'project'
     ? path.join(options.projectRoot, '.agents', 'skills')
-    : path.join(
-        options.env.AW_HOME!,
-        'plugins',
-        options.prepared.bundlePlugin.manifest.name,
-        'codex',
-        'skills',
-      );
-  if (await fs.pathExists(sourceRoot)) {
-    await snapshotRuntimeSkills(sourceRoot, targetRoot);
+    : path.join(options.env.AW_HOME!, 'plugins', plugin.manifest.name, platform, 'skills');
+  const outputRoot = path.join(options.env.TMPDIR!, `materialized-${plugin.manifest.name}`);
+  if (platform === 'codex' || platform === 'claude') {
+    await materializeReviewNativeSkills({
+      plugin, plugins: options.plugins, platform, scope: options.profile.scope,
+      cwd: options.projectRoot, env: options.env, outputRoot, skills,
+      allowDisabledNativeSkills: true,
+    });
+    try {
+      await snapshotRuntimeSkills(path.join(outputRoot, 'skills'), targetRoot, platform);
+    } finally {
+      await fs.remove(outputRoot);
+    }
+  } else {
+    const materialized = await materializePortableSkills({
+      plugins: options.plugins, pluginId: plugin.pluginId ?? plugin.manifest.name,
+      platform, scope: options.profile.scope, cwd: options.projectRoot, env: options.env,
+      inputMode: 'bundle', outputRoot, selectedSkills: skills.map((skill) => skill.skill),
+    });
+    try {
+      await snapshotRuntimeSkills(path.join(materialized.rootDir, 'skills'), targetRoot, platform);
+    } finally {
+      await fs.remove(outputRoot);
+    }
   }
-  const nativeSkills = declarations
-    .filter((target) =>
-      target.platform === 'codex'
-      && target.target === 'codex.skill'
-      && target.scopes.includes(options.profile.scope)
-      && target.delivery?.mode === 'codex-native'
-      && target.skillKey !== undefined)
-    .map((target) => ({ skill: target.skillKey!, targetId: target.id }));
-  if (nativeSkills.length === 0) return;
-  const outputRoot = path.join(options.env.TMPDIR!, `materialized-${options.prepared.bundlePlugin.manifest.name}`);
-  await materializeReviewNativeSkills({
-    plugin: options.prepared.bundlePlugin,
-    plugins: options.plugins,
-    platform: 'codex',
-    scope: options.profile.scope,
-    cwd: options.projectRoot,
-    env: options.env,
-    outputRoot,
-    skills: nativeSkills,
-    allowDisabledNativeSkills: true,
-  });
-  await snapshotRuntimeSkills(path.join(outputRoot, 'skills'), targetRoot);
-  await fs.remove(outputRoot);
 }
 
 async function materializeProfile(options: {
@@ -244,7 +257,8 @@ async function materializeProfile(options: {
         sourceIdentity: prepared.bundlePlugin.sourceIdentity,
         logicalIdentity: prepared.bundlePlugin.catalogLogicalIdentity,
         pluginName: installation.name,
-        scope,
+        scope: 'user',
+        platform: options.profile.platform,
         cwd: projectRoot,
         values: config,
         env,
@@ -253,7 +267,7 @@ async function materializeProfile(options: {
   }
 
   for (const { prepared } of installations) {
-    await materializeCodexSkills({
+    await materializeProfileSkills({
       prepared,
       plugins: installations.map(({ prepared }) => prepared.bundlePlugin),
       profile: options.profile,
@@ -274,9 +288,10 @@ async function materializeProfile(options: {
     },
   });
   for (const { prepared } of installations) {
+    if (options.profile.platform !== 'codex' && options.profile.platform !== 'claude') continue;
     const target = await integration.buildTarget({
       plugin: prepared.bundlePlugin,
-      platform: 'codex',
+      platform: options.profile.platform,
       scope: options.profile.scope,
       cwd: projectRoot,
       command: 'install',
@@ -293,6 +308,7 @@ async function materializeProfile(options: {
     : await copyUserMaterializedArtifacts({
         scopeRoot,
         env,
+        platform: options.profile.platform,
         pluginNames: installations.map(({ installation }) => installation.name),
       });
   const skillsRoot = path.join(subjectRoot, '.agents', 'skills');
@@ -304,7 +320,7 @@ async function materializeProfile(options: {
   for (const skill of options.requiredSkills) {
     if (!materializedSkills.has(skill)) {
       throw new Error(
-        `Profile "${options.profile.id}" did not materialize required Codex Skill "${skill}".`,
+        `Profile "${options.profile.id}" did not materialize required Skill "${skill}".`,
       );
     }
   }
@@ -324,6 +340,9 @@ async function materializeProfile(options: {
 export async function materializeAwSkillEvalSubject(
   options: MaterializeAwSkillEvalOptions,
 ): Promise<AwSkillEvalMaterializedSubject> {
+  if (!PLATFORM_TARGETS.includes(options.profile.platform)) {
+    throw new Error('Eval materialization requires an explicit canonical platform.');
+  }
   const sourcePlugins = new Map<string, PluginMeta>();
   for (const plugin of options.plugins) {
     const name = plugin.manifest.name;
@@ -370,20 +389,21 @@ export async function materializeAwSkillEvalSubject(
     const owners = new Map<string, string>();
     for (const installation of options.profile.plugins) {
       const prepared = preparedByName.get(installation.name)!;
-      const staticSkillsRoot = path.join(prepared.bundleRoot, 'codex', 'skills');
+      const staticSkillsRoot = path.join(prepared.bundleRoot, options.profile.platform, 'skills');
       const staticSkills = await fs.pathExists(staticSkillsRoot)
         ? await fs.readdir(staticSkillsRoot, { withFileTypes: true })
         : [];
       const declaredSkills = [
         ...staticSkills.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
         ...(prepared.bundlePlugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
-          target.target === 'codex.skill' && target.skillKey ? [target.skillKey] : []),
+          target.platform === options.profile.platform && (target.target === 'codex.skill'
+            || target.target === 'claude.skill' || target.target === 'agent-skills.skill') && target.skillKey ? [target.skillKey] : []),
       ];
       for (const skill of new Set(declaredSkills)) {
         const existing = owners.get(skill);
         if (existing && existing !== installation.name) {
           throw new Error(
-            `Eval profile "${options.profile.id}" installs duplicate Codex Skill key "${skill}" ` +
+            `Eval profile "${options.profile.id}" installs duplicate Skill key "${skill}" ` +
             `from plugins "${existing}" and "${installation.name}".`,
           );
         }

@@ -87,23 +87,28 @@ function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
-function recoveryForTarget(state: ReceiptTargetResult['state'], errorCode?: string): string[] {
+function recoveryForTarget(state: ReceiptTargetResult['state'], errorCode: string | undefined,
+  target: ReceiptTargetIdentity): string[] {
   if (state === 'completed') return [];
   if (errorCode === 'exclusiveOwnerEvidenceInvalid'
     || errorCode === 'forceCleanupPathUnavailable') return [];
   if (errorCode === 'codexSystemCliUnsupported') {
     return ['upgrade or repair the official system Codex CLI, then retry the original operation'];
   }
+  const pluginId = target.pluginId ?? target.pluginName;
+  const sync = `aw plugin sync ${pluginId} --target ${target.platform} --context ${target.scope}`;
+  const cleanup = `aw plugin cleanup ${pluginId} --target ${target.platform} --scope ${target.scope}`;
   if (errorCode === 'sourceMissing' || errorCode === 'catalogSourceUnavailable'
     || errorCode === 'codexIntentSourceUnavailable') {
-    return ['refresh the Catalog source and run sync', 'run cleanup for AW-owned residue'];
+    return ['refresh the Catalog source', `run ${sync}`, `run ${cleanup}`];
   }
   if (errorCode === 'codexSharedNativeForeign') {
     return [
-      'remove or rename the foreign Codex plugin, then run sync; cleanup preserves foreign content and does not delete this collision',
+      'remove or rename the foreign Codex plugin; cleanup preserves foreign content and does not delete this collision',
+      `run ${sync}`,
     ];
   }
-  return ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'];
+  return [`run ${sync}`, `run ${sync} --rebuild`, `run ${cleanup}`];
 }
 
 function rebuildErrorCode(message: string): string {
@@ -133,10 +138,10 @@ function earlyFailureRecovery(command: RebuildReceiptJson['command'], errorCode?
     return ['upgrade or repair the official system Codex CLI, then retry the original operation'];
   }
   if (errorCode === 'syncSelectorConflict') {
-    return ['remove either plugin selectors or --all, then rerun sync'];
+    return ['remove either plugin selectors or --all, then rerun aw plugin sync'];
   }
   if (errorCode === 'syncSelectionRequired') {
-    return ['specify desired plugin selectors or --all, then rerun sync'];
+    return ['specify desired plugin selectors or --all, then rerun aw plugin sync'];
   }
   return [`correct the ${command} request and retry`];
 }
@@ -278,6 +283,7 @@ function receiptTargetResult(
     ...recoveryForTarget(
       targetResult.action === 'skipped' ? 'failed' : targetResult.state,
       errorCode,
+      target,
     ),
   ]);
   const sharedNative = target.platform === 'codex' && target.pluginId

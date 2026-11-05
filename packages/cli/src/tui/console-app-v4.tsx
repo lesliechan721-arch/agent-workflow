@@ -1,9 +1,11 @@
 import { configReferenceKey, configReferenceValues, configReferenceScalars, configReferenceSelection, configReferenceMessage, configReferenceSource, configCrossLayerDependencies, type ConfigReferenceContext } from './config-references.js';
 import { arrayDraftChanged, arrayDraftValue, createConfigArrayDraft, editConfigArrayDraft, type ConfigArrayDraft, type ConfigArrayEdit } from './config-array-draft.js';
-import { PLUGIN_CONFIG_ARRAY_MAX_ITEMS, type PluginConfigScalarField } from '@lesliechan721/aw-plugin-core';
+import { PLATFORM_TARGETS, PLUGIN_CONFIG_ARRAY_MAX_ITEMS, type PlatformTarget, type PluginConfigScalarField } from '@lesliechan721/aw-plugin-core';
 import { presentConfigValue, safeConfigText } from './config-value-presentation.js';
 import { ConfigLeafEditor, type ConfigLeafEditorDraft } from './config-leaf-editor.js';
 import { Box, Text, useInput, useWindowSize } from 'ink';
+import { AgentManagement } from './agent-management.js';
+import type { AgentSettings } from './agent-settings.js';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import path from 'node:path';
 import {
@@ -47,6 +49,7 @@ import {
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import {
   ActionRow,
+  AgentStatusText,
   ConfigTile,
   type ConfigTileProps,
   configTileHeight,
@@ -123,7 +126,7 @@ import {
   type DependencyGraphRow,
 } from './dependency-graph.js';
 import { DependencyGraphView, projectDependencyGraphView } from './dependency-graph-view.js';
-import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
+import { agentLabel, platformLabel, scopeLabel, recoveryReason } from './glossary.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { QueryHeader, querySearchWidth } from './query-header.js';
 import { Pager, Reader, paginateWrappedRows, readerPage } from './reader.js';
@@ -137,6 +140,8 @@ import type {
   ConfigEditEvidence,
   ConfigFieldViewModel,
   ConfigPageViewModel,
+  ConfigProfileKey,
+  ConfigReadOptions,
   PlatformPlacementSummary,
   PluginDependencyItemViewModel,
   PluginDependencyOverviewViewModel,
@@ -158,7 +163,7 @@ import { managedCommandPlanChanges } from './operation-review-planner.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
-import type { PluginInstallFilter, TuiPageContext, TuiRoute } from './router.js';
+import type { ConfigRouteLayer, PluginInstallFilter, TuiPageContext, TuiRoute } from './router.js';
 import { resolveTuiGlobalKeyAction, resolveTuiSessionNavigationKey } from './keys.js';
 import { tuiTheme } from './theme.js';
 import { contentRowBudget, rowViewport, wrapDisplayText, type RowViewport } from './viewport.js';
@@ -198,7 +203,10 @@ type ScopedTaskRequest = Parameters<TuiController['prepareScopedTask']>[0];
 type ScopedRecoveryRequest = Extract<ScopedTaskRequest, { kind: 'recovery' }>;
 
 type ScopedUiFlow =
+  | { stage: 'agents'; scope: Scope; settings: AgentSettings; pluginId?: string; focus: number }
   | { stage: 'intentScope'; scope: Scope; selector: string; action: 'add' | 'remove';
+      scopes: Scope[]; focus: number }
+  | { stage: 'recoveryScope'; scope: Scope; selector: string; selectors?: string[]; command: 'uninstall' | 'cleanup';
       scopes: Scope[]; focus: number }
   | { stage: 'targets'; scope: Scope; agents: AgentId[]; savedAgents: AgentId[]; focus: number }
   | { stage: 'preparing'; scope: Scope; request: 'recovery' | 'retire' | 'targets' | 'intent'; focus: number }
@@ -212,31 +220,127 @@ type ScopedUiFlow =
 function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
   if (plan.kind === 'targets' || plan.kind === 'intent') return [];
   if (plan.kind === 'retire') return [
-    ...(plan.plan.options.deleteConfig ? ['本次会删除所选范围已保存的插件设置。'] : []),
+    ...(plan.plan.options.deleteConfig ? ['本次会删除此插件的全部本机设置（通用与各 Agent），影响所有项目。'] : []),
     ...(plan.scope === 'user' && plan.plan.plannedImpact.outputs
       ? ['本次会清理个人原生输出，可能影响其他项目。'] : []),
   ];
-  const reasons = plan.plan.nativeGroups.flatMap((group) =>
-    (group.preview.codexReconcilePlans ?? []).filter((entry) => entry.review.requiresConfirmation)
-      .map((entry) => entry.review.sharedImpact.warning
-        ?? '本次共享原生内容变更可能影响其他使用位置。'));
-  for (const refresh of plan.plan.sourceRefreshes ?? []) {
+  const reasons: string[] = [];
+  const visit = (entry: typeof plan.plan): void => {
+    reasons.push(...entry.nativeGroups.flatMap((group) =>
+      (group.preview.codexReconcilePlans ?? []).filter((item) => item.review.requiresConfirmation)
+        .map((item) => item.review.sharedImpact.warning
+          ?? '本次共享原生内容变更可能影响其他使用位置。')));
+    if (entry.receipt.scope === 'user' && entry.portableGroups.length > 0) {
+      reasons.push('本次可能修改所选工具的个人 Skills 目录，适用于所有项目。');
+    }
+    for (const refresh of entry.sourceRefreshes ?? []) {
     if (!refresh.impact.inventoryComplete) {
       reasons.push(`${refresh.sourceId} 的来源影响清单不完整；必须明确确认来源变更。`);
     } else if (refresh.impact.affectedReferences.length > 0) {
       reasons.push(`${refresh.sourceId} 的来源变更会影响 ${refresh.impact.affectedReferences.length} 个已知引用。`);
     }
-  }
+    }
+    for (const child of entry.joint?.children ?? []) visit(child);
+  };
+  visit(plan.plan);
   if (plan.plan.command === 'cleanup' && plan.plan.options.force) {
     reasons.push('本次受限强制清理只删除已确认的专属目标；依赖此插件的其它目标可能需要恢复。');
-  }
-  if (plan.scope === 'user' && plan.plan.portableGroups.length > 0) {
-    reasons.push('本次可能修改所选工具的个人 Skills 目录，适用于所有项目。');
   }
   return [...new Set(reasons)];
 }
 
-function scopedPlanText(plan: ScopedTuiPlan): string {
+
+function recoveryPluginLabel(id: string): string {
+  const [source, ...name] = id.split('/');
+  return name.length ? `${name.join('/')}（${source}）` : id;
+}
+
+function recoveryTargetLines(receipt: RecoveryReceipt, result: boolean): string[] {
+  const groups = new Map<string, { label: string; targets: string[] }>();
+  let unchanged = 0;
+  for (const target of receipt.targetResults) {
+    let action: string;
+    if (result) {
+      action = target.satisfaction === 'unsupported' || target.satisfaction === 'excluded' ? '! 已跳过'
+        : target.execution === 'applied' || target.execution === 'no-op' ? '✓ 完成'
+        : target.execution === 'failed' || target.execution === 'partial' ? '× 安装失败'
+          : target.blockers.length ? '! 已跳过' : '? 尚未确认';
+    } else if (target.blockers.length || target.satisfaction === 'excluded' || target.satisfaction === 'unsupported') {
+      action = '! 跳过';
+    } else if (receipt.command === 'cleanup' || receipt.command === 'uninstall' || receipt.command === 'retire') {
+      action = '− 移除';
+    } else if ((target.content === 'satisfied' || target.observation === 'verified') && receipt.command !== 'reinstall') {
+      unchanged += 1; continue;
+    } else action = target.content === 'absent' || target.observation === 'missing' ? '+ 新增安装' : '↻ 同步并修复';
+    const reason = target.blockers[0] || target.reasons?.[0] ? recoveryReason((target.blockers[0] ?? target.reasons![0]!).code)
+      : target.satisfaction === 'excluded' ? '已关闭此 Agent'
+        : target.satisfaction === 'unsupported' ? '插件不支持此 Agent' : undefined;
+    const label = `${action} ${recoveryPluginLabel(target.pluginId)}  ${scopeLabel(target.scope)}`;
+    const key = `${label}\0${reason ?? ''}`;
+    const group = groups.get(key) ?? { label: `${label}${reason ? ` · ${reason}` : ''}`, targets: [] };
+    const agent = agentLabel(target.agent);
+    if (!group.targets.includes(agent)) group.targets.push(agent);
+    groups.set(key, group);
+  }
+  return [...groups.values()].flatMap((group) => [group.label, `  → ${group.targets.join(' · ')}`])
+    .concat(unchanged ? [`✓ 另有 ${unchanged} 项已是最新`] : []);
+}
+
+function scopedPlanSummary(plan: ScopedTuiPlan): string {
+  if (plan.kind === 'targets') return ['保存本机 Agent 选择',
+    `已选 ${plan.agents.map(agentLabel).join(' · ') || '无'}`, '已有输出保持不变；保存后可单独同步。'].join('\n');
+  if (plan.kind === 'intent') return [
+    `${plan.action === 'add' ? '+ 加入插件清单' : '− 移出插件清单'} ${recoveryPluginLabel(plan.selector)}`,
+    scopeLabel(plan.scope), '已有安装内容保持不变。',
+  ].join('\n');
+  const receipt = plan.plan.receipt;
+  const lines = [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(plan.scope),
+    ...recoveryTargetLines(receipt, false)];
+  if (plan.kind === 'recovery' && plan.plan.sourceRefreshes?.length) {
+    lines.unshift(...plan.plan.sourceRefreshes.map((refresh) => `↻ 启用来源 ${refresh.sourceId} 的候选版本`),
+      '来源启用后，将重新准备插件操作汇总；本次不会直接更新插件。');
+  }
+  if (plan.plan.plannedImpact.declaration) lines.push('插件清单也将保存本次变化。');
+  if (plan.plan.plannedImpact.config) lines.push('− 删除所选插件的全部本机设置（通用与各 Agent）');
+  for (const change of receipt.nativeToolChanges ?? []) {
+    lines.push(`! 原生工具变更：${recoveryPluginLabel(`${change.producer.sourceId}/${change.producer.pluginName}`)}`);
+    for (const phase of ['before', 'after'] as const) {
+      const closure = change[phase];
+      lines.push(`  ${phase === 'before' ? '变更前' : '变更后'}：${closure?.definitions.map((tool) => tool.key).join(' · ') || '无'}`);
+      for (const consumer of closure?.consumers ?? []) for (const tool of consumer.tools) {
+        lines.push(`  ${consumer.key} 使用 ${tool.key}：${tool.policy === 'required' ? '必须可用' : '优先使用，可回退'}`);
+      }
+    }
+  }
+  if (plan.kind === 'recovery') {
+    const scripts = new Set<string>();
+    const visit = (entry: typeof plan.plan): void => {
+      for (const script of [...(entry.preApplyAuthorization ?? []),
+        ...entry.nativeGroups.flatMap((group) => group.preview.preApplyAuthorization ?? [])]) {
+        scripts.add(`安装检查：${recoveryPluginLabel(script.pluginId)} · ${agentLabel(script.platform)} · ${scopeLabel(script.scope)}`);
+      }
+      for (const child of entry.joint?.children ?? []) visit(child);
+    };
+    visit(plan.plan); lines.push(...scripts);
+  }
+  lines.push(...scopedRiskReasons(plan).map((reason) => `! ${reason}`));
+  for (const diagnostic of [...receipt.errors, ...receipt.blockers]) lines.push(`! ${recoveryReason(diagnostic.code)}`);
+  return [...new Set(lines)].join('\n');
+}
+
+function scopedResultSummary(receipt: RecoveryReceipt): string {
+  return [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(receipt.scope), ...recoveryTargetLines(receipt, true),
+    ...(receipt.declarationChanged ? ['插件清单已保存。'] : []),
+    ...(receipt.preferencesChanged ? ['Agent 选择已保存。'] : []),
+    ...(receipt.configChanged ? ['插件设置已保存。'] : []),
+    ...[...new Set([...receipt.errors, ...receipt.blockers].map((entry) => recoveryReason(entry.code)))]
+      .map((reason) => `! ${reason}`),
+    ...(receipt.commandResults?.length ? [`命令包：${receipt.commandResults.filter((entry) => entry.errors.length === 0).length} 项完成，${receipt.commandResults.filter((entry) => entry.errors.length > 0).length} 项需处理；详情中可查看恢复方法。`] : []),
+  ].join('\n');
+}
+
+function scopedPlanText(plan: ScopedTuiPlan, technical = false): string {
+  if (!technical) return scopedPlanSummary(plan);
   if (plan.kind === 'targets') return [
     '偏好变更：', ...plan.changes, '需求变更：无', '配置变更：无', '输出变更：无',
     ...plan.warnings,
@@ -262,11 +366,12 @@ function scopedPlanText(plan: ScopedTuiPlan): string {
       ? plan.kind === 'retire' ? '删除当前范围声明' : '保存当前范围需求' : '无'}`,
     `偏好变更（计划）：${impact.preferences
       ? plan.kind === 'retire' ? '删除当前范围本机依赖覆盖' : '保存当前范围明确选择的依赖偏好' : '无'}`,
-    `配置变更（计划）：${impact.config ? '删除当前范围已保存配置' : '无'}`,
+    `配置变更（计划）：${impact.config ? '删除所选插件的全部本机配置（common 与所有平台）' : '无'}`,
     `输出变更（计划）：${impact.outputs ? '执行所列精确目标' : '无可执行输出变更'}`,
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '不支持'} · ${target.blockers.length
       ? `受阻：${target.blockers.map((blocker) => blocker.code).join('、')}` : target.observation}`),
     ...diagnostics,
+    ...receipt.targetResults.flatMap((target) => target.reasons?.map((reason) => `${reason.code} · ${reason.message}`) ?? []),
     ...plan.plan.changes.map((change) => `影响：${change}`),
     ...plan.plan.warnings.map((warning) => `注意：${warning}`),
     ...(plan.kind === 'recovery' ? scopedCommandPlanText(plan) : []),
@@ -281,7 +386,8 @@ function scopedCommandPlanText(plan: Extract<ScopedTuiPlan, { kind: 'recovery' }
     .map((change) => `${change.title}${change.description ? `：${change.description}` : ''}`);
 }
 
-function scopedResultText(receipt: RecoveryReceipt): string {
+function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
+  if (!technical) return scopedResultSummary(receipt);
   const diagnostics = [...new Map([
     ...receipt.errors.map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
     ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
@@ -296,6 +402,7 @@ function scopedResultText(receipt: RecoveryReceipt): string {
     `配置变更：${receipt.configChanged ? '是' : '无'}`,
     `输出可能改变：${receipt.outputsMayHaveChanged ? '是' : '否'}`,
     ...diagnostics,
+    ...receipt.targetResults.flatMap((target) => target.reasons?.map((reason) => `${reason.code} · ${reason.message}`) ?? []),
     ...(reviewStale ? ['本次未执行，需要重新准备。'] : []),
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无交付'} · ${target.execution} · ${target.observation}${target.blockers.length ? ` · 受阻 ${target.blockers.map((blocker) => blocker.code).join('、')}` : ''}`),
     ...receipt.targetResults.flatMap((target) => target.recoveryActions?.map((action) =>
@@ -378,7 +485,7 @@ interface DynamicMenuFocus {
 }
 
 interface ConfigDraftIssue {
-  scope: Scope;
+  profile: ConfigProfileKey;
   key: string;
   source: 'update' | 'remove' | 'object';
   referenceSources?: string[];
@@ -391,7 +498,7 @@ interface ConfigLayerDraft {
 }
 
 interface ConfigCandidate {
-  selectingScope?: boolean;
+  layer: ConfigRouteLayer;
   editEvidence?: ConfigEditEvidence;
   pluginId: string;
   flowId?: string;
@@ -402,8 +509,16 @@ interface ConfigCandidate {
   mutations: Record<string, { kind: 'set'; value: PluginConfigValue } | { kind: 'unset' }>;
 }
 
+interface ConfigSaveState {
+  status: 'saving' | 'saved' | 'error';
+  pluginId: string;
+  profiles: ConfigProfileKey[];
+  context: Scope;
+  error?: string;
+}
+
 interface SuspendedConfigDraft {
-  drafts: Partial<Record<Scope, ConfigLayerDraft>>;
+  drafts: Partial<Record<ConfigProfileKey, ConfigLayerDraft>>;
   candidate?: ConfigCandidate;
   arrays: Record<string, ConfigArrayDraft & { evidence?: ConfigEditEvidence }>;
   objects: Record<string, PluginConfigObject>;
@@ -559,7 +674,22 @@ function configPageMatches(
 ): page is ConfigPageViewModel {
   return Boolean(page && route
     && page.pluginId === route.pluginId
-    && page.layer.scope === route.layer.scope);
+    && page.profile === route.layer.profile
+    && page.context === (route.layer.context ?? 'user'));
+}
+
+const CONFIG_PROFILE_KEYS: readonly ConfigProfileKey[] = ['common', ...PLATFORM_TARGETS];
+
+function configReadOptions(layer: ConfigRouteLayer): ConfigReadOptions {
+  return {
+    ...(layer.profile === 'common' ? {} : { platform: layer.profile }),
+    context: layer.context ?? 'user',
+    view: 'stored',
+  };
+}
+
+function configEditorOwnerKey(pluginId: string, layer: ConfigRouteLayer): string {
+  return `${pluginId}\0${layer.profile}\0${layer.context ?? 'user'}`;
 }
 
 function configFieldCanSet(field: ConfigFieldViewModel): boolean {
@@ -664,32 +794,6 @@ function pluginPlatformBadges(plugin: PluginListItemViewModel): React.JSX.Elemen
   </Box>;
 }
 
-function installedScopeStates(
-  plugin: PluginListItemViewModel,
-  platform: PlatformName,
-): Map<Scope, { symbol: '✓' | '!'; status: 'success' | 'warning' | 'error' }> {
-  const states = new Map<Scope, { symbol: '✓' | '!'; status: 'success' | 'warning' | 'error' }>();
-  const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
-  if (!placement || placement.state === 'notInstalled' || placement.state === 'blocked') return states;
-  const scoped = placement.state === 'scopeConflict'
-    ? placement.placements
-    : placement.scopedPlacements ?? [{
-        scope: placement.scope,
-        health: placement.health,
-        revision: placement.revision,
-        actualState: placement.actualState,
-      }];
-  for (const entry of scoped) {
-    const actualState = 'actualState' in entry ? entry.actualState : undefined;
-    const healthy = entry.health === 'ready' && actualState !== 'blocked'
-      && actualState !== 'needsSync';
-    states.set(entry.scope, healthy
-      ? { symbol: '✓', status: 'success' }
-      : { symbol: '!', status: actualState === 'blocked' || entry.health === 'error'
-          ? 'error' : 'warning' });
-  }
-  return states;
-}
 
 function issueMatchesTarget(
   issue: UserIssueViewModel,
@@ -1032,7 +1136,8 @@ function configUnavailableDiagnostic(
         { key: 'pluginId', value: route.pluginId },
         ...(route.invalidStores
           ? [{ key: 'scope' as const, value: route.invalidStores.map((store) => store.scope).join(',') }]
-          : route.layer ? [{ key: 'scope' as const, value: route.layer.scope }] : []),
+          : route.layer ? [{ key: route.layer.profile === 'common' ? 'storeEntry' as const : 'platform' as const,
+              value: route.layer.profile }] : []),
       ],
       checks: invalidLayer
         ? ['只删除所选 user 或 project 设置层。', '重置后重新读取继承值和默认值。']
@@ -1614,6 +1719,12 @@ export function ConsoleAppV4(props: {
   const [operationConfirmation, setOperationConfirmation] = useState<OperationConfirmationOverlay>();
   const [sourceTransportOverlay, setSourceTransportOverlay] = useState<SourceTransportOverlay>();
   const [scopedFlow, setScopedFlow] = useState<ScopedUiFlow>();
+  const [agentSettings, setAgentSettings] = useState<AgentSettings>();
+  const [agentSettingsError, setAgentSettingsError] = useState<string>();
+  const [agentWelcome, setAgentWelcome] = useState(false);
+  const [agentWelcomeFocus, setAgentWelcomeFocus] = useState(0);
+  const [configSavedFocus, setConfigSavedFocus] = useState(0);
+  const agentWelcomeSeen = useRef(false);
   const scopedFlowToken = useRef(0);
   const scopedFlowBusy = useRef(false);
   const scopedSelected = useRef<Record<string, string[]>>({});
@@ -1643,9 +1754,8 @@ export function ConsoleAppV4(props: {
         && snapshot.router.current.route.mode === 'installed' ? 'installed' : 'all'),
   );
   const [scope, setScope] = useState<Scope>('user');
-  const [selectedTargets, setSelectedTargets] = useState<PlatformName[]>([]);
-  const [installPlatformScopes, setInstallPlatformScopes] = useState<Partial<Record<PlatformName, Scope>>>({});
-  const [installPlatformIndex, setInstallPlatformIndex] = useState(0);
+  const [, setSelectedTargets] = useState<PlatformName[]>([]);
+  const [, setInstallPlatformScopes] = useState<Partial<Record<PlatformName, Scope>>>({});
   const [uninstallTargetKeys, setUninstallTargetKeys] = useState<string[]>([]);
   const [technicalRouteKey, setTechnicalRouteKey] = useState<string>();
   const [exitAfterBusy, setExitAfterBusy] = useState(false);
@@ -1653,12 +1763,13 @@ export function ConsoleAppV4(props: {
   const [, setClockTick] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [configPage, setConfigPage] = useState<ConfigPageViewModel>();
-  const [configLayerCounts, setConfigLayerCounts] = useState<Record<string, number>>({});
-  const [configLayerPages, setConfigLayerPages] = useState<Partial<Record<Scope, ConfigPageViewModel>>>({});
-  const [configDrafts, setConfigDrafts] = useState<Partial<Record<Scope, ConfigLayerDraft>>>({});
-  const [referenceContexts, setReferenceContexts] = useState<Partial<Record<Scope, ConfigReferenceContext>>>({});
+  const [configLayerPages, setConfigLayerPages] = useState<Partial<Record<ConfigProfileKey, ConfigPageViewModel>>>({});
+  const [configDrafts, setConfigDrafts] = useState<Partial<Record<ConfigProfileKey, ConfigLayerDraft>>>({});
+  const [referenceContexts, setReferenceContexts] = useState<Partial<Record<ConfigProfileKey, ConfigReferenceContext>>>({});
+  const [configReadRevision, setConfigReadRevision] = useState(0);
   const [referenceContextError, setReferenceContextError] = useState<string>();
   const [configCandidate, setConfigCandidate] = useState<ConfigCandidate>();
+  const [configSaveState, setConfigSaveState] = useState<ConfigSaveState>();
   const [arrayDrafts, setArrayDrafts] = useState<Record<string, ConfigArrayDraft & { evidence?: ConfigEditEvidence }>>({});
   const [arrayToolsOpen, setArrayToolsOpen] = useState(false);
   const [arrayToolFocus, setArrayToolFocus] = useState(0);
@@ -1677,7 +1788,7 @@ export function ConsoleAppV4(props: {
   const [actionError, setActionError] = useState<string>();
   const [copyFeedback, setCopyFeedback] = useState<{ routeKey: string; message: string }>();
   const [configResetAvailability, setConfigResetAvailability] = useState<Partial<Record<
-    Scope,
+    ConfigProfileKey,
     Awaited<ReturnType<TuiController['getConfigResetAvailability']>>
   >>>({});
   const [sourceDraft, setSourceDraft] = useState<SourceDraft>();
@@ -1733,6 +1844,18 @@ export function ConsoleAppV4(props: {
   const operationBusy = useRef(false);
   const route = snapshot.router.current.route;
   useEffect(() => {
+    if (snapshot.phase !== 'ready') return;
+    let active = true;
+    void props.controller.readAgentSettings().then((settings) => {
+      if (!active) return;
+      setAgentSettings(settings); setAgentSettingsError(undefined);
+      if (!agentWelcomeSeen.current && settings.preferences.targets.length === 0) {
+        agentWelcomeSeen.current = true; setAgentWelcome(true);
+      }
+    }).catch(() => { if (active) setAgentSettingsError('无法读取 Agent 设置'); });
+    return () => { active = false; };
+  }, [props.controller, snapshot.phase]);
+  useEffect(() => {
     if (route.name !== 'intentInventory' || scopedStatusRequested.current[route.scope]) return;
     scopedStatusRequested.current[route.scope] = true;
     void props.controller.refreshScopedInventory(route.scope);
@@ -1751,15 +1874,13 @@ export function ConsoleAppV4(props: {
       ...(snapshot.router.currentFlowId ? { flowId: snapshot.router.currentFlowId } : {}),
     });
   }
-  const configDraftCount = (['project', 'user'] as const).reduce((count, draftScope) => {
-    const draft = configDrafts[draftScope];
+  const configDraftCount = CONFIG_PROFILE_KEYS.reduce((count, profile) => {
+    const draft = configDrafts[profile];
     return count + Object.keys(draft?.updates ?? {}).length + (draft?.removes.length ?? 0);
   }, 0);
-  const editingScope = 'layer' in route && route.layer && route.layer.scope !== 'effective' ? route.layer.scope : undefined;
-  const draftUpdates = editingScope ? configDrafts[editingScope]?.updates ?? {} : {
-    ...(configDrafts.user?.updates ?? {}),
-    ...(configDrafts.project?.updates ?? {}),
-  };
+  const editingProfile = 'layer' in route && route.layer ? route.layer.profile : undefined;
+  const configContext = 'layer' in route && route.layer ? route.layer.context ?? 'user' : 'user';
+  const draftUpdates = editingProfile ? configDrafts[editingProfile]?.updates ?? {} : {};
   const definition = routeDefinition(route);
   const rendererFamily = definition.rendererFamily;
   const routeKey = JSON.stringify(route);
@@ -1865,14 +1986,13 @@ export function ConsoleAppV4(props: {
       || (snapshot.result.state !== 'succeeded' && snapshot.result.state !== 'partial')
       || !snapshot.result.operationKind) return;
     if (snapshot.result.operationKind === 'configSaveBatch') {
-      const savedScopes = new Set(snapshot.result.summary.configGroups
-        ?.filter((group) => group.configSaved).map((group) => group.scope) ?? []);
+      const savedProfiles = new Set(snapshot.result.summary.configGroups
+        ?.filter((group) => group.configSaved).map((group) => group.platform ?? 'common') ?? []);
       const nextDrafts = Object.fromEntries(Object.entries(configDrafts)
-        .filter(([draftScope]) => !savedScopes.has(draftScope as Scope))
-        .map(([scope, draft]) => [scope, draft.editEvidence ? { ...draft, editEvidence: Object.fromEntries(
+        .filter(([profile]) => !savedProfiles.has(profile as ConfigProfileKey))
+        .map(([profile, draft]) => [profile, draft.editEvidence ? { ...draft, editEvidence: Object.fromEntries(
           Object.entries(draft.editEvidence).map(([key, evidence]) => [key, {
-            ...evidence, storeDigests: Object.fromEntries(Object.entries(evidence.storeDigests)
-              .filter(([savedScope]) => !savedScopes.has(savedScope as Scope))),
+            ...evidence, storeDigests: {},
           }]),
         ) } : draft]));
       setConfigDrafts(nextDrafts);
@@ -1884,11 +2004,11 @@ export function ConsoleAppV4(props: {
       setObjectError(undefined);
     } else if (snapshot.result.operationKind === 'configSave'
       || snapshot.result.operationKind === 'configReset') {
-      const completedScope = snapshot.result.summary.configScope;
+      const completedProfile = snapshot.result.summary.configPlatform ?? 'common';
       const preserveAll = snapshot.result.operationKind === 'configSave'
         && snapshot.result.summary.configRetryApply === true;
       const nextDrafts = { ...configDrafts };
-      if (!preserveAll && completedScope) delete nextDrafts[completedScope];
+      if (!preserveAll) delete nextDrafts[completedProfile];
       setConfigDrafts(nextDrafts);
       setDirty(Object.keys(nextDrafts).length > 0);
       setConfigCandidate(undefined);
@@ -1991,7 +2111,7 @@ export function ConsoleAppV4(props: {
     for (const suspended of suspendedConfigDrafts.current.values()) {
       if (suspended.externalDraft) drafts.push(suspended.externalDraft);
     }
-    if ((dirty || configCandidate && !configCandidate.selectingScope || nestedPropertyRevision || objectVariantPreview || Object.values(arrayDrafts).some((draft) =>
+    if ((dirty || configCandidate || nestedPropertyRevision || objectVariantPreview || Object.values(arrayDrafts).some((draft) =>
       draft.initial === undefined ? draft.rows.length > 0 : arrayDraftChanged(draft)) || changedObjectDraftKeys.length > 0) && draftOwner) {
       const flowId = externalDraftFlowIds.current.get(draftOwner);
       drafts.push({
@@ -2018,39 +2138,40 @@ export function ConsoleAppV4(props: {
     configDrafts, configCandidate, arrayDrafts, objectDrafts, nestedPropertyRevision, objectVariantPreview, route.name, snapshot.router.currentFlowId, sourceDraft,
   ]);
   useEffect(() => () => props.controller.setExternalDraftState(), [props.controller]);
-  const currentLayerPage = configRoute && configRoute.layer.scope !== 'effective' ? configLayerPages[configRoute.layer.scope] : undefined;
+  const currentLayerPage = configRoute ? configLayerPages[configRoute.layer.profile] : undefined;
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage
     : configPageMatches(currentLayerPage, configRoute) ? currentLayerPage : undefined;
-  const hasReferenceFields = (configPage ?? configLayerPages.user ?? configLayerPages.project)?.groups
-    .some((group) => group.fields.some((field) => configReferenceScalars(field.definition).length > 0)) ?? false;
+  const hasReferenceFields = [configPage, ...Object.values(configLayerPages)]
+    .some((page) => page?.groups.some((group) => group.fields.some((field) => configReferenceScalars(field.definition).length > 0)));
   useEffect(() => {
     if (!configFlowPluginId || !hasReferenceFields) return;
     const abort = new AbortController();
     setReferenceContexts({});
     setReferenceContextError(undefined);
-    void Promise.allSettled((['user', 'project'] as const).map(async (scope) => ({ scope,
-      context: await props.controller.getConfigReferenceContext(configFlowPluginId, scope,
-        configDrafts[scope] ?? { updates: {}, removes: [] }, abort.signal),
+    void Promise.allSettled(CONFIG_PROFILE_KEYS.map(async (profile) => ({ profile,
+      context: await props.controller.getConfigReferenceContext(configFlowPluginId, configReadOptions({ profile, context: configContext }),
+        configDrafts[profile] ?? { updates: {}, removes: [] }, abort.signal),
     }))).then((results) => {
       if (abort.signal.aborted) return;
       setReferenceContexts(Object.fromEntries(results.flatMap((result) => result.status === 'fulfilled'
-        ? [[result.value.scope, result.value.context]] : [])));
+        ? [[result.value.profile, result.value.context]] : [])));
       if (results.some((result) => result.status === 'rejected')) setReferenceContextError('引用来源读取失败。请返回修复来源配置后重新打开设置。');
     });
     return () => abort.abort();
-  }, [props.controller, configFlowPluginId, configDrafts, editingScope, hasReferenceFields]);
+  }, [props.controller, configFlowPluginId, configDrafts, configContext, hasReferenceFields, configReadRevision]);
   const crossLayerDependencies = configCrossLayerDependencies(
-    Object.fromEntries((configPage?.groups ?? []).flatMap((group) => group.fields.map((field) => [field.key, field.definition]))),
+    Object.fromEntries(Object.entries(configLayerPages).map(([profile, page]) => [profile,
+      Object.fromEntries(page.groups.flatMap((group) => group.fields.map((field) => [field.key, field.definition])))])),
     configDrafts, referenceContexts,
   );
-  const referenceContext = editingScope ? referenceContexts[editingScope] : undefined;
+  const referenceContext = editingProfile ? referenceContexts[editingProfile] : undefined;
 
   const configDraftIssues = (() => {
     const issues: ConfigDraftIssue[] = [];
-    for (const draftScope of ['project', 'user'] as const) {
-      const draft = configDrafts[draftScope];
+    for (const profile of CONFIG_PROFILE_KEYS) {
+      const draft = configDrafts[profile];
       if (!draft) continue;
-      const page = configLayerPages[draftScope];
+      const page = configLayerPages[profile];
       if (!page) continue;
       const fields = new Map(page.groups.flatMap((group) => group.fields)
         .map((field) => [field.key, field]));
@@ -2058,20 +2179,21 @@ export function ConsoleAppV4(props: {
         const field = fields.get(key);
         const invalidReferences = field ? configReferenceValues(field.definition, value)
           .filter(({ scalar, value: selected }) => {
-            const reference = referenceContexts[draftScope]?.selections[configReferenceKey(scalar)];
+            const context = referenceContexts[profile];
+            const reference = context?.selections[configReferenceKey(scalar, context.platform)];
             return reference !== undefined && (reference.issues.length > 0
               || !reference.choices.some((choice) => choice.value === selected));
           }).map(({ scalar }) => configReferenceSource(scalar)) : [];
         if (!field || !configFieldCanSet(field)
           || validatePluginConfigValue(field.definition, value, key).length > 0
           || invalidReferences.length > 0) {
-          issues.push({ scope: draftScope, key, source: 'update', referenceSources: invalidReferences });
+          issues.push({ profile, key, source: 'update', referenceSources: invalidReferences });
         }
       }
       for (const key of draft.removes) {
         const field = fields.get(key);
         if (!field || !configFieldCanUnset(field)) {
-          issues.push({ scope: draftScope, key, source: 'remove' });
+          issues.push({ profile, key, source: 'remove' });
         }
       }
     }
@@ -2081,22 +2203,16 @@ export function ConsoleAppV4(props: {
     if (!configFlowPluginId) return;
     const abort = new AbortController();
     setConfigLayerPages({});
-    const layers = [
-      { key: 'user', layer: { scope: 'user' as const } },
-      { key: 'project', layer: { scope: 'project' as const } },
-    ];
-    void Promise.allSettled(layers.map(async ({ key, layer }) => ({
-      key,
-      page: await props.controller.getConfigPage(configFlowPluginId, layer, abort.signal),
+    void Promise.allSettled(CONFIG_PROFILE_KEYS.map(async (profile) => ({
+      key: profile,
+      page: await props.controller.getConfigPage(configFlowPluginId, configReadOptions({ profile, context: configContext }), abort.signal),
     }))).then((results) => {
       if (abort.signal.aborted) return;
-      setConfigLayerCounts(Object.fromEntries(results.flatMap((result) =>
-        result.status === 'fulfilled' ? [[result.value.key, result.value.page.storedCount]] : [])));
       setConfigLayerPages(Object.fromEntries(results.flatMap((result) =>
         result.status === 'fulfilled' ? [[result.value.key, result.value.page]] : [])));
     });
     return () => abort.abort();
-  }, [props.controller, configFlowPluginId]);
+  }, [props.controller, configFlowPluginId, configContext, configReadRevision]);
   useEffect(() => {
     if (!configRoute) return;
     const abort = new AbortController();
@@ -2120,7 +2236,7 @@ export function ConsoleAppV4(props: {
         setConfigActionError(undefined);
       }
     }
-    void props.controller.getConfigPage(expectedPluginId, configRoute.layer, abort.signal)
+    void props.controller.getConfigPage(expectedPluginId, configReadOptions(configRoute.layer), abort.signal)
       .then((page) => {
         if (abort.signal.aborted
           || expectedPluginId !== configRoute.pluginId
@@ -2132,11 +2248,7 @@ export function ConsoleAppV4(props: {
           const invalidStores = error instanceof TuiConfigInvalidStoreError
             ? error.evidence
             : undefined;
-          const layer = invalidStores?.length === 1
-            ? { scope: invalidStores[0]!.scope }
-            : !invalidStores && configRoute.layer.scope !== 'effective'
-              ? { scope: configRoute.layer.scope as Scope }
-              : undefined;
+          const layer = configRoute.layer;
           const code = typeof error === 'object' && error !== null && 'code' in error
             ? safeDiagnosticCode((error as { code?: unknown }).code, 'configUnavailable')
             : error instanceof Error
@@ -2167,7 +2279,7 @@ export function ConsoleAppV4(props: {
         }
       });
     return () => abort.abort();
-  }, [configRoute?.pluginId, configRoute?.layer.scope, props.controller]);
+  }, [configRoute?.pluginId, configRoute?.layer.profile, configContext, configReadRevision, props.controller]);
 
   useEffect(() => {
     if (route.name !== 'configUnavailable'
@@ -2178,23 +2290,21 @@ export function ConsoleAppV4(props: {
     }
     const abort = new AbortController();
     setConfigResetAvailability({});
-    const scopes = route.invalidStores?.map(({ scope }) => scope)
-      ?? route.storedScopes
-      ?? (route.layer ? [route.layer.scope] : []);
-    void Promise.all(scopes.map(async (scope) => {
+    const profiles = route.layer ? [route.layer.profile] : ['common' as const];
+    void Promise.all(profiles.map(async (profile) => {
       try {
         return {
-          scope,
-          availability: await props.controller.getConfigResetAvailability(route.pluginId, { scope }),
+          profile,
+          availability: await props.controller.getConfigResetAvailability(route.pluginId, configReadOptions({ profile, context: route.layer?.context })),
         };
       } catch {
-        return { scope, availability: undefined };
+        return { profile, availability: undefined };
       }
     })).then((results) => {
       if (!abort.signal.aborted) {
         setConfigResetAvailability(Object.fromEntries(results
           .filter((result) => result.availability !== undefined)
-          .map((result) => [result.scope, result.availability!])));
+          .map((result) => [result.profile, result.availability!])));
       }
     });
     return () => abort.abort();
@@ -2207,14 +2317,17 @@ export function ConsoleAppV4(props: {
       ? route.invalidStores?.map((store) => `${store.scope}:${store.code}`).join('|') ?? ''
       : '',
     route.name === 'configUnavailable' ? route.storedScopes?.join('|') ?? '' : '',
-    route.name === 'configUnavailable' ? route.layer?.scope ?? '' : '',
+    route.name === 'configUnavailable' ? route.layer?.profile ?? '' : '',
+    route.name === 'configUnavailable' ? route.layer?.context ?? 'user' : '',
   ]);
 
   useEffect(() => {
     if (route.name !== 'configFields' || !currentConfigPage) return;
+    const currentFrame = props.controller.snapshot.router.current;
+    if (currentFrame.route.name !== 'configFields' || !configPageMatches(currentConfigPage, currentFrame.route)) return;
     const tabs = configTabs(currentConfigPage);
     if (tabs.length === 0) return;
-    const current = snapshot.router.current.context.configGroupId;
+    const current = currentFrame.context.configGroupId;
     if (tabs.some((tab) => tab.id === current)) return;
     props.controller.updatePageContext({ configGroupId: tabs[0]!.id });
   }, [props.controller, route.name, currentConfigPage, snapshot.router.current.context.configGroupId]);
@@ -2363,7 +2476,7 @@ export function ConsoleAppV4(props: {
   const arrayItem = route.name === 'configFieldEditor' || route.name === 'configObjectPropertyEditor'
     ? route.arrayItem : undefined;
   const activeArrayKey = activeTopField?.definition.type === 'array' && configRoute
-    ? `${configOwnerKey(configRoute)}\0${activeTopField.key}` : undefined;
+    ? `${configEditorOwnerKey(configRoute.pluginId, configRoute.layer)}\0${activeTopField.key}` : undefined;
   const activeArrayDraft = activeArrayKey ? arrayDrafts[activeArrayKey] : undefined;
   const itemValue = arrayItem && activeArrayDraft
     ? activeArrayDraft.rows.find((row) => row.rowId === arrayItem.rowId)?.value : undefined;
@@ -2383,10 +2496,9 @@ export function ConsoleAppV4(props: {
     : activeTopField;
   useEffect(() => {
     if (!activeArrayKey || activeArrayDraft || !activeTopField || route.name !== 'configFieldEditor') return;
-    if (route.layer.scope === 'effective' && configReferenceScalars(activeTopField.definition).length) return;
     const value = draftUpdates[activeTopField.key] ?? activeTopField.draftValue ?? activeTopField.value;
     setArrayDrafts((current) => ({ ...current, [activeArrayKey]: { ...createConfigArrayDraft(Array.isArray(value) ? value : undefined), evidence: currentConfigPage?.editEvidence } }));
-  }, [activeArrayKey, activeArrayDraft, activeTopField, route.name, editingScope]);
+  }, [activeArrayKey, activeArrayDraft, activeTopField, route.name, editingProfile]);
   useEffect(() => {
     if (route.name !== 'configFieldEditor' || route.editor !== 'array' || !activeArrayKey || !activeArrayDraft) return;
     const row = activeArrayDraft.rows[focus];
@@ -2412,13 +2524,14 @@ export function ConsoleAppV4(props: {
     }
   }, [props.controller, route, activeField]);
   const activeObjectKey = activeField?.type === 'object' && configRoute
-    ? `${configOwnerKey(configRoute)}\0${activeField.key}${arrayItem ? `\0${arrayItem.rowId ?? 'new'}` : ''}`
+    ? `${configEditorOwnerKey(configRoute.pluginId, configRoute.layer)}\0${activeField.key}${arrayItem ? `\0${arrayItem.rowId ?? 'new'}` : ''}`
     : undefined;
   const objectValueFromUpdate = !arrayItem && activeField && Object.hasOwn(draftUpdates, activeField.key)
     && typeof draftUpdates[activeField.key] === 'object'
     ? draftUpdates[activeField.key] as PluginConfigObject
     : undefined;
-  const activeCandidateMutation = !arrayItem && activeField ? configCandidate?.mutations[activeField.key] : undefined;
+  const activeCandidateMutation = !arrayItem && activeField && configCandidate && configCandidate.layer.profile === editingProfile
+    && (configCandidate.layer.context ?? 'user') === configContext ? configCandidate.mutations[activeField.key] : undefined;
   const objectValueFromCandidate = activeCandidateMutation?.kind === 'set'
     && typeof activeCandidateMutation.value === 'object'
     ? activeCandidateMutation.value as PluginConfigObject
@@ -2450,13 +2563,13 @@ export function ConsoleAppV4(props: {
   const activeFieldIsConst = activeField && 'const' in activeField.definition && activeField.definition.const !== undefined;
   const activePropertyIsConst = activePropertyDefinition && 'const' in activePropertyDefinition && activePropertyDefinition.const !== undefined;
   const referenceNotice = (scalar: PluginConfigScalarField, value: unknown): string | undefined => {
-    const selection = referenceContext?.selections[configReferenceKey(scalar)];
+    const selection = referenceContext?.selections[configReferenceKey(scalar, referenceContext.platform)];
     const message = referenceContextError && !selection ? `来源 ${configReferenceSource(scalar)}：${referenceContextError}`
       : configReferenceMessage(scalar, selection, value);
     const source = 'valueRef' in scalar ? scalar.valueRef!.field : '';
-    const pendingSource = !('valueRef' in scalar && scalar.valueRef?.plugin) && editingScope === 'project' && selection?.source !== 'project'
-      && (Object.hasOwn(configDrafts.user?.updates ?? {}, source) || configDrafts.user?.removes.includes(source));
-    return [message, pendingSource ? `来源 ${source} 在个人默认有未保存修改。请先保存来源配置，再编辑或保存引用配置。` : undefined]
+    const pendingSource = !('valueRef' in scalar && scalar.valueRef?.plugin) && editingProfile !== 'common' && selection?.source !== 'platform'
+      && (Object.hasOwn(configDrafts.common?.updates ?? {}, source) || configDrafts.common?.removes.includes(source));
+    return [message, pendingSource ? `来源 ${source} 在公共设置有未保存修改。请先保存来源配置，再编辑或保存引用配置。` : undefined]
       .filter(Boolean).join(' ') || undefined;
   };
   const openReferenceSource = (scalar: PluginConfigScalarField, leaf?: ConfigLeafEditorDraft): void => {
@@ -2477,7 +2590,7 @@ export function ConsoleAppV4(props: {
 
   useEffect(() => {
     if (route.name !== 'configFieldEditor' || !activeField) return;
-    const candidate = configCandidate?.mutations[activeField.key];
+    const candidate = activeCandidateMutation;
     const draft = arrayItem ? itemValue : candidate?.kind === 'set' ? candidate.value : draftUpdates[activeField.key];
     setInputValue(activeField.sensitive
       ? draft === undefined ? '' : String(draft)
@@ -2488,6 +2601,8 @@ export function ConsoleAppV4(props: {
   }, [
     route.name,
     route.name === 'configFieldEditor' ? `${route.fieldKey}:${route.mode ?? ''}:${route.arrayItem ? route.arrayItem.rowId ?? 'new' : 'field'}` : '',
+    editingProfile,
+    configContext,
     activeField?.key,
     configCandidate,
   ]);
@@ -2505,6 +2620,8 @@ export function ConsoleAppV4(props: {
     route.name === 'configObjectPropertyEditor'
       ? `${route.fieldKey}:${route.propertyKey ?? ''}:${route.stage}`
       : '',
+    editingProfile,
+    configContext,
   ]);
   useEffect(() => {
     if (route.name !== 'sourceAdd') return;
@@ -2562,6 +2679,8 @@ export function ConsoleAppV4(props: {
     && (snapshot.phase === 'error'
 
     || Boolean(route.name === 'intentInventory' && (snapshot.scopedInventories[route.scope]?.errors.length
+      || snapshot.scopedInventories[route.scope]?.declaredRoots.length
+      || snapshot.scopedInventories[route.scope]?.extraInstalledRoots.length
       || snapshot.scopedInventoryRefresh[route.scope]?.state === 'error'
       || snapshot.scopedInventories[route.scope]?.declarationState === 'invalid'
       || snapshot.scopedInventories[route.scope]?.preferenceState === 'invalid'))
@@ -2638,6 +2757,7 @@ export function ConsoleAppV4(props: {
       + Math.max(0, wrapConsoleText(actionError ?? description ?? '', size.columns - 2).length - 1)
       + Math.max(0, wrapConsoleText(title, size.columns - 2).length - 1),
   });
+  let detailNavigation: { maxOffset: number; lineLimit: number } | undefined;
   const detailCardContent = (
     subject: NonNullable<ReturnType<TuiController['getPluginDetailSubject']>>,
     completionLines: string[] = [],
@@ -2645,24 +2765,18 @@ export function ConsoleAppV4(props: {
     const cardWidth = size.columns - 2;
     const card = pluginDetailCardLayout(subject, cardWidth);
     const availableRows = pageActionBudget(completionLines.length);
-    // Compact actions use one row each; paging adds one row inside the card.
     const actionRows = Math.min(3, actions.filter((action) => action.role !== 'navigation').length);
-    const needsPaging = card.fullHeight > availableRows - actionRows;
-    const lineLimit = needsPaging ? Math.max(1, availableRows - actionRows - 3) : undefined;
-    const pageCount = lineLimit ? Math.max(1, Math.ceil(card.factRows / lineLimit)) : 1;
-    const page = lineLimit ? Math.min(pageCount, Math.floor(batchTargetOffset / lineLimit) + 1) : 1;
-    const lineOffset = lineLimit ? (page - 1) * lineLimit : 0;
-    if (lineLimit) readerNavigation = { page, pageCount, move: (direction) => {
-      setBatchTargetOffset((Math.min(pageCount, Math.max(1, page + direction)) - 1) * lineLimit);
-    } };
+    const lineLimit = Math.max(1, availableRows - actionRows - 4);
+    const maxOffset = Math.max(0, card.factRows - lineLimit);
+    const lineOffset = Math.min(batchTargetOffset, maxOffset);
+    detailNavigation = { maxOffset, lineLimit };
     const cardHeight = entityCardWindowHeight(card, lineOffset, lineLimit);
     currentActionViewportLineBudget = Math.max(1,
       pageActionBudget(completionLines.length) - cardHeight);
     const viewport = actionViewport(actions, true, focus, scrollOffset,
       currentActionViewportLineBudget);
     help = [
-      ...(actions.length > 0 ? ['↑↓ 选择动作'] : []),
-      ...(needsPaging ? ['←→ 翻信息'] : []),
+      '↑↓ 连续阅读与选择', 'PgUp/PgDn 翻动',
       ...(actions[focus]?.run && !actions[focus]?.disabled ? ['Enter 选择'] : []),
       'Esc 返回',
     ].join(' · ');
@@ -2694,7 +2808,8 @@ export function ConsoleAppV4(props: {
         else setBatchTargetOffset(next);
       },
     };
-    return <Reader text={text} columns={columns} rows={rows} page={page.page} />;
+    return <Reader text={text} columns={columns} rows={rows} page={page.page}
+      highlightChanges={Boolean(scopedFlow && !showTechnical)} />;
   };
   const pagedItems = (total: number, rows: number, offset = batchTargetOffset) =>
     paginateWrappedRows({
@@ -2835,6 +2950,7 @@ export function ConsoleAppV4(props: {
     if (scopedFlowBusy.current) return;
     scopedFlowBusy.current = true;
     const token = ++scopedFlowToken.current;
+    setShowTechnical(false); setBatchTargetOffset(0);
     setScopedFlow({ stage: 'preparing', scope: request.scope, request: request.kind, focus: 0 });
     void prepare().then((plan) => {
       if (scopedFlowToken.current !== token) {
@@ -2850,6 +2966,29 @@ export function ConsoleAppV4(props: {
         errorCode: safeDiagnosticCode(error instanceof Error ? error.message : undefined,
           'recoveryPreparationFailed'), focus: 0 });
     });
+  };
+  const agentSummaries = (pluginId?: string): Partial<Record<PlatformTarget, { symbol: string; label: string; count: number }>> => {
+    const entries = pluginId ? [pluginId] : props.controller.listPlugins({ mode: 'browse' }).map((entry) => entry.pluginId);
+    return Object.fromEntries((agentSettings?.preferences.targets ?? []).map((target) => {
+      const facts = entries.flatMap((id) => props.controller.getPluginDetailSubject(id)?.placements
+        .filter((fact) => (fact.agent ?? fact.platform) === target) ?? []);
+      const count = new Set(entries.filter((id) => props.controller.getPluginDetailSubject(id)?.placements
+        .some((fact) => (fact.agent ?? fact.platform) === target))).size;
+      const symbol = facts.some((fact) => fact.projectState === 'blocked' || fact.statusState === 'blocked') ? '×'
+        : facts.some((fact) => fact.observation === 'unknown' || fact.projectState === 'unknown') ? '?'
+          : facts.some((fact) => fact.projectState === 'pending' || fact.statusState === 'needsSync'
+            || fact.statusState === 'absent' || fact.statusState === 'orphaned') ? '↻'
+            : facts.length ? '✓' : '?';
+      return [target, { symbol, count, label: symbol === '✓' ? '已安装' : symbol === '↻' ? '待同步'
+        : symbol === '×' ? '安装受阻' : '未确认' }];
+    }));
+  };
+  const openAgentManagement = (pluginId?: string): void => {
+    setAgentWelcome(false);
+    void props.controller.readAgentSettings().then((settings) => {
+      setAgentSettings(settings); setAgentSettingsError(undefined);
+      setScopedFlow({ stage: 'agents', scope: settings.context, settings, pluginId, focus: 0 });
+    }).catch(() => setAgentSettingsError('无法读取 Agent 设置，请检查本机配置。'));
   };
   const closeScopedFlow = (): void => {
     scopedFlowToken.current += 1;
@@ -3085,9 +3224,9 @@ export function ConsoleAppV4(props: {
   const beginReview = (intent: OperationIntent, returnRoute?: TuiRoute): void => {
     setSplitTaskReview(undefined);
     const agentForPlatform = (platform: PlatformName): AgentId =>
-      platform === 'claude' ? 'claude-code' : 'codex';
+      platform === 'claude' ? 'claude' : 'codex';
     if (intent.kind === 'pluginWrite') {
-      const agents: AgentId[] = intent.platform === 'both' ? ['codex', 'claude-code']
+      const agents: AgentId[] = intent.platform === 'both' ? ['codex', 'claude']
         : [agentForPlatform(intent.platform)];
       beginScopedTask({ kind: 'recovery', scope: intent.scope,
         command: intent.action === 'refreshAndSync' ? 'sync' : intent.action,
@@ -3243,6 +3382,9 @@ export function ConsoleAppV4(props: {
     ? '插件已不在当前状态中，可取消选择'
     : draft.action === undefined
       && !props.controller.pluginHasInstallableTarget(candidate.plugin.pluginId)
+      && !candidate.plugin.portableSkills
+      && !props.controller.getPluginDetailSubject(candidate.plugin.pluginId)?.placements.some((placement) =>
+        placement.actual && placement.agent && placement.agent !== 'codex' && placement.agent !== 'claude')
       && props.controller.listPluginWriteBatchTargets(
         'uninstall', [candidate.plugin.pluginId],
       ).length === 0
@@ -3257,7 +3399,8 @@ export function ConsoleAppV4(props: {
       ? '插件来源不可用'
       : draft.action === 'install' && candidate.plugin.capabilityUnsupported
         ? '当前 AW CLI 不支持插件所需功能'
-        : draft.action === 'install' && !props.controller.pluginHasInstallableTarget(candidate.plugin.pluginId)
+        : draft.action === 'install' && !candidate.plugin.portableSkills
+          && !props.controller.pluginHasInstallableTarget(candidate.plugin.pluginId)
           ? '没有可信且兼容的缺失位置'
           : undefined;
   const invalidBatchSelection = (draft: BatchDraft): string[] => {
@@ -3592,7 +3735,7 @@ export function ConsoleAppV4(props: {
       return;
     }
     try {
-      const agent = platform === 'claude' ? 'claude-code' : 'codex';
+      const agent = platform === 'claude' ? 'claude' : 'codex';
       beginScopedTask({ kind: 'recovery', command: 'cleanup', scope: selectedScope,
         selectors: [pluginId], targets: [agent], exactTargets: [{ pluginId, agent }], force: true },
       () => props.controller.startForceCleanupReview(candidate));
@@ -3805,10 +3948,8 @@ export function ConsoleAppV4(props: {
     setDirty(false);
     go({ name: 'sourceEdit', sourceId, owner });
   };
-  const configLayerLabel = (layer: { scope: Scope | 'effective' }): string =>
-    layer.scope === 'effective' ? '有效设置'
-      : layer.scope === 'user' ? '个人默认'
-        : '当前项目';
+  const configLayerLabel = (layer: Pick<ConfigRouteLayer, 'profile'>): string =>
+    layer.profile === 'common' ? '公共设置' : agentLabel(layer.profile);
   const fieldValueText = (field: ConfigFieldViewModel, value: unknown, full = false, configured = value !== undefined): string =>
     presentConfigValue({
       definition: field.definition,
@@ -3825,53 +3966,48 @@ export function ConsoleAppV4(props: {
     }
     return `${field.effectiveDisplayValue}${field.unit && field.effectiveDisplayValue !== '未设置' ? ` ${field.unit}` : ''}`;
   };
-  const pendingFieldDisplay = (field: ConfigFieldViewModel, scope: Scope): string | undefined => {
-    const draft = configDrafts[scope];
+  const pendingFieldDisplay = (field: ConfigFieldViewModel, profile: ConfigProfileKey): string | undefined => {
+    const draft = configDrafts[profile];
     if (!draft) return undefined;
     if (draft.removes.includes(field.key)) return '将删除此位置的覆盖并恢复继承';
     if (!Object.hasOwn(draft.updates, field.key)) return undefined;
     const value = draft.updates[field.key]!;
-    if (field.sensitive) return '将更新';
-    return fieldValueText(field, value);
+    const targetField = configLayerPages[profile]?.groups.flatMap((group) => group.fields)
+      .find((candidate) => candidate.key === field.key);
+    if (!targetField || targetField.sensitive) return '将更新';
+    return fieldValueText(targetField, value);
   };
-  const pendingFieldTargets = (field: ConfigFieldViewModel): Array<{ scope: Scope; value: string }> =>
-    (['project', 'user'] as const).flatMap((scope) => {
-      const value = pendingFieldDisplay(field, scope);
-      return value ? [{ scope, value }] : [];
+  const pendingFieldTargets = (field: ConfigFieldViewModel): Array<{ profile: ConfigProfileKey; value: string }> =>
+    CONFIG_PROFILE_KEYS.flatMap((profile) => {
+      const value = pendingFieldDisplay(field, profile);
+      return value ? [{ profile, value }] : [];
     });
   const fieldEditor = (field: ConfigFieldViewModel): Extract<TuiRoute, { name: 'configFieldEditor' }>['editor'] => {
     return field.type;
   };
   const fieldEditorMode = (field: ConfigFieldViewModel): { mode: 'choices' } | Record<string, never> =>
     (field.choices?.length ?? 0) > 0 || 'valueRef' in field.definition && field.definition.valueRef ? { mode: 'choices' } : {};
-  const openConfigTarget = (candidate: ConfigCandidate, replace = false): void => {
+  const openConfigTarget = (candidate: ConfigCandidate): void => {
     const currentFlowId = snapshot.router.currentFlowId;
     const storedAnchor = configOverviewAnchors.current.get(candidate.pluginId);
     const storedOverviewFrameId = storedAnchor && storedAnchor.flowId === currentFlowId
       ? storedAnchor.overviewFrameId : undefined;
     const overviewFrameId = storedOverviewFrameId
       ?? props.controller.configOverviewFrameId(currentFlowId, candidate.pluginId);
-    setConfigCandidate({
+    const selected = {
       ...candidate,
       ...(currentFlowId ? { flowId: currentFlowId } : {}),
       ...(overviewFrameId ? { overviewFrameId } : {}),
-    });
-    const targetRoute: TuiRoute = {
-      name: 'configLayer',
-      pluginId: candidate.pluginId,
-      ...(candidate.fieldKey ? { fieldKey: candidate.fieldKey } : {}),
-      ...(candidate.groupId ? { groupId: candidate.groupId } : {}),
-      ...(candidate.presetId ? { presetId: candidate.presetId } : {}),
     };
-    if (replace) props.controller.replace(targetRoute);
-    else go(targetRoute);
+    setConfigCandidate(selected);
+    openConfigLayerTarget(candidate.layer, selected);
   };
   const updateDraft = (key: string, value: PluginConfigValue): void => {
     if (!configRoute || !currentConfigPage) return;
     setConfigActionError(undefined);
-    if (activeField && editingScope) {
+    if (activeField && editingProfile) {
       for (const { scalar, value: referencedValue } of configReferenceValues(activeField.definition, value)) {
-        const selected = referenceContext?.selections[configReferenceKey(scalar)];
+        const selected = referenceContext?.selections[configReferenceKey(scalar, referenceContext.platform)];
         if (!selected || selected.issues.length || !selected.choices.some((choice) => choice.value === referencedValue)) {
           setObjectError(referenceNotice(scalar, referencedValue));
           setInputError(referenceNotice(scalar, referencedValue));
@@ -3900,14 +4036,13 @@ export function ConsoleAppV4(props: {
     }
     const candidate: ConfigCandidate = {
       pluginId: configRoute.pluginId,
+      layer: configRoute.layer,
       fieldKey: key,
       groupId: snapshot.router.current.context.configGroupId,
       mutations: { [key]: { kind: 'set', value } },
-      ...(activeArrayDraft?.evidence ? { editEvidence: activeArrayDraft.evidence } : {}),
+      editEvidence: activeArrayDraft?.evidence ?? currentConfigPage.editEvidence,
     };
-    if (editingScope && activeTopField && configReferenceScalars(activeTopField.definition).length) {
-      openConfigLayerTarget({ scope: editingScope }, candidate);
-    } else openConfigTarget(candidate);
+    openConfigTarget(candidate);
   };
   const editArray = (edit: ConfigArrayEdit): void => {
     if (!activeArrayKey || !activeArrayDraft) return;
@@ -3945,12 +4080,13 @@ export function ConsoleAppV4(props: {
     setConfigActionError(undefined);
     const candidate: ConfigCandidate = {
       pluginId: configRoute.pluginId,
+      layer: configRoute.layer,
+      editEvidence: currentConfigPage?.editEvidence,
       fieldKey: key,
       groupId: snapshot.router.current.context.configGroupId,
       mutations: { [key]: { kind: 'unset' } },
     };
-    if (editingScope && activeTopField && configReferenceScalars(activeTopField.definition).length) openConfigLayerTarget({ scope: editingScope }, candidate);
-    else openConfigTarget(candidate);
+    openConfigTarget(candidate);
   };
   const updateObjectDraft = (value: PluginConfigObject): void => {
     if (!activeObjectKey) return;
@@ -4013,7 +4149,7 @@ export function ConsoleAppV4(props: {
     const definition = activeObjectProperties?.[propertyKey] ?? activeField.definition.additionalProperties;
     if (definition && value !== undefined) {
       for (const { scalar, value: selected } of configReferenceValues(definition, value)) {
-        const reference = referenceContext?.selections[configReferenceKey(scalar)];
+        const reference = referenceContext?.selections[configReferenceKey(scalar, referenceContext.platform)];
         if (!reference || reference.issues.length || !reference.choices.some((choice) => choice.value === selected)) {
           setInputError(referenceNotice(scalar, selected) ?? '引用选项已变化，请重新选择。');
           return false;
@@ -4087,56 +4223,41 @@ export function ConsoleAppV4(props: {
       : undefined);
     openConfigTarget({
       pluginId: page.pluginId,
+      layer: { profile: page.profile, context: page.context },
+      editEvidence: page.editEvidence,
       presetId,
       groupId: target?.groupId,
       mutations,
     });
   };
   const openConfigLayerTarget = (
-    layer: { scope: Scope },
+    layer: ConfigRouteLayer,
     explicitCandidate?: ConfigCandidate,
   ): void => {
     const candidate = explicitCandidate ?? configCandidate;
-    if (!candidate) return;
+    if (!candidate || candidate.layer.profile !== layer.profile
+      || (candidate.layer.context ?? 'user') !== (layer.context ?? 'user')) return;
     const selectedCandidate = { ...candidate,
       flowId: candidate.flowId ?? snapshot.router.currentFlowId,
       overviewFrameId: candidate.overviewFrameId ?? configOverviewAnchors.current.get(candidate.pluginId)?.overviewFrameId,
     };
-    if (selectedCandidate.selectingScope) {
-      const field = configLayerPages[layer.scope]?.groups.flatMap((group) => group.fields).find((field) => field.key === selectedCandidate.fieldKey);
-      if (!field || !configFieldCanSet(field)) return;
-      if (field.definition.type === 'array') {
-        const owner = `${candidate.pluginId}\0${field.key}`;
-        const working = arrayDrafts[owner];
-        if (working) {
-          const stored = configDrafts[layer.scope]?.updates[field.key] ?? field.draftValue ?? field.value;
-          setArrayDrafts((current) => ({ ...current, [owner]: { ...working,
-            initial: Array.isArray(stored) ? structuredClone(stored) : undefined,
-            evidence: configLayerPages[layer.scope]?.editEvidence,
-          } }));
-        }
-      }
-      const available = (['user', 'project'] as const).filter((scope) => configLayerPages[scope]?.groups
-        .flatMap((group) => group.fields).some((entry) => entry.key === field.key && configFieldCanSet(entry)));
-      const next = { name: 'configFieldEditor' as const, pluginId: candidate.pluginId, layer, fieldKey: field.key,
-        editor: fieldEditor(field), ...fieldEditorMode(field) };
-      if (available.length === 1) props.controller.replace(next);
-      else go(next);
-      return;
-    }
-    const page = configLayerPages[layer.scope];
-    if (!page) return;
+    const page = currentConfigPage?.pluginId === candidate.pluginId
+      && currentConfigPage.profile === layer.profile && currentConfigPage.context === (layer.context ?? 'user')
+      ? currentConfigPage : configLayerPages[layer.profile];
+    if (!page || page.pluginId !== candidate.pluginId || page.context !== (layer.context ?? 'user')) return;
     const fields = new Map(page.groups.flatMap((group) => group.fields)
       .map((field) => [field.key, field]));
     const valid = Object.entries(selectedCandidate.mutations).every(([key, mutation]) => {
       const field = fields.get(key);
-      return Boolean(field && (mutation.kind === 'set' ? configFieldCanSet(field) : configFieldCanUnset(field)));
+      return Boolean(field && (mutation.kind === 'set'
+        ? configFieldCanSet(field) && validatePluginConfigValue(field.definition, mutation.value, key).length === 0
+        : configFieldCanUnset(field)));
     });
     if (!valid) {
-      setConfigActionError('此值不能保存到所选位置。请返回修改值或选择其他位置。');
+      setConfigActionError('此值不符合当前配置。请检查修改后的值。');
       return;
     }
-    const previous = configDrafts[layer.scope] ?? { updates: {}, removes: [] };
+    const previous = configDrafts[layer.profile] ?? { updates: {}, removes: [] };
     const updates = { ...previous.updates };
     const removes = new Set(previous.removes);
     const editEvidence = { ...previous.editEvidence };
@@ -4156,8 +4277,8 @@ export function ConsoleAppV4(props: {
         else removes.delete(key);
       }
     }
-    const next = { ...configDrafts, [layer.scope]: { updates, removes: [...removes], editEvidence } };
-    if (Object.keys(updates).length === 0 && removes.size === 0) delete next[layer.scope];
+    const next = { ...configDrafts, [layer.profile]: { updates, removes: [...removes], editEvidence } };
+    if (Object.keys(updates).length === 0 && removes.size === 0) delete next[layer.profile];
     const target = selectedCandidate.fieldKey
       ? configFieldTarget(configPage ?? page, selectedCandidate.fieldKey)
       : selectedCandidate.groupId ? { groupId: selectedCandidate.groupId, focusIndex: 0 } : undefined;
@@ -4173,12 +4294,12 @@ export function ConsoleAppV4(props: {
     }
     if (!selectedCandidate.flowId) {
       props.controller.replace(
-        { name: 'configFields', pluginId: selectedCandidate.pluginId, layer: { scope: 'effective' } },
+        { name: 'configFields', pluginId: selectedCandidate.pluginId, layer },
         target ? { configGroupId: target.groupId, focusIndex: target.focusIndex, scrollOffset: 0 } : undefined,
       );
     }
     if (selectedCandidate.fieldKey) {
-      const owner = `${selectedCandidate.pluginId}\0${selectedCandidate.fieldKey}`;
+      const owner = `${configEditorOwnerKey(selectedCandidate.pluginId, layer)}\0${selectedCandidate.fieldKey}`;
       const belongsToField = (key: string): boolean => key === owner || key.startsWith(`${owner}\0`);
       setArrayDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== owner)));
       setObjectDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !belongsToField(key))));
@@ -4190,28 +4311,6 @@ export function ConsoleAppV4(props: {
     setFocus(target?.focusIndex ?? 0);
     setScrollOffset(0);
   };
-  useEffect(() => {
-    if (route.name !== 'configLayer' || !configCandidate) return;
-    const scopes = (['project', 'user'] as const).filter((scope) => {
-      const page = configLayerPages[scope];
-      if (!page) return false;
-      const fields = page.groups.flatMap((group) => group.fields);
-      if (configCandidate.selectingScope) return fields.some((field) => field.key === configCandidate.fieldKey && configFieldCanSet(field));
-      return Object.entries(configCandidate.mutations).every(([key, mutation]) => {
-        const field = fields.find((entry) => entry.key === key);
-        return field && (mutation.kind === 'set' ? configFieldCanSet(field) : configFieldCanUnset(field));
-      });
-    });
-    if (scopes.length === 1) {
-      openConfigLayerTarget({ scope: scopes[0]! });
-      if (!configCandidate.selectingScope) setConfigActionError(`仅可保存到${configLayerLabel({ scope: scopes[0]! })}；已加入待保存修改。`);
-    }
-  }, [route.name, configCandidate, configLayerPages]);
-  useEffect(() => {
-    if (route.name !== 'configFieldEditor' || route.layer.scope !== 'effective' || arrayItem || !activeTopField
-      || !configReferenceScalars(activeTopField.definition).length) return;
-    openConfigTarget({ pluginId: route.pluginId, fieldKey: activeTopField.key, selectingScope: true, mutations: {} }, true);
-  }, [route.name, route.name === 'configFieldEditor' ? route.layer.scope : '', activeTopField?.key]);
   const configChanges = (
     page: ConfigPageViewModel,
     draft: ConfigLayerDraft,
@@ -4285,43 +4384,45 @@ export function ConsoleAppV4(props: {
   };
   const discardInvalidConfigDraftChanges = (): void => {
     if (!configRoute || configDraftIssues.length === 0) return;
-    const invalidKeys = new Set(configDraftIssues.map((issue) => issue.key));
-    const nextDrafts = Object.fromEntries((['project', 'user'] as const).flatMap((scope) => {
-      const draft = configDrafts[scope];
+    const nextDrafts = Object.fromEntries(CONFIG_PROFILE_KEYS.flatMap((profile) => {
+      const draft = configDrafts[profile];
       if (!draft) return [];
-      const invalidForScope = new Set(configDraftIssues
-        .filter((issue) => issue.scope === scope).map((issue) => issue.key));
+      const invalidForProfile = new Set(configDraftIssues
+        .filter((issue) => issue.profile === profile).map((issue) => issue.key));
       const updates = Object.fromEntries(Object.entries(draft.updates)
-        .filter(([key]) => !invalidForScope.has(key)));
-      const removes = draft.removes.filter((key) => !invalidForScope.has(key));
-      return Object.keys(updates).length + removes.length > 0 ? [[scope, { updates, removes,
+        .filter(([key]) => !invalidForProfile.has(key)));
+      const removes = draft.removes.filter((key) => !invalidForProfile.has(key));
+      return Object.keys(updates).length + removes.length > 0 ? [[profile, { updates, removes,
         ...(draft.editEvidence ? { editEvidence: Object.fromEntries(Object.entries(draft.editEvidence)
           .filter(([key]) => Object.hasOwn(updates, key))) } : {}),
       }]] : [];
-    })) as Partial<Record<Scope, ConfigLayerDraft>>;
-    const owner = `${configOwnerKey(configRoute)}\0`;
-    const nextChangedObjectKeys = changedObjectDraftKeys.filter((key) => !key.startsWith(owner)
-      || !invalidKeys.has(key.slice(owner.length)));
+    })) as Partial<Record<ConfigProfileKey, ConfigLayerDraft>>;
+    const invalidEditorOwners = configDraftIssues.map(({ profile, key }) =>
+      `${configEditorOwnerKey(configRoute.pluginId, { profile, context: configContext })}\0${key}`);
+    const invalidEditor = (key: string): boolean => invalidEditorOwners.some((owner) => key === owner || key.startsWith(`${owner}\0`));
+    const nextChangedObjectKeys = changedObjectDraftKeys.filter((key) => !invalidEditor(key));
     setConfigDrafts(nextDrafts);
     setObjectDrafts((current) => Object.fromEntries(Object.entries(current)
-      .filter(([key]) => !key.startsWith(owner)
-        || !invalidKeys.has(key.slice(owner.length)))));
+      .filter(([key]) => !invalidEditor(key))));
+    setArrayDrafts((current) => Object.fromEntries(Object.entries(current)
+      .filter(([key]) => !invalidEditor(key))));
     setChangedObjectDraftKeys(nextChangedObjectKeys);
     setDirty(Object.keys(nextDrafts).length + nextChangedObjectKeys.length > 0);
     setObjectError(undefined);
     setConfigActionError(undefined);
   };
   const configSaveIntent = (
-    apply: boolean,
+    apply = false,
   ): Extract<OperationIntent, { kind: 'configSaveBatch' }> | undefined => {
     if (!configRoute || configDraftCount === 0) return;
-    const groups = (['project', 'user'] as const).flatMap((scope) => {
-      const draft = configDrafts[scope];
-      const page = configLayerPages[scope];
-      if (!draft || !page) return [];
+    const groups = CONFIG_PROFILE_KEYS.flatMap((profile) => {
+      const draft = configDrafts[profile];
+      const page = configLayerPages[profile];
+      if (!draft || !page || page.pluginId !== configRoute.pluginId || page.context !== configContext) return [];
       const fields = page.groups.flatMap((group) => group.fields);
       return [{
-        scope,
+        scope: 'user' as const,
+        ...(profile === 'common' ? {} : { platform: profile }),
         updates: draft.updates,
         ...(draft.editEvidence ? { editEvidence: draft.editEvidence } : {}),
         removeKeys: draft.removes,
@@ -4335,17 +4436,45 @@ export function ConsoleAppV4(props: {
     return {
       kind: 'configSaveBatch',
       pluginId: configRoute.pluginId,
+      context: configContext,
       apply,
       groups,
     };
   };
-  const beginConfigSave = async (apply: boolean): Promise<void> => {
+  const discardDependentConfigDrafts = (): void => {
+    if (!configRoute || crossLayerDependencies.length === 0) return;
+    const next = { ...configDrafts };
+    for (const { profile, key } of crossLayerDependencies) {
+      const previous = next[profile];
+      if (!previous) continue;
+      const updates = { ...previous.updates };
+      delete updates[key];
+      const removes = previous.removes.filter((removed) => removed !== key);
+      const editEvidence = { ...previous.editEvidence };
+      delete editEvidence[key];
+      if (Object.keys(updates).length + removes.length === 0) delete next[profile];
+      else next[profile] = { updates, removes, editEvidence };
+    }
+    const removedOwners = crossLayerDependencies.map(({ profile, key }) =>
+      `${configEditorOwnerKey(configRoute.pluginId, { profile, context: configContext })}\0${key}`);
+    const removed = (key: string): boolean => removedOwners.some((owner) => key === owner || key.startsWith(`${owner}\0`));
+    const changedObjects = changedObjectDraftKeys.filter((key) => !removed(key));
+    setConfigDrafts(next);
+    setArrayDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !removed(key))));
+    setObjectDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !removed(key))));
+    setChangedObjectDraftKeys(changedObjects);
+    setDirty(Object.keys(next).length + changedObjects.length > 0);
+    setObjectError(undefined);
+    setConfigActionError(undefined);
+  };
+  const onSaveConfig = async (): Promise<void> => {
+    if (configSaveState?.status === 'saving') return;
     if (crossLayerDependencies.length) {
-      setConfigActionError(`请先保存来源配置，再编辑或保存引用配置：${[...new Set(crossLayerDependencies.map((entry) => entry.source))].join('、')}（个人默认）。请取消相关引用草稿后保存来源。`);
+      setConfigActionError(`请先保存来源配置，再编辑或保存引用配置：${[...new Set(crossLayerDependencies.map((entry) => entry.source))].join('、')}（公共设置）。请取消相关引用草稿后保存来源。`);
       return;
     }
-    if ((['user', 'project'] as const).some((scope) => !referenceContexts[scope]
-      && Object.keys(configDrafts[scope]?.updates ?? {}).some((key) => configPage?.groups.flatMap((group) => group.fields)
+    if (CONFIG_PROFILE_KEYS.some((profile) => !referenceContexts[profile]
+      && Object.keys(configDrafts[profile]?.updates ?? {}).some((key) => configLayerPages[profile]?.groups.flatMap((group) => group.fields)
         .some((field) => field.key === key && configReferenceScalars(field.definition).length)))) {
       setConfigActionError(referenceContextError ?? '正在读取引用来源，请稍后保存。');
       return;
@@ -4354,20 +4483,72 @@ export function ConsoleAppV4(props: {
       setConfigActionError('字段已变化。请先放弃失效草稿，或返回继续检查来源。');
       return;
     }
-    const intent = configSaveIntent(apply);
+    const intent = configSaveIntent();
     if (!intent) return;
+    const profiles = intent.groups.map((group) => group.platform ?? 'common');
+    const context = intent.context ?? 'user';
+    const previouslySaved = configSaveState?.status === 'error' && configSaveState.pluginId === intent.pluginId
+      && configSaveState.context === context ? configSaveState.profiles : [];
+    setConfigSaveState({ status: 'saving', pluginId: intent.pluginId, profiles, context });
+    setConfigActionError(undefined);
     try {
-      await beginReview(intent);
-      setConfigActionError(undefined);
+      const result = await props.controller.saveConfigDraft(intent);
+      const saved = new Set(result.savedProfiles);
+      const pendingApply = CONFIG_PROFILE_KEYS.filter((profile) => saved.has(profile) || previouslySaved.includes(profile));
+      const nextDrafts = Object.fromEntries(Object.entries(configDrafts)
+        .filter(([profile]) => !saved.has(profile as ConfigProfileKey))
+        .map(([profile, draft]) => [profile, draft.editEvidence ? { ...draft, editEvidence: Object.fromEntries(
+          Object.entries(draft.editEvidence).map(([key, evidence]) => [key, { ...evidence, storeDigests: {} }]),
+        ) } : draft]));
+      const savedEditorOwners = result.savedProfiles.map((profile) =>
+        `${configEditorOwnerKey(intent.pluginId, { profile, context })}\0`);
+      const belongsToSavedProfile = (key: string): boolean => savedEditorOwners.some((owner) => key.startsWith(owner));
+      const nextChangedObjects = changedObjectDraftKeys.filter((key) => !belongsToSavedProfile(key));
+      setConfigDrafts(nextDrafts);
+      setArrayDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !belongsToSavedProfile(key))));
+      setObjectDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !belongsToSavedProfile(key))));
+      setChangedObjectDraftKeys(nextChangedObjects);
+      setConfigCandidate(undefined);
+      setDirty(Object.keys(nextDrafts).length + nextChangedObjects.length > 0);
+      if (saved.size > 0) {
+        setConfigPage(undefined);
+        setConfigLayerPages({});
+        setReferenceContexts({});
+        setConfigReadRevision((revision) => revision + 1);
+      }
+      if (result.status === 'succeeded') {
+        setConfigSaveState({ status: 'saved', pluginId: intent.pluginId, profiles: pendingApply, context });
+      } else {
+        const error = result.status === 'partial' ? '部分设置未保存。已保留未保存的草稿，请检查后重试。'
+          : '设置未保存。已保留草稿，请检查后重试。';
+        setConfigSaveState({ status: 'error', pluginId: intent.pluginId, profiles: pendingApply, context, error });
+        setConfigActionError(error);
+      }
     } catch (error) {
-      props.controller.recordUiFailure(error, { code: 'tuiConfigReviewFailed', stage: 'config-review' });
-      setConfigActionError('设置值未通过验证。请重新检查修改。');
+      props.controller.recordUiFailure(error, { code: 'tuiConfigSaveFailed', stage: 'config-save' });
+      const message = '设置未保存。请重新检查修改后重试。';
+      setConfigSaveState({ status: 'error', pluginId: intent.pluginId, profiles: previouslySaved, context, error: message });
+      setConfigActionError(message);
     }
+  };
+  const beginConfigSave = onSaveConfig;
+  const dismissConfigSaved = (): void => { setConfigSaveState(undefined); };
+  const applySavedConfig = (): void => {
+    if (configSaveState?.status !== 'saved' || configSaveState.profiles.length === 0) return;
+    const saved = configSaveState;
+    const platforms = saved.profiles.filter((profile) => profile !== 'common');
+    setConfigSaveState(undefined);
+    beginReview({
+      kind: 'configSave', pluginId: saved.pluginId, context: saved.context,
+      apply: true, retryApply: true, updates: {},
+      ...(saved.profiles.includes('common') ? {}
+        : platforms.length === 1 ? { platform: platforms[0] } : { targets: platforms }),
+    });
   };
   useEffect(() => {
     if (route.name === 'configSave' && route.view !== 'changes' && configDraftCount > 0 && currentConfigPage) {
       props.controller.replace({ name: 'configFields', pluginId: route.pluginId, layer: route.layer });
-      beginConfigSave(true);
+      void beginConfigSave();
     }
   }, [route.name, route.name === 'configSave' ? route.view : undefined, currentConfigPage, configDraftCount]);
   useEffect(() => {
@@ -4375,14 +4556,6 @@ export function ConsoleAppV4(props: {
     props.controller.replace({ name: 'sourceEdit', sourceId: sourceDraft.sourceId, owner: sourceDraft.owner });
     beginSourceReview(sourceDraft, false);
   }, [route.name, route.name === 'sourceSave' ? route.view : undefined, sourceDraft]);
-  useEffect(() => {
-    const intent = pendingReviewIntentRef.current;
-    if (route.name !== 'review' || intent?.kind !== 'configSaveBatch' || !intent.apply
-      || snapshot.activeReview?.configImpact?.state !== 'known'
-      || snapshot.activeReview.configImpact.affectedTargetCount !== 0) return;
-    back();
-    void beginReview({ ...intent, apply: false });
-  }, [route.name, snapshot.activeReview?.reviewToken]);
   useEffect(() => {
     if (!operationConfirmation) return;
     if (route.name !== 'review'
@@ -4424,7 +4597,34 @@ export function ConsoleAppV4(props: {
       <ProgressRow title="检查当前项目" state="pending" />
       <ProgressRow title="汇总可用操作" state="pending" />
     </StatusCard>;
-  } else if (rendererFamily === 'home' && route.name === 'home') {
+  } else if (configSaveState?.status === 'saved') {
+    title = '插件设置';
+    description = undefined;
+    content = <Box height={Math.max(5, size.rows - 7)} flexDirection="column" justifyContent="center">
+      <Box borderStyle="round" borderColor={tuiTheme.roles.focus} paddingX={2} flexDirection="column">
+        <Text bold color={tuiTheme.roles.focus}>已保存，是否更新插件？</Text>
+        <Text>更新已经安装的插件，使设置生效。</Text>
+        {['更新插件', '暂不更新'].map((label, index) => <Text key={label}
+          color={index === configSavedFocus ? tuiTheme.roles.focus : undefined}>
+          {index === configSavedFocus ? '› ' : '  '}{label}
+        </Text>)}
+      </Box>
+    </Box>;
+    help = '↑↓ 选择 · Enter 确认 · Esc 暂不更新';
+  } else if (agentWelcome) {
+    title = '欢迎使用 AW';
+    description = undefined;
+    content = <Box height={Math.max(5, size.rows - 7)} flexDirection="column" justifyContent="center">
+      <Box borderStyle="round" borderColor={tuiTheme.roles.focus} paddingX={2} flexDirection="column">
+        <Text bold>先选择你在这台电脑上使用的 Agent</Text>
+        {['选择 Agent', '稍后再说'].map((label, index) => <Text key={label}
+          color={index === agentWelcomeFocus ? tuiTheme.roles.focus : undefined}>
+          {index === agentWelcomeFocus ? '› ' : '  '}{label}
+        </Text>)}
+      </Box>
+    </Box>;
+    help = '↑↓ 选择 · Enter 确认 · Esc 稍后再说';
+  } else if (rendererFamily === 'home' && route.name === 'home' && !scopedFlow) {
     const home = snapshot.viewModel!.home;
     const plugins = props.controller.listPlugins({ mode: 'browse' });
     const attention = new Set(plugins.filter((entry) => entry.primaryAttention).map((entry) => entry.pluginId)).size;
@@ -4440,18 +4640,25 @@ export function ConsoleAppV4(props: {
       home.catalogCheckingCount ? `${home.catalogCheckingCount} 检查中` : ''].filter(Boolean).join(' · ') || '✓ 当前可用';
     actions = [
       { label: '插件', description: pluginState, run: () => go({ name: 'pluginList', mode: 'browse' }) },
-      { label: '插件清单', description: '个人与当前项目的插件需求', run: () => go({ name: 'intentScopes' }) },
+      { label: '项目插件', description: (() => { const counts = snapshot.scopedInventories.project?.counts;
+        return counts ? `✓ ${counts.ready} 个就绪 · ! ${counts.pending + counts.blocked + counts.unknown} 个需处理` : '查看当前项目的插件'; })(), run: () => snapshot.projectRoot
+        ? go({ name: 'intentInventory', scope: 'project', projectKey: snapshot.projectRoot })
+        : go({ name: 'intentInventory', scope: 'user' }) },
       { label: '插件来源', description: sourceState, run: () => go({ name: 'sourceList' }) },
+      { label: 'Agent 管理', description: agentSettingsError ?? (agentSettings?.preferences.targets
+        .map((target) => `${agentSummaries()[target]?.symbol ?? '?'} ${agentLabel(target)}`).join(' · ') || '请选择本机使用的 Agent'),
+        run: () => openAgentManagement() },
     ];
-    content = <Box flexDirection="column">{actions.map((action, index) => <Box key={action.label} marginBottom={1}>
+    if (size.rows <= 18 && wrapConsoleText(actions[3]!.description ?? '', size.columns - 4).length > 1) title = '';
+    content = <Box flexDirection="column">{actions.map((action, index) => <Box key={action.label} flexShrink={0} marginBottom={size.rows >= 24 ? 1 : 0}>
       <HomeNavTile width={size.columns - 2} title={action.label} focused={focus === index}>
-        <Text wrap="wrap">{action.description?.split(' · ').map((state, stateIndex) => <Text key={stateIndex}
+        {index === 3 ? <AgentStatusText text={action.description ?? ''} /> : <Text wrap="wrap">{action.description?.split(' · ').map((state, stateIndex) => <Text key={stateIndex}
           color={state.startsWith('↑') ? tuiTheme.roles.change : state.startsWith('!') || state.startsWith('↻') ? tuiTheme.roles.warning
             : state.startsWith('?') ? tuiTheme.roles.unknown : state.startsWith('✓') ? tuiTheme.roles.success : tuiTheme.roles.secondary}>
           {stateIndex > 0 ? ' ' : ''}[{state}]
-        </Text>)}</Text>
+        </Text>)}</Text>}
       </HomeNavTile>
-    </Box>)}</Box>;
+    </Box>)}{snapshot.projectRoot ? <Box flexShrink={0}><Text color={tuiTheme.roles.secondary}>当前项目  {path.basename(snapshot.projectRoot)}</Text></Box> : null}</Box>;
   } else if (route.name === 'intentScopes') {
     breadcrumb = '插件清单';
     title = '选择清单范围';
@@ -4483,9 +4690,35 @@ export function ConsoleAppV4(props: {
     </Box>;
   } else if (scopedFlow) {
     const flow = scopedFlow;
+    const ReviewSurface = showTechnical ? TechnicalDetails : ReviewCard;
+    const ResultSurface = showTechnical ? TechnicalDetails : ResultCard;
+    const detailsAction: ActionItem = { label: showTechnical ? '返回摘要 [d]' : '查看详情 [d]',
+      run: () => { setShowTechnical((value) => !value); setBatchTargetOffset(0); } };
     breadcrumb = `插件清单 / ${flow.scope === 'user' ? '个人' : '当前项目'}`;
     context = undefined;
-    if (flow.stage === 'intentScope') {
+    if (flow.stage === 'agents') {
+      title = 'Agent 管理';
+      description = flow.pluginId ? `选择 ${flow.pluginId.split('/').pop()} 在哪些 Agent 中使用`
+        : '选择这台电脑上使用的 Agent';
+      breadcrumb = flow.pluginId ? '插件 / Agent 管理' : '首页 / Agent 管理';
+      content = <AgentManagement controller={props.controller} settings={flow.settings}
+        pluginId={flow.pluginId} columns={size.columns} rows={size.rows} summaries={agentSummaries(flow.pluginId)}
+        active={!overlay}
+        onBack={closeScopedFlow} onExit={requestConfirmedExit} onSaved={setAgentSettings}
+        onHome={() => { closeScopedFlow(); requestSessionNavigation('home'); }}
+        onReload={() => { closeScopedFlow(); requestSessionNavigation('reload'); }}
+        onHelp={() => { setOverlayFocus(0); setHelpPage(1); setOverlay('help'); }}
+        onSync={() => beginScopedTask({ kind: 'recovery', command: 'sync', scope: flow.scope,
+          selectors: flow.pluginId ? [flow.pluginId] : [], retireUnselectedTargets: true })} />;
+      help = '↑↓ 移动 · Enter/Space 勾选 · s 保存 · Esc 返回';
+    } else if (flow.stage === 'recoveryScope') {
+      title = flow.command === 'uninstall' ? '选择卸载范围' : '选择清理范围';
+      description = '确认变化后处理此范围，保留其他范围仍需要的内容。';
+      actions = flow.scopes.map((selectedScope) => ({ label: scopeLabel(selectedScope),
+        status: 'error', run: () => beginScopedTask({ kind: 'recovery', command: flow.command,
+          scope: selectedScope, selectors: flow.selectors ?? [flow.selector] }) }));
+      content = <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />;
+    } else if (flow.stage === 'intentScope') {
       title = flow.action === 'add' ? '选择插件需求范围' : '选择要移出的清单';
       description = flow.action === 'add' ? '保存需求不会立即安装。'
         : '移出需求后，现有安装仍会保留。';
@@ -4497,7 +4730,7 @@ export function ConsoleAppV4(props: {
     } else if (flow.stage === 'targets') {
       title = flow.scope === 'user' ? '个人插件使用的工具' : '此项目在本机使用的工具';
       description = '保存后可单独准备同步任务。';
-      actions = (['codex', 'claude-code', 'cursor'] as const).map((agent): ActionItem => ({
+      actions = (['codex', 'claude', 'cursor'] as const).map((agent): ActionItem => ({
         actionId: `agent:${agent}`, label: `${flow.agents.includes(agent) ? '✓' : '○'} ${agent}`,
         run: () => setScopedFlow({ ...flow,
           agents: flow.agents.includes(agent) ? flow.agents.filter((value) => value !== agent)
@@ -4537,7 +4770,8 @@ export function ConsoleAppV4(props: {
     } else if (flow.stage === 'review') {
       title = '操作汇总';
       description = '确认需求、偏好、配置及输出影响。';
-      readingText = scopedPlanText(flow.plan);
+      readingText = scopedPlanText(flow.plan, showTechnical);
+      help = '←→ 阅读 · ↑↓ 操作 · Enter 选择 · d 详情 · Esc 返回';
       actions = [
         { label: flow.plan.kind === 'targets' ? '确认保存本机工具'
           : flow.plan.kind === 'intent' ? '确认修改需求' : '确认恢复可执行目标',
@@ -4545,6 +4779,7 @@ export function ConsoleAppV4(props: {
             ? setScopedFlow({ stage: 'risk', scope: flow.scope, request: flow.request,
               plan: flow.plan, focus: 0 }) : executeScopedReview(flow.plan) },
         { label: '返回修改', run: closeScopedFlow },
+        detailsAction,
         ...(flow.request.kind === 'recovery' && batchDraft?.maintenanceTargets?.length
           && batchDraft.maintenanceTargets.every((target) => target.scope === flow.scope)
           ? [{ label: '修改处理范围', run: () => {
@@ -4562,33 +4797,31 @@ export function ConsoleAppV4(props: {
           setScopedFlow({ stage: 'timeout', scope: flow.scope, request, focus: 0 });
         } }] : []),
       ];
-      content = <ReviewCard title="本次影响">
-        {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(6)))}
+      content = <ReviewSurface title={showTechnical ? "技术详情" : "本次变化"}>
+        {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(actions.length + (showTechnical ? 5 : 4))))}
         <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
-      </ReviewCard>;
+      </ReviewSurface>;
     } else if (flow.stage === 'risk') {
       title = '操作汇总';
       description = '确认需求、偏好、配置及输出影响。';
-      readingText = [
-        `范围：${flow.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
-        `完整请求：${flow.plan.kind === 'recovery' || flow.plan.kind === 'retire'
-          ? flow.plan.plan.receipt.requestedRoots.join('、') : ''}`,
-        ...scopedRiskReasons(flow.plan).map((reason) => `! ${reason}`),
-      ].join('\n');
+      readingText = scopedPlanText(flow.plan, showTechnical);
       actions = [
         { label: '返回检查', run: () => setScopedFlow({ ...flow, stage: 'review', focus: 0 }) },
         { label: '确认并执行', run: () => executeScopedReview(flow.plan) },
+        detailsAction,
       ];
-      content = <ReviewCard title="本次影响">
-        {readingPage(scopedPlanText(flow.plan), size.columns - 6, Math.max(1, pageActionBudget(6)))}
-      </ReviewCard>;
+      content = <ReviewSurface title={showTechnical ? "技术详情" : "本次变化"}>
+        {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(actions.length + (showTechnical ? 5 : 4))))}
+        <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
+      </ReviewSurface>;
     } else {
       title = '恢复结果';
-      description = flow.errorCode ? `操作未完成：${flow.errorCode}`
+      help = '←→ 阅读 · ↑↓ 操作 · Enter 选择 · d 详情 · Esc 返回';
+      description = flow.errorCode ? recoveryReason(flow.errorCode)
         : flow.receipt ? flow.receipt.ok ? '请求已完成。' : '请求仍有未完成目标。'
           : '本机工具已保存。';
-      readingText = flow.receipt ? scopedResultText(flow.receipt)
-        : flow.errorCode ?? (flow.changed ? '本机工具已保存。' : '本机工具没有变化。');
+      readingText = flow.receipt ? scopedResultText(flow.receipt, showTechnical)
+        : (flow.errorCode ? showTechnical ? flow.errorCode : recoveryReason(flow.errorCode) : undefined) ?? (flow.changed ? '本机工具已保存。' : '本机工具没有变化。');
       const retryTargets = flow.receipt?.targetResults.filter((target) =>
         (target.execution === 'failed' || target.execution === 'partial')
         && (target.observation === 'missing' || target.content === 'absent')) ?? [];
@@ -4606,6 +4839,7 @@ export function ConsoleAppV4(props: {
             : route.name === 'pluginDetail' ? '返回插件详情'
               : route.name === 'intentInventory' ? '返回当前清单'
                 : '返回插件列表', run: closeScopedFlow },
+        detailsAction,
         ...(reviewStale && flow.request ? [{ label: '重新准备本次操作', run: () =>
           beginScopedTask(flow.request!) }] : []),
         ...(flow.plan?.kind === 'targets' ? [{ label: '立即同步', run: () => beginScopedTask({
@@ -4621,11 +4855,11 @@ export function ConsoleAppV4(props: {
           exactTargets: retryTargets.map((target) => ({ pluginId: target.pluginId, agent: target.agent })),
         }) }] : []),
       ];
-      content = <ResultCard status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}
+      content = <ResultSurface status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}
         title={description}>
-        {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(6)))}
+        {readingPage(readingText, size.columns - 6, Math.max(1, pageActionBudget(actions.length + (showTechnical ? 5 : 4))))}
         <SemanticRows actions={actions} focus={flow.focus} kind="action" compact />
-      </ResultCard>;
+      </ResultSurface>;
     }
   } else if (route.name === 'intentInventory') {
     const inventory = snapshot.scopedInventories[route.scope];
@@ -4694,11 +4928,7 @@ export function ConsoleAppV4(props: {
         { actionId: 'inventory-retire-config', label: '停用已移除插件并删除设置',
           run: () => beginScopedTask({ kind: 'retire', scope: route.scope,
             selector: activeRoot.pluginId, deleteConfig: true }) }] : []),
-      { actionId: 'inventory-targets', label: '选择本机工具', run: () => {
-        const agents = (inventory?.selectedAgents ?? []).filter((value): value is AgentId =>
-          value === 'codex' || value === 'claude-code' || value === 'cursor');
-        setScopedFlow({ stage: 'targets', scope: route.scope, agents, savedAgents: agents, focus: 0 });
-      } },
+      { actionId: 'inventory-targets', label: 'Agent 管理', run: () => openAgentManagement() },
       { actionId: 'inventory-add', label: '添加插件需求', run: () => {
         setScope(route.scope); go({ name: 'pluginList', mode: 'browse' });
       } },
@@ -4752,6 +4982,14 @@ export function ConsoleAppV4(props: {
         `本机偏好：${inventory?.preferenceState ?? '未检查'}`,
         ...(inventory?.coverage?.portable === false ? ['通用 Skills 覆盖：未完整覆盖'] : []),
         ...(inventory?.errors.map((error) => `原因：${safeDiagnosticCode(error.code, 'inventoryUnavailable')}`) ?? []),
+        ...roots.flatMap((root) => [root.pluginId,
+          ...(root.blockers ?? []).map((reason) => safeDiagnosticCode(reason.code, 'inventoryUnavailable')),
+          ...(root.agentResults ?? []).flatMap((target) => [
+            `${target.agent} · ${target.observation} · ${target.content}`,
+            ...target.blockers.map((reason) => safeDiagnosticCode(reason.code, 'targetUnavailable')),
+            ...(target.reasons ?? []).map((reason) => `${reason.code} · ${reason.message}`),
+          ]),
+        ]),
         ...(snapshot.scopedInventoryRefresh[route.scope]?.state === 'error'
           ? [`上次快照已过期：${safeDiagnosticCode(snapshot.scopedInventoryRefresh[route.scope]?.errorCode, 'inventoryRefreshFailed')}`] : []),
         '重新检查只读取当前范围；不会安装或清理。',
@@ -4882,9 +5120,34 @@ export function ConsoleAppV4(props: {
       description: item.configOnly
         ? '来源当前没有这个插件；可以查看已保存设置或定点重置设置层。'
         : item.description,
-      ...(item.primaryAttention ? { attention: item.primaryAttention.message } : {}),
-      placementSummary: '',
-      tags: pluginPlatformBadges(item),
+      placementSummary: (() => {
+        const subject = props.controller.getPluginDetailSubject(item.pluginId);
+        const targets = agentSettings?.preferences.targets ?? [];
+        return targets.filter((target) => !subject?.supportedPlatforms
+          || subject.supportedPlatforms.includes(target)
+          || subject.placements.some((entry) => (entry.agent ?? entry.platform) === target)).map((target) => {
+          const excluded = agentSettings?.preferences.exclusions.some((entry) => entry.plugin === item.pluginId && entry.target === target);
+          const facts = subject?.placements.filter((entry) => (entry.agent ?? entry.platform) === target) ?? [];
+          const symbol = excluded ? '⊘' : facts.some((entry) => entry.projectState === 'blocked' || entry.statusState === 'blocked') ? '×'
+            : facts.some((entry) => entry.projectState === 'pending' || entry.statusState === 'needsSync') ? '↻'
+              : facts.length && facts.every((entry) => entry.observation === 'known' && (entry.projectState === 'ready' || entry.statusState === 'ready')) ? '✓' : '?';
+          return `${symbol} ${agentLabel(target)}`;
+        }).join('  ');
+      })(),
+      tags: (() => {
+        const subject = props.controller.getPluginDetailSubject(item.pluginId);
+        const badges = (['user', 'project'] as const).flatMap((placementScope) => {
+          const direct = subject?.declarations[placementScope].state === 'declared';
+          const facts = subject?.placements.filter((entry) => entry.scope === placementScope) ?? [];
+          if (!direct && !facts.length) return [];
+          const ready = facts.length > 0 && facts.every((entry) => entry.observation === 'known'
+            && (entry.projectState === 'ready' || entry.statusState === 'ready'));
+          return [<Text key={placementScope} backgroundColor={placementScope === 'user' ? '#543e78' : '#234b70'}>
+            {direct ? ready ? '■' : '□' : facts.some((entry) => entry.statusState === 'orphaned') ? '!' : '▣'} {scopeLabel(placementScope)}{direct ? ready ? '' : ' 待安装' : facts.some((entry) => entry.statusState === 'orphaned') ? ' 可清理' : ' 依赖'}
+          </Text>];
+        });
+        return badges.length ? <Text>{badges}</Text> : <Text color={tuiTheme.roles.secondary}>○ 尚未添加</Text>;
+      })(),
       statusLabel: statusText(item),
       status: pluginRowStatus(item),
       }]),
@@ -4954,7 +5217,7 @@ export function ConsoleAppV4(props: {
             ...pluginRows[index]!, width: size.columns - 2,
             hasTags: Boolean(pluginRows[index]!.tags),
           }).height : 1),
-      focus, requestedOffset: scrollOffset, rowBudget: pageActionBudget(3),
+      focus, requestedOffset: scrollOffset, rowBudget: pageActionBudget(4),
     });
     content = (
       <Box flexDirection="column">
@@ -4969,7 +5232,7 @@ export function ConsoleAppV4(props: {
           : route.mode === 'installed' && items.length === 0 && !query && sourceId === 'all'
             ? installFilter === 'updateAvailable'
               ? <Callout title="没有可更新插件" description="当前筛选范围内没有经过版本证据确认的更新。" />
-              : <Callout title="开始添加第一个插件" description="插件可以安装到 Codex、Claude Code 或两者。" />
+              : <Callout title="开始添加第一个插件" description="先选择本机使用的 Agent，再添加插件。" />
             : null}
         <ContentViewport>
           <PluginRows columns={size.columns - 2} rows={pluginRows} focus={focus} viewport={viewport} active={!searchFocus} />
@@ -4977,6 +5240,7 @@ export function ConsoleAppV4(props: {
             offset={Math.max(pluginRows.length, viewport.offset)}
             limit={Math.max(0, viewport.offset + viewport.limit - Math.max(pluginRows.length, viewport.offset))} />
         </ContentViewport>
+        <Text color={tuiTheme.roles.secondary}>{size.columns < 80 ? '■ 已安装 □ 待安装 ▣ 依赖' : '■ 已安装 □ 待安装 ▣ 依赖 │ ✓ 正常 ↻ 待同步 × 失败 ? 未知 ⊘ 已关闭'}</Text>
       </Box>
     );
   } else if (route.name === 'batchSelection') {
@@ -5150,6 +5414,20 @@ export function ConsoleAppV4(props: {
           setActionError('已选插件状态已变化。请返回选择页检查并取消失效项。');
           return;
         }
+        const subjects = selectedIds.flatMap((id) => props.controller.getPluginDetailSubject(id) ?? []);
+        if (subjects.some((subject) => subject.placements.some((placement) => placement.agent
+          && placement.agent !== 'codex' && placement.agent !== 'claude' && placement.actual))) {
+          const scopes = (['user', 'project'] as const).filter((candidate) => subjects.some((subject) =>
+            subject.placements.some((placement) => placement.scope === candidate && placement.actual)
+            || subject.declarations[candidate].state === 'declared'));
+          if ((action === 'uninstall' || action === 'cleanup') && scopes.length > 1) {
+            setScopedFlow({ stage: 'recoveryScope', scope, selector: selectedIds[0]!,
+              selectors: selectedIds, command: action, scopes: [...scopes], focus: 0 });
+          } else beginScopedTask({ kind: 'recovery', command: action,
+            scope: action === 'sync' || action === 'reinstall'
+              ? scopes.includes('project') ? 'project' : 'user' : scopes[0]!, selectors: selectedIds });
+          return;
+        }
         const exactTargets = props.controller.listPluginWriteBatchTargets(action, selectedIds);
         if (exactTargets.length === 0) {
           setActionError('所选插件没有可用的已有安装位置。');
@@ -5171,11 +5449,14 @@ export function ConsoleAppV4(props: {
       };
       const syncTargets = props.controller.listPluginWriteBatchTargets('sync', selectedIds);
       const uninstallTargets = props.controller.listPluginWriteBatchTargets('uninstall', selectedIds);
+      const portableTargetCount = selectedIds.flatMap((id) => props.controller.getPluginDetailSubject(id)?.placements ?? [])
+        .filter((placement) => placement.actual && placement.agent && placement.agent !== 'codex'
+          && placement.agent !== 'claude').length;
       if (batchDraft.stage === 'maintenance') {
         actions = [
-          { label: '同步已保存使用设置', status: 'info', description: `重新应用 ${syncTargets.length} 个已保存或现场目标`, run: () => startExistingBatch('sync') },
-          { label: '重新安装', status: 'info', description: `重新生成 ${props.controller.listPluginWriteBatchTargets('reinstall', selectedIds).length} 个已保存或现场目标`, run: () => startExistingBatch('reinstall') },
-          { label: '清理遗留内容', status: 'error', description: `${props.controller.listPluginWriteBatchTargets('cleanup', selectedIds).length} 个已核验位置；保留不属于插件或被共用的内容`, run: () => startExistingBatch('cleanup') },
+          { label: '同步已保存使用设置', status: 'info', description: `重新应用 ${syncTargets.length + portableTargetCount} 个已保存或现场目标`, run: () => startExistingBatch('sync') },
+          { label: '重新安装', status: 'info', description: `重新生成 ${props.controller.listPluginWriteBatchTargets('reinstall', selectedIds).length + portableTargetCount} 个已保存或现场目标`, run: () => startExistingBatch('reinstall') },
+          { label: '清理遗留内容', status: 'error', description: `${props.controller.listPluginWriteBatchTargets('cleanup', selectedIds).length + portableTargetCount} 个已核验位置；保留不属于插件或被共用的内容`, run: () => startExistingBatch('cleanup') },
           {
             role: 'navigation' as const, label: '返回任务选择',
             run: () => moveBatchStage('task'),
@@ -5205,7 +5486,7 @@ export function ConsoleAppV4(props: {
           {
             label: '安装到缺失位置',
             description: `${addTargetCount} 个当前工具和范围内的可安装位置`,
-            disabled: addTargetCount === 0 ? '当前选择没有可安装位置' : undefined,
+            disabled: !agentSettings?.preferences.targets.length ? '请先选择 Agent' : undefined,
             run: () => {
               setBatchDraft((current) => current ? { ...current, action: 'install' } : current);
               props.controller.push({ name: 'batchInstallPlatforms' });
@@ -5213,7 +5494,9 @@ export function ConsoleAppV4(props: {
               setScrollOffset(0);
             },
           },
-          { label: '卸载所选插件', description: `${uninstallTargets.length} 个现有位置；可在下一页删减范围；保留设置`, status: 'error', run: () => startExistingBatch('uninstall') },
+          ...(!agentSettings?.preferences.targets.length
+            ? [{ label: '打开 Agent 管理', run: () => openAgentManagement() }] : []),
+          { label: '卸载所选插件', description: `${uninstallTargets.length + portableTargetCount} 个现有位置；选择范围后确认；保留设置`, status: 'error', run: () => startExistingBatch('uninstall') },
           {
             label: '其他维护方式',
             description: '同步、重新安装和普通清理',
@@ -5228,67 +5511,23 @@ export function ConsoleAppV4(props: {
       content = <SemanticRows actions={actions} focus={focus} kind="task" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />;
     }
   } else if (route.name === 'batchInstallPlatforms' && batchDraft?.action === 'install') {
-    breadcrumb = '插件 / 批量安装 / 平台';
-    context = `第 1 步，共 3 步 · ${batchDraft.selectedPluginIds.length} 个插件`;
-    title = '选择安装平台';
-    description = '先选择原生平台。下一步再选择使用范围和检查精确目标。';
-    const selectedPlatforms = batchDraft.platform === 'both'
-      ? new Set<PlatformName>(['codex', 'claude'])
-      : new Set<PlatformName>([batchDraft.platform]);
-    const togglePlatform = (platform: PlatformName): void => {
-      setBatchDraft((current) => {
-        if (!current) return current;
-        const next = current.platform === 'both'
-          ? new Set<PlatformName>(['codex', 'claude'])
-          : new Set<PlatformName>([current.platform]);
-        if (next.has(platform)) {
-          if (next.size === 1) {
-            setActionError('至少选择一个目标平台。');
-            return current;
-          }
-          next.delete(platform);
-        } else next.add(platform);
-        setActionError(undefined);
-        return { ...current, platform: next.size === 2 ? 'both' : [...next][0]! };
-      });
-    };
-    const confirmPlatforms: ActionItem = {
-      actionId: 'batch-install-platforms-confirm',
-      label: '确定所选平台 [c]',
-      description: `${[...selectedPlatforms].map(platformLabel).join('、')} · 继续选择目标`,
-      run: () => {
-        props.controller.push({ name: 'batchInstallScope' });
-        setFocus(0);
-        setScrollOffset(0);
-      },
-    };
-    actions = [
-      {
-        actionId: 'batch-install-platform-codex',
-        label: 'Codex',
-        description: '添加到 Codex 的合法缺失位置',
-        selected: selectedPlatforms.has('codex'),
-        run: () => togglePlatform('codex'),
-      },
-      {
-        actionId: 'batch-install-platform-claude',
-        label: 'Claude Code',
-        description: '添加到 Claude Code 的合法缺失位置',
-        selected: selectedPlatforms.has('claude'),
-        run: () => togglePlatform('claude'),
-      },
-      confirmPlatforms,
-    ];
-    bottomActions = [confirmPlatforms];
-    help = '↑↓ 移动 · Space/Enter 切换 · c 确定所选平台 · Esc 返回任务选择';
+    breadcrumb = '插件 / 批量添加';
+    title = '选择使用范围';
+    description = `${batchDraft.selectedPluginIds.length} 个插件使用本机已选择的 Agent。`;
+    const configured = Boolean(agentSettings?.preferences.targets.length);
+    actions = (snapshot.projectRoot ? ['user', 'project'] as const : ['user'] as const).map((selectedScope) => ({
+      label: selectedScope === 'user' ? '■ 所有项目' : '■ 当前项目',
+      disabled: configured ? undefined : '请先选择 Agent',
+      run: () => beginScopedTask({ kind: 'recovery', command: 'install', scope: selectedScope,
+        selectors: batchDraft.selectedPluginIds }),
+    }));
+    if (!configured) actions.push({ label: '打开 Agent 管理', run: () => openAgentManagement() });
     content = <Box flexDirection="column">
-      <ContentViewport>
-        <SemanticRows actions={actions.slice(0, 2)} focus={focus}
-          kind="choice" compact={policy.mode === 'compact'} />
-        <SemanticRows actions={actions} focus={focus}
-          kind="action" compact offset={2} />
-      </ContentViewport>
+      <SemanticRows actions={actions} focus={focus} kind="choice" compact />
+      <Text color={tuiTheme.roles.focus} wrap="wrap">将安装到  {agentSettings?.preferences.targets
+        .map((target) => `◆ ${agentLabel(target)}`).join('  ') || '请先选择 Agent'}</Text>
     </Box>;
+    help = '↑↓ 移动 · Enter 选择 · Esc 返回';
   } else if (route.name === 'batchInstallScope' || route.name === 'batchPlacement') {
     breadcrumb = route.name === 'batchInstallScope'
       ? '插件 / 批量安装 / 目标' : '插件 / 批量操作 / 位置';
@@ -5696,7 +5935,7 @@ export function ConsoleAppV4(props: {
     title = '输入 Agent ID';
     description = '多个 Agent 可使用逗号或空格分隔。';
     help = '输入 Agent ID · Enter 保存 · Ctrl-U 清空输入 · Esc 返回';
-    content = <Box flexDirection="column"><InputCard focused title={<InputDisplay value={portableAgentInput} columns={Math.max(8, size.columns - 8)} />} description={inputError ?? 'Enter 保存并继续 · Esc 返回；q 和 b 会作为输入。'} status={inputError ? 'error' : undefined} /><StaticRow title="示例" meta="cursor, claude-code, codex" status="muted" compact /></Box>;
+    content = <Box flexDirection="column"><InputCard focused title={<InputDisplay value={portableAgentInput} columns={Math.max(8, size.columns - 8)} />} description={inputError ?? 'Enter 保存并继续 · Esc 返回；q 和 b 会作为输入。'} status={inputError ? 'error' : undefined} /><StaticRow title="示例" meta="cursor, opencode, generic" status="muted" compact /></Box>;
   } else if (route.name === 'portableScope' && plugin && snapshot.portableDraft) {
     breadcrumb = `${plugin.displayName} / 通用 Skills / 范围`;
     title = '在哪里使用这些 Skills？';
@@ -5726,7 +5965,7 @@ export function ConsoleAppV4(props: {
       { label: '返回问题摘要', run: () => toggleTechnical() },
     ] : [
       ...(route.code === 'requiredConfigMissing' ? [{ label: '完成插件设置', run: () => {
-        props.controller.replace({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'effective' } });
+        props.controller.replace({ name: 'configFields', pluginId: plugin.pluginId, layer: { profile: 'common' } });
         setFocus(0);
         setScrollOffset(0);
       } }] : []),
@@ -5881,213 +6120,26 @@ export function ConsoleAppV4(props: {
       {readingPage(readingText, size.columns - 2, pageActionBudget(2))}
     </Box>;
     help = '←→/PgUp/PgDn 翻页 · y 复制全文 · Esc 返回';
-  } else if (route.name === 'installTargets' && plugin) {
-    breadcrumb = `${plugin.displayName} / 添加 / 目标平台`;
-    context = '第 1 步，共 2 步';
-    title = '选择目标平台';
-    description = 'Codex 与 Claude Code 可以同时选择。通用 Agent Skills 使用独立安装流程。';
-    const choices = (['codex', 'claude'] as const).map((platform) => {
-      const scopes = (['project', 'user'] as const).filter((candidateScope) =>
-        props.controller.listInstallTargets(plugin.pluginId, candidateScope)
-          .some((entry) => entry.platform === platform && entry.compatible));
-      const evidence = (['project', 'user'] as const).flatMap((candidateScope) =>
-        props.controller.listInstallTargets(plugin.pluginId, candidateScope)
-          .filter((entry) => entry.platform === platform));
-      return {
-        platform,
-        compatible: scopes.length > 0,
-        scopes,
-        disabled: scopes.length > 0 ? undefined
-          : evidence.find((entry) => entry.disabled)?.disabled ?? '没有可信且兼容的缺失位置',
-      };
-    });
-    const selectedNativeTargets = snapshot.installPlacementDraft?.pluginId === plugin.pluginId
-      ? snapshot.installPlacementDraft.platforms
-      : selectedTargets;
-    const validSelectedTargets = selectedNativeTargets.filter((platform) =>
-      choices.some((choice) => choice.platform === platform && choice.compatible));
-    const allUnavailable = choices.every((choice) => !choice.compatible) && !plugin.portableSkills;
-    if (route.view === 'blocked' || allUnavailable) {
-      context = '依赖限制';
-      title = '无法添加到所选目标平台';
-      description = '根插件或必需依赖不支持当前目标平台组合，因此不会进入确认页。';
-      actions = [
-        { label: '查看依赖关系', run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }) },
-        { role: 'navigation' as const, label: '返回插件详情', run: back },
-      ];
-      content = <Box flexDirection="column"><StatusCard status="warning" title="所选目标平台不可用">{choices.map((choice) => <StaticRow key={choice.platform} title={`${platformLabel(choice.platform)} · ${choice.disabled ? `不可选 · ${choice.disabled}` : '不可选'}`} status="muted" compact={policy.mode === 'compact'} />)}</StatusCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
-    } else {
-      const confirmNativePlatforms = (): void => {
-        if (validSelectedTargets.length === 0) {
-          setActionError('请至少选择一个目标平台。');
-          return;
-        }
-        setDirty(false);
-        props.controller.setInstallPlatforms(validSelectedTargets);
-        setInstallPlatformIndex(0);
-        go({ name: 'installPlacement', pluginId: plugin.pluginId });
-      };
-      const nativeActions: ActionItem[] = choices.map((choice) => {
-        const installed = installedScopeStates(plugin, choice.platform);
-        const configuredScopes = plugin.supportedScopes?.[choice.platform];
-        const supportedScopes = (['project', 'user'] as const).filter((candidateScope) =>
-          configuredScopes?.includes(candidateScope)
-          || installed.has(candidateScope) || choice.scopes.includes(candidateScope));
-        const locationItems = supportedScopes.map((candidateScope) => {
-          const state = installed.get(candidateScope);
-          if (state) return {
-            key: `${choice.platform}:${candidateScope}`,
-            label: scopeLabel(candidateScope),
-            symbol: state.symbol,
-            status: state.status,
-          };
-          return choice.scopes.includes(candidateScope)
-            ? { key: `${choice.platform}:${candidateScope}`, label: scopeLabel(candidateScope),
-                symbol: '○' as const, status: 'muted' as const }
-            : { key: `${choice.platform}:${candidateScope}`, label: scopeLabel(candidateScope),
-                symbol: '?' as const, status: 'muted' as const };
-        });
-        const missingLabels = choice.scopes.filter((candidateScope) => !installed.has(candidateScope))
-          .map(scopeLabel);
-        return {
-          actionId: `install-platform-${choice.platform}`,
-          label: platformLabel(choice.platform),
-          selected: validSelectedTargets.includes(choice.platform),
-          description: choice.disabled ? `不可选择：${choice.disabled}` : (missingLabels.length > 0
-            ? `可添加到：${missingLabels.join('、')}` : '所有支持位置已经安装'),
-          status: choice.disabled ? 'muted' : undefined,
-          tags: locationItems.length > 0 ? <StatusBadge items={locationItems} /> : undefined,
-          run: () => {
-            if (!choice.compatible) return;
-            setActionError(undefined);
-            setSelectedTargets((current) => {
-              const next = current.includes(choice.platform)
-                ? current.filter((platform) => platform !== choice.platform)
-                : [...current, choice.platform];
-              props.controller.setInstallPlatforms(next);
-              return next;
-            });
-          },
-        };
-      });
-      const portableAction: ActionItem = {
-        actionId: 'portable-agent-skills',
-        label: '通用 Agent Skills →',
-        description: plugin.portableSkills
-          ? '通过外部 Skills CLI 安装到支持的 Agent；只安装选定 Skills'
-          : '这个插件不提供通用 Agent Skills',
-        status: plugin.portableSkills ? undefined : 'muted',
-        tags: plugin.portableSkills
-          ? <Text color={tuiTheme.colors.accent}>[Skills 可选]</Text>
-          : undefined,
-        run: () => {
-          if (!plugin.portableSkills) return;
-          beginPortable(plugin.pluginId);
-        },
-      };
-      const confirmAction: ActionItem = {
-        actionId: 'confirm-install-platforms',
-        label: '确定所选平台 [c]',
-        disabled: validSelectedTargets.length === 0 ? '至少选择一个目标平台' : undefined,
-        run: confirmNativePlatforms,
-      };
-      actions = [...nativeActions, portableAction, confirmAction];
-      bottomActions = [confirmAction];
-      help = '↑↓ 移动 · Enter/Space 选择 · Esc 返回';
-      content = <Box flexDirection="column">
-        <SemanticRows actions={actions.slice(0, nativeActions.length).map((action) => ({
-          ...action, label: `${action.selected ? '[x]' : '[ ]'} ${action.label}`,
-        }))} focus={focus} kind="action" compact={false} />
-        <SemanticRows actions={actions} focus={focus} offset={nativeActions.length}
-          kind="action" compact={false} />
-      </Box>;
-    }
-  } else if (route.name === 'installPlacement' && plugin) {
-    breadcrumb = `${plugin.displayName} / 添加 / 使用范围`;
-    context = '第 2 步，共 2 步';
-    title = `你希望在哪里使用 ${plugin.displayName}？`;
-    const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
-    const selectedPlatforms = snapshot.installPlacementDraft?.platforms ?? selectedTargets;
-    const legalScopes = (platform: PlatformName): Scope[] => (['project', 'user'] as const).filter((candidateScope) =>
-      props.controller.listInstallTargets(plugin.pluginId, candidateScope)
-        .some((entry) => entry.platform === platform && entry.compatible));
-    const commonScopes = (['project', 'user'] as const).filter((candidateScope) =>
-      selectedPlatforms.every((platform) => legalScopes(platform).includes(candidateScope)));
-    const continueCommonScope = async (candidateScope: Scope): Promise<void> => {
-      setScope(candidateScope);
-      props.controller.setInstallRootScope(candidateScope);
-      props.controller.setInstallPlatforms(selectedPlatforms);
-      if (hasDependencies) {
-        const configurable = await props.controller.prepareInstallDependencyPlacement();
-        if (configurable) {
-          go({ name: 'dependencyPlacement', pluginId: plugin.pluginId });
-          return;
-        }
-      }
-      beginReview(props.controller.installPlacementIntent());
-    };
-    if (commonScopes.length > 0) {
-      description = '所选平台使用同一个范围。操作汇总会显示实际目标和依赖计划。';
-      actions = commonScopes.map((candidateScope) => ({
-        label: scopeLabel(candidateScope),
-        description: candidateScope === 'user'
-          ? '在任意项目中可用，会改变你的用户环境'
-          : '仅供当前项目使用，适合随项目共享',
-        meta: candidateScope === 'project' ? '推荐' : undefined,
-        run: () => continueCommonScope(candidateScope),
-      }));
-    } else {
-      description = '所选平台没有共同范围。请分别确定每个平台的合法位置。';
-      const platformIndex = Math.min(installPlatformIndex, Math.max(0, selectedPlatforms.length - 1));
-      const platform = selectedPlatforms[platformIndex];
-      title = platform ? `${platformLabel(platform)} 的使用范围` : '请返回选择目标平台';
-      context = `平台 ${platformIndex + 1} / ${selectedPlatforms.length}`;
-      if (platformIndex > 0) returnToPreviousInstallPlatform = () => {
-        setInstallPlatformIndex(platformIndex - 1);
-        setFocus(0);
-        setScrollOffset(0);
-      };
-      actions = platform ? legalScopes(platform).map((candidateScope) => ({
-        label: scopeLabel(candidateScope),
-        selected: installPlatformScopes[platform] === candidateScope,
-        description: platformIndex + 1 < selectedPlatforms.length
-          ? `下一步：${platformLabel(selectedPlatforms[platformIndex + 1]!)} 的使用范围`
-          : '下一步：查看这些精确目标的操作汇总',
-        run: async () => {
-          const nextScopes = { ...installPlatformScopes, [platform]: candidateScope };
-          setInstallPlatformScopes(nextScopes);
-          if (platformIndex + 1 < selectedPlatforms.length) {
-            setInstallPlatformIndex(platformIndex + 1);
-            setFocus(0);
-            setScrollOffset(0);
-            return;
-          }
-          const exactTargets = selectedPlatforms.flatMap((selectedPlatform) => {
-            const selectedScope = nextScopes[selectedPlatform];
-            return selectedScope && legalScopes(selectedPlatform).includes(selectedScope)
-              ? [{ pluginId: plugin.pluginId, platform: selectedPlatform, scope: selectedScope }] : [];
-          });
-          if (exactTargets.length !== selectedPlatforms.length) {
-            setInstallPlatformIndex(0);
-            setFocus(0);
-            setScrollOffset(0);
-            setActionError('合法位置已变化。请重新确定每个平台的范围。');
-            return;
-          }
-          props.controller.setInstallRootTargets(exactTargets);
-          if (hasDependencies && await props.controller.prepareInstallDependencyPlacement()) {
-            go({ name: 'dependencyPlacement', pluginId: plugin.pluginId });
-            return;
-          }
-          beginReview(props.controller.installPlacementIntent());
-        },
-      })) : [];
-    }
+  } else if ((route.name === 'installTargets' || route.name === 'installPlacement') && plugin) {
+    breadcrumb = `${plugin.displayName} / 添加插件`;
+    title = '选择使用范围';
+    context = undefined;
+    description = '插件会使用本机已选择的 Agent。';
+    const configured = Boolean(agentSettings?.preferences.targets.length);
+    actions = (snapshot.projectRoot ? ['user', 'project'] as const : ['user'] as const).map((selectedScope) => ({
+      label: selectedScope === 'user' ? '■ 所有项目' : `■ 当前项目 · ${path.basename(snapshot.projectRoot ?? '')}`,
+      description: selectedScope === 'user' ? '在你的每个项目中都能使用' : '记录到当前项目，与团队共享',
+      disabled: configured ? undefined : '请先选择 Agent',
+      run: () => beginScopedTask({ kind: 'recovery', command: 'install', scope: selectedScope,
+        selectors: [plugin.pluginId] }),
+    }));
+    if (!configured) actions.push({ label: '打开 Agent 管理', run: () => openAgentManagement() });
     content = <Box flexDirection="column">
-      <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
-      {hasDependencies ? <Callout title="依赖计划" description="所需插件会自动安排；确认前可查看影响。" /> : null}
+      <SemanticRows actions={actions} focus={focus} kind="choice" compact />
+      <Text color={tuiTheme.roles.focus} wrap="wrap">将安装到  {agentSettings?.preferences.targets
+        .map((target) => `◆ ${agentLabel(target)}`).join('  ') || '请先选择 Agent'}</Text>
     </Box>;
-    help = '↑↓ 移动 · Enter 选择/继续 · Esc 返回';
+    help = '↑↓ 移动 · Enter 选择 · Esc 返回';
   } else if (route.name === 'uninstallTargets' && plugin) {
     breadcrumb = `${plugin.displayName} / 卸载`;
     context = '实际安装位置';
@@ -6324,7 +6376,7 @@ export function ConsoleAppV4(props: {
             props.controller.replace({
               name: 'configFields',
               pluginId: target.pluginId,
-              layer: { scope: 'effective' },
+              layer: { profile: 'common' },
             });
           },
         }]];
@@ -6645,7 +6697,9 @@ export function ConsoleAppV4(props: {
               ? go({ name: 'issueList' })
               : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
         } : undefined;
-    const installed = hasInstalledPlacement(plugin);
+    const hasPortablePlacement = detailSubject.placements.some((placement) => placement.agent
+      && placement.agent !== 'codex' && placement.agent !== 'claude' && placement.actual);
+    const installed = hasInstalledPlacement(plugin) || hasPortablePlacement;
     const hasInstallableTarget = props.controller.pluginHasInstallableTarget(plugin.pluginId);
     const hasInstallationOption = hasInstallableTarget || plugin.portableSkills;
     const beginInstall = (): void => {
@@ -6664,7 +6718,7 @@ export function ConsoleAppV4(props: {
     };
     const installAction: ActionItem | undefined = !plugin.catalogEntryMissing ? {
       actionId: 'install',
-      label: installed ? '安装到其他位置' : '安装',
+      label: installed ? '添加到其他位置…' : '添加插件…',
       description: plugin.sourceUnavailable
         ? '插件来源不可用'
         : plugin.capabilityUnsupported
@@ -6672,8 +6726,8 @@ export function ConsoleAppV4(props: {
           : !hasInstallationOption
             ? '当前工具和插件没有可用的安装方式'
           : '选择工具和使用范围',
-      ...(plugin.sourceUnavailable || plugin.capabilityUnsupported || !hasInstallationOption
-        ? { disabled: plugin.sourceUnavailable ? '插件来源不可用'
+      ...(!agentSettings?.preferences.targets.length || plugin.sourceUnavailable || plugin.capabilityUnsupported || !hasInstallationOption
+        ? { disabled: !agentSettings?.preferences.targets.length ? '请先选择 Agent' : plugin.sourceUnavailable ? '插件来源不可用'
           : plugin.capabilityUnsupported ? '需要升级 AW CLI' : '没有可用的安装方式' }
         : { run: beginInstall }),
     } : undefined;
@@ -6708,6 +6762,16 @@ export function ConsoleAppV4(props: {
         : '选择一个现有平台和实际安装位置',
       status: 'error',
       run: () => {
+        if (hasPortablePlacement) {
+          const scopes = (['user', 'project'] as const).filter((candidate) =>
+            detailSubject.placements.some((placement) => placement.scope === candidate && placement.actual)
+            || detailSubject.declarations[candidate].state === 'declared');
+          if (scopes.length === 1) beginScopedTask({ kind: 'recovery', command: 'uninstall',
+            scope: scopes[0]!, selectors: [plugin.pluginId] });
+          else setScopedFlow({ stage: 'recoveryScope', scope, selector: plugin.pluginId,
+            command: 'uninstall', scopes: [...scopes], focus: 0 });
+          return;
+        }
         const targets = props.controller.listPluginWriteBatchTargets('uninstall', [plugin.pluginId]);
         if (targets.length === 1) {
           const target = targets[0]!;
@@ -6738,8 +6802,14 @@ export function ConsoleAppV4(props: {
     actions = dedupeActions([
       ...(exceptionalAction ? [{ ...exceptionalAction, actionId: 'exceptional' }] : []),
       ...(restoreAction ? [{ ...restoreAction, actionId: 'restore' }] : []),
+      ...(hasPortablePlacement && !restoreAction ? [{ actionId: 'sync', label: '同步并修复…',
+        run: () => beginScopedTask({ kind: 'recovery', command: 'sync',
+          scope: detailSubject.placements.some((placement) => placement.scope === 'project')
+            || detailSubject.declarations.project.state === 'declared' ? 'project' : 'user',
+          selectors: [plugin.pluginId] }) }] : []),
       ...(updateAction ? [{ ...updateAction, actionId: 'update' }] : []),
       ...(installAction ? [installAction] : []),
+      ...(!agentSettings?.preferences.targets.length ? [{ actionId: 'choose-agents', label: '打开 Agent 管理', run: () => openAgentManagement() }] : []),
       ...(!plugin.catalogEntryMissing && !plugin.sourceUnavailable ? [{ actionId: 'add-demand',
         label: '加入插件清单（暂不安装）',
         run: () => snapshot.projectRoot
@@ -6759,6 +6829,9 @@ export function ConsoleAppV4(props: {
             action: 'remove', scopes: [...scopes], focus: 0 });
         } }] : []),
       ...(settingsAction ? [{ ...settingsAction, actionId: 'settings' }] : []),
+      ...(agentSettings?.plugins.some((entry) => entry.pluginId === plugin.pluginId)
+        ? [{ actionId: 'plugin-agents', label: 'Agent 管理',
+          run: () => openAgentManagement(plugin.pluginId) }] : []),
       ...(contentAction ? [contentAction] : []),
       ...(dependencyAction ? [dependencyAction] : []),
       ...(uninstallAction ? [uninstallAction] : []),
@@ -7051,68 +7124,9 @@ export function ConsoleAppV4(props: {
         })}</ContentViewport>
     </Box>;
   } else if (route.name === 'configLayer' && plugin) {
-    breadcrumb = `${plugin.displayName} / 设置`;
-    const configLayerDefinitionPage = configPage ?? configLayerPages.user ?? configLayerPages.project;
-    const selectedField = route.fieldKey && configLayerDefinitionPage
-      ? configLayerDefinitionPage.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
-      : undefined;
-    const selectedPreset = route.presetId && configLayerDefinitionPage
-      ? configLayerDefinitionPage.presets.find((preset) => preset.id === route.presetId)
-      : undefined;
-    const selectedMutation = selectedField && configCandidate
-      ? configCandidate.mutations[selectedField.key]
-      : undefined;
-    const candidateSummary = selectedField && selectedMutation
-      ? selectedMutation.kind === 'unset' ? '恢复继承'
-        : selectedField.sensitive ? '已更新'
-          : fieldValueText(selectedField, selectedMutation.value)
-      : selectedPreset && configCandidate
-        ? `方案“${selectedPreset.title}” · ${Object.keys(configCandidate.mutations).length} 项修改`
-        : undefined;
-    const candidateSummaryLines = candidateSummary
-      ? wrapConsoleText(candidateSummary, Math.max(12, size.columns - 14))
-      : [];
-    const candidateSummaryDisplay = candidateSummaryLines.length > 1
-      ? `${candidateSummaryLines[0]}…`
-      : candidateSummaryLines[0];
-    title = selectedField ? `“${selectedField.title}”保存到哪里？`
-      : selectedPreset ? `“${selectedPreset.title}”保存到哪里？` : '这个值保存到哪里？';
-    description = configCandidate?.selectingScope ? '先选择保存位置，再按该层配置选择引用值。' : selectedField
-      ? `${selectedField.sensitive ? '敏感值只能保存到个人设置。' : '选择后回到分组总览；磁盘尚未改变。'}`
-      : selectedPreset ? '选择后回到分组总览；磁盘尚未改变。' : '请返回重新选择值。';
-    if (configActionError) description = configActionError;
-    help = '↑↓ 移动 · Enter 选择 · Esc 返回修改值';
-    const canUseLayer = (scope: Scope): boolean => {
-      const page = configLayerPages[scope];
-      if (!page || !configCandidate) return false;
-      const fields = page.groups.flatMap((group) => group.fields);
-      if (configCandidate.selectingScope) return fields.some((field) => field.key === configCandidate.fieldKey && configFieldCanSet(field));
-      return Object.entries(configCandidate.mutations).every(([key, mutation]) => {
-        const field = fields.find((candidate) => candidate.key === key);
-        return Boolean(field && (mutation.kind === 'set' ? configFieldCanSet(field) : configFieldCanUnset(field)));
-      });
-    };
-    actions = [
-      ...(canUseLayer('project') ? [{
-        label: '当前项目',
-        description: '修改仅对当前项目生效；适合随仓库共享的约定',
-        meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`,
-        run: () => openConfigLayerTarget({ scope: 'project' }),
-      }] : []),
-      ...(canUseLayer('user') ? [{
-        label: '个人默认',
-        description: '影响个人的所有项目；项目设置仍可覆盖',
-        meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`,
-        run: () => openConfigLayerTarget({ scope: 'user' }),
-      }] : []),
-    ];
-    content = actions.length > 0
-      ? <Box flexDirection="column">
-          {candidateSummaryDisplay ? <StatusCard status="info" title="已确定新值"
-            description={`新值：${candidateSummaryDisplay}`} compact /> : null}
-          <SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />
-        </Box>
-      : <StatusCard status="info" title="正在检查可用保存位置" />;
+    title = '插件设置';
+    description = '正在准备当前 Agent 的设置…';
+    content = <ProgressRow title="读取设置字段" state="active" />;
   } else if (route.name === 'configFields' && plugin) {
     const readonly = false;
     breadcrumb = `${plugin.displayName} / 设置`;
@@ -7134,7 +7148,7 @@ export function ConsoleAppV4(props: {
         const sources = [...new Set(configDraftIssues.flatMap((issue) => issue.referenceSources ?? []))];
         description = `${description ?? ''} 有 ${configDraftIssues.length} 项未保存修改已不适用于当前设置。${sources.length ? ` 请检查来源 ${sources.join('、')}。` : ''}`;
       }
-      const mutableLayer = { scope: 'effective' as const };
+      const mutableLayer = route.layer;
       const tabActions: ActionItem[] = activeTab?.kind === 'presets'
         ? currentConfigPage.presets.map((preset) => ({
             label: preset.title,
@@ -7147,10 +7161,7 @@ export function ConsoleAppV4(props: {
             label: field.title,
             description: field.invalidOverrideIssue ?? field.description,
             configTile: (() => {
-              const project = pendingFieldDisplay(field, 'project');
-              const user = pendingFieldDisplay(field, 'user');
-              const covered = user !== undefined && field.effectiveSourceLabel === '当前项目' && project === undefined;
-              const pending = project ?? (covered ? undefined : user);
+              const pending = pendingFieldDisplay(field, route.layer.profile);
               const targets = pendingFieldTargets(field);
               return {
                 value: pending ?? effectiveFieldDisplay(field),
@@ -7158,81 +7169,48 @@ export function ConsoleAppV4(props: {
                 description: field.description?.split('\n').map(safeConfigText).join('\n'),
                 issue: field.invalidOverrideIssue?.split('\n').map(safeConfigText).join('\n'),
                 invalid: Boolean(field.invalidOverrideIssue),
-                ...(targets.length ? { pending: covered
-                  ? '待保存到个人；个人修改不会影响本项目'
-                  : `待保存到${targets.map(({ scope }) => configLayerLabel({ scope })).join('、')}` } : {}),
+                ...(targets.length ? { pending: '● 未保存' } : {}),
               };
             })(),
             configKey: field.key,
-            run: () => configReferenceScalars(field.definition).length
-              ? openConfigTarget({ pluginId: plugin.pluginId, fieldKey: field.key, selectingScope: true, mutations: {} })
-              : go({ name: 'configFieldEditor', pluginId: plugin.pluginId, layer: mutableLayer,
+            run: () => go({ name: 'configFieldEditor', pluginId: plugin.pluginId, layer: mutableLayer,
                 fieldKey: field.key, editor: fieldEditor(field), ...fieldEditorMode(field) }),
           }));
       const operationActions: ActionItem[] = [
-        ...(crossLayerDependencies.length ? [{
-          label: '取消跨层引用草稿，保留来源修改',
-          description: '先保存个人默认来源，再重新编辑当前项目引用。',
-          run: () => {
-            const keys = new Set(crossLayerDependencies.map((entry) => entry.key));
-            const next = { ...configDrafts };
-            const project = next.project!;
-            const updates = Object.fromEntries(Object.entries(project.updates).filter(([key]) => !keys.has(key)));
-            if (Object.keys(updates).length || project.removes.length) next.project = { ...project, updates };
-            else delete next.project;
-            setConfigDrafts(next);
-            setObjectDrafts({}); setArrayDrafts({}); setChangedObjectDraftKeys([]);
-            setConfigActionError('已取消相关引用草稿。请先保存来源，再重新编辑引用。');
-          },
-        }] : []),
-        ...(configDraftIssues.length > 0 ? [{
-          label: '放弃无法保存的修改',
-          description: `${configDraftIssues.length} 项未保存修改已不再适用于当前插件设置；放弃后不会修改已保存设置。`,
-          status: 'warning' as const,
-          run: discardInvalidConfigDraftChanges,
-        }] : []),
-        ...(['project', 'user'] as const).flatMap((resetScope) => {
-          const page = configLayerPages[resetScope];
-          if (!page || page.storedCount === 0) return [];
-          return [{
-            label: resetScope === 'user' ? '清空个人默认' : '清空当前项目设置',
-            description: `删除${resetScope === 'user' ? '个人默认' : '当前项目'}中的全部值并恢复继承；其他设置层保持不变`,
-            status: 'error' as const,
-            run: () => beginReview({
-              kind: 'configReset', pluginId: plugin.pluginId, scope: resetScope,
-              changes: page.groups.flatMap((group) => group.fields).filter((field) => field.configured).map((field) => ({
-                key: field.key,
-                title: field.title,
-                before: field.displayValue,
-                after: `恢复继承（${field.fallbackDisplayValue ?? '未设置'} · ${field.fallbackSourceLabel ?? '未设置'}）`,
-                ...(field.fallbackObjectChanges?.length
-                  ? { children: field.fallbackObjectChanges }
-                  : {}),
-              })),
-            }),
-          }];
-        }),
+        ...(crossLayerDependencies.length ? [{ label: '取消相关引用草稿', status: 'warning' as const,
+          description: '保留来源设置修改，只放弃依赖这些未保存值的引用草稿。', run: discardDependentConfigDrafts }] : []),
+        ...(configDraftIssues.length > 0 ? [{ label: '放弃无法保存的修改',
+          status: 'warning' as const, run: discardInvalidConfigDraftChanges }] : []),
+        { actionId: 'config-reset-profile', label: '恢复默认值 [u]', status: 'error',
+          description: '删除当前 Agent 设置中的覆盖值，恢复继承。',
+          run: () => beginReview({ kind: 'configReset', pluginId: plugin.pluginId, scope: 'user',
+            ...configReadOptions(route.layer),
+            changes: currentConfigPage.groups.flatMap((group) => group.fields).filter((field) => field.configured).map((field) => ({
+              key: field.key, title: field.title, before: field.displayValue,
+              after: `恢复继承（${field.fallbackDisplayValue ?? '未设置'}）`,
+            })),
+          }) },
       ];
       const configSaveAction: ActionItem = {
         actionId: 'config-save-summary',
-        label: configDraftCount > 0 ? `保存设置（${configDraftCount}） [s]` : '保存设置 [s]',
-        description: '确认全部设置层的变化，再选择只保存或保存并应用',
+        label: '保存 [s]',
+        description: '保存设置后，可选择更新已安装的插件。',
         status: configDraftCount > 0 ? 'info' : 'muted',
         disabled: configDraftCount === 0 ? '没有待保存设置'
           : configDraftIssues.length > 0 ? '请先放弃失效草稿' : undefined,
         run: () => {
           setFocus(0);
           setScrollOffset(0);
-          beginConfigSave(true);
+          onSaveConfig();
         },
       };
-      bottomActions = [configSaveAction, ...(crossLayerDependencies.length ? operationActions.slice(0, 1) : []), {
+      bottomActions = [configSaveAction, ...operationActions, {
         label: '设置选项', run: () => go({ ...route, view: 'options' }),
       }];
       actions = [...tabActions, ...bottomActions];
       if (route.view === 'options') {
         title = '设置选项';
-        description = '查看各层存储值，或清空一个保存位置。';
+        description = '查看用户设置，或恢复当前 Agent 的默认值。';
         actions = [{ label: '查看当前值的来源', run: () => {
           setBatchTargetOffset(0);
           go({ ...route, view: 'values' });
@@ -7241,7 +7219,7 @@ export function ConsoleAppV4(props: {
       const effectiveConfigFocus = Math.min(focus, Math.max(0, actions.length - 1));
       const focusedConfigField = activeGroup?.fields.find((field) =>
         field.key === actions[effectiveConfigFocus]?.configKey);
-      const configRowBudget = pageActionBudget(Number(visibleConfigTabs.length > 1)
+      const configRowBudget = pageActionBudget(1 + Number(visibleConfigTabs.length > 1)
         + (configDraftIssues.length > 0 ? 3 : 0));
       const focusedTile = actions[effectiveConfigFocus]?.configTile;
       if (focusedTile && route.view !== 'options' && route.view !== 'values') {
@@ -7253,26 +7231,28 @@ export function ConsoleAppV4(props: {
       }
       if (!readonly) {
         const canUnsetFocused = focusedConfigField
-          ? (['project', 'user'] as const).some((scope) =>
-              configLayerPages[scope]?.groups.flatMap((group) => group.fields)
+          ? CONFIG_PROFILE_KEYS.some((profile) =>
+              configLayerPages[profile]?.groups.flatMap((group) => group.fields)
                 .some((field) => field.key === focusedConfigField.key && configFieldCanUnset(field)))
           : false;
         help = `↑↓ 选择 · Enter ${focusedConfigField ? '修改' : '选择'}${!route.view && visibleConfigTabs.length > 1
           ? ' · ←→ 分组' : ''}${(configCardNavigation?.pageCount ?? 1) > 1 ? ' · PgUp/PgDn 卡片全文' : ''}`
-          + `${configDraftCount > 0 ? ' · s 查看汇总' : ''}${canUnsetFocused ? ' · u 恢复继承' : ''} · Esc 返回`;
+          + `${configDraftCount > 0 ? ' · s 保存' : ''}${canUnsetFocused ? ' · u 恢复默认值' : ''} · Esc 返回`;
       }
       const totalFields = currentConfigPage.groups.reduce((count, group) => count + group.fields.length, 0);
       const countLabel = `${totalFields} 项${currentConfigPage.presets.length > 0 ? ` · ${currentConfigPage.presets.length} 个方案` : ''}`;
+      description = configActionError ?? (configSaveState?.status === 'error' ? configSaveState.error
+        : configSaveState?.status === 'saving' ? '正在保存设置…'
+        : `${configLayerLabel(route.layer)} · 用户设置${route.layer.context === 'project' ? ' · 当前项目' : ''}`);
+      help += ' · Tab 切换 Agent';
       context = configDraftCount > 0 ? `${configDraftCount} 项待保存` : countLabel;
       content = route.view === 'options' ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
         : route.view === 'values' ? (() => {
           title = '完整设置值与来源';
           description = '显示各保存位置的完整安全值；敏感值不回显。';
-          readingText = (['effective', 'project', 'user'] as const).flatMap((scope) =>
-            ((scope === 'effective' ? currentConfigPage : configLayerPages[scope])?.groups.flatMap((group) => group.fields) ?? []).map((field) =>
-              `${field.title} · ${configLayerLabel({ scope })}：${scope === 'effective'
-                ? field.invalidOverrideIssue ? '需修正' : fieldValueText(field, field.draftValue ?? field.effectiveValue, true, field.effectiveSourceLabel !== '未设置')
-                : fieldValueText(field, field.draftValue ?? field.value, true, field.configured)}`)).join('\n');
+          readingText = CONFIG_PROFILE_KEYS.flatMap((profile) =>
+            (configLayerPages[profile]?.groups.flatMap((group) => group.fields) ?? []).map((field) =>
+              `${field.title} · ${configLayerLabel({ profile })}：${fieldValueText(field, field.draftValue ?? field.value, true, field.configured)}`)).join('\n');
           actions = [{ label: '返回设置', run: back }];
           help = '←→ 或 PgUp/PgDn 阅读 · Esc 返回';
           return <Box flexDirection="column">
@@ -7280,6 +7260,9 @@ export function ConsoleAppV4(props: {
             <SemanticRows actions={actions} focus={focus} kind="action" compact />
           </Box>;
         })() : <Box flexDirection="column">
+        <Text color={tuiTheme.roles.focus} bold>
+          {route.layer.profile === 'common' ? '◎ 全部 Agent' : `${configLayerLabel(route.layer)} 专用`}  [Tab]
+        </Text>
         {!readonly && configDraftIssues.length > 0 ? <Callout
           status="warning"
           title="有未保存修改无法继续使用"
@@ -7296,14 +7279,14 @@ export function ConsoleAppV4(props: {
       </Box>;
     }
   } else if (route.name === 'configSave' && plugin) {
-    const draftGroups = (['project', 'user'] as const).flatMap((scope) => {
+    const draftGroups = CONFIG_PROFILE_KEYS.flatMap((scope) => {
       const draft = configDrafts[scope];
       const page = configLayerPages[scope];
-      return draft && page ? [{ scope, draft, changes: configChanges(page, draft) }] : [];
+      return draft && page ? [{ profile: scope, draft, changes: configChanges(page, draft) }] : [];
     });
     const changes = draftGroups.flatMap((group) => group.changes.map((change) => ({
       ...change,
-      title: `${scopeLabel(group.scope)} · ${change.title}`,
+      title: `${configLayerLabel({ profile: group.profile })} · ${change.title}`,
     })));
     if (route.view === 'changes') {
       readingText = changeDetailText(changes);
@@ -7333,12 +7316,12 @@ export function ConsoleAppV4(props: {
         label: '保存并生效',
         description: '保存全部草稿，并重新应用实际使用这些设置的目标',
         status: 'success',
-        run: () => beginConfigSave(true),
+        run: () => onSaveConfig(),
       },
       {
         label: '只保存，稍后应用',
         description: '保存全部设置层，不重新应用安装目标',
-        run: () => beginConfigSave(false),
+        run: () => onSaveConfig(),
       },
       { label: '返回修改', run: back },
     ];
@@ -7368,8 +7351,8 @@ export function ConsoleAppV4(props: {
     breadcrumb = `${plugin.displayName} / 设置 / ${activeField.title}`;
     const scalarReference = 'valueRef' in activeField.definition && activeField.definition.valueRef ? activeField.definition : undefined;
     const showChoices = Boolean(scalarReference) || (activeField.choices?.length ?? 0) > 0 && route.mode !== 'custom';
-    const targetFields = (['project', 'user'] as const).flatMap((scope) =>
-      configLayerPages[scope]?.groups.flatMap((group) => group.fields).filter((field) => field.key === activeField.key) ?? []);
+    const targetFields = [route.layer.profile].flatMap((profile) =>
+      configLayerPages[profile]?.groups.flatMap((group) => group.fields).filter((field) => field.key === activeField.key) ?? []);
     const canSet = targetFields.some(configFieldCanSet);
     const canUnset = !arrayItem && targetFields.some(configFieldCanUnset);
     if (!canSet) {
@@ -7382,7 +7365,7 @@ export function ConsoleAppV4(props: {
       const selection = configReferenceSelection(referenceContext, scalarReference);
       const current = arrayItem ? itemValue : draftUpdates[activeField.key] ?? activeField.draftValue ?? activeField.value;
       title = `选择${activeField.title}`;
-      description = referenceNotice(scalarReference, current) ?? `选项来自 ${configReferenceSource(scalarReference)}；保存到${editingScope === 'user' ? '个人默认' : '当前项目'}。`;
+      description = referenceNotice(scalarReference, current) ?? `选项来自 ${configReferenceSource(scalarReference)}；保存到${configLayerLabel(route.layer)}。`;
       help = '↑↓ 移动 · Enter 使用 · Esc 返回修复来源';
       actions = selection.choices.map((choice) => ({ label: safeConfigText(choice.title), selected: choice.value === current,
         run: () => updateDraft(activeField.key, choice.value) }));
@@ -7594,10 +7577,6 @@ export function ConsoleAppV4(props: {
         : activeField.sensitive ? '当前值不会回显；留空不会自动删除旧值。' : activeField.description ?? '';
       content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={activeField.sensitive} placeholder={activeField.placeholder} columns={Math.max(8, size.columns - 8)} />} description={inputError ?? (activeField.sensitive ? '输入已隐藏。' : activeField.placeholder ?? '按 Enter 使用输入值。')} status={inputError ? 'error' : undefined} />;
     }
-    if (editingScope === 'user' && activeTopField && configReferenceScalars(activeTopField.definition).length
-      && configLayerPages.project?.groups.flatMap((group) => group.fields).some((field) => field.key === activeTopField.key && field.configured)) {
-      description = `${description ?? ''} 个人默认在当前项目被覆盖。`;
-    }
     if (canUnset) {
       const unset: ActionItem = { label: '恢复继承', description: '选择要删除覆盖值的位置', run: () => removeDraft(activeField.key) };
       const inputEditor = canSet && !showChoices && (route.editor === 'number' || route.editor === 'string');
@@ -7763,45 +7742,35 @@ export function ConsoleAppV4(props: {
     const canRecoverSource = configUnavailableCanRecoverSource(route);
     title = diagnostic.title;
     description = '';
-    const resetScopes = route.diagnosticCode === 'configValidationMemoryExhausted' ? []
-      : route.invalidStores?.map(({ scope }) => scope)
-      ?? route.storedScopes
-      ?? (route.layer ? [route.layer.scope] : []);
+    const resetProfiles: ConfigProfileKey[] = route.diagnosticCode === 'configValidationMemoryExhausted' ? []
+      : [route.layer?.profile ?? 'common'];
     actions = [
-      ...resetScopes.flatMap((scope) => {
-        const availability = configResetAvailability[scope];
+      ...resetProfiles.flatMap((profile) => {
+        const availability = configResetAvailability[profile];
         return availability?.exists && availability.resettable !== false
           ? [{
-              label: `重置${scope === 'user' ? '个人默认' : '当前项目'}设置层`,
-              description: '删除整个目标层；不创建备份',
+              label: `重置${configLayerLabel({ profile })}`,
+              description: '清除当前设置中的覆盖值；损坏的文档按恢复规则处理。',
               status: 'error' as const,
               run: () => beginReview({
-                kind: 'configReset',
-                pluginId: route.pluginId,
-                scope,
+                kind: 'configReset', pluginId: route.pluginId, scope: 'user',
+                ...configReadOptions({ profile, context: route.layer?.context }),
                 ...(availability.state === 'invalid' ? { expectedStoreState: 'invalid' as const } : {}),
               }),
             }]
           : [];
       }),
       ...(!invalidLayer && canRecoverSource ? [
-        {
-          label: '修复插件来源',
-          description: `检查并恢复 ${unavailableSourceId}；完成后返回当前设置位置。`,
-          run: () => props.controller.beginConfigSourceRecovery(unavailableSourceId),
-        },
+        { label: '修复插件来源', description: `检查并恢复 ${unavailableSourceId}；完成后返回当前设置位置。`,
+          run: () => props.controller.beginConfigSourceRecovery(unavailableSourceId) },
       ] : []),
       { label: showTechnical ? '返回问题摘要' : '技术详情', description: '查看脱敏错误代码和阶段', run: () => toggleTechnical() },
       { role: 'navigation' as const, label: '返回', run: back },
     ];
-    const unsupportedScopes = resetScopes.filter((scope) =>
-      configResetAvailability[scope]?.resettable === false);
-    const unsupportedRows = unsupportedScopes.map((scope) => <StaticRow
-      key={`unsupported-reset:${scope}`}
-      title={`${scope === 'user' ? '个人默认' : '当前项目'}设置层不能自动重置：特殊节点，请手动移动`}
-      status="warning"
-      compact
-    />);
+    const unsupportedRows = resetProfiles.filter((profile) => configResetAvailability[profile]?.resettable === false)
+      .map((profile) => <StaticRow key={`unsupported-reset:${profile}`}
+        title={`${configLayerLabel({ profile })}不能自动重置：特殊节点，请手动移动`}
+        status="warning" compact />);
     const technicalPageRows = responsiveBudget(2, 4);
     if (showTechnical && !invalidLayer) {
       referenceDetailPagination = {
@@ -8659,7 +8628,7 @@ export function ConsoleAppV4(props: {
       else if (entry.id === 'reAddSource' && issue.sourceId) beginIssueSourceAdd(issue.sourceId);
       else if (entry.id === 'viewSourceChange' && issue.sourceId) go({ name: 'sourceTechnical', sourceId: issue.sourceId });
       else if (entry.id === 'openConfig' && issue.pluginId) {
-        go({ name: 'configFields', pluginId: issue.pluginId, layer: { scope: 'effective' } });
+        go({ name: 'configFields', pluginId: issue.pluginId, layer: { profile: 'common' } });
       }
       else if (entry.id === 'viewDependencies' && issue.pluginId) {
         go({ name: 'pluginDependencies', pluginId: issue.pluginId });
@@ -9424,7 +9393,7 @@ export function ConsoleAppV4(props: {
       status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title={review.operationKind === 'catalogStorePrune' ? '! 需要确认删除本次预览的可回收项目' : projectPreApplyConfirmation ? '! 需要确认当前项目同步脚本' : '! 需要确认会影响其他项目的内容'} meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}{showTechnical && visibleTechnicalDetails.length > 0 ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={`${technicalDetailPage.offset + index}:${detail}`} title={detail} meta={catalogReferenceDetailOffset >= 0 && technicalDetailPage.offset + index >= catalogReferenceDetailOffset ? undefined : index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}{reviewPageCount > 1 ? <Pager page={reviewCurrentPage} pageCount={reviewPageCount} columns={size.columns - 6} /> : null}{portableReview ? null : <SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact offset={reviewActionViewport.offset} limit={reviewActionViewport.limit} />}{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}</ReviewCard></Box>;
     if (pendingReviewIntent?.kind === 'configSaveBatch' || sourceDraft && (pendingReviewIntent?.kind === 'sourceMutation' || pendingReviewIntent?.kind === 'catalogGeneration') && pendingReviewIntent.sourceId === sourceDraft.sourceId) {
       const changesText = pendingReviewIntent.kind === 'configSaveBatch' ? pendingReviewIntent.groups.map((group) =>
-        `${configLayerLabel({ scope: group.scope })}\n${(group.changes ?? []).flatMap((change) => [
+        `${configLayerLabel({ profile: group.platform ?? 'common' })}\n${(group.changes ?? []).flatMap((change) => [
           `${change.title} · ${change.before ?? '未设置'} → ${change.after}${change.children?.length ? ` · ${change.children.length} 个子属性变化` : ''}`,
           ...(change.children ?? []).map((child) => `${child.property} · ${child.before} → ${child.after}`),
         ]).join('\n')}`).join('\n') : changeDetailText(sourceDraftChanges(sourceDraft!));
@@ -9799,13 +9768,11 @@ export function ConsoleAppV4(props: {
       && 'pluginId' in result.returnRoute
       ? result.returnRoute.pluginId
       : undefined);
-    const configRetryScopes = configResultPluginId === undefined ? []
+    const configRetryProfiles: ConfigProfileKey[] = configResultPluginId === undefined ? []
       : operationKind === 'configSaveBatch'
-        ? resultSummary?.configGroups?.filter((group) =>
-            group.configSaved && group.applyStatus === 'failed'
-            && group.errorCode !== 'invalidConfig').map((group) => group.scope) ?? []
-        : resultSummary?.configApplyRetryAvailable === true && resultSummary.configScope !== undefined
-          ? [resultSummary.configScope] : [];
+        ? resultSummary?.configGroups?.filter((group) => group.configSaved && group.applyStatus === 'failed'
+          && group.errorCode !== 'invalidConfig').map((group) => group.platform ?? 'common') ?? []
+        : resultSummary?.configApplyRetryAvailable === true ? [resultSummary.configPlatform ?? 'common'] : [];
     const configOrigin = successfulConfigOperation && pluginId
       ? props.controller.configOrigin(pluginId)
       : undefined;
@@ -10045,13 +10012,14 @@ export function ConsoleAppV4(props: {
           label: '返回首页', run: () => requestSessionNavigation('home') }]
       : configOperation && partial
       ? [
-          ...configRetryScopes.map((scope) => ({
-            label: configRetryScopes.length > 1 ? `重试应用 · ${scopeLabel(scope)}` : '重试应用',
+          ...configRetryProfiles.map((profile) => ({
+            label: configRetryProfiles.length > 1 ? `重试应用 · ${configLayerLabel({ profile })}` : '重试应用',
             description: '先重新显示操作汇总，并重新读取当前状态',
             run: () => beginReview({
               kind: 'configSave',
               pluginId: configResultPluginId!,
-              scope,
+              scope: 'user',
+              ...configReadOptions({ profile, context: resultSummary?.configContext }),
               apply: true,
               retryApply: true,
               updates: {},
@@ -10134,13 +10102,15 @@ export function ConsoleAppV4(props: {
     }
     const visibleMessages = resultSummary?.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
     const visibleChanges = resultSummary?.changes?.slice(0, policy.mode === 'compact' ? 2 : 4) ?? [];
-    const resultTargetName = (target: NonNullable<OperationResultSummary['targets']>[number]): string =>
+    type ResultTarget = Omit<NonNullable<OperationResultSummary['targets']>[number], 'platform'> & { platform: PlatformTarget };
+    const resultTargetName = (target: ResultTarget): string =>
       target.pluginId
         ? props.controller.getPluginOverview(target.pluginId)?.displayName
           ?? target.pluginId.split('/').at(-1)!
-        : `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
+        : `${agentLabel(target.platform)} · ${scopeLabel(target.scope)}`;
     const resultStatus = blocked ? 'error' : partial ? 'warning' : 'success';
-    const resultTargets = resultSummary?.targets ?? [];
+    const resultTargets: ResultTarget[] = configOperation ? resultSummary?.configTargets ?? resultSummary?.targets ?? []
+      : resultSummary?.targets ?? [];
     const commandResults = resultSummary?.commandResults ?? [];
     const retainedCommandPackage = (result: typeof commandResults[number]): boolean =>
       result.producer.kind === 'package' && (resultSummary?.action === 'cleanup' || resultSummary?.action === 'uninstall');
@@ -10249,7 +10219,7 @@ export function ConsoleAppV4(props: {
       ...(resultSummary?.warnings ?? []),
       ...(resultSummary?.recoveryActions ?? []),
       ...prioritizedTargets.map((target) =>
-        `${resultTargetName(target)} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)} · ${operationTargetStateLabel(target.state).label}`),
+        `${resultTargetName(target)} · ${agentLabel(target.platform)} · ${scopeLabel(target.scope)} · ${operationTargetStateLabel(target.state).label}`),
       ...commandResults.flatMap((result) => [
         `命令生产者 ${result.producer.key} · ${scopeLabel(result.producer.scope)} · ${result.state}`,
         ...(retainedCommandPackage(result) ? [`保留命令包 ${getCommandPackageId(result.producer)} · ${result.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`] : []),
@@ -10378,7 +10348,7 @@ export function ConsoleAppV4(props: {
         : group.applyStatus === 'failed' ? '已保存 · 应用失败'
           : group.applyStatus === 'succeeded' ? '已保存 · 已应用'
             : '已保存';
-      return <ResultRow key={`config:${group.scope}`} title={scopeLabel(group.scope)}
+      return <ResultRow key={`config:${group.platform ?? 'common'}`} title={configLayerLabel({ profile: group.platform ?? 'common' })}
         description={group.errorCode} meta={outcome} status={status} compact />;
     }) ?? [];
     const taskRootResults = taskSummary?.rootResults ?? [];
@@ -10425,7 +10395,7 @@ export function ConsoleAppV4(props: {
             : target.relation === 'transitive' ? '间接依赖' : '所选插件位置';
           return {
             key: `target:${root.pluginId}:${key}`,
-            title: `${root.pluginId}${targetPluginId === root.pluginId ? '' : ` → ${targetPluginId}`} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`,
+            title: `${root.pluginId}${targetPluginId === root.pluginId ? '' : ` → ${targetPluginId}`} · ${agentLabel(target.platform)} · ${scopeLabel(target.scope)}`,
             description: blockedTarget
               ? pluginWriteTaskBlockLabel(blockedTarget.reason)
               : `${relation}${target.errorCode ? ` · ${target.errorCode}` : ''}`,
@@ -10465,7 +10435,7 @@ export function ConsoleAppV4(props: {
           : target.relation === 'transitive' ? '间接依赖' : undefined;
       return <ResultRow
         key={`batch-target:${target.pluginId ?? ''}:${target.platform}:${target.scope}`}
-        title={`${resultTargetName(target)} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`}
+        title={`${resultTargetName(target)} · ${agentLabel(target.platform)} · ${scopeLabel(target.scope)}`}
         description={relation}
         meta={state.label}
         status={state.status ?? 'muted'}
@@ -10915,7 +10885,7 @@ export function ConsoleAppV4(props: {
   });
 
   useEffect(() => {
-    if (!targetActionSignature || !actions[focus]?.disabled) return;
+    if (!targetActionSignature || actions[focus] && !actions[focus]?.disabled) return;
     const firstEnabled = actions.findIndex((action) => !action.disabled);
     if (firstEnabled < 0) return;
     setFocus(firstEnabled);
@@ -11035,6 +11005,34 @@ export function ConsoleAppV4(props: {
     ? Math.min(effectiveFocus, Math.max(0, actions.length - 1))
     : effectiveFocus;
   useInput((input, key) => {
+    if (scopedFlow && tooSmall && !overlay) {
+      if (scopedFlow.stage !== 'progress' && (input.toLowerCase() === 'q'
+        || key.ctrl && input.toLowerCase() === 'c')) requestConfirmedExit();
+      return;
+    }
+    if (configSaveState?.status === 'saving') return;
+    if (configSaveState?.status === 'saved') {
+      if (tooSmall) return;
+      if (key.ctrl && input.toLowerCase() === 'c') { requestConfirmedExit(); return; }
+      if (key.escape) { dismissConfigSaved(); setConfigSavedFocus(0); return; }
+      if (key.upArrow || key.downArrow) { setConfigSavedFocus((value) => 1 - value); return; }
+      if (key.return) {
+        if (configSavedFocus === 0) applySavedConfig(); else dismissConfigSaved();
+        setConfigSavedFocus(0);
+      }
+      return;
+    }
+    if (agentWelcome) {
+      if (tooSmall) return;
+      if (key.ctrl && input.toLowerCase() === 'c') { requestConfirmedExit(); return; }
+      if (key.escape) { setAgentWelcome(false); return; }
+      if (key.upArrow || key.downArrow) { setAgentWelcomeFocus((value) => 1 - value); return; }
+      if (key.return) {
+        if (agentWelcomeFocus === 0) openAgentManagement(); else setAgentWelcome(false);
+      }
+      return;
+    }
+    if (scopedFlow?.stage === 'agents' && !overlay) return;
     if (scopedDiscardIntent) {
       if (key.escape || input.toLowerCase() === 'b' || input.toLowerCase() === 'n') {
         setScopedDiscardIntent(undefined); return;
@@ -11067,6 +11065,9 @@ export function ConsoleAppV4(props: {
         else if (input && !key.ctrl && !key.meta && input >= ' ') setScriptTimeoutInput((value) => value + input);
         setScriptTimeoutError(undefined);
         return;
+      }
+      if (input.toLowerCase() === 'd' && (flow.stage === 'review' || flow.stage === 'risk' || flow.stage === 'result')) {
+        setShowTechnical((value) => !value); setBatchTargetOffset(0); return;
       }
       const dirtyTargets = flow.stage === 'targets'
         && flow.agents.join('\0') !== flow.savedAgents.join('\0');
@@ -11428,6 +11429,13 @@ export function ConsoleAppV4(props: {
       });
       return;
     }
+    if (route.name === 'configFields' && !route.view && visibleConfigTabs.length > 1
+      && (key.leftArrow || key.rightArrow)) {
+      const current = Math.max(0, visibleConfigTabs.findIndex((tab) => tab.id === activeConfigTabId));
+      const next = visibleConfigTabs[(current + (key.leftArrow ? -1 : 1) + visibleConfigTabs.length) % visibleConfigTabs.length]!;
+      props.controller.updatePageContext({ configGroupId: next.id, focusIndex: 0, scrollOffset: 0 });
+      setFocus(0); setScrollOffset(0); return;
+    }
     if (readerNavigation && (key.pageUp || key.pageDown || key.leftArrow || key.rightArrow)) {
       readerNavigation.move(key.pageUp || key.leftArrow ? -1 : 1);
       return;
@@ -11707,8 +11715,8 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (route.name === 'configFieldEditor' && !arrayItem && activeField && key.ctrl && input.toLowerCase() === 'r') {
-      const canUnset = (['project', 'user'] as const).some((scope) =>
-        configLayerPages[scope]?.groups.flatMap((group) => group.fields)
+      const canUnset = [route.layer.profile].some((profile) =>
+        configLayerPages[profile]?.groups.flatMap((group) => group.fields)
           .some((field) => field.key === activeField.key && configFieldCanUnset(field)));
       if (canUnset) removeDraft(activeField.key);
       return;
@@ -11718,7 +11726,7 @@ export function ConsoleAppV4(props: {
       && !(activeField && 'valueRef' in activeField.definition && activeField.definition.valueRef)
       && (route.editor === 'string' || route.editor === 'number')
       && ((activeField?.choices?.length ?? 0) === 0 || route.mode === 'custom')
-      && (['project', 'user'] as const).some((scope) => configLayerPages[scope]?.groups.flatMap((group) => group.fields)
+      && [route.layer.profile].some((profile) => configLayerPages[profile]?.groups.flatMap((group) => group.fields)
         .some((field) => field.key === activeField?.key && configFieldCanSet(field)))) {
       if (key.escape) {
         setConfigCandidate(undefined);
@@ -11926,6 +11934,12 @@ export function ConsoleAppV4(props: {
     }
     // Paste and composed text are data, never multiple background commands.
     if (input.length > 1 && !key.ctrl && !key.meta) return;
+    if (key.tab && route.name === 'configFields') {
+      const index = CONFIG_PROFILE_KEYS.indexOf(route.layer.profile);
+      const profile = CONFIG_PROFILE_KEYS[(index + (key.shift ? -1 : 1) + CONFIG_PROFILE_KEYS.length) % CONFIG_PROFILE_KEYS.length]!;
+      props.controller.replace({ ...route, layer: { ...route.layer, profile } });
+      setFocus(0); setScrollOffset(0); return;
+    }
     if (key.tab) return;
     if ((route.name === 'intentInventory' && !showTechnical
       || route.name === 'intentInventory' && !showTechnical
@@ -12030,7 +12044,7 @@ export function ConsoleAppV4(props: {
       && (route.name === 'configSave' || route.name === 'sourceSave' && route.view === 'changes')) {
       back();
     } else if (globalAction === 'back' && route.name === 'configLayer') {
-      if (configCandidate?.selectingScope) {
+      if (configCandidate) {
         setConfigCandidate(undefined);
         const owner = `${route.pluginId}\0${route.fieldKey}`;
         setObjectDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(owner))));
@@ -12043,10 +12057,7 @@ export function ConsoleAppV4(props: {
       back();
     } else if (globalAction === 'back'
       && (route.name === 'configFieldEditor' || route.name === 'configFieldAction')) {
-      const returnToReferenceScope = !arrayItem && editingScope && activeTopField
-        && configReferenceScalars(activeTopField.definition).length > 0
-        && (['user', 'project'] as const).filter((scope) => configLayerPages[scope]?.groups.flatMap((group) => group.fields)
-          .some((field) => field.key === activeTopField.key && configFieldCanSet(field))).length > 1;
+      const returnToReferenceScope = false;
       if (!returnToReferenceScope) setConfigCandidate(undefined);
       if (activeArrayKey && !arrayItem && !returnToReferenceScope) {
         setArrayDrafts((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key !== activeArrayKey)));
@@ -12117,11 +12128,6 @@ export function ConsoleAppV4(props: {
           ? selected.filter((item) => item !== pluginId) : [...selected, pluginId];
         setScopedSelectionRevision((value) => value + 1);
       }
-    } else if (route.name === 'installTargets' && route.view !== 'blocked'
-      && input.toLowerCase() === 'c') {
-      runAction(bottomActions.find((action) => action.actionId === 'confirm-install-platforms'));
-    } else if (route.name === 'batchInstallPlatforms' && input.toLowerCase() === 'c') {
-      runAction(actions.find((action) => action.actionId === 'batch-install-platforms-confirm'));
     } else if (route.name === 'batchInstallScope' && input.toLowerCase() === 'c') {
       runAction(actions.find((action) => action.actionId === 'batch-placement-confirm'));
     } else if (route.name === 'batchPlacement' && bottomActions.length > 0
@@ -12164,15 +12170,7 @@ export function ConsoleAppV4(props: {
     } else if (route.name === 'configFields' && input.toLowerCase() === 's') {
       runAction(bottomActions[0]);
     } else if (route.name === 'configFields' && input.toLowerCase() === 'u') {
-      const key = actions[focus]?.configKey;
-      const field = currentConfigPage?.groups.flatMap((group) => group.fields)
-        .find((candidate) => candidate.key === key);
-      const canUnset = (['project', 'user'] as const).some((scope) =>
-        configLayerPages[scope]?.groups.flatMap((group) => group.fields)
-          .some((candidate) => candidate.key === key && configFieldCanUnset(candidate)));
-      if (field && canUnset) {
-        removeDraft(field.key);
-      }
+      runAction(actions.find((action) => action.actionId === 'config-reset-profile'));
     } else if (route.name === 'configFields' && !route.view && visibleConfigTabs.length > 1
       && (key.leftArrow || key.rightArrow)) {
       const current = Math.max(0, visibleConfigTabs.findIndex((tab) => tab.id === activeConfigTabId));
@@ -12205,6 +12203,17 @@ export function ConsoleAppV4(props: {
       && !portableToolsOpen) {
       const candidate = portableVisibleCandidates[focus];
       if (candidate) props.controller.togglePortableSkill(candidate.name);
+    } else if (route.name === 'pluginDetail' && detailNavigation && (key.leftArrow || key.rightArrow)) {
+      return;
+    } else if (route.name === 'pluginDetail' && detailNavigation && (key.pageUp || key.pageDown)) {
+      setBatchTargetOffset((value) => Math.max(0, Math.min(detailNavigation!.maxOffset,
+        value + (key.pageUp ? -detailNavigation!.lineLimit : detailNavigation!.lineLimit))));
+    } else if (route.name === 'pluginDetail' && detailNavigation && focus === 0
+      && (key.upArrow || input === 'k') && batchTargetOffset > 0) {
+      setBatchTargetOffset((value) => value - 1);
+    } else if (route.name === 'pluginDetail' && detailNavigation
+      && (key.downArrow || input === 'j') && batchTargetOffset < detailNavigation.maxOffset) {
+      setBatchTargetOffset((value) => value + 1);
     } else if (entityCardNavigation && focus < entityCardNavigation.itemCount
       && (key.upArrow || input.toLowerCase() === 'k') && batchTargetOffset > 0) {
       setBatchTargetOffset((value) => value - 1);

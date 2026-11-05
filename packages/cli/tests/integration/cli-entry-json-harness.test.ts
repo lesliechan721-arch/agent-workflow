@@ -1,54 +1,12 @@
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCliEntry } from '../helpers/cli-entry.js';
-import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
 const tempDirs: string[] = [];
-
-function fixturePath(...segments: string[]): string {
-  return path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '..',
-    'fixtures',
-    ...segments,
-  );
-}
-
-async function makeWorkspace(): Promise<{
-  repoRoot: string;
-  awHome: string;
-  embeddedRoot: string;
-  env: NodeJS.ProcessEnv;
-}> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-json-v3-'));
-  tempDirs.push(root);
-  const repoRoot = path.join(root, 'repo');
-  await fs.copy(fixturePath('repo-template'), repoRoot);
-  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-  tempDirs.push(embeddedRoot);
-  const awHome = path.join(root, 'aw-home');
-  return {
-    repoRoot,
-    awHome,
-    embeddedRoot,
-    env: {
-      ...process.env,
-      AW_HOME: awHome,
-      CODEX_HOME: path.join(root, 'codex-home'),
-      CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
-    },
-  };
-}
-
-async function setEmbeddedRootOverride(rootDir: string | null): Promise<void> {
-  const paths = await import('../../src/utils/paths.js');
-  paths.setEmbeddedPluginsRootOverrideForTests(rootDir);
-}
 
 afterEach(async () => {
   vi.resetModules();
@@ -58,7 +16,6 @@ afterEach(async () => {
   vi.doUnmock('../../src/recovery/status.js');
   vi.clearAllMocks();
   vi.restoreAllMocks();
-  await setEmbeddedRootOverride(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -102,7 +59,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
   it.each(['user', 'project'] as const)('emits one scoped recovery error for %s parse failures', async (scope) => {
     const result = await runCliEntry([
-      'install', 'official/git-commit', '--scope', scope, '--target', 'codex', '--json', '--unknown',
+      'plugin', 'install', 'official/git-commit', '--scope', scope, '--json', '--unknown',
     ]);
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toBe('');
@@ -121,7 +78,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
   it('rejects an invalid Agent without writing declaration state', async () => {
     const result = await runCliEntry([
-      'install', 'official/git-commit', '--scope', 'project', '--target', 'invalid', '--json',
+      'plugin', 'install', 'official/git-commit', '--scope', 'project', '--target', 'invalid', '--json',
     ]);
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
@@ -145,37 +102,13 @@ describe('CLI JSON recovery and independent command harness', () => {
     ]);
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe('');
-    expect(result.parseJsonStdout()).toMatchObject({
-      command: 'plugin:capabilities',
-      schemaVersion: 1,
-      surface: 'artifacts',
-      capabilities: {
-        artifacts: expect.arrayContaining([
-          expect.objectContaining({ field: 'artifacts.targets[].target', owner: 'core' }),
-          expect.objectContaining({
-            field: 'artifacts.targets[].delivery',
-            owner: 'core',
-            profiles: 'CODEX dynamic Skill',
-          }),
-          {
-            field: 'artifacts.targets[].delivery.identity',
-            type: 'literal shared',
-            required: 'when delivery.mode is codex-native',
-            acceptedValues: ['shared'],
-            owner: 'core',
-            provenance: ['@lesliechan721/aw-plugin-core manifest structure registry'],
-          },
-          {
-            field: 'artifacts.targets[].delivery.renderProfile',
-            type: 'literal user',
-            required: 'when delivery.mode is codex-native',
-            acceptedValues: ['user'],
-            owner: 'core',
-            provenance: ['@lesliechan721/aw-plugin-core manifest structure registry'],
-          },
-        ]),
-      },
-    });
+    const value = result.parseJsonStdout<{ command: string; schemaVersion: number; capabilities: { artifacts: Array<{ field: string; acceptedValues?: string[] }> } }>();
+    expect(value).toMatchObject({ command: 'plugin:capabilities', schemaVersion: 1 });
+    expect(value.capabilities.artifacts).toContainEqual(expect.objectContaining({
+      field: 'artifacts.targets[].platform',
+      acceptedValues: ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic'],
+    }));
+    expect(value.capabilities.artifacts.some((entry) => entry.field.startsWith('artifacts.targets[].delivery'))).toBe(false);
   });
 
   it('emits a unified recovery receipt from the scoped coordinator', async () => {
@@ -202,7 +135,7 @@ describe('CLI JSON recovery and independent command harness', () => {
       ...await importOriginal<typeof import('../../src/recovery/coordinator.js')>(), runRecovery,
     }));
     const result = await runCliEntry([
-      'sync', 'official/git-commit', '--scope', 'project', '--target', 'codex', '--json',
+      'plugin', 'sync', 'official/git-commit', '--context', 'user', '--target', 'codex', '--json',
     ], { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv });
     expect(result).toMatchObject({ exitCode: 0, stderr: '' });
     expect(result.parseJsonStdout()).toEqual(receipt);
@@ -220,7 +153,7 @@ describe('CLI JSON recovery and independent command harness', () => {
     vi.doMock('../../src/recovery/status.js', async (importOriginal) => ({
       ...await importOriginal<typeof import('../../src/recovery/status.js')>(), readRecoveryStatus,
     }));
-    const result = await runCliEntry(['status', '--scope', 'user', '--json', '--verbose'], {
+    const result = await runCliEntry(['plugin', 'status', '--context', 'user', '--json', '--verbose'], {
       cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv,
     });
     expect(result.exitCode).toBe(0);
@@ -230,25 +163,25 @@ describe('CLI JSON recovery and independent command harness', () => {
   });
 
   it.each([
-    ['set', ['config', 'set', '--json']],
-    ['unset', ['config', 'unset', '-j']],
-    ['reset', ['config', 'reset', '--json']],
+    ['set', ['plugin', 'config', 'set', '--json']],
+    ['unset', ['plugin', 'config', 'unset', '-j']],
+    ['reset', ['plugin', 'config', 'reset', '--json']],
   ] as const)('emits one Config Mutation Receipt v7 when config %s arguments are missing', async (
     command,
     argv,
   ) => {
     const result = await runCliEntry([...argv]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: `config:${command}`,
       receiptSchemaVersion: 7,
       overallState: 'failed',
       configWrite: 'notStarted',
-      errors: [{ code: 'invalidArguments', message: expect.stringContaining('Usage:') }],
+      errors: [{ code: 'invalidArguments', message: 'error: invalid config mutation arguments' }],
     });
-    expect(result.stderr.match(/Usage:/gu)).toHaveLength(1);
+    expect(result.stderr).toBe('error: invalid config mutation arguments\n');
   });
 
   it.each([
@@ -262,10 +195,10 @@ describe('CLI JSON recovery and independent command harness', () => {
     clusterValue,
   ) => {
     const result = await runCliEntry([
-      'config', command, cluster, ...clusterValue, '--unknown=private-value',
+      'plugin', 'config', command, cluster, ...clusterValue, '--unknown=private-value',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: `config:${command}`,
@@ -283,18 +216,18 @@ describe('CLI JSON recovery and independent command harness', () => {
 
   it.each([
     ['set', [
-      'config', 'set', 'official/demo', 'mode',
+      'plugin', 'config', 'set', 'official/demo', 'mode',
       '--value-json', '"safe"', '--json', '--unknown=private-value',
     ]],
-    ['unset', ['config', 'unset', 'official/demo', 'mode', '-j', '--unknown=private-value']],
-    ['reset', ['config', 'reset', 'official/demo', '--yes', '--json', '--unknown=private-value']],
+    ['unset', ['plugin', 'config', 'unset', 'official/demo', 'mode', '-j', '--unknown=private-value']],
+    ['reset', ['plugin', 'config', 'reset', 'official/demo', '--yes', '--json', '--unknown=private-value']],
   ] as const)('emits one safe Config Mutation Receipt v7 for config %s unknown options', async (
     command,
     argv,
   ) => {
     const result = await runCliEntry([...argv]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: `config:${command}`,
@@ -312,10 +245,10 @@ describe('CLI JSON recovery and independent command harness', () => {
 
   it('emits one Config Mutation Receipt v7 for an action failure', async () => {
     const result = await runCliEntry([
-      'config', 'set', 'official/demo', 'mode', '--json',
+      'plugin', 'config', 'set', 'official/demo', 'mode', '--json',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: 'config:set',
@@ -323,47 +256,48 @@ describe('CLI JSON recovery and independent command harness', () => {
       overallState: 'failed',
       configWrite: 'notStarted',
       errors: [{
-        code: 'configMutationFailed',
-        message: 'Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.',
+        code: 'invalidArguments',
+        message: 'Use exactly one of --value-json, --value-stdin, or --preset.',
       }],
     });
     expect(result.stderr).toBe(
-      'Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.\n',
+      'Use exactly one of --value-json, --value-stdin, or --preset.\n',
     );
   });
 
-  it.each([
-    ['list', '-jv'],
-    ['get', '-vj'],
-  ] as const)(
-    'does not misclassify config %s parsing failures as mutation receipts',
-    async (command, jsonOptions) => {
-      const result = await runCliEntry([
-        'config', command, 'official/demo', jsonOptions, '--unknown',
-      ]);
+  it.each([['schema', '-jv'], ['get', '-vj']])(
+    'keeps config %s parse failures outside mutation receipts', async (command, jsonOptions) => {
+      const result = await runCliEntry(['plugin', 'config', command, 'official/demo', jsonOptions, '--unknown']);
+      expect(result.exitCode).toBe(2);
+      expect(result.parseJsonStdout()).toMatchObject({ ok: false, command: `config:${command}`,
+        errors: [{ code: 'invalidArguments' }] });
+      expect(result.parseJsonStdout()).not.toHaveProperty('receiptSchemaVersion');
+    });
 
-      expect(result.exitCode).toBe(1);
-      expect(result.stdout).toBe('');
-      expect(result.stderr).toContain("error: unknown option '--unknown'");
-    },
-  );
+  it.each([['apply', '-yj'], ['edit', '-j']])(
+    'uses mutation receipt v7 for config %s parse failures', async (command, jsonOptions) => {
+      const result = await runCliEntry(['plugin', 'config', command, 'official/demo', jsonOptions, '--unknown']);
+      expect(result.exitCode).toBe(2);
+      expect(result.parseJsonStdout()).toMatchObject({ receiptSchemaVersion: 7, command: `config:${command}`,
+        ok: false, configWrite: 'notStarted', overallState: 'failed', errors: [{ code: 'invalidArguments' }] });
+    });
 
   it('does not expose a secret value-json token in a config set usage failure', async () => {
     const sensitivePath = path.join(os.tmpdir(), 'private', 'config-secret.json');
     const secret = 'config-secret-value';
     const valueJson = JSON.stringify({ path: sensitivePath, token: secret });
     const result = await runCliEntry([
-      'config', 'set', 'official/demo', '--value-json', valueJson, '--json',
+      'plugin', 'config', 'set', 'official/demo', '--value-json', valueJson, '--json',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: 'config:set',
       receiptSchemaVersion: 7,
       overallState: 'failed',
       configWrite: 'notStarted',
-      errors: [{ code: 'invalidArguments', message: expect.stringContaining('Usage:') }],
+      errors: [{ code: 'invalidArguments', message: 'error: invalid config mutation arguments' }],
     });
     expect(`${result.stdout}\n${result.stderr}`).not.toContain(secret);
     expect(`${result.stdout}\n${result.stderr}`).not.toContain(valueJson);
@@ -374,11 +308,11 @@ describe('CLI JSON recovery and independent command harness', () => {
     'does not treat a %s value-json argument as JSON intent',
     async (valueJson) => {
       const result = await runCliEntry([
-        'config', 'set', 'official/demo', 'mode',
+        'plugin', 'config', 'set', 'official/demo', 'mode',
         '--value-json', valueJson, '--unknown=private-value',
       ]);
 
-      expect(result.exitCode).toBe(1);
+      expect(result.exitCode).toBe(2);
       expect(result.stdout).toBe('');
       expect(result.stderr).toContain("error: unknown option '--unknown=private-value'");
     },
@@ -389,30 +323,29 @@ describe('CLI JSON recovery and independent command harness', () => {
     ['a following scope value', ['-s', '-j']],
   ] as const)('does not scan %s as short JSON options', async (_label, scopeOptions) => {
     const result = await runCliEntry([
-      'config', 'set', 'official/demo', 'mode', ...scopeOptions, '--unknown',
+      'plugin', 'config', 'set', 'official/demo', 'mode', ...scopeOptions, '--unknown',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toContain("error: unknown option '--unknown'");
+    expect(result.stderr).toContain("error: unknown option '-s");
   });
 
   it('does not scan for JSON intent after --', async () => {
-    const result = await runCliEntry(['config', 'set', '--', '--json']);
+    const result = await runCliEntry(['plugin', 'config', 'set', '--', '--json']);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('Usage: aw config set');
+    expect(result.stderr).toContain("missing required argument 'field'");
   });
 
   it('emits a fail-closed config mutation receipt v7', async () => {
-    const workspace = await makeWorkspace();
-    await setEmbeddedRootOverride(workspace.embeddedRoot);
-
-    const noOp = await runCliEntry(
-      ['config', 'reset', 'git-commit', '-s', 'user', '--yes', '--json'],
-      { cwd: workspace.repoRoot, env: workspace.env },
-    );
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-missing-store-'));
+    tempDirs.push(root);
+    const noOp = await runCliEntry(['plugin', 'config', 'reset', 'git-commit', '--yes', '--json'], {
+      cwd: root, env: { ...process.env, AW_HOME: path.join(root, 'aw-home'),
+        CODEX_HOME: path.join(root, 'codex'), CLAUDE_CONFIG_DIR: path.join(root, 'claude') },
+    });
     expect(noOp.exitCode).toBe(1);
     expect(noOp.parseJsonStdout()).toMatchObject({
       ok: false,

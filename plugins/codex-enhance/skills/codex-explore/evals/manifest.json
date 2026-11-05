@@ -5,18 +5,21 @@
   },
   "profiles": {
     "project-default": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "codex-enhance": {}
       }
     },
     "user-default": {
+      "platform": "codex",
       "scope": "user",
       "plugins": {
         "codex-enhance": {}
       }
     },
     "project-nondefault": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "codex-enhance": {
@@ -36,6 +39,7 @@
       }
     },
     "user-nondefault": {
+      "platform": "codex",
       "scope": "user",
       "plugins": {
         "codex-enhance": {
@@ -55,6 +59,7 @@
       }
     },
     "user-custom": {
+      "platform": "codex",
       "scope": "user",
       "plugins": {
         "codex-enhance": {

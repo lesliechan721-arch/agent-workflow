@@ -11,7 +11,7 @@ import {
   PLUGIN_MANIFEST_SCHEMA_VERSION,
   SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION,
 } from './manifest.js';
-import { getPluginConfigDependencyKeys, normalizePluginConfigDefinition } from './plugin-config.js';
+import { compilePluginConfigDefinition, getPluginConfigDependencyKeys, normalizePluginConfigDefinition } from './plugin-config.js';
 
 import type {
   CatalogMarketplaceIdentity,
@@ -35,6 +35,8 @@ import type {
   PermissionDefinition,
   PlatformAgentOverrides,
   PlatformName,
+  PlatformTarget,
+  MarketplacePolicy,
   PlatformPluginManifest,
   PluginRequirements,
   PluginConfigSchema,
@@ -59,7 +61,6 @@ import { normalizeManagedCommands, normalizeManagedCommandPermission, validateMa
 import { applyFileRules } from './file-rules.js';
 import { resolvePlatformEntries } from './platform-entries.js';
 import {
-  validatePortableSkillDirectoriesRoot,
   validatePortableSkillName,
 } from './portable-skill-validation.js';
 import {
@@ -81,9 +82,13 @@ import {
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
 import { assertPluginInputTree, validateRuntimeExportSource } from './runtime-export-source.js';
 import {
-  formatMarketplaceProductsForError,
-  normalizeMarketplaceProductToken,
+  formatManifestPlatformsForError,
+  isPortablePlatformTarget,
+  normalizePlatformTargets,
+  PLATFORM_TARGETS,
   resolveSupportedPlatforms,
+  resolveSupportedNativePlatforms,
+  normalizeMarketplaceProductToken,
   supportsPlatform,
 } from './platform-support.js';
 
@@ -475,14 +480,14 @@ export function assertPlatformFieldSupported(options: {
   pluginName: string;
   manifest: PluginManifestSource;
   fieldPath: string;
-  requiredPlatform: PlatformName;
+  requiredPlatform: PlatformTarget;
 }): void {
   if (supportsPlatform(options.manifest, options.requiredPlatform)) {
     return;
   }
 
   throw new Error(
-    `Invalid plugin "${options.pluginName}": ${options.fieldPath} requires ${PLATFORM_PRODUCT_BY_NAME[options.requiredPlatform]} support, but ${formatMarketplaceProductsForError(options.manifest)}.`,
+    `Invalid plugin "${options.pluginName}": ${options.fieldPath} requires ${options.requiredPlatform} support, but ${formatManifestPlatformsForError(options.manifest)}.`,
   );
 }
 
@@ -524,21 +529,11 @@ export function assertManifestPlatformSupport(
   pluginName: string,
   manifest: PluginManifestSource,
 ): void {
-  if (manifest.buildConfig?.fileRules?.claude !== undefined) {
-    assertPlatformFieldSupported({
-      pluginName,
-      manifest,
-      fieldPath: 'buildConfig.fileRules.claude',
-      requiredPlatform: 'claude',
-    });
-  }
-  if (manifest.buildConfig?.fileRules?.codex !== undefined) {
-    assertPlatformFieldSupported({
-      pluginName,
-      manifest,
-      fieldPath: 'buildConfig.fileRules.codex',
-      requiredPlatform: 'codex',
-    });
+  for (const platform of PLATFORM_TARGETS) {
+    if (manifest.buildConfig?.fileRules?.[platform] !== undefined) {
+      assertPlatformFieldSupported({ pluginName, manifest,
+        fieldPath: `buildConfig.fileRules.${platform}`, requiredPlatform: platform });
+    }
   }
   if (manifest.buildConfig?.manifestOverrides?.claude !== undefined) {
     assertPlatformFieldSupported({
@@ -556,16 +551,14 @@ export function assertManifestPlatformSupport(
       requiredPlatform: 'codex',
     });
   }
-  manifest.buildConfig?.skillRuntimeFiles?.forEach((entry, index) => {
-    for (const platform of entry.platforms ?? []) {
-      assertPlatformFieldSupported({
-        pluginName,
-        manifest,
-        fieldPath: `buildConfig.skillRuntimeFiles[${index}].platforms`,
-        requiredPlatform: platform,
-      });
-    }
-  });
+  for (const selector of ['skillRuntimeFiles', 'generatedSkillRuntimeFiles'] as const) {
+    manifest.buildConfig?.[selector]?.forEach((entry, index) => {
+      for (const platform of entry.platforms ?? []) {
+        assertPlatformFieldSupported({ pluginName, manifest,
+          fieldPath: `buildConfig.${selector}[${index}].platforms`, requiredPlatform: platform });
+      }
+    });
+  }
   if (manifest.apps) {
     assertPlatformFieldSupported({
       pluginName,
@@ -704,7 +697,7 @@ function normalizePluginInterface(
 function normalizeMarketplacePolicy(
   value: unknown,
   fieldName: string,
-): PluginMarketplaceMeta['policy'] {
+): MarketplacePolicy {
   const input = assertObject(value, fieldName);
   assertAllowedKeys(input, fieldName, ['installation', 'authentication', 'products']);
   const authentication = ensureString(
@@ -752,7 +745,10 @@ function normalizeMarketplaceMeta(
         ? undefined
         : normalizeComparableStringArray(ensureStringArray(input.tags, `${fieldName}.tags`)),
     strict: input.strict,
-    policy: normalizeMarketplacePolicy(input.policy, `${fieldName}.policy`),
+    policy: (() => {
+      const { products: _products, ...policy } = normalizeMarketplacePolicy(input.policy, `${fieldName}.policy`);
+      return policy;
+    })(),
   };
 }
 
@@ -761,21 +757,18 @@ function normalizeTemplateVarByPlatform(
   fieldName: string,
 ): TemplateVarByPlatform {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['claude', 'codex']);
-
-  const claude = input.claude;
-  const codex = input.codex;
-  if (
-    (typeof claude !== 'string' && typeof claude !== 'boolean') ||
-    (typeof codex !== 'string' && typeof codex !== 'boolean')
-  ) {
-    throw new Error(`Invalid ${fieldName}: template vars must be string or boolean per platform.`);
+  assertAllowedKeys(input, fieldName, [...PLATFORM_TARGETS]);
+  if (Object.keys(input).length === 0) throw new Error(`Invalid ${fieldName}: expected at least one platform value.`);
+  const output: TemplateVarByPlatform = {};
+  for (const platform of PLATFORM_TARGETS) {
+    const value = input[platform];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' && typeof value !== 'boolean') {
+      throw new Error(`Invalid ${fieldName}.${platform}: template vars must be string or boolean.`);
+    }
+    output[platform] = value;
   }
-
-  return {
-    claude,
-    codex,
-  };
+  return output;
 }
 
 function normalizeBuildConfigTemplates(
@@ -1020,50 +1013,25 @@ function normalizeSkillRuntimeFiles(
   return value.map((entry, index) => {
     const entryField = `${fieldName}[${index}]`;
     const input = assertObject(entry, entryField);
-    assertAllowedKeys(input, entryField, ['skill', 'target', 'platforms', 'distributions', 'source', 'import']);
+    assertAllowedKeys(input, entryField, ['skill', 'target', 'platforms', 'source', 'import']);
     const skill = ensurePluginName(input.skill, `${entryField}.skill`);
     const target = normalizeSkillRuntimeTarget(input.target, `${entryField}.target`);
-    const collisionKey = `${skill}/${target}`;
-    if (targets.has(collisionKey)) {
-      throw new Error(`Invalid ${fieldName}: duplicate target "${collisionKey}".`);
-    }
-    targets.add(collisionKey);
     const hasSource = input.source !== undefined;
     const hasImport = input.import !== undefined;
     if (hasSource === hasImport) {
       throw new Error(`Invalid ${entryField}: exactly one of source or import is required.`);
     }
-    let platforms: PlatformName[] | undefined;
-    if (input.platforms !== undefined) {
-      const values = ensureStringArray(input.platforms, `${entryField}.platforms`);
-      platforms = values.map((platform, platformIndex) => {
-        if (platform !== 'claude' && platform !== 'codex') {
-          throw new Error(`Invalid ${entryField}.platforms[${platformIndex}]: expected claude or codex.`);
-        }
-        return platform;
-      });
-      if (new Set(platforms).size !== platforms.length) {
-        throw new Error(`Invalid ${entryField}.platforms: duplicate platform.`);
-      }
-    }
-    let distributions: Array<'agent-skills'> | undefined;
-    if (input.distributions !== undefined) {
-      const values = ensureStringArray(input.distributions, `${entryField}.distributions`);
-      distributions = values.map((distribution, distributionIndex) => {
-        if (distribution !== 'agent-skills') {
-          throw new Error(`Invalid ${entryField}.distributions[${distributionIndex}]: expected agent-skills.`);
-        }
-        return distribution;
-      });
-      if (new Set(distributions).size !== distributions.length) {
-        throw new Error(`Invalid ${entryField}.distributions: duplicate distribution.`);
-      }
+    const platforms = input.platforms === undefined
+      ? undefined : normalizePlatformTargets(input.platforms, `${entryField}.platforms`);
+    for (const platform of platforms?.length ? platforms : PLATFORM_TARGETS) {
+      const collisionKey = `${platform}:${skill}/${target}`;
+      if (targets.has(collisionKey)) throw new Error(`Invalid ${fieldName}: duplicate target "${collisionKey}".`);
+      targets.add(collisionKey);
     }
     return {
       skill,
       target,
       ...(platforms ? { platforms } : {}),
-      ...(distributions ? { distributions } : {}),
       ...(hasSource
         ? { source: normalizeCanonicalPluginFilePath(pluginRoot, input.source, `${entryField}.source`) }
         : { import: normalizeImportReference(input.import, `${entryField}.import`, reservedImports) }),
@@ -1082,29 +1050,20 @@ function normalizeGeneratedSkillRuntimeFiles(
   return value.map((entry, index) => {
     const entryField = `${fieldName}[${index}]`;
     const input = assertObject(entry, entryField);
-    assertAllowedKeys(input, entryField, ['skill', 'target', 'distributions']);
+    assertAllowedKeys(input, entryField, ['skill', 'target', 'platforms']);
     const skill = ensurePluginName(input.skill, `${entryField}.skill`);
     const target = normalizeSkillRuntimeTarget(input.target, `${entryField}.target`);
-    const collisionKey = `${skill}/${target}`;
-    if (targets.has(collisionKey)) {
-      throw new Error(`Invalid ${fieldName}: duplicate target "${collisionKey}".`);
-    }
-    targets.add(collisionKey);
-    const distributions: Array<'agent-skills'> | undefined = input.distributions === undefined
-      ? undefined
-      : ensureStringArray(input.distributions, `${entryField}.distributions`).map((distribution, distributionIndex) => {
-          if (distribution !== 'agent-skills') {
-            throw new Error(`Invalid ${entryField}.distributions[${distributionIndex}]: expected agent-skills.`);
-          }
-          return distribution;
-        });
-    if (distributions && new Set(distributions).size !== distributions.length) {
-      throw new Error(`Invalid ${entryField}.distributions: duplicate distribution.`);
+    const platforms = input.platforms === undefined
+      ? undefined : normalizePlatformTargets(input.platforms, `${entryField}.platforms`);
+    for (const platform of platforms?.length ? platforms : PLATFORM_TARGETS) {
+      const collisionKey = `${platform}:${skill}/${target}`;
+      if (targets.has(collisionKey)) throw new Error(`Invalid ${fieldName}: duplicate target "${collisionKey}".`);
+      targets.add(collisionKey);
     }
     return {
       skill,
       target,
-      ...(distributions ? { distributions } : {}),
+      ...(platforms ? { platforms } : {}),
     };
   });
 }
@@ -1145,25 +1104,13 @@ function normalizeBuildConfig(
 
   if (input.fileRules !== undefined) {
     const fileRulesInput = assertObject(input.fileRules, `${fieldName}.fileRules`);
-    assertAllowedKeys(fileRulesInput, `${fieldName}.fileRules`, ['claude', 'codex']);
+    assertAllowedKeys(fileRulesInput, `${fieldName}.fileRules`, [...PLATFORM_TARGETS]);
     buildConfig.fileRules = {};
-
-    if (fileRulesInput.claude !== undefined) {
-      const normalizedRuleSet = normalizeFileRuleSet(
-        fileRulesInput.claude,
-        `${fieldName}.fileRules.claude`,
-      );
-      assertNoDeprecatedCommandFileRules(normalizedRuleSet, `${fieldName}.fileRules.claude`);
-      buildConfig.fileRules.claude = normalizedRuleSet;
-    }
-
-    if (fileRulesInput.codex !== undefined) {
-      const normalizedRuleSet = normalizeFileRuleSet(
-        fileRulesInput.codex,
-        `${fieldName}.fileRules.codex`,
-      );
-      assertNoDeprecatedCommandFileRules(normalizedRuleSet, `${fieldName}.fileRules.codex`);
-      buildConfig.fileRules.codex = normalizedRuleSet;
+    for (const platform of PLATFORM_TARGETS) {
+      if (fileRulesInput[platform] === undefined) continue;
+      const normalizedRuleSet = normalizeFileRuleSet(fileRulesInput[platform], `${fieldName}.fileRules.${platform}`);
+      assertNoDeprecatedCommandFileRules(normalizedRuleSet, `${fieldName}.fileRules.${platform}`);
+      buildConfig.fileRules[platform] = normalizedRuleSet;
     }
   }
 
@@ -1746,7 +1693,6 @@ function configFieldContainsSensitiveValue(
 
 function assertSkillRefreshKeysAreNotSensitive(options: {
   target: ArtifactTarget;
-  delivery: PluginArtifactTargetDefinition['delivery'];
   refreshKeys: readonly string[];
   schema: PluginConfigSchema | undefined;
   fieldName: string;
@@ -1758,7 +1704,7 @@ function assertSkillRefreshKeysAreNotSensitive(options: {
   for (const [index, key] of options.refreshKeys.entries()) {
     const field = options.schema?.fields[key];
     if (field && configFieldContainsSensitiveValue(field)) {
-      const native = options.delivery?.mode === 'codex-native';
+      const native = options.target === 'codex.skill';
       throw new Error(
         `${native ? 'codexNativeRenderSensitiveRefreshKey' : 'skillRenderSensitiveRefreshKey'}: ` +
           `Invalid ${options.fieldName}[${index}]: ` +
@@ -1766,29 +1712,6 @@ function assertSkillRefreshKeysAreNotSensitive(options: {
       );
     }
   }
-}
-
-function normalizeCodexSkillDelivery(
-  value: unknown,
-  fieldName: string,
-): NonNullable<PluginArtifactTargetDefinition['delivery']> {
-  const input = assertObject(value, fieldName);
-  const mode = ensureString(input.mode, `${fieldName}.mode`);
-  if (mode === 'aw-extension') {
-    assertAllowedKeys(input, fieldName, ['mode']);
-    return { mode };
-  }
-  if (mode === 'codex-native') {
-    assertAllowedKeys(input, fieldName, ['mode', 'identity', 'renderProfile']);
-    if (input.identity !== 'shared') {
-      throw new Error(`Invalid ${fieldName}.identity: expected "shared".`);
-    }
-    if (input.renderProfile !== 'user') {
-      throw new Error(`Invalid ${fieldName}.renderProfile: expected "user".`);
-    }
-    return { mode, identity: 'shared', renderProfile: 'user' };
-  }
-  throw new Error(`Invalid ${fieldName}.mode: expected "codex-native" or "aw-extension".`);
 }
 
 function normalizeDynamicArtifactKind(value: unknown, fieldName: string): DynamicArtifactKind {
@@ -1844,7 +1767,6 @@ function normalizeArtifactTargetEntry(
     'projectManagedKind',
     'states',
     'refreshKeys',
-    'delivery',
     'requiresCodexProjectConfig',
     'roleKey',
     'skillKey',
@@ -1861,14 +1783,10 @@ function normalizeArtifactTargetEntry(
   }
 
   const target = normalizeArtifactTarget(input.target, `${fieldName}.target`);
-  const delivery = target === 'codex.skill'
-    ? normalizeCodexSkillDelivery(input.delivery, `${fieldName}.delivery`)
-    : undefined;
-  if (target !== 'codex.skill' && input.delivery !== undefined) {
-    throw new Error(`Invalid ${fieldName}.delivery: delivery is only supported for codex.skill targets.`);
-  }
   const portable = target === 'agent-skills.skill';
-  const platform = portable ? undefined : normalizePlatformName(input.platform, `${fieldName}.platform`);
+  const platform = portable
+    ? normalizePlatformTargets([input.platform], `${fieldName}.platform`)[0]!
+    : normalizePlatformName(input.platform, `${fieldName}.platform`);
   const distribution = portable
     ? ensureString(input.distribution, `${fieldName}.distribution`)
     : undefined;
@@ -1876,8 +1794,8 @@ function normalizeArtifactTargetEntry(
     if (distribution !== 'agent-skills') {
       throw new Error(`Invalid ${fieldName}.distribution: expected "agent-skills".`);
     }
-    if (input.platform !== undefined) {
-      throw new Error(`Invalid ${fieldName}.platform: distribution targets do not support platform.`);
+    if (!isPortablePlatformTarget(platform)) {
+      throw new Error(`Invalid ${fieldName}.platform: agent-skills.skill requires a Portable platform target.`);
     }
   } else {
     const expectedPlatform: PlatformName = target === 'claude.skill' ? 'claude' : 'codex';
@@ -1945,7 +1863,7 @@ function normalizeArtifactTargetEntry(
   if (sourceDirs && new Set(sourceDirs).size !== sourceDirs.length) {
     throw new Error(`Invalid ${fieldName}.sourceDirs: duplicate source directory.`);
   }
-  if (sourceDirs && skillKey && !portable) {
+  if (sourceDirs && skillKey) {
     const canonicalRoot = `skills/${skillKey}`;
     const invalidSource = sourceDirs.find((sourceDir) => {
       const normalized = stripDotSlash(sourceDir);
@@ -1978,16 +1896,16 @@ function normalizeArtifactTargetEntry(
     throw new Error(`Invalid ${fieldName}.runtimeImports: runtimeImports are only supported for agent-skills.skill targets.`);
   }
 
+  const platformSchema = schema === undefined ? undefined : compilePluginConfigDefinition(schema, platform);
   const refreshKeys = normalizeArtifactRefreshKeys(
     input.refreshKeys,
     `${fieldName}.refreshKeys`,
-    schema,
+    platformSchema,
   );
   assertSkillRefreshKeysAreNotSensitive({
     target,
-    delivery,
     refreshKeys,
-    schema,
+    schema: platformSchema,
     fieldName: `${fieldName}.refreshKeys`,
   });
 
@@ -2002,24 +1920,26 @@ function normalizeArtifactTargetEntry(
     if (keys.length === 0 || new Set(keys).size !== keys.length || keys.some((key) => !refreshKeys.includes(key))) {
       throw new Error(`Invalid ${fieldName}.runtimeConfig.keys: expected unique non-empty keys from refreshKeys.`);
     }
-    if (!schema || getPluginConfigDependencyKeys(schema, keys).some((key) =>
-      !schema.fields[key] || configFieldContainsSensitiveValue(schema.fields[key]!))) {
+    if (!platformSchema || getPluginConfigDependencyKeys(platformSchema, keys).some((key) =>
+      !platformSchema.fields[key] || configFieldContainsSensitiveValue(platformSchema.fields[key]!))) {
       throw new Error(`runtimeConfigKeyDenied: Invalid ${fieldName}.runtimeConfig.keys: dependency fields must be declared and non-sensitive.`);
     }
     runtimeConfig = { keys: [keys[0]!, ...keys.slice(1)] };
   }
 
+  const declaredScopes = normalizeScopeArray(input.scopes, `${fieldName}.scopes`);
+  const scopes: PluginArtifactTargetDefinition['scopes'] = target === 'codex.skill' || target === 'claude.skill'
+    ? ['user'] : declaredScopes;
   return {
     id,
     platform,
     distribution: distribution as 'agent-skills' | undefined,
-    scopes: normalizeScopeArray(input.scopes, `${fieldName}.scopes`),
+    scopes,
     target,
     kind,
     projectManagedKind,
     states: normalizeArtifactStates(input.states, `${fieldName}.states`),
     refreshKeys,
-    delivery,
     requiresCodexProjectConfig:
       input.requiresCodexProjectConfig === undefined
         ? undefined
@@ -2067,17 +1987,17 @@ function normalizeArtifacts(
             reservedImports,
           );
           for (const scope of target.scopes) {
-            const surfaceScopeId = `${target.platform ?? target.distribution}:${scope}:${target.id}`;
+            const surfaceScopeId = `${target.platform}:${scope}:${target.id}`;
             if (seenIdsBySurfaceScope.has(surfaceScopeId)) {
               throw new Error(
-                `Invalid ${fieldName}.targets[${index}]: duplicate artifact id "${target.id}" for surface/scope "${target.platform ?? target.distribution}:${scope}".`,
+                `Invalid ${fieldName}.targets[${index}]: duplicate artifact id "${target.id}" for surface/scope "${target.platform}:${scope}".`,
               );
             }
             seenIdsBySurfaceScope.add(surfaceScopeId);
           }
           if ((target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill') && target.skillKey) {
             for (const scope of target.scopes) {
-              const ownerKey = `${target.platform ?? target.distribution}:${scope}:${target.skillKey}`;
+              const ownerKey = `${target.platform}:${scope}:${target.skillKey}`;
               if (seenSkillOwners.has(ownerKey)) {
                 throw new Error(
                   `Invalid ${fieldName}.targets[${index}]: duplicate dynamic skill owner "${ownerKey}".`,
@@ -2086,7 +2006,7 @@ function normalizeArtifacts(
               seenSkillOwners.add(ownerKey);
             }
           }
-          if (target.delivery?.mode === 'codex-native') {
+          if (target.target === 'codex.skill') {
             if (seenNativeIds.has(target.id)) {
               throw new Error(
                 `Invalid ${fieldName}.targets[${index}]: duplicate codex-native artifact id "${target.id}" in the shared projection.`,
@@ -2105,47 +2025,6 @@ function normalizeArtifacts(
       })();
 
   return { targets };
-}
-
-function canonicalScopeSet(scopes: readonly ('user' | 'project')[]): string {
-  return [...scopes].sort().join(',');
-}
-
-function assertCodexSharedNativeScopeConsistency(manifest: NormalizedPluginManifest): void {
-  if (!supportsPlatform(manifest, 'codex')) return;
-  const nativeComponents: Array<{ key: string; scopes: Array<'user' | 'project'> }> = [];
-  if (manifest.skills) {
-    nativeComponents.push({ key: 'skills', scopes: ['project', 'user'] });
-  }
-  if (manifest.mcpServers) {
-    nativeComponents.push({ key: 'mcpServers', scopes: ['project', 'user'] });
-  }
-  if (resolvePlatformHookDefinitions(manifest, 'codex').length > 0) {
-    nativeComponents.push({ key: 'hooks', scopes: ['project', 'user'] });
-  }
-  if (manifest.apps) {
-    nativeComponents.push({ key: 'apps', scopes: ['project', 'user'] });
-  }
-  for (const [index, target] of (manifest.artifacts?.targets ?? []).entries()) {
-    if (target.delivery?.mode === 'codex-native') {
-      nativeComponents.push({
-        key: `artifacts.targets[${index}]`,
-        scopes: [...target.scopes],
-      });
-    }
-  }
-  const expected = nativeComponents[0];
-  if (!expected) return;
-  const expectedScopes = canonicalScopeSet(expected.scopes);
-  const mismatch = nativeComponents.find((component) =>
-    canonicalScopeSet(component.scopes) !== expectedScopes);
-  if (mismatch) {
-    throw new Error(
-      `codexSharedNativeScopeMismatch: Codex native component scope sets must match exactly; ` +
-        `${expected.key} has {${expectedScopes}} but ${mismatch.key} has ` +
-        `{${canonicalScopeSet(mismatch.scopes)}}.`,
-    );
-  }
 }
 
 function normalizePlatformAgentOverrides<T>(
@@ -2570,105 +2449,6 @@ export interface ValidatePluginManifestOptions {
 
 export type ReservedImportRegistry = Readonly<Record<string, readonly string[]>>;
 
-function hasDeclaredNativePluginCapability(manifest: PluginManifestSource): boolean {
-  return Boolean(
-    (manifest.extensions?.instructions?.length ?? 0) > 0
-    || (manifest.extensions?.permissions?.length ?? 0) > 0
-    || (manifest.extensions?.hooks?.length ?? 0) > 0
-    || (manifest.extensions?.nativeHooks?.claude?.length ?? 0) > 0
-    || (manifest.extensions?.nativeHooks?.codex?.length ?? 0) > 0
-    || (manifest.extensions?.agents?.length ?? 0) > 0
-    || (manifest.artifacts?.targets ?? []).some((target) =>
-      target.platform !== undefined && target.states.includes('present'))
-  );
-}
-
-async function directoryContainsRegularFile(
-  root: string,
-  fileName?: string,
-  exact = false,
-): Promise<boolean> {
-  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (entry.isSymbolicLink()) continue;
-    const entryPath = path.join(root, entry.name);
-    if (entry.isFile() && (!fileName || (exact ? entry.name === fileName : entry.name.endsWith(fileName)))) {
-      return true;
-    }
-    if (entry.isDirectory() && await directoryContainsRegularFile(entryPath, fileName, exact)) return true;
-  }
-  return false;
-}
-
-async function jsonAssetHasEntries(
-  pluginRoot: string,
-  relativePath: string | undefined,
-  key: 'mcpServers' | 'apps',
-): Promise<boolean> {
-  if (!relativePath) return false;
-  const content = await fs.readJson(path.join(pluginRoot, stripDotSlash(relativePath))).catch(() => undefined);
-  if (!content || typeof content !== 'object' || Array.isArray(content)) return false;
-  const entries = (content as Record<string, unknown>)[key];
-  return Boolean(entries && typeof entries === 'object' && !Array.isArray(entries)
-    && Object.keys(entries as Record<string, unknown>).length > 0);
-}
-
-export async function assertActualNativePluginCapability(
-  pluginRoot: string,
-  manifest: PluginManifestSource,
-  mode: 'source' | 'bundle' = 'source',
-): Promise<void> {
-  if (!manifest.distributions?.agentSkills || hasDeclaredNativePluginCapability(manifest)) return;
-  const skills = manifest.skills
-    ? await directoryContainsRegularFile(path.join(pluginRoot, stripDotSlash(manifest.skills)), 'SKILL.md', true)
-    : false;
-  const slashCommands = manifest.slashCommands
-    ? await directoryContainsRegularFile(path.join(pluginRoot, stripDotSlash(manifest.slashCommands)), '.md')
-    : false;
-  const [mcpServers, apps] = await Promise.all([
-    jsonAssetHasEntries(pluginRoot, manifest.mcpServers, 'mcpServers'),
-    jsonAssetHasEntries(pluginRoot, manifest.apps, 'apps'),
-  ]);
-  let bundled = false;
-  if (mode === 'bundle' && !skills && !slashCommands && !mcpServers && !apps) {
-    for (const platform of ['claude', 'codex'] as const) {
-      const platformManifest = await fs.readJson(
-        path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'),
-      ).catch(() => undefined) as Record<string, unknown> | undefined;
-      if (!platformManifest) continue;
-      const platformSkills = typeof platformManifest.skills === 'string'
-        && await directoryContainsRegularFile(
-          path.join(pluginRoot, stripDotSlash(platformManifest.skills)),
-          'SKILL.md',
-          true,
-        );
-      const commands = typeof platformManifest.commands === 'string'
-        && await directoryContainsRegularFile(
-          path.join(pluginRoot, stripDotSlash(platformManifest.commands)),
-          '.md',
-        );
-      bundled = Boolean(platformSkills || commands
-        || (Array.isArray(platformManifest.agents) && platformManifest.agents.length > 0)
-        || (platformManifest.hooks && typeof platformManifest.hooks === 'object'
-          && Object.keys(platformManifest.hooks as Record<string, unknown>).length > 0)
-        || await jsonAssetHasEntries(
-          pluginRoot,
-          typeof platformManifest.mcpServers === 'string' ? platformManifest.mcpServers : undefined,
-          'mcpServers',
-        )
-        || await jsonAssetHasEntries(
-          pluginRoot,
-          typeof platformManifest.apps === 'string' ? platformManifest.apps : undefined,
-          'apps',
-        ));
-      if (bundled) break;
-    }
-  }
-  if (!skills && !slashCommands && !mcpServers && !apps && !bundled) {
-    throw new Error('Invalid plugin manifest: portable-only plugins are not supported. Declare at least one non-empty native capability.');
-  }
-}
-
 export function validatePluginManifest(
   pluginRoot: string,
   rawManifest: unknown,
@@ -2694,7 +2474,7 @@ export function validatePluginManifest(
     'slashCommands',
     'mcpServers',
     'apps',
-    'distributions',
+    'platforms',
     'marketplace',
     'interface',
     'extensions',
@@ -2774,26 +2554,8 @@ export function validatePluginManifest(
     );
   }
 
-  if (input.distributions !== undefined) {
-    const distributions = assertObject(input.distributions, 'distributions');
-    assertAllowedKeys(distributions, 'distributions', ['agentSkills']);
-    if (distributions.agentSkills !== undefined) {
-      const agentSkills = assertObject(distributions.agentSkills, 'distributions.agentSkills');
-      assertAllowedKeys(agentSkills, 'distributions.agentSkills', ['skills']);
-      manifest.distributions = {
-        agentSkills: {
-          skills: agentSkills.skills === undefined
-            ? undefined
-            : normalizePluginRelativePath(
-                pluginRoot,
-                ensureString(agentSkills.skills, 'distributions.agentSkills.skills'),
-                'distributions.agentSkills.skills',
-              ),
-        },
-      };
-    } else {
-      manifest.distributions = {};
-    }
+  if (input.platforms !== undefined) {
+    manifest.platforms = normalizePlatformTargets(input.platforms, 'platforms');
   }
 
   if (input.interface !== undefined) {
@@ -2837,12 +2599,6 @@ export function validatePluginManifest(
     );
   }
 
-  if (
-    (manifest.artifacts?.targets ?? []).some((target) => target.distribution === 'agent-skills')
-    && !manifest.distributions?.agentSkills
-  ) {
-    throw new Error('Invalid artifacts.targets: agent-skills targets require distributions.agentSkills declaration.');
-  }
   if (input.managedCommands !== undefined) {
     manifest.managedCommands = normalizeManagedCommands(input.managedCommands);
     validateManagedCommandManifest(manifest);
@@ -2852,7 +2608,6 @@ export function validatePluginManifest(
     validateNativeToolsManifest(manifest);
   }
   assertManifestPlatformSupport(manifest.name, manifest);
-  assertCodexSharedNativeScopeConsistency(manifest);
 
   return manifest;
 }
@@ -2882,7 +2637,7 @@ async function validateDeclaredNativeAssets(
           const dynamicSkills = new Set(
             (manifest.artifacts?.targets ?? [])
               .filter((target) =>
-                (target.target === 'codex.skill' || target.target === 'claude.skill') &&
+                (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill') &&
                 target.skillKey &&
                 (target.sourceDirs?.length ?? 0) > 0 &&
                 (target.sourceDirs ?? []).every((sourceDir) =>
@@ -2927,17 +2682,6 @@ async function validateDeclaredAssetPathsExist(
     }),
   );
 
-  const portableSkills = manifest.distributions?.agentSkills?.skills;
-  if (portableSkills) {
-    const absolutePath = path.join(pluginRoot, stripDotSlash(portableSkills));
-    const stats = await fs.lstat(absolutePath).catch(() => undefined);
-    if (!stats?.isDirectory() || stats.isSymbolicLink()) {
-      throw new Error(
-        `Invalid plugin manifest: distributions.agentSkills.skills points to "${portableSkills}" but it is not a regular directory.`,
-      );
-    }
-  }
-
   await Promise.all(
     (manifest.artifacts?.targets ?? []).flatMap((target, targetIndex) =>
       (target.sourceDirs ?? []).map(async (sourceDir, sourceIndex) => {
@@ -2967,70 +2711,42 @@ async function validateSourceSkillInventory(
     .map((entry) => entry.name)
     .sort();
   const staticSkillNameSet = new Set(staticSkillNames);
-  const dynamicSkillNames = (manifest.artifacts?.targets ?? [])
-    .filter((target) => target.target === 'codex.skill' || target.target === 'claude.skill')
+  const dynamicSkillTargets = (manifest.artifacts?.targets ?? [])
+    .filter((target) => target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill');
+  const dynamicSkillNames = dynamicSkillTargets
     .map((target) => target.skillKey?.trim())
     .filter((skillKey): skillKey is string => Boolean(skillKey))
     .sort();
   const dynamicSkillNameSet = new Set(dynamicSkillNames);
   for (const [index, target] of (manifest.artifacts?.targets ?? []).entries()) {
     if (
-      target.target === 'codex.skill'
-      && target.delivery?.mode === 'codex-native'
+      (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill')
       && target.skillKey
       && staticSkillNameSet.has(target.skillKey)
+      && !(target.sourceDirs ?? []).some((sourceDir) =>
+        stripDotSlash(sourceDir) === `skills/${target.skillKey}`)
     ) {
       throw new Error(
-        `Invalid artifacts.targets[${index}].skillKey: native dynamic Skill "${target.skillKey}" conflicts with a static Skill of the same name.`,
+        `Invalid artifacts.targets[${index}].skillKey: dynamic Skill "${target.skillKey}" conflicts with a static Skill of the same name; declare its canonical sourceDirs to use that directory as dynamic source.`,
       );
     }
   }
-  const portableSkillsRoot = manifest.distributions?.agentSkills?.skills
-    ? path.join(pluginRoot, stripDotSlash(manifest.distributions.agentSkills.skills))
-    : null;
-  const portableSkillEntries = portableSkillsRoot
-    ? await fs.readdir(portableSkillsRoot, { withFileTypes: true }).catch(() => [])
-    : [];
-  const portableSkillNameSet = new Set(
-    portableSkillEntries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
-  );
-
-  for (const [index, entry] of (manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
-    const nativeSelected = entry.distributions === undefined;
-    const portableSelected = entry.distributions?.includes('agent-skills') ?? false;
-    if (nativeSelected && (!manifest.skills || !staticSkillNameSet.has(entry.skill))) {
-      throw new Error(
-        `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
-      );
-    }
-    if (portableSelected && !portableSkillNameSet.has(entry.skill)) {
-      throw new Error(
-        `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared portable Skill key.`,
-      );
-    }
-    if (nativeSelected && dynamicSkillNameSet.has(entry.skill)) {
-      throw new Error(
-        `Invalid buildConfig.skillRuntimeFiles[${index}].skill: dynamic Skill targets are not supported.`,
-      );
-    }
-  }
-  for (const [index, entry] of (manifest.buildConfig?.generatedSkillRuntimeFiles ?? []).entries()) {
-    const nativeSelected = entry.distributions === undefined;
-    const portableSelected = entry.distributions?.includes('agent-skills') ?? false;
-    if (nativeSelected && (!manifest.skills || !staticSkillNameSet.has(entry.skill))) {
-      throw new Error(
-        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
-      );
-    }
-    if (portableSelected && !portableSkillNameSet.has(entry.skill)) {
-      throw new Error(
-        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared portable Skill key.`,
-      );
-    }
-    if (nativeSelected && dynamicSkillNameSet.has(entry.skill)) {
-      throw new Error(
-        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: dynamic Skill targets are not supported.`,
-      );
+  for (const selector of ['skillRuntimeFiles', 'generatedSkillRuntimeFiles'] as const) {
+    for (const [index, entry] of (manifest.buildConfig?.[selector] ?? []).entries()) {
+      const platforms = entry.platforms?.length ? entry.platforms : resolveSupportedPlatforms(manifest);
+      for (const platform of platforms) {
+        const dynamicTarget = dynamicSkillTargets.find((target) =>
+          target.platform === platform && target.skillKey === entry.skill);
+        if (dynamicTarget?.target === 'agent-skills.skill') {
+          continue;
+        }
+        if (dynamicTarget) {
+          throw new Error(`Invalid buildConfig.${selector}[${index}].skill: Native dynamic Skill targets are not supported for ${platform}.`);
+        }
+        if (!staticSkillNameSet.has(entry.skill)) {
+          throw new Error(`Invalid buildConfig.${selector}[${index}].skill: "${entry.skill}" is not a declared static Skill key for ${platform}.`);
+        }
+      }
     }
   }
 
@@ -3038,7 +2754,7 @@ async function validateSourceSkillInventory(
     return;
   }
   const slashCommands = await resolveSlashCommands(pluginRoot, manifest, {
-    targetPlatforms: resolveSupportedPlatforms(manifest),
+    targetPlatforms: resolveSupportedNativePlatforms(manifest),
   });
   for (const command of slashCommands?.commands ?? []) {
     if (staticSkillNameSet.has(command.name) || dynamicSkillNameSet.has(command.name)) {
@@ -3124,12 +2840,6 @@ export async function validateSourcePluginManifest(
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
     validateSourceSkillInventory(pluginRoot, manifest),
-    ...(manifest.distributions?.agentSkills?.skills
-      ? [validatePortableSkillDirectoriesRoot(path.join(
-          pluginRoot,
-          stripDotSlash(manifest.distributions.agentSkills.skills),
-        ))]
-      : []),
     ...(manifest.buildConfig?.runtimeExports ?? []).map((entry) =>
       validateRuntimeExportSource({
         pluginRoot,
@@ -3137,7 +2847,6 @@ export async function validateSourcePluginManifest(
         source: entry.source,
       })),
   ]);
-  await assertActualNativePluginCapability(pluginRoot, manifest);
   return manifest;
 }
 
@@ -3163,7 +2872,6 @@ export async function readPluginManifest(
     await validateManagedCommandSources(pluginRoot, manifest);
     const nativeTools = await loadPluginNativeToolClosure(pluginRoot, manifest);
     if (nativeTools) await validateNativeToolClosureFiles(pluginRoot, nativeTools);
-    await assertActualNativePluginCapability(pluginRoot, manifest, 'bundle');
   }
   return {
     rootDir: pluginRoot,
@@ -3250,19 +2958,26 @@ export function createMarketplaceManifestEntry(plugin: PluginMeta): MarketplaceM
     category: plugin.manifest.marketplace.category,
     tags: plugin.manifest.marketplace.tags,
     strict: plugin.manifest.marketplace.strict,
-    policy: plugin.manifest.marketplace.policy,
+    policy: {
+      ...plugin.manifest.marketplace.policy,
+      products: [...resolveSupportedNativePlatforms(plugin.manifest)].map((platform) => PLATFORM_PRODUCT_BY_NAME[platform]).sort(),
+    },
   };
 }
 
 export function createMarketplaceManifest(
   sourceMeta: MarketplaceSourceMeta,
   plugins: PluginMeta[],
+  platform?: PlatformName,
 ): MarketplaceManifest {
   return {
     name: 'aw',
     owner: sourceMeta.owner,
     interface: sourceMeta.interface,
-    plugins: plugins.map((plugin) => createMarketplaceManifestEntry(plugin)),
+    plugins: plugins.filter((plugin) => platform === undefined
+      ? resolveSupportedNativePlatforms(plugin.manifest).size > 0
+      : supportsPlatform(plugin.manifest, platform))
+      .map((plugin) => createMarketplaceManifestEntry(plugin)),
   };
 }
 
@@ -3437,9 +3152,6 @@ export function createBundleSourceManifest(
   return {
     ...plugin.manifest,
     buildConfig,
-    distributions: plugin.manifest.distributions
-      ? structuredClone(plugin.manifest.distributions)
-      : undefined,
     requires: requiredCapabilities === undefined
       ? structuredClone(plugin.manifest.requires)
       : { aw: { capabilities: normalizeAwCapabilities(requiredCapabilities) } },
@@ -3571,6 +3283,11 @@ export async function validatePlatformManifestProjection(
       expected.skills = projected;
       projectedPaths.push(projected);
     }
+  }
+  if ((plugin.manifest.artifacts?.targets ?? []).some((target) =>
+    target.platform === platform && target.target === `${platform}.skill`)) {
+    expected.skills ??= `./${platform}/skills`;
+    if (!projectedPaths.includes(expected.skills)) projectedPaths.push(expected.skills);
   }
   if (plugin.manifest.mcpServers) {
     expected.mcpServers = platformBundlePath(plugin.manifest.mcpServers, platform);

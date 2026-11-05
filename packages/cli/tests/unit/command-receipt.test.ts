@@ -471,7 +471,9 @@ describe('command receipt v6', () => {
     expect(human).toContain('sync 部分完成：2 个目标。');
     expect(human).toContain(`警告：${warning}`);
     expect(human).toContain('- team/root / claude / project: failed');
-    expect(human).toContain('恢复：run sync');
+    expect(human).toContain('恢复：run aw plugin sync team/root --target claude --context project');
+    expect(human).toContain('恢复：run aw plugin sync team/root --target claude --context project --rebuild');
+    expect(human).toContain('恢复：run aw plugin cleanup team/root --target claude --scope project');
     expect(human).not.toContain('Project intent');
     expect(human).not.toContain('AW extensions');
   });

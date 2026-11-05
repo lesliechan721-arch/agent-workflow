@@ -455,7 +455,6 @@ describe('local-plugin generator', () => {
           platform: 'codex',
           scopes: ['user', 'project'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: [],
@@ -587,7 +586,6 @@ describe('local-plugin generator', () => {
         platform: 'codex',
         scopes: ['user'],
         target: 'codex.skill',
-        delivery: { mode: 'aw-extension' },
         projectManagedKind: 'skill',
         states: ['present'],
         refreshKeys: [],
@@ -610,7 +608,7 @@ describe('local-plugin generator', () => {
     )).rejects.toThrow('source root cannot declare reserved file aw-plugin-requirements.json');
   });
 
-  it('does not declare a static Codex skills root for user-only dynamic codex.skill targets', async () => {
+  it('declares the Native Codex skills root for user-only dynamic codex.skill targets', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readFixturePluginManifest(repoRoot);
     delete manifest.skills;
@@ -629,7 +627,6 @@ describe('local-plugin generator', () => {
           platform: 'codex',
           scopes: ['user'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: ['explorerModel'],
@@ -644,18 +641,18 @@ describe('local-plugin generator', () => {
     const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
     const result = await bundleLocalPlugin(plugin, outputRoot);
 
-    expect(result.platformManifests.codex?.skills).toBeUndefined();
+    expect(result.platformManifests.codex?.skills).toBe('./codex/skills');
     await expect(
       fs.readJson(path.join(outputRoot, '.codex-plugin', 'plugin.json')),
-    ).resolves.not.toHaveProperty('skills');
-    await expect(fs.pathExists(path.join(outputRoot, 'codex', 'skills'))).resolves.toBe(false);
+    ).resolves.toHaveProperty('skills', './codex/skills');
+    await expect(fs.pathExists(path.join(outputRoot, 'codex', 'skills'))).resolves.toBe(true);
   });
 
   it('generates only Codex bundle outputs for Codex-only plugins and removes stale Claude outputs', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
-    manifest.marketplace.policy.products = ['CODEX'];
+    manifest.platforms = ['codex'];
     await writeFixturePluginManifest(repoRoot, manifest);
 
     const plugin = await readPluginManifest(pluginRoot);
@@ -682,7 +679,7 @@ describe('local-plugin generator', () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
-    manifest.marketplace.policy.products = ['CLAUDE'];
+    manifest.platforms = ['claude'];
     delete manifest.apps;
     await writeFixturePluginManifest(repoRoot, manifest);
     await fs.remove(path.join(pluginRoot, '.app.json'));
@@ -713,7 +710,7 @@ describe('local-plugin generator', () => {
     );
 
     const claudeOnlyPlugin = await readPluginManifest(pluginRoot);
-    claudeOnlyPlugin.manifest.marketplace.policy.products = ['CLAUDE'];
+    claudeOnlyPlugin.manifest.platforms = ['claude'];
     const claudeOutputRoot = path.join(
       await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-claude-bundle-')),
       'bundle',
@@ -729,7 +726,7 @@ describe('local-plugin generator', () => {
     await expect(fs.pathExists(path.join(claudeOutputRoot, '.codex-plugin'))).resolves.toBe(false);
 
     const codexOnlyPlugin = await readPluginManifest(pluginRoot);
-    codexOnlyPlugin.manifest.marketplace.policy.products = ['CODEX'];
+    codexOnlyPlugin.manifest.platforms = ['codex'];
     const codexOutputRoot = path.join(
       await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-codex-bundle-')),
       'bundle',
@@ -1023,13 +1020,13 @@ describe('local-plugin generator', () => {
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const plugin = await readPluginManifest(pluginRoot);
 
+    plugin.manifest.platforms = ['codex'];
     plugin.manifest.marketplace = {
       category: 'workflow',
       strict: true,
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        products: ['CODEX'],
       },
     };
     plugin.manifest.buildConfig = {
@@ -1047,7 +1044,7 @@ describe('local-plugin generator', () => {
         buildMode: 'prepared',
       }),
     ).rejects.toThrow(
-      'Invalid plugin "git-commit": buildConfig.manifestOverrides.claude requires CLAUDE support, but marketplace.policy.products=[CODEX].',
+      'Invalid plugin "git-commit": buildConfig.manifestOverrides.claude requires claude support, but platforms=[codex].',
     );
   });
 

@@ -1,27 +1,27 @@
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readRecoveryStatus, statusFromObservations, type NativeObservation } from '../../src/recovery/status.js';
+import { readScopedRecoveryStatus, statusFromObservations, type NativeObservation } from '../../src/recovery/status.js';
+import type { AgentId } from '../../src/intent/deployment-preferences.js';
 import type { DemandSnapshot } from '../../src/recovery/demand.js';
 import type { ScopeContext } from '../../src/intent/scope-context.js';
 import * as portableRecovery from '../../src/portable/recovery.js';
 import * as demandService from '../../src/recovery/demand.js';
-import { SkillsCliError } from '../../src/portable/skills-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const context = { scope: 'user', executionCwd: '/tmp/aw-status', env: {},
   dispose: async () => undefined } as ScopeContext;
 
-function demand(ids: string[], agents: Array<'codex' | 'claude-code'>): DemandSnapshot {
+function demand(ids: string[], targets: AgentId[]): DemandSnapshot {
   return {
     scope: 'user', intent: { state: 'valid', value: { schemaVersion: 3, kind: 'aw-plugin-intents',
       sources: { local: { logicalIdentity: 'local' } }, roots: ids.map((pluginId) => ({ pluginId })) },
       digest: 'sha256:test', rawDigest: 'sha256:test', rawBytes: Buffer.from('{}') },
-    preferences: { state: 'valid', value: { schemaVersion: 1, kind: 'aw-deployment-preferences',
-      agents, dependencyScopeOverrides: [] }, digest: 'sha256:test', rawDigest: 'sha256:test', rawBytes: Buffer.from('{}') },
+    preferences: { state: 'valid', value: { schemaVersion: 2, kind: 'aw-deployment-preferences',
+      targets, exclusions: [] }, digest: 'sha256:test', rawDigest: 'sha256:test', rawBytes: Buffer.from('{}') },
     roots: ids.map((pluginId) => ({ pluginId, sourceId: 'local', sourceState: 'ready' as const,
       blockers: [], plugin: { manifest: { name: pluginId.split('/')[1],
-        marketplace: { policy: { products: ['CLAUDE'] } }, skills: './skills' } } as never })),
+        platforms: ['claude', 'cursor'], skills: './skills' } } as never })),
     plugins: [], errors: [],
   };
 }
@@ -29,27 +29,9 @@ function demand(ids: string[], agents: Array<'codex' | 'claude-code'>): DemandSn
 describe('recovery status satisfaction', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  // Test Value Gate: status must preserve a cleanup failure even when the observation also cancels its signal.
-  it.each([false, true])('propagates Portable cleanup failure with cancellation %s', async (cancelled) => {
-    const snapshot = demand(['local/one'], ['claude-code']);
-    snapshot.roots![0]!.plugin!.manifest = { name: 'one', marketplace: { policy: { products: ['CODEX'] } },
-      distributions: { agentSkills: { sourceDirs: ['./skills'] } } } as never;
-    const abort = new AbortController();
-    const failure = new SkillsCliError('portableSkillsCliCleanupFailed', 'child exit unconfirmed');
-    vi.spyOn(portableRecovery, 'inspectPortableRecovery').mockImplementation(async () => {
-      if (cancelled) abort.abort();
-      throw failure;
-    });
-    await expect(statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
-      demand: snapshot, nativeObservations: [], signal: abort.signal })).rejects.toBe(failure);
-  });
-
   // Test Value Gate: cancellation must escape the status fallback and stop observation of later roots.
   it('propagates Portable inventory cancellation without observing later roots', async () => {
-    const snapshot = demand(['local/one', 'local/two'], ['claude-code']);
-    for (const root of snapshot.roots!) root.plugin!.manifest = { name: root.plugin!.manifest.name,
-      marketplace: { policy: { products: ['CODEX'] } },
-      distributions: { agentSkills: { sourceDirs: ['./skills'] } } } as never;
+    const snapshot = demand(['local/one', 'local/two'], ['cursor']);
     const abort = new AbortController();
     let observedSignal: AbortSignal | undefined;
     const inspect = vi.spyOn(portableRecovery, 'inspectPortableRecovery').mockImplementation(async (options) => {
@@ -66,10 +48,7 @@ describe('recovery status satisfaction', () => {
   // Test Value Gate: the operation cwd must remain available until a pending Portable observation ends, including cancellation.
   it('keeps the scoped status context until Portable observation cancellation settles', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const snapshot = demand(['local/one', 'local/two'], ['claude-code']);
-    for (const root of snapshot.roots!) root.plugin!.manifest = { name: root.plugin!.manifest.name,
-      marketplace: { policy: { products: ['CODEX'] } },
-      distributions: { agentSkills: { sourceDirs: ['./skills'] } } } as never;
+    const snapshot = demand(['local/one', 'local/two'], ['cursor']);
     vi.spyOn(demandService, 'readDemand').mockResolvedValue(snapshot);
     let finish: ((value: portableRecovery.PortablePreparation) => void) | undefined;
     let observedCwd: string | undefined;
@@ -78,7 +57,7 @@ describe('recovery status satisfaction', () => {
       return new Promise((resolve) => { finish = resolve; });
     });
     const abort = new AbortController();
-    const read = readRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    const read = readScopedRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
       nativeObservations: [], signal: abort.signal });
     const rejected = expect(read).rejects.toMatchObject({ name: 'AbortError' });
     try {
@@ -115,7 +94,7 @@ describe('recovery status satisfaction', () => {
       { pluginId: 'local/two', platform: 'claude', content: 'unknown', blockers: [] },
     ];
     const status = await statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
-      demand: demand(['local/one', 'local/two'], ['claude-code']), nativeObservations: observations });
+      demand: demand(['local/one', 'local/two'], ['claude']), nativeObservations: observations });
     expect(status.allSatisfied).toBe(false);
     expect(status.counts).toEqual({ blocked: 0, unconfirmed: 1, pending: 1, ready: 0 });
     expect(status.ok).toBe(true);
@@ -123,7 +102,7 @@ describe('recovery status satisfaction', () => {
 
   it.each(['sourceUnavailable', 'sourceActiveUnavailable', 'pluginManifestUnavailable'])(
     'keeps an unobservable delivery unknown for %s', async (code) => {
-      const snapshot = demand(['local/one'], ['claude-code']);
+      const snapshot = demand(['local/one'], ['claude']);
       snapshot.roots![0] = { pluginId: 'local/one', sourceId: 'local', sourceState: 'unavailable',
         blockers: [code] };
       const status = await statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
@@ -138,7 +117,7 @@ describe('recovery status satisfaction', () => {
 
   it.each(['absent', 'conflict', 'unsupported'] as const)(
     'keeps a definite %s failure false beside an unobservable delivery', async (failure) => {
-      const snapshot = demand(['local/one', 'local/two'], [failure === 'unsupported' ? 'codex' : 'claude-code']);
+      const snapshot = demand(['local/one', 'local/two'], [failure === 'unsupported' ? 'codex' : 'claude']);
       snapshot.roots![1] = { pluginId: 'local/two', sourceId: 'local', sourceState: 'unavailable',
         blockers: ['sourceActiveUnavailable'] };
       const status = await statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,

@@ -12,10 +12,12 @@ import {
 } from '../../src/utils/catalog-manifest-v7.js';
 import {
   deriveAwCapabilitiesFromManifest,
+  createMarketplaceManifestEntry,
+  createPlatformManifestBase,
   normalizeAwCapabilities,
   readPluginManifest,
+  resolveSupportedNativePlatforms,
 } from '../../src/utils/manifest.js';
-import { resolveSupportedPlatforms } from '../../src/utils/platform-support.js';
 import { resolvePlatformEntries } from '../../src/utils/platform-entries.js';
 import {
   readCatalogGenerationState,
@@ -63,33 +65,25 @@ export async function createCatalogSnapshotFixture(
       ]),
     },
   };
-  const marketplaceEntry = {
-    name: manifest.name,
-    source: `./plugins/${manifest.name}`,
-    description: manifest.description,
-    ...(manifest.interface ? { interface: manifest.interface } : {}),
-    category: manifest.marketplace.category,
-    strict: manifest.marketplace.strict,
-    policy: manifest.marketplace.policy,
-  };
-  const supportedPlatforms = resolveSupportedPlatforms(manifest);
+  const pluginMeta = { rootDir: pluginRoot, manifestPath, manifest };
+  const marketplaceEntry = createMarketplaceManifestEntry(pluginMeta);
+  const nativePlatforms = resolveSupportedNativePlatforms(manifest);
   await Promise.all((['claude', 'codex'] as const).map((platform) =>
     fs.remove(path.join(pluginRoot, `.${platform}-plugin`))));
   const marketplace = (platform: 'CODEX' | 'CLAUDE') => ({
     name: 'aw',
     owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
     interface: { displayName: 'Fixture Marketplace' },
-    plugins: supportedPlatforms.has(platform === 'CLAUDE' ? 'claude' : 'codex')
+    plugins: nativePlatforms.has(platform === 'CLAUDE' ? 'claude' : 'codex')
       ? [marketplaceEntry]
       : [],
   });
   const platformManifest = (platform: 'claude' | 'codex') => {
-    const projected = {
-      name: manifest.name,
-      version: manifest.version,
-      description: manifest.description,
-      ...(manifest.interface ? { interface: manifest.interface } : {}),
-    } as Record<string, unknown>;
+    const projected = createPlatformManifestBase(pluginMeta) as Record<string, unknown>;
+    if ((manifest.artifacts?.targets ?? []).some((target) =>
+      target.platform === platform && target.target === `${platform}.skill`)) {
+      projected.skills = `./${platform}/skills`;
+    }
     if (platform === 'claude') {
       const agents = resolvePlatformEntries(manifest.extensions?.agents, platform);
       if (agents.length > 0) {
@@ -109,12 +103,15 @@ export async function createCatalogSnapshotFixture(
   });
   await Promise.all([
     fs.outputJson(manifestPath, manifest, { spaces: 2 }),
-    ...[...supportedPlatforms].map((platform) => fs.outputJson(
+    ...[...nativePlatforms].map((platform) => fs.outputJson(
       path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'),
       platformManifest(platform),
       { spaces: 2 },
     )),
-    ...(supportedPlatforms.has('claude')
+    ...[...nativePlatforms].filter((platform) => (manifest.artifacts?.targets ?? []).some((target) =>
+      target.platform === platform && target.target === `${platform}.skill`))
+      .map((platform) => fs.ensureDir(path.join(pluginRoot, platform, 'skills'))),
+    ...(nativePlatforms.has('claude')
       ? projectedAgentPaths.map((agentPath) => fs.outputFile(agentPath, '# Agent\n'))
       : []),
     fs.outputJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),
@@ -246,22 +243,14 @@ export async function createDependencyCatalogSnapshotFixture(
     .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   const entries = await Promise.all(metas.map((meta) =>
     createCatalogManifestV7Entry(meta, meta.rootDir)));
-  const marketplaceEntry = (meta: PluginMeta) => ({
-    name: meta.manifest.name,
-    source: `./plugins/${meta.manifest.name}`,
-    description: meta.manifest.description,
-    category: meta.manifest.marketplace.category,
-    strict: meta.manifest.marketplace.strict,
-    policy: meta.manifest.marketplace.policy,
-  });
   const marketplace = (platform: 'CODEX' | 'CLAUDE') => ({
     name: 'aw',
     owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
     interface: { displayName: 'Fixture Marketplace' },
     plugins: metas
-      .filter((meta) => resolveSupportedPlatforms(meta.manifest)
+      .filter((meta) => resolveSupportedNativePlatforms(meta.manifest)
         .has(platform === 'CLAUDE' ? 'claude' : 'codex'))
-      .map(marketplaceEntry),
+      .map(createMarketplaceManifestEntry),
   });
   await Promise.all([
     fs.writeJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),

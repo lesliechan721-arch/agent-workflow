@@ -3,6 +3,9 @@
   "name": "codex-enhance",
   "version": "0.2.0",
   "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
+  "platforms": [
+    "codex"
+  ],
   "marketplace": {
     "category": "workflow",
     "tags": [
@@ -17,10 +20,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX"
-      ]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {
@@ -51,7 +51,7 @@
     }
   },
   "config": {
-    "schemaVersion": 4,
+    "schemaVersion": 5,
     "definitions": {
       "agentProfile": {
         "type": "object",
@@ -445,11 +445,6 @@
           "project"
         ],
         "target": "codex.skill",
-        "delivery": {
-          "mode": "codex-native",
-          "identity": "shared",
-          "renderProfile": "user"
-        },
         "projectManagedKind": "skill",
         "states": [
           "present"
@@ -489,11 +484,6 @@
           "project"
         ],
         "target": "codex.skill",
-        "delivery": {
-          "mode": "codex-native",
-          "identity": "shared",
-          "renderProfile": "user"
-        },
         "projectManagedKind": "skill",
         "states": [
           "present"
@@ -530,7 +520,7 @@
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.plugin-config.v4",
+        "aw.plugin-config.v5",
         "aw.plugin-config-value-ref.v1",
         "aw.plugin-config-cross-plugin-value-ref.v1"
       ]

@@ -6,7 +6,7 @@ const profile = { type: 'object', properties: {
   effort: { type: 'string', choices: { allowCustom: false, presets: [{ id: 'high', title: 'High', value: 'high' }] } },
 }, additionalProperties: false }
 function manifest(config: unknown) {
-  return { schemaVersion: 3, name: 'config-example', version: '0.1.0', description: 'Example',
+  return { schemaVersion: 3, name: 'config-example', version: '0.1.0', description: 'Example', platforms: ['codex', 'claude'],
     marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, config }
 }
 function config() {

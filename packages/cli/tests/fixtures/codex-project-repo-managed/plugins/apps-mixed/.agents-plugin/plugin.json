@@ -1,5 +1,6 @@
 {
   "schemaVersion": 3,
+  "platforms": ["codex"],
   "name": "apps-mixed",
   "version": "0.1.0",
   "description": "Fixture plugin combining a repo skill with Codex apps; project scope must reject the whole plugin.",
@@ -11,8 +12,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": ["CODEX"]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {

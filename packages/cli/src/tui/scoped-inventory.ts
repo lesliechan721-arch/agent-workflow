@@ -39,7 +39,7 @@ export interface InventoryRoot {
   state: InventoryState;
   targets: InventoryTarget[];
   dependencies: InventoryDependency[];
-  agentResults?: Array<Pick<RecoveryTarget, 'agent' | 'delivery' | 'blockers' | 'observation' | 'content'>>;
+  agentResults?: Array<Pick<RecoveryTarget, 'agent' | 'delivery' | 'blockers' | 'reasons' | 'satisfaction' | 'observation' | 'content'>>;
   blockers?: Array<{ code: string; message: string }>;
   sourceState?: string;
 }
@@ -57,7 +57,7 @@ export interface ScopedInventoryViewModel {
   counts: Record<InventoryState, number>;
   errors: Array<{ code: string; message: string }>;
   allSatisfied: boolean | null;
-  coverage?: { native: boolean; portable: boolean };
+  coverage?: { native: boolean; portable: boolean; scopes?: Scope[] };
 }
 
 export interface RecoveryInventoryInput {
@@ -73,7 +73,7 @@ export interface RecoveryInventoryInput {
   }> | null;
   errors: Array<{ code: string; message: string }>;
   allSatisfied: boolean | null;
-  coverage?: { native: boolean; portable: boolean };
+  coverage?: { native: boolean; portable: boolean; scopes?: Scope[] };
   extraObserved?: Array<{
     pluginId: string; agent: AgentId | null; scope: Scope;
     delivery: RecoveryTarget['delivery']; observation: RecoveryTarget['observation'];
@@ -95,7 +95,7 @@ const stateOrder: Record<InventoryState, number> = {
 };
 
 function agentForPlatform(platform: PlatformName): AgentId {
-  return platform === 'claude' ? 'claude-code' : 'codex';
+  return platform === 'claude' ? 'claude' : 'codex';
 }
 
 function targetIdentity(target: Pick<InventoryTarget, 'platform' | 'scope' | 'agent' | 'delivery'>): string {

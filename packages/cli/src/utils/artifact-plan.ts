@@ -391,6 +391,9 @@ function normalizeArtifact(options: {
     const refreshKeys = normalizeRefreshKeys({ value: options.artifact.refreshKeys, fieldName: `${fieldName}.refreshKeys`, declaration });
     let normalized: ArtifactPlanArtifact;
     if (target === 'aw.command-set') {
+      if (declaration.platform !== undefined && declaration.platform !== 'codex' && declaration.platform !== 'claude') {
+        throw new Error(`Invalid ${fieldName}.platform: managed commands require a Native platform.`);
+      }
       const entries = normalizeCommandDefinitions(options.artifact.entries, `${fieldName}.entries`);
       if (state === 'disabled' && entries.length !== 0) throw new Error(`Invalid ${fieldName}.entries: disabled sets must be empty.`);
       if (state === 'present' && Object.hasOwn(options.artifact, 'disabledReason')) throw new Error(`Invalid ${fieldName}.disabledReason: only disabled sets may include this field.`);
@@ -414,18 +417,21 @@ function normalizeArtifact(options: {
       ? ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'content']
       : target === 'codex.agentRole'
         ? ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'roleKey', 'content']
-        : ['id', target === 'agent-skills.skill' ? 'distribution' : 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'skillKey', 'content'],
+        : ['id', 'platform', ...(target === 'agent-skills.skill' ? ['distribution'] : []), 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'skillKey', 'content'],
   );
 
-  const surfaceField = target === 'agent-skills.skill' ? 'distribution' : 'platform';
-  const surface = ensureNonEmptyString(options.artifact[surfaceField], `${fieldName}.${surfaceField}`) as Exclude<ArtifactRenderSurfaceName, 'managed-commands'>;
+  const surfaceField = 'platform';
+  const surface = ensureNonEmptyString(options.artifact.platform, `${fieldName}.platform`) as Exclude<ArtifactRenderSurfaceName, 'managed-commands' | 'agent-skills'>;
   if (surface !== options.platform) {
     throw new Error(
       `Invalid ${fieldName}.${surfaceField}: expected "${options.platform}" but received "${surface}".`,
     );
   }
-  const platform = surface === 'agent-skills' ? undefined : surface;
-  const distribution = surface === 'agent-skills' ? surface : undefined;
+  const platform = surface;
+  const distribution = target === 'agent-skills.skill' ? 'agent-skills' : undefined;
+  if (distribution && options.artifact.distribution !== distribution) {
+    throw new Error(`Invalid ${fieldName}.distribution: expected "agent-skills".`);
+  }
 
   const kind = ensureNonEmptyString(options.artifact.kind, `${fieldName}.kind`);
   const expectedKind = declaration.kind ?? ARTIFACT_KIND_BY_TARGET[target];
@@ -500,7 +506,8 @@ function normalizeArtifact(options: {
     const normalized = {
       id,
       kind: 'skill',
-      ...(platform ? { platform } : { distribution: distribution! }),
+      platform,
+      ...(distribution ? { distribution } : {}),
       target,
       state,
       skillKey,

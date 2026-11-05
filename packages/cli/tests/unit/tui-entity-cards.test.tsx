@@ -29,9 +29,53 @@ function assertWidth(frame: string, columns: number): void {
   expect(frame.split('\n').every((line) => stringWidth(line) <= columns)).toBe(true);
 }
 
+function declaredScopes(...scopes: Array<'user' | 'project'>): PluginDetailSubject['declarations'] {
+  const declaration = (scope: 'user' | 'project'): PluginDetailSubject['declarations']['user'] => ({
+    state: scopes.includes(scope) ? 'declared' : 'not-declared',
+    targets: 'selected', agents: ['codex', 'claude', 'cursor'],
+  });
+  return { user: declaration('user'), project: declaration('project') };
+}
+
+function compact(frame: string): string {
+  return frame.replace(/ +/gu, ' ');
+}
+
 describe('entity cards in the real Ink renderer', () => {
-  it('renders Native and Portable Agent placements without converting Cursor into Codex', () => {
-    const data = subject({ placements: [{
+  it('shows a merged scope badge and a human conflict reason in the project list', () => {
+    const data = subject({ declarations: declaredScopes('project') });
+    const root: ProjectInventoryRoot = { pluginId: data.pluginId, sourceId: data.sourceId,
+      displayName: data.displayName, scope: 'project', section: 'declared', state: 'blocked',
+      targets: [], dependencies: [], sourceState: 'ready', blockers: [], agentResults: [{
+        agent: 'cursor', delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+        content: 'conflict', observation: 'unknown',
+        blockers: [{ code: 'targetPlacementConflict', message: 'technical /private/path' }],
+      }] };
+    const instance = render(<ProjectRootCard root={root} subject={data} width={60} />);
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('[■ 当前项目]');
+    expect(frame).toContain('Cursor');
+    expect(frame).toContain('Agent 目录冲突');
+    expect(frame).not.toContain('targetPlacementConflict');
+    expect(frame).not.toContain('technical /private/path');
+    expect(frame).not.toContain('项目需求');
+    expect(frame).not.toContain('原生交付');
+    assertWidth(frame, 60);
+  });
+  it('identifies a required installed dependency without offering it as residue', () => {
+    const data = subject({ declarations: declaredScopes(), placements: [{
+      platform: 'codex', agent: 'codex', scope: 'user', platformLabel: 'Codex', scopeLabel: '所有项目',
+      statusState: 'ready', observation: 'known', declared: false, actual: true,
+      sharedWithCurrentProject: false, installedVersion: '1.0.0', reasonCodes: [],
+    }], relations: { outgoing: [], incoming: [{ pluginId: 'team/root', displayName: 'root',
+      declared: true, verified: true }], checkState: 'checked', hasKnownRelations: true } });
+    const instance = render(<PluginDetailCard subject={data} width={60} />);
+    expect(instance.lastFrame()).toContain('依赖');
+    expect(instance.lastFrame()).not.toContain('可清理');
+    expect(instance.lastFrame()).toContain('1.0.0');
+  });
+  it('keeps Native and Portable Agent identities when the table shrinks and grows', () => {
+    const data = subject({ declarations: declaredScopes('user'), placements: [{
       platform: 'codex', agent: 'codex', delivery: 'native', scope: 'user',
       platformLabel: 'Codex', scopeLabel: '所有项目', statusState: 'ready', observation: 'known',
       declared: true, actual: true, sharedWithCurrentProject: false, reasonCodes: [],
@@ -40,13 +84,25 @@ describe('entity cards in the real Ink renderer', () => {
       scopeLabel: '所有项目', statusState: 'ready', observation: 'known', declared: true, actual: true,
       sharedWithCurrentProject: false, reasonCodes: [],
     }] });
-    const frame = render(<PluginDetailCard subject={data} width={80} />).lastFrame() ?? '';
-    expect(frame.replace(/ +/gu, ' ')).toContain('Codex [所有项目]');
-    expect(frame.replace(/ +/gu, ' ')).toContain('Cursor [所有项目]');
+    const instance = render(<PluginDetailCard subject={data} width={80} />);
+    const wideFrame = instance.lastFrame() ?? '';
+    assertWidth(wideFrame, 80);
+    expect(compact(wideFrame)).toContain('Agent 状态 位置 版本');
+    expect(compact(wideFrame)).toContain('Codex ✓ 可用 所有项目 —');
+    expect(compact(wideFrame)).toContain('Cursor ✓ 可用 所有项目 —');
+    expect(wideFrame).toContain('[■ 所有项目]');
+    instance.rerender(<PluginDetailCard subject={data} width={60} />);
+    const narrowFrame = instance.lastFrame() ?? '';
+    assertWidth(narrowFrame, 60);
+    expect(compact(narrowFrame)).toContain('Agent 状态 版本');
+    expect(compact(narrowFrame)).toContain('Codex ✓ 可用 —');
+    expect(compact(narrowFrame)).toContain('Cursor ✓ 可用 —');
+    instance.rerender(<PluginDetailCard subject={data} width={80} />);
+    expect(compact(instance.lastFrame() ?? '')).toContain('Cursor ✓ 可用 所有项目 —');
   });
 
   it.each([60, 80])('keeps separate position and version facts at %i columns', (width) => {
-    const data = subject({ placements: [{
+    const data = subject({ declarations: declaredScopes('user', 'project'), placements: [{
       platform: 'codex', scope: 'user', platformLabel: 'Codex', scopeLabel: '所有项目',
       statusState: 'ready', observation: 'known', declared: true, actual: true,
       sharedWithCurrentProject: false, installedVersion: '1.5.0', reasonCodes: [],
@@ -61,21 +117,31 @@ describe('entity cards in the real Ink renderer', () => {
     assertWidth(frame, width);
     expect(frame).toContain('流程助手');
     expect(frame).toContain('[team]');
-    expect(frame).toContain('目录版本 2.0.0');
-    expect(frame.replace(/ +/gu, ' ')).toContain('Codex [所有项目] 安装版本 1.5.0 [✓ 可用]');
-    expect(frame.replace(/ +/gu, ' ')).toContain('Codex [当前项目] [项目声明] 安装版本 未确认 [? 未确认]');
+    expect(frame).toContain('最新版本 2.0.0');
+    expect(frame).toContain('[■ 所有项目]');
+    expect(frame).toContain('[□ 当前项目 待安装]');
+    expect(compact(frame)).toContain(width >= 76
+      ? 'Codex ✓ 可用 所有项目 1.5.0 ↑' : 'Codex ✓ 可用 1.5.0 ↑');
+    expect(compact(frame)).toContain(width >= 76
+      ? 'Codex ? 未确认 当前项目 —' : 'Codex ? 未确认 —');
+    expect(frame).toContain('无法确认安装状态，请查看技术详情');
     expect(frame.split('\n')[0]).toContain('流程助手');
     expect(frame.split('\n')[0]).toContain('[team]');
     expect(frame).not.toContain('› 流程助手');
+    const columns = frame.split('\n').find((line) => line.includes('Agent'))!;
     const placement = frame.split('\n').find((line) => line.includes('1.5.0'))!;
-    expect(stringWidth(placement.slice(0, placement.indexOf('[✓ 可用]'))))
-      .toBe(width - stringWidth('[✓ 可用]') - 2);
+    expect(stringWidth(placement.slice(0, placement.indexOf('✓ 可用'))))
+      .toBe(stringWidth(columns.slice(0, columns.indexOf('状态'))));
+    expect(stringWidth(placement.slice(0, placement.indexOf('1.5.0'))))
+      .toBe(stringWidth(columns.slice(0, columns.indexOf('版本'))));
+    expect(placement).not.toContain('2.0.0');
     expect(frame).not.toContain('声明期望版本');
-    expect(frame.split('\n')).toHaveLength(pluginDetailCardLayout(data, width).fullHeight);
+    expect(frame.split('\n'), frame).toHaveLength(pluginDetailCardLayout(data, width).fullHeight);
   });
 
   it.each([60, 80])('keeps unknown distinct from confirmed absent at %i columns', (width) => {
     const data = subject({ description: undefined, catalogVersion: undefined,
+      declarations: declaredScopes('project'),
       definitionAvailable: false, savedConfigScopes: ['user'], placements: [{
         platform: 'codex', scope: 'project', platformLabel: 'Codex', scopeLabel: '当前项目',
         statusState: 'absent', observation: 'known', declared: true, actual: false,
@@ -88,13 +154,14 @@ describe('entity cards in the real Ink renderer', () => {
     const frame = render(<PluginDetailCard subject={data} width={width} />).lastFrame() ?? '';
     assertWidth(frame, width);
     expect(frame).toContain('[! 目录定义当前不可用]');
-    expect(frame).toContain('已保存设置 所有项目');
-    expect(frame.replace(/ +/gu, ' ')).toContain('Codex [当前项目] [项目声明] [○ 未安装]');
-    expect(frame.replace(/[│\s]/gu, '')).toContain('ClaudeCode[当前项目][项目声明]安装版本未确认[?未确认]');
-    const unknown = frame.split('\n').find((line) => line.includes('[? 未确认]'))!;
-    expect(stringWidth(unknown.slice(0, unknown.indexOf('[? 未确认]'))))
-      .toBe(width - stringWidth('[? 未确认]') - 2);
-    expect(frame).not.toContain('安装版本 2.0.0');
+    expect(frame).toContain('[□ 当前项目 待安装]');
+    expect(frame).not.toContain('所有项目');
+    expect(compact(frame)).toContain(width >= 76
+      ? 'Codex ○ 未安装 当前项目 —' : 'Codex ○ 未安装 —');
+    expect(compact(frame)).toContain(width >= 76
+      ? 'Claude Code ? 未确认 当前项目 —' : 'Claude Code ? 未确认 —');
+    expect(frame).toContain('最新版本 未确认');
+    expect(frame).not.toContain('2.0.0');
   });
 
   it.each([60, 80])('exposes every wrapped fact through a bounded card window at %i columns', (width) => {
@@ -111,20 +178,21 @@ describe('entity cards in the real Ink renderer', () => {
       visited += frame;
       expect(frame.split('\n')).toHaveLength(entityCardWindowHeight(layout, offset, 2));
     }
-    expect(visited).toContain('目录版本 2.0.0');
-    expect(visited.replace(/ +/gu, ' ')).toContain('使用位置 [? 未确认]');
+    expect(visited).toContain('最新版本 2.0.0');
+    expect(visited).toContain('○ 尚未添加');
+    expect(visited).toContain('尚无安装结果');
     expect(visited).toContain('名称末尾标记');
     expect(visited.replace(/\s|[│╭╮╰╯─]/gu, '')).toContain('来源末尾标记');
     expect(visited).toContain('简介末尾标记');
-    expect(visited).toContain('← 上一页');
-    expect(visited).toContain('下一页 →');
-    const pages = Math.ceil(layout.factRows / 2);
-    expect(visited).toContain(`${pages} / ${pages}`);
+    expect(visited).toContain('↑ 前面还有信息');
+    expect(visited).toContain('↓ 后面还有信息');
+    expect(visited).not.toContain('← 上一页');
+    expect(visited).not.toContain('下一页 →');
     expect(layout.sections.at(-1)?.offset).toBeLessThan(layout.factRows);
   });
 
   it.each([60, 80])('shows one project root with independent mixed targets and proven sharing at %i columns', (width) => {
-    const data = subject({ placements: [{
+    const data = subject({ declarations: declaredScopes('project'), placements: [{
       platform: 'codex', scope: 'project', platformLabel: 'Codex', scopeLabel: '当前项目',
       projectState: 'blocked', observation: 'unknown', declared: true, actual: false,
       sharedWithCurrentProject: false, reasonCodes: [],
@@ -154,8 +222,11 @@ describe('entity cards in the real Ink renderer', () => {
     expect(frame).toContain('Codex [当前项目] [项目声明] 安装版本 未确认 [! 受阻]');
     expect(frame).toContain('Claude Code [当前项目] 安装版本 1.0.0 [↻ 待同步]');
     const detailFrame = render(<PluginDetailCard subject={data} width={width} />).lastFrame() ?? '';
-    expect(detailFrame.replace(/ +/gu, ' ')).toContain('Codex [当前项目] [项目声明] 安装版本 未确认 [! 受阻]');
-    expect(detailFrame.replace(/ +/gu, ' ')).toContain('Claude Code [当前项目] 安装版本 1.0.0 [↻ 待同步]');
+    expect(compact(detailFrame)).toContain(width >= 76
+      ? 'Codex ! 受阻 当前项目 —' : 'Codex ! 受阻 —');
+    expect(compact(detailFrame)).toContain(width >= 76
+      ? 'Claude Code ↻ 待同步 当前项目 1.0.0 ↑' : 'Claude Code ↻ 待同步 1.0.0 ↑');
+    expect(detailFrame).toContain('[□ 当前项目 待安装]');
     expect(frame).toContain('依赖 共用依赖');
     expect(frame).toContain('共用依赖');
     expect(frame).toContain('共用个人安装');
@@ -181,13 +252,13 @@ describe('entity cards in the real Ink renderer', () => {
     expect(frame).toContain('本次检查 · 失败，旧版可用');
   });
 
-  it('colors only status badges while platform and scope retain their own roles', async () => {
+  it('uses independent state colors in the Agent table and combined scope badge', async () => {
     const requireFromInk = createRequire(createRequire(import.meta.url).resolve('ink'));
     const chalk = (await import(requireFromInk.resolve('chalk'))).default;
     const previous = chalk.level;
     chalk.level = 3;
     try {
-      const data = subject({ placements: [{
+      const data = subject({ declarations: declaredScopes('project'), placements: [{
         platform: 'codex', scope: 'project', platformLabel: 'Codex', scopeLabel: '当前项目',
         projectState: 'blocked', observation: 'known', declared: true, actual: true,
         sharedWithCurrentProject: false, installedVersion: '1.0.0', reasonCodes: [],
@@ -195,8 +266,8 @@ describe('entity cards in the real Ink renderer', () => {
       const frame = render(<PluginDetailCard subject={data} width={60} />).lastFrame() ?? '';
       const placement = frame.split('\n').find((line) => line.includes('Codex')) ?? '';
       const platformColor = placement.match(/\u001b\[38;2;([\d;]+)mCodex/u)?.[1];
-      const scopeColor = placement.match(/\u001b\[38;2;([\d;]+)m \[当前项目\]/u)?.[1];
-      const statusColor = placement.match(/\u001b\[38;2;([\d;]+)m +\[! 受阻\]/u)?.[1];
+      const scopeColor = frame.match(/\u001b\[38;2;([\d;]+)m *\[□ 当前项目 待安装\]/u)?.[1];
+      const statusColor = placement.match(/\u001b\[38;2;([\d;]+)m *! 受阻/u)?.[1];
       expect(platformColor).toBeDefined();
       expect(scopeColor).toBeDefined();
       expect(statusColor).toBeDefined();

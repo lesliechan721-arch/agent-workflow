@@ -3,7 +3,8 @@
 准备、验证或执行 AW Agent Skill Eval，复用独立审核并验证运行结果。依赖 `agent-skill-toolkit`。
 
 ```bash
-aw install aw-skill-eval-runner --scope user --target codex
+aw plugin targets set codex
+aw plugin install aw-skill-eval-runner --scope user
 ```
 
 也支持 Claude Code，可改用 `--target claude-code`。需要 PATH 中兼容的 `aw` 和 `aw-skill-eval`。包含公开能力 `run-aw-skill-evals`，其它 Skill 也可按当前任务使用它。

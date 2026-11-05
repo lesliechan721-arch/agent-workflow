@@ -1,12 +1,21 @@
-import type { PlatformName, TemplateValue, TemplateVarByPlatform } from './types.js';
+import type { PlatformTarget, TemplateValue, TemplateVarByPlatform } from './types.js';
 
 function resolveTemplateValue(
+  input: string,
   vars: Record<string, TemplateVarByPlatform>,
-  platform: PlatformName,
+  platform: PlatformTarget,
 ): Record<string, TemplateValue> {
-  return Object.fromEntries(
-    Object.entries(vars).map(([key, value]) => [key, value[platform]]),
-  );
+  const referencedKeys = new Set([...input.matchAll(/{{(?:#(?:if|unless)\s+)?([a-zA-Z0-9_]+)}}/g)]
+    .map((match) => match[1]!));
+  const output: Record<string, TemplateValue> = {};
+  for (const [key, value] of Object.entries(vars)) {
+    const resolved = value[platform];
+    if (resolved !== undefined) output[key] = resolved;
+    else if (referencedKeys.has(key)) {
+      throw new Error(`Missing template variable ${JSON.stringify(key)} for platform ${JSON.stringify(platform)}.`);
+    }
+  }
+  return output;
 }
 
 function replaceConditionalBlocks(
@@ -33,9 +42,9 @@ function replaceConditionalBlocks(
 export function renderTemplate(
   input: string,
   vars: Record<string, TemplateVarByPlatform>,
-  platform: PlatformName,
+  platform: PlatformTarget,
 ): string {
-  const resolvedVars = resolveTemplateValue(vars, platform);
+  const resolvedVars = resolveTemplateValue(input, vars, platform);
   const withConditionals = replaceConditionalBlocks(
     replaceConditionalBlocks(input, resolvedVars, 'if'),
     resolvedVars,
