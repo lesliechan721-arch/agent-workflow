@@ -5760,11 +5760,13 @@ describe('five namespaced write commands', () => {
       && invocation.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
   }, 30_000);
 
-  it('installs a supported target without parsing an unrelated future bundle', async () => {
+  it('installs and saves ordinary config without parsing an unrelated future bundle', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-future-install-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
-      { name: 'root' },
+      { name: 'root', configureManifest(manifest) {
+        manifest.config = { schemaVersion: 4, fields: { mode: { type: 'string', default: 'safe' } } };
+      } },
       { name: 'future', requiredCapabilities: ['aw.future-feature.v3'] },
     ]);
     const futureRoot = path.join(sourceRoot, 'plugins', 'future');
@@ -5801,6 +5803,29 @@ describe('five namespaced write commands', () => {
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
     expect(result.dependencyPlan?.resolvedPluginIds).toEqual(['team/root']);
+    // Test Value Gate: future bundles in a shared Catalog must not block an
+    // unrelated supported plugin's ordinary config Review or save.
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    })));
+    try {
+      await controller.load();
+      const review = await controller.buildOperationReview({
+        kind: 'configSave', pluginId: 'team/root', scope: 'user', apply: false,
+        updates: { mode: 'strict' },
+      });
+      expect(await controller.executeOperation(review.reviewToken)).toMatchObject({ state: 'succeeded' });
+      const stored = await fs.readJson(resolvePluginConfigStorePath({
+        sourceId: 'team', pluginName: 'root', scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      }));
+      expect(stored.values).toEqual({ mode: 'strict' });
+    } finally {
+      await controller.cancelAndWaitForReads();
+      controller.dispose();
+    }
   });
 
   it('lists supported and future entries in status and TUI without parsing the future bundle', async () => {

@@ -2026,7 +2026,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     }, new AbortController().signal)).resolves.toBeUndefined();
   });
 
-  it('prepares config review from loaded session evidence without another status or remote stage', async () => {
+  it('prepares config review without rereading catalog payloads or reloading status', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-review-config-source');
     await fs.outputFile(
@@ -2034,7 +2034,12 @@ describe('TUI controller runtime scope conflict validation', () => {
       'export default async () => undefined;\n',
     );
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { schemaVersion: 4, fields: {
+        mode: { type: 'string', title: 'Mode' },
+        registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
+          type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
+        } },
+      } };
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -2093,12 +2098,21 @@ describe('TUI controller runtime scope conflict validation', () => {
     const signal = new AbortController().signal;
     await dependencies.loadStatus(signal);
 
-    const evidence = await dependencies.prepareReviewEvidence!({
-      kind: 'configSave',
-      pluginId: 'team/demo',
-      scope: 'user',
-      updates: { mode: 'strict' },
-    }, signal, (stage) => { stages.push(stage); });
+    // Test Value Gate: resolving array-backed config references must not repeat
+    // full snapshot payload reads during a warm Review.
+    const reads = vi.spyOn(fs, 'readFile');
+    let evidence: OperationEvidence;
+    try {
+      evidence = await dependencies.prepareReviewEvidence!({
+        kind: 'configSave',
+        pluginId: 'team/demo',
+        scope: 'user',
+        updates: { mode: 'strict' },
+      }, signal, (stage) => { stages.push(stage); });
+      expect(reads.mock.calls.filter(([file]) => path.basename(String(file)) === 'SKILL.md')).toHaveLength(0);
+    } finally {
+      reads.mockRestore();
+    }
     expect(evidence).toMatchObject({
       config: {
         scope: 'user',
