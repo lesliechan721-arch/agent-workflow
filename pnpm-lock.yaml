@@ -123,7 +123,7 @@ importers:
         specifier: ^11.3.0
         version: 11.3.4
       re2-wasm:
-        specifier: ^1.0.2
+        specifier: 1.0.2
         version: 1.0.2
       yaml:
         specifier: ^2.8.1

@@ -1,5 +1,5 @@
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type TestContext } from 'vitest';
 import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { createElement } from 'react';
@@ -73,6 +73,7 @@ import {
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { stubCodexFileSelectionForNativeFixture } from '../helpers/codex-enhance-native-fixture.js';
 import { defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
+import type { CommandEvent } from '../../src/output/model.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
@@ -336,22 +337,90 @@ async function createCodexNativeTestRuntime(
   };
 }
 
-async function prepareCodexEnhancePublicCommandFixture() {
+// Keep diagnostics local to the two timeout-prone tests. Only fixed labels and
+// selected timing fields are logged; command values, paths and errors stay out.
+function createCodexEnhanceTestTiming(test: TestContext) {
+  const startedAt = performance.now();
+  let sequence = 0;
+  const active = new Map<number, { stage: string; name: string; startedAt: number }>();
+  const emit = (event: Record<string, unknown>) => {
+    console.log('AW_TEST_TIMING', JSON.stringify({
+      test: test.task.name,
+      testId: test.task.id,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      ...event,
+    }));
+  };
+  const measure = async <T>(
+    stage: string,
+    name: string,
+    operation: (sequence: number) => Promise<T>,
+  ): Promise<T> => {
+    const id = ++sequence;
+    const start = performance.now();
+    active.set(id, { stage, name, startedAt: start });
+    emit({ stage, name, sequence: id, event: 'start' });
+    let outcome = 'succeeded';
+    try {
+      return await operation(id);
+    } catch (error) {
+      outcome = 'failed';
+      throw error;
+    } finally {
+      active.delete(id);
+      emit({ stage, name, sequence: id, event: 'finish', outcome,
+        durationMs: Math.round(performance.now() - start) });
+    }
+  };
+  const commandEvent = (commandSequence: number, event: CommandEvent): void => {
+    if (!['performance:stage', 'rebuild:action', 'native:start', 'native:success', 'native:error', 'command:result'].includes(event.type)) return;
+    const data = event.data as Record<string, unknown> | undefined;
+    emit({
+      stage: event.type,
+      commandSequence,
+      name: data?.name ?? data?.operation,
+      event: data?.phase ?? event.type.slice(event.type.indexOf(':') + 1),
+      durationMs: data?.durationMs,
+      exitCode: data?.exitCode,
+      plugin: event.source?.plugin,
+      platform: event.source?.platform,
+      scope: event.source?.scope,
+    });
+  };
+  const runRenderer = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
+  const rendererSpy = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(
+    (invocation, options) => measure('renderer', path.basename(invocation.args[0] ?? invocation.command),
+      () => runRenderer(invocation, options)),
+  );
+  test.onTestFinished(() => {
+    rendererSpy.mockRestore();
+    for (const [id, pending] of active) {
+      emit({ stage: pending.stage, name: pending.name, sequence: id, event: 'unfinished',
+        durationMs: Math.round(performance.now() - pending.startedAt) });
+    }
+  });
+  return { measure, commandEvent };
+}
+
+async function prepareCodexEnhancePublicCommandFixture(timing?: ReturnType<typeof createCodexEnhanceTestTiming>) {
+  const measure = timing?.measure ?? (async <T>(
+    _stage: string, _name: string, operation: (sequence: number) => Promise<T>,
+  ): Promise<T> => operation(0));
   const isolation = getCurrentSourceTestIsolation();
   const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
   const sourcePluginRoot = path.join(repositoryRoot, 'plugins', 'codex-enhance');
   const authoringRoot = path.join(isolation.layout.fixtureCwd, 'codex-enhance-authoring');
-  await fs.copy(
+  await measure('fixture-step', 'copy.marketplace-source', () => fs.copy(
     path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
     path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
-  );
+  ));
   const copiedPluginRoot = path.join(authoringRoot, 'plugins', 'codex-enhance');
-  await fs.copy(sourcePluginRoot, copiedPluginRoot);
+  await measure('fixture-step', 'copy.codex-enhance', () => fs.copy(sourcePluginRoot, copiedPluginRoot));
   const sourceSubagentPluginRoot = path.join(repositoryRoot, 'plugins', 'agent-subagent');
   const copiedSubagentPluginRoot = path.join(authoringRoot, 'plugins', 'agent-subagent');
-  await fs.copy(sourceSubagentPluginRoot, copiedSubagentPluginRoot);
-  await stubCodexFileSelectionForNativeFixture(copiedSubagentPluginRoot);
-  const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
+  await measure('fixture-step', 'copy.agent-subagent', () => fs.copy(sourceSubagentPluginRoot, copiedSubagentPluginRoot));
+  await measure('fixture-step', 'stub.file-selection', () => stubCodexFileSelectionForNativeFixture(copiedSubagentPluginRoot));
+  const sourceRoot = await measure('fixture-step', 'bundle.plugins', () => createSyntheticEmbeddedRoot(authoringRoot));
   await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
     schemaVersion: 1,
     kind: 'catalog',
@@ -368,26 +437,38 @@ async function prepareCodexEnhancePublicCommandFixture() {
   const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
   const sourceIdentity = await calculateCatalogSourceIdentity(source);
   const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
-  await replaceCatalogSourcesConfigWithoutActive({
+  await measure('fixture-step', 'catalog.config.write', () => replaceCatalogSourcesConfigWithoutActive({
     config: { schemaVersion: 2, sources: [source] },
     expectedDigest: before.digest,
     env: isolation.env,
-  });
-  await syncCatalogSourceGeneration({
+  }));
+  await measure('fixture-step', 'catalog.source.sync', () => syncCatalogSourceGeneration({
     sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
-  });
-  const runtime = await createCodexNativeTestRuntime(isolation);
-  const runPublic = async (args: string[]) => {
+  }));
+  const runtime = await measure('fixture-step', 'fake-codex.prepare', () => createCodexNativeTestRuntime(isolation));
+  const runPublic = (args: string[]) => measure('command', [
+    args[0], args[1],
+    args.includes('--scope') ? args[args.indexOf('--scope') + 1] : undefined,
+  ].filter(Boolean).join(' '), async (commandSequence) => {
     const captured = createCapturedCliIo();
     const exitCode = await runCli([...args, '--json'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: captured.io,
       interactive: false,
-      nativeCliRunner: runtime.nativeCliRunner,
+      nativeCliRunner: timing ? (invocation) => {
+        const pluginIndex = invocation.args.indexOf('plugin');
+        const name = pluginIndex < 0 ? 'version'
+          : invocation.args.slice(pluginIndex, pluginIndex + (
+            invocation.args[pluginIndex + 1] === 'marketplace' ? 3 : 2
+          )).join(' ');
+        return measure('native', name, () => runtime.nativeCliRunner(invocation));
+      } : runtime.nativeCliRunner,
+      ...(timing ? { debugLogger: { log: (event: CommandEvent) => timing.commandEvent(commandSequence, event) } } : {}),
     });
+    timing?.commandEvent(commandSequence, { type: 'command:result', data: { exitCode } });
     return { exitCode, payload: JSON.parse(captured.readStdout()) as Record<string, unknown> };
-  };
+  });
   return {
     isolation,
     sourcePluginRoot,
@@ -16287,10 +16368,11 @@ describe('five namespaced write commands', () => {
     }
   }, 90000);
 
-  it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async () => {
+  it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async (test) => {
     // Test Value Gate: real config writes rematerialize only affected shared Skills and bindings, while project roles keep their bytes and scope.
+    const timing = createCodexEnhanceTestTiming(test);
     const { isolation, sourceIdentity, logicalIdentity, cacheRoot, subagentCacheRoot, runPublic } =
-      await prepareCodexEnhancePublicCommandFixture();
+      await timing.measure('fixture', 'codex-enhance', () => prepareCodexEnhancePublicCommandFixture(timing));
     const roleKeys = ['codex-explore', 'codex-advisor'];
     const assertRoleInstructions = (roleKey: string, delivered: string | undefined, shared: string) => {
       if (typeof delivered !== 'string') throw new Error('Expected native role developer instructions.');
@@ -16439,42 +16521,11 @@ describe('five namespaced write commands', () => {
     ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
   }, 30_000);
 
-  it('restores codex-enhance project activation after user scope uninstall through public commands', async ({ onTestFinished }) => {
+  it('restores codex-enhance project activation after user scope uninstall through public commands', async (test) => {
     // Test Value Gate: a real project-to-user-to-project lifecycle restores project activation and cleans its roles after user uninstall.
-    // Keep timing local to this lifecycle test. Start events identify an unfinished stage after a timeout.
-    let timingSequence = 0;
-    const measure = async <T>(
-      stage: 'fixture' | 'command' | 'renderer',
-      name: string,
-      operation: () => Promise<T>,
-    ): Promise<T> => {
-      const timing = { stage, name, sequence: ++timingSequence };
-      const startedAt = performance.now();
-      console.log('AW_TEST_TIMING', JSON.stringify({ ...timing, event: 'start' }));
-      try {
-        return await operation();
-      } finally {
-        console.log('AW_TEST_TIMING', JSON.stringify({
-          ...timing,
-          event: 'finish',
-          durationMs: Math.round(performance.now() - startedAt),
-        }));
-      }
-    };
-    const runRenderer = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
-    const rendererSpy = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(
-      (invocation, options) => measure(
-        'renderer',
-        path.basename(invocation.args[0] ?? invocation.command),
-        () => runRenderer(invocation, options),
-      ),
-    );
-    onTestFinished(() => rendererSpy.mockRestore());
-    const { isolation, runPublic: runFixtureCommand } = await measure(
-      'fixture', 'codex-enhance', prepareCodexEnhancePublicCommandFixture,
-    );
-    const runPublic = (args: string[]) => measure(
-      'command', args.join(' '), () => runFixtureCommand(args),
+    const timing = createCodexEnhanceTestTiming(test);
+    const { isolation, runPublic } = await timing.measure(
+      'fixture', 'codex-enhance', () => prepareCodexEnhancePublicCommandFixture(timing),
     );
     const rolePaths = ['codex-explore', 'codex-advisor'].map((role) => path.join(
       isolation.layout.fixtureCwd, '.codex', 'agents', `aw-codex-enhance-${role}.toml`,
