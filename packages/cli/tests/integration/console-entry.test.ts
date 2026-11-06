@@ -25,7 +25,7 @@ describe('console entry', () => {
 
     expect(exitCode).toBe(1);
     expect(captured.readStderr()).toContain('当前运行环境不可交互');
-    expect(captured.readStderr()).toContain('aw status --json');
+    expect(captured.readStderr()).toContain('aw plugin status --context user --json');
   });
 
   it('launches one V4 controller session, completes through onExit, and disposes ownership once', async () => {
@@ -157,8 +157,8 @@ describe('console entry', () => {
     const secret = 'unknown-config-secret-value';
 
     const exitCode = await runCli([
-      'config', 'set', 'missing/demo', 'unknown-sensitive-key',
-      '--scope', 'user', '--value-json', JSON.stringify(secret),
+      'plugin', 'config', 'set', 'missing/demo', 'unknown-sensitive-key',
+      '--context', 'user', '--value-json', JSON.stringify(secret),
       '--debug', '--log-file', logFile,
     ], {
       cwd: isolation.layout.fixtureCwd,

@@ -32,8 +32,8 @@ async function createWorkspace(label = 'aw-review-preparation-'): Promise<{
     HOME: path.join(root, 'state', 'home'),
     USERPROFILE: path.join(root, 'state', 'home'),
     AW_HOME: path.join(root, 'state', 'aw-home'),
-    AW_CODEX_HOME: path.join(root, 'state', 'codex-home'),
-    AW_CLAUDE_HOME: path.join(root, 'state', 'claude-home'),
+    CODEX_HOME: path.join(root, 'state', 'codex-home'),
+    CLAUDE_CONFIG_DIR: path.join(root, 'state', 'claude-home'),
   }
   await fs.ensureDir(env.HOME!)
   return { root, env }
@@ -51,8 +51,8 @@ async function copyWorkspace(source: string, label: string): Promise<{
     HOME: path.join(root, 'state', 'home'),
     USERPROFILE: path.join(root, 'state', 'home'),
     AW_HOME: path.join(root, 'state', 'aw-home'),
-    AW_CODEX_HOME: path.join(root, 'state', 'codex-home'),
-    AW_CLAUDE_HOME: path.join(root, 'state', 'claude-home'),
+    CODEX_HOME: path.join(root, 'state', 'codex-home'),
+    CLAUDE_CONFIG_DIR: path.join(root, 'state', 'claude-home'),
   }
   await fs.ensureDir(env.HOME!)
   return { root, env }
@@ -64,6 +64,7 @@ function manifest(name: string, extra: Partial<PluginManifestSource> = {}): Plug
     name,
     version: '0.1.0',
     description: `${name} Review preparation fixture.`,
+    platforms: ['codex', 'claude'],
     marketplace: {
       category: 'test',
       strict: true,
@@ -85,6 +86,7 @@ async function writeNativeSkill(pluginRoot: string, name: string): Promise<void>
     path.join(skillRoot, 'SKILL.md'),
     `---\nname: ${name}\ndescription: ${name} Review fixture.\n---\n\n# ${name}\n`,
   )
+  await fs.outputFile(path.join(skillRoot, 'README.md'), `# ${name}\n`)
   await fs.outputFile(
     path.join(skillRoot, 'agents', 'openai.yaml'),
     'interface:\n  display_name: Review fixture\n  short_description: Review fixture\n'
@@ -103,7 +105,7 @@ function rendererSource(mutateSourcePath?: string): string {
     "  'codex-extension': { platform: 'codex', target: 'codex.skill', skillKey: 'codex-extension' },",
     "  'codex-native': { platform: 'codex', target: 'codex.skill', skillKey: 'codex-native' },",
     "  'claude-skill': { platform: 'claude', target: 'claude.skill', skillKey: 'claude-skill' },",
-    "  'portable-skill': { distribution: 'agent-skills', target: 'agent-skills.skill', skillKey: 'portable-skill' },",
+    "  'portable-skill': { platform: 'generic', distribution: 'agent-skills', target: 'agent-skills.skill', skillKey: 'portable-skill' },",
     "  'unselected-skill': { platform: 'codex', target: 'codex.skill', skillKey: 'unselected-skill' },",
     '};',
     'const artifacts = context.requestedArtifactIds.map((id) => {',
@@ -137,10 +139,9 @@ async function createDynamicPlugin(root: string): Promise<string> {
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        products: ['CODEX', 'CLAUDE'],
       },
     },
-    distributions: { agentSkills: {} },
+    platforms: ['codex', 'claude', 'generic'],
     scripts: {
       artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
     },
@@ -159,7 +160,6 @@ async function createDynamicPlugin(root: string): Promise<string> {
           platform: 'codex',
           scopes: ['project', 'user'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           states: ['present'],
           refreshKeys: ['mode'],
           skillKey: 'codex-extension',
@@ -169,7 +169,6 @@ async function createDynamicPlugin(root: string): Promise<string> {
           platform: 'codex',
           scopes: ['project', 'user'],
           target: 'codex.skill',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           states: ['present', 'disabled'],
           refreshKeys: ['nativeMode'],
           skillKey: 'codex-native',
@@ -185,7 +184,7 @@ async function createDynamicPlugin(root: string): Promise<string> {
         },
         {
           id: 'portable-skill',
-          distribution: 'agent-skills',
+          platform: 'generic', distribution: 'agent-skills',
           scopes: ['project', 'user'],
           target: 'agent-skills.skill',
           states: ['present'],
@@ -197,7 +196,6 @@ async function createDynamicPlugin(root: string): Promise<string> {
           platform: 'codex',
           scopes: ['project', 'user'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           states: ['present'],
           refreshKeys: ['needed'],
           skillKey: 'unselected-skill',
@@ -227,10 +225,9 @@ async function createSharedConfigPlugin(root: string): Promise<string> {
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        products: ['CODEX'],
       },
     },
-    distributions: { agentSkills: {} },
+    platforms: ['codex', 'claude', 'generic'],
     scripts: {
       artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
     },
@@ -247,7 +244,6 @@ async function createSharedConfigPlugin(root: string): Promise<string> {
           platform: 'codex',
           scopes: ['project', 'user'],
           target: 'codex.skill',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           states: ['present'],
           refreshKeys: ['shared'],
           skillKey: 'native',
@@ -257,14 +253,13 @@ async function createSharedConfigPlugin(root: string): Promise<string> {
           platform: 'codex',
           scopes: ['project', 'user'],
           target: 'codex.skill',
-          delivery: { mode: 'aw-extension' },
           states: ['present'],
           refreshKeys: ['shared', 'projectOnly'],
           skillKey: 'extension',
         },
         {
           id: 'portable',
-          distribution: 'agent-skills',
+          platform: 'generic', distribution: 'agent-skills',
           scopes: ['project', 'user'],
           target: 'agent-skills.skill',
           states: ['present'],
@@ -280,7 +275,7 @@ async function createSharedConfigPlugin(root: string): Promise<string> {
     'const definitions = {',
     "  native: { platform: 'codex', target: 'codex.skill', skillKey: 'native', refreshKeys: ['shared'] },",
     "  extension: { platform: 'codex', target: 'codex.skill', skillKey: 'extension', refreshKeys: ['shared', 'projectOnly'] },",
-    "  portable: { distribution: 'agent-skills', target: 'agent-skills.skill', skillKey: 'portable', refreshKeys: ['shared', 'projectOnly'] },",
+    "  portable: { platform: 'generic', distribution: 'agent-skills', target: 'agent-skills.skill', skillKey: 'portable', refreshKeys: ['shared', 'projectOnly'] },",
     '};',
     'const artifacts = context.requestedArtifactIds.map((id) => {',
     '  const definition = definitions[id];',
@@ -299,6 +294,7 @@ async function createSharedConfigPlugin(root: string): Promise<string> {
 
 async function createRebuildableDynamicPlugin(root: string): Promise<void> {
   const providerRoot = await writePlugin(root, manifest('review-provider', {
+    platforms: ['codex', 'claude', 'generic'],
     buildConfig: {
       runtimeExports: [{
         name: 'registry',
@@ -318,10 +314,9 @@ async function createRebuildableDynamicPlugin(root: string): Promise<void> {
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        products: ['CODEX'],
       },
     },
-    distributions: { agentSkills: {} },
+    platforms: ['codex', 'claude', 'generic'],
     dependencies: ['review-provider'],
     scripts: {
       node: { build: { runner: 'node', path: './scripts/build.mjs' } },
@@ -337,13 +332,13 @@ async function createRebuildableDynamicPlugin(root: string): Promise<void> {
     artifacts: {
       targets: [{
         id: 'rebuilt-skill',
-        distribution: 'agent-skills',
+        platform: 'generic', distribution: 'agent-skills',
         scopes: ['project', 'user'],
         target: 'agent-skills.skill',
         states: ['present'],
         refreshKeys: [],
         skillKey: 'rebuilt-skill',
-        sourceDirs: ['./dynamic-source'],
+        sourceDirs: ['./skills/rebuilt-skill'],
         runtimeImports: [{ name: 'registry', plugin: 'review-provider', export: 'registry' }],
       }],
     },
@@ -351,17 +346,17 @@ async function createRebuildableDynamicPlugin(root: string): Promise<void> {
   await writeNativeSkill(pluginRoot, 'native-anchor')
   await Promise.all([
     fs.outputFile(
-      path.join(pluginRoot, 'dynamic-source', 'SKILL.md'),
+      path.join(pluginRoot, 'skills', 'rebuilt-skill', 'SKILL.md'),
       '---\nname: rebuilt-skill\ndescription: Long working tree source text for the rebuild fixture.\n---\n\n# Source text that the renderer replaces\n',
     ),
     fs.outputFile(
-      path.join(pluginRoot, 'dynamic-source', 'README.md'),
+      path.join(pluginRoot, 'skills', 'rebuilt-skill', 'README.md'),
       '# Rebuilt Skill\n',
     ),
     fs.outputFile(path.join(pluginRoot, 'scripts', 'build.mjs'), [
       "import fs from 'node:fs/promises';",
-      "await fs.mkdir('dynamic-source/references', { recursive: true });",
-      "await fs.copyFile(process.env.AW_PLUGIN_IMPORT_REGISTRY, 'dynamic-source/references/build.json');",
+      "await fs.mkdir('skills/rebuilt-skill/references', { recursive: true });",
+      "await fs.copyFile(process.env.AW_PLUGIN_IMPORT_REGISTRY, 'skills/rebuilt-skill/references/build.json');",
     ].join('\n')),
     fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), [
       "import fs from 'node:fs';",
@@ -370,7 +365,7 @@ async function createRebuildableDynamicPlugin(root: string): Promise<void> {
       "if (!runtime) throw new Error('missing runtime import');",
       "const registry = fs.readFileSync(runtime.path, 'utf8');",
       "process.stdout.write(JSON.stringify({ version: 2, artifacts: [{",
-      "  id: 'rebuilt-skill', distribution: 'agent-skills', target: 'agent-skills.skill', kind: 'skill',",
+      "  id: 'rebuilt-skill', platform: 'generic', distribution: 'agent-skills', target: 'agent-skills.skill', kind: 'skill',",
       "  state: 'present', refreshKeys: [], skillKey: 'rebuilt-skill',",
       "  content: { files: {",
       "    'SKILL.md': '---\\nname: rebuilt-skill\\ndescription: Stable rendered rebuild fixture.\\n---\\n\\n# Rendered\\n',",
@@ -401,6 +396,7 @@ describe('Review preparation', () => {
     token: { type: 'string', sensitive: true } } }
     await fs.writeJson(consumerPath, consumer)
     const providerRoot = await writePlugin(fixture.root, manifest('review-config-provider', {
+      platforms: ['codex', 'claude', 'generic'],
       config: { schemaVersion: 4, fields: {
         sources: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
           type: 'object', properties: { key: { type: 'string', required: true }, location: { type: 'string', required: true } },
@@ -411,7 +407,7 @@ describe('Review preparation', () => {
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
       artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill',
         kind: 'skill', skillKey: 'provider', scopes: ['user', 'project'], states: ['present'],
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' }, refreshKeys: ['sources'] }] },
+        refreshKeys: ['sources'] }] },
     }))
     await fs.writeFile(path.join(providerRoot, 'render.mjs'), 'throw new Error("Unselected provider renderer ran");\n')
     const providerConfig = { sources: [{ key: 'remote', location: '/explicit' }], unrelated: 'ignored' }
@@ -437,7 +433,7 @@ describe('Review preparation', () => {
     expect(result.exitCode, JSON.stringify(result.receipt)).toBe(0)
     await expect(fs.readdir(path.join(output, 'skills'))).resolves.toEqual(['codex-extension'])
     await expect(fs.readJson(path.join(output, 'skills', 'codex-extension', 'render.json'))).resolves.toEqual({
-      requested: ['codex-extension'], scope: 'project', configScope: 'project', config: { mode: 'remote' },
+      requested: ['codex-extension'], scope: 'user', configScope: 'user', config: { mode: 'remote' },
     })
     const inspect = () => inspectReviewTarget({ cwd: fixture.root, target: pluginRoot,
       skills: ['codex-extension'], platform: 'codex', scope: 'project', configFile,
@@ -466,7 +462,7 @@ describe('Review preparation', () => {
       cwd: fixture.root,
       target: path.join(fixture.root, 'plugins', 'rebuild-consumer'),
       skills: ['rebuilt-skill'],
-      platform: 'agent-skills',
+      platform: 'generic',
       scope: 'project',
       out: path.join(fixture.root, '_review-output', outputName),
       env: fixture.env,
@@ -507,7 +503,7 @@ describe('Review preparation', () => {
     }
 
     await fs.writeFile(
-      path.join(candidate.root, 'plugins', 'rebuild-consumer', 'dynamic-source', 'SKILL.md'),
+      path.join(candidate.root, 'plugins', 'rebuild-consumer', 'skills', 'rebuilt-skill', 'SKILL.md'),
       '---\nname: rebuilt-skill\ndescription: Short source.\n---\n',
     )
     const shortenedPrepared = await prepare(candidate, 'candidate-shortened')
@@ -611,7 +607,6 @@ describe('Review preparation', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
       scripts: { node: { build: { runner: 'node', path: './build.mjs' } } },
@@ -682,10 +677,10 @@ describe('Review preparation', () => {
   })
 
   it.each([
-    ['codex', 'project', 'codex-extension', 'project', { mode: 'custom' }],
+    ['codex', 'project', 'codex-extension', 'user', { mode: 'custom' }],
     ['codex', 'project', 'codex-native', 'user', { nativeMode: 'custom' }],
     ['claude', 'user', 'claude-skill', 'user', { mode: 'custom' }],
-    ['agent-skills', 'project', 'portable-skill', 'project', { mode: 'custom' }],
+    ['generic', 'project', 'portable-skill', 'project', { mode: 'custom' }],
   ] as const)(
     'uses the selected %s/%s production projection for %s',
     async (platform, scope, skill, expectedConfigScope, expectedConfig) => {
@@ -728,7 +723,7 @@ describe('Review preparation', () => {
       const render = await fs.readJson(path.join(output, 'skills', skill, 'render.json'))
       expect(render).toEqual({
         requested: [skill],
-        scope: platform === 'codex' && skill === 'codex-native' ? 'user' : scope,
+        scope: platform === 'codex' || platform === 'claude' ? 'user' : scope,
         configScope: expectedConfigScope,
         config: expectedConfig,
       })
@@ -747,7 +742,7 @@ describe('Review preparation', () => {
 
   it.each([
     ['codex', 'extension'],
-    ['agent-skills', 'portable'],
+    ['generic', 'portable'],
   ] as const)(
     'keeps shared native and ordinary project config aligned for %s/%s',
     async (platform, skill) => {
@@ -769,18 +764,13 @@ describe('Review preparation', () => {
         scope: 'project',
         configFile,
       })
-      expect(selection.profiles[0]!.pluginConfigs).toEqual(expect.arrayContaining([
+      expect(selection.profiles[0]!.pluginConfigs).toEqual([
         expect.objectContaining({
-          scope: 'user',
-          overrides: { shared: 'shared-custom' },
-          sources: { shared: 'user' },
+          scope: platform === 'codex' ? 'user' : 'project',
+          overrides: { shared: 'shared-custom', projectOnly: 'project-custom' },
+          sources: { shared: 'platform', projectOnly: 'platform' },
         }),
-        expect.objectContaining({
-          scope: 'project',
-          overrides: { projectOnly: 'project-custom' },
-          sources: { projectOnly: 'project' },
-        }),
-      ]))
+      ])
       expect(selection.profiles[0]!.profile.config).toEqual({
         'shared-config-review': {
           projectOnly: 'project-custom',
@@ -801,8 +791,8 @@ describe('Review preparation', () => {
       expect(prepared.exitCode, JSON.stringify(prepared.receipt)).toBe(0)
       await expect(fs.readJson(path.join(output, 'skills', skill, 'config.json'))).resolves.toEqual({
         values: { projectOnly: 'project-custom', shared: 'shared-custom' },
-        sources: { projectOnly: 'project', shared: 'user' },
-        targetScope: 'project',
+        sources: { projectOnly: 'platform', shared: 'platform' },
+        targetScope: platform === 'codex' ? 'user' : 'project',
       })
       const binding = await readAwSourceBinding(prepared.receipt.sourceBindingPath!)
       expect(binding.profile).toMatchObject({
@@ -855,7 +845,6 @@ describe('Review preparation', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
     }))
@@ -895,7 +884,7 @@ describe('Review preparation', () => {
     await expect(fs.pathExists(path.join(realParent, 'review'))).resolves.toBe(false)
   })
 
-  it.each(['AW_HOME', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME', '.agents', '.codex', '.claude'])(
+  it.each(['AW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', '.agents', '.codex', '.claude'])(
     'rejects output inside the physical installation root behind %s',
     async (installationRoot) => {
       const fixture = await createWorkspace()
@@ -914,7 +903,7 @@ describe('Review preparation', () => {
       const alias = path.join(fixture.root, installationRoot)
       await fs.symlink(physicalRoot, alias, 'junction')
       const suffix = installationRoot === 'AW_HOME' ? 'not-created-yet' : ''
-      if (installationRoot.startsWith('AW_')) {
+      if (['AW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR'].includes(installationRoot)) {
         fixture.env[installationRoot] = path.join(alias, suffix)
       }
       const output = path.join(physicalRoot, suffix, 'review-copy')

@@ -7,7 +7,8 @@
 ## 安装
 
 ```bash
-aw install git-toolkit -p both
+aw plugin targets set codex claude
+aw plugin install git-toolkit --scope user
 ```
 
 ## 包含的 Skill

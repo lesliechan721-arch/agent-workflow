@@ -40,6 +40,7 @@ import {
 import { resolveCanonicalRepoProjectKey } from './state-paths.js';
 import { validateManagedCommandPackageClosure } from './managed-command-closure.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
+import { readSafeOperationError } from './safe-operation-diagnostic.js';
 import { AW_RUNTIME_CONFIG_BINDING_PATH, AW_RUNTIME_CONFIG_READER_PATH, AW_RUNTIME_NATIVE_RECEIPT_PATH } from '@lesliechan721/aw-plugin-core';
 
 export interface ManagedCommandCandidate {
@@ -149,8 +150,9 @@ export async function managedCommandProducerIdentity(options: {
     key = producer.artifactId;
     const declaration = plugin.manifest.artifacts?.targets?.find((entry) => entry.id === producer.artifactId);
     if (!declaration?.platform) throw new Error('commandReferenceInvalid: command artifact is not declared.');
+    if (declaration.platform !== 'codex' && declaration.platform !== 'claude') throw new Error('commandReferenceInvalid: command artifacts require a Native Skill.');
     platform = declaration.platform;
-    if (declaration.delivery?.mode === 'codex-native') scope = 'user';
+    if (declaration.target === 'codex.skill' || declaration.target === 'claude.skill') scope = 'user';
   }
   let projectRoot: string | null = null;
   if (scope === 'project') {
@@ -218,7 +220,10 @@ export async function prepareManagedCommandPackage(options: {
   plugin: PluginMeta; packageKey: string; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
   event?: 'install' | 'refresh' | 'materialize'; changedConfigKeys?: string[];
   requestedArtifactIds?: readonly string[];
+  signal?: AbortSignal;
+  scriptTimeoutMs?: number;
 }): Promise<PreparedManagedCommandPackage> {
+  options.signal?.throwIfAborted();
   const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => entry.key === options.packageKey);
   if (!declaration || declaration.scope !== options.scope) throw new ManagedCommandError('commandDefinitionInvalid', 'The requested package and scope are not declared.');
   const renderConfig = await resolveArtifactRenderConfig({
@@ -255,7 +260,7 @@ export async function prepareManagedCommandPackage(options: {
   let generatedFiles: Record<string, string> = {};
   if (targets.length > 0) {
     if (process.platform === 'win32') await prepareWindowsJobHelper();
-    const rendered = await runArtifactRenderer({ plugin: options.plugin, referencePlugins: options.referencePlugins, event: options.event ?? 'install', platform: 'managed-commands', scope: declaration.scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), ...(options.event === 'refresh' ? { changedConfigKeys: options.changedConfigKeys ?? [] } : {}) });
+    const rendered = await runArtifactRenderer({ plugin: options.plugin, referencePlugins: options.referencePlugins, event: options.event ?? 'install', platform: 'managed-commands', scope: declaration.scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), signal: options.signal, scriptTimeoutMs: options.scriptTimeoutMs, ...(options.event === 'refresh' ? { changedConfigKeys: options.changedConfigKeys ?? [] } : {}) });
     artifacts = validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: 'managed-commands', scope: declaration.scope, requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts;
     for (const artifact of artifacts) if (artifact.target === 'aw.command-package') generatedFiles = artifact.files;
   }
@@ -290,6 +295,8 @@ export async function syncPluginManagedCommandPackage(options: {
   plugin: PluginMeta; packageKey: string; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
   event?: 'install' | 'refresh' | 'materialize'; changedConfigKeys?: string[];
   requestedArtifactIds?: readonly string[];
+  signal?: AbortSignal;
+  scriptTimeoutMs?: number;
   managedCommandProducerCache?: Map<string, Promise<CommandProducerResult>>;
 }): Promise<CommandProducerResult> {
   const producer = await managedCommandProducerIdentity({ ...options, producer: { kind: 'package', packageKey: options.packageKey } });
@@ -305,6 +312,8 @@ export async function syncPluginManagedCommandPackage(options: {
         const synced = await syncManagedCommandPackage({ producer, sourceDirectory: candidate.resourceRoot, sets: candidate.sets, nativeTools: candidate.nativeTools, env: options.env });
         return { producer, state: 'completed' as const, commandIds: synced.commandIds, removedCommandIds: previousIds.filter((id) => !synced.commandIds.includes(id)), errors: [], recoveryActions: [] };
       } catch (error) {
+        if (options.signal?.aborted || error instanceof Error && error.name === 'AbortError'
+          || readSafeOperationError(error)) throw error;
         return { producer, state: 'failed' as const, commandIds: [], removedCommandIds: [], errors: [managedCommandDiagnostic(error)], recoveryActions: [`aw command package sync ${producer.sourceId}/${producer.pluginName} ${producer.key} --scope ${producer.scope} --yes`] };
       } finally { await candidate?.cleanup(); }
     })();
@@ -322,11 +331,14 @@ export async function discoverInstalledPluginManagedCommandPackages(options: {
   const relevant = listed.packages.filter((entry) => entry.producer.sourceId === options.plugin.sourceId && entry.producer.pluginName === options.plugin.manifest.name);
   const installedPackageIds = new Set(relevant.map((entry) => entry.id));
   const errors = [...listed.errors];
-  if (relevant.some((entry) => entry.producer.scope === 'project') || (options.platformTargets?.length && options.plugin.manifest.managedCommands?.packages.some((entry) => entry.scope === 'project'))) currentProject = path.normalize(await fs.realpath(await resolveCanonicalRepoProjectKey(options.cwd)));
+  if (options.scope === 'project' && (relevant.some((entry) => entry.producer.scope === 'project')
+    || (options.platformTargets?.length && options.plugin.manifest.managedCommands?.packages.some((entry) => entry.scope === 'project')))) {
+    currentProject = path.normalize(await fs.realpath(await resolveCanonicalRepoProjectKey(options.cwd)));
+  }
   const producers = new Map<string, ProducerIdentity>();
   for (const entry of relevant) {
     const identity = entry.producer;
-    if (identity.scope === 'user' ? options.scope !== 'user' : identity.projectRoot !== currentProject) continue;
+    if (identity.scope !== options.scope || (identity.scope === 'project' && identity.projectRoot !== currentProject)) continue;
     if (identity.sourceIdentity !== options.plugin.sourceIdentity) {
       errors.push({ code: 'commandSourceIdentityChanged', message: `The retained command package belongs to a previous source identity; remove it with aw command package remove ${entry.id} --yes.`, subject: entry.id });
       continue;
@@ -334,7 +346,7 @@ export async function discoverInstalledPluginManagedCommandPackages(options: {
     producers.set(entry.id, identity);
   }
   for (const declaration of options.plugin.manifest.managedCommands?.packages ?? []) {
-    if (options.scope === 'project' && declaration.scope !== 'project') continue;
+    if (declaration.scope !== options.scope) continue;
     if (!options.platformTargets?.some((target) => declaration.platforms.includes(target.platform))) continue;
     const producer = await managedCommandProducerIdentity({ ...options, producer: { kind: 'package', packageKey: declaration.key } });
     producers.set(getCommandPackageId(producer), producer);
@@ -358,7 +370,7 @@ export async function createManagedCommandReferenceResolver(options: {
       if (!declaration?.platforms.includes(options.platform) || (options.scope === 'user' && declaration.scope === 'project')) continue;
     } else if (set.producer.kind === 'artifact') {
       const declaration = options.plugin.manifest.artifacts?.targets?.find((entry) => set.producer.kind === 'artifact' && entry.id === set.producer.artifactId);
-      if (declaration?.platform !== options.platform || (options.scope === 'user' && declaration.delivery?.mode !== 'codex-native' && !declaration.scopes.includes('user'))) continue;
+      if (declaration?.platform !== options.platform) continue;
     }
     const producer = await managedCommandProducerIdentity({ ...options, producer: set.producer });
     if (producer.platform && producer.platform !== options.platform) continue;

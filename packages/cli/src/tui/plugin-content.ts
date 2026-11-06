@@ -617,9 +617,10 @@ export async function projectPluginContentOverview(options: {
       checkClaudeCommand: true,
     });
   }
-  if (options.plugin.manifest.distributions?.agentSkills?.skills) {
-    await addSkillDirectory({
-      root, relativePath: 'agent-skills/skills', tool: 'Agent Skills', items, coverageIssues,
+  for (const target of resolveSupportedPlatforms(options.plugin.manifest)) {
+    if (target === 'codex' || target === 'claude') continue;
+    if (options.plugin.manifest.skills) await addSkillDirectory({
+      root, relativePath: `${target}/skills`, tool: 'Agent Skills', items, coverageIssues,
     });
   }
   if (options.plugin.manifest.mcpServers) {

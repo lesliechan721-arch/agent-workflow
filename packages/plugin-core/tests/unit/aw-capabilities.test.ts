@@ -47,6 +47,8 @@ describe('AW capability contracts', () => {
     expect(new Set(registry).size).toBe(registry.length)
     expect(registry).toContain('aw.review-preparation.v1')
     expect(registry).toContain('aw.review-inspection.v2')
+    expect(registry).toContain('aw.plugin-recovery.v1')
+    expect(registry).not.toContain('aw.project-recovery.v1')
     expect(registry).not.toContain('aw.review-publication.v1')
     expect(registry).not.toContain('aw.review-inspection.v1')
     expect(registry).not.toContain('aw.catalog-context.v1')
@@ -96,8 +98,7 @@ describe('AW capability contracts', () => {
       },
       config: { fields: {} },
       scripts: { preApply: { path: './scripts/pre-apply.mjs' } },
-      artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [] }] },
-      distributions: { agentSkills: { skills: './portable' } },
+      artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', platform: 'codex', states: ['present'], refreshKeys: [] }] },
     }))).toEqual([
       'aw.dynamic-artifacts.v2',
       'aw.plugin-build-config.v1',
@@ -115,7 +116,7 @@ describe('AW capability contracts', () => {
     const capabilities = deriveAwCapabilitiesFromManifest(manifest({
       config: { fields: { displayStyle: { type: 'string' } } },
       artifacts: { targets: [{ id: 'tool', scopes: ['user'], platform: 'codex', target: 'codex.skill',
-        delivery: { mode: 'aw-extension' }, skillKey: 'tool', states: ['present'], refreshKeys: ['displayStyle'],
+        skillKey: 'tool', states: ['present'], refreshKeys: ['displayStyle'],
         runtimeConfig: { keys: ['displayStyle'] },
       }] },
     }))
@@ -303,6 +304,7 @@ describe('AW capability contracts', () => {
     const result = await resolvePluginRequirements({
       pluginRoot,
       manifest: manifest({
+        platforms: ['codex', 'claude'],
         skills: './skills',
         requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
       }),

@@ -7,6 +7,7 @@ export const AW_CAPABILITY_IDS = [
   'aw.plugin-config.v2',
   'aw.plugin-config.v3',
   'aw.plugin-config.v4',
+  'aw.plugin-config.v5',
   'aw.plugin-config-array.v1',
   'aw.plugin-config-unique-by.v1',
   'aw.plugin-config-value-ref.v1',
@@ -31,6 +32,7 @@ export const AW_CAPABILITY_IDS = [
   'aw.review-inspection.v2',
   'aw.catalog-snapshot.v7',
   'aw.self-check.v1',
+  'aw.plugin-recovery.v1',
 ] as const
 
 export type RegisteredAwCapabilityId = typeof AW_CAPABILITY_IDS[number]

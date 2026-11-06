@@ -316,9 +316,11 @@ function isolatedEnvironment(baseEnv, roots) {
     XDG_CONFIG_HOME: roots.xdgConfig,
     XDG_DATA_HOME: roots.xdgData,
     XDG_CACHE_HOME: roots.xdgCache,
+    XDG_STATE_HOME: roots.xdgState,
     AW_HOME: roots.awHome,
     AW_CODEX_HOME: roots.codexHome,
     AW_CLAUDE_HOME: roots.claudeHome,
+    CLAUDE_CONFIG_DIR: roots.claudeHome,
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: roots.gitConfig,
     GIT_TERMINAL_PROMPT: '0',
@@ -331,6 +333,20 @@ function isolatedEnvironment(baseEnv, roots) {
     https_proxy: blockedProxy,
     all_proxy: blockedProxy,
     no_proxy: '',
+  }
+}
+
+async function assertNeutralCwd(directory) {
+  for (let current = await realpath(directory); ; current = path.dirname(current)) {
+    for (const marker of ['.git', '.agent-workflows', '.aw', path.join('.codex', 'config.toml')]) {
+      try {
+        await lstat(path.join(current, marker))
+        throw Object.assign(new Error('Neutral cwd has a project marker.'), { code: 'neutralCwdUnsafe' })
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+      }
+    }
+    if (path.dirname(current) === current) return
   }
 }
 
@@ -546,6 +562,24 @@ async function observedMcp(options, cwd) {
   }
 }
 
+async function observedSharedPackage(options, cwd) {
+  const execution = await executeCodex(options, [
+    'plugin', 'list', '--marketplace', marketplaceName, '--json',
+  ], cwd)
+  const list = parseJsonOutput(execution.stdout, 'Codex plugin list')
+  if (!Array.isArray(list?.installed) || !Array.isArray(list?.available)) {
+    throw Object.assign(new Error('Codex plugin list has an unsupported shape.'), {
+      code: 'codexPluginListInvalid',
+    })
+  }
+  const entries = list.installed.filter((entry) => entry?.pluginId === pluginId)
+  return {
+    listedOnce: entries.length === 1,
+    installed: entries.length === 1 && entries[0]?.installed === true,
+    enabled: entries.length === 1 ? entries[0]?.enabled === true : null,
+  }
+}
+
 function surfaceResult(id, supported, evidence) {
   return {
     id,
@@ -593,8 +627,11 @@ function blockedScenarios(report, reason) {
   for (const id of [
     'marketplace-add',
     'plugin-add-default-user-enabled',
+    'neutral-cwd-repo-free',
     'user-false-project-true',
+    'user-true-project-false',
     'user-true-project-true',
+    'both-disabled-shared-package-retained',
     'neutral-cwd-excludes-project-activation',
     'exact-project-cwd-loads-project-activation',
     'project-trust-not-effective',
@@ -654,8 +691,11 @@ export function assertQualificationReport(report) {
     'exact-version-gate',
     'marketplace-add',
     'plugin-add-default-user-enabled',
+    'neutral-cwd-repo-free',
     'user-false-project-true',
+    'user-true-project-false',
     'user-true-project-true',
+    'both-disabled-shared-package-retained',
     'neutral-cwd-excludes-project-activation',
     'exact-project-cwd-loads-project-activation',
     'project-trust-not-effective',
@@ -695,6 +735,7 @@ export async function runQualification(input = {}) {
     xdgConfig: path.join(temporaryRoot, 'xdg-config'),
     xdgData: path.join(temporaryRoot, 'xdg-data'),
     xdgCache: path.join(temporaryRoot, 'xdg-cache'),
+    xdgState: path.join(temporaryRoot, 'xdg-state'),
     awHome: path.join(temporaryRoot, 'aw-home'),
     claudeHome: path.join(temporaryRoot, 'claude-home'),
     gitConfig: path.join(temporaryRoot, 'git-config'),
@@ -717,8 +758,17 @@ export async function runQualification(input = {}) {
     }))
     await writeFile(roots.gitConfig, '', 'utf8')
     await createGitProject(roots.project)
-    await createGitProject(roots.neutral)
     await createMarketplace(roots.marketplace)
+
+    try {
+      await assertNeutralCwd(roots.neutral)
+      report.scenarios.push(result('neutral-cwd-repo-free', 'passed', [{ code: 'noAncestorProjectMarker' }]))
+    } catch (error) {
+      report.scenarios.push(result('neutral-cwd-repo-free', 'failed', failedEvidence('neutralCwdUnsafe', error)))
+      report.scenarios.push(result('exact-version-gate', 'failed', [{ code: 'neutralCwdUnsafe' }]))
+      blockedScenarios(report, 'neutralCwdUnsafe')
+      return report
+    }
 
     let versionExecution
     try {
@@ -829,6 +879,28 @@ export async function runQualification(input = {}) {
         [{ code: 'sharedNativeActivationObserved', project: projectBoth, neutral: neutralUser }],
       ))
 
+      await writeFile(projectConfigPath, pluginConfigBlock(false), 'utf8')
+      const userOnlyProject = await observedActivation(options, roots.project)
+      const userOnlyNeutral = await observedActivation(options, roots.neutral)
+      report.scenarios.push(result(
+        'user-true-project-false',
+        userOnlyProject.active && userOnlyNeutral.active ? 'passed' : 'failed',
+        [{ code: 'userActivationPreservedAfterProjectDisable', project: userOnlyProject, neutral: userOnlyNeutral }],
+      ))
+
+      await writeFile(userConfigPath, `${replacePluginEnabled(userConfig, false).trim()}\n\n${projectTrustBlock(roots.project, true)}`, 'utf8')
+      const disabledProject = await observedActivation(options, roots.project)
+      const disabledNeutral = await observedActivation(options, roots.neutral)
+      const sharedPackage = await observedSharedPackage(options, roots.neutral)
+      report.scenarios.push(result(
+        'both-disabled-shared-package-retained',
+        !disabledProject.active && !disabledNeutral.active
+          && sharedPackage.listedOnce && sharedPackage.installed && !sharedPackage.enabled ? 'passed' : 'failed',
+        [{ code: 'sharedPackageRetainedAfterScopeDisable', project: disabledProject, neutral: disabledNeutral, sharedPackage }],
+      ))
+
+      await writeFile(projectConfigPath, pluginConfigBlock(true), 'utf8')
+
       const untrustedUserConfig = `${replacePluginEnabled(userConfig, false).trim()}\n\n${projectTrustBlock(roots.project, false)}`
       await writeFile(userConfigPath, untrustedUserConfig, 'utf8')
       const untrustedProject = await observedActivation(options, roots.project)
@@ -898,8 +970,11 @@ export async function runQualification(input = {}) {
         'exact-version-gate',
         'marketplace-add',
         'plugin-add-default-user-enabled',
+        'neutral-cwd-repo-free',
         'user-false-project-true',
+        'user-true-project-false',
         'user-true-project-true',
+        'both-disabled-shared-package-retained',
         'neutral-cwd-excludes-project-activation',
         'exact-project-cwd-loads-project-activation',
         'project-trust-not-effective',

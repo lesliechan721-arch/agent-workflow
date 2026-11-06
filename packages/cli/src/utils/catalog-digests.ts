@@ -16,6 +16,7 @@ import {
 } from './manifest.js';
 import { calculateFileDigest } from './bundle-integrity.js';
 import { CODEX_NATIVE_RENDER_RECEIPT_PATH } from './codex-native-render-receipt.js';
+import { CLAUDE_NATIVE_RENDER_RECEIPT_PATH } from './claude-native-render-receipt.js';
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -160,6 +161,7 @@ async function calculateCodexPayloadDigest(
 ): Promise<string> {
   const files = (await listFilesRecursively(pluginRoot)).filter((relativePath) =>
     relativePath !== CODEX_NATIVE_RENDER_RECEIPT_PATH
+    && relativePath !== CLAUDE_NATIVE_RENDER_RECEIPT_PATH
     && path.posix.basename(relativePath) !== '.agent-workflows-owner.json');
   const fileEntries = await Promise.all(
     files.map(async (relativePath): Promise<CatalogDigestPathRecord> => {

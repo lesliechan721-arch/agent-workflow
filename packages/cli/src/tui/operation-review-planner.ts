@@ -3,7 +3,7 @@ import { describeNativeToolClosure } from '../utils/native-tool-review.js';
 
 import { requestedIntentAction } from '../output/command-receipt.js';
 import type { PortableRetryReview } from '../portable/commands.js';
-import type { PlatformName } from '../types.js';
+import type { PlatformName, PlatformTarget } from '../types.js';
 import type {
   OperationEvidence,
   OperationIntent,
@@ -17,13 +17,14 @@ import type {
 import type { PluginDependencyOverviewViewModel } from './model.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
+import type { OperationAction } from '../commands/operation-plan.js';
 import { catalogSourceAutoCheckOnlyValue } from './catalog-sources/review.js';
 import {
   parseScriptTimeoutMs,
   SCRIPT_TIMEOUT_DEFAULT_MS,
 } from '../commands/options.js';
 import { MANAGED_CODEX_VERSION } from '../utils/codex-manager.js';
-import { platformLabel, scopeLabel } from './glossary.js';
+import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import { normalizeInstalledCommandProducer, type InstalledCommandProducer } from '../utils/managed-command-store.js';
 
@@ -42,17 +43,17 @@ function configCommandPackageChanges(evidence: OperationEvidence | undefined, ap
     group: 'configImpact',
     pluginId: `${target.producer.sourceId}/${target.producer.pluginName}`,
     title: `${target.declared ? apply ? '刷新' : '需同步' : '保留残留'}命令包 ${target.packageKey}`,
-    description: `${target.producer.sourceId}/${target.producer.pluginName} · ${scopeLabel(target.producer.scope)} · ${target.producer.scope === 'user'
-      ? '平台共用一份个人默认配置，更新会影响全部引用者' : '当前项目配置'}${target.declared ? ''
+    description: `${target.producer.sourceId}/${target.producer.pluginName} · ${scopeLabel(target.producer.scope)} · ${target.producer.platform
+      ? `${agentLabel(target.producer.platform)} 平台配置` : '公共配置'}${target.declared ? ''
       : ` · 声明已删除；aw command package remove ${target.packageId} --yes`}`,
   }));
 }
 
-function managedCommandPlanChanges(evidence: OperationEvidence | undefined): OperationReviewChange[] {
+export function managedCommandPlanChanges(actions: readonly OperationAction[]): OperationReviewChange[] {
   const changes: OperationReviewChange[] = [];
   const producers = new Map<string, InstalledCommandProducer>();
   const retained = new Set<string>();
-  for (const action of evidence?.operationPlan?.actions ?? []) {
+  for (const action of actions) {
     for (const change of action.nativeToolChanges ?? []) {
       const pluginId = `${change.producer.sourceId}/${change.producer.pluginName}`;
       for (const [kind, closure] of [['remove', change.before], ['add', change.after]] as const) {
@@ -66,7 +67,7 @@ function managedCommandPlanChanges(evidence: OperationEvidence | undefined): Ope
       retained.add(action.packageId);
       changes.push({ kind: 'keep', group: 'preserved', pluginId: action.pluginId,
         title: `保留命令包 ${action.producer.key}`,
-        description: `${action.packageId} · ${scopeLabel(action.producer.scope)} · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'} · ${action.commandIds.length} 个命令 · ${action.availability} · ${action.recoveryAction}` });
+        description: `${action.producer.sourceId}/${action.producer.pluginName} · ${action.packageId} · ${scopeLabel(action.producer.scope)} · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'} · ${action.commandIds.length} 个命令 · ${action.availability} · ${action.recoveryAction}` });
     } else if (action.kind === 'syncManagedCommandPackage') {
       producers.set(getCommandPackageId(action.producer), { schemaVersion: 1, producer: action.producer, sets: action.sets, ...(action.nativeTools ? { nativeTools: action.nativeTools } : {}) });
     } else if (action.kind === 'writeOwnedArtifact' || action.kind === 'materializeNativeSkill') {
@@ -134,7 +135,7 @@ function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] 
 function preApplyScopeChanges(
   targets: ReadonlyArray<{
     pluginId: string;
-    platform: PlatformName;
+    platform: PlatformTarget;
     scope: 'project' | 'user';
     relation?: 'requested' | 'direct' | 'transitive';
   }>,
@@ -149,7 +150,7 @@ function preApplyScopeChanges(
     pluginId: target.pluginId,
     ...(target.relation ? { relation: target.relation } : {}),
     title: `运行 ${target.pluginId} preApply`,
-    description: `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`,
+    description: `${agentLabel(target.platform)} · ${scopeLabel(target.scope)}`,
   }));
 }
 
@@ -171,22 +172,10 @@ function offlineCleanupPlans(evidence: OperationEvidence | undefined): OfflineCl
     ?? (evidence.offlineCleanup ? [evidence.offlineCleanup] : []);
 }
 
-function removesOfflineCleanupIntent(
-  plan: NonNullable<OperationEvidence['operationPlan']>,
-  target: OfflineCleanupTargetEvidence,
-): boolean {
-  return plan.changes.includes(
-    `${target.pluginId}:${target.platform}:${target.scope}:removeIntent`,
-  );
-}
-
 function offlineCleanupReviewChanges(evidence: OperationEvidence): OperationReviewChange[] {
-  const operationPlan = evidence.operationPlan;
-  const removed = new Set(evidence.removedPluginCleanupIds ?? []);
-  const plans = offlineCleanupPlans(evidence).filter((target) => !removed.has(target.pluginId));
+  const plans = offlineCleanupPlans(evidence);
   return plans.flatMap((target): OperationReviewChange[] => {
     const targetDescription = `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
-    const removesIntent = operationPlan !== undefined && removesOfflineCleanupIntent(operationPlan, target);
     const actions = target.plan.actions.length;
     return [
       {
@@ -197,14 +186,6 @@ function offlineCleanupReviewChanges(evidence: OperationEvidence): OperationRevi
         title: '核验当前 AW 管理现场',
         description: targetDescription,
       },
-      ...(removesIntent ? [{
-        kind: 'remove' as const,
-        group: 'requested' as const,
-        pluginId: target.pluginId,
-        relation: 'requested' as const,
-        title: '取消已保存的使用设置',
-        description: targetDescription,
-      }] : []),
       actions > 0 ? {
         kind: 'remove' as const,
         group: 'requested' as const,
@@ -218,17 +199,14 @@ function offlineCleanupReviewChanges(evidence: OperationEvidence): OperationRevi
         pluginId: target.pluginId,
         relation: 'requested' as const,
         title: '没有可验证的 AW 输出',
-        description: removesIntent
-          ? `${targetDescription} · 仍会取消此位置的使用设置`
-          : `${targetDescription} · 不会删除现场内容`,
+        description: `${targetDescription} · 不会删除现场内容`,
       },
     ];
   });
 }
 
 function offlineCleanupPreservedChanges(evidence: OperationEvidence): OperationReviewChange[] {
-  const removed = new Set(evidence.removedPluginCleanupIds ?? []);
-  const plans = offlineCleanupPlans(evidence).filter((target) => !removed.has(target.pluginId));
+  const plans = offlineCleanupPlans(evidence);
   if (plans.length === 0) return [];
   const warnings = evidence.operationPlan?.warnings ?? [];
   return [
@@ -249,32 +227,6 @@ function offlineCleanupPreservedChanges(evidence: OperationEvidence): OperationR
       title: '其他根插件仍可按自己的设置使用或安装此依赖',
     },
   ];
-}
-
-function removedPluginCleanupReviewChanges(evidence: OperationEvidence): OperationReviewChange[] {
-  return (evidence.removedPluginCleanupIds ?? []).flatMap((pluginId): OperationReviewChange[] => [
-    {
-      kind: 'remove', group: 'requested', pluginId, relation: 'requested',
-      title: `${pluginNameFromId(pluginId)} · 已从当前目录删除`,
-      description: '整体清理 Codex、Claude Code 的用户与当前项目位置；即使初始选择只有一个平台或范围。',
-    },
-    ...(['codex', 'claude'] as const).flatMap((platform): OperationReviewChange[] =>
-      (['user', 'project'] as const).map((scope) => ({
-        kind: 'remove', group: 'requested', pluginId, relation: 'requested',
-        title: `${platformLabel(platform)} · ${scopeLabel(scope)}`,
-        description: '清理安装、激活、使用意图及可验证的专属输出。',
-      }))),
-    {
-      kind: 'remove', group: 'requested', pluginId, relation: 'requested',
-      title: '删除已保存的插件设置',
-      description: '删除用户与当前项目的插件设置记录；不读取已删除的配置 schema。',
-    },
-    {
-      kind: 'warning', group: 'requested', pluginId, relation: 'requested',
-      title: '移除 Codex 共享原生安装会影响其他项目',
-      description: '其他项目可能无法继续使用此插件；不会扫描或改写它们的本地记录。',
-    },
-  ]);
 }
 
 function sourceMutationReviewChanges(
@@ -393,14 +345,6 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     };
   }
   if (intent.kind === 'pluginWrite') {
-    if (intent.action === 'cleanup' && (evidence?.removedPluginCleanupIds?.length ?? 0) > 0) {
-      return {
-        title: '整体清理已删除插件',
-        description: '清理两个平台的用户与当前项目位置、保存设置及共享原生安装。',
-        primaryLabel: '确认整体清理',
-        destructive: true,
-      };
-    }
     if (intent.originIssue) {
       if (intent.action === 'cleanup') {
         return {
@@ -445,17 +389,17 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   if (intent.kind === 'configSave') {
     if (intent.retryApply) {
       return {
-        title: '重试应用插件设置',
-        description: '重新读取当前设置和安装证据；不会恢复或重写历史值。',
-        primaryLabel: '重试应用',
+        title: '更新已有插件内容',
+        description: `使用已保存的用户配置，刷新${intent.context === 'project' ? '用户和当前项目' : '用户'}范围内已有的插件内容。`,
+        primaryLabel: '更新插件',
         destructive: false,
       };
     }
     return {
       title: intent.apply ? '保存并应用插件设置' : '保存插件设置',
       description: intent.apply
-        ? '保存所选设置层，并重新应用可见安装。'
-        : '只保存所选设置层；当前安装保持不变。',
+        ? '保存所选用户配置，并更新已有插件内容。'
+        : '保存所选用户配置。',
       primaryLabel: intent.apply ? '保存并应用' : '保存',
       destructive: false,
     };
@@ -464,8 +408,8 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     return {
       title: '确认保存设置',
       description: intent.apply
-        ? '按当前项目、个人默认的顺序保存设置，并应用实际受影响的安装位置。'
-        : '按当前项目、个人默认的顺序保存设置。',
+        ? '保存所选公共和平台配置，并更新已有插件内容。'
+        : '保存所选公共和平台配置。',
       primaryLabel: intent.apply ? '保存并应用设置' : '保存设置',
       destructive: false,
     };
@@ -601,7 +545,7 @@ function reviewChanges(
     );
     const runtimeChanges: OperationReviewChange[] = [
       ...scriptTimeoutChanges(intent),
-      ...managedCommandPlanChanges(evidence),
+      ...managedCommandPlanChanges(evidence?.operationPlan?.actions ?? []),
       ...preApplyScopeChanges(operationPreApplyTargets(evidence)),
       ...(evidence?.codexManager
       ? [{
@@ -683,10 +627,9 @@ function reviewChanges(
     }
     if (intent.action === 'cleanup' && evidence) {
       const cleanupChanges = offlineCleanupReviewChanges(evidence);
-      if (cleanupChanges.length > 0 || (evidence.removedPluginCleanupIds?.length ?? 0) > 0) {
+      if (cleanupChanges.length > 0) {
         const changes: OperationReviewChange[] = [
           ...cleanupChanges,
-          ...removedPluginCleanupReviewChanges(evidence),
           ...offlineCleanupPreservedChanges(evidence),
         ];
         if (intent.force === true) changes.push({
@@ -744,9 +687,8 @@ function reviewChanges(
     return [...changes, ...codexChanges, ...runtimeChanges];
   }
   if (intent.kind === 'configReset') {
-    const layerLabel = intent.scope === 'user'
-      ? '个人默认'
-      : '当前项目';
+    const layerLabel = intent.expectedStoreState === 'invalid' ? '无效用户配置文档'
+      : intent.platform ? `${agentLabel(intent.platform)} 平台配置` : '公共配置';
     const impact = evidence?.config;
     const impactChanges: OperationReviewChange[] = impact?.impactState === 'unknown'
       ? [{
@@ -758,7 +700,7 @@ function reviewChanges(
         : (impact?.affectedTargets ?? []).length > 0
           ? impact!.affectedTargets.map((target): OperationReviewChange => ({
               kind: 'warning', group: 'configImpact',
-              title: `重置后需同步 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+              title: `重置后需同步 ${agentLabel(target.platform)} · ${scopeLabel(target.scope)}`,
             }))
           : [{ kind: 'keep', group: 'configImpact', title: '只删除设置层；当前安装保持不变' }];
     return [
@@ -772,7 +714,8 @@ function reviewChanges(
       })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '删除整个设置层且不创建备份；有效值将恢复为继承值或默认值。' }]),
       ...impactChanges,
       ...configCommandPackageChanges(evidence, false),
-      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目设置保持不变' : '个人默认保持不变' },
+      ...(intent.expectedStoreState === 'invalid' ? []
+        : [{ kind: 'keep' as const, group: 'preserved' as const, title: '其他公共和平台配置保持不变' }]),
     ];
   }
   if (intent.kind === 'sourceMutation') {
@@ -891,14 +834,14 @@ function reviewChanges(
     return [
       ...scriptTimeoutChanges(intent),
       ...intent.groups.flatMap((group) => {
-        const groupEvidence = evidence.configBatch!.groups.find((item) => item.scope === group.scope);
+        const groupEvidence = evidence.configBatch!.groups.find((item) => item.platform === group.platform);
         if (!groupEvidence) {
           throw plannerError('configBatchPrepareFailed', '设置层 Review 证据不完整。');
         }
         return reviewChanges({
           kind: 'configSave',
           pluginId: intent.pluginId,
-          scope: group.scope,
+          scope: 'user', platform: group.platform, context: intent.context ?? 'user',
           apply: intent.apply,
           ...(group.updates ? { updates: group.updates } : {}),
           ...(group.removeKeys ? { removeKeys: group.removeKeys } : {}),
@@ -919,22 +862,27 @@ function reviewChanges(
   }
   const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const removeKeys = new Set(intent.removeKeys ?? []);
-  const layerLabel = intent.scope === 'user' ? '个人默认' : '当前项目';
+  const layerLabel = intent.platform ? `${agentLabel(intent.platform)} 平台配置` : '公共配置';
   if (intent.retryApply) {
     return [
       ...scriptTimeoutChanges(intent),
       ...preApplyScopeChanges(evidence?.config?.preApplyAuthorization ?? []),
       ...configCommandPackageChanges(evidence, true),
+      ...(evidence?.config?.applyChanges ?? []).map((title): OperationReviewChange => ({ kind: 'change', group: 'configImpact', title })),
+      ...(evidence?.config?.applyWarnings ?? []).map((title): OperationReviewChange => ({ kind: 'warning', group: 'configImpact', title })),
+      ...(evidence?.config?.applyBlockers ?? []).map((item): OperationReviewChange => ({
+        kind: 'warning', group: 'configImpact', title: item.code, description: item.message,
+      })),
       ...(evidence?.config?.sharedNativeRenderTargets ?? []).filter((shared) => evidence?.config?.affectedTargets
         .some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
           && target.platform === (shared.platform ?? 'codex'))).map((shared): OperationReviewChange => ({
         kind: 'change', group: 'configImpact', title: `重新生成 ${shared.skillKey} 原生 Skill`,
-        description: `配置来源为个人默认；更新 ${platformLabel(shared.platform ?? 'codex')} 由平台共用的内容会影响所有启用项目。`,
+        description: `配置来源为用户配置；更新 ${platformLabel(shared.platform ?? 'codex')} 由平台共用的内容会影响所有启用项目。`,
       })),
       ...(evidence?.config?.affectedTargets.map((target): OperationReviewChange => ({
         kind: 'change',
         group: 'configImpact',
-        title: `重新应用 ${target.pluginName ? `${target.pluginName} · ` : ''}${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+        title: `重新应用 ${target.pluginName ? `${target.pluginName} · ` : ''}${agentLabel(target.platform)} · ${scopeLabel(target.scope)}`,
       })) ?? []),
       { kind: 'keep', group: 'preserved', title: `${layerLabel}中的当前值保持不变` },
       { kind: 'keep', group: 'preserved', title: '不会恢复历史设置值' },
@@ -948,8 +896,6 @@ function reviewChanges(
     const sharedPlatforms = [...new Set(sharedNativeTargets.map((target) => target.platform ?? 'codex'))];
     const sharedPlatformLabel = sharedPlatforms.map(platformLabel).join('、');
     const sharedSkillLabel = sharedPlatforms.includes('claude') ? '原生 Skill' : '动态 Skill';
-    const sharedCodexRole = sharedPlatforms.includes('codex')
-      ? [{ kind: 'keep' as const, group: 'preserved' as const, title: '当前项目 Agent role 继续使用当前项目配置' }] : [];
     const sharedNativeImpact: OperationReviewChange[] = noEffectiveChange || sharedNativeTargets.length === 0
       ? []
       : intent.apply
@@ -957,29 +903,21 @@ function reviewChanges(
             {
               kind: 'change', group: 'configImpact',
               title: `重新生成 ${sharedNativeTargets.map((target) => target.skillKey).join('、')} ${sharedSkillLabel}`,
-              description: `配置来源为个人默认；更新 ${sharedPlatformLabel} 由平台共用的内容会影响所有启用项目。`,
+              description: `配置来源为用户配置；更新 ${sharedPlatformLabel} 由平台共用的内容会影响所有启用项目。`,
             },
             { kind: 'keep', group: 'preserved', title: '保留所有项目和当前项目的启用位置' },
-            ...sharedCodexRole,
           ]
         : [
             {
               kind: 'warning', group: 'configImpact',
               title: `${sharedPlatformLabel} 由平台共用的内容待同步`,
-              description: `个人默认已保存；${sharedSkillLabel} 尚未重新生成。`,
+              description: `用户配置已保存；${sharedSkillLabel} 尚未重新生成。`,
             },
             { kind: 'keep', group: 'preserved', title: '当前由平台共用的内容和启用位置保持不变' },
-            ...sharedCodexRole,
           ];
     return [
       ...scriptTimeoutChanges(intent),
       ...preApplyScopeChanges(evidence?.config?.preApplyAuthorization ?? []),
-      ...(evidence?.config?.shareability === 'unverified' ? [{
-        kind: 'warning' as const,
-        group: 'configImpact' as const,
-        title: 'Git 无法验证 project config 可共享',
-        description: '可以继续写入，但不要将该路径视为已验证可提交。',
-      }] : []),
       ...intent.changes.map((change): OperationReviewChange => ({
         kind: removeKeys.has(change.key) ? 'remove' : 'change',
         group: 'configChanges',
@@ -1009,11 +947,11 @@ function reviewChanges(
         ? []
         : intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
         ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
-            kind: 'change', group: 'configImpact', title: `重新应用 ${target.pluginName ? `${target.pluginName} · ` : ''}${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+            kind: 'change', group: 'configImpact', title: `重新应用 ${target.pluginName ? `${target.pluginName} · ` : ''}${agentLabel(target.platform)} · ${scopeLabel(target.scope)}`,
           }))
         : !intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
         ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
-            kind: 'warning', group: 'configImpact', title: `保存后需同步 ${target.pluginName ? `${target.pluginName} · ` : ''}${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+            kind: 'warning', group: 'configImpact', title: `保存后需同步 ${target.pluginName ? `${target.pluginName} · ` : ''}${agentLabel(target.platform)} · ${scopeLabel(target.scope)}`,
           }))
         : (evidence?.config?.commandPackages?.length ?? 0) > 0 ? []
         : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
@@ -1046,9 +984,6 @@ function batchGroupEvidence(
     catalog: evidence.catalog,
     ...(group.preview.offlineCleanupPlans
       ? { offlineCleanupPlans: group.preview.offlineCleanupPlans }
-      : {}),
-    ...(group.preview.removedPluginCleanupIds
-      ? { removedPluginCleanupIds: group.preview.removedPluginCleanupIds }
       : {}),
     ...(group.preview.dependencyPlan ? { dependencyPlan: group.preview.dependencyPlan } : {}),
     ...(group.preview.codexReconcilePlans ? { codexReconcilePlans: group.preview.codexReconcilePlans } : {}),
@@ -1176,8 +1111,7 @@ function batchReviewChanges(
       };
     });
     const selectedTargetChanges = group.preview.targetResults.length === 0
-      && (intent.selection.kind === 'targets'
-        || intent.selection.kind === 'currentProjectIntentTargets')
+      && intent.selection.kind === 'targets'
       ? intent.selection.targets.filter((target) =>
           target.pluginId.startsWith(`${group.sourceId}/`)
           && target.platform === group.platform
@@ -1236,19 +1170,8 @@ function batchReviewChanges(
       }] : []),
     ];
   });
-  const projectPreApplyCount = intent.action === 'sync'
-    && intent.selection.kind === 'currentProjectIntentTargets'
-    ? changes.filter((change) => change.title.startsWith('运行 ')
-      && change.title.endsWith(' preApply')).length
-    : 0;
   return [
     ...scriptTimeoutChanges(intent),
-    ...(projectPreApplyCount > 0 ? [{
-      kind: 'warning' as const,
-      group: 'runtime' as const,
-      title: `${projectPreApplyCount} 个当前项目同步目标将运行 preApply`,
-      description: '脚本在同步写入前运行；范围只限本次确认的当前项目位置。',
-    }] : []),
     ...changes,
     { kind: 'keep', group: 'preserved', title: '插件设置保持不变' },
   ];
@@ -1298,9 +1221,9 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     details.push(`离线清理计划：${target.plan.actions.length} 个动作 · ${short(target.planDigest)}`);
   }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
-  if (evidence.config) details.push(`设置层：${evidence.config.scope} · ${short(evidence.config.storeDigest)}`);
+  if (evidence.config) details.push(`用户配置：${evidence.config.platform ?? 'common'} · context=${evidence.config.context ?? 'user'} · ${short(evidence.config.storeDigest)}`);
   for (const group of evidence.configBatch?.groups ?? []) {
-    details.push(`设置层：${group.scope} · ${short(group.config.storeDigest)}`);
+    details.push(`用户配置：${group.platform ?? 'common'} · context=${group.config.context ?? 'user'} · ${short(group.config.storeDigest)}`);
   }
   if (evidence.sourceWrite) {
     details.push(`新配置：${short(evidence.sourceWrite.proposedConfigDigest)}`);
@@ -1397,10 +1320,6 @@ export function buildOperationReviewProjection(options: {
           (group.config.preApplyAuthorization?.length ?? 0) > 0) === true
     : operationPreApplyTargets(evidence).length > 0
       || (evidence.config?.preApplyAuthorization?.length ?? 0) > 0;
-  const projectPreApplyConfirmation = hasPreApply
-    && intent.kind === 'pluginWriteBatch'
-    && intent.action === 'sync'
-    && intent.selection.kind === 'currentProjectIntentTargets';
   const sharedNativeConfigApply = (intent.kind === 'configSave'
     && intent.apply
     && (evidence.config?.sharedNativeRenderTargets?.some((shared) => evidence.config?.affectedTargets
@@ -1412,17 +1331,13 @@ export function buildOperationReviewProjection(options: {
         group.config.sharedNativeRenderTargets?.some((shared) => group.config.affectedTargets
           .some((target) => (!shared.pluginName || shared.pluginName === target.pluginName)
           && target.platform === (shared.platform ?? 'codex')))) ?? false));
-  const requiresConfirmation = projectPreApplyConfirmation
-    || sharedNativeConfigApply
+  const requiresConfirmation = sharedNativeConfigApply
     || intent.kind === 'catalogStorePrune'
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || Boolean(taskEvidence?.taskPlan.sources.some((source) =>
       (source.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || (evidence.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)
-    || (evidence.removedPluginCleanupIds?.length ?? 0) > 0
-    || Boolean(batchEvidence?.groups.some((group) =>
-      (group.preview.removedPluginCleanupIds?.length ?? 0) > 0))
     || Boolean(evidence.sourceWrite
       && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
     || Boolean(evidence.catalogGeneration?.impact
@@ -1443,6 +1358,22 @@ export function buildOperationReviewProjection(options: {
     title: '来源刷新失败；本次使用旧 Active',
     description: '同步可以继续。再次刷新并同步时会重试来源刷新。',
   }));
+  let equivalentCommand: string | undefined;
+  if (intent.kind === 'pluginWrite') {
+    const sync = intent.action === 'sync' || intent.action === 'refreshAndSync' || intent.action === 'reinstall';
+    const action = sync ? 'sync' : intent.action === 'uninstall' ? 'remove' : intent.action;
+    const agents = intent.platform === 'both' ? ['codex', 'claude'] : [intent.platform];
+    const targets = intent.action === 'cleanup' ? agents.map((agent) => ` --target ${agent}`)
+      : [sync ? agents.map((agent) => ` --target ${agent}`).join('') : ''];
+    equivalentCommand = targets.map((target) =>
+      `aw plugin ${action} ${intent.pluginId} --${sync ? 'context' : 'scope'} ${intent.scope}${target}`
+      + (intent.action === 'reinstall' ? ' --rebuild' : '')
+      + (intent.action === 'refreshAndSync' ? ' --refresh' : '')
+      + (scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : '')
+      + (intent.action === 'cleanup' && intent.force === true ? ' --force' : '')
+      + (evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : '')
+      + (requiresConfirmation || hasPreApply ? ' --yes' : '')).join(' && ');
+  }
   return {
     title: labels.title,
     description: labels.description,
@@ -1455,9 +1386,7 @@ export function buildOperationReviewProjection(options: {
         : reviewChanges(intent, evidence, options.dependencyOverview)),
     ],
     technicalDetails: technicalDetails(evidence),
-    ...(intent.kind === 'pluginWrite'
-      ? { equivalentCommand: `aw ${intent.action === 'refreshAndSync' ? 'sync' : intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'refreshAndSync' ? ' --refresh' : ''}${scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : ''}${(intent.dependencyScopeOverrides ?? []).map((override) => ` --dependency-scope ${override.pluginId}#${override.platform}=${override.scope}`).join('')}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}${requiresConfirmation || hasPreApply ? ' --yes' : ''}` }
-      : {}),
+    ...(equivalentCommand ? { equivalentCommand } : {}),
     primaryLabel: intent.kind === 'pluginWriteBatch'
       ? `${labels.primaryLabel} ${batchEvidence!.requestedPluginIds.length} 个插件`
       : intent.kind === 'pluginWriteTask'

@@ -7,7 +7,8 @@
 在包含本插件的 Catalog 来源中安装到 Codex 和 Claude Code：
 
 ```bash
-aw install frontend-design -p both
+aw plugin targets set codex claude
+aw plugin install frontend-design --scope user
 ```
 
 支持 user 和 project 安装范围，无插件配置项。唯一技能是 `frontend-design`，既可按任务自动采用，也可显式选择。

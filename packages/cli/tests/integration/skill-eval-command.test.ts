@@ -68,8 +68,8 @@ async function createWorkspace(): Promise<{
     HOME: path.join(root, 'home'),
     USERPROFILE: path.join(root, 'home'),
     AW_HOME: path.join(root, 'aw-home'),
-    AW_CODEX_HOME: path.join(root, 'codex-home'),
-    AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+    CODEX_HOME: path.join(root, 'codex-home'),
+    CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
   }
   await fs.ensureDir(env.HOME)
   expect(await runCli(['catalog', 'init', '--workspace-root', root], {
@@ -185,8 +185,7 @@ describe('aw skill eval commands', () => {
     const pluginManifest = await fs.readJson(manifestPath)
     pluginManifest.artifacts = { targets: [{
       id: 'configured', platform: 'codex', scopes: ['project', 'user'],
-      target: 'codex.skill', delivery: { mode: 'aw-extension' },
-      states: ['present'], refreshKeys: ['mode'], skillKey: 'configured-skill',
+      target: 'codex.skill', states: ['present'], refreshKeys: ['mode'], skillKey: 'configured-skill',
     }] }
     pluginManifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } }
     await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
@@ -214,7 +213,7 @@ describe('aw skill eval commands', () => {
     await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
       version: 1,
       defaults: { profile: 'local' },
-      profiles: { local: { scope: 'project', plugins: { 'eval-owner': { mode: 'profile-value' } } } },
+      profiles: { local: { platform: 'codex', scope: 'project', plugins: { 'eval-owner': { mode: 'profile-value' } } } },
       suites: [{ id: 'configured', kind: 'trigger', cases: 'cases.json' }],
     })
     const configFile = path.join(fixture.outputRoot, 'config.json')
@@ -310,7 +309,6 @@ describe('aw skill eval commands', () => {
         platform: 'codex',
         scopes: ['project', 'user'],
         target: 'codex.skill',
-        delivery: { mode: 'aw-extension' },
         states: ['present', 'disabled'],
         refreshKeys: ['roleMode', 'dynamicEnabled'],
         skillKey: 'dynamic-skill',
@@ -319,7 +317,6 @@ describe('aw skill eval commands', () => {
         platform: 'codex',
         scopes: ['project', 'user'],
         target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         projectManagedKind: 'skill',
         states: ['present', 'disabled'],
         refreshKeys: ['nativeMode', 'nativeEnabled'],
@@ -340,7 +337,7 @@ describe('aw skill eval commands', () => {
     await fs.outputFile(path.join(fixture.ownerRoot, 'scripts', 'render.mjs'), [
       "import fs from 'node:fs';",
       "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
-      `fs.appendFileSync(${JSON.stringify(rendererLog)}, JSON.stringify(context.requestedArtifactIds) + '\\n');`,
+      `fs.appendFileSync(${JSON.stringify(rendererLog)}, JSON.stringify({ids:context.requestedArtifactIds,platform:context.platform,scope:context.scope,targetScope:context.config.targetScope}) + '\\n');`,
       'const artifacts = context.requestedArtifactIds.map((id) => {',
       "  if (id === 'fixture-role') return {",
       "    id, kind: 'codexRole', platform: 'codex', target: 'codex.agentRole', state: 'present',",
@@ -391,7 +388,7 @@ describe('aw skill eval commands', () => {
       defaults: { profile: 'project-scoped' },
       profiles: {
         'project-scoped': {
-          scope: 'project',
+          platform: 'codex', scope: 'project',
           plugins: {
             'eval-owner': {
               mode: 'common-mode', roleMode: 'common-role', nativeMode: 'common-native',
@@ -405,7 +402,7 @@ describe('aw skill eval commands', () => {
           },
         },
         'user-scoped': {
-          scope: 'user',
+          platform: 'codex', scope: 'user',
           plugins: {
             'eval-owner': {
               mode: 'common-mode', roleMode: 'common-role', nativeMode: 'common-native',
@@ -418,7 +415,7 @@ describe('aw skill eval commands', () => {
           },
         },
         'optional-disabled': {
-          scope: 'project',
+          platform: 'codex', scope: 'project',
           plugins: {
             'eval-owner': {
               mode: 'common-mode', roleMode: 'common-role', nativeMode: 'common-native',
@@ -470,7 +467,7 @@ describe('aw skill eval commands', () => {
       ))).resolves.toEqual({ selected: 'user-native', targetScope: 'user' })
       await expect(fs.readJson(path.join(
         subject, '.agents', 'skills', 'dynamic-skill', 'render.json',
-      ))).resolves.toEqual({ selected: roleMode, targetScope: profile === 'project-scoped' ? 'project' : 'user' })
+      ))).resolves.toEqual({ selected: roleMode, targetScope: 'user' })
       await expect(fs.pathExists(path.join(
         subject, '.agents', 'skills', 'native-skill', 'references', 'native-tree.json',
       ))).resolves.toBe(true)
@@ -497,10 +494,15 @@ describe('aw skill eval commands', () => {
     const optionalSubject = path.join(optionalOutput, 'workspace', 'subject', '.agents', 'skills')
     await expect(fs.pathExists(path.join(optionalSubject, 'dynamic-skill'))).resolves.toBe(false)
     await expect(fs.pathExists(path.join(optionalSubject, 'native-skill'))).resolves.toBe(false)
+
     const requests = (await fs.readFile(rendererLog, 'utf8')).trim().split('\n')
-      .flatMap((line) => JSON.parse(line) as string[])
-    expect(requests.filter((id) => id === 'dynamic-skill')).toHaveLength(1)
-    expect(requests.filter((id) => id === 'native-skill')).toHaveLength(1)
+      .map((line) => JSON.parse(line) as { ids: string[]; platform: string; scope: string; targetScope: string })
+    expect([...new Set(requests.flatMap((request) => request.ids))].sort())
+      .toEqual(['dynamic-skill', 'fixture-role', 'native-skill'])
+    expect(requests.every((request) => request.platform === 'codex')).toBe(true)
+    for (const request of requests.filter((row) => row.ids.some((id) => id === 'dynamic-skill' || id === 'native-skill'))) {
+      expect(request).toMatchObject({ scope: 'user', targetScope: 'user' })
+    }
 
     const requiredDisabledOutput = path.join(fixture.outputRoot, 'required-native-disabled')
     const requiredDisabled = capture()
@@ -512,6 +514,7 @@ describe('aw skill eval commands', () => {
     await expect(fs.pathExists(requiredDisabledOutput)).resolves.toBe(false)
 
     pluginManifest.skills = './skills'
+    pluginManifest.artifacts.targets[0].sourceDirs = ['./skills/dynamic-skill']
     await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
     const dynamicEvalRoot = path.join(fixture.ownerRoot, 'skills', 'dynamic-skill', 'evals')
     await fs.outputJson(path.join(dynamicEvalRoot, 'cases.json'), {
@@ -531,7 +534,7 @@ describe('aw skill eval commands', () => {
       defaults: { profile: 'user-target' },
       profiles: {
         'user-target': {
-          scope: 'user',
+          platform: 'codex', scope: 'user',
           plugins: {
             'eval-owner': {
               mode: 'common-mode', roleMode: 'user-role', nativeMode: 'user-native',
@@ -638,7 +641,7 @@ describe('aw skill eval commands', () => {
       defaults: { profile: 'project-default', runs: 2, timeoutMs: 12_000 },
       profiles: {
         'project-default': {
-          scope: 'project',
+          platform: 'codex', scope: 'project',
           plugins: {
             'eval-owner': { mode: 'fixture-mode' },
             'participant-plugin': {},
@@ -662,7 +665,7 @@ describe('aw skill eval commands', () => {
       'plugin', 'validate', fixture.ownerRoot,
       '--workspace-root', fixture.root,
       '--json',
-    ], { cwd: fixture.root, env: fixture.env, io: validation.io }), validation.stdout()).toBe(0)
+    ], { cwd: fixture.root, env: fixture.env, io: validation.io }), validation.stdout() + validation.stderr()).toBe(0)
     expect(JSON.parse(validation.stdout())).toMatchObject({ ok: true, errors: [] })
     const blockedOutput = path.join(fixture.root, 'prepared-v1')
     const blocked = capture()
@@ -1074,7 +1077,7 @@ describe('aw skill eval commands', () => {
       ...v1Manifest,
       profiles: {
         ...v1Manifest.profiles,
-        unused: { scope: 'project', plugins: { 'participant-plugin': {} } },
+        unused: { platform: 'codex', scope: 'project', plugins: { 'participant-plugin': {} } },
       },
     }, { spaces: 2 })
     const invalidOwnerProfile = capture()
@@ -1146,6 +1149,7 @@ describe('aw skill eval commands', () => {
       '--workspace-root', fixture.root,
       '--json',
     ], { cwd: fixture.root, env: fixture.env, io: legacyManifest.io })).toBe(1)
+    expect(legacyManifest.stdout(), legacyManifest.stderr()).not.toBe('')
     expect(JSON.parse(legacyManifest.stdout())).toMatchObject({
       ok: false,
       errors: expect.arrayContaining([

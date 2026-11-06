@@ -1,10 +1,8 @@
-import os from 'node:os';
-import path from 'node:path';
-
-import fs from 'fs-extra';
+import { createSafeNeutralCwd } from '../intent/scope-context.js';
 
 import {
   buildCodexPluginListJsonInvocation,
+  NativeCliError,
   parseCodexPluginListJson,
   runNativeCli,
   SYSTEM_CODEX_MANAGER,
@@ -101,11 +99,14 @@ export async function createCodexNativeObservationSession(options: {
   runner?: NativeCliRunner;
   manager?: CodexManager;
 }): Promise<CodexNativeObservationSession> {
-  const neutralCwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-observation-'));
+  const neutral = await createSafeNeutralCwd(options.env);
+  const neutralCwd = neutral.executionCwd;
   let manager = options.manager ?? SYSTEM_CODEX_MANAGER;
   const snapshots = new Map<string, Promise<CodexObservationEntries>>();
+  const pendingReads = new Set<Promise<CodexObservationEntries>>();
+  let cleanupFailure: NativeCliError | undefined;
   let generation = 0;
-  let disposed = false;
+  let disposal: Promise<void> | undefined;
 
   const read = (marketplace: string, scope: CodexObservationScope): Promise<CodexObservationEntries> => {
     const key = `${marketplace}\0${scope}`;
@@ -124,12 +125,19 @@ export async function createCodexNativeObservationSession(options: {
           if (nativeResult.exitCode !== 0) return { failure: 'unavailable' };
           return indexCodexEntries(parseCodexPluginListJson(nativeResult.stdout));
         } catch (error) {
+          if (error instanceof NativeCliError && error.cleanupError) {
+            cleanupFailure ??= error;
+            throw error;
+          }
+          if (error instanceof Error && error.name === 'AbortError') throw error;
           return (error as NodeJS.ErrnoException).code === 'ENOENT'
             ? { unobserved: true }
             : { failure: 'unavailable' };
         }
       })();
       snapshots.set(key, result);
+      pendingReads.add(result);
+      void result.then(() => pendingReads.delete(result!), () => pendingReads.delete(result!));
     }
     return result;
   };
@@ -139,7 +147,7 @@ export async function createCodexNativeObservationSession(options: {
 
   return {
     async snapshot(marketplace, scope = 'both') {
-      if (disposed) throw new Error('codexObservationSessionDisposed');
+      if (disposal) throw new Error('codexObservationSessionDisposed');
       const capturedGeneration = generation;
       const scopes = requestedScopes(scope);
       const values = await Promise.all(scopes.map((entry) => read(marketplace, entry)));
@@ -153,7 +161,7 @@ export async function createCodexNativeObservationSession(options: {
       };
     },
     async inspectPlugin({ pluginId, scope = 'both' }) {
-      if (disposed) throw new Error('codexObservationSessionDisposed');
+      if (disposal) throw new Error('codexObservationSessionDisposed');
       const { marketplace } = parseNamespacedPluginId(pluginId);
       const scopes = requestedScopes(scope);
       const values = await Promise.all(scopes.map((entry) => read(marketplace, entry)));
@@ -205,10 +213,16 @@ export async function createCodexNativeObservationSession(options: {
         if (key.startsWith(`${marketplace}\0`)) snapshots.delete(key);
       }
     },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      await fs.remove(neutralCwd);
+    dispose() {
+      disposal ??= (async () => {
+        await Promise.allSettled([...pendingReads]);
+        try {
+          await neutral.dispose();
+        } finally {
+          if (cleanupFailure) throw cleanupFailure;
+        }
+      })();
+      return disposal;
     },
   };
 }

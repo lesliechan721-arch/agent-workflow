@@ -174,6 +174,34 @@ describe('Codex manager resolver', () => {
     expect(await fs.pathExists(isolation.layout.codexHomeDir)).toBe(false);
   });
 
+  // Test Value Gate: PATH and PATHEXT selection must match the child environment, including empty selected values.
+  it.each([
+    { name: 'legacy keys first', entries: [['Path', 'legacy-bin'], ['Pathext', '.BAT'], ['PATH', 'selected-bin'], ['PATHEXT', '.EXE;.CMD']], directory: 'selected-bin', extension: '.EXE' },
+    { name: 'uppercase keys first', entries: [['PATH', 'selected-bin'], ['PATHEXT', '.EXE;.CMD'], ['Path', 'legacy-bin'], ['Pathext', '.BAT']], directory: 'selected-bin', extension: '.EXE' },
+    { name: 'empty selected PATH', entries: [['Path', 'legacy-bin'], ['Pathext', '.BAT'], ['PATH', ''], ['PATHEXT', '.EXE']], directory: '', extension: '.EXE' },
+    { name: 'empty selected PATHEXT', entries: [['Path', 'legacy-bin'], ['Pathext', '.BAT'], ['PATH', 'selected-bin'], ['PATHEXT', '']], directory: 'selected-bin', extension: '' },
+    { name: 'single mixed case keys', entries: [['pAtH', 'selected-bin'], ['pAtHeXt', '.EXE']], directory: 'selected-bin', extension: '.EXE' },
+  ])('inspects the selected Windows command with $name', async ({ entries, directory, extension }) => {
+    for (const bin of ['legacy-bin', 'selected-bin', '']) {
+      const binRoot = path.join(isolation.layout.fixtureCwd, bin);
+      await fs.ensureDir(binRoot);
+      await Promise.all(['codex.BAT', 'codex.EXE', 'codex'].map((name) =>
+        fs.writeFile(path.join(binRoot, name), 'fixture')));
+    }
+    const baseEnv = Object.fromEntries(Object.entries(isolation.env)
+      .filter(([key]) => !['PATH', 'PATHEXT'].includes(key.toUpperCase())));
+    const runner = vi.fn<NativeCliRunner>(async () => result('codex-cli 0.151.0'));
+    await expect(inspectSystemCodex({
+      platform: 'win32', cwd: isolation.layout.fixtureCwd,
+      env: { ...baseEnv, ...Object.fromEntries(entries) },
+      operationRequirement: getCodexOperationRequirement('project'), runner,
+    })).resolves.toMatchObject({ state: 'compatible', detectedVersion: '0.151.0' });
+    expect(runner).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      command: path.join(isolation.layout.fixtureCwd, directory, `codex${extension}`),
+      args: ['--version'],
+    }));
+  });
+
   it('selects a supported system Codex and does not inspect or authorize managed state', async () => {
     const executable = await writePathCodex(isolation, 'system-bin', 'linux');
     const authorizer = vi.fn(() => true);

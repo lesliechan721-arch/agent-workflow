@@ -1,19 +1,17 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "kind": "aw-plugin-intents",
+  "sources": {
+    "official": {
+      "logicalIdentity": "sha256:4b861d05690759912a383852b4703fcf5aecc1cc9d2bf0f2fa5db0fafe6b4567"
+    }
+  },
   "roots": [
     {
-      "pluginId": "official/aw-development-toolkit",
-      "platforms": [
-        "codex"
-      ]
+      "pluginId": "official/aw-development-toolkit"
     },
     {
-      "pluginId": "official/aw-skill-eval-runner",
-      "platforms": [
-        "codex"
-      ]
+      "pluginId": "official/aw-skill-eval-runner"
     }
-  ],
-  "dependencyScopeOverrides": []
+  ]
 }

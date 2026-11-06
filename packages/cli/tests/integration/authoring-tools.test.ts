@@ -77,13 +77,10 @@ function fixturePath(...segments: string[]): string {
 }
 
 function withManifestSchema<T extends Record<string, unknown>>(manifest: T): T {
-  if (Object.prototype.hasOwnProperty.call(manifest, 'schemaVersion')) {
-    return manifest;
-  }
-
   return {
-    ...manifest,
     schemaVersion: 3,
+    platforms: ['codex', 'claude'],
+    ...manifest,
   };
 }
 
@@ -210,6 +207,7 @@ function createBaseManifest(
 ): Record<string, unknown> {
   return {
     schemaVersion: 3,
+    platforms: ['codex', 'claude'],
     name,
     version: '0.1.0',
     description: `${name} test plugin.`,
@@ -243,7 +241,7 @@ async function writeDynamicArtifactPlugin(
     rendererRoleKey?: string;
     includeRoleKey?: boolean;
     omitCodexInvocationPolicy?: boolean;
-    products?: string[] | null;
+    platforms?: string[] | null;
   } = {},
 ): Promise<{ pluginDir: string; manifestPath: string }> {
   const pluginDir = path.join(root, 'dynamic-authoring-test');
@@ -258,6 +256,7 @@ async function writeDynamicArtifactPlugin(
     name: 'dynamic-authoring-test',
     version: '0.1.0',
     description: 'Test dynamic artifact authoring contracts.',
+    ...(options.platforms === null ? {} : { platforms: options.platforms ?? ['codex'] }),
     skills: './skills',
     marketplace: {
       category: 'workflow',
@@ -265,7 +264,6 @@ async function writeDynamicArtifactPlugin(
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        ...(options.products === null ? {} : { products: options.products ?? ['CODEX'] }),
       },
     },
     scripts: {
@@ -387,7 +385,7 @@ async function writeSlashCommandPlugin(
   root: string,
   options: {
     name: string;
-    products?: string[] | null;
+    platforms?: string[] | null;
     commandFileName?: string;
     commandContent: string;
   },
@@ -398,13 +396,13 @@ async function writeSlashCommandPlugin(
     name,
     createBaseManifest(name, {
       slashCommands: './slash-commands',
+      ...(options.platforms === null ? {} : { platforms: options.platforms ?? ['codex'] }),
       marketplace: {
         category: 'workflow',
         strict: true,
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          ...(options.products === null ? {} : { products: options.products ?? ['CODEX'] }),
         },
       },
       interface: {
@@ -553,6 +551,7 @@ describe('authoring tools', () => {
     );
     expect(scaffoldManifest).toMatchObject({
       schemaVersion: 3,
+      platforms: ['codex', 'claude'],
       name: 'repo-check',
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
@@ -630,10 +629,12 @@ describe('authoring tools', () => {
       defaults: { profile: 'project-default' },
       profiles: {
         'project-default': {
+          platform: 'codex',
           scope: 'project',
           plugins: { 'repo-check': {} },
         },
         'user-default': {
+          platform: 'codex',
           scope: 'user',
           plugins: { 'repo-check': {} },
         },
@@ -911,6 +912,18 @@ describe('authoring tools', () => {
       fs.readFile(path.join(claudeModelRoot, 'agents', 'openai.yaml'), 'utf8'),
     ).resolves.toEqual(expect.stringContaining('allow_implicit_invocation: true'));
 
+    for (const skillRoot of [manualRoot, claudeModelRoot]) {
+      const pluginRoot = path.resolve(skillRoot, '..', '..');
+      const manifest = await fs.readJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'));
+      expect(manifest.platforms).toEqual(['codex', 'claude']);
+      const skillPath = path.join(skillRoot, 'SKILL.md');
+      const scaffold = await fs.readFile(skillPath, 'utf8');
+      await fs.writeFile(skillPath, scaffold.replace(/\[TODO:[^\]]+\]/gu, '核对平台、输入与输出，并报告验证结果'));
+      await expect(runValidatePlugin(pluginRoot)).resolves.toMatchObject({
+        stdout: expect.stringContaining('[PASS] All checks passed.'),
+      });
+    }
+
     await expect(execFileAsync('node', [
       scriptPath,
       'invalid-invocation',
@@ -982,6 +995,7 @@ describe('authoring tools', () => {
       defaults: { profile: 'project-default' },
       profiles: {
         'project-default': {
+          platform: 'codex',
           plugins: { 'git-commit': {} },
         },
       },
@@ -1051,20 +1065,19 @@ describe('authoring tools', () => {
       'utf8',
     )).resolves.toBe(manifestBeforeCollision);
 
-    for (const platform of ['codex', 'claude'] as const) {
+    for (const platform of ['codex', 'claude', 'generic'] as const) {
       const pluginName = `${platform}-only-add-skill`;
-      const products = [platform.toUpperCase()];
       const { pluginDir } = await writeSourcePlugin(
         path.join(tempRepo, 'plugins'),
         pluginName,
         createBaseManifest(pluginName, {
+          platforms: [platform],
           marketplace: {
             category: 'workflow',
             strict: true,
             policy: {
               installation: 'AVAILABLE',
               authentication: 'ON_INSTALL',
-              products,
             },
           },
           interface: {
@@ -1093,12 +1106,17 @@ describe('authoring tools', () => {
         expect(skillMd).toContain('user-invocable: false');
         await expect(fs.pathExists(path.join(skillRoot, 'agents', 'openai.yaml'))).resolves.toBe(false);
         await expect(fs.pathExists(path.join(skillRoot, 'evals'))).resolves.toBe(false);
-      } else {
+      } else if (platform === 'codex') {
         expect(skillMd).not.toContain('disable-model-invocation:');
         await expect(
           fs.readFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'utf8'),
         ).resolves.toEqual(expect.stringContaining('allow_implicit_invocation: false'));
         await expect(fs.pathExists(path.join(skillRoot, 'evals', 'manifest.json'))).resolves.toBe(true);
+      } else {
+        expect(skillMd).not.toContain('user-invocable:');
+        expect(skillMd).not.toContain('disable-model-invocation:');
+        await expect(fs.pathExists(path.join(skillRoot, 'agents', 'openai.yaml'))).resolves.toBe(false);
+        await expect(fs.pathExists(path.join(skillRoot, 'evals'))).resolves.toBe(false);
       }
     }
 
@@ -1113,7 +1131,6 @@ describe('authoring tools', () => {
               platform: 'codex',
               scopes: ['project'],
               target: 'codex.skill',
-              delivery: { mode: 'aw-extension' },
               states: ['present'],
               refreshKeys: [],
               skillKey: 'repo-report',
@@ -2857,7 +2874,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts has unknown field "postApply"'),
+      stdout: expect.stringContaining('/scripts must NOT have additional properties'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -2875,7 +2892,7 @@ describe('authoring tools', () => {
       }),
     ).rejects.toMatchObject({
       stdout: expect.stringContaining(
-        'scripts.preApply.timeoutMs must be an integer between 1000 and 1800000',
+        '/scripts/preApply/timeoutMs must be <= 1800000',
       ),
     });
 
@@ -2907,7 +2924,16 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.helpers.config must use a Node runnable extension'),
+      stdout: expect.stringContaining('/config/fields/badMin'),
+    });
+
+    const helperOnlyManifest = await fs.readJson(manifestPath);
+    helperOnlyManifest.config = { fields: { goodKey: { type: 'string' } } };
+    await fs.writeJson(manifestPath, helperOnlyManifest, { spaces: 2 });
+    await expect(execFileAsync('node', [scriptPath, pluginDir], {
+      cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024,
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('scripts.helpers.config: expected a Node runnable file extension'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -2937,7 +2963,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.preApply.path must use a Node runnable extension'),
+      stdout: expect.stringContaining('scripts.preApply.path: expected a Node runnable file extension'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -2967,8 +2993,9 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.node.packageRoot is missing pnpm-lock.yaml'),
+      stdout: expect.stringContaining('scripts.node.packageRoot: missing pnpm-lock.yaml'),
     });
+    await fs.writeFile(path.join(pluginDir, 'scripts', 'pkg', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n');
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -3223,7 +3250,7 @@ describe('authoring tools', () => {
       },
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('unsupported artifact target "codex.unknownTarget"'),
+      stdout: expect.stringContaining('/artifacts/targets/0/target'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -3238,7 +3265,7 @@ describe('authoring tools', () => {
       },
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('unsupported artifact state "archived"'),
+      stdout: expect.stringContaining('/artifacts/targets/0/states/0'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -3262,7 +3289,6 @@ describe('authoring tools', () => {
         platform: 'codex',
         scopes: ['user'],
         target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         states: ['present'],
         refreshKeys: ['secret'],
         skillKey: 'native-secret',
@@ -3272,11 +3298,10 @@ describe('authoring tools', () => {
         platform: 'codex',
         scopes: ['user'],
         target: 'codex.skill',
-        delivery: { mode: 'aw-extension' },
         states: ['present'],
         refreshKeys: ['secret'],
         skillKey: 'codex-secret',
-      }, 'skillRenderSensitiveRefreshKey'],
+      }, 'codexNativeRenderSensitiveRefreshKey'],
       [{
         id: 'claude-secret',
         platform: 'claude',
@@ -3288,6 +3313,7 @@ describe('authoring tools', () => {
       }, 'skillRenderSensitiveRefreshKey'],
       [{
         id: 'portable-secret',
+        platform: 'generic',
         distribution: 'agent-skills',
         scopes: ['user'],
         target: 'agent-skills.skill',
@@ -3298,7 +3324,7 @@ describe('authoring tools', () => {
     ] as const) {
       await fs.writeJson(manifestPath, {
         ...validManifest,
-        distributions: { agentSkills: { skills: './portable' } },
+        platforms: ['codex', 'claude', 'generic'],
         config: { fields: { secret: { type: 'string', sensitive: true } } },
         artifacts: { targets: [target] },
       }, { spaces: 2 });
@@ -3309,14 +3335,12 @@ describe('authoring tools', () => {
 
     await fs.writeJson(manifestPath, {
       ...validManifest,
-      skills: undefined,
       artifacts: { targets: [
         {
           id: 'native-user',
           platform: 'codex',
           scopes: ['user'],
           target: 'codex.skill',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           states: ['present'],
           refreshKeys: [],
           skillKey: 'native-user',
@@ -3326,16 +3350,14 @@ describe('authoring tools', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           states: ['present'],
           refreshKeys: [],
           skillKey: 'native-project',
         },
       ] },
     }, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('codexSharedNativeScopeMismatch:'),
-    });
+    expect((await readPluginManifest(pluginDir)).manifest.artifacts?.targets?.map((target) => target.scopes))
+      .toEqual([['user'], ['user']]);
 
     await fs.writeJson(manifestPath, {
       ...validManifest,
@@ -3344,15 +3366,13 @@ describe('authoring tools', () => {
         platform: 'codex',
         scopes: ['user'],
         target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         states: ['present'],
         refreshKeys: [],
         skillKey: 'native-user',
       }] },
     }, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('codexSharedNativeScopeMismatch:'),
-    });
+    expect((await readPluginManifest(pluginDir)).manifest.artifacts?.targets?.map((target) => target.scopes))
+      .toEqual([['user']]);
 
     await fs.writeJson(manifestPath, {
       ...validManifest,
@@ -3374,9 +3394,10 @@ describe('authoring tools', () => {
 
     await fs.writeJson(manifestPath, {
       ...validManifest,
+      platforms: ['codex', 'claude'],
       marketplace: {
         ...validManifest.marketplace,
-        policy: { ...validManifest.marketplace.policy, products: ['CODEX', 'CLAUDE'] },
+        policy: { ...validManifest.marketplace.policy,  },
       },
       artifacts: {
         targets: [
@@ -3428,10 +3449,11 @@ describe('authoring tools', () => {
       path.join(tempRoot, 'plugins'),
       'surface-provider',
       createBaseManifest('surface-provider', {
+        platforms: ['codex', 'generic'],
         marketplace: {
           category: 'workflow',
           strict: true,
-          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL',  },
         },
         extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
         buildConfig: { runtimeExports: [{
@@ -3443,9 +3465,9 @@ describe('authoring tools', () => {
     );
     const invalidManifest = createBaseManifest('surface-consumer', {
       schemaVersion: 3,
+      platforms: ['codex', 'claude', 'generic'],
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
       skills: './skills',
-      distributions: { agentSkills: { skills: './portable-skills' } },
       buildConfig: {
         skillRuntimeFiles: [{
           skill: 'demo',
@@ -3466,8 +3488,6 @@ describe('authoring tools', () => {
           'policy:',
           '  allow_implicit_invocation: true',
         ].join('\n'),
-        'portable-skills/demo/SKILL.md': '---\nname: demo\ndescription: Portable demo.\n---\n',
-        'portable-skills/demo/README.md': '# Portable demo\n',
       },
     );
     await execFileAsync('git', ['add', '.'], { cwd: tempRoot });
@@ -3490,8 +3510,8 @@ describe('authoring tools', () => {
     })).rejects.toThrow('unavailable for platform "claude"');
 
     const validManifest = structuredClone(invalidManifest);
-    validManifest.buildConfig.skillRuntimeFiles[0].platforms = ['codex'];
-    validManifest.buildConfig.skillRuntimeFiles[0].distributions = ['agent-skills'];
+    validManifest.buildConfig.skillRuntimeFiles[0].platforms = ['codex', 'generic'];
+
     await fs.writeJson(manifestPath, validManifest, { spaces: 2 });
     await execFileAsync('git', ['add', '.'], { cwd: tempRoot });
     await execFileAsync(
@@ -3513,7 +3533,7 @@ describe('authoring tools', () => {
       'utf8',
     )).resolves.toBe(providerBytes);
     await expect(fs.readFile(
-      path.join(validBundle, 'agent-skills', 'skills', 'demo', 'references', 'shared.txt'),
+      path.join(validBundle, 'generic', 'skills', 'demo', 'references', 'shared.txt'),
       'utf8',
     )).resolves.toBe(providerBytes);
   });
@@ -3527,6 +3547,7 @@ describe('authoring tools', () => {
       path.join(tempRoot, 'plugins'),
       'portable-provider',
       createBaseManifest('portable-provider', {
+        platforms: ['generic'],
         extensions: {
           instructions: [{ name: 'native', title: 'Native provider', content: 'Native provider.' }],
         },
@@ -3553,22 +3574,23 @@ describe('authoring tools', () => {
       'portable-authoring',
       createBaseManifest('portable-authoring', {
         schemaVersion: 3,
+        platforms: ['generic'],
         extensions: {
           instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
         },
-        distributions: { agentSkills: { skills: './portable-skills' } },
+        skills: './skills',
         buildConfig: {
           skillRuntimeFiles: [
             {
               skill: 'portable-static',
               target: 'references/runtime.txt',
-              distributions: ['agent-skills'],
+              platforms: ['generic'],
               source: './runtime.txt',
             },
             {
               skill: 'portable-dynamic',
               target: 'references/dynamic.txt',
-              distributions: ['agent-skills'],
+              platforms: ['generic'],
               source: './dynamic-runtime.txt',
             },
           ],
@@ -3584,13 +3606,14 @@ describe('authoring tools', () => {
         artifacts: {
           targets: [{
             id: 'portable-dynamic',
+            platform: 'generic',
             distribution: 'agent-skills',
             scopes: ['user', 'project'],
             target: 'agent-skills.skill',
             states: ['present', 'disabled'],
             refreshKeys: ['variant'],
             skillKey: 'portable-dynamic',
-            sourceDirs: ['./portable-source'],
+            sourceDirs: ['./skills/portable-dynamic'],
             runtimeImports: [{ name: 'registry', plugin: 'portable-provider', export: 'registry' }],
           }],
         },
@@ -3598,12 +3621,12 @@ describe('authoring tools', () => {
       {
         'runtime.txt': 'portable runtime projection\n',
         'dynamic-runtime.txt': 'dynamic runtime projection\n',
-        'portable-skills/portable-static/SKILL.md': '---\nname: portable-static\ndescription: Static portable Skill.\n---\n\n# Static\n',
-        'portable-skills/portable-static/README.md': '# Static portable Skill\n',
-        'portable-skills/portable-dynamic/SKILL.md': '---\nname: portable-dynamic\ndescription: Dynamic owner placeholder.\n---\n',
-        'portable-skills/portable-dynamic/README.md': '# Dynamic owner placeholder\n',
-        'portable-source/SKILL.md': '---\nname: portable-dynamic\ndescription: Dynamic portable Skill.\n---\n\n# Dynamic\n',
-        'portable-source/README.md': '# Dynamic portable Skill\n',
+        'skills/portable-static/SKILL.md': '---\nname: portable-static\ndescription: Static portable Skill.\n---\n\n# Static\n',
+        'skills/portable-static/README.md': '# Static portable Skill\n',
+        'skills/portable-static/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+        'skills/portable-dynamic/SKILL.md': '---\nname: portable-dynamic\ndescription: Dynamic portable Skill.\n---\n\n# Dynamic\n',
+        'skills/portable-dynamic/README.md': '# Dynamic portable Skill\n',
+        'skills/portable-dynamic/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
         'scripts/render.mjs': [
           'const fs = await import("node:fs");',
           'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
@@ -3615,14 +3638,14 @@ describe('authoring tools', () => {
           '  }] }));',
           '} else {',
           '  if (context.surface.kind !== "distribution" || context.surface.name !== "agent-skills") process.exit(3);',
-          '  if (context.platform !== undefined || context.distribution !== "agent-skills") process.exit(4);',
-          '  if (process.env.AW_PLUGIN_PLATFORM !== undefined || process.env.AW_PLUGIN_DISTRIBUTION !== "agent-skills") process.exit(5);',
+          '  if (context.platform !== "generic" || context.distribution !== "agent-skills") process.exit(4);',
+          '  if (process.env.AW_PLUGIN_PLATFORM !== "generic" || process.env.AW_PLUGIN_DISTRIBUTION !== "agent-skills") process.exit(5);',
           '  if (context.runtimeImports[0]?.artifactId !== "portable-dynamic") process.exit(6);',
           '  if (!fs.statSync(context.runtimeImports[0].path).isFile()) process.exit(7);',
           '  const registry = JSON.parse(fs.readFileSync(context.runtimeImports[0].path, "utf8"));',
           '  if (registry.profile !== "portable-author-validator") process.exit(8);',
           '  process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
-          '    id: "portable-dynamic", distribution: "agent-skills", target: "agent-skills.skill", kind: "skill",',
+          '    id: "portable-dynamic", platform: "generic", distribution: "agent-skills", target: "agent-skills.skill", kind: "skill",',
           '    state: "present", refreshKeys: ["variant"], skillKey: "portable-dynamic",',
           '    content: { files: { "references/rendered.txt": "rendered\\n" } }',
           '  }] }));',
@@ -3651,10 +3674,10 @@ describe('authoring tools', () => {
       'missing-provider',
       'missing-export',
       'import-collision',
-      'missing-distribution',
+      'missing-platform',
       'portable-only',
       'native-capability',
-      'invalid-distribution',
+      'invalid-platform-selector',
       'uppercase-skill-key',
       'wrong-skill-name',
     ] as const;
@@ -3677,6 +3700,7 @@ describe('authoring tools', () => {
     );
     const withNativeCapability = (state: 'disabled' | 'present') => ({
       ...manifest,
+      platforms: ['codex', 'generic'],
       extensions: {},
       artifacts: {
         targets: [...manifest.artifacts.targets, {
@@ -3692,7 +3716,7 @@ describe('authoring tools', () => {
 
     await waitForAll([
       fs.writeFile(
-        path.join(scenarioPlugin('portable-root-file'), 'portable-skills', 'README.md'),
+        path.join(scenarioPlugin('portable-root-file'), 'skills', 'README.md'),
         '# Invalid root file\n',
       ),
       fs.writeFile(
@@ -3704,7 +3728,7 @@ describe('authoring tools', () => {
         importedFinalTreeManifest.buildConfig.skillRuntimeFiles[1] = {
           skill: 'portable-dynamic',
           target: 'references/dynamic.txt',
-          distributions: ['agent-skills'],
+          platforms: ['generic'],
           import: { plugin: 'portable-provider', export: 'unsafe-runtime' },
         };
         await waitForAll([
@@ -3728,12 +3752,12 @@ describe('authoring tools', () => {
         importCollisionManifest.buildConfig.skillRuntimeFiles[0] = {
           skill: 'portable-static',
           target: 'references/runtime.txt',
-          distributions: ['agent-skills'],
+          platforms: ['generic'],
           import: { plugin: 'portable-provider', export: 'registry' },
         };
         await waitForAll([
           fs.writeFile(
-            path.join(scenarioPlugin('import-collision'), 'portable-skills', 'portable-static', 'references'),
+            path.join(scenarioPlugin('import-collision'), 'skills', 'portable-static', 'references'),
             'file blocks imported child\n',
           ),
           fs.writeJson(scenarioManifest('import-collision'), importCollisionManifest, { spaces: 2 }),
@@ -3741,17 +3765,17 @@ describe('authoring tools', () => {
       })(),
       (async () => {
         const withoutDistribution = structuredClone(manifest);
-        delete withoutDistribution.distributions;
-        await fs.writeJson(scenarioManifest('missing-distribution'), withoutDistribution, { spaces: 2 });
+        delete withoutDistribution.artifacts.targets[0].platform;
+        await fs.writeJson(scenarioManifest('missing-platform'), withoutDistribution, { spaces: 2 });
       })(),
-      fs.writeJson(scenarioManifest('portable-only'), withNativeCapability('disabled'), { spaces: 2 }),
+      fs.writeJson(scenarioManifest('portable-only'), { ...manifest, extensions: {} }, { spaces: 2 }),
       fs.writeJson(scenarioManifest('native-capability'), withNativeCapability('present'), { spaces: 2 }),
-      fs.writeJson(scenarioManifest('invalid-distribution'), {
+      fs.writeJson(scenarioManifest('invalid-platform-selector'), {
         ...manifest,
         buildConfig: {
           skillRuntimeFiles: [{
             ...manifest.buildConfig.skillRuntimeFiles[0],
-            distributions: ['native'],
+            platforms: ['native'],
           }],
         },
       }, { spaces: 2 }),
@@ -3761,18 +3785,18 @@ describe('authoring tools', () => {
         await fs.writeJson(scenarioManifest('uppercase-skill-key'), uppercaseDynamicKey, { spaces: 2 });
       })(),
       fs.writeFile(
-        path.join(scenarioPlugin('wrong-skill-name'), 'portable-skills', 'portable-static', 'SKILL.md'),
+        path.join(scenarioPlugin('wrong-skill-name'), 'skills', 'portable-static', 'SKILL.md'),
         '---\nname: wrong-name\ndescription: Invalid portable Skill.\n---\n',
       ),
     ]);
 
     const expectFailure = async (scenario: typeof scenarios[number], diagnostic: string) => {
-      await expect(runValidatePlugin(scenarioPlugin(scenario))).rejects.toMatchObject({
+      await expect(runValidatePlugin(scenarioPlugin(scenario)), scenario).rejects.toMatchObject({
         stdout: expect.stringContaining(diagnostic),
       });
     };
     const validations: Array<() => Promise<unknown>> = [
-      () => expectFailure('portable-root-file', '直接子节点必须是普通目录'),
+      () => expectFailure('portable-root-file', 'Skill 根路径必须是真实目录'),
       () => expectFailure('unresolved-runtime', 'final file tree contains an unresolved template'),
       () => expectFailure('unresolved-provider-runtime', 'final file tree contains an unresolved template'),
       ...(['missing-provider', 'missing-export'] as const).map((scenario) => async () => {
@@ -3784,14 +3808,16 @@ describe('authoring tools', () => {
         expect(failure.stdout).not.toContain(providerBytes.trim());
       }),
       () => expectFailure('import-collision', 'final file tree path "references" conflicts with "references/runtime.txt"'),
-      () => expectFailure('missing-distribution', 'agent-skills targets require distributions.agentSkills'),
-      () => expectFailure('portable-only', 'portable-only plugins are not supported'),
+      () => expectFailure('missing-platform', 'platform'),
+      () => expect(runValidatePlugin(scenarioPlugin('portable-only'), ['--json'])).resolves.toMatchObject({
+        stdout: expect.stringContaining('"ok": true'),
+      }),
       () => expect(runValidatePlugin(scenarioPlugin('native-capability'), ['--json'])).resolves.toMatchObject({
         stdout: expect.stringContaining('"ok": true'),
       }),
-      () => expectFailure('invalid-distribution', '/buildConfig/skillRuntimeFiles/0/distributions/0'),
+      () => expectFailure('invalid-platform-selector', '/buildConfig/skillRuntimeFiles/0/platforms/0'),
       () => expectFailure('uppercase-skill-key', 'ASCII lowercase hyphen-case'),
-      () => expectFailure('wrong-skill-name', 'name 必须与 Skill 目录一致'),
+      () => expectFailure('wrong-skill-name', '[name-directory-mismatch]'),
     ];
     await mapWithConcurrency(validations, 2, (validation) => validation());
   }, 30_000);
@@ -3848,11 +3874,11 @@ describe('authoring tools', () => {
     await fs.writeFile(path.join(pluginDir, 'scripts/render.mjs'), renderer);
     await writeAuthoringPluginManifest(pluginDir, {
       ...manifest,
-      distributions: { agentSkills: { skills: './agent-skills/skills' } },
+      platforms: ['codex', 'claude', 'generic'],
     });
-    await fs.outputFile(path.join(pluginDir, 'agent-skills/skills/helper/SKILL.md'),
+    await fs.outputFile(path.join(pluginDir, 'skills/helper/SKILL.md'),
       '---\nname: helper\ndescription: Runs the managed helper.\n---\n{{aw.command:tools/run}} check\n');
-    await fs.outputFile(path.join(pluginDir, 'agent-skills/skills/helper/README.md'), '# Helper\n');
+    await fs.outputFile(path.join(pluginDir, 'skills/helper/README.md'), '# Helper\n');
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({ stdout: expect.stringContaining('managedCommandPortableUnsupported') });
   });
 
@@ -3895,9 +3921,10 @@ describe('authoring tools', () => {
     const scopedSkill = 'scoped-helper';
     const nativeText = `---\nname: ${nativeSkill}\ndescription: Shared native commands.\n---\n{{aw.command:native/run}}\n`;
     const manifest = createBaseManifest('claude-shared-author', {
+      platforms: ['claude'],
       marketplace: {
         category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CLAUDE'] },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL',  },
       },
       skills: './skills',
       requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
@@ -3940,8 +3967,8 @@ describe('authoring tools', () => {
     const calls = (await fs.readFile(path.join(pluginDir, 'requests.jsonl'), 'utf8'))
       .trim().split('\n').map((line) => JSON.parse(line));
     expect(calls).toEqual([
-      { scope: 'user', ids: ['scoped-skill', 'command-set.native', 'command-set.scoped'] },
-      { scope: 'project', ids: ['scoped-skill', 'command-set.scoped'] },
+      { scope: 'user', ids: ['scoped-skill'] },
+      { scope: 'user', ids: ['command-set.native', 'command-set.scoped'] },
     ]);
 
     await fs.writeFile(path.join(pluginDir, 'skills', nativeSkill, 'SKILL.md'), `${nativeText}{{aw.command:project-tools/run}}\n`);
@@ -3964,10 +3991,15 @@ describe('authoring tools', () => {
         'if (process.env.AW_PLUGIN_EVENT !== "install") throw new Error("missing fixture event");',
         'const fs = await import("node:fs");',
         'const path = await import("node:path");',
-        'const rendererHomes = [process.env.AW_HOME, process.env.AW_CODEX_HOME, process.env.AW_CLAUDE_HOME];',
+        'if (process.env.AW_CODEX_HOME || process.env.AW_CLAUDE_HOME) throw new Error("test home variable leaked");',
+        'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'if (process.env.CODEX_HOME !== context.paths.codexHome || process.env.CLAUDE_CONFIG_DIR !== context.paths.claudeHome || process.env.AW_HOME !== context.paths.awHome) throw new Error("renderer home differs from context");',
+        'if (!process.env.HOME || process.env.HOME !== process.env.USERPROFILE) throw new Error("missing isolated user home");',
+        'const rendererHomes = [process.env.AW_HOME, process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR, process.env.HOME, ...["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"].map((key) => process.env[key])];',
+        'if (rendererHomes.some((home) => !home || !path.isAbsolute(home))) throw new Error("missing isolated state home");',
+        'for (const rendererHome of rendererHomes) fs.mkdirSync(rendererHome, { recursive: true });',
         'for (const rendererHome of rendererHomes) fs.writeFileSync(path.join(rendererHome, "probe"), "probe");',
         'fs.appendFileSync(path.join(process.env.AW_PLUGIN_ROOT, "renderer-home-probes.jsonl"), JSON.stringify(rendererHomes) + "\\n");',
-        'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
         'if (context.config.mode !== "artifact-render") throw new Error("missing config mode");',
         'if (context.config.values.explorerModel !== "gpt-5.4-mini") throw new Error("missing config values");',
         'if (context.renderConfig || context.artifactRenderConfig) throw new Error("validator-only context alias");',
@@ -3976,10 +4008,16 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    await expect(runValidatePlugin(pluginDir, [], {
+    const parentEnv = {
       ...process.env,
       AW_VALIDATOR_SECRET_SENTINEL: 'must-not-reach-renderer',
-    })).resolves.toMatchObject({
+      ...Object.fromEntries([
+        'AW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME',
+        'HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+        'XDG_DATA_HOME', 'XDG_RUNTIME_DIR',
+      ].map((key) => [key, path.join(tempRoot, 'parent', key)])),
+    };
+    await expect(runValidatePlugin(pluginDir, [], parentEnv)).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
     const rendererHomes = (await fs.readFile(rendererHomeProbesPath, 'utf8'))
@@ -3988,9 +4026,7 @@ describe('authoring tools', () => {
       .flatMap((line) => JSON.parse(line) as string[]);
     const actualHomes = [
       os.homedir(),
-      process.env.AW_HOME,
-      process.env.AW_CODEX_HOME,
-      process.env.AW_CLAUDE_HOME,
+      ...Object.values(parentEnv),
     ].filter((home): home is string => typeof home === 'string' && home !== '');
     expect(rendererHomes).not.toHaveLength(0);
     for (const rendererHome of rendererHomes) {
@@ -4028,13 +4064,13 @@ describe('authoring tools', () => {
       tempRoot,
       skillKey,
       createBaseManifest(skillKey, {
+        platforms: ['claude'],
         marketplace: {
           category: 'workflow',
           strict: true,
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CLAUDE'],
           },
         },
         scripts: {
@@ -4118,18 +4154,22 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.mjs validates artifact target platforms against supported products', async () => {
+  it('validate_plugin.mjs validates artifact target platforms against the declared target set', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-artifact-platforms-'));
     tempDirs.push(tempRoot);
 
-    const omittedProducts = await writeDynamicArtifactPlugin(
+    const omittedPlatforms = await writeDynamicArtifactPlugin(
       path.join(tempRoot, 'omitted-products'),
-      { products: null },
+      { platforms: null },
     );
 
-    const emptyProducts = await writeDynamicArtifactPlugin(
+    const omittedManifest = await fs.readJson(omittedPlatforms.manifestPath);
+    delete omittedManifest.platforms;
+    await fs.writeJson(omittedPlatforms.manifestPath, omittedManifest);
+
+    const emptyPlatforms = await writeDynamicArtifactPlugin(
       path.join(tempRoot, 'empty-products'),
-      { products: [] },
+      { platforms: [] },
     );
 
     const rendererOnlyClaude = await writeSourcePlugin(
@@ -4177,13 +4217,13 @@ describe('authoring tools', () => {
     ]);
     const claudeOnly = await writeDynamicArtifactPlugin(
       path.join(tempRoot, 'claude-only-products'),
-      { products: ['claude'] },
+      { platforms: ['claude'] },
     );
-    const productValidations: Array<() => Promise<unknown>> = [
-      () => expect(runValidatePlugin(omittedProducts.pluginDir)).resolves.toMatchObject({
+    const platformValidations: Array<() => Promise<unknown>> = [
+      () => expect(runValidatePlugin(omittedPlatforms.pluginDir)).resolves.toMatchObject({
         stdout: expect.stringContaining('[PASS] All checks passed.'),
       }),
-      () => expect(runValidatePlugin(emptyProducts.pluginDir)).resolves.toMatchObject({
+      () => expect(runValidatePlugin(emptyPlatforms.pluginDir)).resolves.toMatchObject({
         stdout: expect.stringContaining('[PASS] All checks passed.'),
       }),
       () => expect(runValidatePlugin(rendererOnlyClaude.pluginDir)).resolves.toMatchObject({
@@ -4191,23 +4231,23 @@ describe('authoring tools', () => {
       }),
       () => expect(runValidatePlugin(claudeOnly.pluginDir)).rejects.toMatchObject({
         stdout: expect.stringContaining(
-          'artifacts.targets[0].platform requires CODEX support',
+          'artifacts.targets[0].platform requires codex support',
         ),
       }),
     ];
-    await mapWithConcurrency(productValidations, 2, (validation) => validation());
+    await mapWithConcurrency(platformValidations, 2, (validation) => validation());
 
     const dynamicCodex = await writeSourcePlugin(
       path.join(tempRoot, 'codex-dynamic'),
       'codex-dynamic',
       createBaseManifest('codex-dynamic', {
+        platforms: ['codex'],
         marketplace: {
           category: 'workflow',
           strict: true,
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CODEX'],
           },
         },
         scripts: {
@@ -4224,9 +4264,7 @@ describe('authoring tools', () => {
             platform: 'codex',
             scopes: ['project'],
             target: 'codex.skill',
-            delivery: { mode: 'aw-extension' },
-            projectManagedKind: 'skill',
-            states: ['present'],
+                        states: ['present'],
             refreshKeys: [],
             skillKey: 'codex-dynamic',
             sourceDirs: ['./skills/codex-dynamic'],
@@ -4284,6 +4322,7 @@ describe('authoring tools', () => {
       defaults: { profile: 'project-default' },
       profiles: {
         'project-default': {
+          platform: 'codex',
           scope: 'project',
           plugins: { 'codex-dynamic': {} },
         },
@@ -4313,13 +4352,13 @@ describe('authoring tools', () => {
       path.join(tempRoot, 'claude-dynamic'),
       'claude-dynamic',
       createBaseManifest('claude-dynamic', {
+        platforms: ['claude'],
         marketplace: {
           category: 'workflow',
           strict: true,
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CLAUDE'],
           },
         },
         scripts: {
@@ -4415,14 +4454,14 @@ describe('authoring tools', () => {
           './skills/claude-dynamic',
           './skills/claude-dynamic',
         ]), { spaces: 2 });
-        await expectVariantFailure('duplicate-source', 'sourceDirs must not contain duplicate directories');
+        await expectVariantFailure('duplicate-source', 'duplicate source directory');
       },
       async () => {
         await fs.writeJson(variantManifestPath('normalized-duplicate-source'), manifestWithSources([
           './skills/claude-dynamic',
           './skills/claude-dynamic/../claude-dynamic',
         ]), { spaces: 2 });
-        await expectVariantFailure('normalized-duplicate-source', 'sourceDirs must not contain duplicate directories');
+        await expectVariantFailure('normalized-duplicate-source', 'duplicate source directory');
       },
       async () => {
         await fs.remove(path.join(variantSource('missing-skill'), 'SKILL.md'));
@@ -4446,7 +4485,7 @@ describe('authoring tools', () => {
         ]);
         await expectVariantFailure(
           'missing-skill-root',
-          'sourceDirs must include "./skills/claude-dynamic" so README.md is published',
+          'dynamic Skill sources must include "./skills/claude-dynamic" so README.md is published',
         );
       },
       async () => {
@@ -4458,7 +4497,7 @@ describe('authoring tools', () => {
             { spaces: 2 },
           ),
         ]);
-        await expectVariantFailure('author-only-source', 'must not point inside an author-only Skill directory');
+        await expectVariantFailure('author-only-source', 'inside an author-only Skill directory');
       },
       async () => {
         await waitForAll([
@@ -4509,7 +4548,7 @@ describe('authoring tools', () => {
         }, { spaces: 2 });
         await expectVariantFailure(
           'duplicate-owner',
-          'duplicate skill ownership "claude:user:claude-dynamic"',
+          'duplicate dynamic skill owner "claude:user:claude-dynamic"',
         );
       },
     ];
@@ -4521,25 +4560,25 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const pluginName = 'renderer-partitions';
     const nativeId = 'native-shared';
-    const extensionId = 'extension-skill';
+    const otherSkillId = 'other-shared';
     const roleId = 'sensitive-role';
     const { pluginDir, manifestPath } = await writeSourcePlugin(
       tempRoot,
       pluginName,
       createBaseManifest(pluginName, {
+        platforms: ['codex'],
         marketplace: {
           category: 'workflow',
           strict: true,
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CODEX'],
           },
         },
         config: {
           fields: {
             nativeMode: { type: 'string', default: 'native-default' },
-            extensionMode: { type: 'string', default: 'extension-default' },
+            otherMode: { type: 'string', default: 'other-default' },
             secret: { type: 'string', sensitive: true },
           },
         },
@@ -4551,7 +4590,6 @@ describe('authoring tools', () => {
             id: nativeId,
             platform: 'codex',
             target: 'codex.skill',
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
             scopes: ['user', 'project'],
             states: ['present'],
             refreshKeys: ['nativeMode'],
@@ -4586,15 +4624,14 @@ describe('authoring tools', () => {
 
     const manifest = await fs.readJson(manifestPath);
     manifest.artifacts.targets.push({
-      id: extensionId,
+      id: otherSkillId,
       platform: 'codex',
       target: 'codex.skill',
-      delivery: { mode: 'aw-extension' },
       scopes: ['user'],
       states: ['present'],
-      refreshKeys: ['extensionMode'],
-      skillKey: extensionId,
-      sourceDirs: [`./skills/${extensionId}`],
+      refreshKeys: ['otherMode'],
+      skillKey: otherSkillId,
+      sourceDirs: [`./skills/${otherSkillId}`],
     });
     manifest.artifacts.targets.push({
       id: roleId,
@@ -4608,11 +4645,11 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await waitForAll([
       fs.outputFile(
-        path.join(pluginDir, 'skills', extensionId, 'SKILL.md'),
-        `---\nname: ${extensionId}\ndescription: AW extension Skill.\n---\n`,
+        path.join(pluginDir, 'skills', otherSkillId, 'SKILL.md'),
+        `---\nname: ${otherSkillId}\ndescription: Another shared native Skill.\n---\n`,
       ),
       fs.outputFile(
-        path.join(pluginDir, 'skills', extensionId, 'agents', 'openai.yaml'),
+        path.join(pluginDir, 'skills', otherSkillId, 'agents', 'openai.yaml'),
         'policy:\n  allow_implicit_invocation: true\n',
       ),
       fs.writeFile(path.join(pluginDir, 'scripts', 'render.mjs'), [
@@ -4631,9 +4668,9 @@ describe('authoring tools', () => {
         '  previousArtifacts: context.previousArtifacts, awHome: process.env.AW_HOME',
         '}) + "\\n");',
         'if (context.scope !== "user" || context.config.targetScope !== "user") process.exit(1);',
-        'const id = context.requestedArtifactIds[0];',
-        'if (context.requestedArtifactIds.length !== 1 || !["native-shared", "extension-skill", "sensitive-role"].includes(id)) process.exit(2);',
-        'const artifact = id === "sensitive-role" ? {',
+        'if (context.requestedArtifactIds.some(id => !["native-shared", "other-shared", "sensitive-role"].includes(id))) process.exit(2);',
+        'if (context.requestedArtifactIds.includes("sensitive-role") && context.requestedArtifactIds.length !== 1) process.exit(2);',
+        'const artifacts = context.requestedArtifactIds.map(id => id === "sensitive-role" ? {',
         '  id, platform: "codex", target: "codex.agentRole", kind: "codexRole", state: "present",',
         '  refreshKeys: ["secret"], roleKey: id, content: {',
         '    registration: { description: "Sensitive role." },',
@@ -4641,10 +4678,10 @@ describe('authoring tools', () => {
         '  }',
         '} : {',
         '  id, platform: "codex", target: "codex.skill", kind: "skill", state: "present",',
-        '  refreshKeys: id === "native-shared" ? ["nativeMode"] : ["extensionMode"],',
+        '  refreshKeys: id === "native-shared" ? ["nativeMode"] : ["otherMode"],',
         '  skillKey: id, content: { files: {} }',
-        '};',
-        'process.stdout.write(JSON.stringify({ version: 2, artifacts: [artifact] }));',
+        '});',
+        'process.stdout.write(JSON.stringify({ version: 2, artifacts }));',
       ].join('\n'), 'utf8'),
     ]);
 
@@ -4655,36 +4692,34 @@ describe('authoring tools', () => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    expect(calls).toHaveLength(3);
-    expect(calls).toEqual(expect.arrayContaining([
-      {
-        scope: 'user', targetScope: 'user', requestedArtifactIds: [nativeId],
-        schemaKeys: ['nativeMode'], valueKeys: ['nativeMode'], previousArtifacts: [],
-        sourceIds: [nativeId, extensionId], sourceRootsExist: true,
+    expect(calls.flatMap((call) => call.requestedArtifactIds).sort())
+      .toEqual([nativeId, otherSkillId, roleId].sort());
+    for (const call of calls) {
+      expect(call).toMatchObject({
+        scope: 'user', targetScope: 'user', previousArtifacts: [],
+        sourceIds: [nativeId, otherSkillId], sourceRootsExist: true,
         awHome: expect.any(String),
-      },
-      {
-        scope: 'user', targetScope: 'user', requestedArtifactIds: [extensionId],
-        schemaKeys: ['extensionMode'], valueKeys: ['extensionMode'], previousArtifacts: [],
-        sourceIds: [nativeId, extensionId], sourceRootsExist: true,
-        awHome: expect.any(String),
-      },
-      {
-        scope: 'user', targetScope: 'user', requestedArtifactIds: [roleId],
-        schemaKeys: ['secret'], valueKeys: [], previousArtifacts: [],
-        sourceIds: [nativeId, extensionId], sourceRootsExist: true,
-        awHome: expect.any(String),
-      },
-    ]));
-    expect(new Set(calls.map((call) => call.awHome)).size).toBe(3);
+      });
+      if (call.requestedArtifactIds.includes(roleId)) {
+        expect(call.requestedArtifactIds).toEqual([roleId]);
+        expect(call.schemaKeys).toEqual(['secret']);
+        expect(call.valueKeys).toEqual([]);
+      } else {
+        const expectedKeys = call.requestedArtifactIds
+          .map((id: string) => id === nativeId ? 'nativeMode' : 'otherMode').sort();
+        expect([...call.schemaKeys].sort()).toEqual(expectedKeys);
+        expect([...call.valueKeys].sort()).toEqual(expectedKeys);
+      }
+    }
+    expect(new Set(calls.map((call) => call.awHome)).size).toBe(calls.length);
 
     await fs.writeFile(path.join(pluginDir, 'scripts', 'render.mjs'), [
       'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
       `  id: ${JSON.stringify(nativeId)}, platform: "codex", target: "codex.skill", kind: "skill",`,
       `  state: "present", refreshKeys: ["nativeMode"], skillKey: ${JSON.stringify(nativeId)}, content: { files: {} }`,
       '}, {',
-      `  id: ${JSON.stringify(extensionId)}, platform: "codex", target: "codex.skill", kind: "skill",`,
-      `  state: "present", refreshKeys: ["extensionMode"], skillKey: ${JSON.stringify(extensionId)}, content: { files: {} }`,
+      `  id: ${JSON.stringify(otherSkillId)}, platform: "codex", target: "codex.skill", kind: "skill",`,
+      `  state: "present", refreshKeys: ["otherMode"], skillKey: ${JSON.stringify(otherSkillId)}, content: { files: {} }`,
       '}] }));',
     ].join('\n'), 'utf8');
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
@@ -4713,7 +4748,6 @@ describe('authoring tools', () => {
             id: 'review',
             platform: 'codex',
             target: 'codex.skill',
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
             scopes: ['user'],
             states: ['present'],
             refreshKeys: ['mode'],
@@ -4730,8 +4764,10 @@ describe('authoring tools', () => {
     );
 
     const manifest = await fs.readJson(fixture.manifestPath);
+    delete manifest.artifacts.targets[0].sourceDirs;
+    await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
     await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('native dynamic Skill "review" conflicts with a static Skill'),
+      stdout: expect.stringContaining('dynamic Skill "review" conflicts with a static Skill'),
     });
 
     delete manifest.skills;
@@ -4743,14 +4779,14 @@ describe('authoring tools', () => {
     });
     await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
     await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('duplicate codex-native artifact id "review" in the shared projection'),
+      stdout: expect.stringContaining('duplicate artifact id "review" for surface/scope "codex:user"'),
     });
 
     manifest.artifacts.targets[1].id = 'other-review';
     manifest.artifacts.targets[1].skillKey = 'review';
     await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
     await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('duplicate codex-native skillKey "review" in the shared projection'),
+      stdout: expect.stringContaining('duplicate dynamic skill owner "codex:user:review"'),
     });
   });
 
@@ -4761,13 +4797,13 @@ describe('authoring tools', () => {
       tempRoot,
       'codex-null-hook-authoring',
       createBaseManifest('codex-null-hook-authoring', {
+        platforms: ['codex', 'claude'],
         marketplace: {
           category: 'workflow',
           strict: true,
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CODEX', 'CLAUDE'],
           },
         },
         extensions: {
@@ -4786,7 +4822,6 @@ describe('authoring tools', () => {
             id: 'user-native',
             platform: 'codex',
             target: 'codex.skill',
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
             scopes: ['user'],
             states: ['present'],
             refreshKeys: [],
@@ -4982,28 +5017,29 @@ describe('authoring tools', () => {
 
     const cases: Array<{
       name: string;
-      products: string[];
+      platforms: string[];
       extra: Record<string, unknown>;
       files?: Record<string, string | Record<string, unknown>>;
       expected?: string;
     }> = [
       {
         name: 'codex-only-file-rules',
-        products: ['codex'],
+        platforms: ['codex'],
         extra: {
           buildConfig: {
             fileRules: {
               claude: {
                 include: ['skills/**'],
+                exclude: [],
               },
             },
           },
         },
-        expected: 'buildConfig.fileRules.claude requires CLAUDE support',
+        expected: 'buildConfig.fileRules.claude requires claude support',
       },
       {
         name: 'claude-only-manifest-overrides',
-        products: ['claude'],
+        platforms: ['claude'],
         extra: {
           buildConfig: {
             manifestOverrides: {
@@ -5011,11 +5047,11 @@ describe('authoring tools', () => {
             },
           },
         },
-        expected: 'buildConfig.manifestOverrides.codex requires CODEX support',
+        expected: 'buildConfig.manifestOverrides.codex requires codex support',
       },
       {
         name: 'claude-only-apps',
-        products: ['claude'],
+        platforms: ['claude'],
         extra: {
           apps: './.app.json',
         },
@@ -5028,11 +5064,11 @@ describe('authoring tools', () => {
             },
           },
         },
-        expected: 'apps requires CODEX support',
+        expected: 'apps requires codex support',
       },
       {
         name: 'claude-only-native-hooks',
-        products: ['claude'],
+        platforms: ['claude'],
         extra: {
           extensions: {
             nativeHooks: {
@@ -5045,11 +5081,11 @@ describe('authoring tools', () => {
             },
           },
         },
-        expected: 'extensions.nativeHooks.codex requires CODEX support',
+        expected: 'extensions.nativeHooks.codex requires codex support',
       },
       {
         name: 'claude-only-agent-overrides',
-        products: ['claude'],
+        platforms: ['claude'],
         extra: {
           extensions: {
             hooks: [
@@ -5066,11 +5102,11 @@ describe('authoring tools', () => {
             ],
           },
         },
-        expected: 'extensions.hooks[0].agentOverrides.codex requires CODEX support',
+        expected: 'extensions.hooks[0].agentOverrides.codex requires codex support',
       },
       {
         name: 'claude-only-null-agent-overrides',
-        products: ['claude'],
+        platforms: ['claude'],
         extra: {
           extensions: {
             hooks: [
@@ -5093,13 +5129,14 @@ describe('authoring tools', () => {
         tempRoot,
         testCase.name,
         createBaseManifest(testCase.name, {
+          platforms: testCase.platforms,
           marketplace: {
             category: 'workflow',
             strict: true,
             policy: {
               installation: 'AVAILABLE',
               authentication: 'ON_INSTALL',
-              products: testCase.products,
+
             },
           },
           ...testCase.extra,
@@ -5192,13 +5229,14 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: 'Test plugin for slash command platform gating.',
       slashCommands: './slash-commands',
+      platforms: ['claude'],
       marketplace: {
         category: 'workflow',
         strict: true,
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CLAUDE'],
+
         },
       },
     }), { spaces: 2 });
@@ -5221,7 +5259,7 @@ describe('authoring tools', () => {
     });
 
     const manifest = await fs.readJson(manifestPath);
-    manifest.marketplace.policy.products = ['CODEX'];
+    manifest.platforms = ['codex'];
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
@@ -5235,7 +5273,7 @@ describe('authoring tools', () => {
 
     const codexOnly = await writeSlashCommandPlugin(path.join(tempRoot, 'codex-only'), {
       name: 'slash-codex-only',
-      products: ['codex'],
+      platforms: ['codex'],
       commandContent: [
         '---',
         'description: Validate Codex-only slash command rendering.',
@@ -5256,12 +5294,12 @@ describe('authoring tools', () => {
     });
 
     const manifest = await fs.readJson(codexOnly.manifestPath);
-    manifest.marketplace.policy.products = ['claude', 'codex'];
+    manifest.platforms = ['claude', 'codex'];
     await fs.writeJson(codexOnly.manifestPath, manifest, { spaces: 2 });
 
     await expect(runValidatePlugin(codexOnly.pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining(
-        'slash-commands/review.md frontmatter.claude.shell must be "bash" or "powershell"',
+        'frontmatter.claude.shell: expected "bash" or "powershell"',
       ),
     });
   });
@@ -5463,7 +5501,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.mjs follows registry marketplace policy values', async () => {
+  it('validate_plugin.mjs validates canonical platforms and registry marketplace policy values', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-manifest-products-'));
     tempDirs.push(tempRoot);
 
@@ -5473,13 +5511,14 @@ describe('authoring tools', () => {
       name: 'manifest-products-test',
       version: '0.1.0',
       description: 'Test plugin for manifest product checks.',
+      platforms: ['codex', 'browser'],
       marketplace: {
         category: 'workflow',
         strict: true,
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX', 'BROWSER'],
+
         },
       },
     }), { spaces: 2 });
@@ -5494,12 +5533,12 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('marketplace.policy.products[1]'),
+      stdout: expect.stringContaining('/platforms/1'),
     });
 
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
-    manifest.marketplace.policy.products = ['codex', 'claude'];
+    manifest.platforms = ['codex', 'claude'];
     for (const installation of getPluginAuthoringAcceptedValues(
       'manifest',
       'marketplace.policy.installation',
@@ -5697,6 +5736,7 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: 'Test plugin for templated skill metadata.',
       skills: './skills',
+      platforms: ['codex', 'claude'],
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -5791,13 +5831,14 @@ describe('authoring tools', () => {
       version: '0.1.0',
       description: 'Test plugin for Claude-only skill metadata checks.',
       skills: './skills',
+      platforms: ['claude'],
       marketplace: {
         category: 'workflow',
         strict: true,
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CLAUDE'],
+
         },
       },
     }), { spaces: 2 });
@@ -6082,7 +6123,7 @@ describe('authoring tools', () => {
 
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     const codexOnlyManifest = await fs.readJson(manifestPath);
-    codexOnlyManifest.marketplace.policy.products = ['CODEX'];
+    codexOnlyManifest.platforms = ['codex'];
     await fs.writeJson(manifestPath, codexOnlyManifest, { spaces: 2 });
 
     let codexOnlyExtensionStdout = '';
@@ -6383,14 +6424,14 @@ describe('authoring tools', () => {
         ...createBaseManifest('stale-portable'),
         schemaVersion: 3,
         extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-        distributions: { agentSkills: { skills: './portable-skills' } },
+        platforms: ['generic'], skills: './skills',
       }),
       fs.outputFile(path.join(pluginDir, 'README.md'), '# Stale portable\n'),
       fs.outputFile(
-        path.join(pluginDir, 'portable-skills', 'portable', 'SKILL.md'),
+        path.join(pluginDir, 'skills', 'portable', 'SKILL.md'),
         '---\nname: portable\ndescription: Stale runtime fixture.\n---\n',
       ),
-      fs.outputFile(path.join(pluginDir, 'portable-skills', 'portable', 'README.md'), '# Portable\n'),
+      fs.outputFile(path.join(pluginDir, 'skills', 'portable', 'README.md'), '# Portable\n'),
     ]);
 
     const validator = path.join(authoringRoot, 'scripts', 'validate-plugin.mjs');

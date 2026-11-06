@@ -151,7 +151,14 @@ export class SessionHost {
     const previous = this.#controller;
     previous.beginRetirement();
     this.#publish();
-    const ready = await previous.cancelAndWaitForReads();
+    let ready: boolean;
+    try {
+      ready = await previous.cancelAndWaitForReads();
+    } catch (error) {
+      this.#reloading = false;
+      this.#publish();
+      throw error;
+    }
     if (!ready || previous.hasActiveWrite || this.#disposed) {
       this.#reloading = false;
       this.#publish();
@@ -215,7 +222,9 @@ export class SessionHost {
       if (pending === 'home') {
         controller.goHome();
         this.#publish();
-      } else void this.#reload();
+      } else void this.#reload().catch((error: unknown) => {
+        controller.recordUiFailure(error, { code: 'tuiSessionReloadFailed', stage: 'session-reload' });
+      });
     });
   }
 

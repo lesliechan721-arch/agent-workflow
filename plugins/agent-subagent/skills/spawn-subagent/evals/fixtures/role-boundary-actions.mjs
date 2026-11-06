@@ -63,8 +63,8 @@ async function successfulCommand(command, args, options) {
 }
 function labEnvironment(workspace) {
   const root = path.join(workspace, LAB);
-  return { ...process.env, AW_HOME: path.join(root, 'home', 'aw'), AW_CODEX_HOME: path.join(root, 'home', 'codex'),
-    AW_CLAUDE_HOME: path.join(root, 'home', 'claude'), HOME: path.join(root, 'home'), CI: '1', GIT_TERMINAL_PROMPT: '0' };
+  return { ...process.env, AW_HOME: path.join(root, 'home', 'aw'), CODEX_HOME: path.join(root, 'home', 'codex'),
+    CLAUDE_CONFIG_DIR: path.join(root, 'home', 'claude'), HOME: path.join(root, 'home'), CI: '1', GIT_TERMINAL_PROMPT: '0' };
 }
 async function awAvailable(env, cwd) {
   const describe = await jsonCommand('aw', ['self', 'describe', '--json'], { env, cwd });
@@ -287,7 +287,7 @@ async function installLab(workspace, fixtures, operation) {
   await jsonCommand('aw', ['catalog', 'build', '--workspace-root', catalog, '--out', snapshot, '--force', '--json'], { env, cwd: project });
   await jsonCommand('aw', ['catalog', 'source', 'add', 'role-boundary-eval', '--path', snapshot, '--primary', '--no-auto-check', '--yes', '--json'], { env, cwd: project });
   await jsonCommand('aw', ['catalog', 'source', 'sync', 'role-boundary-eval', '--yes', '--json'], { env, cwd: project });
-  await jsonCommand('aw', ['install', 'role-boundary-eval/role-boundary-lab', '--scope', 'project', '--platform', 'codex', '--yes', '--json'], { env, cwd: project });
+  await jsonCommand('aw', ['install', 'role-boundary-eval/role-boundary-lab', '--scope', 'project', '--target', 'codex', '--yes', '--json'], { env, cwd: project });
   const guideRoot = path.join(project, '.agents', 'skills', 'spawn-subagent');
   const active = await readInstalled(project, guideRoot);
   const instructionsFile = path.join(lab, 'instructions.md'), promptFile = path.join(lab, 'task.md');
@@ -314,7 +314,7 @@ async function applyChange(workspace, instructions = false) {
   if (!isDeepStrictEqual(saved.effectiveValues, before.effectiveValues)) throw new Error('fixtureSaveUnexpectedlyApplied');
   // Repeating the same config set --apply has no store change and does not
   // refresh outputs. Public sync applies this already saved configuration.
-  await jsonCommand('aw', ['sync', state.pluginId, '--scope', 'project', '--platform', 'codex', '--yes', '--json'], { env, cwd: state.project });
+  await jsonCommand('aw', ['sync', state.pluginId, '--scope', 'project', '--target', 'codex', '--yes', '--json'], { env, cwd: state.project });
   const after = await readInstalled(state.project, state.guideRoot);
   if (!isDeepStrictEqual(after.effectiveValues.subagentCommands, commands)) throw new Error('fixtureApplyDidNotUpdateValues');
   if (instructions) {

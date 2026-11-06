@@ -57,6 +57,9 @@ export function mergeWriteCommandResults(
       : results.some((result) => result.overallState === 'succeeded'
         || result.overallState === 'partial') ? 'partial' : 'failed',
     receiptTargets: results.flatMap((result) => result.receiptTargets),
+    ...(results.some((result) => result.nativeFootprints !== undefined)
+      ? { nativeFootprints: results.flatMap((result) => result.nativeFootprints ?? []) }
+      : {}),
     ...(dependencyPlan ? { dependencyPlan } : {}),
     ...(results.some((result) => result.codexReconcilePlans !== undefined)
       ? { codexReconcilePlans: results.flatMap((result) => result.codexReconcilePlans ?? []) }
@@ -78,9 +81,6 @@ export function mergeWriteCommandResults(
     } : {}),
     ...(results.some((result) => result.offlineCleanupPlans !== undefined)
       ? { offlineCleanupPlans: results.flatMap((result) => result.offlineCleanupPlans ?? []) }
-      : {}),
-    ...(results.some((result) => result.removedPluginCleanupIds !== undefined)
-      ? { removedPluginCleanupIds: [...new Set(results.flatMap((result) => result.removedPluginCleanupIds ?? []))] }
       : {}),
   };
 }
@@ -214,8 +214,8 @@ export function failedWriteCommandResult(
       errorCode,
       ...(errorCode === 'exclusiveOwnerEvidenceInvalid' && result.target.pluginId ? {
         recoveryActions: [
-          `run aw cleanup ${result.target.pluginId} --platform ${result.target.platform} --scope ${result.target.scope} --force`,
-          `then run aw reinstall ${result.target.pluginId} --platform ${result.target.platform} --scope ${result.target.scope}`,
+          `run aw plugin cleanup ${result.target.pluginId} --target ${result.target.platform} --scope ${result.target.scope} --force`,
+          `then run aw plugin sync ${result.target.pluginId} --target ${result.target.platform} --context ${result.target.scope} --rebuild`,
         ],
       } : errorCode === 'forceCleanupPathUnavailable' ? {
         recoveryActions: [

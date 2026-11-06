@@ -205,3 +205,33 @@ export const sensitiveFieldRejectsConst: PluginConfigScalarField = {
   type: 'string', sensitive: true,
   const: 'secret',
 }
+
+export const sourceConfigV5: NonNullable<PluginManifestSourceV3['config']> = {
+  schemaVersion: 5,
+  definitions: { profile: { type: 'object', properties: { executor: { type: 'string' } } } },
+  fields: { profile: { $ref: '#/config/definitions/profile', default: { executor: 'native' } } },
+  platforms: {
+    cursor: { definitions: { profile: { type: 'object', properties: { executor: { type: 'string', const: 'native' } } } } },
+    generic: { fields: { genericOnly: { type: 'boolean', default: false } }, presentation: {} },
+  },
+}
+
+export const normalizedConfigV5: import('../../src/types.js').PluginConfigDefinition = {
+  schemaVersion: 5,
+  fields: { enabled: { type: 'boolean' } },
+  platforms: {
+    cursor: { fields: { enabled: { type: 'boolean', default: true } } },
+    generic: { fields: {
+      profile: {
+        // @ts-expect-error Normalized platform profiles contain compiled fields.
+        $ref: '#/config/definitions/profile',
+      },
+    } },
+  },
+}
+
+export const compiledConfigRejectsProfiles: import('../../src/types.js').PluginConfigCompiledDefinition = {
+  schemaVersion: 4, fields: {},
+  // @ts-expect-error A selected compiled profile has no platform branches.
+  platforms: {},
+}

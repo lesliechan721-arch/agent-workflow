@@ -1,6 +1,6 @@
 import type {
   CatalogWorkspace,
-  PlatformName,
+  PlatformTarget,
   PluginConfigValue,
   PluginMeta,
   Scope,
@@ -9,7 +9,7 @@ import type {
 import type { CatalogWorkspaceResolvedFrom } from '../commands/catalog-workspace-resolution.js'
 import type { PluginConfigSource } from '../utils/plugin-config.js'
 
-export type ReviewPlatform = PlatformName | 'agent-skills'
+export type ReviewPlatform = PlatformTarget
 
 export type ReviewProfileConfig = Record<string, Record<string, PluginConfigValue>>
 
@@ -24,13 +24,11 @@ export interface ReviewProfile {
 
 export type ReviewSkillSourceKind =
   | 'source-skill'
-  | 'portable-source-skill'
   | 'artifact-source'
 
 export type ReviewSkillDelivery =
   | 'static'
-  | 'aw-extension'
-  | 'codex-native'
+  | 'native'
   | 'agent-skills'
 
 export interface ReviewSelectedSkill {

@@ -194,7 +194,7 @@ describe('Cross-plugin config references', () => {
       ] as const) {
         const directory = path.join(root, 'plugins', name)
         await fs.outputJson(path.join(directory, '.agents-plugin/plugin.json'), manifest)
-        await fs.outputJson(path.join(directory, '.mcp.json'), { mcpServers: {} })
+        await fs.outputJson(path.join(directory, '.mcp.json'), { mcpServers: { example: { command: 'node', args: [] } } })
       }
       let built = false
       await expect(buildCatalogWorkspace({ workspaceRoot: root, adapter: { build: async () => { built = true } } }))
@@ -218,7 +218,7 @@ describe('Cross-plugin config references', () => {
       ] as const) {
         const directory = path.join(root, 'plugins', name)
         await fs.outputJson(path.join(directory, '.agents-plugin/plugin.json'), manifest)
-        await fs.outputJson(path.join(directory, '.mcp.json'), { mcpServers: {} })
+        await fs.outputJson(path.join(directory, '.mcp.json'), { mcpServers: { example: { command: 'node', args: [] } } })
       }
       let built = false
       await expect(buildCatalogWorkspace({ workspaceRoot: root, adapter: { build: async () => { built = true } } }))

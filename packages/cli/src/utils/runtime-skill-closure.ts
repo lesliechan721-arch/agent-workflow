@@ -1,8 +1,8 @@
+import type { PlatformTarget } from '@lesliechan721/aw-plugin-core';
 import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import type { PlatformName } from '../types.js';
 import { calculateFileDigest } from './bundle-integrity.js';
 
 const CORE_RESOURCE_ROOT_PATTERN = /^(?:\.\/)?(?:references|assets|scripts|agents|evals|providers)(?:[\\/]|$)/u;
@@ -23,7 +23,7 @@ interface RuntimeSkillReference {
 }
 
 export interface SkillRuntimeProjectionEvidence {
-  platform: PlatformName;
+  platform: PlatformTarget;
   skill: string;
   target: string;
   sourceDigest: string;

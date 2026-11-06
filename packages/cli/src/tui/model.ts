@@ -8,15 +8,16 @@ import {
 
 import type {
   PlatformName,
+  PlatformTarget,
   PluginConfigFieldType,
   PluginConfigObject,
   PluginConfigPreset,
   PluginConfigSchemaField,
   PluginConfigJoinSummary,
-  PluginConfigSchema,
   PluginConfigValue,
   Scope,
 } from '../types.js';
+import type { PluginConfigCompiledDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 import type {
   StatusActivationProjection,
   StatusExtensionProjection,
@@ -514,15 +515,30 @@ export interface ConfigPresetViewModel {
 }
 
 export interface ConfigEditEvidence {
+  platform?: PlatformTarget;
+  context?: Scope;
   sourceIdentity: string;
   schemaIdentity: string;
   storeDigests: Partial<Record<Scope, string>>;
 }
 
+export type ConfigProfileKey = 'common' | PlatformTarget;
+
+export interface ConfigProfileOptions {
+  platform?: PlatformTarget;
+  context?: Scope;
+}
+
+export interface ConfigReadOptions extends ConfigProfileOptions {
+  view?: 'stored' | 'effective';
+}
+
 export interface ConfigPageViewModel {
   editEvidence?: ConfigEditEvidence;
   pluginId: string;
-  layer: { scope: Scope | 'effective' };
+  profile: ConfigProfileKey;
+  context: Scope;
+  layer: { profile: ConfigProfileKey; context: Scope; view?: 'stored' | 'effective' };
   groups: ConfigGroupViewModel[];
   presets: ConfigPresetViewModel[];
   storedCount: number;
@@ -640,10 +656,11 @@ export interface UserIssueViewModel {
     key: string;
     title: string;
     type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath' | 'configLayerUnsupported';
-    source: 'default' | 'user' | 'project' | 'missing';
+    source: NonNullable<StatusV8PluginSummary['configIssues']>[number]['source'];
     scope: Scope;
+    platform?: PlatformTarget;
   }>;
-  configLayer?: { scope: Scope };
+  configLayer?: { profile: ConfigProfileKey; context: Scope };
   actions: UserIssueActionViewModel[];
   technicalDetails: Array<{ code: string; message: string }>;
   diagnostic: DiagnosticSummaryViewModel;
@@ -746,9 +763,10 @@ function parsedScopedUninstallRecovery(
   expectedPlatform: PlatformName,
 ): { pluginId: string; scope: Scope; description: string } | undefined {
   if (recovery.command !== 'uninstall' || !recovery.scope) return undefined;
-  const match = /(?:^|\s)aw uninstall ([^\s]+) --platform (codex|claude) --scope (user|project)(?:，|,|\s|$)/u
+  const match = /(?:^|\s)aw plugin cleanup ([^\s]+) --target (codex|claude) --scope (user|project)(?:，|,|\s|$)/u
     .exec(recovery.description);
-  if (!match || match[2] !== expectedPlatform || match[3] !== recovery.scope) return undefined;
+  if (!match || match[2] !== expectedPlatform
+    || match[3] !== recovery.scope) return undefined;
   return { pluginId: match[1]!, scope: recovery.scope, description: recovery.description };
 }
 
@@ -1803,19 +1821,19 @@ function configIssues(pluginSummaries: StatusV8PluginSummary[]): UserIssueDraft[
         issueId: `config:${summary.pluginId}:unsupported-project-layer`,
         category: 'configLayerUnsupported' as const,
         title: `${summary.displayName ?? summary.pluginName} · 项目设置包含旧值`,
-        explanation: '本项目旧值不再受支持；当前继承个人或插件默认。',
-        impact: ['旧值不会参与生成。可以进入项目设置删除旧值。'],
+        explanation: '项目配置值不再受支持。请使用用户公共或平台配置。',
+        impact: ['旧项目值不会参与生成。请在用户配置中重新设置所需值。'],
         entity: { kind: 'plugin' as const, id: summary.pluginId },
         pluginId: summary.pluginId,
         sourceId,
-        configLayer: { scope: 'project' as const },
+        configLayer: { profile: 'common', context: 'project' },
         actions: [
-          { id: 'openConfig' as const, label: '删除旧值', description: '进入项目设置并恢复继承' },
+          { id: 'openConfig' as const, label: '打开用户配置', description: '在当前项目上下文中设置用户配置' },
           { id: 'viewTechnical' as const, label: '查看字段详情' },
         ],
         technicalDetails: unsupported.map((entry) => ({
           code: entry.type,
-          message: `${entry.title} · project · 实际使用 user/default`,
+          message: `${entry.title} · 旧项目配置层不再读取`,
         })),
       });
     }
@@ -1825,11 +1843,11 @@ function configIssues(pluginSummaries: StatusV8PluginSummary[]): UserIssueDraft[
     const invalid = types.has('invalid-config') || types.has('sharedCompositeContainsLocalPath');
     const sources = new Set(blockingIssues.map((issue) => issue.source));
     const onlySource = sources.size === 1 ? [...sources][0] : undefined;
-    const configLayer = onlySource === 'user'
-      ? { scope: 'user' as const }
-      : onlySource === 'project'
-        ? { scope: 'project' as const }
-        : undefined;
+    const context = blockingIssues.some((issue) => issue.scope === 'project') ? 'project' as const : 'user' as const;
+    const platforms = new Set(blockingIssues.flatMap((issue) => issue.platform ? [issue.platform] : []));
+    const onlyPlatform = platforms.size === 1 ? [...platforms][0] : undefined;
+    const configLayer = onlySource === 'common' ? { profile: 'common' as const, context }
+      : onlyPlatform ? { profile: onlyPlatform, context } : undefined;
     issues.push({
       issueId: `config:${summary.pluginId}:${invalid ? 'invalid' : 'required'}`,
       category: 'requiredConfigMissing' as const,
@@ -1841,12 +1859,12 @@ function configIssues(pluginSummaries: StatusV8PluginSummary[]): UserIssueDraft[
       entity: { kind: 'plugin' as const, id: summary.pluginId },
       pluginId: summary.pluginId,
       sourceId,
-      requiredFields: blockingIssues.map(({ key, title, type, source, scope }) => ({
-        key, title, type, source, scope,
+      requiredFields: blockingIssues.map(({ key, title, type, source, scope, platform }) => ({
+        key, title, type, source, scope, platform,
       })),
       ...(configLayer ? { configLayer } : {}),
       actions: [
-        { id: 'openConfig' as const, label: invalid ? '修正设置' : '完成设置', description: configLayer ? '进入建议的设置层' : '选择个人或项目设置层' },
+        { id: 'openConfig' as const, label: invalid ? '修正设置' : '完成设置', description: configLayer ? '进入相关用户配置' : '选择公共或平台配置' },
         { id: 'viewTechnical' as const, label: '查看字段详情' },
       ],
       technicalDetails: blockingIssues.map((entry) => ({
@@ -1922,7 +1940,8 @@ function issueDiagnostic(
           })),
           { state: 'preserved', message: preserved },
         ];
-  const primaryAction = issue.actions.find((action) => action.id !== 'viewTechnical');
+  const primaryAction = issue.actions.find((action) => action.id !== 'viewTechnical'
+    && action.id !== 'keepProjectScope' && action.id !== 'keepUserScope');
   const nextStep = primaryAction
     ? `${primaryAction.label}，然后重新检查当前状态。`
     : '打开技术详情，记录安全错误代码后重新检查。';
@@ -1953,7 +1972,7 @@ function issueDiagnostic(
   const checks = issue.category === 'legacyState'
     ? [
         '不自动迁移旧版状态。',
-        '运行 aw status --json，记录公开错误 code。',
+        '运行 aw plugin status --json，记录公开错误 code。',
         '备份相关 AW 配置。',
         '按技术详情使用受支持命令或人工处理。',
         '再次运行状态检查。',
@@ -2388,8 +2407,8 @@ function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceL
   if (!source) return '未设置';
   return {
     default: '默认值',
-    user: '个人默认',
-    project: '当前项目',
+    common: '公共配置',
+    platform: '平台配置',
   }[source];
 }
 
@@ -2440,13 +2459,13 @@ function configObjectChildChanges(
 }
 
 export function buildConfigGroups(options: {
-  schema: PluginConfigSchema;
+  schema: PluginConfigCompiledDefinition;
   read: ResolvedConfigRead;
   effectiveRead?: ResolvedConfigRead;
-  layerReads?: Partial<Record<Scope, ResolvedConfigRead>>;
+  layerReads?: Partial<Record<ConfigProfileKey, ResolvedConfigRead>>;
   dirtyKeys?: ReadonlySet<string>;
   rawValues?: Record<string, PluginConfigValue>;
-  rawLayerValues?: Partial<Record<Scope, Record<string, PluginConfigValue>>>;
+  rawLayerValues?: Partial<Record<ConfigProfileKey, Record<string, PluginConfigValue>>>;
   effectiveRawValues?: Record<string, PluginConfigValue>;
   sharedNativeRefreshKeys?: ReadonlySet<string>;
 }): ConfigGroupViewModel[] {
@@ -2455,8 +2474,7 @@ export function buildConfigGroups(options: {
     (options.effectiveRead ?? options.read).fields.map((field) => [field.key, field]),
   );
   const effectivePage = options.read.scope === 'effective';
-  const layerEntry = (layer: Scope, key: string) =>
-    options.layerReads?.[layer]?.fields.find((field) => field.key === key);
+  const selectedSource = options.read.platform ? 'platform' : 'common';
   const fieldModel = (key: string): ConfigFieldViewModel => {
     const schema = options.schema.fields[key]!;
     const entry = entryByKey.get(key);
@@ -2476,7 +2494,7 @@ export function buildConfigGroups(options: {
     const summaries = presentation && 'summaries' in presentation ? presentation.summaries : undefined;
     const summary = fieldView?.summary ? summaries?.[fieldView.summary] : undefined;
     const itemSummary = fieldView?.itemSummary ? summaries?.[fieldView.itemSummary] : undefined;
-    const privateValue = schema.sensitive === true;
+    const privateValue = schema.sensitive === true || configObjectHasSensitiveChild(schema);
     const choices = schema.choices;
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
     const selectedRawValue = effectivePage
@@ -2486,29 +2504,26 @@ export function buildConfigGroups(options: {
       && entry?.storedSourceLayer !== undefined
       && entry.storedValue === undefined;
     const invalidOverrideSourceCandidate = selectedStoredInvalid
-      ? (effectivePage ? entry?.invalidOverride?.sourceLayer : options.read.scope)
+      ? selectedSource
       : entry?.invalidOverride?.sourceLayer;
-    const invalidOverrideSource = invalidOverrideSourceCandidate === 'user'
-      || invalidOverrideSourceCandidate === 'project'
+    const invalidOverrideSource = invalidOverrideSourceCandidate === 'common'
+      || invalidOverrideSourceCandidate === 'platform'
       ? invalidOverrideSourceCandidate
       : undefined;
     const invalidOverride = invalidOverrideSource !== undefined;
     const invalidOverrideOwnedByLayer = !effectivePage
-      && invalidOverrideSource === options.read.scope;
+      && invalidOverrideSource === selectedSource;
     const effectiveConfigured = effectiveEntry?.sourceLayer !== undefined
       && effectiveEntry.sourceLayer !== null
       && effectiveEntry.effectiveValue !== undefined
       && effectiveEntry.effectiveValue !== null
       && (effectiveEntry.valueState === 'configured' || effectiveEntry.valueState === 'default');
-    const omittedLayer = options.read.scope === 'user'
-      ? 'user'
-      : 'project';
-    const fallback = options.read.scope === 'user'
-      ? undefined
-      : (['project', 'user'] as const)
-        .filter((layer) => layer !== omittedLayer)
-        .map((layer) => ({ layer, entry: layerEntry(layer, key) }))
-        .find((candidate) => candidate.entry?.storedSourceLayer !== undefined);
+    const commonEntry = options.read.platform
+      ? options.layerReads?.common?.fields.find((field) => field.key === key)
+      : undefined;
+    const fallback = commonEntry?.storedSourceLayer !== undefined
+      ? { layer: 'common' as const, entry: commonEntry }
+      : undefined;
     const projectedFallback = entry?.fallback;
     const fallbackInvalid = projectedFallback?.state === 'invalid';
     const fallbackValue = projectedFallback?.state === 'valid'
@@ -2517,8 +2532,8 @@ export function buildConfigGroups(options: {
         ? undefined
         : fallback?.entry?.storedValue ?? schema.default;
     const fallbackRawValue = projectedFallback?.state === 'valid'
-      ? projectedFallback.sourceLayer === 'user'
-        ? options.rawLayerValues?.user?.[key] ?? fallbackValue
+      ? projectedFallback.sourceLayer === 'common'
+        ? options.rawLayerValues?.common?.[key] ?? fallbackValue
         : fallbackValue
       : projectedFallback
         ? undefined
@@ -2553,10 +2568,8 @@ export function buildConfigGroups(options: {
       }),
       required: schema.required === true,
       sensitive: schema.sensitive === true,
-      writable: (entry?.writable ?? effectivePage)
-        && !(options.read.scope === 'project' && privateValue),
-      canSet: (entry?.canSet ?? effectivePage)
-        && !(options.read.scope === 'project' && privateValue),
+      writable: entry?.writable ?? effectivePage,
+      canSet: entry?.canSet ?? effectivePage,
       canUnset: entry?.canUnset ?? false,
       dirty: options.dirtyKeys?.has(key) === true,
       inherited,
@@ -2697,18 +2710,22 @@ export function buildConfigGroups(options: {
 
 export function buildConfigPage(options: {
   pluginId: string;
-  schema: PluginConfigSchema;
+  context?: Scope;
+  schema: PluginConfigCompiledDefinition;
   read: ResolvedConfigRead;
   effectiveRead?: ResolvedConfigRead;
-  layerReads?: Partial<Record<Scope, ResolvedConfigRead>>;
+  layerReads?: Partial<Record<ConfigProfileKey, ResolvedConfigRead>>;
   rawValues?: Record<string, PluginConfigValue>;
-  rawLayerValues?: Partial<Record<Scope, Record<string, PluginConfigValue>>>;
+  rawLayerValues?: Partial<Record<ConfigProfileKey, Record<string, PluginConfigValue>>>;
   effectiveRawValues?: Record<string, PluginConfigValue>;
   sharedNativeRefreshKeys?: ReadonlySet<string>;
 }): ConfigPageViewModel {
   return {
     pluginId: options.pluginId,
-    layer: { scope: options.read.scope },
+    profile: options.read.platform ?? 'common',
+    context: options.context ?? 'user',
+    layer: { profile: options.read.platform ?? 'common', context: options.context ?? 'user',
+      view: options.read.scope === 'effective' ? 'effective' : 'stored' },
     groups: buildConfigGroups(options),
     presets: [],
     storedCount: options.read.fields.filter((field) => field.storedSourceLayer !== undefined).length,

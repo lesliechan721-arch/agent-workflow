@@ -42,30 +42,30 @@ afterEach(async () => {
 describe('AW source binding', () => {
   it('accepts explicit config for same-source Eval dependencies and binds their defaults', () => {
     const marketplace = { category: 'test', strict: true,
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] } }
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }
     const consumer = { rootDir: '/consumer', manifestPath: '/consumer/.agents-plugin/plugin.json', manifest: {
-      name: 'consumer', marketplace, dependencies: ['provider'], config: normalizePluginConfigDefinition({
+      name: 'consumer', platforms: ['codex'], marketplace, dependencies: ['provider'], config: normalizePluginConfigDefinition({
         schemaVersion: 4, fields: { selected: { type: 'string', default: 'native',
           valueRef: { plugin: 'provider', field: 'registry', key: 'key', include: ['native'] } } },
       }, 'config', { plugin: 'consumer', dependencies: ['provider'] }),
     } } as PluginMeta
     const provider = { rootDir: '/provider', manifestPath: '/provider/.agents-plugin/plugin.json', manifest: {
-      name: 'provider', marketplace, config: normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
+      name: 'provider', platforms: ['codex'], marketplace, config: normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
         registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
           type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
         } },
       } }), artifacts: { targets: [{ id: 'native', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' }, refreshKeys: ['registry'] }] },
+        refreshKeys: ['registry'] }] },
     } } as PluginMeta
-    const profile = { id: 'cross-reference', scope: 'project' as const, plugins: [{ name: 'consumer', config: {} }] }
+    const profile = { id: 'cross-reference', platform: 'codex' as const, scope: 'project' as const, plugins: [{ name: 'consumer', config: {} }] }
     const defaults = resolveEvalProfileBindingInput(profile, [consumer, provider])
     expect(() => resolveEvalProfileBindingInput(profile, [consumer, provider], { consumer: { selected: 'remote' } }))
-      .toThrow(/dependency overrides/u)
+      .toThrow(/provider\/registry/u)
     const config = { consumer: { selected: 'remote' }, provider: { registry: [{ key: 'remote' }] } }
     const resolved = resolveEvalProfileBindingInput(profile, [consumer, provider], config)
     expect(resolved.profile).toMatchObject({ config })
     expect(resolved.materializationProfile.plugins).toContainEqual({
-      name: 'provider', configByScope: { project: config.provider, user: config.provider },
+      name: 'provider', configByScope: { user: config.provider },
     })
     expect(() => resolveEvalProfileBindingInput(profile, [consumer, provider], { foreign: { key: 'remote' } }))
       .toThrow(/dependency closure/u)
@@ -75,115 +75,40 @@ describe('AW source binding', () => {
       .not.toBe(defaults.profile.inputDigest)
   })
 
-  it('binds merged effective config for the profile scope and shared native user scope', () => {
+  it('binds one effective author config for the explicit platform and selected profile scope', () => {
     const plugin = {
-      rootDir: '/fixture',
-      manifestPath: '/fixture/.agents-plugin/plugin.json',
+      rootDir: '/fixture', manifestPath: '/fixture/.agents-plugin/plugin.json',
       manifest: {
-        name: 'fixture',
-        marketplace: {
-          category: 'test',
-          strict: true,
-          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
-        },
-        config: {
-          fields: {
-            common: { type: 'string', required: true },
-            selected: { type: 'string', required: true },
-            settings: {
-              type: 'object',
-              properties: { first: { type: 'string' }, second: { type: 'string' } },
-              additionalProperties: false,
-            },
-          },
-        },
-        artifacts: {
-          targets: [{
-            id: 'native',
-            platform: 'codex',
-            scopes: ['project', 'user'],
-            target: 'codex.skill',
-            states: ['present'],
-            refreshKeys: ['common'],
-            skillKey: 'native',
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-          }],
-        },
+        name: 'fixture', platforms: ['codex'],
+        marketplace: { category: 'test', strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+        config: { fields: {
+          common: { type: 'string', required: true }, selected: { type: 'string', required: true },
+          settings: { type: 'object', properties: { first: { type: 'string' }, second: { type: 'string' } }, additionalProperties: false },
+        } },
       },
     } as PluginMeta
-    const projectOnlyPlugin = {
-      ...plugin,
-      manifest: {
-        ...plugin.manifest,
-        name: 'project-only',
-        config: { fields: { projectOnly: { type: 'string', required: true } } },
-        artifacts: {
-          targets: [{
-            id: 'direct', platform: 'codex', scopes: ['project', 'user'],
-            target: 'codex.skill', states: ['present'], refreshKeys: ['projectOnly'],
-            skillKey: 'direct', delivery: { mode: 'aw-extension' },
-          }],
-        },
-      },
-    } as PluginMeta
-    const userOnlyNativePlugin = {
-      ...plugin,
-      manifest: {
-        ...plugin.manifest,
-        name: 'user-only-native',
-        config: { fields: { projectValue: { type: 'string', required: true } } },
-        artifacts: {
-          targets: [{
-            id: 'user-native', platform: 'codex', scopes: ['user'],
-            target: 'codex.skill', states: ['present'], refreshKeys: [],
-            skillKey: 'user-native',
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-          }],
-        },
-      },
-    } as PluginMeta
-    const base = {
-      id: 'selected',
-      scope: 'project' as const,
-      plugins: [{
-        name: 'fixture',
-        config: { common: 'base', selected: 'base', settings: { first: 'base', second: 'base' } },
-      }, { name: 'project-only', config: {} }, { name: 'user-only-native', config: {} }],
-    }
-    const first = resolveEvalProfileBindingInput({
-      ...base,
+    const profile = {
+      id: 'selected', platform: 'codex' as const, scope: 'project' as const,
+      plugins: [{ name: 'fixture', config: { common: 'base', selected: 'base', settings: { first: 'base', second: 'base' } } }],
       configByScope: {
-        project: [
-          { name: 'fixture', config: { selected: 'project', settings: { first: 'project' } } },
-          { name: 'project-only', config: { projectOnly: 'project' } },
-          { name: 'user-only-native', config: { projectValue: 'project' } },
-        ],
+        project: [{ name: 'fixture', config: { selected: 'project', settings: { first: 'project' } } }],
         user: [{ name: 'fixture', config: { selected: 'user' } }],
       },
-    }, [plugin, projectOnlyPlugin, userOnlyNativePlugin])
-    expect(first.materializationProfile.plugins).toEqual([
-      {
-        name: 'fixture',
-        configByScope: {
-          project: { common: 'base', selected: 'project', settings: { first: 'project' } },
-          user: { common: 'base', selected: 'user', settings: { first: 'base', second: 'base' } },
-        },
-      },
-      { name: 'project-only', configByScope: { project: { projectOnly: 'project' } } },
-      { name: 'user-only-native', configByScope: { project: { projectValue: 'project' } } },
-    ])
-    const changed = resolveEvalProfileBindingInput({
-      ...base,
-      configByScope: {
-        project: [
-          { name: 'fixture', config: { selected: 'project', settings: { first: 'project' } } },
-          { name: 'project-only', config: { projectOnly: 'project' } },
-          { name: 'user-only-native', config: { projectValue: 'project' } },
-        ],
-        user: [{ name: 'fixture', config: { selected: 'changed-user' } }],
-      },
-    }, [plugin, projectOnlyPlugin, userOnlyNativePlugin])
+    }
+    const first = resolveEvalProfileBindingInput(profile, [plugin])
+    expect(first.materializationProfile).toEqual({
+      id: 'selected', platform: 'codex', scope: 'project',
+      plugins: [{ name: 'fixture', configByScope: { user: {
+        common: 'base', selected: 'project', settings: { first: 'project' },
+      } } }],
+    })
+    const shadowed = structuredClone(profile)
+    shadowed.configByScope.user[0]!.config.selected = 'changed-user'
+    expect(resolveEvalProfileBindingInput(shadowed, [plugin]).profile.inputDigest).toBe(first.profile.inputDigest)
+    const changed = resolveEvalProfileBindingInput(profile, [plugin], { fixture: { selected: 'explicit' } })
     expect(changed.profile.inputDigest).not.toBe(first.profile.inputDigest)
+    expect(changed.materializationProfile.plugins[0]!.configByScope.user!.selected).toBe('explicit')
   })
 
   it('reports a missing legacy receipt as incomplete', async () => {
@@ -207,7 +132,7 @@ describe('AW source binding', () => {
       source: { kind: 'workspace', workspaceIdentity: 'fixture', sourceIdentity: digest },
       subject: { plugin: 'fixture' },
       profile: {
-        kind: 'portable', id: 'agent-skills-project', scope: 'project', inputDigest: digest,
+        kind: 'portable', id: 'generic-project', platform: 'generic', scope: 'project', inputDigest: digest,
       },
       artifacts: [{ kind: 'portable-skill', plugin: 'fixture', skill: 'fixture', path: '../outside' }],
     })).rejects.toThrow('safe relative POSIX path')
@@ -225,7 +150,7 @@ describe('AW source binding', () => {
       source: { kind: 'workspace', workspaceIdentity: 'fixture', sourceIdentity: digest },
       subject: { plugin: 'fixture' },
       profile: {
-        kind: 'portable', id: 'agent-skills-project', scope: 'project', inputDigest: digest,
+        kind: 'portable', id: 'generic-project', platform: 'generic', scope: 'project', inputDigest: digest,
       },
       artifacts: [{ kind: 'portable-skill', plugin: 'fixture', skill: 'fixture', path: 'skills/fixture' }],
     })
@@ -266,7 +191,7 @@ describe('AW source binding', () => {
       source: { kind: 'workspace', workspaceIdentity: 'fixture', sourceIdentity: digest },
       subject: { plugin: 'fixture' },
       profile: {
-        kind: 'portable', id: 'agent-skills-project', scope: 'project', inputDigest: digest,
+        kind: 'portable', id: 'generic-project', platform: 'generic', scope: 'project', inputDigest: digest,
       },
       artifacts: [{ kind: 'portable-skill', plugin: 'fixture', skill: 'fixture', path: 'skills/fixture' }],
     })

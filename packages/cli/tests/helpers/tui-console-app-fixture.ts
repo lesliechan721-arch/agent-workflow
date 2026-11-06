@@ -1,3 +1,5 @@
+import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
+import type { RecoveryReceipt, RecoveryTarget } from '../../src/recovery/receipt.js';
 import { vi } from 'vitest';
 
 import type {
@@ -16,13 +18,15 @@ import {
   operationEvidenceFingerprint,
   type OperationEvidence,
   type OperationIntent,
+  type ConfigSaveBatchExecutionResult,
   type PluginWriteBatchEvidence,
   type PluginWriteTaskEvidence,
   type PluginWriteTaskExecutionResult,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
-import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
+import type { AgentSettings } from '../../src/tui/agent-settings.js';
+import type { ConfigPageViewModel, ConfigReadOptions, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
 
 export function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
@@ -51,13 +55,16 @@ export function evidenceForIntent(intent: OperationIntent): OperationEvidence {
       ...evidence,
       configBatch: {
         groups: intent.groups.map((group) => ({
-          scope: group.scope,
-          targetFingerprint: `sha256:config-${group.scope}`,
+          scope: 'user',
+          ...(group.platform ? { platform: group.platform } : {}),
+          targetFingerprint: `sha256:config-${group.platform ?? 'common'}`,
           config: {
-            scope: group.scope,
-            storeDigest: `sha256:config-store-${group.scope}`,
+            scope: 'user',
+            ...(group.platform ? { platform: group.platform } : {}),
+            context: intent.context ?? 'user',
+            storeDigest: `sha256:config-store-${group.platform ?? 'common'}`,
             impactState: 'known',
-            affectedTargets: [{ platform: 'codex', scope: group.scope }],
+            affectedTargets: [{ platform: group.platform ?? 'codex', scope: 'user' }],
           },
         })),
       },
@@ -67,10 +74,12 @@ export function evidenceForIntent(intent: OperationIntent): OperationEvidence {
     return {
       ...evidence,
       config: {
-        scope: intent.scope,
+        scope: 'user',
+        ...(intent.platform ? { platform: intent.platform } : {}),
+        context: intent.context ?? 'user',
         storeDigest: 'sha256:config-store',
         impactState: 'known',
-        affectedTargets: [{ platform: 'codex', scope: intent.scope }],
+        affectedTargets: [{ platform: intent.platform ?? 'codex', scope: 'user' }],
       },
     };
   }
@@ -325,6 +334,7 @@ export function loadResult(): TuiStatusLoadResult {
     };
   return {
     payload,
+    projectRoot: '/workspace',
     pluginSummaries: summaries,
     configuredSources: [
       { id: 'official', type: 'path', primary: true, path: '/catalog/official', autoCheck: true },
@@ -529,18 +539,46 @@ export function dependencyLoadResult(options: {
   return initial;
 }
 
+export function agentSettings(targets: AgentSettings['preferences']['targets'] = ['codex', 'claude']): AgentSettings {
+  return {
+    preferences: { schemaVersion: 2, kind: 'aw-deployment-preferences', targets, exclusions: [] },
+    revision: 'sha256:preferences',
+    plugins: [],
+    context: 'project',
+    projectRoot: '/workspace',
+  };
+}
+
+export function configSaveResult(intent: Extract<OperationIntent, { kind: 'configSaveBatch' }>): ConfigSaveBatchExecutionResult {
+  return {
+    status: 'succeeded',
+    groups: intent.groups.map((group) => ({
+      scope: 'user', ...(group.platform ? { platform: group.platform } : {}),
+      status: 'succeeded', configSaved: true, applyRequested: false, applyStatus: 'notRequested',
+    })),
+  };
+}
+
 export function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiController {
   const dependencies: TuiControllerDependencies = {
+    readAgentSettings: vi.fn(async () => agentSettings()),
     loadStatus: vi.fn().mockResolvedValue(loadResult()),
     inspectSourceRemoval: vi.fn().mockResolvedValue({ blocked: false, inventoryComplete: true, installationCount: 0, configCount: 0, lifecycleCount: 0, marketplaceCount: 0, dependencies: [] }),
     captureEvidence: vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent)),
-    executeIntent: vi.fn().mockResolvedValue({
+    executeIntent: vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch' ? configSaveResult(intent)
+      : intent.kind === 'configSave' ? { configWrite: 'succeeded' } : {
       overallState: 'succeeded',
       targetResults: [
         { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
         { target: { platform: 'claude', scope: 'user' }, state: 'completed' },
       ],
     }),
+    prepareScopedTask: vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request)),
+    executeScopedTask: vi.fn(async (plan: ScopedTuiPlan) => ({
+      kind: 'recovery' as const,
+      receipt: plan.kind === 'recovery' || plan.kind === 'retire' ? plan.plan.receipt
+        : scopedReceipt({ kind: 'recovery', scope: plan.scope, selectors: [] }),
+    })),
     now: () => 1_000,
     reviewTtlMs: 10_000,
     ...overrides,
@@ -674,7 +712,13 @@ export function platformLoadResult(
   return loaded;
 }
 
-export function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
+export function configPageForProfile(page: ConfigPageViewModel, options: ConfigReadOptions): ConfigPageViewModel {
+  const profile = options.platform ?? 'common';
+  const context = options.context ?? 'user';
+  return { ...page, profile, context, layer: { profile, context } };
+}
+
+export function configPage(pluginId = 'team-tools/review-gate', options: ConfigReadOptions = {}): ConfigPageViewModel {
   const field = (
     key: string,
     type: ConfigPageViewModel['groups'][number]['fields'][number]['type'],
@@ -689,6 +733,8 @@ export function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewM
       required: false,
       sensitive: false,
       writable: true,
+      canSet: true,
+      canUnset: false,
       dirty: false,
       inherited: true,
       configured: false,
@@ -702,7 +748,8 @@ export function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewM
     return {
       ...value,
       effectiveDisplayValue: extra.effectiveDisplayValue ?? value.displayValue,
-      effectiveSourceLabel: extra.effectiveSourceLabel ?? (value.configured ? '个人默认' : '未设置'),
+      effectiveSourceLabel: extra.effectiveSourceLabel ?? (value.configured ? '公共配置' : '默认值'),
+      canUnset: extra.canUnset ?? value.configured,
       ...(extra.effectiveValue !== undefined
         ? { effectiveValue: extra.effectiveValue }
         : value.value !== undefined && !value.sensitive
@@ -712,7 +759,9 @@ export function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewM
   };
   return {
     pluginId,
-    layer: { scope: 'user', projectLayer: 'shared' },
+    profile: options.platform ?? 'common',
+    context: options.context ?? 'user',
+    layer: { profile: options.platform ?? 'common', context: options.context ?? 'user' },
     storedCount: 2,
     presets: [{
       id: 'team',
@@ -755,7 +804,9 @@ export function objectConfigPage(pluginId = 'team-tools/review-gate'): ConfigPag
   };
   return {
     pluginId,
-    layer: { scope: 'user' },
+    profile: 'common',
+    context: 'user',
+    layer: { profile: 'common', context: 'user' },
     storedCount: 0,
     presets: [],
     groups: [{
@@ -804,12 +855,14 @@ export function objectConfigPage(pluginId = 'team-tools/review-gate'): ConfigPag
         required: true,
         sensitive: false,
         writable: true,
+        canSet: true,
+        canUnset: false,
         dirty: false,
         inherited: true,
         configured: false,
         sourceLabel: '继承',
         effectiveDisplayValue: '已设置 · 4 项',
-        effectiveSourceLabel: '当前项目',
+        effectiveSourceLabel: '公共配置',
         effectiveValue: effective,
         draftValue: effective,
         advanced: false,
@@ -817,3 +870,78 @@ export function objectConfigPage(pluginId = 'team-tools/review-gate'): ConfigPag
     }],
   };
 }
+
+export function mixedScopeConflictTarget(
+  pluginName: string,
+  sourceId = 'official',
+): StatusV8CodexTarget {
+  const value = target({ pluginName, sourceId, platform: 'codex', scope: 'user', state: 'present' }) as StatusV8CodexTarget;
+  value.placements.push(structuredClone(value.placements[0]!), { ...structuredClone(value.placements[0]!), scope: 'project' });
+  value.placements.shift();
+  value.state = 'blocked';
+  value.components.push(
+    { kind: 'sharedNative', key: `${pluginName}@aw-${sourceId}`, state: 'usable', metadata: { shared: true } },
+  );
+  for (const entry of value.placements) entry.components.push(
+    {
+      kind: 'intent', key: 'desired', state: 'desired',
+      metadata: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
+    },
+    { kind: 'extension', key: 'aw', state: 'conflict', metadata: { kinds: ['instruction'] } },
+  );
+  value.reasons = [{
+    code: 'codexExtensionScopeConflict',
+    message: 'codexExtensionScopeConflict: mixed scope overlap',
+    severity: 'blocking',
+  }];
+  value.recoveryActions = [
+    {
+      command: 'uninstall',
+      scope: 'user',
+      description: `运行 aw plugin intent remove ${sourceId}/${pluginName} --scope user，再运行 aw plugin cleanup ${sourceId}/${pluginName} --target codex --scope user，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context project。`,
+    },
+    {
+      command: 'uninstall',
+      scope: 'project',
+      description: `运行 aw plugin intent remove ${sourceId}/${pluginName} --scope project，再运行 aw plugin cleanup ${sourceId}/${pluginName} --target codex --scope project，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context user。`,
+    },
+  ];
+  return value;
+}
+
+export function scopedPlan(request: ScopedTaskRequest, receipt = scopedReceipt(request)): ScopedTuiPlan {
+  return { kind: 'recovery', scope: request.scope, plan: {
+    command: request.kind === 'recovery' ? request.command ?? 'sync' : 'sync', options: request,
+    receipt, changes: [], warnings: [], nativeGroups: [], portableGroups: [],
+    context: { dispose: vi.fn() },
+    plannedImpact: {
+      declaration: receipt.declarationChanged,
+      preferences: receipt.preferencesChanged,
+      config: receipt.configChanged,
+      outputs: request.kind === 'recovery',
+    },
+  } } as ScopedTuiPlan;
+}
+
+export function scopedReceipt(request: ScopedTaskRequest): RecoveryReceipt {
+  const selectors = request.kind === 'recovery' ? request.selectors
+    : 'selector' in request ? [request.selector] : [];
+  const agents = request.kind === 'recovery' ? request.targets ?? ['codex'] : [];
+  return {
+    schemaVersion: 1, kind: 'aw-recovery', scope: request.scope,
+    command: request.kind === 'recovery' ? request.command ?? 'sync' : request.kind,
+    ok: true, intent: { state: 'valid', roots: selectors }, requestedRoots: selectors,
+    requestedTargets: [], selection: { agents, origin: 'argument', preferences: 'valid' },
+    blockers: [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
+    declarationChanged: false, preferencesChanged: false, configChanged: false,
+    outputsMayHaveChanged: false,
+  };
+}
+
+export function scopedTarget(pluginId: string, agent: 'codex' | 'claude',
+  execution: RecoveryTarget['execution'], observation: RecoveryTarget['observation']): RecoveryTarget {
+  return { pluginId, agent, scope: 'user', delivery: { kind: 'native', platform: agent === 'codex' ? 'codex' : 'claude' },
+    execution, observation, blockers: [], requiredBy: [], relation: 'root' };
+}
+
+export type ScopedTaskRequest = Parameters<NonNullable<TuiControllerDependencies['prepareScopedTask']>>[0];

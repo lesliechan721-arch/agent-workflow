@@ -18,10 +18,9 @@ const tempRoots: string[] = [];
 async function createPlugin(options: {
   root: string;
   name: string;
-  products?: string[];
+  platforms?: string[];
   buildConfig?: Record<string, unknown>;
   scripts?: Record<string, unknown>;
-  distributions?: Record<string, unknown>;
   artifacts?: Record<string, unknown>;
   extensions?: Record<string, unknown>;
   omitNativeSkills?: boolean;
@@ -34,6 +33,7 @@ async function createPlugin(options: {
     name: options.name,
     version: '0.1.0',
     description: options.name,
+    platforms: options.platforms ?? ['codex', 'claude'],
     ...(!options.omitNativeSkills ? { skills: './skills' } : {}),
     marketplace: {
       category: 'workflow',
@@ -41,16 +41,15 @@ async function createPlugin(options: {
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        ...(options.products ? { products: options.products } : {}),
       },
     },
     ...(options.buildConfig ? { buildConfig: options.buildConfig } : {}),
     ...(options.scripts ? { scripts: options.scripts } : {}),
-    ...(options.distributions ? { distributions: options.distributions } : {}),
     ...(options.artifacts ? { artifacts: options.artifacts } : {}),
     ...(options.extensions ? { extensions: options.extensions } : {}),
   }, { spaces: 2 });
   if (!options.omitNativeSkills) {
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'README.md'), '# Demo\n');
     await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: demo\n---\n');
     await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'agents', 'openai.yaml'), 'interface:\n  display_name: Demo\n');
   }
@@ -65,34 +64,32 @@ afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => fs.remove(root)));
 });
 describe('catalog runtime projection', () => {
-  it('validates portable generated source and final closure without a native Skill root', async () => {
+  it('validates Portable generated source and final closure without a Native target', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-generated-runtime-'));
     tempRoots.push(root);
     const plugin = await createPlugin({
       root,
       name: 'portable-generated-runtime',
-      omitNativeSkills: true,
-      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-      distributions: { agentSkills: { skills: './portable-skills' } },
+      platforms: ['generic'],
       buildConfig: {
         generatedSkillRuntimeFiles: [{
           skill: 'demo',
           target: 'references/generated.md',
-          distributions: ['agent-skills'],
+          platforms: ['generic'],
         }],
       },
       scripts: { node: { build: { runner: 'node', path: './build.mjs' } } },
       files: {
         'build.mjs': 'export {};\n',
-        'portable-skills/demo/SKILL.md': '---\nname: demo\ndescription: demo\n---\n[generated](references/generated.md)\n',
-        'portable-skills/demo/README.md': '# Demo\n',
+        'skills/demo/SKILL.md': '---\nname: demo\ndescription: demo\n---\n[generated](references/generated.md)\n',
+        'skills/demo/README.md': '# Demo\n',
       },
     });
     const runner: PluginStagingRunner = {
       async installPackageRoot() {},
       async runNodeBuild({ pluginRoot }) {
         await fs.outputFile(
-          path.join(pluginRoot, 'portable-skills', 'demo', 'references', 'generated.md'),
+          path.join(pluginRoot, 'skills', 'demo', 'references', 'generated.md'),
           '[nested](nested.md)\n',
         );
       },
@@ -153,6 +150,7 @@ describe('catalog runtime projection', () => {
     const provider = await createPlugin({
       root,
       name: 'portable-provider',
+      platforms: ['codex', 'claude', 'generic'],
       buildConfig: { runtimeExports: [{
         name: 'registry', source: './registry.json',
         requires: { aw: { capabilities: ['aw.review-inspection.v2'] } },
@@ -162,10 +160,11 @@ describe('catalog runtime projection', () => {
     const consumer = await createPlugin({
       root,
       name: 'portable-consumer',
-      distributions: { agentSkills: { skills: './portable-skills' } },
+      platforms: ['codex', 'claude', 'generic'],
       artifacts: {
         targets: [{
           id: 'dynamic-portable',
+          platform: 'generic',
           distribution: 'agent-skills',
           target: 'agent-skills.skill',
           scopes: ['user'],
@@ -179,13 +178,13 @@ describe('catalog runtime projection', () => {
         skillRuntimeFiles: [{
           skill: 'demo',
           target: 'references/registry.json',
-          distributions: ['agent-skills'],
+          platforms: ['generic'],
           import: { plugin: 'portable-provider', export: 'registry' },
         }],
       },
       files: {
-        'portable-skills/demo/SKILL.md': '---\nname: demo\ndescription: portable demo\n---\n',
-        'portable-skills/demo/README.md': '# Portable demo\n',
+        'skills/demo/SKILL.md': '---\nname: demo\ndescription: portable demo\n---\n',
+        'skills/demo/README.md': '# Portable demo\n',
       },
     });
     const outputRoot = path.join(root, 'portable-bundle');
@@ -194,10 +193,11 @@ describe('catalog runtime projection', () => {
     });
 
     await expect(fs.readFile(
-      path.join(outputRoot, 'agent-skills', 'skills', 'demo', 'references', 'registry.json'),
+      path.join(outputRoot, 'generic', 'skills', 'demo', 'references', 'registry.json'),
       'utf8',
     )).resolves.toBe('{"portable":true}\n');
     expect(result.runtimeProjection.skillRuntimeFiles).toMatchObject([{
+      platform: 'generic',
       distribution: 'agent-skills',
       provider: 'portable-provider',
       requiredCapabilities: ['aw.review-inspection.v2'],
@@ -223,7 +223,7 @@ describe('catalog runtime projection', () => {
     for (const receiptPath of [
       'claude/skills/demo/aw-plugin-requirements.json',
       'codex/skills/demo/aw-plugin-requirements.json',
-      'agent-skills/skills/demo/aw-plugin-requirements.json',
+      'generic/skills/demo/aw-plugin-requirements.json',
     ]) {
       await expect(fs.readJson(path.join(outputRoot, receiptPath))).resolves.toMatchObject({
         requiredCapabilities: expect.arrayContaining(['aw.review-inspection.v2']),
@@ -237,6 +237,7 @@ describe('catalog runtime projection', () => {
     const provider = await createPlugin({
       root,
       name: 'artifact-provider',
+      platforms: ['generic'],
       buildConfig: { runtimeExports: [{
         name: 'registry', source: './registry.json',
         requires: { aw: { capabilities: ['aw.review-inspection.v2'] } },
@@ -246,10 +247,11 @@ describe('catalog runtime projection', () => {
     const consumer = await createPlugin({
       root,
       name: 'artifact-consumer',
-      distributions: { agentSkills: {} },
+      platforms: ['generic'],
       artifacts: {
         targets: [{
           id: 'dynamic',
+          platform: 'generic',
           distribution: 'agent-skills',
           target: 'agent-skills.skill',
           scopes: ['user'],
@@ -606,7 +608,7 @@ describe('catalog runtime projection', () => {
     const provider = await createPlugin({
       root,
       name: 'provider',
-      products: ['CODEX'],
+      platforms: ['codex'],
       buildConfig: { runtimeExports: [{
         name: 'registry', source: './registry.json',
         requires: { aw: { capabilities: [] } },

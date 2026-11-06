@@ -2,11 +2,12 @@
 
 创建、维护、评审和简化 Agent Skill，并审核用例与组合架构。提供最小创建与静态包检查工具。
 
-```sh
-aw install agent-skill-toolkit -p codex
+```bash
+aw plugin targets set codex
+aw plugin install agent-skill-toolkit --scope user
 ```
 
-也支持 Claude，可将平台改为 `claude`。以上是 AW 分发安装方式，不是通用工具的运行依赖。使用其它方式取得完整包时，同时提供 `agent-content` 内容方法；单独复制源码目录不等于取得完整运行包。
+也支持 Claude Code，可改用 `--target claude-code`。以上是 AW 分发安装方式，不是通用工具的运行依赖。使用其它方式取得完整包时，同时提供 `agent-content` 内容方法；单独复制源码目录不等于取得完整运行包。
 
 | Skill | 用户结果 |
 | --- | --- |

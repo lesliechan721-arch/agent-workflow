@@ -2,20 +2,15 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import { readEnvironmentValue } from './state-paths.js';
+
 export interface WindowsNpmCommand {
   command: string;
   argsPrefix: string[];
 }
 
-function readWindowsEnvironmentValue(
-  env: NodeJS.ProcessEnv,
-  name: string,
-): string | undefined {
-  return Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
-}
-
 function windowsExecutableNames(command: string, env: NodeJS.ProcessEnv): string[] {
-  const pathExt = readWindowsEnvironmentValue(env, 'PATHEXT') ?? '.COM;.EXE;.BAT;.CMD';
+  const pathExt = readEnvironmentValue(env, 'PATHEXT', 'win32') ?? '.COM;.EXE;.BAT;.CMD';
   const supported = new Set(['.com', '.exe', '.bat', '.cmd']);
   const extensions = pathExt.split(';')
     .map((extension) => extension.trim())
@@ -26,12 +21,12 @@ function windowsExecutableNames(command: string, env: NodeJS.ProcessEnv): string
   ].map((extension) => `${command}${extension}`);
 }
 
-async function resolveWindowsPathCommand(
+export async function resolveWindowsPathCommand(
   command: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string | undefined> {
-  const pathValue = readWindowsEnvironmentValue(env, 'PATH');
+  const pathValue = readEnvironmentValue(env, 'PATH', 'win32');
   if (pathValue === undefined) return undefined;
   for (const rawEntry of pathValue.split(';')) {
     const directory = path.resolve(cwd, rawEntry.replace(/^"|"$/gu, '') || '.');
@@ -49,7 +44,7 @@ async function resolveWindowsPathCommand(
   return undefined;
 }
 
-function renderNpmCmdShim(target: string): string {
+export function renderNpmCmdShim(target: string): string {
   return [
     '@ECHO off',
     'GOTO start',

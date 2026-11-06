@@ -14,11 +14,6 @@ import {
   partialConfigExecution,
   successfulSingleConfigRetry,
 } from '../helpers/tui-pty-config-fixture.mjs';
-import {
-  projectBatchEvidence,
-  projectBatchExecution,
-  withProjectRecoveryStatus,
-} from '../helpers/tui-pty-project-fixture.mjs';
 
 const evidence = {
   catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
@@ -159,7 +154,7 @@ function loadResult() {
       },
     ],
   };
-  if (scenario === 'project-recovery') return withProjectRecoveryStatus(result);
+  if (scenario === 'scoped-inventory') return { ...result, projectRoot: process.cwd() };
   if (scenario === 'portable-recheck' || scenario === 'portable-flow') {
     return { ...result, portablePluginIds: ['official/agent-lab'] };
   }
@@ -241,31 +236,51 @@ const recordResize = () => {
 process.stdout.on('resize', recordResize);
 
 let configExecutionCount = 0;
-let projectExecutionCount = 0;
 let portablePrepareCaptureCount = 0;
 let portableReviewBlocked = false;
 let portableReviewPrepared = false;
+const scopedReceipt = {
+  schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command: 'sync', ok: true,
+  intent: { state: 'valid', roots: ['official/agent-lab'] },
+  requestedRoots: ['official/agent-lab'], requestedTargets: [],
+  selection: { agents: ['codex'], origin: 'preference', preferences: 'valid' },
+  blockers: [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
+  declarationChanged: false, preferencesChanged: false, configChanged: false,
+  outputsMayHaveChanged: false,
+};
 const controller = new TuiController({
+  prepareScopedTask: scenario === 'scoped-inventory' ? async (request) => {
+    record({ type: 'scoped-prepare', scope: request.scope, selectors: request.selectors });
+    return { kind: 'recovery', scope: request.scope, plan: {
+      receipt: { ...scopedReceipt, scope: request.scope },
+      plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
+      changes: ['精确同步所选插件与工具'], warnings: [], context: { dispose: async () => {} },
+      nativeGroups: [{ preview: { codexReconcilePlans: [{ review: {
+        requiresConfirmation: true, sharedImpact: { warning: '共享原生内容可能影响其他项目。' },
+      } }] } }], portableGroups: [],
+    } };
+  } : undefined,
+  executeScopedTask: scenario === 'scoped-inventory' ? async (plan) => {
+    record({ type: 'scoped-execute', scope: plan.scope });
+    return { kind: 'recovery', receipt: { ...scopedReceipt, scope: plan.scope } };
+  } : undefined,
+  loadScopedStatus: async (scope) => {
+    record({ type: 'scoped-status-load', scope });
+    return { scope, intent: { state: 'valid' }, selection: { agents: ['codex'], preferences: 'valid' },
+      inventory: [{ pluginId: 'official/agent-lab', source: 'official', sourceState: 'ready', blockers: [],
+        targetResults: [{ pluginId: 'official/agent-lab', agent: 'codex', scope,
+          delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run', observation: 'missing',
+          content: 'absent', blockers: [], requiredBy: [] }] }],
+      extraObserved: [], errors: [], allSatisfied: false,
+      nativeSnapshot: { payload: { ...loadResult().payload, targets: [] }, pluginSummaries: loadResult().pluginSummaries, targetRevisions: [], dependencyOverviews: [] } };
+  },
   loadStatus: async () => {
-    const status = loadResult();
-    if (scenario === 'project-recovery') record({
-      type: 'project-status-load',
-      projectIntentRoots: status.projectIntent?.roots,
-      targets: status.payload.targets.map((target) => ({
-        pluginId: target.pluginId,
-        platform: target.platform,
-        scope: target.scope,
-        state: target.state,
-        components: target.components,
-      })),
-    });
-    return status;
+    return loadResult();
   },
   captureEvidence: async (intent) => intent.kind === 'configSaveBatch'
     ? configEvidence(intent)
     : intent.kind === 'configSave' ? configRetryEvidence(intent)
-      : intent.kind === 'pluginWriteBatch' ? projectBatchEvidence(intent)
-        : intent.kind === 'portableInstall' ? (async () => {
+      : intent.kind === 'portableInstall' ? (async () => {
             if (intent.selectedSkills.length === 0) portablePrepareCaptureCount += 1;
             else if (scenario === 'portable-flow') portableReviewPrepared = true;
             if (scenario === 'portable-flow' && !portableReviewPrepared
@@ -326,15 +341,6 @@ const controller = new TuiController({
         retryApply: intent.retryApply === true,
       });
       return successfulSingleConfigRetry();
-    }
-    if (intent.kind === 'pluginWriteBatch') {
-      projectExecutionCount += 1;
-      record({
-        type: 'project-execute',
-        attempt: projectExecutionCount,
-        targets: intent.selection.targets,
-      });
-      return projectBatchExecution(intent, projectExecutionCount);
     }
     if (intent.kind === 'portableInstall') {
       record({
@@ -398,16 +404,8 @@ const unsubscribe = controller.subscribe((snapshot) => {
       operationKind: snapshot.activeReview.operationKind,
       requiresConfirmation: snapshot.activeReview.requiresConfirmation,
     } : undefined,
-    projectIntentReminder: snapshot.projectIntentReminder ? {
-      actionableTargets: snapshot.projectIntentReminder.actionableTargets,
-      blockedTargets: snapshot.projectIntentReminder.blockedTargets,
-      unconfirmedTargets: snapshot.projectIntentReminder.unconfirmedTargets,
-    } : undefined,
-    projectInventory: snapshot.projectInventory ? {
-      declaredPluginIds: snapshot.projectInventory.declaredRoots.map((root) => root.pluginId),
-      counts: snapshot.projectInventory.counts,
-      syncTargets: snapshot.projectInventory.syncTargets,
-    } : undefined,
+    scopedInventories: Object.fromEntries(Object.entries(snapshot.scopedInventories).map(([scope, inventory]) =>
+      [scope, inventory?.declaredRoots.map((root) => root.pluginId)])),
     portableDraft: snapshot.portableDraft ? {
       selected: snapshot.portableDraft.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.name),
       candidates: snapshot.portableDraft.candidates.map((candidate) => candidate.name),
@@ -434,8 +432,8 @@ if (scenario !== 'browse') {
     controller.push({ name: 'pluginList', mode: 'installed' });
     controller.push({ name: 'pluginDetail', pluginId: CONFIG_PLUGIN_ID });
     controller.beginConfigFlow(CONFIG_PLUGIN_ID);
-  } else if (scenario === 'project-recovery') {
-    // Loading the synthetic project status is the fixture anchor. The reminder and later routes are UI-driven.
+  } else if (scenario === 'scoped-inventory') {
+    controller.push({ name: 'intentScopes' });
   } else if (scenario === 'portable-recheck') {
     controller.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
     await controller.preparePortableInstall('official/agent-lab');
@@ -456,7 +454,6 @@ try {
     output: process.stdout,
     render: (complete) => React.createElement(ConsoleAppV4, {
       controller,
-      ...(scenario === 'project-recovery' ? { onClaimProjectIntentReminder: () => true } : {}),
       onExit: (request) => {
         record({ type: 'ui-exit-request', ...request });
         queueMicrotask(() => {

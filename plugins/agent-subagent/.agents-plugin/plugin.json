@@ -3,6 +3,10 @@
   "name": "agent-subagent",
   "version": "0.1.0",
   "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
+  "platforms": [
+    "codex",
+    "claude"
+  ],
   "marketplace": {
     "category": "workflow",
     "tags": [
@@ -13,11 +17,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX",
-        "CLAUDE"
-      ]
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {
@@ -81,7 +81,7 @@
     }
   },
   "config": {
-    "schemaVersion": 4,
+    "schemaVersion": 5,
     "definitions": {
       "agentProfile": {
         "type": "object",
@@ -98,10 +98,10 @@
             "native": {
               "properties": {
                 "model": {
-                  "$ref": "#/config/definitions/agentModel"
+                  "$ref": "#/config/definitions/nativeAgentModel"
                 },
                 "reasoningEffort": {
-                  "$ref": "#/config/definitions/agentReasoningEffort"
+                  "$ref": "#/config/definitions/nativeAgentReasoningEffort"
                 }
               }
             }
@@ -225,6 +225,19 @@
         "validation": {
           "minLength": 1
         }
+      },
+      "nativeAgentModel": {
+        "type": "string",
+        "validation": {
+          "minLength": 1
+        }
+      },
+      "nativeAgentReasoningEffort": {
+        "type": "string",
+        "validation": {
+          "minLength": 1
+        },
+        "description": "宿主原生执行器的推理强度；省略时沿用宿主默认。"
       }
     },
     "fields": {
@@ -669,10 +682,10 @@
               "native": {
                 "properties": {
                   "model": {
-                    "$ref": "#/config/definitions/agentModel"
+                    "$ref": "#/config/definitions/nativeAgentModel"
                   },
                   "reasoningEffort": {
-                    "$ref": "#/config/definitions/agentReasoningEffort"
+                    "$ref": "#/config/definitions/nativeAgentReasoningEffort"
                   }
                 }
               }
@@ -761,6 +774,100 @@
           "itemSummary": "executorKey"
         }
       }
+    },
+    "platforms": {
+      "codex": {
+        "definitions": {
+          "nativeAgentModel": {
+            "type": "string",
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "gpt-6.1-sol",
+                  "title": "gpt-6.1-sol",
+                  "value": "gpt-6.1-sol"
+                },
+                {
+                  "id": "gpt-6-luna",
+                  "title": "gpt-6-luna",
+                  "value": "gpt-6-luna"
+                },
+                {
+                  "id": "gpt-6-astra",
+                  "title": "gpt-6-astra",
+                  "value": "gpt-6-astra"
+                },
+                {
+                  "id": "gpt-6-sol",
+                  "title": "gpt-6-sol",
+                  "value": "gpt-6-sol"
+                },
+                {
+                  "id": "gpt-5.6-luna",
+                  "title": "gpt-5.6-luna",
+                  "value": "gpt-5.6-luna"
+                },
+                {
+                  "id": "gpt-5.6-terra",
+                  "title": "gpt-5.6-terra",
+                  "value": "gpt-5.6-terra"
+                },
+                {
+                  "id": "gpt-5.6-sol",
+                  "title": "gpt-5.6-sol",
+                  "value": "gpt-5.6-sol"
+                }
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "nativeAgentReasoningEffort": {
+            "type": "string",
+            "choices": {
+              "allowCustom": true,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            },
+            "validation": {
+              "minLength": 1
+            },
+            "description": "Codex Native 推理强度；具体模型是否支持由宿主决定。"
+          }
+        }
+      }
     }
   },
   "artifacts": {
@@ -773,11 +880,6 @@
           "project"
         ],
         "target": "codex.skill",
-        "delivery": {
-          "mode": "codex-native",
-          "identity": "shared",
-          "renderProfile": "user"
-        },
         "projectManagedKind": "skill",
         "states": [
           "present"
@@ -854,7 +956,7 @@
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.plugin-config.v4",
+        "aw.plugin-config.v5",
         "aw.plugin-config-unique-by.v1",
         "aw.plugin-config-value-ref.v1",
         "aw.installed-runtime-config.v2",

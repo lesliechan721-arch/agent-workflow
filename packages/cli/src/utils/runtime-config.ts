@@ -7,6 +7,7 @@ import {
   AW_RUNTIME_NATIVE_RECEIPT_PATH,
   createRuntimeConfigBinding,
   createRuntimeConfigSnapshot,
+  compilePluginConfigDefinition,
   getPluginConfigDependencyKeys,
   type RuntimeConfigBinding,
   type RuntimeConfigSnapshot,
@@ -40,20 +41,21 @@ export function createArtifactRuntimeConfigSnapshots(options: {
       pluginName: options.manifest.name,
       pluginVersion: options.manifest.version,
       platform: options.platform,
-      scope: target.delivery?.mode === 'codex-native' ? 'user' : options.scope,
+      scope: target.target === 'codex.skill' || target.target === 'claude.skill' ? 'user' : options.scope,
       configScope: options.config.targetScope,
       artifactId: target.id,
       skillKey: target.skillKey!,
     };
     if (!options.manifest.config) throw new Error('runtimeConfigInvalid: Runtime config requires a config definition.');
-    const dependencyKeys = new Set(getPluginConfigDependencyKeys(options.manifest.config, target.runtimeConfig.keys));
+    const definition = options.config.definition ?? compilePluginConfigDefinition(options.manifest.config, options.platform);
+    const dependencyKeys = new Set(getPluginConfigDependencyKeys(definition, target.runtimeConfig.keys));
     if (options.config.issues.some((issue) => dependencyKeys.has(issue.key))) {
       throw new Error('runtimeConfigInvalid: Effective runtime config dependencies are invalid; fix config and sync or reinstall.');
     }
     snapshots[target.id] = createRuntimeConfigSnapshot({
       installedIdentity,
       declaration: target.runtimeConfig,
-      definition: options.manifest.config,
+      definition,
       values: options.config.values,
       referenceContext: options.config.referenceContext,
     });

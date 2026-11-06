@@ -14,34 +14,78 @@ function assertWritableHomePathForTests(
   return assertTestWritablePath(targetPath, source, recommendedFix);
 }
 
-export function getClaudeHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.AW_CLAUDE_HOME || path.join(os.homedir(), '.claude');
+function absoluteHomePath(value: string, source: string, platform: NodeJS.Platform = process.platform): string {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  if (!paths.isAbsolute(value) || (platform === 'win32' && /^[\\/](?![\\/])/u.test(value))) {
+    throw new Error(`scopeEnvironmentAmbiguous: ${source} must be absolute.`);
+  }
+  return value;
+}
+
+/** Match Node's child environment key selection, including Windows duplicate keys. */
+export function readEnvironmentValue(
+  env: NodeJS.ProcessEnv, key: string, platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (platform !== 'win32') return env[key];
+  const keys: string[] = [];
+  for (const candidate in env) keys.push(candidate);
+  const selected = keys.sort().find((candidate) => candidate.toUpperCase() === key.toUpperCase());
+  return selected === undefined ? undefined : env[selected];
+}
+
+export function resolveUserHome(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  systemHome?: string,
+): string {
+  const key = platform === 'win32' ? 'USERPROFILE' : 'HOME';
+  // Match the child provider's os.homedir(), without consulting the parent's environment.
+  return absoluteHomePath(readEnvironmentValue(env, key, platform) ?? systemHome ?? os.userInfo().homedir, key, platform);
+}
+
+export function getClaudeHome(
+  env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, systemHome?: string,
+): string {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const configured = readEnvironmentValue(env, 'CLAUDE_CONFIG_DIR', platform)?.trim();
+  const home = absoluteHomePath(
+    configured || paths.join(resolveUserHome(env, platform, systemHome), '.claude'),
+    configured ? 'CLAUDE_CONFIG_DIR' : 'Claude home', platform,
+  );
   return assertWritableHomePathForTests(
     home,
-    env.AW_CLAUDE_HOME ? 'AW_CLAUDE_HOME' : 'AW_CLAUDE_HOME fallback (os.homedir())',
-    '用 createIsolatedTestEnv() 生成默认 AW_CLAUDE_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 Claude home。',
+    configured ? 'CLAUDE_CONFIG_DIR' : 'Claude home fallback (HOME)',
+    '用 createIsolatedTestEnv() 生成隔离 CLAUDE_CONFIG_DIR，或通过 registerWritableStateRoot() 登记显式覆盖的 Claude home。',
   );
 }
 
-export function getCodexHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.AW_CODEX_HOME || env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  const source = env.AW_CODEX_HOME
-    ? 'AW_CODEX_HOME'
-    : env.CODEX_HOME
-      ? 'CODEX_HOME'
-      : 'CODEX_HOME fallback (os.homedir())';
+export function getCodexHome(
+  env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, systemHome?: string,
+): string {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const configured = readEnvironmentValue(env, 'CODEX_HOME', platform)?.trim();
+  const home = absoluteHomePath(
+    configured || paths.join(resolveUserHome(env, platform, systemHome), '.codex'),
+    configured ? 'CODEX_HOME' : 'Codex home', platform,
+  );
+  const source = configured ? 'CODEX_HOME' : 'CODEX_HOME fallback (HOME)';
   return assertWritableHomePathForTests(
     home,
     source,
-    '用 createIsolatedTestEnv() 生成默认 AW_CODEX_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 Codex home。',
+    '用 createIsolatedTestEnv() 生成隔离 CODEX_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 Codex home。',
   );
 }
 
-export function resolveAwHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.AW_HOME || path.join(os.homedir(), '.aw');
+export function resolveAwHome(
+  env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, systemHome?: string,
+): string {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const configured = readEnvironmentValue(env, 'AW_HOME', platform);
+  const home = absoluteHomePath(configured || paths.join(resolveUserHome(env, platform, systemHome), '.aw'),
+    configured ? 'AW_HOME' : 'AW_HOME fallback', platform);
   return assertWritableHomePathForTests(
     home,
-    env.AW_HOME ? 'AW_HOME' : 'AW_HOME fallback (os.homedir())',
+    configured ? 'AW_HOME' : 'AW_HOME fallback (HOME)',
     '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 AW home。',
   );
 }
@@ -152,6 +196,20 @@ export async function resolveCanonicalRepoProjectKey(cwd: string): Promise<strin
     if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
     return path.resolve(repoRoot);
   }
+}
+
+export async function resolveRequiredCanonicalRepoRoot(cwd: string): Promise<string> {
+  const root = await resolveCanonicalRepoProjectKey(cwd);
+  const markers = await Promise.all(['.git', 'pnpm-workspace.yaml'].map((name) =>
+    fs.pathExists(path.join(root, name))));
+  if (!markers.some(Boolean)) throw new Error('projectRootUnavailable: cwd is not inside a repository.');
+  return root;
+}
+
+export function resolveAbsoluteAwHome(env: NodeJS.ProcessEnv = process.env): string {
+  const home = resolveAwHome(env);
+  if (!path.isAbsolute(home)) throw new Error('scopeEnvironmentAmbiguous: AW_HOME must be absolute.');
+  return home;
 }
 
 export async function resolveClaudeProjectKey(cwd: string): Promise<string> {

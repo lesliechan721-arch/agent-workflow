@@ -124,6 +124,8 @@ describe('test isolation helpers', () => {
     expect(isolated.env.AW_HOME).toBe(isolated.layout.awHomeDir);
     expect(isolated.env.AW_CODEX_HOME).toBe(isolated.layout.codexHomeDir);
     expect(isolated.env.AW_CLAUDE_HOME).toBe(isolated.layout.claudeHomeDir);
+    expect(isolated.env.CODEX_HOME).toBe(isolated.layout.codexHomeDir);
+    expect(isolated.env.CLAUDE_CONFIG_DIR).toBe(isolated.layout.claudeHomeDir);
     expect(isolated.env.XDG_CONFIG_HOME).toBe(isolated.layout.xdgConfigHomeDir);
     expect(isolated.env.XDG_CACHE_HOME).toBe(isolated.layout.xdgCacheHomeDir);
     expect(isolated.env.XDG_STATE_HOME).toBe(isolated.layout.xdgStateHomeDir);

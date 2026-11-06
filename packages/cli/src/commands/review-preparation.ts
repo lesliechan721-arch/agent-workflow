@@ -1,6 +1,6 @@
 import path from 'node:path'
 
-import { calculateCatalogWorkspaceSourceIdentity } from '@lesliechan721/aw-plugin-core'
+import { calculateCatalogWorkspaceSourceIdentity, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core'
 import fs from 'fs-extra'
 
 import { materializeReviewNativeSkills } from './rebuild-integration.js'
@@ -20,7 +20,7 @@ import {
   AW_SOURCE_BINDING_FILENAME,
   writeAwSourceBinding,
 } from '../review/source-binding.js'
-import type { PluginMeta, Scope } from '../types.js'
+import type { PluginConfigValue, PluginMeta, Scope } from '../types.js'
 import { materializePortableSkills } from '../portable/materializer.js'
 import { writePluginConfigStore } from '../utils/plugin-config.js'
 import {
@@ -282,6 +282,9 @@ function sameResolvedInput(
 }
 
 async function resolveSelection(options: PrepareReviewTargetOptions): Promise<ReviewSelection> {
+  if (!PLATFORM_TARGETS.includes(options.platform)) {
+    throw new ReviewSelectionError('invalidArguments', 'Review preparation requires an explicit canonical platform.')
+  }
   return resolveReviewSelection({
     cwd: options.cwd,
     target: options.target,
@@ -300,19 +303,24 @@ async function writeIsolatedConfig(options: {
   cwd: string
   env: NodeJS.ProcessEnv
 }): Promise<void> {
+  const configs = new Map<string, Record<string, PluginConfigValue>>()
   for (const config of options.profile.pluginConfigs) {
-    const plugin = options.plugins.get(config.pluginName)
+    configs.set(config.pluginName, { ...configs.get(config.pluginName), ...config.overrides })
+  }
+  for (const [pluginName, values] of configs) {
+    const plugin = options.plugins.get(pluginName)
     if (!plugin) {
-      throw new Error(`Review config references unresolved plugin "${config.pluginName}".`)
+      throw new Error(`Review config references unresolved plugin "${pluginName}".`)
     }
     await writePluginConfigStore({
       sourceId: plugin.sourceId,
       sourceIdentity: plugin.sourceIdentity,
       logicalIdentity: plugin.catalogLogicalIdentity,
-      pluginName: config.pluginName,
-      scope: config.scope,
+      pluginName,
+      scope: 'user',
+      platform: options.profile.platform,
       cwd: options.cwd,
-      values: config.overrides,
+      values,
       env: options.env,
     })
   }
@@ -366,11 +374,12 @@ async function prepareSelectedSkills(options: {
       env: options.env,
     })
 
-    if (options.profile.platform === 'agent-skills') {
+    if (options.profile.platform !== 'codex' && options.profile.platform !== 'claude') {
       const portableRoot = path.join(options.workRoot, 'portable')
       portable = await materializePortableSkills({
         plugins: [...plugins.values()],
         pluginId: bundlePlugin.pluginId!,
+        platform: options.profile.platform,
         scope: options.profile.scope,
         cwd: options.cwd,
         env: options.env,

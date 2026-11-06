@@ -12,7 +12,7 @@ import {
   type EvalSpec,
   type SelectedCasesDocument,
 } from '@lesliechan721/agent-skill-eval'
-import { readCatalogWorkspace } from '@lesliechan721/aw-plugin-core'
+import { readCatalogWorkspace, type PlatformTarget } from '@lesliechan721/aw-plugin-core'
 import fs from 'fs-extra'
 
 import {
@@ -27,7 +27,7 @@ import {
   type AwSkillEvalManifestV1Suite,
 } from '../eval/manifest-v1.js'
 import type { PluginMeta } from '../types.js'
-import { validateSkillDirectory } from '../utils/dynamic-skill-tree.js'
+import { validatePortableSkillDirectory, validateSkillDirectory } from '../utils/dynamic-skill-tree.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
 import { normalizeReviewProfileConfig } from '../review/review-profile.js'
 import type { ReviewProfileConfig } from '../review/review-types.js'
@@ -69,6 +69,7 @@ export interface PrepareSkillEvalReceipt {
   ok: true
   suite: string
   profile: string
+  platform: PlatformTarget
   specPath: string
   targetDigest: string
   corpusDigest: string
@@ -102,6 +103,14 @@ interface ResolvedSelection {
   cases: SelectedCasesDocument
   defaults: { runs?: number; timeoutMs?: number }
   corpusPaths: string[]
+}
+
+async function validateEvalRuntimeSkill(root: string, platform: PlatformTarget): Promise<void> {
+  if (platform === 'codex' || platform === 'claude') {
+    await validateSkillDirectory(root, `${platform}.skill`, { ownerMarkerPolicy: 'ignore', requirementsReceiptPolicy: 'allow' })
+  } else {
+    await validatePortableSkillDirectory(root)
+  }
 }
 
 function prettyJson(value: unknown): string {
@@ -235,6 +244,9 @@ async function resolveSelection(options: PrepareSkillEvalOptions): Promise<Resol
   if (suite.profiles && !suite.profiles.includes(profile.id)) {
     throw new Error(`Eval suite "${suite.id}" does not support profile "${profile.id}".`)
   }
+  if (profile.platform !== 'codex' && suite.kind !== 'custom-process') {
+    throw new Error(`Eval suite "${suite.id}" has no supported backend for platform "${profile.platform}". Use an explicit custom-process provider for that platform.`)
+  }
   assertNoSensitiveProfileConfig(profile, workspace.plugins)
   let profileConfig: ReviewProfileConfig = {}
   if (options.configFile !== undefined) {
@@ -347,10 +359,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     })
     const subjectSource = resolveMaterializedSubjectRoot(targetSourceRoot, materialized)
     const runtimeTarget = path.join(subjectSource, '.agents', 'skills', options.skillName)
-    await validateSkillDirectory(runtimeTarget, 'codex.skill', {
-      ownerMarkerPolicy: 'ignore',
-      requirementsReceiptPolicy: 'allow',
-    })
+    await validateEvalRuntimeSkill(runtimeTarget, selection.profile.platform)
     const targetRoot = path.join(staging, 'targets', 'current')
     const target = await createRuntimeSkillSnapshot(runtimeTarget, targetRoot)
     const subjectRoot = path.join(staging, 'workspace', 'subject')
@@ -370,10 +379,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
       }
       const actualSource = await fs.realpath(source)
       if (pathsOverlap(actualSource, finalOutput)) throw new Error('Previous version must not overlap prepared output.')
-      await validateSkillDirectory(actualSource, 'codex.skill', {
-        ownerMarkerPolicy: 'ignore',
-        requirementsReceiptPolicy: 'allow',
-      })
+      await validateEvalRuntimeSkill(actualSource, selection.profile.platform)
       const previous = await createRuntimeSkillSnapshot(actualSource, path.join(staging, 'targets', 'previous'))
       baseline = {
         type: 'previous-version',
@@ -494,6 +500,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
       ok: true,
       suite: selection.suite.id,
       profile: selection.profile.id,
+      platform: selection.profile.platform,
       specPath: path.join(finalOutput, 'spec.json'),
       targetDigest: target.digest,
       corpusDigest: spec.cases.digest,

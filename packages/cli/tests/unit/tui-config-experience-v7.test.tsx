@@ -11,7 +11,9 @@ import {
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
-import type { ConfigFieldViewModel, ConfigPageViewModel } from '../../src/tui/model.js';
+import type { ConfigFieldViewModel, ConfigPageViewModel, ConfigProfileKey, ConfigReadOptions } from '../../src/tui/model.js';
+
+import { chooseConfigProfile, chooseConfigSave, focusAction, openConfigSave } from '../helpers/tui-console-app-input.js';
 
 afterEach(() => cleanup());
 
@@ -20,7 +22,7 @@ const pluginId = 'team/demo';
 function status(): TuiStatusLoadResult {
   return {
     payload: {
-      schemaVersion: 7,
+      schemaVersion: 8,
       catalog: {
         primarySourceId: 'team',
         configDigest: 'sha256:config',
@@ -49,46 +51,45 @@ function status(): TuiStatusLoadResult {
 
 function field(
   key: string,
-  layer: ConfigPageViewModel['layer']['scope'],
-  options: { userOnly?: boolean } = {},
+  profile: ConfigProfileKey,
 ): ConfigFieldViewModel {
-  const projectBlocked = layer === 'project' && options.userOnly === true;
   return {
     key,
     title: key === 'token' ? '访问令牌' : '运行模式',
     description: key === 'mode' ? '插件声明的常用字段' : undefined,
     type: 'string',
     definition: key === 'token' ? { type: 'string', sensitive: true } : { type: 'string' },
-    displayValue: layer === 'effective' ? '团队值' : '未设置',
+    displayValue: profile === 'common' ? '团队值' : '未设置',
     required: false,
     sensitive: key === 'token',
-    writable: !projectBlocked,
-    canSet: !projectBlocked,
+    writable: true,
+    canSet: true,
     canUnset: false,
     dirty: false,
-    inherited: layer !== 'effective',
-    configured: layer === 'effective',
-    sourceLabel: layer === 'effective' ? '个人默认' : '未设置',
+    inherited: profile !== 'common',
+    configured: profile === 'common',
+    sourceLabel: profile === 'common' ? '公共配置' : '未设置',
     effectiveDisplayValue: key === 'token' ? '已设置' : '团队值',
-    effectiveSourceLabel: '个人默认',
+    effectiveSourceLabel: '公共配置',
     ...(key === 'mode' ? { effectiveValue: 'team', draftValue: 'team' } : {}),
     allowCustom: true,
     advanced: false,
   };
 }
 
-function page(layer: ConfigPageViewModel['layer']): ConfigPageViewModel {
+function page(options: ConfigReadOptions): ConfigPageViewModel {
+  const profile = options.platform ?? 'common';
+  const context = options.context ?? 'user';
   return {
-    pluginId,
-    layer,
-    storedCount: layer.scope === 'user' ? 2 : 0,
+    pluginId, profile, context, layer: { profile, context },
+    storedCount: profile === 'common' ? 2 : 0,
     presets: [{ id: 'declared', title: '插件方案', description: '由 Manifest 声明', values: { mode: 'safe' } }],
     groups: [{
       id: 'main',
       title: '插件设置',
       description: '由 Manifest 声明的分组',
       advanced: false,
-      fields: [field('mode', layer.scope), field('token', layer.scope, { userOnly: true })],
+      fields: [field('mode', profile), field('token', profile)],
     }],
   };
 }
@@ -116,13 +117,13 @@ function controller(options: {
           catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
           configBatch: {
             groups: intent.groups.map((group) => ({
-              scope: group.scope,
-              targetFingerprint: `sha256:${group.scope}`,
+              scope: 'user', platform: group.platform,
+              targetFingerprint: `sha256:${group.platform ?? 'common'}`,
               config: {
-                scope: group.scope,
-                storeDigest: `sha256:store:${group.scope}`,
+                scope: 'user', platform: group.platform, context: intent.context ?? 'user',
+                storeDigest: `sha256:store:${group.platform ?? 'common'}`,
                 impactState: options.impactState ?? 'known',
-                affectedTargets: options.affectedTargets ?? [{ platform: 'codex', scope: group.scope }],
+                affectedTargets: options.affectedTargets ?? [{ platform: group.platform ?? 'codex', scope: intent.context ?? 'user' }],
               },
             })),
           },
@@ -131,7 +132,8 @@ function controller(options: {
       return {
         catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
         config: {
-          scope: intent.kind === 'configSave' ? intent.scope : 'project',
+          scope: 'user',
+          ...(intent.kind === 'configSave' ? { platform: intent.platform, context: intent.context ?? 'user' } : {}),
           storeDigest: 'sha256:store',
           impactState: options.impactState ?? 'known',
           affectedTargets: options.affectedTargets ?? [],
@@ -139,7 +141,10 @@ function controller(options: {
       };
     }),
     getConfigPage: vi.fn(async (_pluginId, layer) => (options.configPage ?? page)(layer)),
-    executeIntent: options.executeIntent ?? vi.fn(),
+    executeIntent: options.executeIntent ?? vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch'
+      ? { status: 'succeeded', groups: intent.groups.map((group) => ({ scope: 'user', platform: group.platform,
+          status: 'succeeded', configSaved: true, applyRequested: false, applyStatus: 'notRequested' })) }
+      : { configWrite: 'succeeded', overallState: 'succeeded', apply: { state: 'succeeded', targetResults: [] } }),
   };
   return { value: new TuiController(dependencies), captured };
 }
@@ -161,24 +166,14 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
   }
 }
 
-async function openChangedProjectSave(value: TuiController, columns: number, rows: number) {
-  value.push({ name: 'configFields', pluginId, layer: { scope: 'effective' } });
-  value.push({
-    name: 'configFieldEditor', pluginId, layer: { scope: 'effective' },
-    fieldKey: 'mode', editor: 'string', mode: 'custom',
-  });
+async function openChangedProfileSave(value: TuiController, columns: number, rows: number) {
+  value.push({ name: 'configFields', pluginId, layer: { profile: 'codex', context: 'project' } });
+  value.push({ name: 'configFieldEditor', pluginId, layer: { profile: 'codex', context: 'project' },
+    fieldKey: 'mode', editor: 'string', mode: 'custom' });
   const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
-  await nextTurn(4);
-  await input(instance, 'x', '\r');
-  expect(value.snapshot.router.current.route.name).toBe('configLayer');
-  await input(instance, '\r');
-  await nextTurn(4);
-  expect(value.snapshot.router.current.route).toMatchObject({
-    name: 'configFields', layer: { scope: 'effective' },
-  });
-  await input(instance, 's');
-  expect(value.snapshot.router.current.route.name).toBe('review');
-  await nextTurn(4);
+  await nextTurn(5); await input(instance, 'x', '\r');
+  expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFields', layer: { profile: 'codex', context: 'project' } });
+  await openConfigSave(instance, value);
   return instance;
 }
 
@@ -191,7 +186,7 @@ describe('TUI config experience v7', () => {
         result.groups[0]!.fields[0]!.description = Array.from({ length: 20 }, (_, index) => `完整说明第 ${index + 1} 行`).join('\n');
         return result;
       } });
-      await value.load(); value.push({ name: 'configFields', pluginId, layer: { scope: 'effective' } });
+      await value.load(); value.push({ name: 'configFields', pluginId, layer: { profile: 'common', context: 'user' } });
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
       await nextTurn(6);
       let seen = instance.lastFrame() ?? '';
@@ -225,7 +220,7 @@ describe('TUI config experience v7', () => {
         });
         return result;
       } });
-      await value.load(); value.push({ name: 'configFields', pluginId, layer: { scope: 'effective' } });
+      await value.load(); value.push({ name: 'configFields', pluginId, layer: { profile: 'common', context: 'user' } });
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
       await nextTurn(6);
       const first = instance.lastFrame() ?? '';
@@ -244,343 +239,209 @@ describe('TUI config experience v7', () => {
     },
   );
 
-  it.each([[60, 18], [80, 24]] as const)(
-    'returns from save summary to config editing and preserves the draft at %ix%i',
-    async (columns, rows) => {
-      const { value, captured } = controller();
-      await value.load();
-      const instance = await openChangedProjectSave(value, columns, rows);
-      await input(instance, '\u001b');
-      expect(value.snapshot.router.current.route.name).toBe('configFields');
-      expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
-      await input(instance, 's', '\u001b[B', '\r');
-      await nextTurn(4);
-      expect(captured.at(-1)).toMatchObject({
-        kind: 'configSaveBatch', groups: [{ scope: 'project', updates: { mode: 'teamx' } }],
-      });
-    },
-  );
-
-  it.each([[60, 18], [80, 24]] as const)(
-    'keeps each current config value and its source readable at %ix%i',
-    async (columns, rows) => {
-      const { value } = controller();
-      await value.load();
-      value.push({ name: 'pluginDetail', pluginId });
-      value.beginConfigFlow(pluginId);
-      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
-      await nextTurn(4);
-
-      expect(instance.lastFrame()).toContain('[个人默认]');
-      if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR, `config-${columns}x${rows}.json`), { synthetic: true, size: { columns, rows }, frame: instance.lastFrame() }, { spaces: 2 });
-      expect((instance.lastFrame() ?? '').match(/团队值/gu)).toHaveLength(1);
-      expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
-    },
-  );
-
-  it('starts with effective values, edits before choosing an explicit legal destination', async () => {
-    const { value } = controller();
+  it.each([[60, 18], [80, 24]] as const)('keeps saved data after declining an apply at %ix%i', async (columns, rows) => {
+    const { value, captured } = controller();
     await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-
-    expect(instance.lastFrame()).toContain('插件设置');
-    expect(instance.lastFrame()).toContain('团队值');
-    expect(instance.lastFrame()).toContain('个人默认');
-    await input(instance, '\r');
-    await nextTurn(4);
-
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', layer: { scope: 'effective' }, fieldKey: 'mode',
-    });
-    await input(instance, 'strict', '\r');
-    await nextTurn(4);
-    expect(value.snapshot.router.current.route.name).toBe('configLayer');
-    expect(instance.lastFrame()).toContain('当前项目');
-    expect(instance.lastFrame()).toContain('个人默认');
-    expect(instance.lastFrame()).toContain('修改仅对当前项目生效');
-    expect(instance.lastFrame()).toContain('影响个人的所有项目');
-    await input(instance, '\r');
-    await nextTurn(3);
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'effective' },
-    });
-    expect(instance.lastFrame()).toContain('待保存到当前项目');
-    expect(instance.lastFrame()).toContain('strict');
+    const instance = await openChangedProfileSave(value, columns, rows);
+    await chooseConfigSave(instance, value, 'only');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+    expect(instance.lastFrame()).not.toContain('项待保存');
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', apply: false, context: 'project',
+      groups: [{ scope: 'user', platform: 'codex', updates: { mode: 'teamx' } }] });
   });
 
-  it('returns a preset target to the original config overview in the same flow', async () => {
-    const { value } = controller();
-    await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
-    const flowId = value.snapshot.router.currentFlowId;
-    const overviewFrameId = value.snapshot.router.currentFrameId;
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
+  it.each([[60, 18], [80, 24]] as const)('keeps each current value and source readable at %ix%i', async (columns, rows) => {
+    const { value } = controller(); await value.load();
+    value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />); await nextTurn(5);
+    expect(instance.lastFrame()).toContain('公共配置');
+    expect((instance.lastFrame() ?? '').match(/团队值/gu)).toHaveLength(1);
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+    if (process.env.AW_TUI_ACCEPTANCE_TRACE_DIR) await fs.outputJson(path.join(process.env.AW_TUI_ACCEPTANCE_TRACE_DIR,
+      `config-${columns}x${rows}.json`), { synthetic: true, size: { columns, rows }, frame: instance.lastFrame() }, { spaces: 2 });
+  });
 
-    await input(instance, '\u001B[C', '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configLayer', presetId: 'declared' });
-    await input(instance, '\r');
-    await nextTurn(3);
+  it('edits directly in the selected profile while preserving deployment context', async () => {
+    const { value } = controller(); await value.load(); value.push({ name: 'pluginDetail', pluginId });
+    value.beginConfigFlow(pluginId, { platform: 'codex', context: 'project' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />); await nextTurn(5);
+    expect(instance.lastFrame()).toContain('团队值');
+    await input(instance, '\r', '\u0015', 'strict', '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFields', layer: { profile: 'codex', context: 'project' } });
+    expect(instance.lastFrame()).toContain('strict');
+    expect(instance.lastFrame()).toContain('1 项待保存');
+  });
 
+  it('returns a preset directly to the anchored overview in the same flow', async () => {
+    const { value } = controller(); await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
+    const flowId = value.snapshot.router.currentFlowId; const frameId = value.snapshot.router.currentFrameId;
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />); await nextTurn(5);
+    await input(instance, '\u001b[C', '\r'); await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('configFields');
-    expect(value.snapshot.router.currentFrameId).toBe(overviewFrameId);
-    expect(value.snapshot.router.currentFlowId).toBe(flowId);
+    expect(value.snapshot.router.currentFlowId).toBe(flowId); expect(value.snapshot.router.currentFrameId).toBe(frameId);
     expect(instance.lastFrame()).toContain('safe');
   });
 
   it('switches config groups in place with the basic arrow keys', async () => {
-    const { value } = controller();
-    await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-
+    const { value } = controller(); await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />); await nextTurn(5);
     const frameId = value.snapshot.router.currentFrameId;
-    await input(instance, '\u001B[C');
-    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    await input(instance, '\u001b[C');
     expect(value.snapshot.router.currentFrameId).toBe(frameId);
     expect(value.snapshot.router.current.context.configGroupId).toBe('@presets');
     expect(instance.lastFrame()).toContain('插件方案');
-    await input(instance, '\u001B[D');
+    await input(instance, '\u001b[D');
     expect(value.snapshot.router.currentFrameId).toBe(frameId);
     expect(value.snapshot.router.current.context.configGroupId).toBe('main');
-    expect(instance.lastFrame()).toContain('运行模式');
   });
 
-  it('keeps a user-only field out of the project destination list', async () => {
-    const { value } = controller();
-    await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(4);
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', layer: { scope: 'effective' }, fieldKey: 'token',
-    });
-    await input(instance, 'private-value', '\r');
-    await nextTurn(4);
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFields' });
-    expect(instance.lastFrame()).toContain('个人默认');
-    expect(instance.lastFrame()).toContain('仅可保存到个人默认');
+  it('keeps a sensitive field private when edited from project context', async () => {
+    const { value, captured } = controller(); await value.load(); value.push({ name: 'pluginDetail', pluginId });
+    value.beginConfigFlow(pluginId, { platform: 'claude', context: 'project' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />); await nextTurn(5);
+    await input(instance, '\u001b[B', '\r', 'private-value', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(instance.lastFrame()).not.toContain('private-value');
+    await openConfigSave(instance, value);
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', context: 'project', groups: [
+      { scope: 'user', platform: 'claude', updates: { token: 'private-value' }, sensitiveKeys: ['token'] },
+    ] });
+    expect(JSON.stringify(value.snapshot)).not.toContain('private-value');
   });
 
-  it('keeps the project target visible in the compact batch save summary', async () => {
-    const { value, captured } = controller();
-    await value.load();
-    const instance = await openChangedProjectSave(value, 60, 18);
-
-    const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('每层独立提交');
-    expect(frame).toContain('当前项目');
-    expect(frame).toContain('只保存，稍后应用');
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-    expect(captured.at(-1)).toMatchObject({
-      kind: 'configSaveBatch', apply: false,
-      groups: [expect.objectContaining({ scope: 'project', updates: { mode: expect.any(String) } })],
-    });
+  it('offers a compact saved dialog after the selected profile is committed', async () => {
+    const { value, captured } = controller(); await value.load();
+    const instance = await openChangedProfileSave(value, 60, 18);
+    expect(instance.lastFrame()).toContain('已保存，是否更新插件？');
+    expect(instance.lastFrame()).toContain('暂不更新');
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', apply: false,
+      groups: [{ scope: 'user', platform: 'codex' }] });
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 
-  it('submits the explicit apply choice as a project batch', async () => {
-    const { value, captured } = controller({
-      affectedTargets: [{ platform: 'codex', scope: 'project' }],
-    });
-    await value.load();
-    const instance = await openChangedProjectSave(value, 80, 24);
-
-    const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('保存并生效');
-    expect(frame).toContain('只保存，稍后应用');
-    expect(frame).toContain('应用结果单独报告');
-    await input(instance, '\r');
-    await nextTurn(3);
-    expect(captured.at(-1)).toMatchObject({
-      kind: 'configSaveBatch', apply: true,
-      groups: [expect.objectContaining({ scope: 'project', updates: { mode: expect.any(String) } })],
-    });
+  it('starts a separate apply Review after saving the Codex profile', async () => {
+    const { value, captured } = controller({ affectedTargets: [{ platform: 'codex', scope: 'project' }] }); await value.load();
+    const instance = await openChangedProfileSave(value, 80, 24);
+    await chooseConfigSave(instance, value, 'apply');
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', apply: false });
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSave', platform: 'codex', context: 'project', apply: true, retryApply: true, updates: {} });
   });
 
-  it('submits the explicit save-only choice as a project batch', async () => {
-    const { value, captured } = controller();
-    await value.load();
-    const instance = await openChangedProjectSave(value, 80, 24);
-
-    const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('改为只保存，稍后应用');
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-    expect(captured.at(-1)).toMatchObject({
-      kind: 'configSaveBatch', apply: false,
-      groups: [expect.objectContaining({ scope: 'project', updates: { mode: expect.any(String) } })],
+  it('declines an update without writing the saved profile again', async () => {
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('unexpected intent');
+      return { status: 'succeeded', groups: intent.groups.map((group) => ({ scope: 'user', platform: group.platform,
+        status: 'succeeded', configSaved: true, applyRequested: false, applyStatus: 'notRequested' })) };
     });
+    const { value, captured } = controller({ executeIntent }); await value.load();
+    const instance = await openChangedProfileSave(value, 80, 24); await chooseConfigSave(instance, value, 'only');
+    expect(executeIntent).toHaveBeenCalledOnce(); expect(captured).toHaveLength(1);
+    expect(value.snapshot.activeReview).toBeUndefined();
   });
-
 });
 
-function objectAndFlagPage(layer: ConfigPageViewModel['layer']): ConfigPageViewModel {
-  const profile = { model: 'alpha', effort: 'high', hidden: 7 };
-  const definition: ConfigFieldViewModel['definition'] = {
-    type: 'object', properties: {
-      model: { type: 'string', required: true },
-      effort: { type: 'string', required: true },
-      hidden: { type: 'number' },
-    }, additionalProperties: false,
-  };
-  return { pluginId, layer, storedCount: layer.scope === 'project' ? 1 : 0, presets: [], groups: [{
+function objectAndFlagPage(options: ConfigReadOptions): ConfigPageViewModel {
+  const profile = options.platform ?? 'common'; const context = options.context ?? 'user';
+  const object = { model: 'alpha', effort: 'high', hidden: 7 };
+  const definition: ConfigFieldViewModel['definition'] = { type: 'object', properties: {
+    model: { type: 'string', required: true }, effort: { type: 'string', required: true }, hidden: { type: 'number' },
+  }, additionalProperties: false };
+  return { pluginId, profile, context, layer: { profile, context }, storedCount: 1, presets: [], groups: [{
     id: 'main', title: '常用', advanced: false, fields: [{
-      ...field('profile', layer.scope), title: '模型配置', type: 'object', definition,
-      configured: layer.scope !== 'user', canUnset: layer.scope === 'project',
-      value: layer.scope === 'user' ? undefined : profile,
-      effectiveValue: profile, draftValue: profile, defaultValue: profile,
+      ...field('profile', profile), title: '模型配置', type: 'object', definition, configured: true, canUnset: true,
+      value: object, effectiveValue: object, draftValue: object, defaultValue: object,
       displayValue: 'model=alpha · effort=high', effectiveDisplayValue: 'model=alpha · effort=high',
-      effectiveSourceLabel: '当前项目',
-    }, {
-      ...field('enabled', layer.scope), title: '启用', type: 'boolean', definition: { type: 'boolean' },
+    }, { ...field('enabled', profile), title: '启用', type: 'boolean', definition: { type: 'boolean' },
       configured: false, value: undefined, draftValue: false, effectiveValue: false,
       effectiveDisplayValue: '关闭', effectiveSourceLabel: '默认值',
     }],
   }] };
 }
 
-describe('Config v2 direct editing and complete drafts', () => {
-  it.each([[60, 18], [80, 24]] as const)('edits an existing object and a second field, shows both changes, and retries only failed apply at %ix%i', async (columns, rows) => {
-    const { value, captured } = controller({ configPage: objectAndFlagPage,
-      executeIntent: vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch' ? {
-        status: 'partial', groups: [
-          { scope: 'project', status: 'failed', configSaved: true, applyRequested: true, applyStatus: 'failed', errorCode: 'configApplyFailed' },
-          { scope: 'user', status: 'failed', configSaved: false, applyRequested: true, applyStatus: 'notRequested', errorCode: 'configWriteFailed' },
-        ],
-      } : { configWrite: 'succeeded', overallState: 'succeeded', apply: { state: 'succeeded', targetResults: [] } }),
-    });
-    await value.load();
-    value.push({ name: 'pluginDetail', pluginId });
-    value.beginConfigFlow(pluginId);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
-    await nextTurn(4);
-    await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', fieldKey: 'profile' });
-    await input(instance, '\r', '\r', '\u0015', 'beta', '\r');
-    await input(instance, '\u001b[B', '\u001b[B', '\u001b[B', '\r');
-    expect(value.snapshot.router.current.route.name).toBe('configLayer');
-    await input(instance, '\r', '\u001b[B', '\r', '\r', '\u001b[B', '\r');
-    expect(value.snapshot.router.current.route.name).toBe('configFields');
-    await input(instance, 's');
-    const firstPage = instance.lastFrame() ?? '';
-    const pages = [firstPage];
-    for (let index = 0; index < 10; index++) {
-      await input(instance, '\u001b[6~');
-      const page = instance.lastFrame() ?? '';
-      if (page === pages.at(-1)) break;
-      pages.push(page);
-    }
-    const summary = pages.join('\n');
-    expect(summary).toContain('模型配置');
-    expect(summary).toContain('当前项目');
-    expect(summary).toContain('beta');
-    expect(summary).toContain('启用');
-    expect(summary).toContain('个人默认');
-    expect(summary).toContain('开启');
-    for (const page of pages) expect(page.split('\n').length).toBeLessThanOrEqual(rows);
-    expect(value.snapshot.router.current.route.name).toBe('review');
-    for (let index = 1; index < pages.length; index++) await input(instance, '\u001b[5~');
-    expect(instance.lastFrame()).toBe(firstPage);
-    await nextTurn(4);
-    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
-      { scope: 'project', updates: { profile: { model: 'beta', effort: 'high', hidden: 7 } } },
-      { scope: 'user', updates: { enabled: true } },
+async function editProperty(instance: ReturnType<typeof render>, property: string, next: string): Promise<void> {
+  await focusAction(instance, property); await input(instance, '\r', '\r', '\u0015', next, '\r');
+}
+
+async function commitObject(instance: ReturnType<typeof render>): Promise<void> {
+  await focusAction(instance, '使用此完整对象'); await input(instance, '\r');
+}
+
+describe('Config direct editing and complete drafts', () => {
+  it.each([[60, 18], [80, 24]] as const)('keeps complete object changes and a second profile through a separate failed apply at %ix%i', async (columns, rows) => {
+    const executeIntent = vi.fn(async (intent: OperationIntent) => intent.kind === 'configSaveBatch'
+      ? { status: 'succeeded', groups: intent.groups.map((group) => ({ scope: 'user', platform: group.platform,
+          status: 'succeeded', configSaved: true, applyRequested: false, applyStatus: 'notRequested' })) }
+      : { configWrite: 'succeeded', overallState: 'partial', apply: { state: 'partial',
+          targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'failed', errorCode: 'runtimeApplyFailed' }] } });
+    const { value, captured } = controller({ configPage: objectAndFlagPage, executeIntent });
+    await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />); await nextTurn(5);
+    await input(instance, '\r'); await editProperty(instance, 'model', 'beta'); await commitObject(instance);
+    await chooseConfigProfile(instance, value, 'codex'); await focusAction(instance, '启用'); await input(instance, '\r', '\r');
+    await openConfigSave(instance, value);
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', apply: false, groups: [
+      { scope: 'user', updates: { profile: { model: 'beta', effort: 'high', hidden: 7 } } },
+      { scope: 'user', platform: 'codex', updates: { enabled: true } },
     ] });
-    const review = value.snapshot.activeReview!;
-    await value.executeOperation(review.reviewToken);
-    await nextTurn(4);
-    expect(instance.lastFrame()).toContain('已保存 · 应用失败');
-    expect(instance.lastFrame()).toContain('保存失败');
-    await input(instance, '\r');
-    await nextTurn(4);
-    expect(captured.at(-1)).toMatchObject({ kind: 'configSave', scope: 'project', retryApply: true, updates: {}, removeKeys: [] });
-    await value.executeOperation(value.snapshot.activeReview!.reviewToken);
-    await nextTurn(4);
-    expect(value.externalDrafts).toEqual([expect.objectContaining({ kind: 'configDraft', owner: pluginId })]);
+    await chooseConfigSave(instance, value, 'apply');
+    await value.executeOperation(value.snapshot.activeReview!.reviewToken); await nextTurn(5);
+    expect(value.snapshot.result).toMatchObject({ state: 'partial', summary: { configApplyRetryAvailable: true } });
+    await input(instance, '\r'); await nextTurn(5);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSave', retryApply: true, updates: {} });
+    expect(executeIntent).toHaveBeenCalledTimes(2);
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
   });
 
-  it.each([[60, 18], [80, 24]] as const)('uses the declared join while retaining complete object changes at %ix%i', async (columns, rows) => {
-    const { value, captured } = controller({ configPage: (layer) => {
-      const result = objectAndFlagPage(layer);
+  it.each([[60, 18], [80, 24]] as const)('uses a declared join while submitting complete object values at %ix%i', async (columns, rows) => {
+    const { value, captured } = controller({ configPage: (options) => {
+      const result = objectAndFlagPage(options);
       result.groups[0]!.fields[0]!.summary = { kind: 'join', parts: [{ path: '/model' }, { path: '/effort' }], separator: '/', missing: '未设置' };
       return result;
     } });
     await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
-    await nextTurn(4);
-    await input(instance, '\r');
-    expect(value.snapshot.router.current.route.name).toBe('configFieldEditor');
-    await input(instance, '\r', '\r', '\u0015', 'beta', '\r');
-    await input(instance, '\u001b[B', '\u001b[B', '\u001b[B', '\r');
-    expect(value.snapshot.router.current.route.name).toBe('configLayer');
-    expect(instance.lastFrame()).toContain('beta/high');
-    await input(instance, '\r');
-    expect(instance.lastFrame()).toContain('beta/high');
-    await input(instance, 's', '\r');
-    await nextTurn(4);
-    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [expect.objectContaining({
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />); await nextTurn(5);
+    await input(instance, '\r'); await editProperty(instance, 'model', 'beta'); await commitObject(instance);
+    expect(instance.lastFrame()).toContain('beta/high'); await openConfigSave(instance, value);
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', groups: [expect.objectContaining({
       updates: { profile: { model: 'beta', effort: 'high', hidden: 7 } },
-      changes: [expect.objectContaining({ after: '{"model":"beta","effort":"high","hidden":7}' })],
+      changes: [expect.objectContaining({ before: '{"model":"alpha","effort":"high","hidden":7}', after: '{"model":"beta","effort":"high","hidden":7}' })],
     })] });
   });
 
-  it('cancels only the current property or object and detects a hidden-property change from complete values', async () => {
-    const { value, captured } = controller({ configPage: objectAndFlagPage });
-    await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-    await input(instance, '\u001b[B', '\r', '\r', '\u001b[B', '\r');
-    await input(instance, '\u001b[A', '\r', '\r', '\r', '\u0015', 'cancel-property', '\u001b');
+  it('cancels only the current property or object and compares complete hidden-property values', async () => {
+    const { value, captured } = controller({ configPage: objectAndFlagPage }); await value.load();
+    value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />); await nextTurn(5);
+    await focusAction(instance, '启用'); await input(instance, '\r', '\r');
+    await focusAction(instance, '模型配置'); await input(instance, '\r', '\r', '\r', '\u0015', 'cancel-property', '\u001b');
     expect(value.snapshot.router.current.route.name).toBe('configFieldEditor');
-    expect(instance.lastFrame()).toContain('alpha');
     expect(instance.lastFrame()).not.toContain('cancel-property');
-    await input(instance, '\r', '\r', '\u0015', 'cancel-object', '\r', '\u001b');
-    expect(value.snapshot.router.current.route.name).toBe('configFields');
-    expect(instance.lastFrame()).toContain('1 项待保存');
-    await input(instance, '\r', '\u001b[B', '\u001b[B', '\r', '\r', '\u0015', '8', '\r');
-    await input(instance, '\u001b[B', '\r', '\r', 's');
-    expect(instance.lastFrame()).toContain('个人默认');
-    await input(instance, '\u001b[B', '\r'); await nextTurn(4);
-    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
-      { scope: 'project', updates: { profile: { model: 'alpha', effort: 'high', hidden: 8 } }, changes: [expect.objectContaining({
-        before: '{"model":"alpha","effort":"high","hidden":7}', after: '{"model":"alpha","effort":"high","hidden":8}',
-      })] },
-      { scope: 'user', updates: { enabled: true } },
-    ] });
+    await editProperty(instance, 'model', 'cancel-object'); await input(instance, '\u001b');
+    expect(value.snapshot.router.current.route.name).toBe('configFields'); expect(instance.lastFrame()).toContain('1 项待保存');
+    await focusAction(instance, '模型配置'); await input(instance, '\r'); await editProperty(instance, 'hidden', '8'); await commitObject(instance);
+    await openConfigSave(instance, value);
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', groups: [{ scope: 'user', updates: {
+      profile: { model: 'alpha', effort: 'high', hidden: 8 }, enabled: true,
+    }, changes: expect.arrayContaining([expect.objectContaining({ key: 'profile',
+      before: '{"model":"alpha","effort":"high","hidden":7}', after: '{"model":"alpha","effort":"high","hidden":8}',
+    })]) }] });
   });
 
-  it('keeps the project effective value above a user draft and retains both target diffs', async () => {
-    const { value, captured } = controller({ configPage: (layer) => {
-      const next = page(layer);
-      const mode = next.groups[0]!.fields[0]!;
-      Object.assign(mode, { configured: true, canUnset: true, value: layer.scope === 'user' ? 'old-user' : 'project-live',
-        draftValue: layer.scope === 'user' ? 'old-user' : 'project-live', effectiveValue: 'project-live',
-        effectiveDisplayValue: 'project-live', effectiveSourceLabel: '当前项目' });
-      return next;
+  it('keeps an existing Codex override independent from a common draft', async () => {
+    const { value, captured } = controller({ configPage: (options) => {
+      const result = page(options); const current = options.platform === 'codex' ? 'codex-live' : 'common-live';
+      Object.assign(result.groups[0]!.fields[0]!, { configured: true, canUnset: true, value: current, draftValue: current,
+        effectiveValue: current, effectiveDisplayValue: current, effectiveSourceLabel: options.platform ?? '公共配置' }); return result;
     } });
     await value.load(); value.push({ name: 'pluginDetail', pluginId }); value.beginConfigFlow(pluginId);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-    await input(instance, '\r', '\u0015', 'new-user', '\r', '\u001b[B', '\r');
-    expect(instance.lastFrame()).toContain('project-live');
-    expect((instance.lastFrame() ?? '').replace(/\s/gu, '')).toContain('个人修改不会影响本项目');
-    await input(instance, '\r', '\u0015', 'new-project', '\r', '\r', 's');
-    expect(instance.lastFrame()).toContain('new-project');
-    expect(instance.lastFrame()).toContain('new-user');
-    await input(instance, '\u001b[B', '\r'); await nextTurn(4);
-    expect(captured.at(-1)).toMatchObject({ kind: 'configSaveBatch', groups: [
-      { scope: 'project', updates: { mode: 'new-project' } }, { scope: 'user', updates: { mode: 'new-user' } },
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />); await nextTurn(5);
+    await input(instance, '\r', '\u0015', 'new-common', '\r'); await chooseConfigProfile(instance, value, 'codex');
+    expect(instance.lastFrame()).toContain('codex-live'); expect(instance.lastFrame()).not.toContain('new-common');
+    await input(instance, '\r', '\u0015', 'new-codex', '\r'); await openConfigSave(instance, value);
+    expect(captured[0]).toMatchObject({ kind: 'configSaveBatch', groups: [
+      { scope: 'user', updates: { mode: 'new-common' } }, { scope: 'user', platform: 'codex', updates: { mode: 'new-codex' } },
     ] });
   });
 });

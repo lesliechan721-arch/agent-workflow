@@ -1,10 +1,10 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
-import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
+import { bindNativeCliRunnerSignal, NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function listResult(pluginIds: readonly string[]) {
@@ -19,6 +19,117 @@ function listResult(pluginIds: readonly string[]) {
 }
 
 describe('Codex native observation session', () => {
+  // Test Value Gate: one cancelled read must not release the neutral cwd while another invalidated read still cleans up.
+  it.each([
+    ['plugin', false], ['snapshot', false], ['plugin', true], ['snapshot', true],
+  ] as const)('drains cancelled %s reads and reports unconfirmed cleanup: %s', async (kind, cleanupUnconfirmed) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const abort = new AbortController();
+    let fastCleanup: (() => void) | undefined;
+    let slowCleanup: (() => void) | undefined;
+    let neutralCwd: string | undefined;
+    let cleanupFailure: NativeCliError | undefined;
+    let started = 0;
+    const session = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd, env: isolation.env,
+      runner: bindNativeCliRunnerSignal(async (invocation) => {
+        started += 1;
+        const neutral = invocation.cwd !== isolation.layout.fixtureCwd;
+        if (neutral) neutralCwd = invocation.cwd;
+        if (neutral && cleanupUnconfirmed) {
+          cleanupFailure = new NativeCliError({
+            invocation, exitCode: 1, stdout: '', stderr: '', reason: 'aborted',
+            cleanupError: new Error('process cleanup unconfirmed'),
+          });
+        }
+        await new Promise<void>((resolve) => invocation.signal!.addEventListener('abort', () => resolve(), { once: true }));
+        await new Promise<void>((resolve) => {
+          if (neutral) slowCleanup = resolve;
+          else fastCleanup = resolve;
+        });
+        if (neutral && cleanupUnconfirmed) {
+          throw cleanupFailure;
+        }
+        throw new DOMException('cancelled after cleanup', 'AbortError');
+      }, abort.signal),
+    });
+    const reading = kind === 'plugin'
+      ? session.inspectPlugin({ pluginId: 'demo@aw', scope: 'project' })
+      : session.snapshot('aw', 'both');
+    const rejected = expect(reading).rejects.toMatchObject({ name: 'AbortError' });
+    let disposing: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(started).toBe(2));
+      session.invalidate('aw');
+      abort.abort();
+      await vi.waitFor(() => expect(fastCleanup).toBeTypeOf('function'));
+      expect(slowCleanup).toBeTypeOf('function');
+      fastCleanup!();
+      await rejected;
+      disposing = session.dispose();
+      const state = await Promise.race([disposing.then(() => 'disposed'),
+        new Promise<string>((resolve) => setTimeout(() => resolve('waiting'), 50))]);
+      expect(state).toBe('waiting');
+      expect(await fs.pathExists(neutralCwd!)).toBe(true);
+      await expect(session.snapshot('aw')).rejects.toThrow('codexObservationSessionDisposed');
+      slowCleanup!();
+      if (cleanupUnconfirmed) {
+        await expect(disposing).rejects.toBe(cleanupFailure);
+        await expect(session.dispose()).rejects.toBe(cleanupFailure);
+      } else {
+        await disposing;
+      }
+      expect(await fs.pathExists(neutralCwd!)).toBe(false);
+    } finally {
+      abort.abort();
+      fastCleanup?.();
+      slowCleanup?.();
+      await reading.catch(() => undefined);
+      await (disposing ?? session.dispose()).catch(() => undefined);
+    }
+  });
+
+  // Test Value Gate: timeout cleanup failures must survive observation fallback and cache invalidation.
+  it.each([
+    ['plugin', 'none'], ['snapshot', 'none'],
+    ['plugin', 'pending'], ['snapshot', 'pending'],
+    ['plugin', 'settled'], ['snapshot', 'settled'],
+  ] as const)('retains timeout cleanup failures from %s reads with %s invalidation', async (kind, invalidation) => {
+    const isolation = getCurrentSourceTestIsolation();
+    let finishRead: (() => void) | undefined;
+    let cleanupFailure: NativeCliError | undefined;
+    let neutralCwd: string | undefined;
+    const session = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd, env: isolation.env,
+      runner: async (invocation) => {
+        neutralCwd = invocation.cwd;
+        await new Promise<void>((resolve) => { finishRead = resolve; });
+        cleanupFailure = new NativeCliError({
+          invocation, exitCode: 1, stdout: '', stderr: '', reason: 'timeout',
+          cleanupError: new Error('process cleanup unconfirmed'),
+        });
+        throw cleanupFailure;
+      },
+    });
+    const reading = kind === 'plugin'
+      ? session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' })
+      : session.snapshot('aw', 'user');
+    const rejected = expect(reading).rejects.toMatchObject({ reason: 'timeout', cleanupError: expect.any(Error) });
+    try {
+      await vi.waitFor(() => expect(finishRead).toBeTypeOf('function'));
+      if (invalidation === 'pending') session.invalidate('aw');
+      finishRead!();
+      await rejected;
+      if (invalidation === 'settled') session.invalidate('aw');
+      await expect(session.dispose()).rejects.toBe(cleanupFailure);
+      expect(await fs.pathExists(neutralCwd!)).toBe(false);
+    } finally {
+      finishRead?.();
+      await reading.catch(() => undefined);
+      await session.dispose().catch(() => undefined);
+    }
+  });
+
   it('serves twenty same-marketplace plugins from one exact and one neutral list', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const calls: NativeCliInvocation[] = [];
@@ -180,7 +291,7 @@ describe('Codex native observation session', () => {
 
     expect(new Set(neutralCwds).size).toBe(2);
     for (const cwd of new Set(neutralCwds)) {
-      expect(path.dirname(cwd)).toBe(isolation.env.TMPDIR);
+      expect(path.dirname(cwd)).toBe(await fs.realpath(isolation.env.TMPDIR!));
       await expect(fs.pathExists(cwd)).resolves.toBe(false);
     }
   });

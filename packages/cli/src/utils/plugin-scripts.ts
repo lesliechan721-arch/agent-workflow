@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
 import type { CommandExecutionContext } from '../commands/runtime.js';
-import type { DistributionName, NormalizedPluginManifest, PlatformName, PluginConfigValue, PluginMeta, Scope } from '../types.js';
+import type { DistributionName, NormalizedPluginManifest, PlatformTarget, PluginConfigValue, PluginMeta, Scope } from '../types.js';
+import { compilePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 import { redactString } from '../output/redact.js';
 import {
   createWindowsJobInvocation,
@@ -14,9 +15,10 @@ import {
   type WindowsJobInvocation,
 } from './process-tree.js';
 import { resolveAwHome } from './paths.js';
+import { readEnvironmentValue } from './state-paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
-import { attachSafeOperationError } from './safe-operation-diagnostic.js';
+import { attachSafeOperationError, readSafeOperationError } from './safe-operation-diagnostic.js';
 import {
   collectSensitiveTokenRepresentations,
   containsBlockedSensitiveToken,
@@ -88,14 +90,20 @@ export async function preparePluginScriptDirectories(tempDir: string): Promise<v
 
 export function buildPluginScriptSpawnEnv(options: {
   commandEnv: NodeJS.ProcessEnv; contextPath: string; tempDir: string; plugin: { name: string; version: string };
-  event: string; platform?: PlatformName; distribution?: DistributionName; scope: Scope; bundleRoot: string;
+  event: string; platform?: PlatformTarget; distribution?: DistributionName; scope: Scope; bundleRoot: string;
+  isolatedHomes?: { awHome: string; codexHome: string; claudeHome: string };
 }): NodeJS.ProcessEnv {
-  const input = process.platform === 'win32'
-    ? Object.fromEntries(Object.entries(options.commandEnv).map(([key, value]) => [key.toUpperCase(), value]))
-    : options.commandEnv;
+  const input = options.commandEnv;
+  const home = path.join(options.tempDir, 'home');
   const output: NodeJS.ProcessEnv = {
-    AW_HOME: resolveAwHome(input), AW_CODEX_HOME: input.AW_CODEX_HOME || path.join(resolveAwHome(input), 'isolated-codex-home'),
-    AW_CLAUDE_HOME: input.AW_CLAUDE_HOME || path.join(resolveAwHome(input), 'isolated-claude-home'), PATH: input.PATH ?? input.Path ?? '',
+    AW_HOME: options.isolatedHomes?.awHome ?? resolveAwHome(input),
+    CODEX_HOME: options.isolatedHomes?.codexHome ?? path.join(options.tempDir, 'codex-home'),
+    CLAUDE_CONFIG_DIR: options.isolatedHomes?.claudeHome ?? path.join(options.tempDir, 'claude-home'),
+    HOME: home, USERPROFILE: home,
+    XDG_CONFIG_HOME: path.join(options.tempDir, 'xdg-config'), XDG_CACHE_HOME: path.join(options.tempDir, 'xdg-cache'),
+    XDG_STATE_HOME: path.join(options.tempDir, 'xdg-state'), XDG_DATA_HOME: path.join(options.tempDir, 'xdg-data'),
+    XDG_RUNTIME_DIR: path.join(options.tempDir, 'xdg-runtime'),
+    PATH: readEnvironmentValue(input, 'PATH') ?? (process.platform === 'win32' ? '' : input.Path ?? ''),
     AW_PLUGIN_CONTEXT: options.contextPath, AW_PLUGIN_ROOT: options.bundleRoot, AW_PLUGIN_NAME: options.plugin.name,
     AW_PLUGIN_VERSION: options.plugin.version, AW_PLUGIN_EVENT: options.event, AW_PLUGIN_SCOPE: options.scope,
   };
@@ -105,18 +113,16 @@ export function buildPluginScriptSpawnEnv(options: {
     // Native Windows hosts need system installation paths to load their runtime
     // and modules. Keep user state and module-path overrides out of this list.
     for (const key of WINDOWS_SYSTEM_ENV_KEYS) {
-      const value = input[key.toUpperCase()];
+      const value = readEnvironmentValue(input, key, 'win32');
       if (value !== undefined) output[key] = value;
     }
-    output.HOME = path.join(options.tempDir, 'home');
-    output.USERPROFILE = output.HOME;
-    output.HOMEDRIVE = path.parse(output.HOME).root.replace(/[\\/]$/u, '');
-    output.HOMEPATH = output.HOME.slice(output.HOMEDRIVE.length);
-    output.APPDATA = path.join(output.HOME, 'AppData', 'Roaming');
-    output.LOCALAPPDATA = path.join(output.HOME, 'AppData', 'Local');
+    output.HOMEDRIVE = path.parse(home).root.replace(/[\\/]$/u, '');
+    output.HOMEPATH = home.slice(output.HOMEDRIVE.length);
+    output.APPDATA = path.join(home, 'AppData', 'Roaming');
+    output.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
     output.TEMP = path.join(options.tempDir, 'tmp');
     output.TMP = output.TEMP;
-  } else { output.HOME = path.join(options.tempDir, 'home'); output.TMPDIR = path.join(options.tempDir, 'tmp'); }
+  } else { output.TMPDIR = path.join(options.tempDir, 'tmp'); }
   return output;
 }
 
@@ -133,8 +139,9 @@ function collectScalarLeafTokens(value: unknown): string[] {
   return Object.values(value).flatMap(collectScalarLeafTokens);
 }
 
-export function collectSensitivePluginConfigValues(manifest: NormalizedPluginManifest, values: Record<string, PluginConfigValue>): string[] {
-  return Object.entries(manifest.config?.fields ?? {}).flatMap(([key, field]) => {
+export function collectSensitivePluginConfigValues(manifest: NormalizedPluginManifest, values: Record<string, PluginConfigValue>, platform?: PlatformTarget): string[] {
+  const fields = manifest.config ? compilePluginConfigDefinition(manifest.config, platform).fields : {};
+  return Object.entries(fields).flatMap(([key, field]) => {
     const value = values[key];
     if (value === undefined) return [];
     if (field.sensitive) return collectScalarLeafTokens(value);
@@ -359,6 +366,13 @@ export function createDefaultPluginProcessRunner(
         cleanup();
         reject(error);
       };
+      const failCleanup = (cause: unknown): void => {
+        const failure = new Error(cause instanceof Error ? cause.message : 'Plugin process cleanup could not be confirmed.', { cause });
+        settleImmediately(attachSafeOperationError(failure, readSafeOperationError(cause) ?? {
+          code: 'pluginProcessCleanupFailed',
+          safeMessage: 'Plugin process cleanup could not be confirmed.',
+        }));
+      };
       const settleIfComplete = (): void => {
         if (settled || !childExited || !cleanupCompleted || !inputCompleted) return;
         settled = true;
@@ -390,33 +404,39 @@ export function createDefaultPluginProcessRunner(
               throw new Error('Windows Job helper did not accept termination.');
             }
           } catch (error) {
-            settleImmediately(error);
+            failCleanup(error);
             return;
           }
           windowsJobCloseTimer = setTimeout(
-            () => settleImmediately(new Error('Windows Job helper exit could not be confirmed.')),
+            () => failCleanup(new Error('Windows Job helper exit could not be confirmed.')),
             WINDOWS_JOB_CLOSE_TIMEOUT_MS,
           );
           windowsJobCloseTimer.unref();
           return;
         }
-        const termination = child.pid === undefined
-          ? Promise.resolve(direct('SIGKILL'))
-          : terminateProcessTreeImpl(
-              child.pid,
-              direct,
-              {},
-              {
-                observation,
-                requireConfirmedCleanup,
-                ...(allowUnobservedWindowsProcessOnNormalCompletion
-                  ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
-                  : {}),
-              },
-            );
+        let termination: Promise<unknown>;
+        try {
+          termination = child.pid === undefined
+            ? Promise.resolve(direct('SIGKILL'))
+            : terminateProcessTreeImpl(
+                child.pid,
+                direct,
+                {},
+                {
+                  observation,
+                  requireConfirmedCleanup,
+                  ...(allowUnobservedWindowsProcessOnNormalCompletion
+                    ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
+                    : {}),
+                },
+              );
+        } catch (error) {
+          failCleanup(error);
+          return;
+        }
         void Promise.resolve(termination).then(
           () => { cleanupCompleted = true; settleIfComplete(); },
-          (error: unknown) => settleImmediately(error),
+          failCleanup,
         );
       }
       child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
@@ -481,19 +501,17 @@ export const defaultPluginProcessRunner = createDefaultPluginProcessRunner();
 export interface PreApplyContextV1 {
   schemaVersion: 1;
   plugin: { pluginId: string; name: string; version: string; rootDir: string };
-  target: { platform: PlatformName; scope: Scope; projectRoot?: string };
+  target: { platform: PlatformTarget; scope: Scope; projectRoot?: string };
   config: { values: Record<string, PluginConfigValue> };
 }
 
 export async function runPreApplyScript(options: {
   referencePlugins?: readonly PluginMeta[];
-  plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; context: CommandExecutionContext;
+  plugin: PluginMeta; platform: PlatformTarget; scope: Scope; cwd: string; context: Pick<CommandExecutionContext, 'env'>;
   scriptTimeoutMs?: number; runner?: PluginProcessRunner;
 }): Promise<void> {
   const declaration = options.plugin.manifest.scripts?.preApply; if (!declaration) return;
   const awHome = resolveAwHome(options.context.env);
-  const codexHome = options.context.env.AW_CODEX_HOME || path.join(awHome, 'isolated-codex-home');
-  const claudeHome = options.context.env.AW_CLAUDE_HOME || path.join(awHome, 'isolated-claude-home');
   let tempDir: string | undefined;
   let interruptSignal: 'SIGINT' | 'SIGTERM' | undefined;
   let interruptReason: Error | undefined;
@@ -504,18 +522,18 @@ export async function runPreApplyScript(options: {
     ...(tempDir ? [
       { root: path.join(tempDir, 'home'), replacement: '[temporary-home]' },
       { root: path.join(tempDir, 'tmp'), replacement: '[temporary]' },
+      { root: path.join(tempDir, 'codex-home'), replacement: '[codex-home]' },
+      { root: path.join(tempDir, 'claude-home'), replacement: '[claude-home]' },
       { root: tempDir, replacement: '[temporary]' },
     ] : []),
-    { root: codexHome, replacement: '[codex-home]' },
-    { root: claudeHome, replacement: '[claude-home]' },
     { root: awHome, replacement: '[aw-home]' },
     { root: options.plugin.rootDir, replacement: '[plugin-root]' },
     { root: options.cwd, replacement: '[project-root]' },
   ];
   try {
     const entryPath = await resolveBundledPluginFilePath({ bundleRoot: options.plugin.rootDir, pluginRelativePath: declaration.path, fieldName: 'preApply script' });
-    const effective = options.plugin.manifest.config?.fields
-      ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, targetScope: options.scope, cwd: options.cwd, env: options.context.env, referencePlugins: options.referencePlugins })
+    const effective = options.plugin.manifest.config
+      ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, platform: options.platform, targetScope: options.scope, cwd: options.cwd, env: options.context.env, referencePlugins: options.referencePlugins })
       : { values: {}, issues: [] };
     if (effective.issues.length > 0) throw new Error(`preApply config is invalid for ${options.plugin.manifest.name}.`);
     const payload: PreApplyContextV1 = {
@@ -528,7 +546,7 @@ export async function runPreApplyScript(options: {
     tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-pre-apply-'));
     await preparePluginScriptDirectories(tempDir);
     const env = buildPluginScriptSpawnEnv({ commandEnv: options.context.env, contextPath: '', tempDir, plugin: payload.plugin, event: 'preApply', platform: options.platform, scope: options.scope, bundleRoot: options.plugin.rootDir }); delete env.AW_PLUGIN_CONTEXT;
-    sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
+    sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values, options.platform);
     const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });
     const runOptions = { timeoutMs: resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs, manifestTimeoutMs: declaration.timeoutMs }) };
     const interruptController = new AbortController();

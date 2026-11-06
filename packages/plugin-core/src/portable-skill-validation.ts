@@ -99,7 +99,10 @@ export async function validatePortableSkillDirectory(rootDir: string): Promise<P
   return { skillKey, files };
 }
 
-export async function validatePortableSkillDirectoriesRoot(rootDir: string): Promise<PortableSkillTree[]> {
+export async function validatePortableSkillDirectoriesRoot(
+  rootDir: string,
+  options: { dynamicSkillKeys?: ReadonlySet<string> } = {},
+): Promise<PortableSkillTree[]> {
   const rootStats = await fs.lstat(rootDir).catch(() => null);
   if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     throw new Error(`Skills 根路径必须是真实目录：${rootDir}`);
@@ -110,6 +113,8 @@ export async function validatePortableSkillDirectoriesRoot(rootDir: string): Pro
     if (entry.isSymbolicLink() || !entry.isDirectory()) {
       throw new Error(`Skills 根目录的直接子节点必须是普通目录：${entry.name}`);
     }
+    // A bundle can contain runtime imports for a Skill whose complete tree is produced by its renderer.
+    if (options.dynamicSkillKeys?.has(entry.name)) continue;
     trees.push(await validatePortableSkillDirectory(path.join(rootDir, entry.name)));
   }
   return trees;

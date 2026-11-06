@@ -292,6 +292,7 @@ describe('slashCommands source and bundle contract', () => {
         name: 'slash-command-claude-only',
         version: '0.1.0',
         description: 'claude only slash commands',
+        platforms: ['claude'],
         slashCommands: './slash-commands',
         marketplace: {
           category: 'workflow',
@@ -299,7 +300,6 @@ describe('slashCommands source and bundle contract', () => {
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CLAUDE'],
           },
         },
         buildConfig: {
@@ -345,6 +345,7 @@ describe('slashCommands source and bundle contract', () => {
         name: 'slash-command-codex-only-forbidden',
         version: '0.1.0',
         description: 'codex only slash commands',
+        platforms: ['codex'],
         slashCommands: './slash-commands',
         marketplace: {
           category: 'workflow',
@@ -352,7 +353,6 @@ describe('slashCommands source and bundle contract', () => {
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CODEX'],
           },
         },
       },
@@ -378,6 +378,7 @@ describe('slashCommands source and bundle contract', () => {
         name: 'slash-command-codex-only-frontmatter',
         version: '0.1.0',
         description: 'codex only slash commands',
+        platforms: ['codex'],
         slashCommands: './slash-commands',
         marketplace: {
           category: 'workflow',
@@ -385,7 +386,6 @@ describe('slashCommands source and bundle contract', () => {
           policy: {
             installation: 'AVAILABLE',
             authentication: 'ON_INSTALL',
-            products: ['CODEX'],
           },
         },
       },

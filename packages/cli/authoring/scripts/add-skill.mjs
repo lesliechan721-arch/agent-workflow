@@ -4,6 +4,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import crypto from 'node:crypto';
 
+import { resolveSupportedPlatforms as resolveManifestPlatforms } from '@lesliechan721/aw-plugin-core/manifest';
+
 import { parseStrictSemVer } from './lib/semver.mjs';
 import {
   MAX_CODEX_SHORT_DESCRIPTION_LEN,
@@ -136,20 +138,8 @@ function parseArgs(argv) {
 }
 
 function resolveSupportedPlatforms(manifest) {
-  const products = manifest.marketplace?.policy?.products;
-  if (products === undefined || (Array.isArray(products) && products.length === 0)) {
-    return { codex: true, claude: true };
-  }
-  if (!Array.isArray(products)) {
-    fail('marketplace.policy.products must be an array when present.');
-  }
-  const normalized = new Set(products.map((value) => String(value).trim().toUpperCase()));
-  for (const product of normalized) {
-    if (product !== 'CODEX' && product !== 'CLAUDE') {
-      fail(`Unsupported marketplace.policy.products entry: ${JSON.stringify(product)}.`);
-    }
-  }
-  return { codex: normalized.has('CODEX'), claude: normalized.has('CLAUDE') };
+  const supported = new Set(resolveManifestPlatforms(manifest));
+  return { codex: supported.has('codex'), claude: supported.has('claude') };
 }
 
 function lstatOrNull(filePath) {
@@ -341,9 +331,6 @@ function main() {
     fail('plugin version must be a stable SemVer without prerelease or build metadata.');
   }
   const platforms = resolveSupportedPlatforms(manifest);
-  if (!platforms.codex && !platforms.claude) {
-    fail('Plugin must support at least one of CODEX or CLAUDE.');
-  }
   if (args.skillInvocation === 'claude-model-only' && !platforms.claude) {
     fail('claude-model-only invocation requires a plugin that supports CLAUDE.');
   }

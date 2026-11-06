@@ -111,7 +111,11 @@ async function writeNativeAndPortableSkillBundle(
   for (const relative of [
     'claude/skills/example',
     'codex/skills/example',
-    'agent-skills/skills/example',
+    'cursor/skills/example',
+    'antigravity/skills/example',
+    'opencode/skills/example',
+    'pi/skills/example',
+    'generic/skills/example',
   ]) {
     await fs.outputFile(path.join(outputRoot, relative, 'SKILL.md'), skill)
     await fs.outputFile(path.join(outputRoot, relative, 'README.md'), '# Example\n')
@@ -128,6 +132,67 @@ afterEach(async () => {
 })
 
 describe('AW Catalog Workspace v1', () => {
+  it('rejects incomplete platform coverage across a transitive dependency before running a build adapter', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    for (const [name, platforms, dependencies] of [
+      ['a-root', ['codex', 'claude'], ['b-mid']],
+      ['b-mid', ['codex', 'claude'], ['c-leaf']],
+      ['c-leaf', ['codex'], []],
+    ] as const) {
+      const manifest = await writeSourcePlugin(root, name)
+      await fs.writeJson(path.join(root, 'plugins', name, '.agents-plugin', 'plugin.json'), {
+        ...manifest, platforms, dependencies,
+      })
+    }
+    const build = vi.fn()
+    await expect(buildCatalogWorkspace({ workspaceRoot: root, adapter: { build } }))
+      .rejects.toThrow(/consumer "b-mid", dependency "c-leaf" lacks platforms \[claude\].*a-root -> b-mid -> c-leaf/u)
+    expect(build).not.toHaveBeenCalled()
+    expect(await fs.pathExists(path.join(root, '.aw', 'catalog'))).toBe(false)
+  })
+
+  it('publishes a Portable-only plugin without Native marketplace entries or Native capabilities', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const original = await writeSourcePlugin(root)
+    const manifest = { ...original, platforms: ['cursor'], skills: './skills', artifacts: { targets: [{
+      id: 'dynamic', platform: 'cursor', distribution: 'agent-skills', target: 'agent-skills.skill',
+      scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'dynamic',
+    }] } }
+    const pluginRoot = path.join(root, 'plugins', 'atomic-plugin')
+    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest)
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'example', 'SKILL.md'),
+      '---\nname: example\ndescription: Example Skill.\n---\n\n# Example\n')
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'example', 'README.md'), '# Example\n')
+    const capabilities = ['aw.dynamic-artifacts.v2', 'aw.plugin-manifest.v3', 'aw.plugin-skills.v1', 'aw.portable-skills.v1']
+    const adapter = {
+      build: async ({ outputRoot }: { outputRoot: string }) => {
+        await fs.outputJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'), {
+          ...manifest, requires: { aw: { capabilities } },
+        })
+        const skillRoot = path.join(outputRoot, 'cursor', 'skills', 'example')
+        await fs.copy(path.join(pluginRoot, 'skills', 'example'), skillRoot)
+        await fs.outputJson(path.join(skillRoot, 'aw-plugin-requirements.json'),
+          createAwPluginRequirementsReceipt({ name: 'atomic-plugin', version: '0.1.0' }, capabilities))
+        await fs.outputFile(path.join(outputRoot, 'cursor', 'skills', 'dynamic', 'references', 'runtime.mjs'), 'export {}\n')
+      },
+    }
+    const built = await buildCatalogWorkspace({ workspaceRoot: root, adapter })
+    await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
+      manifest: { entries: [{ name: 'atomic-plugin' }] },
+    })
+    for (const relative of ['.agents/plugins/marketplace.json', '.claude-plugin/marketplace.json']) {
+      await expect(fs.readJson(path.join(built.outputRoot, relative))).resolves.toMatchObject({ plugins: [] })
+    }
+    expect(await fs.pathExists(path.join(built.outputRoot, 'plugins', 'atomic-plugin', '.codex-plugin'))).toBe(false)
+    expect(await fs.pathExists(path.join(built.outputRoot, 'plugins', 'atomic-plugin', '.claude-plugin'))).toBe(false)
+    await fs.writeFile(path.join(pluginRoot, 'skills', 'example', 'README.md'), '')
+    await expect(buildCatalogWorkspace({ workspaceRoot: root, force: true, adapter }))
+      .rejects.toThrow(/README.md/u)
+    await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toBeDefined()
+  })
+
   it('initializes and reads the exact marker contract while preserving identity on force', async () => {
     const root = await createWorkspace()
     await fs.writeFile(path.join(root, '.gitignore'), 'node_modules/\n')
@@ -697,12 +762,11 @@ describe('AW Catalog Workspace v1', () => {
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
     manifest.skills = './skills'
-    manifest.distributions = { agentSkills: { skills: './portable-skills' } }
     await fs.writeJson(
       path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
       manifest,
     )
-    for (const relative of ['skills/example', 'portable-skills/example']) {
+    for (const relative of ['skills/example']) {
       await fs.outputFile(path.join(root, 'plugins', 'atomic-plugin', relative, 'SKILL.md'), [
         '---',
         'name: example',
@@ -737,7 +801,7 @@ describe('AW Catalog Workspace v1', () => {
     for (const relative of [
       'claude/skills/example',
       'codex/skills/example',
-      'agent-skills/skills/example',
+      'cursor/skills/example',
     ]) {
       await expect(fs.readJson(path.join(
         first.outputRoot,
@@ -1063,12 +1127,11 @@ describe('AW Catalog Workspace v1', () => {
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
     manifest.skills = './skills'
-    manifest.distributions = { agentSkills: { skills: './portable-skills' } }
     await fs.writeJson(
       path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
       manifest,
     )
-    for (const relative of ['skills/example', 'portable-skills/example']) {
+    for (const relative of ['skills/example']) {
       await fs.outputFile(path.join(root, 'plugins', 'atomic-plugin', relative, 'SKILL.md'), [
         '---',
         'name: example',

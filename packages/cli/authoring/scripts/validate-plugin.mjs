@@ -17,6 +17,11 @@ import {
   getSkillFrontmatterCapabilityRegistry,
   getManagedCommandArtifactTargets,
   normalizePluginConfigDefinition,
+  compilePluginConfigDefinition,
+  resolveSupportedPlatforms,
+  PLATFORM_TARGETS,
+  isPortablePlatformTarget,
+  SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION,
   parseManagedCommandPlaceholders,
   replaceManagedCommandPlaceholders,
   validateCommandEntryFiles,
@@ -41,7 +46,6 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 18;
 let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
@@ -74,9 +78,9 @@ const CODEX_POLICY_PRODUCTS = new Set([
   'codex',
   'CODEX',
 ]);
-const MANIFEST_POLICY_PRODUCTS = new Set(getPluginAuthoringAcceptedValues(
+const MANIFEST_PLATFORMS = new Set(getPluginAuthoringAcceptedValues(
   'manifest',
-  'marketplace.policy.products',
+  'platforms',
 ));
 const MARKETPLACE_AUTHENTICATION_POLICIES = new Set(getPluginAuthoringAcceptedValues(
   'manifest',
@@ -159,29 +163,6 @@ const DEFAULT_SLASH_COMMANDS_DIR = 'slash-commands';
 const SCRIPT_NODE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const SCRIPT_TIMEOUT_MIN_MS = 1000;
 const SCRIPT_TIMEOUT_MAX_MS = 1800000;
-const ARTIFACT_TARGETS = new Set(getPluginAuthoringAcceptedValues(
-  'artifacts',
-  'artifacts.targets[].target',
-));
-const ARTIFACT_STATES = new Set(getPluginAuthoringAcceptedValues(
-  'artifacts',
-  'artifacts.targets[].states',
-));
-const ARTIFACT_SCOPES = new Set(['user', 'project']);
-const ARTIFACT_KINDS = new Set(['instruction', 'codexRole', 'skill']);
-const ARTIFACT_PROJECT_MANAGED_KINDS = new Set(['instruction', 'agent', 'skill']);
-const ARTIFACT_KIND_BY_TARGET = {
-  'codex.developerInstructionsBlock': 'instruction',
-  'codex.agentRole': 'codexRole',
-  'codex.skill': 'skill',
-  'claude.skill': 'skill',
-  'agent-skills.skill': 'skill',
-};
-const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET = {
-  'codex.developerInstructionsBlock': 'instruction',
-  'codex.agentRole': 'agent',
-  'codex.skill': 'skill',
-};
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 let yamlParser = null;
 let pluginVersionCheckResult = null;
@@ -600,177 +581,12 @@ function validateStrictSemVerString(value, fieldName) {
   return value;
 }
 
-function validateManifestLightweight(manifest) {
-  const input = expectRecord(manifest, 'plugin manifest');
-  if (!input) return;
-  if (Object.prototype.hasOwnProperty.call(input, 'commands')) {
-    error('top-level "commands" has been removed; use "slashCommands" instead');
-  }
-  validateAllowedKeys(input, 'plugin manifest', [
-    'schemaVersion',
-    'name',
-    'version',
-    'description',
-    'dependencies',
-    'requires',
-    'skills',
-    'slashCommands',
-    'mcpServers',
-    'apps',
-    'distributions',
-    'marketplace',
-    'interface',
-    'extensions',
-    'buildConfig',
-    'scripts',
-    'config',
-    'artifacts',
-    'managedCommands',
-  ]);
-
-  if (manifest.dependencies !== undefined) {
-    if (!Array.isArray(manifest.dependencies)) {
-      error('dependencies must be an array');
-    } else if (manifest.dependencies.length > 64) {
-      error('dependencies must contain at most 64 direct plugin dependencies');
-    } else {
-      const seen = new Set();
-      for (const [index, dependency] of manifest.dependencies.entries()) {
-        if (typeof dependency !== 'string' || !PLUGIN_NAME_PATTERN.test(dependency)) {
-          error(`dependencies[${index}] must be an ASCII lowercase hyphen-case plugin name`);
-          continue;
-        }
-        if (dependency === manifest.name) {
-          error(`plugin "${manifest.name}" cannot depend on itself`);
-        }
-        if (seen.has(dependency)) {
-          error(`dependencies contains duplicate plugin "${dependency}"`);
-        }
-        seen.add(dependency);
-      }
-    }
-  }
-
-  for (const field of ['name', 'version', 'description', 'marketplace']) {
-    if (!manifest[field]) {
-      error(`Missing required field: ${field}`);
-    }
-  }
-
-  if (manifest.name && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest.name)) {
-    error(`manifest name "${manifest.name}" is not lowercase-hyphen-case`);
-  }
-  if (manifest.version) {
-    const pluginVersion = parseStrictSemVer(manifest.version);
-    if (!pluginVersion) {
-      error(`manifest.version must be a strict SemVer 2.0.0 string, got "${manifest.version}"`);
-    } else if (pluginVersion.prerelease.length > 0 || pluginVersion.build.length > 0) {
-      error('manifest.version must be a stable SemVer without prerelease or build metadata');
-    }
-  }
-
-  if (manifest.marketplace) {
-    const mp = manifest.marketplace;
-    if (!mp.category) error('marketplace.category is required');
-    if (typeof mp.strict !== 'boolean')
-      error('marketplace.strict must be a boolean');
-    if (!mp.policy || !mp.policy.installation)
-      error('marketplace.policy.installation is required');
-    else if (!MARKETPLACE_INSTALLATION_POLICIES.has(mp.policy.installation))
-      error(`marketplace.policy.installation must be one of ${[...MARKETPLACE_INSTALLATION_POLICIES].map((value) => JSON.stringify(value)).join(', ')}`);
-    if (!mp.policy || !mp.policy.authentication)
-      error('marketplace.policy.authentication is required');
-    else if (!MARKETPLACE_AUTHENTICATION_POLICIES.has(mp.policy.authentication))
-      error('marketplace.policy.authentication must be "ON_INSTALL" or "ON_USE"');
-    validateManifestPolicyProducts(mp.policy?.products);
-  }
-
-  for (const field of ['skills', 'slashCommands', 'mcpServers', 'apps']) {
-    if (manifest[field] && !manifest[field].startsWith('./')) {
-      error(`${field} path must start with "./", got "${manifest[field]}"`);
-    }
-  }
-
-  const claudeCommands = manifest.buildConfig?.manifestOverrides?.claude?.commands;
-  if (claudeCommands !== undefined) {
-    error('buildConfig.manifestOverrides.claude.commands has been removed; use "slashCommands" instead');
-  }
-
-  for (const platform of ['claude', 'codex']) {
-    const rules = manifest.buildConfig?.fileRules?.[platform];
-    if (!rules) continue;
-    for (const pattern of [...(rules.include ?? []), ...(rules.exclude ?? [])]) {
-      const normalized = String(pattern).replace(/\\/g, '/').replace(/^\.\//, '');
-      if (normalized === 'commands' || normalized.startsWith('commands/')) {
-        error(`buildConfig.fileRules.${platform} no longer accepts legacy "commands/**" source rules; use "slashCommands" instead`);
-      }
-    }
-  }
-
-  validateExtensionsLightweight(manifest.extensions);
-  validatePlatformFieldSupport(manifest);
-}
-
-function validatePortableNativeArtifactCapabilityLightweight(manifest) {
-  if (manifest.distributions?.agentSkills === undefined) return;
-  const hasOtherNativeDeclaration = Boolean(
-    manifest.skills
-    || manifest.slashCommands
-    || manifest.mcpServers
-    || manifest.apps
-    || (manifest.extensions?.instructions?.length ?? 0) > 0
-    || (manifest.extensions?.permissions?.length ?? 0) > 0
-    || (manifest.extensions?.hooks?.length ?? 0) > 0
-    || (manifest.extensions?.nativeHooks?.claude?.length ?? 0) > 0
-    || (manifest.extensions?.nativeHooks?.codex?.length ?? 0) > 0
-    || (manifest.extensions?.agents?.length ?? 0) > 0
-  );
-  const hasPresentNativeArtifact = (manifest.artifacts?.targets ?? []).some((target) =>
-    (target?.platform === 'claude' || target?.platform === 'codex')
-    && Array.isArray(target.states)
-    && target.states.includes('present'));
-  if (!hasOtherNativeDeclaration && !hasPresentNativeArtifact) {
-    const message = 'Invalid plugin manifest: portable-only plugins are not supported. Declare at least one non-empty native capability.';
-    if (!errors.includes(message)) error(message);
-  }
-}
-
-function normalizeManifestProductToken(value) {
-  return String(value).trim().toUpperCase().replace(/[\s-]+/g, '_');
-}
-
-function resolveSupportedPlatforms(manifest) {
-  const products = manifest.marketplace?.policy?.products;
-  if (!Array.isArray(products) || products.length === 0) {
-    return new Set(['claude', 'codex']);
-  }
-
-  const supported = new Set();
-  for (const product of products) {
-    const normalized = normalizeManifestProductToken(product);
-    if (normalized === 'CLAUDE') supported.add('claude');
-    if (normalized === 'CODEX') supported.add('codex');
-  }
-
-  return supported;
-}
-
 function supportsManifestPlatform(manifest, platform) {
   return resolveSupportedPlatforms(manifest).has(platform);
 }
 
-function formatManifestProductsForError(manifest) {
-  const products = manifest.marketplace?.policy?.products;
-  if (!Array.isArray(products) || products.length === 0) {
-    return 'marketplace.policy.products=[]';
-  }
-
-  const normalized = [...new Set(products.map(normalizeManifestProductToken))];
-  return `marketplace.policy.products=[${normalized.join(', ')}]`;
-}
-
-function platformProductName(platform) {
-  return platform === 'claude' ? 'CLAUDE' : 'CODEX';
+function formatManifestPlatformsForError(manifest) {
+  return `platforms=[${[...resolveSupportedPlatforms(manifest)].join(', ')}]`;
 }
 
 function pluginNameForError(manifest) {
@@ -782,34 +598,12 @@ function pluginNameForError(manifest) {
 function assertPlatformFieldSupported(manifest, fieldPath, requiredPlatform) {
   if (supportsManifestPlatform(manifest, requiredPlatform)) return;
   error(
-    `Invalid plugin "${pluginNameForError(manifest)}": ${fieldPath} requires ${platformProductName(requiredPlatform)} support, but ${formatManifestProductsForError(manifest)}.`,
+    `Invalid plugin "${pluginNameForError(manifest)}": ${fieldPath} requires ${requiredPlatform} support, but ${formatManifestPlatformsForError(manifest)}.`,
   );
 }
 
 function hasNonEmptyOverride(value) {
   return isRecord(value) && Object.keys(value).length > 0;
-}
-
-function validateManifestPolicyProducts(products) {
-  if (products === undefined) return;
-
-  if (!Array.isArray(products)) {
-    error('marketplace.policy.products must be an array');
-    return;
-  }
-
-  for (const [index, product] of products.entries()) {
-    const fieldName = `marketplace.policy.products[${index}]`;
-    if (typeof product !== 'string' || product.trim() === '') {
-      error(`${fieldName} must be a non-empty string`);
-      continue;
-    }
-
-    const normalized = normalizeManifestProductToken(product);
-    if (!MANIFEST_POLICY_PRODUCTS.has(normalized)) {
-      error(`${fieldName} must be one of "CODEX" or "CLAUDE"`);
-    }
-  }
 }
 
 function validatePlatformFieldSupport(manifest) {
@@ -1501,7 +1295,7 @@ function targetedPlatforms(manifest) {
   const platforms = [];
   if (isClaudeTargeted(manifest)) platforms.push('claude');
   if (isCodexTargeted(manifest)) platforms.push('codex');
-  return platforms.length > 0 ? platforms : ['claude', 'codex'];
+  return platforms;
 }
 
 // ---------------------------------------------------------------------------
@@ -1560,7 +1354,7 @@ function validateCanonicalSkillLayout(pluginDir, manifest) {
     .filter((target) =>
       target &&
       typeof target === 'object' &&
-      (target.target === 'codex.skill' || target.target === 'claude.skill') &&
+      (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill') &&
       typeof target.skillKey === 'string' &&
       Array.isArray(target.sourceDirs) &&
       target.sourceDirs.length > 0)
@@ -1581,18 +1375,7 @@ function validateCanonicalSkillLayout(pluginDir, manifest) {
       error(`skills/${skill}/README.md must not be empty`);
     }
   }
-  const portableRoot = manifest.distributions?.agentSkills?.skills;
-  for (const skill of declared.portable) {
-    const skillRoot = path.join(pluginDir, portableRoot, skill);
-    const skillReadme = path.join(skillRoot, 'README.md');
-    if (!fs.statSync(skillReadme, { throwIfNoEntry: false })?.isFile()) {
-      error(`${normalizeRelativePath(path.join(portableRoot, skill, 'README.md'))} is required`);
-      continue;
-    }
-    if (fs.readFileSync(skillReadme, 'utf8').trim() === '') {
-      error(`${normalizeRelativePath(path.join(portableRoot, skill, 'README.md'))} must not be empty`);
-    }
-  }
+
 }
 
 function validateDeclaredNativeAssets(pluginDir, manifest) {
@@ -1668,24 +1451,10 @@ function collectDeclaredSkillNames(pluginDir, manifest) {
     .map((target) => target.skillKey.trim())
     .sort();
   const dynamicSkillNameSet = new Set(dynamicSkillNames);
-  const portableRoot = typeof manifest.distributions?.agentSkills?.skills === 'string'
-    ? path.join(pluginDir, manifest.distributions.agentSkills.skills)
-    : null;
-  const portableRootStats = portableRoot
-    ? fs.lstatSync(portableRoot, { throwIfNoEntry: false })
-    : null;
-  const portableSkillNameSet = new Set(
-    portableRootStats?.isDirectory() && !portableRootStats.isSymbolicLink()
-      ? fs.readdirSync(portableRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-      : [],
-  );
 
   return {
     static: staticSkillNameSet,
     dynamic: dynamicSkillNameSet,
-    portable: portableSkillNameSet,
     all: new Set([...staticSkillNames, ...dynamicSkillNames]),
   };
 }
@@ -1985,13 +1754,8 @@ function validateConfigSchemaLightweight(config, manifest) {
   }
 }
 
-function configSchemaKeys(manifest) {
-  const schema = manifest.config?.fields;
-  return isRecord(schema) ? new Set(Object.keys(schema)) : new Set();
-}
-
-function defaultConfigValues(manifest) {
-  const schema = manifest.config?.fields;
+function defaultConfigValues(manifest, platform) {
+  const schema = compilePluginConfigDefinition(manifest.config ?? { fields: {} }, platform).fields;
   const values = {};
   if (!isRecord(schema)) return values;
   for (const [key, field] of Object.entries(schema)) {
@@ -2022,25 +1786,6 @@ function configFieldContainsSensitiveValue(field) {
   );
 }
 
-function codexStaticNativeComponentKeys(manifest) {
-  if (!isCodexTargeted(manifest)) return [];
-  const keys = [];
-  if (manifest.skills) keys.push('skills');
-  if (manifest.mcpServers) keys.push('mcpServers');
-  if (
-    (
-      Array.isArray(manifest.extensions?.hooks)
-      && manifest.extensions.hooks.some((hook) => hook?.agentOverrides?.codex !== null)
-    )
-    || (
-      Array.isArray(manifest.extensions?.nativeHooks?.codex)
-      && manifest.extensions.nativeHooks.codex.length > 0
-    )
-  ) keys.push('hooks');
-  if (manifest.apps) keys.push('apps');
-  return keys;
-}
-
 function validateArtifactId(value, fieldName) {
   const id = validateManifestString(value, fieldName);
   if (!id) return null;
@@ -2048,33 +1793,6 @@ function validateArtifactId(value, fieldName) {
     error(`${fieldName}: expected a stable id using letters, numbers, ".", "_" or "-"`);
   }
   return id;
-}
-
-function validateCodexRoleKey(value, fieldName) {
-  const roleKey = validateManifestString(value, fieldName);
-  if (!roleKey) return null;
-  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(roleKey)) {
-    error(`${fieldName}: expected a valid Codex role key`);
-  }
-  return roleKey;
-}
-
-function validateCodexSkillKey(value, fieldName) {
-  const skillKey = validateManifestString(value, fieldName);
-  if (!skillKey) return null;
-  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(skillKey)) {
-    error(`${fieldName}: expected a valid Codex skill key`);
-  }
-  return skillKey;
-}
-
-function validatePortableSkillKey(value, fieldName) {
-  const skillKey = validateManifestString(value, fieldName);
-  if (!skillKey) return null;
-  if (skillKey.length > MAX_SKILL_NAME_LEN || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skillKey)) {
-    error(`${fieldName}: expected at most 64 ASCII lowercase hyphen-case characters`);
-  }
-  return skillKey;
 }
 
 function validateStringArray(value, fieldName, options = {}) {
@@ -2104,353 +1822,8 @@ function validateStringArray(value, fieldName, options = {}) {
   return output;
 }
 
-function validateArtifactTargetEntry(entry, index, manifest, pluginDir) {
-  const fieldName = `artifacts.targets[${index}]`;
-  const target = expectRecord(entry, fieldName);
-  if (!target) return null;
-
-  validateAllowedKeys(target, fieldName, [
-    'id',
-    'platform',
-    'distribution',
-    'scopes',
-    'target',
-    'kind',
-    'projectManagedKind',
-    'states',
-    'refreshKeys',
-    'delivery',
-    'requiresCodexProjectConfig',
-    'roleKey',
-    'skillKey',
-    'sourceDirs',
-    'runtimeImports',
-    'runtimeConfig',
-  ]);
-
-  const id = validateArtifactId(target.id, `${fieldName}.id`);
-  const artifactTarget = validateManifestString(target.target, `${fieldName}.target`);
-  if (artifactTarget && !ARTIFACT_TARGETS.has(artifactTarget)) {
-    error(`${fieldName}.target: unsupported artifact target "${artifactTarget}"`);
-  }
-  const portable = artifactTarget === 'agent-skills.skill';
-  let delivery;
-  if (artifactTarget === 'codex.skill') {
-    delivery = expectRecord(target.delivery, `${fieldName}.delivery`);
-    if (delivery) {
-      if (delivery.mode === 'aw-extension') {
-        validateAllowedKeys(delivery, `${fieldName}.delivery`, ['mode']);
-      } else if (delivery.mode === 'codex-native') {
-        validateAllowedKeys(delivery, `${fieldName}.delivery`, ['mode', 'identity', 'renderProfile']);
-        if (delivery.identity !== 'shared') {
-          error(`${fieldName}.delivery.identity: expected "shared"`);
-        }
-        if (delivery.renderProfile !== 'user') {
-          error(`${fieldName}.delivery.renderProfile: expected "user"`);
-        }
-      } else {
-        error(`${fieldName}.delivery.mode: expected "codex-native" or "aw-extension"`);
-      }
-    }
-  } else if (target.delivery !== undefined) {
-    error(`${fieldName}.delivery: delivery is only supported for codex.skill targets`);
-  }
-  const platform = portable || target.platform === undefined
-    ? undefined
-    : validateManifestString(target.platform, `${fieldName}.platform`);
-  const distribution = portable || target.distribution !== undefined
-    ? validateManifestString(target.distribution, `${fieldName}.distribution`)
-    : undefined;
-  if (portable) {
-    if (distribution !== 'agent-skills') {
-      error(`${fieldName}.distribution: expected "agent-skills"`);
-    }
-    if (target.platform !== undefined) {
-      error(`${fieldName}.platform: distribution targets do not support platform`);
-    }
-  } else {
-    const expectedPlatform = artifactTarget === 'claude.skill' ? 'claude' : 'codex';
-    if (platform && artifactTarget && platform !== expectedPlatform) {
-      error(`${fieldName}.platform: target "${artifactTarget}" must use "${expectedPlatform}"`);
-    }
-    if (target.distribution !== undefined) {
-      error(`${fieldName}.distribution: platform targets do not support distribution`);
-    }
-  }
-
-  const expectedKind = ARTIFACT_KIND_BY_TARGET[artifactTarget];
-  const kind = target.kind === undefined
-    ? expectedKind
-    : validateManifestString(target.kind, `${fieldName}.kind`);
-  if (kind && !ARTIFACT_KINDS.has(kind)) {
-    error(`${fieldName}.kind: unsupported artifact kind "${kind}"`);
-  }
-  if (expectedKind && kind && kind !== expectedKind) {
-    error(`${fieldName}.kind: target "${artifactTarget}" requires kind "${expectedKind}"`);
-  }
-
-  const expectedProjectManagedKind = ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET[artifactTarget];
-  const projectManagedKind = target.projectManagedKind === undefined
-    ? expectedProjectManagedKind
-    : validateManifestString(target.projectManagedKind, `${fieldName}.projectManagedKind`);
-  if (projectManagedKind && !ARTIFACT_PROJECT_MANAGED_KINDS.has(projectManagedKind)) {
-    error(`${fieldName}.projectManagedKind: unsupported Codex project managed kind "${projectManagedKind}"`);
-  }
-  if (
-    expectedProjectManagedKind &&
-    projectManagedKind &&
-    projectManagedKind !== expectedProjectManagedKind
-  ) {
-    error(
-      `${fieldName}.projectManagedKind: target "${artifactTarget}" must map to "${expectedProjectManagedKind}"`,
-    );
-  }
-  if (!expectedProjectManagedKind && projectManagedKind) {
-    error(`${fieldName}.projectManagedKind: target "${artifactTarget}" does not support projectManagedKind`);
-  }
-
-  const scopes = validateStringArray(target.scopes, `${fieldName}.scopes`, {
-    allowed: ARTIFACT_SCOPES,
-    label: 'artifact scope',
-    requireNonEmpty: true,
-  });
-  const states = validateStringArray(target.states, `${fieldName}.states`, {
-    allowed: ARTIFACT_STATES,
-    label: 'artifact state',
-    requireNonEmpty: true,
-  });
-  const refreshKeys = validateStringArray(target.refreshKeys, `${fieldName}.refreshKeys`);
-  const schemaKeys = configSchemaKeys(manifest);
-  for (const [refreshIndex, refreshKey] of refreshKeys.entries()) {
-    if (!schemaKeys.has(refreshKey)) {
-      error(`${fieldName}.refreshKeys[${refreshIndex}]: unknown config key "${refreshKey}"`);
-      continue;
-    }
-    const sensitiveRefreshKey = configFieldContainsSensitiveValue(
-      manifest.config?.fields?.[refreshKey],
-    );
-    const skillTarget = artifactTarget === 'codex.skill'
-      || artifactTarget === 'claude.skill'
-      || artifactTarget === 'agent-skills.skill';
-    if (skillTarget && sensitiveRefreshKey) {
-      const native = delivery?.mode === 'codex-native';
-      error(
-        `${native ? 'codexNativeRenderSensitiveRefreshKey' : 'skillRenderSensitiveRefreshKey'}: ` +
-          `${fieldName}.refreshKeys[${refreshIndex}]: ` +
-          `${native ? 'codex-native renderers' : 'Skill renderers'} cannot read sensitive config field "${refreshKey}"`,
-      );
-    }
-  }
-
-  if (
-    target.requiresCodexProjectConfig !== undefined &&
-    typeof target.requiresCodexProjectConfig !== 'boolean'
-  ) {
-    error(`${fieldName}.requiresCodexProjectConfig must be a boolean`);
-  }
-  if (artifactTarget === 'codex.skill' && target.requiresCodexProjectConfig === true) {
-    error(`${fieldName}.requiresCodexProjectConfig: codex.skill writes the skill runtime and must not require Codex project config preflight`);
-  }
-  if ((platform === 'claude' || portable) && target.requiresCodexProjectConfig !== undefined) {
-    error(`${fieldName}.requiresCodexProjectConfig: this target does not support the field`);
-  }
-
-  let roleKey;
-  let skillKey;
-  if (artifactTarget === 'codex.agentRole') {
-    roleKey = validateCodexRoleKey(target.roleKey, `${fieldName}.roleKey`);
-    if (!roleKey) {
-      error(`${fieldName}.roleKey: codex.agentRole targets must declare a static roleKey`);
-    }
-  } else if (target.roleKey !== undefined) {
-    error(`${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets`);
-  }
-  if (artifactTarget === 'codex.skill' || artifactTarget === 'claude.skill' || portable) {
-    skillKey = portable
-      ? validatePortableSkillKey(target.skillKey, `${fieldName}.skillKey`)
-      : validateCodexSkillKey(target.skillKey, `${fieldName}.skillKey`);
-    if (!skillKey) {
-      error(`${fieldName}.skillKey: ${artifactTarget} targets must declare a static skillKey`);
-    }
-  } else if (target.skillKey !== undefined) {
-    error(`${fieldName}.skillKey: skillKey is only supported for skill targets`);
-  }
-
-  const normalizedSourceDirs = Array.isArray(target.sourceDirs)
-    ? target.sourceDirs
-      .filter((sourceDir) => typeof sourceDir === 'string' && sourceDir.trim() !== '')
-      .map((sourceDir) => path.posix.normalize(sourceDir))
-    : [];
-  if (new Set(normalizedSourceDirs).size !== normalizedSourceDirs.length) {
-    error(`${fieldName}.sourceDirs must not contain duplicate directories`);
-  }
-  const sourceDirs = target.sourceDirs === undefined
-    ? []
-    : validateStringArray(target.sourceDirs, `${fieldName}.sourceDirs`);
-  if (sourceDirs.length > 0 && artifactTarget !== 'codex.skill' && artifactTarget !== 'claude.skill' && !portable) {
-    error(`${fieldName}.sourceDirs: sourceDirs are only supported for skill targets`);
-  }
-  for (const [sourceIndex, sourceDir] of sourceDirs.entries()) {
-    const sourceField = `${fieldName}.sourceDirs[${sourceIndex}]`;
-    if (!sourceDir.startsWith('./') || path.posix.isAbsolute(sourceDir)) {
-      error(`${sourceField} must start with "./" and stay inside the plugin root`);
-      continue;
-    }
-    const normalized = path.posix.normalize(sourceDir);
-    if (normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
-      error(`${sourceField} must stay inside the plugin root`);
-      continue;
-    }
-    const stats = fs.lstatSync(path.join(pluginDir, normalized), { throwIfNoEntry: false });
-    if (!stats?.isDirectory() || stats.isSymbolicLink()) {
-      error(`${sourceField} must point to an existing directory`);
-    }
-    if (
-      skillKey && !portable &&
-      normalized !== `skills/${skillKey}` &&
-      !normalized.startsWith(`skills/${skillKey}/`)
-    ) {
-      error(`${sourceField} must stay inside "./skills/${skillKey}"`);
-    }
-    if (
-      skillKey && !portable &&
-      isSkillAuthorOnlyPath(path.posix.relative(`skills/${skillKey}`, normalized))
-    ) {
-      error(`${sourceField} must not point inside an author-only Skill directory`);
-    }
-  }
-  if (
-    skillKey && !portable &&
-    sourceDirs.length > 0 &&
-    !normalizedSourceDirs.includes(`skills/${skillKey}`)
-  ) {
-    error(`${fieldName}.sourceDirs must include "./skills/${skillKey}" so README.md is published`);
-  }
-
-  return {
-    id,
-    platform,
-    distribution,
-    scopes,
-    target: artifactTarget,
-    kind,
-    projectManagedKind,
-    states,
-    refreshKeys,
-    delivery,
-    roleKey,
-    skillKey,
-    sourceDirs,
-    runtimeConfig: target.runtimeConfig,
-    runtimeImports: Array.isArray(target.runtimeImports) ? target.runtimeImports : [],
-  };
-}
-
-function validateArtifactsConfigLightweight(pluginDir, manifest) {
-  if (manifest.artifacts === undefined) return [];
-  const artifacts = expectRecord(manifest.artifacts, 'artifacts');
-  if (!artifacts) return [];
-  validateAllowedKeys(artifacts, 'artifacts', ['targets']);
-  if (artifacts.targets === undefined) return [];
-  if (!Array.isArray(artifacts.targets)) {
-    error('artifacts.targets must be an array');
-    return [];
-  }
-
-  const declarations = artifacts.targets
-    .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, pluginDir))
-    .filter(Boolean);
-  const idsBySurfaceScope = new Map();
-  const nativeIds = new Map();
-  const nativeSkillKeys = new Map();
-  for (const [declarationIndex, declaration] of declarations.entries()) {
-    for (const scope of declaration.scopes) {
-      const surface = declaration.platform ?? declaration.distribution;
-      const key = `${surface}:${scope}:${declaration.id}`;
-      const existing = idsBySurfaceScope.get(key);
-      if (existing !== undefined) {
-        error(
-          `artifacts.targets has duplicate artifact id "${declaration.id}" for surface/scope "${surface}:${scope}" in targets[${existing}] and targets[${declarationIndex}]`,
-        );
-      } else {
-        idsBySurfaceScope.set(key, declarationIndex);
-      }
-    }
-    if (declaration.delivery?.mode === 'codex-native') {
-      const existingId = nativeIds.get(declaration.id);
-      if (existingId !== undefined) {
-        error(
-          `artifacts.targets has duplicate codex-native artifact id "${declaration.id}" in the shared projection at targets[${existingId}] and targets[${declarationIndex}]`,
-        );
-      } else {
-        nativeIds.set(declaration.id, declarationIndex);
-      }
-      const existingSkillKey = nativeSkillKeys.get(declaration.skillKey);
-      if (existingSkillKey !== undefined) {
-        error(
-          `artifacts.targets has duplicate codex-native skillKey "${declaration.skillKey}" in the shared projection at targets[${existingSkillKey}] and targets[${declarationIndex}]`,
-        );
-      } else {
-        nativeSkillKeys.set(declaration.skillKey, declarationIndex);
-      }
-    }
-  }
-  const nativeComponents = codexStaticNativeComponentKeys(manifest).map((key) => ({
-    key,
-    scopes: ['project', 'user'],
-  }));
-  declarations.forEach((declaration, index) => {
-    if (declaration.delivery?.mode === 'codex-native') {
-      nativeComponents.push({ key: `artifacts.targets[${index}]`, scopes: declaration.scopes });
-    }
-  });
-  const expectedNativeComponent = nativeComponents[0];
-  if (expectedNativeComponent) {
-    const canonicalScopes = (component) => [...component.scopes].sort().join(',');
-    const expectedScopes = canonicalScopes(expectedNativeComponent);
-    const mismatch = nativeComponents.find((component) =>
-      canonicalScopes(component) !== expectedScopes);
-    if (mismatch) {
-      error(
-        `codexSharedNativeScopeMismatch: Codex native component scope sets must match exactly; ` +
-          `${expectedNativeComponent.key} has {${expectedScopes}} but ${mismatch.key} has ` +
-          `{${canonicalScopes(mismatch)}}`,
-      );
-    }
-  }
-  const staticSkillNames = new Set(collectDeclaredSkillNames(pluginDir, manifest).static);
-  for (const [index, declaration] of declarations.entries()) {
-    if (
-      declaration.target === 'codex.skill'
-      && declaration.delivery?.mode === 'codex-native'
-      && staticSkillNames.has(declaration.skillKey)
-    ) {
-      error(
-        `artifacts.targets[${index}].skillKey: native dynamic Skill "${declaration.skillKey}" conflicts with a static Skill of the same name`,
-      );
-    }
-  }
-  const owners = new Map();
-  for (const declaration of declarations) {
-    if (
-      (declaration.target !== 'codex.skill' && declaration.target !== 'claude.skill' && declaration.target !== 'agent-skills.skill') ||
-      !declaration.skillKey
-    ) {
-      continue;
-    }
-    for (const scope of declaration.scopes) {
-      const ownerKey = `${declaration.platform ?? declaration.distribution}:${scope}:${declaration.skillKey}`;
-      const existing = owners.get(ownerKey);
-      if (existing) {
-        error(
-          `artifacts.targets has duplicate skill ownership "${ownerKey}" in artifacts "${existing}" and "${declaration.id}"`,
-        );
-      } else {
-        owners.set(ownerKey, declaration.id);
-      }
-    }
-  }
-  return declarations;
+function validateArtifactsConfigLightweight(_pluginDir, manifest) {
+  return (manifest.artifacts?.targets ?? []).map((target) => ({ ...target, sourceDirs: target.sourceDirs ?? [] }));
 }
 
 function validateArtifactPlanRefreshKeys(refreshKeys, declaration, fieldName) {
@@ -2483,7 +1856,7 @@ function isSkillAuthorOnlyPath(relativePath) {
   return topLevel === 'evals' || topLevel === 'reports';
 }
 
-function collectArtifactSourceFiles(rootDir, fieldName, files) {
+function collectArtifactSourceFiles(rootDir, fieldName, files, transform = (_relative, bytes) => bytes) {
   const rootStats = fs.lstatSync(rootDir, { throwIfNoEntry: false });
   if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return;
 
@@ -2506,7 +1879,7 @@ function collectArtifactSourceFiles(rootDir, fieldName, files) {
         error(`${fieldName} contains unsupported non-regular file "${relativePath}"`);
         continue;
       }
-      files.set(relativePath, fs.readFileSync(absolutePath));
+      files.set(relativePath, transform(relativePath, fs.readFileSync(absolutePath)));
     }
   };
 
@@ -2523,27 +1896,23 @@ function findArtifactFilePrefixConflict(files) {
   return null;
 }
 
-function authorRuntimeImportKey(artifactId, importIndex) {
-  return `${artifactId}\0${importIndex}`;
+function authorRuntimeImportKey(artifactId, importIndex, platform) {
+  return `${platform ?? "common"}\0${artifactId}\0${importIndex}`;
 }
 
 async function resolveAuthorRuntimeImports(options) {
   const artifactImports = (options.manifest.artifacts?.targets ?? []).flatMap((target) =>
     (target.runtimeImports ?? []).map((reference, importIndex) => ({
-      key: authorRuntimeImportKey(target.id, importIndex),
+      key: authorRuntimeImportKey(target.id, importIndex, target.platform),
       label: `artifacts target ${JSON.stringify(target.id)} runtime import ${JSON.stringify(reference.name)}`,
       purpose: 'artifact-runtime',
+      platforms: target.platform ? [target.platform] : [undefined],
       reference,
     })));
   const skillRuntimeImports = (options.manifest.buildConfig?.skillRuntimeFiles ?? []).flatMap(
     (entry, importIndex) => {
       if (!isRecord(entry.import)) return [];
-      const platforms = [
-        ...(entry.platforms !== undefined || entry.distributions === undefined
-          ? (entry.platforms ?? [...resolveSupportedPlatforms(options.manifest)])
-          : []),
-        ...(entry.distributions?.includes('agent-skills') ? [undefined] : []),
-      ];
+      const platforms = entry.platforms?.length ? entry.platforms : [...resolveSupportedPlatforms(options.manifest)];
       return platforms.length > 0 ? [{
         key: importIndex,
         label: `buildConfig.skillRuntimeFiles[${importIndex}].import`,
@@ -2634,11 +2003,11 @@ async function resolveAuthorRuntimeImports(options) {
   };
 }
 
-function overlayPortableRuntimeFiles(files, manifest, pluginDir, skillKey, runtimeImports) {
+function overlayPortableRuntimeFiles(files, manifest, pluginDir, skillKey, runtimeImports, platform) {
   for (const [runtimeIndex, runtimeFile] of (manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
     if (
       runtimeFile.skill !== skillKey
-      || !runtimeFile.distributions?.includes('agent-skills')
+      || (runtimeFile.platforms?.length && !runtimeFile.platforms.includes(platform))
     ) continue;
     if (typeof runtimeFile.source === 'string') {
       const sourcePath = path.join(pluginDir, normalizeRelativePath(runtimeFile.source));
@@ -2681,6 +2050,9 @@ function validateRenderedSkillTree(options) {
       path.join(pluginDir, normalizeRelativePath(sourceDir)),
       `artifacts.targets sourceDirs[${index}] for artifact "${declaration.id}"`,
       files,
+      (relative, bytes) => isTemplateTextFile(relative)
+        ? Buffer.from(renderTemplateForPlatform(manifest, `${normalizeRelativePath(sourceDir)}/${relative}`, bytes.toString('utf8'), declaration.platform))
+        : bytes,
     );
   });
   if (declaration.target === 'agent-skills.skill') {
@@ -2690,6 +2062,7 @@ function validateRenderedSkillTree(options) {
       pluginDir,
       declaration.skillKey,
       options.runtimeImports,
+      declaration.platform,
     );
   }
   for (const [relativePath, content] of Object.entries(entry.content.files)) {
@@ -2793,36 +2166,27 @@ function validateStaticPortableFinalTrees(
   runtimeImports,
   skillValidationTools,
 ) {
-  const portableRoot = manifest.distributions?.agentSkills?.skills;
-  if (typeof portableRoot !== 'string') return;
-  const rootDir = path.join(pluginDir, normalizeRelativePath(portableRoot));
+  if (!manifest.skills) return;
+  const rootDir = path.join(pluginDir, normalizeRelativePath(manifest.skills));
   const rootStats = fs.lstatSync(rootDir, { throwIfNoEntry: false });
   if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return;
-  const dynamicKeys = new Set(
-    (manifest.artifacts?.targets ?? [])
-      .filter((target) => target.target === 'agent-skills.skill' && typeof target.skillKey === 'string')
-      .map((target) => target.skillKey),
-  );
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-static-portable-final-'));
   try {
-    for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || dynamicKeys.has(entry.name)) continue;
-      validateRenderedSkillTree({
-        entry: { state: 'present', content: { files: {} } },
-        declaration: {
-          id: `static:${entry.name}`,
-          distribution: 'agent-skills',
-          target: 'agent-skills.skill',
-          skillKey: entry.name,
-          sourceDirs: [`${portableRoot}/${entry.name}`],
-        },
-        fieldName: `static portable Skill "${entry.name}"`,
-        pluginDir,
-        manifest,
-        runtimeImports,
-        materializedRoot: path.join(tempRoot, entry.name),
-        skillValidationTools,
-      });
+    for (const platform of resolveSupportedPlatforms(manifest)) {
+      if (!isPortablePlatformTarget(platform)) continue;
+      const dynamicKeys = new Set((manifest.artifacts?.targets ?? [])
+        .filter((target) => target.platform === platform && target.target === 'agent-skills.skill')
+        .map((target) => target.skillKey));
+      for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || dynamicKeys.has(entry.name)) continue;
+        validateRenderedSkillTree({
+          entry: { state: 'present', content: { files: {} } },
+          declaration: { id: `static:${entry.name}`, platform, distribution: 'agent-skills',
+            target: 'agent-skills.skill', skillKey: entry.name, sourceDirs: [`${manifest.skills}/${entry.name}`] },
+          fieldName: `static Portable Skill "${entry.name}" (${platform})`, pluginDir, manifest, runtimeImports,
+          materializedRoot: path.join(tempRoot, platform, entry.name), skillValidationTools,
+        });
+      }
     }
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -2884,10 +2248,8 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
       if (entry.distribution !== declaration.distribution) {
         error(`${fieldName}.distribution: expected "${declaration.distribution}"`);
       }
-      if (entry.platform !== undefined) {
-        error(`${fieldName}.platform: distribution artifacts do not support platform`);
-      }
-    } else if (entry.platform !== declaration.platform) {
+    }
+    if (entry.platform !== declaration.platform) {
       error(`${fieldName}.platform: expected "${declaration.platform}"`);
     }
     if (entry.kind !== declaration.kind) {
@@ -2979,56 +2341,32 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
 }
 
 function resolveArtifactRendererFixtureRequests(declarations, manifest, requiresNonSensitiveArtifactInput) {
-  const awOwned = new Map();
-  const codexNative = new Map();
+  const requests = new Map();
   for (const declaration of declarations) {
-    if (declaration.delivery?.mode === 'codex-native') {
-      const scope = declaration.scopes.includes('user') ? 'user' : 'project';
-      const request = codexNative.get(scope) ?? {
-        kind: 'codex-native',
-        surface: 'codex',
-        scope,
-        configScope: 'user',
-        declarations: [],
-      };
-      request.declarations.push(declaration);
-      codexNative.set(scope, request);
-      continue;
-    }
-
-    const surface = declaration.surface?.kind === 'aw'
-      ? declaration.surface.name
-      : declaration.platform ?? declaration.distribution;
+    const nativeSkill = declaration.target === 'codex.skill' || declaration.target === 'claude.skill';
+    const surface = declaration.surface?.kind === 'aw' ? declaration.surface.name : declaration.platform;
     if (!surface) continue;
-    for (const scope of declaration.scopes) {
-      const key = `${surface}:${scope}`;
-      const request = awOwned.get(key) ?? {
-        kind: 'aw-owned',
-        surface,
-        scope,
-        configScope: scope,
-        declarations: [],
-      };
+    for (const scope of nativeSkill ? ['user'] : declaration.scopes) {
+      const key = `${nativeSkill ? 'native' : 'ordinary'}:${surface}:${scope}`;
+      const request = requests.get(key) ?? { kind: nativeSkill ? 'native' : 'ordinary', surface, scope,
+        configScope: nativeSkill ? 'user' : scope, declarations: [] };
       request.declarations.push(declaration);
-      awOwned.set(key, request);
+      requests.set(key, request);
     }
   }
-  const partitionedAwOwned = [...awOwned.values()].flatMap((request) => {
+  return [...requests.values()].flatMap((request) => {
+    const definition = compilePluginConfigDefinition(manifest.config ?? { fields: {} },
+      MANIFEST_PLATFORMS.has(request.surface) ? request.surface : undefined);
     const hasNonSensitiveTarget = request.declarations.some(requiresNonSensitiveArtifactInput);
     const hasSensitiveOtherTarget = request.declarations.some((declaration) =>
       !requiresNonSensitiveArtifactInput(declaration)
-      && declaration.refreshKeys.some((key) =>
-        configFieldContainsSensitiveValue(manifest.config?.fields?.[key])));
+      && declaration.refreshKeys.some((key) => configFieldContainsSensitiveValue(definition.fields[key])));
     if (!hasNonSensitiveTarget || !hasSensitiveOtherTarget) return [request];
-    const nonSensitiveDeclarations = request.declarations.filter(requiresNonSensitiveArtifactInput);
-    const otherDeclarations = request.declarations.filter((declaration) =>
-      !requiresNonSensitiveArtifactInput(declaration));
     return [
-      { ...request, declarations: nonSensitiveDeclarations },
-      { ...request, declarations: otherDeclarations },
+      { ...request, declarations: request.declarations.filter(requiresNonSensitiveArtifactInput) },
+      { ...request, declarations: request.declarations.filter((declaration) => !requiresNonSensitiveArtifactInput(declaration)) },
     ];
   });
-  return [...partitionedAwOwned, ...codexNative.values()];
 }
 
 async function runArtifactRendererFixture(
@@ -3045,7 +2383,6 @@ async function runArtifactRendererFixture(
   if (!renderEntry || declarations.length === 0) return [];
 
   const requests = resolveArtifactRendererFixtureRequests(declarations, manifest, requiresNonSensitiveArtifactInput);
-  const values = defaultConfigValues(manifest);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-artifact-render-'));
   const returnedArtifacts = [];
   try {
@@ -3057,9 +2394,17 @@ async function runArtifactRendererFixture(
         configScope,
         declarations: scopedDeclarations,
       } = request;
-      const distribution = surface === 'agent-skills' ? surface : undefined;
+      const distribution = isPortablePlatformTarget(surface) ? 'agent-skills' : undefined;
       const awSurface = surface === 'managed-commands';
-      const platform = distribution || awSurface ? undefined : surface;
+      const platform = awSurface ? undefined : surface;
+      const definition = compilePluginConfigDefinition(manifest.config ?? { fields: {} }, platform);
+      const values = defaultConfigValues(manifest, platform);
+      const platformReferences = referenceContext ? { ...referenceContext, platform,
+        plugins: Object.fromEntries(Object.entries(referenceContext.plugins).map(([name, entry]) => {
+          const compiled = compilePluginConfigDefinition(entry.definition, platform);
+          return [name, { ...entry, definition: compiled, values: defaultConfigValues({ config: compiled }) }];
+        })),
+      } : undefined;
       const event = distribution ? 'materialize' : 'install';
       const requestRoot = path.join(tempRoot, `${requestIndex}-${kind}-${surface}-${scope}`);
       const rendererAwHome = path.join(requestRoot, 'aw-home');
@@ -3070,7 +2415,7 @@ async function runArtifactRendererFixture(
       const runtimeImports = scopedDeclarations.flatMap((target) =>
         (target.runtimeImports ?? []).map((runtimeImport, importIndex) => {
           const resolved = resolvedRuntimeImports?.artifactImports.get(
-            authorRuntimeImportKey(target.id, importIndex),
+            authorRuntimeImportKey(target.id, importIndex, target.platform),
           );
           if (!resolved) return null;
           const importPath = path.join(requestRoot, `runtime-${target.id}-${importIndex}`);
@@ -3087,18 +2432,15 @@ async function runArtifactRendererFixture(
       const refreshKeys = [...new Set(scopedDeclarations.flatMap((target) =>
         target.refreshKeys))];
       const scopedSchema = Object.fromEntries(refreshKeys.flatMap((key) =>
-        manifest.config?.fields?.[key] === undefined
-          ? []
-          : [[key, manifest.config.fields[key]]]));
+        definition.fields[key] === undefined ? [] : [[key, definition.fields[key]]]));
       const scopedValues = Object.fromEntries(refreshKeys.flatMap((key) =>
         Object.prototype.hasOwnProperty.call(values, key) ? [[key, values[key]]] : []));
       try {
         if (manifest.config) {
-          const issues = validatePluginConfigCandidate(manifest.config, values, refreshKeys, referenceContext);
+          const issues = validatePluginConfigCandidate(definition, values, refreshKeys, platformReferences);
           if (issues.length > 0) throw new Error(formatPluginConfigIssue(issues[0]));
         }
         for (const target of scopedDeclarations.filter((declaration) => declaration.runtimeConfig)) {
-          const definition = manifest.config;
           createRuntimeConfigSnapshot({
             installedIdentity: {
               sourceId: 'authoring',
@@ -3107,7 +2449,7 @@ async function runArtifactRendererFixture(
               pluginName: manifest.name,
               pluginVersion: manifest.version,
               platform: target.platform,
-              scope: target.delivery?.mode === 'codex-native' ? 'user' : scope,
+              scope: target.target === 'codex.skill' || target.target === 'claude.skill' ? 'user' : scope,
               configScope,
               artifactId: target.id,
               skillKey: target.skillKey,
@@ -3115,7 +2457,7 @@ async function runArtifactRendererFixture(
             declaration: target.runtimeConfig,
             definition,
             values,
-            referenceContext,
+            referenceContext: platformReferences,
           });
         }
       } catch (runtimeConfigError) {
@@ -3150,11 +2492,11 @@ async function runArtifactRendererFixture(
           previousArtifacts: [],
           artifactSources: declarations.filter((target) =>
             (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill')
-            && (distribution ? target.distribution === distribution : target.platform === platform)
+            && target.platform === platform
             && target.scopes.includes(scope)).map((target) => ({
             id: target.id,
             target: target.target,
-            sourceDirs: target.sourceDirs.map((sourceDir) =>
+            sourceDirs: (target.sourceDirs ?? []).map((sourceDir) =>
               path.join(pluginDir, normalizeRelativePath(sourceDir))),
           })),
           commandSources: (managedContext?.manifest.managedCommands?.packages ?? [])
@@ -3186,8 +2528,15 @@ async function runArtifactRendererFixture(
       fs.mkdirSync(rendererTemp, { recursive: true });
       const rendererEnv = {
         AW_HOME: rendererAwHome,
-        AW_CODEX_HOME: rendererCodexHome,
-        AW_CLAUDE_HOME: rendererClaudeHome,
+        CODEX_HOME: rendererCodexHome,
+        CLAUDE_CONFIG_DIR: rendererClaudeHome,
+        HOME: rendererHome,
+        USERPROFILE: rendererHome,
+        XDG_CONFIG_HOME: path.join(requestRoot, 'xdg-config'),
+        XDG_CACHE_HOME: path.join(requestRoot, 'xdg-cache'),
+        XDG_STATE_HOME: path.join(requestRoot, 'xdg-state'),
+        XDG_DATA_HOME: path.join(requestRoot, 'xdg-data'),
+        XDG_RUNTIME_DIR: path.join(requestRoot, 'xdg-runtime'),
         PATH: process.env.PATH ?? process.env.Path ?? '',
         AW_PLUGIN_CONTEXT: contextPath,
         AW_PLUGIN_ROOT: pluginDir,
@@ -3200,13 +2549,11 @@ async function runArtifactRendererFixture(
         AW_PLUGIN_SCOPE: scope,
       };
       if (process.platform === 'win32') {
-        rendererEnv.USERPROFILE = rendererHome;
         rendererEnv.TEMP = rendererTemp;
         rendererEnv.TMP = rendererTemp;
         if (process.env.SystemRoot) rendererEnv.SystemRoot = process.env.SystemRoot;
         if (process.env.ComSpec) rendererEnv.ComSpec = process.env.ComSpec;
       } else {
-        rendererEnv.HOME = rendererHome;
         rendererEnv.TMPDIR = rendererTemp;
       }
       const result = spawnSync(
@@ -3359,8 +2706,8 @@ async function validateAuthorManagedCommands(pluginDir, manifest, rendered, cont
     }
     for (const [index, tree] of trees.entries()) {
       const { declaration } = tree;
-      const scope = declaration.delivery?.mode === 'codex-native' ? 'user' : tree.scope;
-      if (!declaration.platform) continue;
+      const scope = declaration.target === 'codex.skill' || declaration.target === 'claude.skill' ? 'user' : tree.scope;
+      if (declaration.platform !== 'codex' && declaration.platform !== 'claude') continue;
       const producer = declaration.staticSkill
         ? { kind: 'static-skill', platform: declaration.platform, skillKey: declaration.skillKey }
         : { kind: 'artifact', artifactId: declaration.id };
@@ -3376,8 +2723,8 @@ async function validateAuthorManagedCommands(pluginDir, manifest, rendered, cont
       candidates.push({ producer: await tools.managedCommandProducerIdentity({ plugin, producer, scope, cwd: pluginDir }), sets });
     }
     for (const tree of trees) {
-      if (!tree.declaration.platform) continue;
-      const scope = tree.declaration.delivery?.mode === 'codex-native' ? 'user' : tree.scope;
+      if (tree.declaration.platform !== 'codex' && tree.declaration.platform !== 'claude') continue;
+      const scope = tree.declaration.target === 'codex.skill' || tree.declaration.target === 'claude.skill' ? 'user' : tree.scope;
       const resolve = await tools.createManagedCommandReferenceResolver({ plugin, platform: tree.declaration.platform, scope, cwd: pluginDir, env, candidates });
       for (const [relative, bytes] of tree.files) {
         if (!relative.endsWith('.md')) continue;
@@ -3689,8 +3036,6 @@ function validateSkills(pluginDir, manifest, options, skillValidationTools) {
   if (!manifest.skills) return;
   const skillsDir = path.join(pluginDir, manifest.skills);
   if (!fs.existsSync(skillsDir)) return;
-  const requiresCodexMetadata = isCodexTargeted(manifest);
-  const targetsClaude = isClaudeTargeted(manifest);
 
   const skillDirs = fs
     .readdirSync(skillsDir, { withFileTypes: true })
@@ -3701,6 +3046,11 @@ function validateSkills(pluginDir, manifest, options, skillValidationTools) {
   }
 
   for (const dir of skillDirs) {
+    const staticPlatforms = [...resolveSupportedPlatforms(manifest)].filter((platform) =>
+      !(manifest.artifacts?.targets ?? []).some((target) => target.platform === platform && target.skillKey === dir.name));
+    if (staticPlatforms.length === 0) continue;
+    const requiresCodexMetadata = staticPlatforms.includes('codex');
+    const targetsClaude = staticPlatforms.includes('claude');
     const skillPath = path.join(skillsDir, dir.name);
     const skillMdPath = path.join(skillPath, 'SKILL.md');
     const openaiYamlPath = path.join(skillPath, 'agents', 'openai.yaml');
@@ -3722,7 +3072,7 @@ function validateSkills(pluginDir, manifest, options, skillValidationTools) {
       manifest,
       skillMdRelativePath,
       content,
-      targetedPlatforms(manifest),
+      staticPlatforms,
     );
     for (const variant of variants) {
       const sourceName = variant.platform
@@ -3736,7 +3086,7 @@ function validateSkills(pluginDir, manifest, options, skillValidationTools) {
           error(`${entry.path} [${entry.code}] ${entry.message}`);
         }
         if (parsed.frontmatter) {
-          const profile = options.strictAgentSkills || !targetsClaude
+          const profile = options.strictAgentSkills || !targetsClaude || isPortablePlatformTarget(variant.platform)
             ? 'portable-agent-skills'
             : options.claudeSkillProfile === 'current'
               ? 'claude-current'
@@ -4124,8 +3474,7 @@ async function validatePluginDir(pluginDir, options) {
   let referenceContext;
   try {
     normalizedManifest = await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
-    // Renderer fixtures consume the same compiled config as installed runtime consumers.
-    if (normalizedManifest.config) manifest.config = normalizedManifest.config;
+    manifest = normalizedManifest;
     // The Workspace is the sole source of dependency definitions and defaults.
     // No installed plugin or user config can complete an author fixture.
     if (manifest.config) {
@@ -4176,9 +3525,9 @@ async function validatePluginDir(pluginDir, options) {
     }
   } catch (e) {
     error(e.message);
+    return;
   }
   validatePlatformFieldSupport(manifest);
-  validatePortableNativeArtifactCapabilityLightweight(manifest);
 
   validateNameMatchesDirectory(pluginDir, manifest);
   validateNoBuildOutputDirs(pluginDir);

@@ -14,7 +14,6 @@ import {
   ARTIFACT_RENDERER_MAX_STDOUT_BYTES,
 } from '../../src/utils/artifact-renderer.js';
 import {
-  resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 import {
@@ -30,7 +29,7 @@ const SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS = 30_000;
 
 function requestedIdsFor(
   manifest: PluginMeta['manifest'],
-  platform: 'codex' | 'claude' | 'agent-skills',
+  platform: Parameters<typeof runArtifactRendererExact>[0]['platform'],
   scope: 'user' | 'project',
 ): string[] {
   return (manifest.artifacts?.targets ?? [])
@@ -101,12 +100,7 @@ function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
           type: 'string',
           sensitive: true,
         },
-        credentials: {
-          type: 'object',
-          properties: {
-            accessKey: { type: 'string', sensitive: true },
-          },
-        },
+        accessKey: { type: 'string', sensitive: true },
         enableLightweightInstruction: {
           type: 'boolean',
           default: true,
@@ -254,7 +248,7 @@ describe('artifact renderer runtime', () => {
     const target = await resolveArtifactRendererTarget(plugin);
     target.sourceManifest!.artifacts!.targets = [{
       id: 'portable-skill',
-      distribution: 'agent-skills',
+      platform: 'generic', distribution: 'agent-skills',
       target: 'agent-skills.skill',
       scopes: ['user'],
       states: ['present'],
@@ -265,7 +259,7 @@ describe('artifact renderer runtime', () => {
     const createdDirectories = vi.spyOn(fs, 'mkdtemp');
     try {
       await expect(writeArtifactRendererContext({
-        target, event: 'install', platform: 'agent-skills', scope: 'user',
+        target, event: 'install', platform: 'generic', scope: 'user',
         cwd: root, commandEnv: { AW_HOME: path.join(root, 'aw-home') },
       })).rejects.toThrow('portable-skill/helper" is not resolved');
       expect(createdDirectories).toHaveBeenCalledOnce();
@@ -402,7 +396,8 @@ describe('artifact renderer runtime', () => {
     });
     await writePluginConfigStore({
       pluginName: plugin.manifest.name,
-      scope: 'project',
+      scope: 'user',
+      platform: 'claude',
       cwd,
       env,
       values: {
@@ -431,7 +426,7 @@ describe('artifact renderer runtime', () => {
         modelReasoningEffort: 'medium',
       },
       sources: {
-        explorerModel: 'user',
+        explorerModel: 'common',
         modelReasoningEffort: 'default',
       },
     });
@@ -469,10 +464,10 @@ describe('artifact renderer runtime', () => {
       commandEnv: env,
       requestedArtifactIds: ['codex-explorer-role', 'lightweight-instruction'],
     });
-    expect(projectContext.context.config.values.explorerModel).toBe('project-model');
-    expect(projectContext.context.config.values.modelReasoningEffort).toBe('high');
-    expect(projectContext.context.config.sources.explorerModel).toBe('project');
-    expect(projectContext.context.config.sources.modelReasoningEffort).toBe('project');
+    expect(projectContext.context.config.values.explorerModel).toBe('gpt-5.4');
+    expect(projectContext.context.config.values.modelReasoningEffort).toBe('medium');
+    expect(projectContext.context.config.sources.explorerModel).toBe('common');
+    expect(projectContext.context.config.sources.modelReasoningEffort).toBe('default');
     expect(Object.keys(projectContext.context.config.schema ?? {}).sort()).toEqual([
       'enableLightweightInstruction',
       'explorerModel',
@@ -486,12 +481,7 @@ describe('artifact renderer runtime', () => {
       'codex-explorer-role',
     ]);
 
-    await fs.outputFile(resolvePluginConfigStorePath({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-    }), '{invalid');
+    await fs.outputFile(path.join(cwd, '.agent-workflows', 'plugin-config', plugin.manifest.name, 'config.json'), '{invalid');
     const userContextWithInvalidProjectStore = await writeArtifactRendererContext({
       target,
       event: 'install',
@@ -501,14 +491,11 @@ describe('artifact renderer runtime', () => {
       commandEnv: env,
     });
     expect(userContextWithInvalidProjectStore.context.config.values.explorerModel).toBe('gpt-5.4');
-    await expect(writeArtifactRendererContext({
-      target,
-      event: 'install',
-      platform: 'codex',
-      scope: 'project',
-      cwd,
-      commandEnv: env,
-    })).rejects.toThrow('invalidJson');
+    const projectContextWithInvalidLegacyStore = await writeArtifactRendererContext({
+      target, event: 'install', platform: 'codex', scope: 'project', cwd, commandEnv: env,
+    });
+    expect(projectContextWithInvalidLegacyStore.context.config.values.explorerModel).toBe('gpt-5.4');
+    await projectContextWithInvalidLegacyStore.cleanup();
 
     await Promise.all([
       userContext.cleanup(),
@@ -528,7 +515,6 @@ describe('artifact renderer runtime', () => {
         platform: 'codex',
         scopes: ['user'],
         target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         states: ['present'],
         refreshKeys: [],
         skillKey: 'native-skill',
@@ -565,12 +551,12 @@ describe('artifact renderer runtime', () => {
     expect(result.plan.artifacts.map((artifact) => artifact.id)).toEqual(['lightweight-instruction']);
   });
 
-  it('splits Skill requests from non-Skill requests that require sensitive config and rejects unsafe callers', () => {
+  it('keeps Native Skill requests separate from non-Skill requests that require sensitive config', () => {
     const manifest = createManifest() as PluginMeta['manifest'];
     manifest.artifacts!.targets = [
       {
         id: 'safe-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-        delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'safe-skill',
+        states: ['present'], refreshKeys: [], skillKey: 'safe-skill',
       },
       {
         id: 'sensitive-instruction', platform: 'codex', scopes: ['user'],
@@ -584,10 +570,7 @@ describe('artifact renderer runtime', () => {
 
     expect(resolveAwDeliveredArtifactRequestBatches({
       manifest, platform: 'codex', scope: 'user',
-    })).toEqual([
-      ['safe-skill'],
-      ['sensitive-instruction', 'safe-role'],
-    ]);
+    })).toEqual([['sensitive-instruction', 'safe-role']]);
     expect(() => resolveArtifactRequest({
       manifest,
       platform: 'codex',
@@ -610,7 +593,7 @@ describe('artifact renderer runtime', () => {
     await fs.ensureDir(cwd);
     const manifest = createManifest() as PluginMeta['manifest'];
     manifest.artifacts!.targets = [
-      { id: 'safe-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'safe-skill' },
+      { id: 'safe-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'safe-skill' },
       { id: 'sensitive-instruction', platform: 'codex', scopes: ['user'], target: 'codex.developerInstructionsBlock', states: ['present'], refreshKeys: ['token'] },
       { id: 'safe-role', platform: 'codex', scopes: ['user'], target: 'codex.agentRole', states: ['present'], refreshKeys: ['explorerModel'], roleKey: 'safe-role' },
     ];
@@ -618,11 +601,9 @@ describe('artifact renderer runtime', () => {
       packages: [],
       sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'safe-skill' }, mode: 'dynamic', refreshKeys: [] }],
     };
-    const batches = resolveAwDeliveredArtifactRequestBatches({ manifest, platform: 'codex', scope: 'user' });
-    expect(batches).toEqual([
-      ['safe-skill', 'command-set.tools'],
-      ['sensitive-instruction', 'safe-role'],
-    ]);
+    const ordinaryBatches = resolveAwDeliveredArtifactRequestBatches({ manifest, platform: 'codex', scope: 'user' });
+    expect(ordinaryBatches).toEqual([['sensitive-instruction', 'safe-role']]);
+    const batches = [['safe-skill', 'command-set.tools'], ...ordinaryBatches];
     expect(() => resolveArtifactRequest({ manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['command-set.tools', 'sensitive-instruction'] }))
       .toThrow('artifactRendererSensitiveRequestMixed');
 
@@ -673,6 +654,10 @@ describe('artifact renderer runtime', () => {
         AW_HOME: realHomes.aw,
         AW_CODEX_HOME: realHomes.codex,
         AW_CLAUDE_HOME: realHomes.claude,
+        CODEX_HOME: realHomes.codex,
+        CLAUDE_CONFIG_DIR: realHomes.claude,
+        XDG_CONFIG_HOME: realHomes.aw,
+        XDG_STATE_HOME: realHomes.aw,
       },
       requestedArtifactIds: ['codex-explorer-role'],
       runner: {
@@ -680,8 +665,14 @@ describe('artifact renderer runtime', () => {
           observedContextPath = invocation.env.AW_PLUGIN_CONTEXT!;
           const context = await fs.readJson(observedContextPath);
           expect(invocation.env.AW_HOME).toBe(context.paths.awHome);
-          expect(invocation.env.AW_CODEX_HOME).toBe(context.paths.codexHome);
-          expect(invocation.env.AW_CLAUDE_HOME).toBe(context.paths.claudeHome);
+          expect(invocation.env.CODEX_HOME).toBe(context.paths.codexHome);
+          expect(invocation.env.CLAUDE_CONFIG_DIR).toBe(context.paths.claudeHome);
+          expect(invocation.env).not.toHaveProperty('AW_CODEX_HOME');
+          expect(invocation.env).not.toHaveProperty('AW_CLAUDE_HOME');
+          for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME',
+            'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR']) {
+            expect(path.relative(path.dirname(observedContextPath), invocation.env[key]!).startsWith('..')).toBe(false);
+          }
           expect(Object.values(context.paths)).not.toContain(realHomes.aw);
           expect(Object.values(context.paths)).not.toContain(realHomes.codex);
           expect(Object.values(context.paths)).not.toContain(realHomes.claude);
@@ -846,7 +837,7 @@ describe('artifact renderer runtime', () => {
       scope: 'user',
       cwd,
       env,
-      values: { token: secret, credentials: { accessKey: 'nested-render-secret' } },
+      values: { token: secret, accessKey: 'nested-render-secret' },
     });
 
     const error = await runArtifactRenderer({

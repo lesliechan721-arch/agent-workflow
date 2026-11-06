@@ -614,8 +614,8 @@ describe('build smoke', () => {
     });
     const subagentBundle = await fs.readJson(path.join(outputRoot, 'plugins', 'agent-subagent', '.agents-plugin', 'plugin.json'));
     expect(subagentBundle.artifacts.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'spawn-subagent-skill', skillKey: 'spawn-subagent', target: 'codex.skill' }),
-      expect.objectContaining({ id: 'spawn-subagent-claude-skill', skillKey: 'spawn-subagent', target: 'claude.skill', scopes: ['user', 'project'] }),
+      expect.objectContaining({ id: 'spawn-subagent-skill', platform: 'codex', skillKey: 'spawn-subagent', target: 'codex.skill', scopes: ['user'] }),
+      expect.objectContaining({ id: 'spawn-subagent-claude-skill', platform: 'claude', skillKey: 'spawn-subagent', target: 'claude.skill', scopes: ['user'] }),
       expect.objectContaining({ id: 'subagent-role', roleKey: 'subagent', target: 'codex.agentRole' }),
     ]));
     expect(catalogManifest).not.toHaveProperty('history');
@@ -958,11 +958,7 @@ describe('build smoke', () => {
     const bundleManifest = await fs.readJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'));
     expect(bundleManifest).toMatchObject({
       description: 'Built smoke description',
-      marketplace: {
-        policy: {
-          products: ['CODEX'],
-        },
-      },
+      platforms: ['codex'],
       scripts: {
         preApply: {
           path: './scripts/runtime.mjs',
@@ -1005,11 +1001,7 @@ describe('build smoke', () => {
       fs.readJson(path.join(tempRepo, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
       description: expect.not.stringContaining('Built smoke description'),
-      marketplace: {
-        policy: {
-          products: ['CLAUDE'],
-        },
-      },
+      platforms: ['claude'],
       scripts: {
         tests: {
           node: ['./scripts/source-only.test.mjs'],

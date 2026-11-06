@@ -7,7 +7,8 @@ Decision Kit 先调查可查事实，保留原始要求和开放问题，再按�
 ## 安装
 
 ```bash
-aw install decision-kit -p both
+aw plugin targets set codex claude
+aw plugin install decision-kit --scope user
 ```
 
 安装会同时满足 `human-content` 依赖，为复杂材料提供 `explain-for-review`。普通短问题仍直接说明，不强制制作阅读页。

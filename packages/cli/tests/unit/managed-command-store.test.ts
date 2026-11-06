@@ -1,14 +1,16 @@
-import * as fs from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getCommandPackageId, normalizeCommandDefinition, normalizeCommandLaunch, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
+import { getCommandPackageId, getPluginCommandId, normalizeCommandDefinition, normalizeCommandLaunch, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
 import {
   COMMAND_PRODUCER_RECORD,
+  assertManagedCommandBindingIdentities,
+  captureManagedCommandBindingRecoveryEvidence,
   copyManagedCommandDirectory,
   installUserCommand,
   listManagedCommands,
@@ -35,6 +37,31 @@ describe('managed command store and run preparation', () => {
     await fs.writeFile(path.join(source, 'lib', 'dependency.mjs'), 'export const value = 1;\n');
   });
   afterEach(async () => { await isolated.cleanup(); });
+
+  async function installedNativeProducer() {
+    const sourceIdentity = `sha256:${'a'.repeat(64)}`;
+    const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity, pluginName: 'example', kind: 'static-skill', key: 'guide', platform: 'codex', scope: 'user', projectRoot: null };
+    const marketplaceRoot = path.join(isolated.layout.awHomeDir, 'marketplaces', producer.sourceId);
+    const pluginRoot = path.join(marketplaceRoot, 'plugins', producer.pluginName);
+    const resourceRoot = path.join(pluginRoot, 'codex', 'skills', producer.key);
+    await fs.mkdir(resourceRoot, { recursive: true });
+    await fs.cp(source, resourceRoot, { recursive: true });
+    for (const [relativePath, value] of [
+      ['config.json', { schemaVersion: 2, sourceId: producer.sourceId, sourceIdentity, marketplaceName: 'aw' }],
+      ['.agents/plugins/marketplace.json', { name: 'aw', plugins: [{ name: producer.pluginName, source: `./plugins/${producer.pluginName}` }] }],
+      [`plugins/${producer.pluginName}/.agents-plugin/plugin.json`, { name: producer.pluginName, version: '1.0.0', skills: './skills' }],
+      [`plugins/${producer.pluginName}/.codex-plugin/plugin.json`, { name: producer.pluginName, version: '1.0.0', skills: './codex/skills' }],
+    ] as const) {
+      const filePath = path.join(marketplaceRoot, relativePath);
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, JSON.stringify(value));
+    }
+    await fs.writeFile(path.join(resourceRoot, 'SKILL.md'), '# Native Guide\n');
+    const sets = [{ set: 'tools', state: 'present' as const, entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'entry.mjs' })] }];
+    const [id] = await publishManagedCommandBindings({ producer, resourceRoot, sets, env: isolated.env });
+    const bindingPath = path.join(isolated.layout.awHomeDir, 'commands', 'bindings', `${id!}.json`);
+    return { producer, resourceRoot, sets, id: id!, bindingPath };
+  }
 
   // Protects complete directory ownership and the strong definition switch on a rejected update.
   it('copies the complete tool, keeps its identity, and retains the old revision after an invalid update', async () => {
@@ -155,6 +182,78 @@ describe('managed command store and run preparation', () => {
       hashSpy.mockRestore();
       syncBuiltinESMExports();
     }
+  });
+
+  // A damaged weak index can be rebuilt from independently verified installed Native bytes, including after cleanup.
+  it('rebuilds a damaged binding only from its previously verified installed Native producer', async () => {
+    const installed = await installedNativeProducer();
+    const evidence = await captureManagedCommandBindingRecoveryEvidence({ ...installed, env: isolated.env });
+    await fs.writeFile(installed.bindingPath, '{broken');
+    await fs.unlink(path.join(installed.resourceRoot, COMMAND_PRODUCER_RECORD));
+    const sets = [{ ...installed.sets[0]!, entries: [{ ...installed.sets[0]!.entries[0]!, args: ['rebuilt'] }] }];
+    const options = { ...installed, sets, env: isolated.env, bindingRecoveryEvidence: [evidence] };
+    await assertManagedCommandBindingIdentities({ producers: [options], env: isolated.env, bindingRecoveryEvidence: [evidence] });
+    expect(await fs.readFile(installed.bindingPath, 'utf8')).toBe('{broken');
+    expect(await publishManagedCommandBindings(options)).toEqual([installed.id]);
+    expect((await resolveManagedCommand(installed.id, isolated.env)).launch.args).toEqual(['rebuilt']);
+  });
+
+  // New candidates and another command or producer cannot claim a damaged binding from its filename.
+  it.each(['none', 'source', 'platform', 'producer', 'command'] as const)('rejects damaged binding recovery with %s evidence identity', async (difference) => {
+    const installed = await installedNativeProducer();
+    const evidence = await captureManagedCommandBindingRecoveryEvidence({ ...installed, env: isolated.env });
+    const producer = { ...installed.producer,
+      ...(difference === 'source' ? { sourceIdentity: `sha256:${'b'.repeat(64)}` } : {}),
+      ...(difference === 'platform' ? { platform: 'claude' as const } : {}),
+      ...(difference === 'producer' ? { key: 'other-guide' } : {}),
+    };
+    const entry = { ...installed.sets[0]!.entries[0]!, ...(difference === 'command' ? { key: 'other' } : {}) };
+    const sets = [{ ...installed.sets[0]!, entries: [entry] }];
+    const id = getPluginCommandId({ schemaVersion: 1, producer, set: sets[0]!.set, key: entry.key, variant: entry.variant });
+    const bindingPath = path.join(path.dirname(installed.bindingPath), `${id}.json`);
+    await fs.writeFile(bindingPath, '{broken');
+    const before = await fs.readFile(path.join(installed.resourceRoot, COMMAND_PRODUCER_RECORD), 'utf8');
+    await expect(publishManagedCommandBindings({ producer, resourceRoot: installed.resourceRoot, sets, env: isolated.env, ...(difference !== 'none' ? { bindingRecoveryEvidence: [evidence] } : {}) })).rejects.toMatchObject({ code: 'commandBindingInvalid' });
+    expect(await fs.readFile(bindingPath, 'utf8')).toBe('{broken');
+    expect(await fs.readFile(path.join(installed.resourceRoot, COMMAND_PRODUCER_RECORD), 'utf8')).toBe(before);
+  });
+
+  // Recovery evidence never overrides a readable foreign identity or follows a link to a different file.
+  it.each(['foreign', 'symlink'] as const)('retains %s binding evidence during Native rebuild', async (kind) => {
+    const installed = await installedNativeProducer();
+    const evidence = await captureManagedCommandBindingRecoveryEvidence({ ...installed, env: isolated.env });
+    const before = await fs.readFile(installed.bindingPath, 'utf8');
+    if (kind === 'foreign') {
+      const foreign = JSON.parse(before);
+      foreign.identity.producer.sourceIdentity = `sha256:${'b'.repeat(64)}`;
+      await fs.writeFile(installed.bindingPath, JSON.stringify(foreign));
+    } else {
+      await fs.unlink(installed.bindingPath);
+      await fs.symlink(path.join(source, 'entry.mjs'), installed.bindingPath);
+    }
+    await expect(publishManagedCommandBindings({ ...installed, env: isolated.env, bindingRecoveryEvidence: [evidence] })).rejects.toMatchObject({ code: kind === 'foreign' ? 'commandIdentityConflict' : 'commandResourceInvalid' });
+    if (kind === 'foreign') expect(JSON.parse(await fs.readFile(installed.bindingPath, 'utf8')).identity.producer.sourceIdentity).toBe(`sha256:${'b'.repeat(64)}`);
+    else expect((await fs.lstat(installed.bindingPath)).isSymbolicLink()).toBe(true);
+  });
+
+  // Filesystem failures must stop the write; unreadable content is not proof of a damaged index.
+  it.each(['EACCES', 'EIO'] as const)('does not rebuild a binding after a %s read failure', async (code) => {
+    const installed = await installedNativeProducer();
+    const evidence = await captureManagedCommandBindingRecoveryEvidence({ ...installed, env: isolated.env });
+    const before = await fs.readFile(installed.bindingPath, 'utf8');
+    const readFile = fs.readFile;
+    const readSpy = vi.spyOn(fs, 'readFile').mockImplementation((...args: Parameters<typeof fs.readFile>) => {
+      if (String(args[0]) === installed.bindingPath) return Promise.reject(Object.assign(new Error('Cannot read binding'), { code }));
+      return readFile(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(publishManagedCommandBindings({ ...installed, env: isolated.env, bindingRecoveryEvidence: [evidence] })).rejects.toMatchObject({ code });
+    } finally {
+      readSpy.mockRestore();
+      syncBuiltinESMExports();
+    }
+    expect(await fs.readFile(installed.bindingPath, 'utf8')).toBe(before);
   });
 
   // Protects byte-level argv composition and control environment precedence before transparent spawn.

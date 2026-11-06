@@ -1,437 +1,366 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 
-const catalogMocks = vi.hoisted(() => ({ refresh: vi.fn() }));
-
-vi.mock('../../src/utils/catalog-generation-service.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/utils/catalog-generation-service.js')>(),
-  syncCatalogSourceGeneration: catalogMocks.refresh,
-}));
-
-vi.mock('../../src/commands/write-commands.js', () => ({
-  syncWriteCommand: vi.fn(async () => ({
-    platforms: ['codex'],
-    plugins: ['demo'],
-    warnings: [],
-    rebuildResults: [],
-    targetResults: [],
-    overallState: 'succeeded',
-    receiptTargets: [],
-  })),
-}));
+import fs from 'fs-extra';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  resolveSyncIntentSelection,
-  syncCommand,
-} from '../../src/commands/sync-command.js';
-import { syncWriteCommand } from '../../src/commands/write-commands.js';
-import { buildRebuildReceiptJson } from '../../src/output/command-receipt.js';
-import {
-  createEmptyPluginIntentState,
-  readPluginIntentState,
-  upsertPluginIntentRoot,
-  writePluginIntentState,
-} from '../../src/utils/plugin-intent-state.js';
+  activateRecoverySourcesAndReprepare,
+  executeRecovery,
+  prepareRecovery,
+  runRecovery,
+} from '../../src/recovery/coordinator.js';
+import { checkRecovery } from '../../src/recovery/status.js';
+import { addRoot, observeIntent } from '../../src/intent/intent-store.js';
+import { observePreferences, setTargets } from '../../src/intent/deployment-preferences.js';
+import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
+import { observePortableSkill, portableOwnedTreeDigest, publishPortableSkill } from '../../src/portable/writer.js';
+import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { createCatalogSnapshotFixture as createCatalogFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-const mockedReconcile = vi.mocked(syncWriteCommand);
-
-describe('public Codex sync command', () => {
-  beforeEach(() => {
-    mockedReconcile.mockClear();
-    catalogMocks.refresh.mockReset();
-    catalogMocks.refresh.mockResolvedValue({});
+async function createSyncCatalogFixture(root: string, name = 'demo', capabilities: readonly string[] = [], readme = `${name}\n`) {
+  await createCatalogFixture(root, name, capabilities, readme, (manifest) => {
+    manifest.extensions = { instructions: [{ name: `${name}-instruction`, title: name, content: `${name}.` }] };
   });
+}
 
-  it('freezes intent roots and groups shared source roots once per actual platform', () => {
-    const selection = resolveSyncIntentSelection({
-      roots: [
-        { pluginId: 'first/codex-only', platforms: ['codex'] },
-        { pluginId: 'first/dual', platforms: ['codex', 'claude'] },
-        { pluginId: 'second/other', platforms: ['claude'] },
-      ],
-      selectors: [],
-      all: true,
-      platform: 'both',
-    });
+beforeEach(async () => {
+  const isolation = getCurrentSourceTestIsolation();
+  await setTargets({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, ['codex']);
+});
 
-    expect(selection).toEqual({
-      requestedPluginIds: ['first/codex-only', 'first/dual', 'second/other'],
-      groups: [
-        {
-          sourceId: 'first', platform: 'codex',
-          pluginIds: ['first/codex-only', 'first/dual'],
-        },
-        { sourceId: 'first', platform: 'claude', pluginIds: ['first/dual'] },
-        { sourceId: 'second', platform: 'claude', pluginIds: ['second/other'] },
-      ],
-    });
-  });
-
-  it('rejects selectors with --all and non-interactive missing selection', async () => {
+describe('scoped sync source refresh', () => {
+  it('keeps Active unchanged during refresh Review and rebuilds the recovery plan after activation', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const base = {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex' as const,
-      scope: 'project' as const,
-      interactive: false,
-    };
-    await expect(syncCommand(['official/demo'], { ...base, all: true }))
-      .rejects.toMatchObject({ code: 'syncSelectorConflict' });
-    await expect(syncCommand([], base))
-      .rejects.toMatchObject({ code: 'syncSelectionRequired' });
-    expect(mockedReconcile).not.toHaveBeenCalled();
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const sourceRoot = path.join(cwd, 'review-refresh-source');
+    await createSyncCatalogFixture(sourceRoot, 'demo', [], 'active\n');
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] },
+    expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    const before = (await readCatalogGenerationState(env)).sources.local?.active;
+    if (!before) throw new Error('Missing Active generation in fixture.');
+    await addRoot({ scope: 'user', cwd, env }, 'local/demo', before.logicalIdentity);
+
+    await createSyncCatalogFixture(sourceRoot, 'demo', [], 'reviewed candidate\n');
+    const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, { ...manifest, catalogVersion: '2.0.0' }, { spaces: 2 });
+
+    const plan = await prepareRecovery('sync', ['local/demo'], { scope: 'user', cwd, env,
+      cliVersion: '1.0.0', targets: ['codex'], refresh: true });
+    expect(plan.sourceRefreshes).toHaveLength(1);
+    expect((await readCatalogGenerationState(env)).sources.local?.active).toEqual(before);
+    const reviewedDigest = plan.sourceRefreshes[0]!.candidate.snapshotDigest;
+
+    const rebuilt = await activateRecoverySourcesAndReprepare(plan);
+    const activated = (await readCatalogGenerationState(env)).sources.local?.active;
+    expect(activated?.snapshotDigest).toBe(reviewedDigest);
+    expect(activated?.snapshotDigest).not.toBe(before.snapshotDigest);
+    expect(rebuilt.sourceRefreshes).toEqual([]);
+    expect(rebuilt.demand.catalogOperationContext?.generationSetDigest)
+      .not.toBe(plan.demand.catalogOperationContext?.generationSetDigest);
+    await rebuilt.context.dispose();
   });
 
-  it('uses the existing prompt and reconciles selected desired roots without changing them', async () => {
+  it('keeps a failed source blocked after another source is activated and the recovery plan is rebuilt', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    let intent = createEmptyPluginIntentState();
-    intent = upsertPluginIntentRoot(intent, {
-      pluginId: 'official/demo',
-      platforms: ['codex'],
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const freshRoot = path.join(cwd, 'mixed-refresh-fresh');
+    const failedRoot = path.join(cwd, 'mixed-refresh-failed');
+    await createSyncCatalogFixture(freshRoot, 'alpha', [], 'active alpha\n');
+    await createSyncCatalogFixture(failedRoot, 'beta', [], 'active beta\n');
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'fresh', type: 'path', primary: true, path: freshRoot },
+      { id: 'failed', type: 'path', primary: false, path: failedRoot },
+    ] }, expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'fresh', cliVersion: '1.0.0', env });
+    await syncCatalogSourceGeneration({ sourceId: 'failed', cliVersion: '1.0.0', env });
+    const state = await readCatalogGenerationState(env);
+    const freshActive = state.sources.fresh?.active;
+    const failedActive = state.sources.failed?.active;
+    if (!freshActive || !failedActive) throw new Error('Missing Active generation in fixture.');
+    await addRoot({ scope: 'user', cwd, env }, 'fresh/alpha', freshActive.logicalIdentity);
+    await addRoot({ scope: 'user', cwd, env }, 'failed/beta', failedActive.logicalIdentity);
+
+    await createSyncCatalogFixture(freshRoot, 'alpha', [], 'candidate alpha\n');
+    const manifestPath = path.join(freshRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, { ...manifest, catalogVersion: '2.0.0' }, { spaces: 2 });
+    await fs.remove(failedRoot);
+
+    const plan = await prepareRecovery('sync', ['fresh/alpha', 'failed/beta'], {
+      scope: 'user', cwd, env, cliVersion: '1.0.0', targets: ['codex'], refresh: true,
     });
-    intent = {
-      ...intent,
-      dependencyScopeOverrides: [{
-        pluginId: 'official/leaf',
-        platform: 'codex',
-        scope: 'user',
-      }],
-    };
-    await writePluginIntentState({
-      scope: 'project',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    }, intent);
-    const multiSelect = vi.fn(async () => ({
-      cancelled: false as const,
-      value: ['official/demo'],
+    expect(plan.sourceRefreshes.map((entry) => entry.sourceId)).toEqual(['fresh']);
+    expect(plan.sourceRefreshFailures).toEqual([
+      { sourceId: 'failed', code: 'catalogGenerationRefreshFailed' },
+    ]);
+
+    const rebuilt = await activateRecoverySourcesAndReprepare(plan);
+    expect((await readCatalogGenerationState(env)).sources.fresh?.active.snapshotDigest)
+      .toBe(plan.sourceRefreshes[0]!.candidate.snapshotDigest);
+    expect(rebuilt.receipt.targetResults.find((target) => target.pluginId === 'failed/beta')?.blockers)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'catalogGenerationRefreshFailed' }),
+      ]));
+    await rebuilt.context.dispose();
+  });
+
+  it('does not activate a refresh without explicit source confirmation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const sourceRoot = path.join(cwd, 'unconfirmed-refresh-source');
+    await createSyncCatalogFixture(sourceRoot, 'demo', [], 'active\n');
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] },
+    expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    const before = (await readCatalogGenerationState(env)).sources.local?.active;
+    if (!before) throw new Error('Missing Active generation in fixture.');
+    await addRoot({ scope: 'user', cwd, env }, 'local/demo', before.logicalIdentity);
+    await createSyncCatalogFixture(sourceRoot, 'demo', [], 'candidate\n');
+    const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, { ...manifest, catalogVersion: '2.0.0' }, { spaces: 2 });
+
+    const receipt = await runRecovery('sync', ['local/demo'], { scope: 'user', cwd, env,
+      cliVersion: '1.0.0', targets: ['codex'], refresh: true });
+
+    expect(receipt.blockers).toContainEqual(expect.objectContaining({
+      code: 'sourceRefreshConfirmationRequired',
     }));
-
-    await expect(syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'project',
-      interactive: true,
-      prompt: { multiSelect },
-      yes: true,
-    })).resolves.toMatchObject({ overallState: 'succeeded' });
-
-    expect(multiSelect).toHaveBeenCalledOnce();
-    expect(mockedReconcile).toHaveBeenCalledWith(
-      ['official/demo'],
-      expect.objectContaining({
-        platform: 'codex',
-        scope: 'project',
-        yes: true,
-      }),
-      expect.objectContaining({
-        directCli: true,
-      }),
-    );
-    expect(mockedReconcile.mock.calls[0]?.[1]).not.toHaveProperty('dependencyScopeOverrides');
+    expect((await readCatalogGenerationState(env)).sources.local?.active).toEqual(before);
   });
 
-  it('recovers a new clone from shared project intent with --all', async () => {
+  it('reviews a new install declaration separately from an already saved root', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'official/demo',
-      platforms: ['codex'],
-    });
-    await writePluginIntentState({
-      scope: 'project',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    }, intent);
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const sourceRoot = path.join(cwd, 'install-review-source');
+    await createSyncCatalogFixture(sourceRoot);
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] },
+    expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    const location = { scope: 'user' as const, cwd, env };
+    const options = { ...location, cliVersion: '1.0.0' };
 
-    await syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'project',
-      all: true,
-      interactive: false,
-    });
-
-    expect(mockedReconcile).toHaveBeenCalledWith(
-      ['official/demo'],
-      expect.objectContaining({ platform: 'codex', scope: 'project' }),
-      expect.objectContaining({ directCli: true }),
-    );
-    await expect(readPluginIntentState({
-      scope: 'project',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    })).resolves.toEqual(intent);
+    const fresh = await prepareRecovery('install', ['local/demo'], options);
+    expect(fresh.plannedImpact).toMatchObject({ declaration: true, preferences: false, config: false });
+    await fresh.context.dispose();
+    const active = (await readCatalogGenerationState(env)).sources.local?.active;
+    if (!active) throw new Error('Missing Active generation in fixture.');
+    await addRoot(location, 'local/demo', active.logicalIdentity);
+    const saved = await prepareRecovery('install', ['local/demo'], options);
+    expect(saved.plannedImpact).toMatchObject({ declaration: false, preferences: false, config: false });
+    await saved.context.dispose();
   });
 
-  it('refreshes only selected root sources and keeps reconciling with the old Active on failure', async () => {
+  it('does not restore a failed source from its old Active generation', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'first/demo', platforms: ['codex'],
-    });
-    intent = upsertPluginIntentRoot(intent, {
-      pluginId: 'second/other', platforms: ['codex'],
-    });
-    await writePluginIntentState({
-      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    }, intent);
-    catalogMocks.refresh.mockRejectedValueOnce(new Error('offline'));
+    const cwd = isolation.layout.fixtureCwd;
+    const env = { ...isolation.env, PATH: '' };
+    const sourceRoot = path.join(cwd, 'source');
+    await createSyncCatalogFixture(sourceRoot);
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    const active = (await readCatalogGenerationState(env)).sources.local?.active;
+    if (!active) throw new Error('Missing Active generation in fixture.');
+    await addRoot({ scope: 'user', cwd, env }, 'local/demo', active.logicalIdentity);
+    const before = await observeIntent({ scope: 'user', cwd, env });
+    await fs.remove(sourceRoot);
 
-    const result = await syncCommand(['first/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'project',
-      refresh: true,
-      cliVersion: '1.0.0',
-      interactive: false,
-    });
+    const receipt = await runRecovery('sync', ['local/demo'], { scope: 'user', cwd, env,
+      cliVersion: '1.0.0', targets: ['codex'], refresh: true, yes: true });
 
-    expect(catalogMocks.refresh).toHaveBeenCalledOnce();
-    expect(catalogMocks.refresh).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'first' }));
-    expect(result.warnings).toEqual([expect.stringContaining('catalogSourceRefreshFailed: first')]);
-    expect(mockedReconcile).toHaveBeenCalledWith(
-      ['first/demo'],
-      expect.any(Object),
-      expect.any(Object),
-    );
+    expect(receipt.ok).toBe(false);
+    expect(receipt.targetResults).toEqual([expect.objectContaining({ pluginId: 'local/demo',
+      agent: 'codex', execution: 'not-run', blockers: expect.arrayContaining([
+        expect.objectContaining({ code: 'catalogGenerationRefreshFailed' }),
+      ]) })]);
+    expect(receipt.outputsMayHaveChanged).toBe(false);
+    expect(await observeIntent({ scope: 'user', cwd, env })).toEqual(before);
   });
 
-  it('isolates a source without Active while continuing unrelated refreshed sources', async () => {
+  it('reports a declared root without local Agents as blocked in a read-only check', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'first/demo', platforms: ['codex'],
-    });
-    intent = upsertPluginIntentRoot(intent, {
-      pluginId: 'second/other', platforms: ['codex'],
-    });
-    await writePluginIntentState({
-      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    }, intent);
-    mockedReconcile.mockRejectedValueOnce(new Error('catalogSourceActiveMissing: first'))
-      .mockImplementationOnce(async () => ({
-      platforms: ['codex'], plugins: ['other'], warnings: [], rebuildResults: [],
-      targetResults: [], overallState: 'succeeded', receiptTargets: [],
-      }));
+    const cwd = isolation.layout.fixtureCwd;
+    const env = isolation.env;
+    const sourceRoot = path.join(cwd, 'check-source');
+    await createSyncCatalogFixture(sourceRoot);
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] },
+    expectedDigest: current.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    const active = (await readCatalogGenerationState(env)).sources.local?.active;
+    if (!active) throw new Error('Missing Active generation in fixture.');
+    const location = { scope: 'user' as const, cwd, env };
+    await setTargets(location, []);
+    await addRoot(location, 'local/demo', active.logicalIdentity);
+    const before = await observeIntent(location);
+    const runtimeUser = path.join(isolation.layout.awHomeDir, 'runtime', 'user');
+    expect(await fs.pathExists(runtimeUser)).toBe(false);
 
-    const result = await syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'project',
-      all: true,
-      refresh: true,
-      cliVersion: '1.0.0',
-      interactive: false,
-    });
+    const receipt = await checkRecovery([], { ...location, cliVersion: '1.0.0', all: true });
 
-    expect(catalogMocks.refresh).toHaveBeenCalledTimes(2);
-    expect(mockedReconcile.mock.calls.map((call) => call[0])).toEqual([
-      ['first/demo'],
-      ['second/other'],
-    ]);
-    expect(result.plugins).toEqual(['other']);
-    expect(result.overallState).toBe('failed');
-    expect(result.targetResults).toContainEqual(expect.objectContaining({
-      target: expect.objectContaining({ pluginId: 'first/demo' }),
-      state: 'failed',
-      message: expect.stringContaining('catalogSourceActiveMissing'),
-    }));
+    expect(receipt.ok).toBe(false);
+    expect(receipt.requestedRoots).toEqual(['local/demo']);
+    expect(receipt.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'targetsNotConfigured' }),
+    ]));
+    expect(receipt.targetResults).toEqual([]);
+    expect(await observeIntent(location)).toEqual(before);
+    expect(await fs.pathExists(runtimeUser)).toBe(false);
   });
+});
 
-  it('refreshes one source once and dispatches both platforms from each root intent', async () => {
+async function ownedCursorSkill(location: { cwd: string; env: NodeJS.ProcessEnv }) {
+  const sourceDir = path.join(location.cwd, 'portable-source', 'demo');
+  await fs.ensureDir(location.env.HOME!);
+  const destinationRoot = path.join(await fs.realpath(location.env.HOME!), '.cursor', 'skills');
+  const identity = { pluginId: 'local/demo', logicalIdentity: 'sha256:logical',
+    platform: 'cursor' as const, scope: 'user' as const, skill: 'demo' };
+  await fs.outputFile(path.join(sourceDir, 'SKILL.md'), '---\nname: demo\ndescription: Test skill\n---\nUse demo.\n');
+  await fs.outputFile(path.join(sourceDir, 'README.md'), 'Use demo.\n');
+  const expectedDigest = await portableOwnedTreeDigest(sourceDir);
+  const observed = await observePortableSkill({ destinationRoot, skill: 'demo', identity });
+  await publishPortableSkill({ sourceDir, destinationRoot, identity, expectedDigest,
+    configDigest: `sha256:${'1'.repeat(64)}`, observed });
+  return path.join(destinationRoot, 'demo');
+}
+
+describe('ordinary scoped cleanup residue', () => {
+  // Test Value Gate: failed output inspection must retain each physical target as retryable.
+  it('keeps each unobservable Portable target in the cleanup retry set', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'team/codex-only', platforms: ['codex'],
-    });
-    intent = upsertPluginIntentRoot(intent, {
-      pluginId: 'team/dual', platforms: ['codex', 'claude'],
-    });
-    await writePluginIntentState({
-      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    }, intent);
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    await addRoot(location, 'local/demo', 'sha256:logical');
+    await fs.outputFile(path.join(isolation.env.HOME!, '.cursor', 'skills'), 'foreign file');
+    await fs.outputFile(path.join(isolation.env.HOME!, '.pi', 'agent', 'skills'), 'foreign file');
 
-    await syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'both',
-      scope: 'project',
-      all: true,
-      refresh: true,
-      cliVersion: '1.0.0',
-      interactive: false,
-    });
+    const receipt = await runRecovery('cleanup', ['local/demo'], { ...location,
+      cliVersion: '1.0.0', targets: ['cursor', 'pi'], yes: true });
 
-    expect(catalogMocks.refresh).toHaveBeenCalledOnce();
-    expect(catalogMocks.refresh).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'team' }));
-    expect(mockedReconcile.mock.calls.map((call) => [call[0], call[1].platform])).toEqual([
-      [['team/codex-only', 'team/dual'], 'codex'],
-      [['team/dual'], 'claude'],
-    ]);
+    expect(receipt.remainingTargets.map((target) => target.agent).sort()).toEqual(['cursor', 'pi']);
+    for (const target of receipt.targetResults) expect(target.blockers)
+      .toContainEqual(expect.objectContaining({ code: 'portableObservationFailed' }));
+    expect(await fs.readFile(path.join(isolation.env.HOME!, '.cursor', 'skills'), 'utf8')).toBe('foreign file');
+    expect(receipt.outputsMayHaveChanged).toBe(false);
   });
 
-  it('merges dependency plans from source and platform groups into the public receipt', async () => {
+  // Test Value Gate: offline cleanup removes only owned output and preserves strong documents and foreign skills.
+  it('cleans an owned Portable copy while preserving foreign content and all strong state', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'first/root', platforms: ['codex'],
-    });
-    intent = upsertPluginIntentRoot(intent, {
-      pluginId: 'second/root', platforms: ['claude'],
-    });
-    await writePluginIntentState({
-      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    }, intent);
-    mockedReconcile.mockImplementation(async (selectors, options) => {
-      const rootId = selectors[0]!;
-      const sourceId = rootId.split('/')[0]!;
-      const dependencyId = `${sourceId}/leaf`;
-      const platform = options.platform === 'both' ? 'codex' : options.platform;
-      const dependencyScope = sourceId === 'first' ? 'user' : 'project';
-      const targets = [
-        {
-          pluginId: dependencyId,
-          pluginName: 'leaf',
-          platform,
-          resolvedScope: dependencyScope,
-          relation: 'dependency' as const,
-          requiredBy: [rootId],
-          state: 'absent' as const,
-          action: 'install' as const,
-          order: 0,
-          depth: 1,
-          rootScope: 'project' as const,
-          minimumScope: 'project' as const,
-          allowedScopes: ['project', 'user'] as const,
-          assignmentSource: sourceId === 'first' ? 'userOverride' as const : 'default' as const,
-          locked: sourceId === 'first',
-          ...(sourceId === 'first' ? { lockReason: 'dependencyScopeOverride' } : {}),
-          affectsOtherProjects: sourceId === 'first',
-        },
-        {
-          pluginId: rootId,
-          pluginName: 'root',
-          platform,
-          resolvedScope: 'project' as const,
-          relation: 'requested' as const,
-          requiredBy: [],
-          state: 'present' as const,
-          action: 'keep' as const,
-          order: 1,
-          depth: 0,
-          rootScope: 'project' as const,
-          minimumScope: 'project' as const,
-          allowedScopes: ['project', 'user'] as const,
-          assignmentSource: 'root' as const,
-          locked: true,
-          lockReason: 'requestedRootScope',
-          affectsOtherProjects: false,
-        },
-      ];
-      return {
-        platforms: [platform],
-        plugins: [dependencyId, rootId],
-        warnings: [],
-        rebuildResults: targets.map((target) => ({
-          status: 'succeeded' as const,
-          command: 'sync' as const,
-          target: {
-            pluginName: target.pluginName,
-            pluginId: target.pluginId,
-            sourceId,
-            pluginVersion: '1.0.0',
-            platform,
-            scope: target.resolvedScope,
-            cwd: isolation.layout.fixtureCwd,
-          },
-          actions: [],
-          cleanupAttempted: false,
-          removed: [],
-          absent: [],
-          residual: [],
-          quarantined: [],
-          failures: [],
-        })),
-        targetResults: targets.map((target) => ({
-          target: {
-            pluginName: target.pluginName,
-            pluginId: target.pluginId,
-            sourceId,
-            platform,
-            scope: target.resolvedScope,
-          },
-          action: target.action,
-          state: 'completed' as const,
-          message: 'done',
-        })),
-        overallState: 'succeeded' as const,
-        receiptTargets: [],
-        dependencyPlan: {
-          requestedPluginIds: [rootId],
-          resolvedPluginIds: [dependencyId, rootId],
-          dependencyEdges: [{ from: rootId, to: dependencyId, platform }],
-          scopeOverrides: sourceId === 'first'
-            ? [{ pluginId: dependencyId, platform, scope: 'user' as const }]
-            : [],
-          targets,
-        },
-      };
-    });
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    await addRoot(location, 'local/demo', 'sha256:logical');
+    const beforeIntent = await observeIntent(location);
+    const beforePreferences = await observePreferences(location);
+    const configPath = resolvePluginConfigStorePath({ ...location, sourceId: 'local', pluginName: 'demo' });
+    await fs.outputFile(configPath, 'saved config bytes');
+    const owned = await ownedCursorSkill(location);
+    const foreign = path.join(path.dirname(owned), 'foreign', 'SKILL.md');
+    await fs.outputFile(foreign, 'foreign skill bytes');
 
-    const result = await syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'both',
-      scope: 'project',
-      all: true,
-      interactive: false,
-    });
-    const receipt = buildRebuildReceiptJson('sync', result);
+    const receipt = await runRecovery('cleanup', ['local/demo'], { ...location,
+      cliVersion: '1.0.0', targets: ['cursor'], yes: true });
 
-    expect(mockedReconcile.mock.calls.map((call) => [call[0], call[1].platform])).toEqual([
-      [['first/root'], 'codex'],
-      [['second/root'], 'claude'],
-    ]);
-    expect(result.dependencyPlan).toMatchObject({
-      requestedPluginIds: ['first/root', 'second/root'],
-      resolvedPluginIds: ['first/leaf', 'first/root', 'second/leaf', 'second/root'],
-      dependencyEdges: [
-        { from: 'second/root', to: 'second/leaf', platform: 'claude' },
-        { from: 'first/root', to: 'first/leaf', platform: 'codex' },
-      ],
-      scopeOverrides: [{ pluginId: 'first/leaf', platform: 'codex', scope: 'user' }],
-      targets: expect.arrayContaining([
-        expect.objectContaining({
-          pluginId: 'first/leaf', relation: 'dependency', requiredBy: ['first/root'],
-          action: 'install', state: 'absent',
-        }),
-        expect.objectContaining({
-          pluginId: 'second/leaf', relation: 'dependency', requiredBy: ['second/root'],
-          action: 'install', state: 'absent',
-        }),
-      ]),
-    });
-    expect(receipt).toMatchObject({
-      receiptSchemaVersion: 6,
-      overallState: 'succeeded',
-      requestedPluginIds: ['first/root', 'second/root'],
-      resolvedPluginIds: ['first/leaf', 'first/root', 'second/leaf', 'second/root'],
-      dependencyEdges: [
-        { from: 'second/root', to: 'second/leaf', platform: 'claude' },
-        { from: 'first/root', to: 'first/leaf', platform: 'codex' },
-      ],
-      targetResults: expect.arrayContaining([
-        expect.objectContaining({
-          target: expect.objectContaining({ pluginId: 'first/leaf' }),
-          relation: 'dependency', requiredBy: ['first/root'],
-        }),
-        expect.objectContaining({
-          target: expect.objectContaining({ pluginId: 'second/leaf' }),
-          relation: 'dependency', requiredBy: ['second/root'],
-        }),
-      ]),
-    });
+    expect(receipt).toMatchObject({ ok: true, declarationChanged: false,
+      preferencesChanged: false, configChanged: false, outputsMayHaveChanged: true, remainingTargets: [] });
+    expect(await fs.pathExists(owned)).toBe(false);
+    expect(await fs.readFile(foreign, 'utf8')).toBe('foreign skill bytes');
+    expect(await fs.readFile(configPath, 'utf8')).toBe('saved config bytes');
+    expect(await observeIntent(location)).toEqual(beforeIntent);
+    expect(await observePreferences(location)).toEqual(beforePreferences);
   });
 
+  it('removes a declaration while leaving unowned Portable output untouched', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    await setTargets(location, ['cursor']);
+    const sourceRoot = path.join(location.cwd, 'remove-foreign-source');
+    await createSyncCatalogFixture(sourceRoot);
+    const sourceConfig = await readCatalogSourcesConfigSnapshot(location.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] },
+    expectedDigest: sourceConfig.digest, env: location.env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env: location.env });
+    const active = (await readCatalogGenerationState(location.env)).sources.local?.active;
+    if (!active) throw new Error('Missing Active generation in fixture.');
+    await addRoot(location, 'local/demo', active.logicalIdentity);
+    const beforePreferences = await observePreferences(location);
+    const foreign = path.join(isolation.env.HOME!, '.cursor', 'skills', 'demo', 'SKILL.md');
+    await fs.outputFile(foreign, 'legacy third-party skill');
+
+    const receipt = await runRecovery('uninstall', ['local/demo'], { ...location,
+      cliVersion: '1.0.0', yes: true });
+
+    expect(receipt.ok, JSON.stringify(receipt, null, 2)).toBe(true);
+    expect(receipt).toMatchObject({ declarationChanged: true,
+      preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false });
+    expect(await observeIntent(location)).toMatchObject({ state: 'valid', value: { roots: [] } });
+    expect(await observePreferences(location)).toEqual(beforePreferences);
+    expect(await fs.readFile(foreign, 'utf8')).toBe('legacy third-party skill');
+  });
+
+  it('rejects a stale User execution directory before any output or strong-state write', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    await addRoot(location, 'local/demo', 'sha256:logical');
+    const before = await observeIntent(location);
+    const owned = await ownedCursorSkill(location);
+    const plan = await prepareRecovery('cleanup', ['local/demo'], { ...location,
+      cliVersion: '1.0.0', targets: ['cursor'], yes: true });
+    await fs.outputFile(path.join(plan.context.executionCwd, '.codex'), 'new local config marker');
+
+    const receipt = await executeRecovery(plan);
+
+    expect(receipt.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'operationReviewStale' }),
+    ]));
+    expect(receipt.outputsMayHaveChanged).toBe(false);
+    expect(await observeIntent(location)).toEqual(before);
+    expect(await fs.pathExists(owned)).toBe(true);
+  });
+
+  it('rejects a changed HOME symlink target before cleanup writes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const alias = path.join(isolation.layout.rootDir, 'home-alias');
+    const otherHome = path.join(isolation.layout.rootDir, 'other-home');
+    await fs.ensureDir(otherHome);
+    await fs.ensureDir(isolation.layout.homeDir);
+    await fs.symlink(isolation.layout.homeDir, alias, 'dir');
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd,
+      env: { ...isolation.env, HOME: alias, USERPROFILE: alias } };
+    await addRoot(location, 'local/demo', 'sha256:logical');
+    const before = await observeIntent(location);
+    await ownedCursorSkill(location);
+    const plan = await prepareRecovery('cleanup', ['local/demo'], { ...location,
+      cliVersion: '1.0.0', targets: ['cursor'], yes: true });
+    await fs.remove(alias);
+    await fs.symlink(otherHome, alias, 'dir');
+
+    const receipt = await executeRecovery(plan);
+
+    expect(receipt.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'operationReviewStale' }),
+    ]));
+    expect(receipt.outputsMayHaveChanged).toBe(false);
+    expect(await observeIntent(location)).toEqual(before);
+    expect(await fs.pathExists(path.join(isolation.layout.homeDir, '.cursor', 'skills', 'demo'))).toBe(true);
+  });
 });

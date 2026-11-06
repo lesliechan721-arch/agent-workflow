@@ -108,7 +108,7 @@ describe('Review profile reference validation', () => {
     const config = { 'review-profile': { sources: [{ id: 'remote', location: '/first' }], selected: 'remote' } }
     const resolved = resolveReviewPluginProfileConfig({ plugin, scope: 'user', keys: ['selected'], config })
     expect(resolved.values).toEqual({ selected: 'remote' })
-    expect(resolved.sources).toEqual({ selected: 'user' })
+    expect(resolved.sources).toEqual({ selected: 'common' })
     // Keep the dependency override for isolated prepare and binding replay.
     expect(resolved.overrides).toEqual(config['review-profile'])
     const changed = resolveReviewPluginProfileConfig({ plugin, scope: 'user', keys: ['selected'],

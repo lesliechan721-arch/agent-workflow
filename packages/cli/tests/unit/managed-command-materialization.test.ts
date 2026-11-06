@@ -1,13 +1,17 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { resolveCommandSourceDirectory } from '../../src/utils/artifact-sources.js';
-import { managedCommandProducerIdentity, prepareManagedCommandPackageFiles } from '../../src/utils/managed-command-materialization.js';
+import { discoverInstalledPluginManagedCommandPackages, managedCommandProducerIdentity, prepareManagedCommandPackage, prepareManagedCommandPackageFiles,
+  syncPluginManagedCommandPackage } from '../../src/utils/managed-command-materialization.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { listManagedCommands } from '../../src/utils/managed-command-store.js';
+import { listManagedCommands, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
+import { createDefaultPluginProcessRunner, defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
+import { terminateProcessTree } from '../../src/utils/process-tree.js';
+import { waitForProcessExit } from '../support/process-tree.js';
 
 describe('managed command package materialization', () => {
   let isolated: IsolatedTestEnvironment;
@@ -22,7 +26,84 @@ describe('managed command package materialization', () => {
     await fs.outputFile(path.join(sourceRoot, 'config.json'), '{"mode":"source"}\n');
     await fs.chmod(path.join(sourceRoot, 'entry.mjs'), 0o755);
   });
-  afterEach(async () => { await isolated.cleanup(); });
+  afterEach(async () => { vi.restoreAllMocks(); await isolated.cleanup(); });
+
+  async function writeControlledRenderer() {
+    const pluginRoot = path.dirname(sourceRoot);
+    const ready = path.join(pluginRoot, 'renderer-ready.json');
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3, name: 'package-lifecycle', version: '1.0.0', description: 'Package lifecycle fixture.',
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      managedCommands: {
+        packages: [{ key: 'shared', scope: 'user', platforms: ['codex'], sourceDir: './tools', render: true }],
+        sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'shared' }, mode: 'static',
+          entries: [{ key: 'run', runner: 'node', entry: 'entry.mjs' }] }],
+      },
+    });
+    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+      "import fs from 'node:fs';",
+      `fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ pid: process.pid, contextPath: process.env.AW_PLUGIN_CONTEXT }));`,
+      'setTimeout(() => { console.log(JSON.stringify({version:2,artifacts:[{',
+      "id:'command-package.shared',target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:[],files:{'config.json':'{}'}",
+      '}]})); }, 3000);',
+    ].join('\n'));
+    const plugin = { ...await readPluginManifest(pluginRoot), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
+    return { plugin, ready };
+  }
+
+  // Test Value Gate: producer preparation and direct sync must stop their renderer before releasing temporary context or publishing commands.
+  it.each([['cancel', 'prepare'], ['cancel', 'sync'], ['timeout', 'prepare'], ['timeout', 'sync']] as const)(
+    'honors %s through %s with confirmed renderer and context cleanup', async (mode, entrypoint) => {
+      const fixture = await writeControlledRenderer();
+      const controller = new AbortController();
+      const reason = new DOMException('package renderer cancelled', 'AbortError');
+      const options = { plugin: fixture.plugin, packageKey: 'shared', scope: 'user' as const,
+        cwd: isolated.layout.fixtureCwd, env: isolated.env, signal: controller.signal, scriptTimeoutMs: 1000 };
+      const prepare = entrypoint === 'prepare';
+      const operation = prepare ? prepareManagedCommandPackage(options) : syncPluginManagedCommandPackage(options);
+      const outcome = operation.then(async (value) => {
+        if ('cleanup' in value) await value.cleanup();
+        return { value };
+      }, (error: unknown) => ({ error }));
+      await vi.waitFor(async () => expect(await fs.pathExists(fixture.ready)).toBe(true), { timeout: 2500 });
+      const started = await fs.readJson(fixture.ready) as { pid: number; contextPath: string };
+      if (mode === 'cancel') controller.abort(reason);
+      const result = await outcome;
+      if (mode === 'cancel') expect('error' in result ? result.error : undefined).toBe(reason);
+      else if (prepare) expect(result).toMatchObject({ error: { message: expect.stringContaining('Artifact renderer timed out after 1000 ms') } });
+      else expect(result).toMatchObject({ value: { state: 'failed' } });
+      await waitForProcessExit(started.pid);
+      expect(await fs.pathExists(path.dirname(started.contextPath))).toBe(false);
+      expect((await listManagedCommands(isolated.env)).commands).toEqual([]);
+    },
+  );
+
+  // Test Value Gate: cancelling a direct package sync must preserve the process boundary's cleanup failure and safe diagnostic.
+  it.skipIf(process.platform === 'win32')('preserves renderer cleanup failure evidence when direct package sync is cancelled', async () => {
+    const fixture = await writeControlledRenderer();
+    const controller = new AbortController();
+    const cause = new Error('synthetic process identity failure');
+    const failure = Object.assign(new Error('Renderer cleanup could not be confirmed.', { cause }), {
+      operationDiagnostic: { code: 'rendererCleanupFailed', safeMessage: 'Renderer cleanup could not be confirmed.' },
+    });
+    const runner = createDefaultPluginProcessRunner({
+      terminateProcessTree: async (...args) => { await terminateProcessTree(...args); throw failure; },
+    });
+    vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation((invocation, options) => runner.run(invocation, options));
+    const options = { plugin: fixture.plugin, packageKey: 'shared', scope: 'user' as const,
+      cwd: isolated.layout.fixtureCwd, env: isolated.env, signal: controller.signal };
+    const outcome = syncPluginManagedCommandPackage(options).catch((error: unknown) => error);
+    await vi.waitFor(async () => expect(await fs.pathExists(fixture.ready)).toBe(true), { timeout: 2500 });
+    const started = await fs.readJson(fixture.ready) as { pid: number; contextPath: string };
+    controller.abort(new DOMException('package renderer cancelled', 'AbortError'));
+    expect(await outcome).toMatchObject({ cause: failure, operationDiagnostic: failure.operationDiagnostic });
+    expect(failure.cause).toBe(cause);
+    expect(failure.operationDiagnostic.code).toBe('rendererCleanupFailed');
+    await waitForProcessExit(started.pid);
+    expect(await fs.pathExists(path.dirname(started.contextPath))).toBe(false);
+    expect((await listManagedCommands(isolated.env)).commands).toEqual([]);
+  });
 
   // Native static payload paths have no activation scope, so their IDs must not depend on the caller's project.
   it('gives static native Skills one shared user identity across both platforms and project activations', async () => {
@@ -41,6 +122,34 @@ describe('managed command package materialization', () => {
       expect(identities[0]).toMatchObject({ kind: 'static-skill', platform, scope: 'user', projectRoot: null });
       expect(identities).toEqual([identities[0], identities[0], identities[0]]);
     }
+  });
+
+  // Test Value Gate: a retained project package must not block user config apply outside a repository.
+  it('discovers user packages outside a repository without including retained or declared project packages', async () => {
+    const pluginRoot = path.dirname(sourceRoot);
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3, name: 'discovery-scope', version: '1.0.0', description: 'Package scope fixture.',
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      managedCommands: { packages: [
+        { key: 'user-tools', scope: 'user', platforms: ['codex'], sourceDir: './tools' },
+        { key: 'project-tools', scope: 'project', platforms: ['codex'], sourceDir: './tools' },
+      ] },
+    });
+    const plugin = { ...await readPluginManifest(pluginRoot), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
+    await syncManagedCommandPackage({
+      producer: { sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name,
+        kind: 'package', key: 'project-tools', platform: null, scope: 'project', projectRoot: isolated.layout.fixtureCwd },
+      sourceDirectory: sourceRoot, sets: [], env: isolated.env,
+    });
+    const outside = path.join(isolated.layout.rootDir, 'outside');
+    await fs.ensureDir(outside);
+    const discovered = await discoverInstalledPluginManagedCommandPackages({
+      plugin, scope: 'user', cwd: outside, env: isolated.env,
+      platformTargets: [{ platform: 'codex', scope: 'user' }],
+    });
+    expect(discovered.errors).toEqual([]);
+    expect(discovered.packages.map((entry) => entry.packageKey)).toEqual(['user-tools']);
+    expect(discovered.packages[0]!.producer).toMatchObject({ scope: 'user', platform: null, projectRoot: null });
   });
 
   // Protects readonly source preparation, complete resources, and absence of real command publication.

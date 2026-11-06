@@ -4,6 +4,8 @@ import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
 import fs from 'fs-extra';
+import { isPortablePlatformTarget, resolveSupportedPlatforms, type PortablePlatformTarget } from '@lesliechan721/aw-plugin-core';
+import { prepareSkillPluginBundle } from '../review/skill-materialization.js';
 
 import type {
   ArtifactRuntimeImportDefinition,
@@ -50,7 +52,7 @@ import {
 import {
   resolveCatalogSnapshotBindingSource,
   resolvePortablePluginProfileConfig,
-  resolvePortableProfileBindingInput,
+  resolvePortableProfileBindingInputs,
   type AwCatalogSnapshotBindingSource,
   type AwSourceBindingProfile,
 } from '../review/source-binding.js';
@@ -58,6 +60,7 @@ import {
 export interface PortableMaterializationProvenance {
   schemaVersion: 1;
   pluginId: string;
+  platform: PortablePlatformTarget;
   scope: Scope;
   dependencyPluginIds: string[];
   configDigest: string;
@@ -68,6 +71,7 @@ export interface PortableMaterializationProvenance {
 export interface MaterializePortableSkillsOptions {
   plugins: readonly PluginMeta[];
   pluginId: string;
+  platform: PortablePlatformTarget;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -83,6 +87,7 @@ export interface MaterializedPortableSkills {
   sourceId?: string;
   sourceIdentity?: string;
   pluginVersion?: string;
+  platform: PortablePlatformTarget;
   scope: Scope;
   candidates: PortableSkillCandidate[];
   dependencyPluginIds: string[];
@@ -95,6 +100,7 @@ export interface MaterializedPortableSkills {
 
 export interface MaterializePortableSkillsFromCatalogOptions {
   selector: string;
+  platform: PortablePlatformTarget;
   scope: Scope;
   cwd: string;
   cliVersion: string;
@@ -115,6 +121,14 @@ export interface PortableCatalogBindingInput {
   source: AwCatalogSnapshotBindingSource;
   subject: { plugin: string };
   profile: AwSourceBindingProfile & { kind: 'portable' };
+  /** Read-only configuration evidence; it is not part of the materialization identity. */
+  providerConfigs?: ReadonlyArray<readonly [string, string]>;
+}
+
+export function assertPortablePlatform(platform: unknown): asserts platform is PortablePlatformTarget {
+  if (!isPortablePlatformTarget(platform)) {
+    throw new Error('Portable materialization requires an explicit Portable canonical platform: antigravity, cursor, opencode, pi, or generic.');
+  }
 }
 
 function pluginId(plugin: PluginMeta): string {
@@ -238,7 +252,7 @@ function assertNoUnresolvedTemplates(candidate: CandidateTree): void {
 
 async function assertRuntimeImports(plugin: PluginMeta): Promise<void> {
   const imports = (plugin.manifest.artifacts?.targets ?? [])
-    .filter((target) => target.distribution === 'agent-skills')
+    .filter((target) => target.target === 'agent-skills.skill')
     .flatMap((target) => target.runtimeImports ?? []);
   for (const runtimeImport of imports) {
     await assertRuntimeImport(plugin, runtimeImport);
@@ -272,6 +286,7 @@ async function materializePluginCandidates(options: {
   plugins: readonly PluginMeta[];
   plugin: PluginMeta;
   relation: PortablePluginRelation;
+  platform: PortablePlatformTarget;
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -281,15 +296,14 @@ async function materializePluginCandidates(options: {
   recordConfigDigest: (pluginId: string, configDigest: string) => void;
 }): Promise<CandidateTree[]> {
   options.signal?.throwIfAborted();
-  const distribution = options.plugin.manifest.distributions?.agentSkills;
-  if (!distribution) return [];
   const dynamicTargets = (options.plugin.manifest.artifacts?.targets ?? [])
     .filter((target) =>
-      target.distribution === 'agent-skills'
+      target.target === 'agent-skills.skill'
+      && target.platform === options.platform
       && target.scopes.includes(options.scope)
       && (!options.selectedSkills || options.selectedSkills.has(target.skillKey!)));
   const dynamicKeys = new Set((options.plugin.manifest.artifacts?.targets ?? [])
-    .filter((target) => target.target === 'agent-skills.skill')
+    .filter((target) => target.target === 'agent-skills.skill' && target.platform === options.platform)
     .map((target) => target.skillKey!));
   const output: CandidateTree[] = [];
   let config: Pick<ResolvedArtifactRenderConfig, 'values' | 'sources' | 'issues'> | undefined;
@@ -298,6 +312,7 @@ async function materializePluginCandidates(options: {
     const profileConfig = await resolvePortablePluginProfileConfig({
       plugins: options.plugins,
       plugin: options.plugin,
+      platform: options.platform,
       scope: options.scope,
       cwd: options.cwd,
       env: options.env,
@@ -307,13 +322,12 @@ async function materializePluginCandidates(options: {
     sensitiveValues = collectSensitivePluginConfigValues(
       options.plugin.manifest,
       config.values,
+      options.platform,
     );
   }
-  const staticRoot = distribution.skills
-    ? path.join(options.plugin.rootDir, distribution.skills.replace(/^\.\//u, ''))
-    : undefined;
+  const staticRoot = path.join(options.plugin.rootDir, options.platform, 'skills');
 
-  if (staticRoot) {
+  if (await fs.pathExists(staticRoot)) {
     const rootStats = await fs.lstat(staticRoot).catch(() => undefined);
     if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) {
       throw new Error('Portable Skills root must be a regular directory.');
@@ -393,7 +407,7 @@ async function materializePluginCandidates(options: {
     event: 'materialize',
     referencePlugins: options.plugins,
     plugin: options.plugin,
-    platform: 'agent-skills',
+    platform: options.platform,
     scope: options.scope,
     cwd: options.cwd,
     commandEnv: options.env,
@@ -405,9 +419,10 @@ async function materializePluginCandidates(options: {
     sensitiveValues = collectSensitivePluginConfigValues(
       options.plugin.manifest,
       config.values,
+      options.platform,
     );
     options.recordConfigDigest(pluginId(options.plugin), `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify({ values: config.values, sources: config.sources }))
+      .update(JSON.stringify({ platform: options.platform, values: config.values, sources: config.sources }))
       .digest('hex')}`);
   }
   if (!config) {
@@ -417,7 +432,7 @@ async function materializePluginCandidates(options: {
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
     plan: rendered.plan,
-    platform: 'agent-skills',
+    platform: options.platform,
     scope: options.scope,
     requestedArtifactIds: rendered.context.requestedArtifactIds,
     renderConfig: config,
@@ -431,7 +446,7 @@ async function materializePluginCandidates(options: {
     'portable-runtime-files.json',
   );
   const portableRuntimeProjections = await fs.readJson(portableRuntimeProjectionPath)
-    .catch(() => []) as Array<{ skill: string; target: string; path: string; digest: string }>;
+    .catch(() => []) as Array<{ platform: PortablePlatformTarget; skill: string; target: string; path: string; digest: string }>;
   for (const artifact of plan.artifacts) {
     if (artifact.target !== 'agent-skills.skill' || artifact.state === 'disabled') continue;
     const files: Record<string, Buffer> = {};
@@ -439,8 +454,8 @@ async function materializePluginCandidates(options: {
       await overlayDirectory(sourceDir, files);
     }
     for (const projection of portableRuntimeProjections.filter((entry) =>
-      entry.skill === artifact.skillKey)) {
-      const expectedPath = `./agent-skills/skills/${artifact.skillKey}/${projection.target}`;
+      entry.platform === options.platform && entry.skill === artifact.skillKey)) {
+      const expectedPath = `./${options.platform}/skills/${artifact.skillKey}/${projection.target}`;
       if (
         projection.path !== expectedPath
         || projection.target.includes('\\')
@@ -528,6 +543,7 @@ async function resolvePortableCatalogPlugins(options: {
 export async function resolvePortableCatalogBindingInput(
   options: MaterializePortableSkillsFromCatalogOptions,
 ): Promise<PortableCatalogBindingInput> {
+  assertPortablePlatform(options.platform);
   return withResolvedCatalogPlugin({
     selector: options.selector,
     cliVersion: options.cliVersion,
@@ -539,19 +555,22 @@ export async function resolvePortableCatalogBindingInput(
       : {}),
     consume: async ({ source, plugin: requestedPlugin }) => {
       const plugins = await resolvePortableCatalogPlugins({ source, requestedPlugin });
+      const inputs = await resolvePortableProfileBindingInputs({
+        plugins,
+        pluginName: requestedPlugin.manifest.name,
+        platform: options.platform,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env,
+        sourceId: source.sourceId,
+        catalogSourceIdentity: source.sourceIdentity,
+        logicalIdentity: source.logicalIdentity,
+      });
       return {
         source: await resolveCatalogSnapshotBindingSource(source),
         subject: { plugin: requestedPlugin.manifest.name },
-        profile: await resolvePortableProfileBindingInput({
-          plugins,
-          pluginName: requestedPlugin.manifest.name,
-          scope: options.scope,
-          cwd: options.cwd,
-          env: options.env,
-          sourceId: source.sourceId,
-          catalogSourceIdentity: source.sourceIdentity,
-          logicalIdentity: source.logicalIdentity,
-        }),
+        profile: inputs.profile,
+        providerConfigs: inputs.providerConfigs,
       };
     },
   });
@@ -560,6 +579,7 @@ export async function resolvePortableCatalogBindingInput(
 export async function materializePortableSkillsFromCatalog(
   options: MaterializePortableSkillsFromCatalogOptions,
 ): Promise<MaterializedPortableSkills> {
+  assertPortablePlatform(options.platform);
   const operationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-operation-'));
   const outputRoot = path.join(operationRoot, 'materialized');
   try {
@@ -577,6 +597,7 @@ export async function materializePortableSkillsFromCatalog(
         const materialized = await materializePortableSkills({
           plugins,
           pluginId: resolvedPluginId,
+          platform: options.platform,
           scope: options.scope,
           cwd: options.cwd,
           env: options.env,
@@ -589,6 +610,7 @@ export async function materializePortableSkillsFromCatalog(
           sourceId: source.sourceId,
           sourceIdentity: source.sourceIdentity,
           pluginVersion: requestedPlugin.manifest.version,
+          platform: materialized.platform,
           scope: materialized.scope,
           candidates: materialized.candidates,
           dependencyPluginIds: materialized.dependencyPluginIds,
@@ -613,12 +635,18 @@ export async function materializePortableSkillsFromCatalog(
 export async function materializePortableSkills(
   options: MaterializePortableSkillsOptions,
 ): Promise<MaterializedPortableSkills> {
+  assertPortablePlatform(options.platform);
   const requested = resolveRequestedPlugin(options.plugins, options.pluginId);
-  if (!requested.manifest.distributions?.agentSkills) {
-    throw new Error(`Plugin "${pluginId(requested)}" does not declare distributions.agentSkills.`);
+  if (!resolveSupportedPlatforms(requested.manifest).has(options.platform)) {
+    throw new Error(`Plugin "${pluginId(requested)}" does not support platform "${options.platform}".`);
   }
   const closure = resolvePluginMetaDependencyClosure(options.plugins, [requested.manifest.name]);
   assertSameSource(requested, closure);
+  for (const plugin of closure) {
+    if (!resolveSupportedPlatforms(plugin.manifest).has(options.platform)) {
+      throw new Error(`Portable dependency "${pluginId(plugin)}" does not support platform "${options.platform}".`);
+    }
+  }
   const createdRoot = options.outputRoot === undefined;
   const rootDir = options.outputRoot
     ? path.resolve(options.outputRoot)
@@ -643,19 +671,29 @@ export async function materializePortableSkills(
     for (const plugin of closure) {
       options.signal?.throwIfAborted();
       if (selectedSkills && plugin.manifest.name !== requested.manifest.name) continue;
-      trees.push(...await materializePluginCandidates({
-        plugins: options.plugins,
-        plugin,
-        relation: relationFor(requested, plugin),
-        scope: options.scope,
-        cwd: options.cwd,
-        env,
-        signal: options.signal,
-        inputMode: options.inputMode ?? 'source',
-        ...(selectedSkills ? { selectedSkills } : {}),
-        recordConfigDigest: (id, configDigest) => configDigests.push([id, configDigest]),
-      }));
+      const prepared = options.inputMode === 'bundle' ? undefined : await prepareSkillPluginBundle({
+        plugin, plugins: options.plugins, workRoot: path.join(rootDir, '.prepare'), env,
+      });
+      try {
+        const candidatePlugin = prepared?.bundlePlugin ?? plugin;
+        trees.push(...await materializePluginCandidates({
+          plugins: options.plugins.map((entry) => entry === plugin ? candidatePlugin : entry),
+          plugin: candidatePlugin,
+          relation: relationFor(requested, plugin),
+          platform: options.platform,
+          scope: options.scope,
+          cwd: options.cwd,
+          env,
+          signal: options.signal,
+          inputMode: 'bundle',
+          ...(selectedSkills ? { selectedSkills } : {}),
+          recordConfigDigest: (id, configDigest) => configDigests.push([id, configDigest]),
+        }));
+      } finally {
+        await prepared?.cleanup();
+      }
     }
+    await fs.remove(path.join(rootDir, '.prepare'));
     if (selectedSkills) {
       const materializedNames = new Set(trees.map((candidate) => candidate.tree.skillKey));
       const missing = [...selectedSkills]
@@ -683,20 +721,22 @@ export async function materializePortableSkills(
       relation: candidate.relation,
       dynamic: candidate.dynamic,
       filesDigest: treeDigest(candidate.tree),
+      configDigest: new Map(configDigests).get(pluginId(candidate.plugin)),
     })).sort((left, right) => left.name.localeCompare(right.name));
     const dependencyPluginIds = closure
       .filter((plugin) => plugin.manifest.name !== requested.manifest.name)
       .map(pluginId);
     const configDigest = `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify(configDigests))
+      .update(JSON.stringify({ platform: options.platform, scope: options.scope, config: configDigests }))
       .digest('hex')}`;
     const digest = `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify(candidates.map((candidate) => [candidate.name, candidate.filesDigest])))
+      .update(JSON.stringify({ platform: options.platform, scope: options.scope, skills: candidates.map((candidate) => [candidate.name, candidate.filesDigest]) }))
       .digest('hex')}`;
     const provenancePath = path.join(rootDir, '.aw-materialization.json');
     const provenance: PortableMaterializationProvenance = {
       schemaVersion: 1,
       pluginId: pluginId(requested),
+      platform: options.platform,
       scope: options.scope,
       dependencyPluginIds,
       configDigest,
@@ -707,6 +747,7 @@ export async function materializePortableSkills(
     return {
       rootDir,
       pluginId: pluginId(requested),
+      platform: options.platform,
       scope: options.scope,
       candidates,
       dependencyPluginIds,

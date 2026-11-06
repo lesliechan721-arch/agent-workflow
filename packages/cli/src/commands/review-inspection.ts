@@ -7,6 +7,7 @@ import {
   validateCatalogSnapshotComplete,
   type CatalogWorkspace,
   type Scope,
+  type PlatformTarget,
 } from '@lesliechan721/aw-plugin-core'
 import fs from 'fs-extra'
 
@@ -24,20 +25,15 @@ import {
 } from '../review/review-selection.js'
 import type {
   ReviewResolvedProfile,
-  ReviewProfileConfig,
   ReviewSelection,
   ReviewSelectedSkill,
 } from '../review/review-types.js'
-import {
-  resolveEffectivePluginConfigFromStores,
-  codexNativeRefreshKeys,
-  type PluginConfigStore,
-} from '../utils/plugin-config.js'
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js'
 import { pluginConfigHasExternalReferences } from '../utils/plugin-config-references.js'
+import { normalizeReviewProfileConfig, resolveReviewPluginProfileConfig } from '../review/review-profile.js'
 
 export type ReviewInspectionView = 'review'
-export type ReviewInspectionPlatform = 'codex' | 'claude' | 'agent-skills'
+export type ReviewInspectionPlatform = PlatformTarget
 
 export interface ReviewInspectionOptions {
   cwd: string
@@ -206,19 +202,6 @@ function selectedSkillConfig(
   return selectResolvedConfig({ values, sources }, skill.refreshKeys)
 }
 
-function legacyProfileStore(
-  scope: Scope,
-  values: ReviewProfileConfig[string],
-): PluginConfigStore {
-  return {
-    path: `<legacy-${scope}-profile>`,
-    exists: Object.keys(values).length > 0,
-    state: 'ready',
-    values,
-    issues: [],
-  }
-}
-
 async function legacyBindingMatchesSelection(options: {
   selection: ReviewSelection
   requestedProfile: ReviewResolvedProfile
@@ -227,86 +210,37 @@ async function legacyBindingMatchesSelection(options: {
   env?: NodeJS.ProcessEnv
 }): Promise<boolean> {
   const { binding, requestedProfile, skill } = options
-  if (binding.profile.scope !== requestedProfile.scope) return false
-  if (binding.profile.kind === 'eval') {
-    if (
-      requestedProfile.platform !== 'codex'
-      || !binding.subject.skill
-      || skill.delivery === 'codex-native'
-    ) return false
-    const plugin = options.selection.workspace.plugins.find((entry) =>
-      entry.manifest.name === binding.subject.plugin)
-    if (!plugin) return false
-    const loaded = await readAwSkillEvalManifest({ plugin, skill: binding.subject.skill })
-    const evalProfile = loaded.manifest.profiles.find((entry) => entry.id === binding.profile.id)
-    if (!evalProfile) return false
-    try {
+  if (binding.profile.scope !== requestedProfile.scope
+    || binding.profile.platform !== requestedProfile.platform) return false
+  const requested = selectedSkillConfig(requestedProfile, skill)
+  if (!requested) return false
+  try {
+    if (binding.profile.kind === 'eval') {
+      if (!binding.subject.skill) return false
+      const plugin = options.selection.workspace.plugins.find((entry) => entry.manifest.name === binding.subject.plugin)
+      if (!plugin) return false
+      const loaded = await readAwSkillEvalManifest({ plugin, skill: binding.subject.skill })
+      const evalProfile = loaded.manifest.profiles.find((entry) => entry.id === binding.profile.id)
+      if (!evalProfile) return false
       const { materializationProfile } = resolveEvalProfileBindingInput(
         evalProfile, options.selection.workspace.plugins, binding.profile.config,
       )
-      const installations = new Map(materializationProfile.plugins.map((entry) => [entry.name, entry]))
-      const requested = selectedSkillConfig(requestedProfile, skill)
-      if (!requested) return false
-      const overrides = {
-        ...(evalProfile.plugins.find((entry) => entry.name === skill.pluginName)?.config ?? {}),
-        ...(binding.profile.config?.[skill.pluginName] ?? {}),
-      } as ReviewProfileConfig[string]
-      const userValues = binding.profile.scope === 'user' ? overrides : {}
-      const effective = await resolveEffectivePluginConfigFromStores({
-        pluginName: skill.pluginName,
-        manifest: skill.plugin.manifest,
-        targetScope: binding.profile.scope,
-        projectRoot: options.selection.workspace.workspaceRoot,
-        referenceContext: {
-          plugin: skill.pluginName,
-          dependencies: skill.plugin.manifest.dependencies ?? [],
-          plugins: Object.fromEntries(options.selection.workspace.plugins.map((provider) => {
-            const scopes = installations.get(provider.manifest.name)?.configByScope ?? {}
-            const userOnly = codexNativeRefreshKeys(provider.manifest)
-            return [provider.manifest.name, { definition: provider.manifest.config ?? { fields: {} },
-              dependencies: provider.manifest.dependencies ?? [],
-              values: Object.fromEntries(Object.entries(provider.manifest.config?.fields ?? {}).flatMap(([key, field]) => {
-                const values = userOnly.has(key) ? scopes.user ?? {}
-                  : { ...(scopes.user ?? {}), ...(scopes[binding.profile.scope] ?? {}) }
-                return Object.hasOwn(values, key) ? [[key, values[key]]]
-                  : field.default === undefined ? [] : [[key, field.default]]
-              })),
-            }]
-          })),
-        },
-        stores: {
-          user: legacyProfileStore('user', userValues),
-          ...(binding.profile.scope === 'project'
-            ? { project: legacyProfileStore('project', overrides) }
-            : {}),
-        },
+      const config = normalizeReviewProfileConfig(Object.fromEntries(materializationProfile.plugins.map((entry) =>
+        [entry.name, entry.configByScope.user ?? {}])))
+      const effective = resolveReviewPluginProfileConfig({
+        plugin: skill.plugin, plugins: options.selection.workspace.plugins,
+        platform: requestedProfile.platform, scope: skill.configScope, config, keys: skill.refreshKeys,
       })
-      return sameResolvedConfig(
-        requested,
-        selectResolvedConfig(effective, skill.refreshKeys),
-      )
-    } catch {
-      return false
+      return sameResolvedConfig(requested, selectResolvedConfig(effective, skill.refreshKeys))
     }
-  }
-  if (binding.profile.kind !== 'portable' || requestedProfile.platform !== 'agent-skills') {
-    return false
-  }
-  try {
-    const requested = selectedSkillConfig(requestedProfile, skill)
-    if (!requested) return false
+    if (binding.profile.kind !== 'portable' || requestedProfile.platform === 'codex'
+      || requestedProfile.platform === 'claude') return false
     const current = await resolvePortablePluginProfileConfig({
-      plugin: skill.plugin,
-      plugins: options.selection.workspace.plugins,
-      offlineConfig: requestedProfile.profile.config,
-      scope: skill.configScope,
-      cwd: options.selection.workspace.workspaceRoot,
-      env: options.env,
+      plugin: skill.plugin, plugins: options.selection.workspace.plugins,
+      platform: requestedProfile.platform, offlineConfig: requestedProfile.profile.config,
+      scope: skill.configScope, cwd: options.selection.workspace.workspaceRoot, env: options.env,
     })
-    return sameResolvedConfig(
-      requested,
-      selectResolvedConfig(current.config, skill.refreshKeys),
-    )
+    return sameResolvedConfig(requested, selectResolvedConfig(current.config, skill.refreshKeys))
   } catch {
     return false
   }
@@ -362,7 +296,7 @@ async function inspectNavigationBindings(options: {
       cwd: options.selection.workspace.workspaceRoot,
       env: options.env,
       offlineConfig: Object.fromEntries(options.selection.profiles
-        .filter((profile) => profile.platform === 'agent-skills' && profile.scope === binding.profile.scope)
+        .filter((profile) => profile.platform === binding.profile.platform && profile.scope === binding.profile.scope)
         .flatMap((profile) => Object.entries(profile.profile.config))),
     })
     if (validation.state === 'invalid' || validation.state === 'incomplete') {
@@ -378,12 +312,8 @@ async function inspectNavigationBindings(options: {
         .some((entry) => pluginConfigHasExternalReferences(entry.manifest))
     let selected = false
     for (const requestedProfile of options.selection.profiles) {
-      const profileMatches = binding.profile.kind === 'review'
-        ? binding.profile.platform === requestedProfile.platform
-          && binding.profile.scope === requestedProfile.scope
-        : binding.profile.kind === 'eval'
-          ? requestedProfile.platform === 'codex'
-          : requestedProfile.platform === 'agent-skills'
+      const profileMatches = binding.profile.platform === requestedProfile.platform
+        && binding.profile.scope === requestedProfile.scope
       if (!profileMatches || portableConfigMismatch) continue
       for (const artifact of binding.artifacts) {
         const identity = bindingOutputIdentity(binding, artifact)
@@ -484,7 +414,6 @@ export async function inspectReviewTarget(
         if (
           snapshot.root
           && !skill.dynamic
-          && profile.platform !== 'agent-skills'
         ) {
           const finalPath = path.join(
             snapshot.root,

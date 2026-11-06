@@ -309,7 +309,7 @@ type CommandManagementResult = {
 
 管理命令退出 0 表示完整完成，1 表示 failed/partial，2 表示参数错误；`ok` 仅在 completed 为 true。list/show 发现资源不可用时仍返回可读记录，同时 overallState=partial、exit=1；无命令的健康 list 为 completed。记录连身份也无法解析时只放 errors，subject 使用安全的本 AW_HOME 相对定位，不伪造 PackageView。show 找不到 ID 为 `commandNotFound`。
 
-既有插件写命令继续使用 Receipt v6，在其顶层增加可选 `commandResults`，无相关动作时省略；TUI 使用同一投影，不新增第三个平台：
+插件恢复写命令使用 `aw-recovery` schema 1，在顶层以可选 `commandResults` 报告实际命令结果，无相关动作时省略。底层原生执行保留内部 Receipt v6，并由统一恢复协调器汇总。TUI 使用同一投影，不新增第三个平台：
 
 ```ts
 commandResults?: Array<{
@@ -324,7 +324,7 @@ commandResults?: Array<{
 
 producer 写入或绑定失败参与整体 failed/partial 计算；权限写入仍计入其真实平台结果。Review 展示 package 的共享影响、固定参数和权限变化，不能因为没有平台枚举值就漏掉 AW-owned 包。
 
-Config Mutation Receipt v7 的 `apply` 对象增加可选 `commandResults`，元素与上述 Receipt v6 的 commandResults 完全相同；它与 `apply.targetResults` 并列，不向 ConfigApplyTargetIdentity 填入假平台。所有 apply union 分支都接受此字段：没有命令目标时省略，skipped 时只能省略或为空；其它分支保留已经取得的实际结果。TUI 配置 Review、Progress 和 Result 同时消费这两组结果。
+Config Mutation Receipt v7 的 `apply` 对象增加可选 `commandResults`，元素与上述恢复回执的 commandResults 完全相同；它与 `apply.targetResults` 并列，不向 ConfigApplyTargetIdentity 填入假平台。所有 apply union 分支都接受此字段：没有命令目标时省略，skipped 时只能省略或为空；其它分支保留已经取得的实际结果。TUI 配置 Review、Progress 和 Result 同时消费这两组结果。
 
 配置 apply 的发现范围固定为：本次 sourceId + sourceIdentity + pluginName 下，独立 owner marker 可核验的已安装包，加上本次既有平台 apply 计划明确引用的 package producer，按完整 ProducerIdentity 去重。user 配置 apply 检查 user 包和当前规范项目的 project 包；project 配置 apply 只检查当前项目的 project 包。它只扫描 AW_HOME 的包 marker，不扫描其它项目，也不刷新其它 projectRoot 的包。旧来源身份的包保留并提示精确 remove/sync，不按当前配置接管。
 

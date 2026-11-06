@@ -23,6 +23,7 @@ const processTests = [
   'tests/unit/vitest-eval-dependency.test.ts',
   'tests/unit/native-cli.test.ts',
   'tests/unit/plugin-scripts.test.ts',
+  'tests/unit/managed-command-materialization.test.ts',
   'tests/unit/artifact-renderer.test.ts',
   'tests/unit/process-lock.test.ts',
   'tests/integration/aw-home-mutation-command-lock.test.ts',

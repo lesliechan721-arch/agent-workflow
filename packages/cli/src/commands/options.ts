@@ -3,10 +3,12 @@ import type {
   InstallCommandOptions,
   PlatformName,
   PlatformSelection,
+  PlatformTarget,
   Scope,
   StatusCommandOptions,
 } from '../types.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 
 export interface NormalizeCommandOptionsDefaults {
   cwd?: string;
@@ -60,18 +62,9 @@ export interface ReinstallCommandOptions extends InstallCommandOptions {
   json?: boolean;
 }
 
-export interface RawConfigProjectLayerOptions {
-  scope?: string;
-  local?: boolean;
-}
-
-
 export const SCRIPT_TIMEOUT_MIN_MS = 1000;
 export const SCRIPT_TIMEOUT_MAX_MS = 1800000;
 export const SCRIPT_TIMEOUT_DEFAULT_MS = 300000;
-export const CONFIG_WRITE_DEFAULT_SCOPE: Scope = 'user';
-export type ConfigReadResolution = Scope | 'effective';
-export const CONFIG_READ_DEFAULT_RESOLUTION: ConfigReadResolution = 'effective';
 
 function renderUnsupportedValue(value: unknown): string {
   return typeof value === 'string' ? value : String(value);
@@ -83,6 +76,16 @@ export function parseScopeValue(scope: unknown): Scope {
   }
 
   throw new Error(`Unsupported scope "${renderUnsupportedValue(scope)}".`);
+}
+
+export function parseContextValue(context: unknown): Scope {
+  if (context === 'project' || context === 'user') return context;
+  throw new Error(`Unsupported context "${renderUnsupportedValue(context)}". Expected user or project.`);
+}
+
+export function parsePlatformTargetValue(platform: unknown): PlatformTarget {
+  if (isPlatformTarget(platform)) return platform;
+  throw new Error(`Unsupported platform target "${renderUnsupportedValue(platform)}".`);
 }
 
 export function parsePlatformValue(platform: unknown): PlatformSelection {
@@ -180,26 +183,6 @@ export function resolveScriptTimeoutMs(
 ): number | undefined {
   const value = raw.scriptTimeoutMs ?? raw.scriptTimeout;
   return value === undefined ? undefined : parseScriptTimeoutMs(value);
-}
-
-export function resolveConfigWriteScope(scope: unknown): Scope {
-  return scope === undefined ? CONFIG_WRITE_DEFAULT_SCOPE : parseScopeValue(scope);
-}
-
-export function resolveConfigReadResolution(scope: unknown): ConfigReadResolution {
-  return scope === undefined ? CONFIG_READ_DEFAULT_RESOLUTION : parseScopeValue(scope);
-}
-
-export function resolveConfigProjectLayer(
-  raw: RawConfigProjectLayerOptions = {},
-): 'shared' | 'local' {
-  if (!raw.local) {
-    return 'shared';
-  }
-  if (raw.scope !== 'project') {
-    throw new Error('`--local` 只能与 `--scope project` 一起使用。');
-  }
-  return 'local';
 }
 
 function resolveCwd(rawCwd: string | undefined, defaultCwd: string | undefined): string {

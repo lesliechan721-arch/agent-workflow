@@ -1,0 +1,256 @@
+import path from 'node:path';
+
+import fs from 'fs-extra';
+import { describe, expect, it, vi } from 'vitest';
+
+import { addRoot, resolveIntentPath } from '../../src/intent/intent-store.js';
+import { createScopeContext } from '../../src/intent/scope-context.js';
+import { demandNativeProjection, readDemand, readIntentReferences, resolveDelivery } from '../../src/recovery/demand.js';
+import type { NormalizedPluginManifest } from '../../src/types.js';
+import { pluginConfigTargetRenderScopes } from '../../src/utils/plugin-config-impact.js';
+import { getClaudeHome, getCodexHome, resolveAwHome } from '../../src/utils/state-paths.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+
+function manifest(): NormalizedPluginManifest {
+  return {
+    schemaVersion: 3, name: 'demo', version: '1.0.0', description: 'demo', skills: './skills',
+    marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+  };
+}
+
+describe('scoped demand and execution context', () => {
+  it('uses Native skills on Codex and Claude and the AW writer on other targets', () => {
+    const plugin = manifest();
+    for (const scope of ['user', 'project'] as const) {
+      expect(resolveDelivery(plugin, 'codex', scope)).toEqual({ kind: 'native', platform: 'codex' });
+      expect(resolveDelivery(plugin, 'claude', scope)).toEqual({ kind: 'native', platform: 'claude' });
+      expect(resolveDelivery(plugin, 'cursor', scope)).toEqual({
+        kind: 'agent-skills', provider: 'aw', agentId: 'cursor',
+      });
+    }
+    plugin.slashCommands = './commands';
+    expect(resolveDelivery(plugin, 'codex', 'project')).toBeUndefined();
+    plugin.platforms = ['codex', 'claude'];
+    expect(resolveDelivery(plugin, 'cursor', 'project')).toBeUndefined();
+  });
+
+  // Test Value Gate: capability checks must select the same concrete target and
+  // scope as materialization, without turning a disabled result into a new gate.
+  it.each([
+    ['cursor', 'agent-skills.skill', 'user', 'present', 'user', true],
+    ['cursor', 'agent-skills.skill', 'user', 'present', 'project', false],
+    ['pi', 'agent-skills.skill', 'project', 'present', 'project', false],
+    ['codex', 'codex.skill', 'project', 'present', 'project', false],
+    ['cursor', 'agent-skills.skill', 'project', 'disabled', 'project', true],
+  ] as const)('matches Cursor delivery to %s %s %s/%s for %s (%s)', (
+    platform, target, declaredScope, state, scope, supported,
+  ) => {
+    const plugin = manifest();
+    delete plugin.skills;
+    plugin.artifacts = { targets: [{ id: 'dynamic', platform, target,
+      scopes: [declaredScope], states: [state], refreshKeys: [], skillKey: 'dynamic' }] };
+
+    expect(resolveDelivery(plugin, 'cursor', scope)).toEqual(supported
+      ? { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }
+      : undefined);
+  });
+
+  // Test Value Gate: project activation must retain Native delivery and the shared user producer profile.
+  it('keeps Claude dynamic skills Native with a shared user producer in either activation scope', () => {
+    const plugin = manifest();
+    delete plugin.skills;
+    plugin.platforms = ['claude'];
+    plugin.artifacts = { targets: [{
+      id: 'project-skill', platform: 'claude', scopes: ['project'], target: 'claude.skill',
+      states: ['present'], refreshKeys: ['mode'], skillKey: 'project-skill',
+    }] };
+
+    const rootDir = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    const meta = { manifest: plugin, rootDir, manifestPath: path.join(rootDir, '.agents-plugin/plugin.json') };
+    for (const declaredScope of ['project', 'user'] as const) {
+      plugin.artifacts.targets![0]!.scopes = [declaredScope];
+      for (const scope of ['user', 'project'] as const) {
+        expect(resolveDelivery(plugin, 'claude', scope)).toEqual({ kind: 'native', platform: 'claude' });
+        expect(pluginConfigTargetRenderScopes(meta, { pluginName: 'demo', platform: 'claude', scope }))
+          .toEqual(['user']);
+      }
+    }
+  });
+
+  it('does not treat Claude platform support as a deployable Native component', () => {
+    const plugin = manifest();
+    delete plugin.skills;
+    plugin.platforms = ['claude'];
+
+    expect(resolveDelivery(plugin, 'claude', 'user')).toBeUndefined();
+  });
+
+  it('retains source references with no Agents or available Catalog and uses a protocol-free Native view', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    await addRoot(location, 'team/demo', 'catalog-team');
+    const demand = await readDemand(location);
+    expect(demand.roots?.[0]).toMatchObject({ pluginId: 'team/demo' });
+    expect(demand.preferences.state).toBe('absent');
+    expect(await readIntentReferences(location)).toEqual(['team/demo']);
+    const native = demandNativeProjection(demand);
+    expect(native).toEqual({ roots: [], dependencyScopeOverrides: [] });
+    expect(native).not.toHaveProperty('schemaVersion');
+    expect(native).not.toHaveProperty('kind');
+  });
+
+  it('reports a precise backup and rebuild path for unsupported User Intent bytes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const file = await resolveIntentPath(location);
+    const bytes = JSON.stringify({ schemaVersion: 2, kind: 'aw-plugin-intents',
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }], dependencyScopeOverrides: [] });
+    await fs.outputFile(file, bytes);
+    const demand = await readDemand(location);
+    expect(demand.roots).toBeNull();
+    expect(demand.errors[0]?.message).toContain(file);
+    expect(demand.errors[0]?.message).toContain('备份');
+    expect(demand.errors[0]?.message).toContain('aw plugin intent add');
+    expect(await fs.readFile(file, 'utf8')).toBe(bytes);
+  });
+
+  it('uses a neutral User cwd in and outside repositories and keeps read-only observation temporary', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const ordinary = path.join(isolation.layout.fixtureCwd, 'ordinary-context');
+    const repo = path.join(isolation.layout.fixtureCwd, 'repo-context');
+    await fs.ensureDir(ordinary);
+    await fs.ensureDir(path.join(repo, '.git'));
+    for (const cwd of [ordinary, repo]) {
+      const context = await createScopeContext({ scope: 'user', cwd, env: isolation.env, readOnly: true });
+      expect(context.executionCwd).not.toContain(repo);
+      expect(context.executionCwd).not.toContain(ordinary);
+      expect(context.projectRoot).toBeUndefined();
+      expect(context.targetHomes.home).toBe(path.join(
+        await fs.realpath(path.dirname(isolation.env.HOME!)), path.basename(isolation.env.HOME!),
+      ));
+      const runtime = path.join(isolation.env.AW_HOME!, 'runtime', 'user');
+      expect(await fs.pathExists(runtime)).toBe(false);
+      const temporary = context.executionCwd;
+      await context.dispose();
+      expect(await fs.pathExists(temporary)).toBe(false);
+    }
+  });
+
+  it('rejects polluted AW_HOME ancestors, uses an operation-owned cwd, and preserves foreign files', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const repo = path.join(isolation.layout.fixtureCwd, 'aw-inside-repo');
+    const awHome = path.join(repo, 'aw-home');
+    await fs.ensureDir(path.join(repo, '.git'));
+    await fs.ensureDir(awHome);
+    const foreign = path.join(awHome, 'foreign.txt');
+    await fs.writeFile(foreign, 'keep');
+    const context = await createScopeContext({ scope: 'user', cwd: repo,
+      env: { ...isolation.env, AW_HOME: awHome } });
+    expect(context.executionCwd).not.toContain(repo);
+    expect(context.generationRoot).toBe(path.join(await fs.realpath(awHome), 'portable', 'user'));
+    const temporary = context.executionCwd;
+    await context.dispose();
+    expect(await fs.pathExists(temporary)).toBe(false);
+    expect(await fs.readFile(foreign, 'utf8')).toBe('keep');
+    expect(await fs.pathExists(path.join(awHome, 'runtime'))).toBe(false);
+  });
+
+  it('blocks backend context when every neutral cwd fails and leaves foreign state untouched', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const repo = path.join(isolation.layout.fixtureCwd, 'no-neutral');
+    await fs.ensureDir(path.join(repo, '.git'));
+    const awHome = path.join(repo, 'aw-home');
+    const foreign = path.join(awHome, 'foreign.txt');
+    await fs.outputFile(foreign, 'keep');
+    const mkdtemp = vi.spyOn(fs, 'mkdtemp').mockRejectedValue(new Error('no safe temp'));
+    try {
+      await expect(createScopeContext({ scope: 'user', cwd: repo,
+        env: { ...isolation.env, AW_HOME: awHome } })).rejects.toThrow('userNeutralCwdUnavailable');
+    } finally {
+      mkdtemp.mockRestore();
+    }
+    expect(await fs.readFile(foreign, 'utf8')).toBe('keep');
+    expect(await fs.pathExists(path.join(awHome, 'runtime'))).toBe(false);
+  });
+
+  it('rejects a neutral cwd whose ancestor carries project configuration', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configured = path.join(isolation.layout.fixtureCwd, 'configured-ancestor');
+    const awHome = path.join(configured, 'aw-home');
+    await fs.ensureDir(path.join(configured, '.codex'));
+    await fs.ensureDir(awHome);
+    const context = await createScopeContext({ scope: 'user', cwd: configured,
+      env: { ...isolation.env, AW_HOME: awHome } });
+    expect(context.executionCwd).not.toContain(configured);
+    expect(await fs.pathExists(path.join(awHome, 'runtime'))).toBe(false);
+    await context.dispose();
+  });
+
+  it.each(['.git', '.agent-workflows', '.aw-workspace.json', '.codex'])(
+    'rejects a persistent neutral cwd under an ancestor with %s', async (marker) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const configured = path.join(isolation.layout.fixtureCwd, `marker-${marker.replaceAll('.', '-')}`);
+      const awHome = path.join(configured, 'aw-home');
+      await fs.ensureDir(awHome);
+      const markerPath = path.join(configured, marker);
+      if (marker.endsWith('.json') || marker === '.git') await fs.writeFile(markerPath, 'marker');
+      else await fs.ensureDir(markerPath);
+      const context = await createScopeContext({ scope: 'user', cwd: configured,
+        env: { ...isolation.env, AW_HOME: awHome } });
+      expect(context.executionCwd).not.toContain(configured);
+      expect(await fs.pathExists(path.join(awHome, 'runtime'))).toBe(false);
+      await context.dispose();
+    },
+  );
+
+  it('resolves a symlinked AW_HOME before checking neutral cwd ancestors', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const repo = path.join(isolation.layout.fixtureCwd, 'aliased-repo');
+    const actual = path.join(repo, 'aw-home');
+    const alias = path.join(isolation.layout.fixtureCwd, 'aw-alias');
+    await fs.ensureDir(path.join(repo, '.git'));
+    await fs.ensureDir(actual);
+    await fs.symlink(actual, alias, 'dir');
+    const context = await createScopeContext({ scope: 'user', cwd: repo,
+      env: { ...isolation.env, AW_HOME: alias } });
+    expect(context.executionCwd).not.toContain(repo);
+    expect(context.awHome).toBe(await fs.realpath(actual));
+    await context.dispose();
+  });
+
+  it('rejects ambiguous relative environment homes and resolves Project worktree context only for a repo', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plain = path.join(isolation.layout.fixtureCwd, 'plain-project');
+    await fs.ensureDir(plain);
+    await expect(createScopeContext({ scope: 'project', cwd: plain, env: isolation.env }))
+      .rejects.toThrow('projectRootUnavailable');
+    await expect(createScopeContext({ scope: 'user', cwd: plain,
+      env: { ...isolation.env, XDG_STATE_HOME: 'relative' } })).rejects.toThrow('scopeEnvironmentAmbiguous');
+    const repo = path.join(isolation.layout.fixtureCwd, 'real-project');
+    await fs.ensureDir(path.join(repo, '.git'));
+    const context = await createScopeContext({ scope: 'project', cwd: repo, env: isolation.env });
+    expect(context.executionCwd).toBe(await fs.realpath(repo));
+    expect(context.projectRoot).toBe(await fs.realpath(repo));
+    expect(context.configProfile).toBe('project');
+    await context.dispose();
+  });
+
+  it('binds fallback AW and Agent homes to the supplied HOME and honors Claude config override', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const home = isolation.env.HOME!;
+    const customClaude = path.join(home, 'custom-claude');
+    const env = { ...isolation.env, AW_HOME: undefined, AW_CODEX_HOME: undefined,
+      AW_CLAUDE_HOME: undefined, CODEX_HOME: undefined, CLAUDE_CONFIG_DIR: customClaude };
+    expect(resolveAwHome(env)).toBe(path.join(home, '.aw'));
+    expect(getCodexHome(env)).toBe(path.join(home, '.codex'));
+    expect(getClaudeHome(env)).toBe(customClaude);
+    const context = await createScopeContext({ scope: 'user', cwd: isolation.layout.fixtureCwd,
+      env, readOnly: true });
+    expect(context.awHome).toBe(path.join(await fs.realpath(path.dirname(home)),
+      path.basename(home), '.aw'));
+    expect(context.targetHomes.claude).toBe(path.join(context.targetHomes.home, 'custom-claude'));
+    expect(context.env.HOME).toBe(home);
+    await context.dispose();
+    expect(await fs.pathExists(path.join(home, '.aw'))).toBe(false);
+  });
+});

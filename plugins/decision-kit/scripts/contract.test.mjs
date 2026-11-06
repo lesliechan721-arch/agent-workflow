@@ -103,7 +103,8 @@ test('manifest exposes the four decision and project knowledge Skills', async ()
   assert.equal(manifest.skills, './skills');
   assert.equal(manifest.extensions?.instructions?.length ?? 0, 0);
   assert.equal(manifest.config, undefined);
-  assert.deepEqual(manifest.distributions, { agentSkills: { skills: './skills' } });
+  assert.deepEqual(manifest.platforms, ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic']);
+  assert.equal(Object.hasOwn(manifest, 'distributions'), false);
   assert.equal(manifest.artifacts, undefined);
   assert.equal(manifest.scripts.artifacts, undefined);
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
@@ -966,7 +967,7 @@ test('plan-review cases receive an actual migration plan fixture', async () => {
   }
 });
 
-test('prepared bundle renders the four static Skills', async () => {
+test('prepared bundle renders the four static Skills on every supported platform', async () => {
   if (!context.platform) return;
 
   const platformManifest = await readJson(
@@ -974,22 +975,26 @@ test('prepared bundle renders the four static Skills', async () => {
   );
   assert.equal(platformManifest.name, 'decision-kit');
   assert.equal(platformManifest.skills, `./${context.platform}/skills`);
-  for (const skillName of requiredSkills) {
-    const skill = await readFile(
-      path.join(context.bundleRoot, context.platform, 'skills', skillName, 'SKILL.md'),
-      'utf8',
-    );
-    // Static contract exception: portable Skill text must not bind questioning to a platform tool name; behavior tests cannot observe consumer-read Skill text.
-    assert.equal(skill.includes('`request_user_input`'), false);
-    assert.equal(skill.includes('`AskUserQuestion`'), false);
-    assert.equal(skill.includes('{{questionTool}}'), false);
-  }
-
   const bundleManifest = await readJson(path.join(
     context.bundleRoot, '.agents-plugin', 'plugin.json',
   ));
   // Dependency resolution consumes the published manifest, not prose calls.
   assert.ok(bundleManifest.dependencies.includes('human-content'));
+
+  for (const platform of bundleManifest.platforms) {
+    for (const skillName of requiredSkills) {
+      const skillRoot = path.join(context.bundleRoot, platform, 'skills', skillName);
+      const skill = await readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
+      await access(path.join(skillRoot, 'README.md'));
+      // Static contract exception: portable Skill text must not bind questioning to a platform tool name; behavior tests cannot observe consumer-read Skill text.
+      assert.equal(skill.includes('`request_user_input`'), false);
+      assert.equal(skill.includes('`AskUserQuestion`'), false);
+      assert.equal(skill.includes('{{questionTool}}'), false);
+    }
+    const prototypeRoot = path.join(context.bundleRoot, platform, 'skills', 'decision-prototype');
+    await access(path.join(prototypeRoot, 'assets', 'prototype-verdict.md'));
+    await access(path.join(prototypeRoot, 'references', 'prototype-review.md'));
+  }
 
   const prototypeBundleRoot = path.join(
     context.bundleRoot,

@@ -16,6 +16,8 @@ vi.mock('../../src/tui/clipboard.js', () => ({ copyToClipboard: vi.fn() }));
 
 import {
   configPage,
+  configPageForProfile,
+  configSaveResult,
   controller,
   evidence,
   evidenceForIntent,
@@ -24,8 +26,7 @@ import {
 
 import {
   chooseConfigSave,
-  chooseConfigTarget,
-  confirmReview,
+  chooseConfigProfile,
   focusAction,
   input,
   nextTurn,
@@ -44,6 +45,7 @@ function configuredObjectPage(pluginId = 'team-tools/review-gate'): ConfigPageVi
   };
   page.storedCount = 1;
   field.configured = true;
+  field.canUnset = true;
   field.inherited = false;
   field.displayValue = '已设置 · 3 项';
   field.value = current;
@@ -58,97 +60,39 @@ function configuredObjectPage(pluginId = 'team-tools/review-gate'): ConfigPageVi
 }
 
 describe('ConsoleAppV4', () => {
-  it('uses visible group tabs and edits a focused effective field before selecting its save target', async () => {
-    const reached = new Set<ConsoleV4ScreenId>();
-    const getConfigPage = vi.fn(async (
-      pluginId: string,
-      layer: ConfigPageViewModel['layer'],
-    ) => {
-      const page = configPage(pluginId);
-      return {
-        ...page,
-        layer,
-        groups: layer.scope === 'effective'
-          ? page.groups.map((group) => ({
-              ...group,
-              fields: group.fields.map((field) => ({
-                ...field,
-                displayValue: field.effectiveDisplayValue,
-                sourceLabel: field.effectiveSourceLabel,
-                ...(field.effectiveValue !== undefined ? { value: field.effectiveValue } : {}),
-              })),
-            }))
-          : page.groups,
-      };
-    });
+  it('switches groups with arrows and retains the common draft when Tab changes profiles', async () => {
+    const getConfigPage = vi.fn(async (pluginId, options) => configPage(pluginId, options));
     const value = controller({ getConfigPage });
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
-    const instance = render(<ConsoleAppV4
-      controller={value}
-      size={{ columns: 80, rows: 24 }}
-      onScreenChange={(screen) => reached.add(screen)}
-    />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-
     await focusAction(instance, '插件设置');
     await input(instance, '\r');
-    await nextTurn(3);
-    expect(reached).toContain('C01');
-    const effectiveFrame = instance.lastFrame() ?? '';
-    expect(effectiveFrame).toContain('插件设置');
-    expect(effectiveFrame).toContain('基本设置');
-    expect(effectiveFrame).toContain('个人默认');
-    expect(effectiveFrame).toContain('未设置');
-    expect(effectiveFrame).not.toContain('保存修改');
-    expect(effectiveFrame).toContain('快速方案 1');
-    expect(effectiveFrame).toContain('› level');
-    expect(effectiveFrame).not.toContain('/Users/private');
-
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('基本设置'));
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFields', layer: { profile: 'common' } });
+    await nextTurn(4);
     const depth = value.snapshot.router.depth;
     await input(instance, '\u001B[C');
     expect(value.snapshot.router.depth).toBe(depth);
     expect(value.snapshot.router.current.context.configGroupId).toBe('advanced');
     expect(instance.lastFrame()).toContain('› model');
-    expect(instance.lastFrame()).not.toContain('› level');
-    await input(instance, '\u001B[D');
-    expect(value.snapshot.router.depth).toBe(depth);
-    expect(instance.lastFrame()).toContain('› level');
-
-    await input(instance, '\r');
+    await input(instance, '\u001B[D', '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', fieldKey: 'level', layer: { scope: 'effective' },
-    });
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', fieldKey: 'level', layer: { scope: 'effective' },
+      name: 'configFieldEditor', fieldKey: 'level', layer: { profile: 'common' },
     });
     await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-    expect(reached).toContain('C07');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configLayer', fieldKey: 'level',
-    });
-    const chooserFrame = instance.lastFrame() ?? '';
-    expect(chooserFrame).toContain('“level”保存到哪里？');
-    expect(chooserFrame).toContain('新值：balanced');
-    expect(chooserFrame).toContain('个人默认');
-    expect(chooserFrame).toContain('当前项目');
-    const layerRoute = value.snapshot.router.current.route;
-    await input(instance, '\t');
-    expect(value.snapshot.router.current.route).toEqual(layerRoute);
-
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'effective' },
-    });
-    expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
-    expect(instance.lastFrame()).toContain('› level');
-    expect(instance.lastFrame()).toContain('待保存到个人默认');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFields', layer: { profile: 'common' } });
+    expect(instance.lastFrame()).toContain('未保存');
+    await chooseConfigProfile(instance, value, 'codex');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('Codex 专用'));
+    await chooseConfigProfile(instance, value, 'common');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('未保存'));
+    expect(value.externalDrafts).toHaveLength(1);
   });
 
-  it('opens the preview settings action on the effective read-only homepage', async () => {
+  it('opens the common profile from plugin details', async () => {
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => configPage(pluginId, layer)),
     });
     value.push({ name: 'pluginDetail', pluginId: 'official/review-gate' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -158,10 +102,10 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await nextTurn(3);
 
-    expect(value.snapshot.router.current.route).toEqual({
+    expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields',
       pluginId: 'official/review-gate',
-      layer: { scope: 'effective' },
+      layer: { profile: 'common' },
     });
     expect(instance.lastFrame()).toContain('插件设置');
     expect(instance.lastFrame()).not.toContain('保存修改');
@@ -169,13 +113,13 @@ describe('ConsoleAppV4', () => {
 
   it('uses preset-first scalar choices and retains invalid Core-validated input', async () => {
     const page = configPage();
-    const getConfigPage = vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer }));
+    const getConfigPage = vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId }));
     const closed = controller({ getConfigPage });
-    closed.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    closed.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     closed.push({
       name: 'configFieldEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'level',
       editor: 'string',
       mode: 'choices',
@@ -191,13 +135,13 @@ describe('ConsoleAppV4', () => {
     const note = invalidPage.groups[0]!.fields.find((field) => field.key === 'note')!;
     note.definition = { type: 'string', validation: { pattern: '^[A-Z]+$', maxLength: 20 } };
     const invalid = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...invalidPage, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(invalidPage, layer), pluginId })),
     });
-    invalid.push({ name: 'configFields', pluginId: invalidPage.pluginId, layer: { scope: 'user' } });
+    invalid.push({ name: 'configFields', pluginId: invalidPage.pluginId, layer: { profile: 'common' } });
     invalid.push({
       name: 'configFieldEditor',
       pluginId: invalidPage.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'note',
       editor: 'string',
       mode: 'custom',
@@ -227,20 +171,19 @@ describe('ConsoleAppV4', () => {
     field.inherited = true;
     delete field.value;
     delete field.draftValue;
-    const executeIntent = vi.fn().mockResolvedValue({
-      configWrite: 'succeeded',
-      overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
       executeIntent,
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
       name: 'configFieldEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'enabled',
       editor: 'boolean',
       mode: 'choices',
@@ -252,12 +195,11 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
-    await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSaveBatch',
       groups: [expect.objectContaining({ scope: 'user', updates: { enabled: true } })],
-    }), expect.objectContaining(evidence));
+    }), expect.objectContaining(evidence), expect.any(AbortSignal));
 
     instance.unmount();
     const openPage = configPage();
@@ -272,13 +214,13 @@ describe('ConsoleAppV4', () => {
     openField.choices = [{ id: 'on', title: '开启方案', value: true }];
     openField.allowCustom = true;
     const open = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...openPage, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(openPage, layer), pluginId })),
     });
-    open.push({ name: 'configFields', pluginId: openPage.pluginId, layer: { scope: 'user' } });
+    open.push({ name: 'configFields', pluginId: openPage.pluginId, layer: { profile: 'common' } });
     open.push({
       name: 'configFieldEditor',
       pluginId: openPage.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'enabled',
       editor: 'boolean',
       mode: 'choices',
@@ -292,23 +234,22 @@ describe('ConsoleAppV4', () => {
     expect(openFrame).not.toContain('自定义');
   });
 
-  it('edits a mixed fixed and dynamic object from the effective seed and reviews one full top-level update', async () => {
+  it('edits a mixed fixed and dynamic object from the effective seed and saves one full top-level update', async () => {
     const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
     const page = objectConfigPage();
-    const executeIntent = vi.fn().mockResolvedValue({
-      configWrite: 'succeeded',
-      overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
       executeIntent,
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
       name: 'configFieldEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       editor: 'object',
       mode: 'choices',
@@ -361,49 +302,10 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, ...Array.from({ length: 2 }, () => '\u001B[B'), '\r');
     await openConfigSave(instance, value);
-    await chooseConfigSave(instance, value, 'only');
-    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        title: '个人默认 · 服务设置',
-        description: expect.stringContaining('owner: Alice → Bob'),
-      }),
-    ]));
-    expect(instance.lastFrame()).toContain('确认保存设置');
-    expect(instance.lastFrame()).toContain('3 个子');
-    expect(instance.lastFrame()).toContain('owner · Alice → Bob');
-    expect(instance.lastFrame()).toContain('legacy · old → 未设置');
-    expect(instance.lastFrame()).toContain('new_key · 未设置 → ready');
+    expect(instance.lastFrame()).toContain('已保存，是否更新插件？');
     expect(instance.lastFrame()).not.toContain('SECRET-BYTES');
-    await input(instance, 'y');
-    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
-    const copied = clipboard.mock.calls[0]![0];
-    expect(copied).toContain('owner · Alice → Bob');
-    expect(copied).toContain('legacy · old → 未设置');
-    expect(copied).toContain('new_key · 未设置 → ready');
-    expect(copied).not.toContain('SECRET-BYTES');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(24);
-    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }}
-      onSessionNavigation={onSessionNavigation} />);
-    await nextTurn(3);
-    const compactPages: string[] = [];
-    for (let pageIndex = 0; pageIndex < 10; pageIndex++) {
-      const frame = instance.lastFrame() ?? '';
-      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
-      expect(Math.max(...frame.split('\n').map(stringWidth))).toBeLessThanOrEqual(60);
-      compactPages.push(frame);
-      if (pageIndex > 0 && frame === compactPages.at(-2)) break;
-      await input(instance, '\u001b[6~');
-    }
-    const compactDocument = compactPages.join('\n');
-    for (const change of ['owner · Alice → Bob', 'legacy · old → 未设置', 'new_key · 未设置 → ready']) {
-      expect(compactDocument).toContain(change);
-    }
-    expect(compactDocument).not.toContain('SECRET-BYTES');
-    await input(instance, 'y');
-    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledTimes(2));
-    expect(clipboard.mock.calls[1]![0]).toBe(copied);
-    await confirmReview(instance, value);
-    await nextTurn(4);
+    await chooseConfigSave(instance, value, 'only');
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSaveBatch',
       groups: [expect.objectContaining({
@@ -417,7 +319,7 @@ describe('ConsoleAppV4', () => {
           },
         },
       })],
-    }), expect.objectContaining(evidence));
+    }), expect.objectContaining(evidence), expect.any(AbortSignal));
   });
 
   it.each([
@@ -426,13 +328,13 @@ describe('ConsoleAppV4', () => {
   ])('keeps one object focus and its add/save actions visible at $columns x $rows', async (size) => {
     const page = objectConfigPage();
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
       name: 'configFieldEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       editor: 'object',
       mode: 'custom',
@@ -448,20 +350,19 @@ describe('ConsoleAppV4', () => {
 
   it('stores the actual complete object value selected by an object preset', async () => {
     const page = objectConfigPage();
-    const executeIntent = vi.fn().mockResolvedValue({
-      configWrite: 'succeeded',
-      overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
       executeIntent,
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
       name: 'configFieldEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       editor: 'object',
       mode: 'choices',
@@ -472,12 +373,14 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
-    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('3 个子项变化');
-    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
+    const intent = executeIntent.mock.calls[0]![0];
+    if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+    expect(intent.groups[0]!.changes?.[0]?.children).toEqual(expect.arrayContaining([
+      expect.objectContaining({ property: 'owner', before: 'Alice', after: 'Service' }),
+    ]));
     expect(instance.lastFrame()).toContain('已设置');
     expect(instance.lastFrame()).not.toContain('方案“服务方案”');
     expect(instance.lastFrame()).not.toContain('preset-secret');
-    await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSaveBatch',
@@ -487,7 +390,7 @@ describe('ConsoleAppV4', () => {
           settings: { owner: 'Service', region: 'west', token: 'preset-secret' },
         },
       })],
-    }), expect.objectContaining(evidence));
+    }), expect.objectContaining(evidence), expect.any(AbortSignal));
   });
 
   it('does not show which object preset matches a sensitive child and still applies a selected preset', async () => {
@@ -508,20 +411,19 @@ describe('ConsoleAppV4', () => {
     field.draftValue = first.value;
     field.effectiveValue = first.value;
     field.effectiveDisplayValue = '已设置 · 3 项';
-    const executeIntent = vi.fn().mockResolvedValue({
-      configWrite: 'succeeded',
-      overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
       executeIntent,
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
       name: 'configFieldEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       editor: 'object',
       mode: 'choices',
@@ -535,20 +437,22 @@ describe('ConsoleAppV4', () => {
     expect(editorFrame).not.toContain('preset-secret');
 
     await input(instance, '\u001B[B', '\r');
-    expect(instance.lastFrame()).toContain('新值：已设置');
+    expect(instance.lastFrame()).toContain('已设置');
     expect(instance.lastFrame()).not.toContain('other-preset-secret');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
-    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
-    expect(value.snapshot.activeReview?.changes[0]?.description).not.toContain('服务方案');
-    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
+    const intent = executeIntent.mock.calls[0]![0];
+    if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+    expect(intent.groups[0]!.changes?.[0]?.children).toEqual(expect.arrayContaining([
+      expect.objectContaining({ property: 'token', before: '已设置', after: '已设置', private: true }),
+    ]));
+    expect(JSON.stringify(intent.groups[0]!.changes)).not.toContain('preset-secret');
     expect(instance.lastFrame()).not.toContain('preset-secret');
-    await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSaveBatch',
       groups: [expect.objectContaining({ scope: 'user', updates: { settings: second.value } })],
-    }), expect.objectContaining(evidence));
+    }), expect.objectContaining(evidence), expect.any(AbortSignal));
   });
 
   it('does not show which object preset matches sensitive additional properties', async () => {
@@ -567,9 +471,9 @@ describe('ConsoleAppV4', () => {
     field.effectiveValue = presets[0]!.value;
     field.effectiveDisplayValue = '已设置 · 1 项';
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     expect(instance.lastFrame()).toContain('已设置 · 1 项');
@@ -577,7 +481,7 @@ describe('ConsoleAppV4', () => {
     value.push({
       name: 'configFieldEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       editor: 'object',
       mode: 'choices',
@@ -593,13 +497,13 @@ describe('ConsoleAppV4', () => {
   it('uses a closed child choice without a custom route', async () => {
     const page = objectConfigPage();
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
       name: 'configObjectPropertyEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       propertyKey: 'region',
       dynamic: false,
@@ -621,11 +525,11 @@ describe('ConsoleAppV4', () => {
     if (field.definition.type !== 'object') throw new Error('expected object fixture');
     field.definition.additionalProperties = false;
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
-      name: 'configObjectPropertyEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      name: 'configObjectPropertyEditor', pluginId: page.pluginId, layer: { profile: 'common' },
       fieldKey: 'settings', dynamic: true, stage: 'key',
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -656,22 +560,21 @@ describe('ConsoleAppV4', () => {
     field.allowCustom = true;
     field.draftValue = {};
     field.effectiveValue = {};
-    const executeIntent = vi.fn().mockResolvedValue({
-      configWrite: 'succeeded',
-      overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
       executeIntent,
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
-      name: 'configFieldEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      name: 'configFieldEditor', pluginId: page.pluginId, layer: { profile: 'common' },
       fieldKey: 'settings', editor: 'object', mode: 'custom',
     });
     value.push({
-      name: 'configObjectPropertyEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      name: 'configObjectPropertyEditor', pluginId: page.pluginId, layer: { profile: 'common' },
       fieldKey: 'settings', propertyKey: 'enabled', dynamic: false, stage: 'choices',
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -689,13 +592,12 @@ describe('ConsoleAppV4', () => {
     });
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
-    expect(value.snapshot.activeReview?.operationKind).toBe('configSaveBatch');
-    await confirmReview(instance, value);
+    expect(value.snapshot.activeReview).toBeUndefined();
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSaveBatch',
       groups: [expect.objectContaining({ scope: 'user', updates: { settings: { enabled: true } } })],
-    }), expect.objectContaining(evidence));
+    }), expect.objectContaining(evidence), expect.any(AbortSignal));
 
     instance.unmount();
     const kvPage = objectConfigPage();
@@ -712,11 +614,11 @@ describe('ConsoleAppV4', () => {
     kvField.draftValue = { flag: true };
     kvField.effectiveValue = { flag: true };
     const kv = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...kvPage, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(kvPage, layer), pluginId })),
     });
-    kv.push({ name: 'configFields', pluginId: kvPage.pluginId, layer: { scope: 'user' } });
+    kv.push({ name: 'configFields', pluginId: kvPage.pluginId, layer: { profile: 'common' } });
     kv.push({
-      name: 'configObjectPropertyEditor', pluginId: kvPage.pluginId, layer: { scope: 'user' },
+      name: 'configObjectPropertyEditor', pluginId: kvPage.pluginId, layer: { profile: 'common' },
       fieldKey: 'settings', propertyKey: 'flag', dynamic: true, stage: 'choices',
     });
     const kvInstance = render(<ConsoleAppV4 controller={kv} size={{ columns: 80, rows: 24 }} />);
@@ -734,15 +636,15 @@ describe('ConsoleAppV4', () => {
     parentField.draftValue = { owner: 'PARENT-SECRET', region: 'west' };
     parentField.effectiveValue = parentField.draftValue;
     const parent = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...parentPage, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(parentPage, layer), pluginId })),
     });
-    parent.push({ name: 'configFields', pluginId: parentPage.pluginId, layer: { scope: 'user' } });
+    parent.push({ name: 'configFields', pluginId: parentPage.pluginId, layer: { profile: 'common' } });
     const parentInstance = render(<ConsoleAppV4 controller={parent} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     parent.push({
       name: 'configObjectPropertyEditor',
       pluginId: parentPage.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       propertyKey: 'owner',
       dynamic: false,
@@ -756,15 +658,15 @@ describe('ConsoleAppV4', () => {
     parentInstance.unmount();
     const childPage = objectConfigPage();
     const child = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...childPage, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(childPage, layer), pluginId })),
     });
-    child.push({ name: 'configFields', pluginId: childPage.pluginId, layer: { scope: 'user' } });
+    child.push({ name: 'configFields', pluginId: childPage.pluginId, layer: { profile: 'common' } });
     const childInstance = render(<ConsoleAppV4 controller={child} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     child.push({
       name: 'configObjectPropertyEditor',
       pluginId: childPage.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       propertyKey: 'token',
       dynamic: false,
@@ -778,13 +680,13 @@ describe('ConsoleAppV4', () => {
   it.each(['key', 'custom'] as const)('clears object property %s input with Ctrl-U without deleting the property', async (stage) => {
     const page = objectConfigPage();
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     value.push({
-      name: 'configObjectPropertyEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      name: 'configObjectPropertyEditor', pluginId: page.pluginId, layer: { profile: 'common' },
       fieldKey: 'settings', ...(stage === 'custom' ? { propertyKey: 'owner' } : {}),
       dynamic: stage === 'key', stage,
     });
@@ -806,11 +708,11 @@ describe('ConsoleAppV4', () => {
     timeout.definition = { type: 'number', validation: { minimum: 0, maximum: 60 } };
     timeout.min = 0;
     const scalar = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...scalarPage, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(scalarPage, layer), pluginId })),
     });
-    scalar.push({ name: 'configFields', pluginId: scalarPage.pluginId, layer: { scope: 'user' } });
+    scalar.push({ name: 'configFields', pluginId: scalarPage.pluginId, layer: { profile: 'common' } });
     scalar.push({
-      name: 'configFieldEditor', pluginId: scalarPage.pluginId, layer: { scope: 'user' },
+      name: 'configFieldEditor', pluginId: scalarPage.pluginId, layer: { profile: 'common' },
       fieldKey: 'timeout', editor: 'number', mode: 'custom',
     });
     const scalarInstance = render(<ConsoleAppV4 controller={scalar} size={{ columns: 80, rows: 24 }} />);
@@ -819,8 +721,8 @@ describe('ConsoleAppV4', () => {
     expect(scalar.snapshot.router.current.route.name).toBe('configFieldEditor');
     expect(scalarInstance.lastFrame()).toContain('空输入不会保存为 0');
     await input(scalarInstance, '\u0015', '0', '\r');
-    expect(scalar.snapshot.router.current.route.name).toBe('configLayer');
-    expect(scalarInstance.lastFrame()).toContain('新值：0');
+    expect(scalar.snapshot.router.current.route.name).toBe('configFields');
+    expect(scalarInstance.lastFrame()).toContain('0');
     scalarInstance.unmount();
 
     const objectPage = objectConfigPage();
@@ -833,11 +735,11 @@ describe('ConsoleAppV4', () => {
     objectField.draftValue = { count: 5 };
     objectField.effectiveValue = { count: 5 };
     const objectValue = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...objectPage, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(objectPage, layer), pluginId })),
     });
-    objectValue.push({ name: 'configFields', pluginId: objectPage.pluginId, layer: { scope: 'user' } });
+    objectValue.push({ name: 'configFields', pluginId: objectPage.pluginId, layer: { profile: 'common' } });
     objectValue.push({
-      name: 'configObjectPropertyEditor', pluginId: objectPage.pluginId, layer: { scope: 'user' },
+      name: 'configObjectPropertyEditor', pluginId: objectPage.pluginId, layer: { profile: 'common' },
       fieldKey: 'settings', propertyKey: 'count', dynamic: false, stage: 'custom',
     });
     const objectInstance = render(<ConsoleAppV4 controller={objectValue} size={{ columns: 80, rows: 24 }} />);
@@ -856,35 +758,31 @@ describe('ConsoleAppV4', () => {
       value: 'old note', draftValue: 'old note', displayValue: 'old note',
       configured: true, inherited: false,
     });
-    const executeIntent = vi.fn().mockResolvedValue({
-      configWrite: 'succeeded', overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
       executeIntent,
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     value.push({
-      name: 'configFieldEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      name: 'configFieldEditor', pluginId: page.pluginId, layer: { profile: 'common' },
       fieldKey: 'note', editor: 'string', mode: 'custom',
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, '\u0015', '\r');
-    expect(value.snapshot.router.current.route.name).toBe('configLayer');
-    expect(instance.lastFrame()).toContain('新值：（空字符串）');
-    await input(instance, '\r');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     expect(instance.lastFrame()).toContain('（空字符串）');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
-    await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSaveBatch',
       groups: [expect.objectContaining({ updates: { note: '' }, removeKeys: [] })],
-    }), expect.objectContaining(evidence));
+    }), expect.objectContaining(evidence), expect.any(AbortSignal));
   });
 
   it('does not project sensitive boolean or preset values as the current child choice', async () => {
@@ -928,13 +826,13 @@ describe('ConsoleAppV4', () => {
     field.effectiveValue = field.draftValue;
 
     const booleanValue = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
     });
-    booleanValue.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    booleanValue.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     booleanValue.push({
       name: 'configObjectPropertyEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       propertyKey: 'enabled',
       dynamic: false,
@@ -949,13 +847,13 @@ describe('ConsoleAppV4', () => {
 
     booleanInstance.unmount();
     const choiceValue = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
     });
-    choiceValue.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    choiceValue.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     choiceValue.push({
       name: 'configObjectPropertyEditor',
       pluginId: page.pluginId,
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'settings',
       propertyKey: 'mode',
       dynamic: false,
@@ -970,65 +868,52 @@ describe('ConsoleAppV4', () => {
     expect(choiceFrame).not.toContain('fast-secret');
   });
 
-  it('reviews object unset with inherited preset and redacted child changes', async () => {
+  it('stages object unset and saves one redacted common-profile removal', async () => {
     const page = configuredObjectPage();
-    const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    const value = controller({
+      getConfigPage: vi.fn(async (_pluginId, options) => configPageForProfile(page, options)),
+      executeIntent,
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
+    value.push({ name: 'configFieldEditor', pluginId: page.pluginId, layer: { profile: 'common' }, fieldKey: 'settings', editor: 'object' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\u0012');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(executeIntent).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).not.toContain('CURRENT-SECRET');
+    await openConfigSave(instance, value);
+    const intent = executeIntent.mock.calls[0]![0];
+    expect(intent).toMatchObject({ kind: 'configSaveBatch', groups: [{ scope: 'user', updates: {}, removeKeys: ['settings'] }] });
+    expect(JSON.stringify(intent)).not.toContain('CURRENT-SECRET');
+    expect(JSON.stringify(intent)).not.toContain('preset-secret');
+    await chooseConfigSave(instance, value, 'only');
+    expect(value.snapshot.activeReview).toBeUndefined();
+  });
+
+  it('reviews a common-profile reset with redacted object changes', async () => {
+    const page = configuredObjectPage();
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, options) => configPageForProfile(page, options)) });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, 'u');
-    await openConfigSave(instance, value);
-    await chooseConfigSave(instance, value, 'only');
-
-    expect(value.snapshot.activeReview?.operationKind).toBe('configSaveBatch');
+    await vi.waitFor(() => expect(value.snapshot.activeReview?.operationKind).toBe('configReset'));
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        title: '个人默认 · 删除 服务设置 中的值',
-        description: expect.stringContaining('已设置 · 3 项'),
-      }),
+      expect.objectContaining({ description: expect.stringContaining('已设置 · 3 项') }),
     ]));
-    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
-    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
     expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('CURRENT-SECRET');
     expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
     expect(instance.lastFrame()).not.toContain('CURRENT-SECRET');
-    expect(instance.lastFrame()).not.toContain('preset-secret');
-  });
-
-  it('reviews a valid layer reset with inherited object preset and redacted child changes', async () => {
-    const page = configuredObjectPage();
-    const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
-    });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(4);
-    await focusAction(instance, '设置选项');
-    await input(instance, '\r');
-    await focusAction(instance, '清空当前项目设置');
-    await input(instance, '\r');
-    await nextTurn(4);
-
-    expect(value.snapshot.activeReview?.operationKind).toBe('configReset');
-    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        title: '当前项目 · 服务设置',
-        description: expect.stringContaining('已设置 · 3 项'),
-      }),
-    ]));
-    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
-    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
-    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('CURRENT-SECRET');
-    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
-    expect(instance.lastFrame()).not.toContain('CURRENT-SECRET');
-    expect(instance.lastFrame()).not.toContain('preset-secret');
   });
 
   it('returns editor completion or cancellation to the effective field and then restores the config origin', async () => {
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => configPage(pluginId, layer)),
     });
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -1043,7 +928,7 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields',
-      layer: { scope: 'effective' },
+      layer: { profile: 'common' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
 
@@ -1057,7 +942,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'effective' },
+      layer: { profile: 'common' },
     });
   });
 
@@ -1074,13 +959,13 @@ describe('ConsoleAppV4', () => {
       origin: { name: 'pluginDetail', pluginId: 'team-tools/review-gate' } as const,
       leaveResult: '\u001B',
     },
-  ])('clears the mounted C12 settings flow for $label and preserves the original Back stack', async ({
+  ])('returns from saved settings for $label and preserves the original Back stack', async ({
     previous,
     origin,
     leaveResult,
   }) => {
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => configPage(pluginId, layer)),
       executeIntent: vi.fn().mockResolvedValue({
         status: 'succeeded',
         groups: [{
@@ -1102,17 +987,17 @@ describe('ConsoleAppV4', () => {
     await focusAction(instance, '插件设置');
     await input(instance, '\r');
     await nextTurn(3);
-    await input(instance, '\r', '\u001B[B', '\r', '\u001B[B', '\r');
+    await input(instance, '\r', '\u001B[B', '\r');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
-    await input(instance, '\r');
-    await nextTurn(5);
-    expect(screens).toContain('C12');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(value.snapshot.activeReview).toBeUndefined();
+    expect(screens).not.toContain('C12');
 
     if (leaveResult === '\u001B') {
       instance.stdin.write(leaveResult);
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 550));
       await nextTurn(2);
     } else {
       await input(instance, leaveResult);
@@ -1133,10 +1018,10 @@ describe('ConsoleAppV4', () => {
       },
     ];
     const screens = new Set<ConsoleV4ScreenId>();
-    const value = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => ({ ...page, layer })) });
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => configPageForProfile(page, layer)) });
     value.push({
       name: 'configFields', pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }}
       onScreenChange={(screen) => screens.add(screen)} />);
@@ -1156,10 +1041,10 @@ describe('ConsoleAppV4', () => {
   it('preserves preset, manifest group, and advanced headings on the mutable settings page', async () => {
     const page = configPage();
     page.groups[0]!.fields = [page.groups[0]!.fields[0]!];
-    const value = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => ({ ...page, layer })) });
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => configPageForProfile(page, layer)) });
     value.push({
       name: 'configFields', pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
@@ -1172,88 +1057,52 @@ describe('ConsoleAppV4', () => {
     expect(frame.split('\n').length).toBeLessThanOrEqual(24);
   });
 
-  it('applies an effective preset to one selected target and preserves its draft across tabs', async () => {
+  it('stages a preset in the current profile and retains it across groups and profiles', async () => {
     const page = configPage();
     page.presets[0]!.privateFieldTitles = ['token'];
-    const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
-    value.push({
-      name: 'configFields', pluginId: page.pluginId,
-      layer: { scope: 'effective', projectLayer: 'shared' },
-    });
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, options) => configPageForProfile(page, options)), executeIntent });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-
     await input(instance, '\u001B[C', '\u001B[C');
     expect(value.snapshot.router.current.context.configGroupId).toBe('@presets');
-    expect(instance.lastFrame()).toContain('› 团队默认');
     expect(instance.lastFrame()).toContain('token需手动输入');
     await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configLayer', presetId: 'team' });
-    await input(instance, '\r');
-    await nextTurn(5);
-
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'effective' },
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFields', layer: { profile: 'common' } });
+    expect(instance.lastFrame()).toContain('2 项待保存');
+    await chooseConfigProfile(instance, value, 'codex');
+    await chooseConfigProfile(instance, value, 'common');
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('2 项待保存');
+    await openConfigSave(instance, value);
+    expect(executeIntent.mock.calls[0]![0]).toMatchObject({
+      kind: 'configSaveBatch', groups: [{ scope: 'user', updates: { level: 'balanced', timeout: 20 } }],
     });
-    expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
-    expect(instance.lastFrame()).toContain('2 项待保存');
-    expect(instance.lastFrame()).toContain('token需手动输入');
-    await input(instance, '\u001B[C', '\u001B[C');
-    expect(value.snapshot.router.current.context.configGroupId).toBe('@presets');
-    await input(instance, '\r', '\r');
-    expect(value.snapshot.router.current.context.configGroupId).toBe('basic');
-    expect(instance.lastFrame()).toContain('2 项待保存');
-    await input(instance, '\u001B[C');
-    expect(instance.lastFrame()).toContain('2 项待保存');
-    expect(instance.lastFrame()).toContain('› model');
-    await input(instance, '\u001B[D');
-    expect(instance.lastFrame()).toContain('待保存到当前项目');
-    expect(instance.lastFrame()).toContain('2 项待保存');
-    await input(instance, 's');
-    expect(value.snapshot.router.current.route.name).toBe('review');
-    expect(instance.lastFrame()).toContain('确认保存设置');
+    expect(executeIntent.mock.calls[0]![0]).not.toHaveProperty('groups.0.platform');
     await chooseConfigSave(instance, value, 'only');
   });
 
-  it('does not apply a preset after leaving its target picker while a target page is loading', async () => {
+  it('does not restore a profile page after leaving while its read is pending', async () => {
     const page = configPage();
-    let resolveUser!: (page: ConfigPageViewModel) => void;
-    const userPage = new Promise<ConfigPageViewModel>((resolve) => {
-      resolveUser = resolve;
-    });
-    const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => layer.scope === 'user'
-        ? userPage
-        : { ...page, pluginId, layer }),
-    });
-    value.push({
-      name: 'configFields', pluginId: page.pluginId,
-      layer: { scope: 'effective', projectLayer: 'shared' },
-    });
+    let resolvePlatform!: (page: ConfigPageViewModel) => void;
+    const pending = new Promise<ConfigPageViewModel>((resolve) => { resolvePlatform = resolve; });
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, options) => options.platform === 'codex'
+      ? pending : configPageForProfile(page, options)) });
+    value.push({ name: 'pluginDetail', pluginId: page.pluginId });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-
-    await input(instance, '\u001B[C', '\u001B[C', '\r', '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configLayer', presetId: 'team',
-    });
+    await chooseConfigProfile(instance, value, 'codex');
     await input(instance, 'b');
-    await nextTurn(2);
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'effective', projectLayer: 'shared' },
-    });
-
-    await input(instance, '\r');
-    resolveUser({ ...page, layer: { scope: 'user', projectLayer: 'shared' } });
+    expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
+    resolvePlatform(configPageForProfile(page, { platform: 'codex' }));
     await nextTurn(5);
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', fieldKey: 'level',
-    });
-    await input(instance, 'b');
-    expect(instance.lastFrame()).toContain('严格');
-    expect(instance.lastFrame()).not.toContain('项待保存');
+    expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
+    expect(value.externalDrafts).toEqual([]);
   });
 
   it('shows one fallback plugin-settings tab when presentation groups are absent', async () => {
@@ -1263,16 +1112,16 @@ describe('ConsoleAppV4', () => {
       id: 'general', title: '插件设置', advanced: false,
       fields: [page.groups[0]!.fields[0]!],
     }];
-    const value = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => ({ ...page, layer })) });
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => configPageForProfile(page, layer)) });
     value.push({
       name: 'configFields', pluginId: page.pluginId,
-      layer: { scope: 'effective', projectLayer: 'shared' },
+      layer: { profile: 'common' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
 
     expect(instance.lastFrame()).toContain('插件设置');
-    expect(instance.lastFrame()).toMatch(/› level[^\n]*\[个人默认\]/u);
+    expect(instance.lastFrame()).toMatch(/› level[^\n]*\[公共配置\]/u);
     expect(instance.lastFrame()).not.toContain('高级设置');
     expect(instance.lastFrame()).not.toContain('快速方案');
   });
@@ -1282,8 +1131,8 @@ describe('ConsoleAppV4', () => {
     const level = page.groups[0]!.fields[0]!;
     level.fallbackDisplayValue = '平衡';
     level.fallbackSourceLabel = '默认值';
-    const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })) });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user', projectLayer: 'shared' } });
+    const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })) });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
 
@@ -1298,9 +1147,9 @@ describe('ConsoleAppV4', () => {
   it.each([
     { columns: 60, rows: 18 },
     { columns: 80, rows: 24 },
-  ])('shows and unsets a legacy project native override at $columns x $rows', async (size) => {
+  ])('shows and unsets an unavailable platform field at $columns x $rows', async (size) => {
     const page = configPage();
-    page.layer = { scope: 'project' };
+    page.layer = { profile: 'codex', context: 'user' };
     page.storedCount = 1;
     const legacy = page.groups[0]!.fields[0]!;
     page.groups = [{
@@ -1311,29 +1160,29 @@ describe('ConsoleAppV4', () => {
         writable: false,
         canSet: false,
         canUnset: true,
-        sharedNativeRender: true,
+
         configured: true,
         inherited: false,
-        displayValue: '旧项目值',
-        effectiveDisplayValue: '个人默认值',
-        effectiveSourceLabel: '个人默认',
-        fallbackDisplayValue: '个人默认值',
-        fallbackSourceLabel: '个人默认',
+        displayValue: '旧平台值',
+        effectiveDisplayValue: '公共值',
+        effectiveSourceLabel: '公共配置',
+        fallbackDisplayValue: '公共值',
+        fallbackSourceLabel: '公共配置',
       }],
     }];
     const captureEvidence = vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent));
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
       captureEvidence,
     });
     value.push({
-      name: 'configFields', pluginId: page.pluginId, layer: { scope: 'effective' },
+      name: 'configFields', pluginId: page.pluginId, layer: { profile: 'codex' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
 
     expect(instance.lastFrame()).toContain('共享模式');
-    expect(instance.lastFrame()).toContain('个人默认值');
+    expect(instance.lastFrame()).toContain('公共值');
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFieldEditor', fieldKey: legacy.key,
@@ -1341,88 +1190,67 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('修改值');
     expect(instance.lastFrame()).toContain('恢复继承');
     await input(instance, '\r');
-    await chooseConfigTarget(instance, value, 'project');
     await openConfigSave(instance, value);
     await chooseConfigSave(instance, value, 'only');
 
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSaveBatch',
       groups: [expect.objectContaining({
-        scope: 'project', updates: {}, removeKeys: [legacy.key],
+        scope: 'user', platform: 'codex', updates: {}, removeKeys: [legacy.key],
       })],
     }), expect.any(AbortSignal));
     expect(instance.lastFrame()).not.toContain('Shared impact 需要显式确认');
     instance.unmount();
   });
 
-  it('does not present a user invalid override as a project-layer unset or fallback', async () => {
+  it('does not remove an invalid common value from a platform profile', async () => {
     const page = configPage();
-    page.layer = { scope: 'project' };
     page.storedCount = 0;
     const inherited = page.groups[0]!.fields.find((field) => field.key === 'note')!;
-    inherited.invalidOverrideIssue = '字段“note”在个人默认中的值无效。请切换到该设置层修改或删除此字段。';
+    inherited.invalidOverrideIssue = '字段“note”在公共配置中的值无效。请切换到该配置档案修改或删除此字段。';
     inherited.invalidOverrideOwnedByLayer = false;
+    inherited.canUnset = false;
     inherited.effectiveDisplayValue = '值无效';
-    inherited.effectiveSourceLabel = '个人默认';
-    const value = controller({ getConfigPage: vi.fn().mockResolvedValue(page) });
-    value.push({
-      name: 'configFields',
-      pluginId: 'team-tools/review-gate',
-      layer: { scope: 'project' },
-    });
+    inherited.effectiveSourceLabel = '公共配置';
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, options) => configPageForProfile(page, options)) });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'codex' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-    await input(instance, ...Array.from({ length: 3 }, () => '\u001B[B'));
-
-    const frame = instance.lastFrame() ?? '';
-    expect(frame).toContain('在个人默认中的值无效');
-    expect(frame).toContain('切换到该设置层');
-    expect(frame).not.toContain('删除后恢复');
-    expect(frame).not.toContain('u 恢复继承');
-    await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', layer: { scope: 'effective' }, fieldKey: 'note',
-    });
+    await input(instance, ...Array.from({ length: 3 }, () => '\u001B[B'), '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', layer: { profile: 'codex' }, fieldKey: 'note' });
+    expect(instance.lastFrame()).not.toContain('Ctrl-R 恢复继承');
+    await input(instance, '\u0012');
+    expect(value.externalDrafts).toEqual([]);
   });
 
   it.each([
     { columns: 80, rows: 24 },
     { columns: 60, rows: 18 },
-  ])('shows shared native user-only fields as project read-only guidance at $columns x $rows', async (size) => {
+  ])('keeps editable platform drafts separate at $columns x $rows', async (size) => {
     const page = configPage();
-    const userOnly = page.groups[0]!.fields[0]!;
-    userOnly.title = '共享等待窗口';
-    userOnly.sharedNativeRender = true;
-    const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => {
-        const next = structuredClone(page);
-        const field = next.groups[0]!.fields[0]!;
-        if (layer.scope === 'project') {
-          field.writable = false;
-          field.canSet = false;
-        }
-        return { ...next, pluginId, layer };
-      }),
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
-    value.push({
-      name: 'configFields',
-      pluginId: page.pluginId,
-      layer: { scope: 'effective', projectLayer: 'shared' },
-    });
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, options) => configPageForProfile(page, options)), executeIntent });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
-
     await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFieldEditor', fieldKey: userOnly.key,
-    });
     await focusAction(instance, '快速');
     await input(instance, '\r');
-    expect(value.snapshot.router.current.route.name).toBe('configFields');
-    expect(instance.lastFrame()).toContain('仅可保存到个人默认');
-    expect(instance.lastFrame()).not.toContain('› 当前项目');
-    await chooseConfigTarget(instance, value, 'user');
-    expect(instance.lastFrame()).toContain('待保存到个人默认');
+    await chooseConfigProfile(instance, value, 'codex');
+    await nextTurn(4);
+    await input(instance, '\r');
+    await focusAction(instance, '平衡（推荐）');
+    await input(instance, '\r');
+    await openConfigSave(instance, value);
+    expect(executeIntent.mock.calls[0]![0]).toMatchObject({ kind: 'configSaveBatch', groups: [
+      { scope: 'user', updates: { level: 'fast' } },
+      { scope: 'user', platform: 'codex', updates: { level: 'balanced' } },
+    ] });
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
+    await chooseConfigSave(instance, value, 'only');
   });
 
   it.each([
@@ -1431,8 +1259,8 @@ describe('ConsoleAppV4', () => {
     ['configured secret', 'token', 'configFieldEditor', 6],
   ] as const)('routes an effective %s through the selected layer stored state', async (_label, fieldKey, expectedRoute, focusIndex) => {
     const page = configPage();
-    const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })) });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'effective', projectLayer: 'shared' } });
+    const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })) });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'common' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, ...Array.from({ length: focusIndex }, () => '\u001B[B'));
@@ -1442,98 +1270,73 @@ describe('ConsoleAppV4', () => {
     if (fieldKey !== 'level') expect(instance.lastFrame()).toContain('▌');
   });
 
-  it('stages a stored field removal without executing a write and shows inherited Review text', async () => {
+  it('stages a platform removal without writing and saves the inherited change', async () => {
     const page = configPage();
     const level = page.groups[0]!.fields[0]!;
-    level.displayValue = `严格${'并保留当前项目的完整配置'.repeat(18)}。设置修改前唯一结尾。`;
-    level.value = level.displayValue;
-    level.draftValue = level.value;
-    level.definition = { type: 'string' };
     level.fallbackDisplayValue = '平衡';
-    level.fallbackSourceLabel = '个人默认';
-    const executeIntent = vi.fn();
-    const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
-      executeIntent,
+    level.fallbackSourceLabel = '公共配置';
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
-    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'project', projectLayer: 'shared' } });
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, options) => configPageForProfile(page, options)), executeIntent });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { profile: 'codex' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(4);
-
-    await input(instance, 'u');
-    await chooseConfigTarget(instance, value, 'project');
-    expect(executeIntent).not.toHaveBeenCalled();
-    expect(instance.lastFrame()).toContain('1 项待保存');
-    await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', fieldKey: 'level' });
-    expect(instance.lastFrame()).toContain('恢复继承');
-    await input(instance, 'b');
+    await input(instance, '\r', '\u0012');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(executeIntent).not.toHaveBeenCalled();
     expect(instance.lastFrame()).toContain('1 项待保存');
     await openConfigSave(instance, value);
-    expect(instance.lastFrame()).toContain('确认保存设置');
-    expect(instance.lastFrame()).toContain('当前项目');
-    expect(instance.lastFrame()).toContain('每层独立提交');
+    const intent = executeIntent.mock.calls[0]![0];
+    expect(intent).toMatchObject({ kind: 'configSaveBatch', groups: [{ scope: 'user', platform: 'codex', updates: {}, removeKeys: ['level'] }] });
+    expect(JSON.stringify(intent)).toContain('平衡');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
-    expect(instance.lastFrame()).not.toContain('设置修改前唯一结尾');
-    expect(value.snapshot.router.current.route.name).toBe('review');
-    const detailPages: string[] = [];
-    for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
-      const frame = instance.lastFrame() ?? '';
-      detailPages.push(frame);
-      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
-      if (pageIndex > 0 && frame === detailPages.at(-2)) break;
-      await input(instance, '\u001B[6~');
-    }
-    expect(detailPages.join('\n').replace(/\s/gu, '')).toContain('设置修改前唯一结尾');
-    expect(detailPages.join('\n')).toContain('恢复继承（平衡 · 个人默认）');
-    await input(instance, 'b');
-    expect(value.snapshot.router.current.route.name).toBe('configFields');
-    expect(executeIntent).not.toHaveBeenCalled();
+    await chooseConfigSave(instance, value, 'only');
+    expect(executeIntent).toHaveBeenCalledTimes(1);
   });
 
   it.each([
     ['secret', 'token'],
     ['path', 'rules'],
-  ] as const)('renders a %s removal as a redacted inherited change', async (_label, fieldKey) => {
+  ] as const)('saves a %s removal with redacted change text', async (_label, fieldKey) => {
     const page = configPage();
     const field = page.groups.flatMap((group) => group.fields).find((candidate) => candidate.key === fieldKey)!;
     field.fallbackDisplayValue = '已设置';
-    field.fallbackSourceLabel = '个人默认';
-    const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    field.fallbackSourceLabel = '公共配置';
+    const executeIntent = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'configSaveBatch') throw new Error('Expected configSaveBatch.');
+      return configSaveResult(intent);
     });
-    const layer = { scope: 'project' as const, projectLayer: 'shared' as const };
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, options) => configPageForProfile(page, options)), executeIntent });
+    const layer = { profile: 'codex' as const };
     value.push({ name: 'configFields', pluginId: page.pluginId, layer });
-    value.push({ name: 'configFieldAction', pluginId: page.pluginId, layer, fieldKey });
+    value.push({ name: 'configFieldEditor', pluginId: page.pluginId, layer, fieldKey, editor: 'string', mode: 'custom' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-
     await input(instance, '\u0012');
-    await chooseConfigTarget(instance, value, 'project');
     await openConfigSave(instance, value);
-
-    const frame = instance.lastFrame()!;
-    expect(frame).toContain('当前项目');
-    expect(frame).toContain(fieldKey);
-    expect(frame).toContain('恢复继承（已设置 · 个人默认）');
-    expect(value.snapshot.router.current.route.name).toBe('review');
-    expect(instance.lastFrame()).toContain('已设置');
-    expect(frame).not.toContain('sk-private');
-    expect(frame).not.toContain('/Users/private');
+    const intent = executeIntent.mock.calls[0]![0];
+    expect(intent).toMatchObject({ kind: 'configSaveBatch', groups: [{ scope: 'user', platform: 'codex', updates: {}, removeKeys: [fieldKey] }] });
+    const text = JSON.stringify(intent);
+    expect(text).toContain('已设置');
+    expect(text).not.toContain('sk-private');
+    expect(text).not.toContain('/Users/private');
+    expect(instance.lastFrame()).not.toContain('sk-private');
+    await chooseConfigSave(instance, value, 'only');
   });
 
   it('treats h, H, q, and b as config text, normalizes no-op drafts, and hides reset for an empty layer', async () => {
     const page = configPage();
     page.storedCount = 0;
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPageForProfile(page, layer), pluginId })),
     });
-    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { profile: 'common' } });
     value.push({
       name: 'configFieldEditor',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
       fieldKey: 'note',
       editor: 'string',
     });
@@ -1542,30 +1345,28 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('Ctrl-U 清空输入');
 
     await input(instance, 'hHqb', '\r');
-    await chooseConfigTarget(instance, value, 'user');
+    await chooseConfigProfile(instance, value, 'common');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     expect(instance.lastFrame()).toContain('1 项待保存');
     await openConfigSave(instance, value);
-    expect(instance.lastFrame()).toContain('hHqb');
-
-    await input(instance, 'b', '\u001B[B', '\r');
-    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    await chooseConfigSave(instance, value, 'only');
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { profile: 'common' } });
     await nextTurn(4);
     value.push({
       name: 'configFieldEditor',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
       fieldKey: 'level',
       editor: 'enum',
     });
     await input(instance, '\u001B[B', '\u001B[B', '\r');
-    await chooseConfigTarget(instance, value, 'user');
+    await chooseConfigProfile(instance, value, 'common');
     await input(instance, ...Array.from({ length: 8 }, () => '\u001B[B'));
     expect(value.snapshot.activeReview).toBeUndefined();
     value.push({
       name: 'configFieldEditor',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
       fieldKey: 'note',
       editor: 'string',
     });
@@ -1597,11 +1398,11 @@ describe('ConsoleAppV4', () => {
       layer,
     }));
     const value = controller({ getConfigPage });
-    value.push({ name: 'configFields', pluginId: alpha.pluginId, layer: { scope: 'user', projectLayer: 'shared' } });
+    value.push({ name: 'configFields', pluginId: alpha.pluginId, layer: { profile: 'common' } });
     value.push({
       name: 'configFieldEditor',
       pluginId: alpha.pluginId,
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
       fieldKey: 'token',
       editor: 'sensitive',
     });
@@ -1609,7 +1410,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     await input(instance, 'LEAK-VALUE', '\r');
 
-    value.replace({ name: 'configFields', pluginId: beta.pluginId, layer: { scope: 'user', projectLayer: 'shared' } });
+    value.replace({ name: 'configFields', pluginId: beta.pluginId, layer: { profile: 'common' } });
     expect(instance.lastFrame()).not.toContain('LEAK-VALUE');
     await nextTurn(4);
     expect(instance.lastFrame()).toContain('普通 token 字段');
@@ -1620,13 +1421,13 @@ describe('ConsoleAppV4', () => {
 
   it('returns a removed config field route to its surviving layer', async () => {
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => configPage(pluginId, layer)),
     });
     await value.load();
     value.push({
       name: 'configFieldEditor',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
       fieldKey: 'removed-field',
       editor: 'string',
     });
@@ -1636,7 +1437,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({
       name: 'configFields',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user' },
+      layer: { profile: 'common' },
     });
   });
 });

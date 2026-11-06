@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'fs-extra';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -25,7 +26,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 const mocks = vi.hoisted(() => ({
   statusCommandV8: vi.fn(),
   applyPluginConfigWrite: vi.fn(),
-  replayConfigRuntimeWrites: vi.fn(),
+  applyPluginConfig: vi.fn(),
   resolveConfigPreApplyAuthorization: vi.fn(),
 }));
 
@@ -33,6 +34,7 @@ vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
   statusCommandV8: async (...args: unknown[]) => ({
     projectIntentObservation: { state: 'absent' as const },
+    nativeExtraObserved: [],
     ...await mocks.statusCommandV8(...args),
   }),
 }));
@@ -40,7 +42,7 @@ vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
 vi.mock('../../src/utils/plugin-config-write.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/utils/plugin-config-write.js')>(),
   applyPluginConfigWrite: mocks.applyPluginConfigWrite,
-  replayConfigRuntimeWrites: mocks.replayConfigRuntimeWrites,
+  applyPluginConfig: mocks.applyPluginConfig,
   resolveConfigPreApplyAuthorization: mocks.resolveConfigPreApplyAuthorization,
 }));
 
@@ -87,9 +89,10 @@ function statusTarget(scopes: Array<'project' | 'user'>): StatusV8Payload['targe
 
 async function setupBackend() {
   const isolation = getCurrentSourceTestIsolation();
+  await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-batch-source');
   await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-    manifest.config = { fields: {
+    manifest.config = { schemaVersion: 5, fields: {
       mode: { type: 'string', title: 'Mode' },
       rules: {
         type: 'object',
@@ -150,9 +153,10 @@ function batchIntent(apply = true): Extract<OperationIntent, { kind: 'configSave
     kind: 'configSaveBatch',
     pluginId: 'team/demo',
     apply,
+    context: 'project',
     groups: [{
-      scope: 'project',
-      updates: { rules: { level: 'strict', token: 'project-secret' } },
+      scope: 'user', platform: 'codex',
+      updates: { rules: { level: 'strict', token: 'codex-secret' } },
       privateKeys: ['rules'],
       changes: [{
         key: 'rules', title: 'Rules', before: '旧对象', after: '新对象',
@@ -162,7 +166,7 @@ function batchIntent(apply = true): Extract<OperationIntent, { kind: 'configSave
         ],
       }],
     }, {
-      scope: 'user',
+      scope: 'user', platform: 'claude',
       updates: { mode: 'safe' },
       changes: [{ key: 'mode', title: 'Mode', before: 'fast', after: 'safe' }],
     }],
@@ -180,7 +184,7 @@ beforeEach(() => {
     apply: { state: 'succeeded', targetResults: [] },
     otherProjectsMayRequireSync: false,
   });
-  mocks.replayConfigRuntimeWrites.mockResolvedValue({
+  mocks.applyPluginConfig.mockResolvedValue({
     configWrite: 'succeeded',
     overallState: 'succeeded',
     apply: { state: 'succeeded', targetResults: [] },
@@ -188,8 +192,8 @@ beforeEach(() => {
   });
 });
 
-describe('TUI multi-scope config save backend', () => {
-  it('prepares one redacted review and preserves a successful project write when user fails', async () => {
+describe('TUI multi-profile config save backend', () => {
+  it('prepares one redacted review and preserves a successful Codex profile when Claude fails', async () => {
     const { dependencies } = await setupBackend();
     const intent = batchIntent();
     const evidence = await dependencies.prepareReviewEvidence!(
@@ -197,13 +201,13 @@ describe('TUI multi-scope config save backend', () => {
       new AbortController().signal,
       () => undefined,
     );
-    expect(evidence.configBatch?.groups.map((group) => group.scope)).toEqual(['project', 'user']);
+    expect(evidence.configBatch?.groups.map((group) => group.platform)).toEqual(['codex', 'claude']);
     const review = buildOperationReviewProjection({ intent, evidence });
     expect(review.changes).toContainEqual(expect.objectContaining({
-      title: '当前项目 · Rules',
+      title: 'Codex 平台配置 · Rules',
       description: expect.stringContaining('level: balanced → strict'),
     }));
-    expect(JSON.stringify(review)).not.toContain('project-secret');
+    expect(JSON.stringify(review)).not.toContain('codex-secret');
 
     mocks.applyPluginConfigWrite
       .mockResolvedValueOnce({
@@ -218,15 +222,15 @@ describe('TUI multi-scope config save backend', () => {
       status: 'partial',
       groups: [
         expect.objectContaining({
-          scope: 'project', status: 'succeeded', configSaved: true, applyStatus: 'succeeded',
+          scope: 'user', platform: 'codex', status: 'succeeded', configSaved: true, applyStatus: 'succeeded',
         }),
         expect.objectContaining({
-          scope: 'user', status: 'failed', configSaved: false, errorCode: 'configWriteFailed',
+          scope: 'user', platform: 'claude', status: 'failed', configSaved: false, errorCode: 'configWriteFailed',
         }),
       ],
     });
-    expect(mocks.applyPluginConfigWrite.mock.calls.map(([options]) => options.scope))
-      .toEqual(['project', 'user']);
+    expect(mocks.applyPluginConfigWrite.mock.calls.map(([options]) => [options.scope, options.platform, options.context]))
+      .toEqual([['user', 'codex', 'project'], ['user', 'claude', 'project']]);
   });
 
   it('blocks stale target evidence before the first config write', async () => {
@@ -245,7 +249,7 @@ describe('TUI multi-scope config save backend', () => {
     expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
   });
 
-  it('marks apply failure as saved and retries only runtime writes for that scope', async () => {
+  it('marks apply failure as saved and retries only runtime writes for that profile', async () => {
     const { dependencies } = await setupBackend();
     const intent = batchIntent();
     const evidence = await dependencies.prepareReviewEvidence!(
@@ -271,15 +275,15 @@ describe('TUI multi-scope config save backend', () => {
     expect(result).toMatchObject({
       status: 'partial',
       groups: [{
-        scope: 'project', status: 'failed', configSaved: true,
+        scope: 'user', platform: 'codex', status: 'failed', configSaved: true,
         applyStatus: 'failed', errorCode: 'runtimeApplyFailed',
       }, {
-        scope: 'user', status: 'succeeded', configSaved: true,
+        scope: 'user', platform: 'claude', status: 'succeeded', configSaved: true,
       }],
     });
 
     const retryIntent: Extract<OperationIntent, { kind: 'configSave' }> = {
-      kind: 'configSave', pluginId: 'team/demo', scope: 'project',
+      kind: 'configSave', pluginId: 'team/demo', scope: 'user', platform: 'codex', context: 'project',
       apply: true, retryApply: true, updates: {}, removeKeys: [],
     };
     const retryEvidence = await dependencies.prepareReviewEvidence!(
@@ -288,11 +292,11 @@ describe('TUI multi-scope config save backend', () => {
       () => undefined,
     );
     await dependencies.executeIntent(retryIntent, retryEvidence);
-    expect(mocks.replayConfigRuntimeWrites).toHaveBeenCalledOnce();
+    expect(mocks.applyPluginConfig).toHaveBeenCalledOnce();
     expect(mocks.applyPluginConfigWrite).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps the saved project layer and refuses to overwrite a user layer changed after it', async () => {
+  it('keeps the saved Codex profile and refuses to overwrite a Claude profile changed after it', async () => {
     const { dependencies, isolation } = await setupBackend();
     const intent = batchIntent(false);
     const evidence = await dependencies.prepareReviewEvidence!(
@@ -303,7 +307,7 @@ describe('TUI multi-scope config save backend', () => {
     mocks.applyPluginConfigWrite.mockImplementationOnce(async (options: {
       plugin: PluginMeta;
       pluginName: string;
-      scope: 'project';
+      scope: 'user';
     }) => {
       const identity = {
         sourceId: options.plugin.sourceId,
@@ -315,12 +319,12 @@ describe('TUI multi-scope config save backend', () => {
       };
       await writePluginConfigStore({
         ...identity,
-        scope: 'project',
-        values: { rules: { level: 'strict', token: 'project-secret' } },
+        scope: 'user', platform: 'codex',
+        values: { rules: { level: 'strict', token: 'codex-secret' } },
       });
       await writePluginConfigStore({
         ...identity,
-        scope: 'user',
+        scope: 'user', platform: 'claude',
         values: { mode: 'external-change' },
       });
       return {
@@ -334,9 +338,9 @@ describe('TUI multi-scope config save backend', () => {
     await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
       status: 'partial',
       groups: [{
-        scope: 'project', status: 'succeeded', configSaved: true,
+        scope: 'user', platform: 'codex', status: 'succeeded', configSaved: true,
       }, {
-        scope: 'user', status: 'failed', configSaved: false,
+        scope: 'user', platform: 'claude', status: 'failed', configSaved: false,
         errorCode: 'operationReviewStale',
       }],
     });
@@ -350,13 +354,13 @@ describe('TUI multi-scope config save backend', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     };
-    const project = await readPluginConfigStore({
-      ...identity, scope: 'project',
+    const codex = await readPluginConfigStore({
+      ...identity, scope: 'user', platform: 'codex',
     });
-    const user = await readPluginConfigStore({
-      ...identity, scope: 'user',
+    const claude = await readPluginConfigStore({
+      ...identity, scope: 'user', platform: 'claude',
     });
-    expect(project.values).toEqual({ rules: { level: 'strict', token: 'project-secret' } });
-    expect(user.values).toEqual({ mode: 'external-change' });
+    expect(codex.values).toEqual({ rules: { level: 'strict', token: 'codex-secret' } });
+    expect(claude.values).toEqual({ mode: 'external-change' });
   });
 });

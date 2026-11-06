@@ -3,13 +3,13 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import type { PluginConfigReferenceContext } from '@lesliechan721/aw-plugin-core/manifest';
+import { compilePluginConfigDefinition, type PlatformTarget, type PluginConfigCompiledDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   ArtifactPlan,
   ArtifactSurface,
   ArtifactRenderSurfaceName,
   DistributionName,
-  PlatformName,
   PluginArtifactRenderScriptEntry,
   PluginConfigSchema,
   PluginConfigSchemaField,
@@ -49,6 +49,7 @@ import { resolveArtifactRequest } from './artifact-request.js';
 import { validateArtifactPlan } from './artifact-plan.js';
 import { createArtifactRuntimeConfigSnapshots } from './runtime-config.js';
 import type { RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
+import { attachSafeOperationError, readSafeOperationError } from './safe-operation-diagnostic.js';
 
 export type ArtifactRenderEvent = 'install' | 'refresh' | 'materialize';
 
@@ -60,13 +61,14 @@ export interface ResolvedArtifactRenderConfig {
   sources: Record<string, PluginConfigSource>;
   issues: PluginConfigIssue[];
   stores: Partial<Record<Scope, PluginConfigStore>>;
+  definition?: PluginConfigCompiledDefinition;
   referenceContext?: PluginConfigReferenceContext;
 }
 
 export interface ArtifactRendererContext {
   event: ArtifactRenderEvent;
   surface: ArtifactSurface;
-  platform?: PlatformName;
+  platform?: PlatformTarget;
   distribution?: DistributionName;
   scope: Scope;
   plugin: {
@@ -181,12 +183,13 @@ export async function resolveArtifactRenderConfig(options: {
   logicalIdentity?: string;
   pluginName?: string;
   manifest: NormalizedPluginManifest;
+  platform?: PlatformTarget;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedArtifactRenderConfig> {
   const pluginName = options.pluginName ?? options.manifest.name;
-  const schema = options.manifest.config?.fields;
+  const schema = options.manifest.config ? compilePluginConfigDefinition(options.manifest.config, options.platform).fields : undefined;
   if (!schema) {
     const userStore = await readPluginConfigStore({
       sourceId: options.sourceId,
@@ -197,19 +200,7 @@ export async function resolveArtifactRenderConfig(options: {
       cwd: options.cwd,
       env: options.env,
     });
-    const projectStore = options.scope === 'user'
-      ? undefined
-      : await readPluginConfigStore({
-          sourceId: options.sourceId,
-          sourceIdentity: options.sourceIdentity,
-          logicalIdentity: options.logicalIdentity,
-          pluginName,
-          scope: 'project',
-          cwd: options.cwd,
-          env: options.env,
-        });
     assertReadyPluginConfigStore(userStore);
-    if (projectStore) assertReadyPluginConfigStore(projectStore);
     return {
       mode: 'artifact-render',
       targetScope: options.scope,
@@ -219,7 +210,6 @@ export async function resolveArtifactRenderConfig(options: {
       issues: [],
       stores: {
         user: userStore,
-        ...(projectStore ? { project: projectStore } : {}),
       },
     };
   }
@@ -230,6 +220,7 @@ export async function resolveArtifactRenderConfig(options: {
     logicalIdentity: options.logicalIdentity,
     pluginName,
     manifest: options.manifest,
+    platform: options.platform,
     referencePlugins: options.referencePlugins,
     targetScope: options.scope,
     cwd: options.cwd,
@@ -239,7 +230,8 @@ export async function resolveArtifactRenderConfig(options: {
   return {
     mode: 'artifact-render',
     targetScope: options.scope,
-    schema,
+    schema: effective.schema,
+    definition: effective.definition,
     values: effective.values,
     sources: effective.sources,
     issues: effective.issues,
@@ -314,9 +306,12 @@ export async function writeArtifactRendererContext(options: {
     throw new Error('Cannot write artifact renderer context for a no-op target.');
   }
 
-  const distribution = options.platform === 'agent-skills' ? options.platform : undefined;
+  if (options.platform === 'agent-skills') {
+    throw new Error('artifactTargetRequired: Portable Skill rendering requires a concrete platform target.');
+  }
   const awSurface = options.platform === 'managed-commands';
-  const platform = distribution || awSurface ? undefined : options.platform as PlatformName;
+  const platform = options.platform === 'managed-commands' ? undefined : options.platform;
+  const distribution = platform && platform !== 'codex' && platform !== 'claude' ? 'agent-skills' : undefined;
   const request = resolveArtifactRequest({
     manifest: options.target.sourceManifest,
     platform: options.platform,
@@ -332,6 +327,7 @@ export async function writeArtifactRendererContext(options: {
     logicalIdentity: options.logicalIdentity,
     pluginName: options.target.sourceManifest.name,
     manifest: options.target.sourceManifest,
+    platform,
     referencePlugins: options.referencePlugins,
     scope: options.configScope ?? options.scope,
     cwd: options.cwd,
@@ -347,7 +343,7 @@ export async function writeArtifactRendererContext(options: {
     sources: selectConfigKeys(config.sources, requestedConfigKeys),
     issues: config.issues.filter((issue) => requestedConfigKeys.has(issue.key)),
   };
-  const runtimeConfigSnapshots = platform ? createArtifactRuntimeConfigSnapshots({
+  const runtimeConfigSnapshots = platform === 'codex' || platform === 'claude' ? createArtifactRuntimeConfigSnapshots({
     sourceId: options.sourceId,
     sourceIdentity: options.sourceIdentity,
     logicalIdentity: options.logicalIdentity,
@@ -362,8 +358,10 @@ export async function writeArtifactRendererContext(options: {
     (options.target.sourceManifest.artifacts?.targets ?? [])
       .filter((target) =>
         (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill')
-        && (distribution ? target.distribution === distribution : target.platform === platform)
-        && target.scopes.includes(options.scope))
+        && target.platform === platform
+        && target.distribution === distribution
+        && ((target.target === 'codex.skill' || target.target === 'claude.skill')
+          || target.scopes.includes(options.scope)))
       .map(async (target) => ({
         id: target.id,
         target: target.target,
@@ -458,6 +456,7 @@ export async function writeArtifactRendererContext(options: {
       sensitiveValues: collectSensitivePluginConfigValues(
         options.target.sourceManifest,
         config.values,
+        platform,
       ),
       runtimeConfigSnapshots,
       cleanup: async () => {
@@ -563,7 +562,7 @@ export async function runArtifactRenderer(options: {
   scriptTimeoutMs?: number;
   signal?: AbortSignal;
   runner?: PluginProcessRunner;
-  /** Validated process output owned by one rebuild execution context. */
+  /** Validated process output owned by one operation, including its rechecks. */
   preparedResults?: Map<string, PluginProcessResult>;
 }): Promise<RunArtifactRendererResult> {
   options.signal?.throwIfAborted();
@@ -612,21 +611,16 @@ export async function runArtifactRenderer(options: {
       manifestTimeoutMs: undefined,
     });
     const spawnEnv = buildPluginScriptSpawnEnv({
-      commandEnv: {
-        ...commandEnv,
-        AW_HOME: writtenContext.context.paths.awHome,
-        AW_CODEX_HOME: writtenContext.context.paths.codexHome,
-        AW_CLAUDE_HOME: writtenContext.context.paths.claudeHome,
-      },
+      commandEnv,
+      isolatedHomes: writtenContext.context.paths,
       contextPath: writtenContext.contextPath,
       tempDir: writtenContext.tempDir,
       plugin: writtenContext.context.plugin,
       event,
       ...(options.platform === 'managed-commands'
         ? {}
-        : options.platform === 'agent-skills'
-        ? { distribution: options.platform }
-        : { platform: options.platform }),
+        : { platform: writtenContext.context.platform,
+          ...(writtenContext.context.distribution ? { distribution: writtenContext.context.distribution } : {}) }),
       scope: options.scope,
       bundleRoot: writtenContext.context.plugin.rootDir,
     });
@@ -735,7 +729,10 @@ export async function runArtifactRenderer(options: {
     const message = error instanceof Error ? error.message : String(error);
     const redacted = redactPluginScriptOutput(message, writtenContext.sensitiveValues);
     if (redacted === message) throw error;
-    throw new Error(redacted);
+    const failure = new Error(redacted, { cause: error });
+    if (error instanceof Error) failure.name = error.name;
+    const diagnostic = readSafeOperationError(error);
+    throw diagnostic ? attachSafeOperationError(failure, diagnostic) : failure;
   } finally {
     await writtenContext.cleanup();
   }

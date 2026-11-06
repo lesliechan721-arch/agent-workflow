@@ -42,6 +42,7 @@ import {
   createDependencyCatalogSnapshotFixture,
 } from '../helpers/catalog-source-fixture.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
+import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
 
 const SAMPLES = 20;
 const BUDGET_MS = 500;
@@ -82,8 +83,8 @@ describe('multi-source performance budgets', () => {
     env = {
       ...process.env,
       AW_HOME: path.join(root, 'aw-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      CODEX_HOME: path.join(root, 'codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
     };
     await fs.outputJson(path.join(env.AW_HOME!, 'catalog-sources.json'), {
       schemaVersion: 2,
@@ -103,7 +104,7 @@ describe('multi-source performance budgets', () => {
     const agentPlugin = (name: string) => ({
       name,
       configureManifest: (manifest: PluginMeta['manifest']) => {
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
         manifest.extensions = {
           agents: [{ name: `${name}-role`, description: `${name} role.`, prompt: `${name}.` }],
         };
@@ -117,7 +118,7 @@ describe('multi-source performance budgets', () => {
       {
         name: 'config-target',
         configureManifest: (manifest) => {
-          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.platforms = ['codex'];
           manifest.extensions = {
             instructions: [{ name: 'config-target', title: 'Config target', content: 'Config target.' }],
           };
@@ -141,8 +142,8 @@ describe('multi-source performance budgets', () => {
     fanoutEnv = {
       ...process.env,
       AW_HOME: path.join(root, 'fanout-aw-home'),
-      AW_CODEX_HOME: path.join(root, 'fanout-codex-home'),
-      AW_CLAUDE_HOME: path.join(root, 'fanout-claude-home'),
+      CODEX_HOME: path.join(root, 'fanout-codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(root, 'fanout-claude-home'),
     };
     await fs.outputJson(path.join(fanoutEnv.AW_HOME!, 'catalog-sources.json'), {
       schemaVersion: 2,
@@ -230,9 +231,9 @@ describe('multi-source performance budgets', () => {
     await fs.outputJson(path.join(plugin.rootDir, '.app.json'), { apps: {} });
     const marketplaceRoot = path.join(env.AW_HOME!, 'marketplaces', 'local');
     const marketplaceName = 'aw-local';
-    const configPath = path.join(env.AW_CODEX_HOME!, 'config.toml');
+    const configPath = path.join(env.CODEX_HOME!, 'config.toml');
     const cacheRoot = path.join(
-      env.AW_CODEX_HOME!,
+      env.CODEX_HOME!,
       'plugins',
       'cache',
       marketplaceName,
@@ -465,6 +466,9 @@ describe('multi-source performance budgets', () => {
 
   it('keeps a real warm install path observable with local stage budgets', async () => {
     fanoutProviderInvocations = 0;
+    const native = await createNativeTestExecution({ scope: 'project', cwd: root, env: fanoutEnv,
+      selectedTargets: [{ pluginId: 'path-a/write-root', platform: 'codex' }],
+      includeSelectedInDemand: true });
     const commandDurations: number[] = [];
     const localStageDurations: number[] = [];
     const runInstall = async (record: boolean): Promise<void> => {
@@ -476,6 +480,7 @@ describe('multi-source performance budgets', () => {
         scope: 'project',
       }, {
         env: fanoutEnv,
+        executionInput: native.executionInput,
         nativeCliRunner: fakeNativeRunner,
         debugLogger: { log: (event) => { events.push(event); } },
       });
@@ -506,6 +511,7 @@ describe('multi-source performance budgets', () => {
     };
     await runInstall(false);
     for (let index = 0; index < 8; index += 1) await runInstall(true);
+    await native.dispose();
     expect(fanoutProviderInvocations).toBe(0);
     const commandSummary = createPerfSummary(
       'install-write-command-warm',

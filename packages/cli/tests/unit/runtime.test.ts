@@ -96,37 +96,20 @@ describe('command runtime', () => {
     expect(JSON.stringify([reportEvent.mock.calls, debugLog.mock.calls])).not.toContain(sentinel);
   });
 
-  it('keeps Windows native admission before writes after diagnostic runner wrapping', async () => {
-    const [{ runCli }, { execFileNativeCliRunner }] = await Promise.all([
-      import('../../src/index.js'),
-      import('../../src/utils/native-cli.js'),
-    ]);
+  it('keeps Windows native admission after diagnostic runner wrapping', async () => {
+    const { createCommandExecutionContext } = await import('../../src/commands/runtime.js');
+    const { execFileNativeCliRunner, prepareNativeCliExecution } = await import('../../src/utils/native-cli.js');
     const processTree = await import('../../src/utils/process-tree.js');
-    const admission = vi.spyOn(processTree, 'prepareWindowsJobHelper').mockRejectedValue(Object.assign(new Error('Reinstall the current CLI/Eval package and include optional dependencies.'), { code: 'nativePackageUnavailable' }));
-    const isolation = getCurrentSourceTestIsolation();
-    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    let exitCode: number;
+    const failure = Object.assign(new Error('Reinstall the current CLI/Eval package and include optional dependencies.'), { code: 'nativePackageUnavailable' });
+    const admission = vi.spyOn(processTree, 'prepareWindowsJobHelper').mockRejectedValue(failure);
+    const context = createCommandExecutionContext({ nativeCliRunner: execFileNativeCliRunner });
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     try {
-      Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'win32' });
-      exitCode = await runCli(['install', 'team/missing', '--platform', 'codex', '--scope', 'user', '--yes', '--json'], {
-        cwd: isolation.layout.fixtureCwd,
-        env: {
-          ...isolation.env,
-        },
-        nativeCliRunner: execFileNativeCliRunner,
-        interactive: false,
-        io: { stdout: (value) => stdout.push(value), stderr: (value) => stderr.push(value) },
-      });
+      await expect(prepareNativeCliExecution({ runner: context.nativeCliRunner })).rejects.toBe(failure);
+      expect(admission).toHaveBeenCalledOnce();
     } finally {
-      Object.defineProperty(process, 'platform', originalPlatform);
-      admission.mockRestore();
+      platform.mockRestore();
     }
-    expect(exitCode!).toBe(1);
-    const receipt = JSON.parse(stdout.join(''));
-    expect(receipt.targetResults).toEqual([expect.objectContaining({ errorCode: 'nativePackageUnavailable' })]);
-    await expect(fs.pathExists(isolation.layout.awHomeDir)).resolves.toBe(false);
   });
 
   it('uses the injected prompt output sink instead of stdout', async () => {

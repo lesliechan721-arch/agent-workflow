@@ -663,6 +663,17 @@ export function pluginListRowLayout(options: {
   };
 }
 
+export function AgentStatusText({ text }: { text: string }): React.JSX.Element {
+  const parts = text.split(/([✓↻×?!⊘+] (?:Claude Code|Antigravity|OpenCode|Generic|Cursor|Codex|Pi))/u);
+  return <Text>{parts.map((part, index) => {
+    const symbol = part[0];
+    const background = symbol === '✓' ? '#214d36' : symbol === '↻' || symbol === '!' ? '#624b20'
+      : symbol === '×' ? '#682e32' : symbol === '?' || symbol === '⊘' ? '#39404b' : undefined;
+    return <Text key={index} backgroundColor={background}
+      color={background ? '#f5f5f5' : undefined}>{part}</Text>;
+  })}</Text>;
+}
+
 export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
   const windowSize = useWindowSize();
   const width = props.width ?? windowSize.columns;
@@ -684,7 +695,7 @@ export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
         ? layout.attentionLines.map((line, index) => <Text key={`attention:${index}`} color={tuiTheme.statusColors.warning}>{line}</Text>)
         : props.attention ? <Text color={tuiTheme.statusColors.warning}>! {props.attention}</Text> : null}
       {typeof props.placementSummary === 'string'
-        ? layout.placementLines.map((line, index) => <Text key={`placement:${index}`} color={tuiTheme.colors.muted}>{line}</Text>)
+        ? layout.placementLines.map((line, index) => <AgentStatusText key={`placement:${index}`} text={line} />)
         : props.placementSummary ? <Text color={tuiTheme.colors.muted}>{props.placementSummary}</Text> : null}
       {props.tags || props.statusLabel || props.sourceLabel ? <ObjectCardFooter
         tags={props.tags ?? (props.statusLabel ? <Text color={color}>{props.statusLabel}</Text> : undefined)}

@@ -22,24 +22,19 @@ const adapterFacts: Readonly<Partial<Record<
 >>> = {
   manifest: {
     dependencies: {
-      requires: 'Each dependency is an available plugin in the same Catalog source.',
+      requires: 'Each same-source dependency covers every supported consumer platform, including transitive edges.',
       conflicts: 'The plugin itself, missing providers, and dependency cycles.',
     },
-    'distributions.agentSkills': {
-      profiles: 'agent-skills',
-      requires: 'At least one non-empty native capability; portable-only plugins are not supported.',
-      conflicts: 'Portable-only plugins and implicit promotion of native skills.',
-      provenance: ['CLI source plugin validator'],
+    platforms: {
+      profiles: 'codex, claude, antigravity, cursor, opencode, pi, generic',
+      requires: 'Omitted or empty platforms support all seven canonical targets; each selected projection must be valid.',
+      conflicts: 'Unknown or duplicate target IDs, distributions.agentSkills, and marketplace.policy.products.',
+      provenance: ['CLI source and bundle validators'],
     },
-    'distributions.agentSkills.skills': {
-      profiles: 'agent-skills static',
-      requires: 'Each direct child is a valid portable-agent-skills Skill with a production README.md.',
-      conflicts: 'Inferring the portable root from the native skills root.',
-      provenance: ['CLI source plugin validator'],
-    },
-    'marketplace.policy.products': {
-      profiles: 'Omitted means CODEX and CLAUDE.',
-      provenance: ['CLI author validator'],
+    skills: {
+      profiles: 'Native and Portable targets from one ./skills source root',
+      requires: 'Each final Skill has a production README.md and valid target metadata and resource closure.',
+      provenance: ['CLI target projection and Skill validators'],
     },
   },
   'build-config': {
@@ -50,21 +45,20 @@ const adapterFacts: Readonly<Partial<Record<
       provenance: ['CLI runtime import resolver'],
     },
     'buildConfig.buildImports': { requires: 'scripts.node.build and a unique AW_PLUGIN_IMPORT_* environment variable.' },
-    'buildConfig.manifestOverrides.claude': { profiles: 'CLAUDE', requires: 'CLAUDE product support.' },
+    'buildConfig.manifestOverrides.claude': { profiles: 'CLAUDE', requires: 'claude target support.' },
     'buildConfig.skillRuntimeFiles': { requires: 'A declared static Skill and a target below references/, assets/, or scripts/.' },
-    'buildConfig.skillRuntimeFiles[].distributions': {
-      profiles: 'agent-skills projection',
-      requires: 'distributions.agentSkills and a declared portable Skill key.',
-      conflicts: 'Omission selects native surfaces; platforms plus distributions selects both explicit surface groups.',
+    'buildConfig.skillRuntimeFiles[].platforms': {
+      profiles: 'canonical target projection',
+      requires: 'A declared static Skill key and targets within plugin platforms.',
+      conflicts: 'Overlapping target selections for the same Skill runtime path; omitted or empty selection covers supported targets.',
     },
     'buildConfig.generatedSkillRuntimeFiles': {
-      requires: 'scripts.node.build creates each declared final target; omitted distributions apply to supported native platforms.',
+      requires: 'scripts.node.build creates each declared final target; omitted or empty platforms cover supported targets.',
       provenance: ['CLI bundle validator'],
     },
-    'buildConfig.generatedSkillRuntimeFiles[].distributions': {
-      profiles: 'agent-skills projection',
-      requires: 'distributions.agentSkills and a declared portable Skill key.',
-      conflicts: 'Omission selects native surfaces; explicit agent-skills selects only the portable surface.',
+    'buildConfig.generatedSkillRuntimeFiles[].platforms': {
+      profiles: 'canonical target projection',
+      requires: 'A declared static Skill key and targets within plugin platforms.',
       provenance: ['CLI bundle validator'],
     },
   },
@@ -75,8 +69,8 @@ const adapterFacts: Readonly<Partial<Record<
       conflicts: 'Plain strings, Codex overrides, and widening to all aw commands.',
       provenance: ['CLI managed command reference resolver and Claude permission writer'],
     },
-    'extensions.nativeHooks.claude': { profiles: 'CLAUDE', requires: 'CLAUDE product support.' },
-    'extensions.nativeHooks.codex': { profiles: 'CODEX', requires: 'CODEX product support.' },
+    'extensions.nativeHooks.claude': { profiles: 'CLAUDE', requires: 'claude target support.' },
+    'extensions.nativeHooks.codex': { profiles: 'CODEX', requires: 'codex target support.' },
   },
   'slash-commands': {
     claude: { profiles: 'CLAUDE' },
@@ -108,13 +102,13 @@ const adapterFacts: Readonly<Partial<Record<
       provenance: ['CLI artifact renderer context'],
     },
     'artifacts.targets': { requires: 'scripts.artifacts.render and complete static target identity.' },
-    'artifacts.targets[].delivery': {
-      profiles: 'CODEX dynamic Skill',
-      requires: 'codex.skill target with one supported delivery shape.',
-      conflicts: 'Any non-codex.skill target.',
+    'artifacts.targets[].platform': {
+      profiles: 'one explicit canonical target',
+      requires: 'codex.skill and claude.skill use Native shared-user production; agent-skills.skill binds one Portable target.',
+      conflicts: 'Missing targets, agent-skills as a platform, and authored delivery choices.',
     },
     'artifacts.targets[].refreshKeys': {
-      requires: 'Config fields referenced by codex-native targets are writable only in user scope.',
+      requires: 'Fields exist in the selected target schema. Skill renderers cannot read sensitive fields; Native Skill content uses user configuration.',
     },
     'artifacts.targets[].runtimeConfig': {
       requires: 'aw.installed-runtime-config.v2 and a native Skill target. AW injects the reader and binding; source and renderer cannot provide reserved files.',
@@ -154,7 +148,7 @@ const adapterFacts: Readonly<Partial<Record<
     },
     'Skill Markdown placeholder': {
       requires: 'A validated candidate or healthy installed producer in the same source/plugin and legal scope.',
-      conflicts: 'Portable distribution and unresolved, disabled, or foreign commands.',
+      conflicts: 'Portable targets and unresolved, disabled, or foreign commands.',
     },
   },
 }

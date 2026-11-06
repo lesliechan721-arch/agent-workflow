@@ -1,3 +1,4 @@
+import { target } from '../helpers/tui-console-app-fixture.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -38,10 +39,10 @@ afterEach(() => cleanup());
 
 describe('ConsoleAppV4', () => {
   it('keeps the complete reachable screen map free of duplicate identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(129);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 129);
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(131);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 131);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
-      'G01', 'G02', 'G03', 'G04', 'G05', 'G06',
+      'G01', 'G02', 'G03', 'G04', 'G05', 'G06', 'G07', 'G08',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
       'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P21', 'P22',
       'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
@@ -74,7 +75,7 @@ describe('ConsoleAppV4', () => {
     />);
     expect(instance.lastFrame()).toContain('正在检查插件状态');
     await nextTurn(3);
-    expect(instance.lastFrame()).toContain('项目插件');
+    expect(instance.lastFrame()).toContain('Agent 管理');
 
     await input(instance, '?');
     expect(instance.lastFrame()).toContain('当前页快捷键');
@@ -89,63 +90,11 @@ describe('ConsoleAppV4', () => {
   });
 
   it.each([
-    ['q', undefined],
-    ['h', 'home'],
-    ['H', 'reload'],
-  ] as const)('keeps %s available from help through the common navigation path', async (key, navigation) => {
-    const value = controller();
-    const onSessionNavigation = vi.fn(async () => 'completed' as const);
-    const instance = render(<ConsoleAppV4
-      controller={value}
-      size={{ columns: 60, rows: 18 }}
-      onSessionNavigation={onSessionNavigation}
-    />);
-    await nextTurn(2);
-    await input(instance, '?', key);
-    if (navigation) expect(onSessionNavigation).toHaveBeenCalledWith(navigation, expect.any(Object));
-    else expect(instance.lastFrame()).toContain('退出控制台？');
-  });
-
-  it.each([[60, 18], [80, 24]] as const)(
-    'keeps storage rules user-facing and preserves exact cleanup evidence at %ix%i',
-    async (columns, rows) => {
-      const value = controller();
-      await value.load();
-      value.push({ name: 'catalogStoreRules' });
-      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
-      await nextTurn(2);
-
-      const ordinary = instance.lastFrame() ?? '';
-      expect(ordinary).toContain('始终保留');
-      expect(ordinary).toContain('满足时间和完整验证后可回收');
-      expect(ordinary).toContain('当前使用的目录不会删除');
-      expect(ordinary).toContain('旧版本满足保留期限后才清理');
-      expect(ordinary).toContain('隔离内容至少保留 24 小时');
-      expect(ordinary).toContain('对应正式版本完整可用后才清理');
-      expect(ordinary).toContain('技术详情');
-      expect(ordinary).not.toContain('返回存储概览');
-      expect(ordinary).not.toContain('AW_HOME 写锁');
-      expect(ordinary).not.toContain('delete claim');
-      await input(instance, 'd');
-      const technical = instance.lastFrame() ?? '';
-      expect(technical).toContain('AW_HOME 写锁内重新检查');
-      expect(technical).toContain('非 Active 项保留 30 天');
-      expect(technical).toContain('staging、replacement、delete claim');
-      expect(technical).toContain('foreign、符号链接、unsafe、损坏或未知项目');
-      expect(technical.split('\n').length).toBeLessThanOrEqual(rows);
-      await input(instance, 'd');
-      const returned = instance.lastFrame() ?? '';
-      expect(returned).toContain('满足时间和完整验证后可回收');
-      expect(returned).toContain('对应正式版本完整可用后才清理');
-    },
-  );
-
-  it.each([
     [80, 24],
     [60, 18],
   ] as const)('keeps every G03 shortcut meaning and the single close focus visible at %ix%i', async (columns, rows) => {
     const value = controller({
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => configPage(pluginId, layer)),
     });
     await value.load();
     const screens = new Set<ConsoleV4ScreenId>();
@@ -233,13 +182,13 @@ describe('ConsoleAppV4', () => {
     value.replace({
       name: 'configFields',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
     });
     await nextTurn(3);
     await input(instance, '?');
     const configHelp = await readHelp();
     expect(configHelp).not.toContain('s 查看汇总');
-    expect(configHelp).toContain('u 恢复继承');
+    expect(configHelp).toContain('u 恢复默认值');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
     await input(instance, '?');
   });
@@ -289,23 +238,23 @@ describe('ConsoleAppV4', () => {
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
   });
 
-  it('keeps the same-scope target selection after Back and confirms Ctrl-C from help', async () => {
+  it('keeps local Agents after Back and confirms discarding the selection from help', async () => {
     const exit = vi.fn();
     const value = controller();
     value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
     await nextTurn(3);
-
-    await focusAction(instance, '安装');
-    await input(instance, '\r', '\r', 'a', '\r');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'installPlacement', pluginId: 'official/agent-lab' });
-    await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'installTargets', pluginId: 'official/agent-lab' });
-    expect(instance.lastFrame()).toContain('[x] Codex');
-    expect(exit).not.toHaveBeenCalled();
-
-    await input(instance, '?', '\u0003');
+    await focusAction(instance, '添加插件…');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'installTargets', pluginId: 'official/agent-lab' });
+    expect(instance.lastFrame()).toContain('◆ Codex');
+    expect(instance.lastFrame()).toContain('◆ Claude Code');
+    await escape(instance);
+    expect(value.snapshot.router.current.route.name).toBe('pluginDetail');
+    await focusAction(instance, '添加插件…');
+    await input(instance, '\r', '?', '\u0003');
     expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(value.externalDrafts).toEqual([]);
     expect(exit).not.toHaveBeenCalled();
     await input(instance, '\u001B[B', '\r');
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });

@@ -42,7 +42,7 @@ async function installed(native = false) {
 }
 
 describe('runtime config reader boundary', () => {
-  it('keeps duplicate artifact IDs in their platform and scope namespace', async () => {
+  it('keeps duplicate artifact IDs in their Native platform namespace and user producer scope', async () => {
     const root = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'namespaced-plugin');
     const common = { id: 'shared-id', states: ['present'], refreshKeys: ['selected'], runtimeConfig: {
       keys: ['selected'],
@@ -51,20 +51,19 @@ describe('runtime config reader boundary', () => {
       description: 'Namespaced artifact IDs', marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } }, config: { fields: { selected: { type: 'string', default: 'local' } } },
       artifacts: { targets: [
-        { ...common, platform: 'codex', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, skillKey: 'codex-user-tool' },
-        { ...common, platform: 'codex', scopes: ['project'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, skillKey: 'codex-project-tool' },
+        { ...common, platform: 'codex', scopes: ['project'], target: 'codex.skill', skillKey: 'codex-user-tool' },
         { ...common, platform: 'claude', scopes: ['user'], target: 'claude.skill', skillKey: 'claude-user-tool' },
       ] },
     });
     await fs.outputFile(path.join(root, 'render.mjs'), 'console.log("{}");\n');
     const plugin = await readPluginManifest(root);
-    for (const [platform, scope, skillKey] of [['codex', 'user', 'codex-user-tool'], ['codex', 'project', 'codex-project-tool'], ['claude', 'user', 'claude-user-tool']] as const) {
+    for (const [platform, skillKey] of [['codex', 'codex-user-tool'], ['claude', 'claude-user-tool']] as const) {
       const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: 'team', sourceIdentity: identity.sourceIdentity,
-        manifest: plugin.manifest, platform, scope, requestedArtifactIds: ['shared-id'],
-        config: { mode: 'artifact-render', targetScope: scope, schema: plugin.manifest.config!.fields,
+        manifest: plugin.manifest, platform, scope: 'user', requestedArtifactIds: ['shared-id'],
+        config: { mode: 'artifact-render', targetScope: 'user', schema: plugin.manifest.config!.fields,
           values: { selected: 'local' }, sources: { selected: 'default' }, issues: [], stores: {} },
       });
-      expect(snapshots['shared-id']!.installedIdentity).toMatchObject({ platform, scope, skillKey });
+      expect(snapshots['shared-id']!.installedIdentity).toMatchObject({ platform, scope: 'user', configScope: 'user', skillKey });
     }
   });
   it('validates the dependency closure at installation and returns only requested allowed keys', async () => {
@@ -77,7 +76,7 @@ describe('runtime config reader boundary', () => {
     expect(() => createRuntimeConfigSnapshot({ ...options, values: { ...options.values, selected: 'dangling' } }))
       .toThrow('runtimeConfigInvalid');
     expect(() => createRuntimeConfigSnapshot({ ...options,
-      definition: { ...definition, fields: { ...definition.fields, channels: { ...definition.fields.channels!, sensitive: true } } } as PluginConfigSchema,
+      declaration: { keys: ['secret'] },
     })).toThrow('runtimeConfigKeyDenied');
     await expect(readRuntimeConfig({ from: item.from, keys: ['channels'] })).rejects.toMatchObject({ code: 'runtimeConfigKeyDenied' });
     await expect(readRuntimeConfig({ from: item.from, keys: ['secret'] })).rejects.toMatchObject({ code: 'runtimeConfigKeyDenied' });
@@ -124,7 +123,7 @@ describe('runtime config reader boundary', () => {
     await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 3, name: 'legacy-plugin', version: '1.0.0',
       description: 'Old runtime config', marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } }, config: { fields: { selected: { type: 'string' } } },
-      artifacts: { targets: [{ id: 'tool-a', platform: 'codex', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' },
+      artifacts: { targets: [{ id: 'tool-a', platform: 'codex', scopes: ['user'], target: 'codex.skill',
         states: ['present'], refreshKeys: ['selected'], skillKey: 'tool-a', runtimeConfig: { keys: ['selected'], [legacyKey]: legacyKey === 'artifactIds' ? ['tool-a'] : 'old-v1' } }] },
     });
     await expect(readPluginManifest(root)).rejects.toThrow(/runtimeConfigMigrationRequired.*aw\.installed-runtime-config\.v2/u);

@@ -9,11 +9,7 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
-import {
-  createEmptyPluginIntentState,
-  upsertPluginIntentRoot,
-  writePluginIntentState,
-} from '../../src/utils/plugin-intent-state.js';
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import {
   createCatalogSnapshotFixture,
   rewriteActiveCatalogCapabilities,
@@ -204,11 +200,9 @@ describe('Catalog source sync CLI', () => {
       active: { snapshotDigest: firstActive.snapshotDigest },
     });
 
-    await writePluginIntentState({
+    await writeIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env,
-    }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'local/demo', platforms: ['codex'],
-    }));
+    }, { roots: [{ pluginId: 'local/demo', platforms: ['codex'] }] });
     await fs.remove(root);
     await createCatalogSnapshotFixture(root, 'replacement');
     await fs.writeJson(path.join(root, '.aw-generated.json'), {

@@ -59,6 +59,7 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | Smoke | 见下方命令表 | 真实 build、stage、pack、fetch 和插件脚本产物 |
 | Native qualification | `pnpm qualification:codex-project-native` | 显式验证精确 Codex CLI 的 shared native 与 project activation 行为；不进入普通测试或构建 |
 | Native performance qualification | `pnpm qualification:codex-native-performance` | 显式验证精确 Codex CLI 的 scoped list、隔离本地安装和中位数预算；不进入普通测试或构建 |
+| 历史 Portable provider qualification | `pnpm qualification:project-skills-provider` | 仅保留旧第三方 provider 的历史资格，不证明当前 AW 自有 writer 或客户端加载行为 |
 | Windows Job qualification | `pnpm qualification:windows-job` | 在真实 Windows x64/arm64 主机验证 Eval 与插件两种 Job；tag 发布 smoke 必须运行，普通本地 test/build 不运行 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Model eval | 见[插件维护指南](plugin-maintenance.md) | 需要模型理解、判断、路由或完成任务的语义合同；不进入普通 CI |
@@ -73,7 +74,7 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm test:smoke` | 运行完整 smoke suite |
 | `pnpm test:smoke:build` | 等价于 `pnpm test:dist`；校验正式 build 产物，并证明官方入口使用 `--strict-requirements` 语义 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
-| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
+| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → plugin targets set cursor → plugin install source/plugin --scope project`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `两个 Windows 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:release:automation` | 在已有正式 build 后验证精确 source tag、临时 bare remote、artifact 恢复与真实 smoke harness 边界；不访问官方发布目标 |
@@ -84,6 +85,8 @@ CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。�
 | `pnpm qualification:codex-project-native` | 使用 PATH 中精确 `codex-cli 0.151.0` 运行离线真实 qualification，并输出单个 schema 1 JSON report |
 | `pnpm test:qualification:codex-native-performance:harness` | 使用 fake executable 验证两个版本的参数、隔离、缺失 binary 和报告合同；不提供真实性能证据 |
 | `pnpm qualification:codex-native-performance` | 使用显式提供的精确 `0.151.0` 或 `0.153.0` binary，运行五次本地 native plugin 安装并输出 schema 1 JSON report |
+| `pnpm test:qualification:project-skills-provider:harness` | 使用 fake provider 验证资格 runner 本身；不提供真实安装或加载证据 |
+| `pnpm qualification:project-skills-provider` | 历史 provider 资格；当前产品使用 AW writer，新测试覆盖真实复制、归属、stale、冲突、离线清理与部分失败，客户端加载须另做精确平台资格 |
 | `pnpm test:qualification:windows-job:harness` | 在非 Windows 主机验证 Eval/plugin qualification 的生产接线、失败和收尾合同；不提供 Windows 支持证据 |
 | `pnpm qualification:windows-job` | 在真实 Windows 主机执行两种 Job 的全部 17 项必需检查，包含 stdio、退出码、快速成功、root/parent/helper 退出、后代、生产 timeout/abort、名称碰撞和 ready 失败；mock 和非 Windows 运行不提供此证据 |
 
@@ -119,8 +122,8 @@ Windows Job 显式生产资格使用 `pnpm native:windows-job:prepare` 构建当
 - Integration 覆盖 CLI 与真实模块桥接，但不访问用户 home。
 - 写命令测试只构造 Active catalog snapshot、live owner 和平台组件 fixture。
 - Catalog source 测试只构造 source、state、store 和 snapshot fixture，不依赖安装状态 fixture。
-- Source mutation 测试验证 add/update 只提交 config；sync 失败不撤销原 Active；`sync --check` 不写 store 或 Active。
-- Offline cleanup 测试验证 source 缺失时仍能删除可证明属于 AW 的输出。`cleanup --force` 测试还必须证明它只删除专属目标、保留 foreign/shared 内容，并报告 dependent 的 partial 风险。
+- Source mutation 测试验证 add/update 只提交 config；`aw catalog source sync <id>` 失败不撤销原 Active；该命令的 `--check` 不写 store 或 Active。
+- Offline cleanup 测试验证 source 缺失时仍能删除可证明属于 AW 的输出，且两种 scope 的普通清理都不改 Intent、偏好或配置。`cleanup --force` 测试还必须证明它只删除专属目标、保留 foreign/shared 内容，并报告 dependent 的 partial 风险。独立 `intent retire` 测试验证健康 Active 缺席门禁、单 scope 强配置提交、默认保留设置和残留可重试。
 - TUI unit 和入口测试使用真实 Ink mount；不要用静态组件快照代替交互行为。
 - Platform tests 断言 MCP、apps、hooks、permissions、roles、instructions、Skill 和 command 的最终平台输出，不建立独立安装健康数据库。
 - JSON 测试同时断言 schema、单一 stdout 对象、stderr 诊断边界和退出码。
@@ -172,6 +175,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 | Codex shared native/project activation qualification | 独立 qualification | `pnpm test:qualification:codex-project-native:harness`，并在支持的本机运行 `pnpm qualification:codex-project-native`；Windows 未实跑时必须报告证据缺口 |
 | Codex native 性能与版本合同 | Unit + Integration + 独立 qualification | Codex observation/native CLI 定向 unit、grouped write 与 Git batch integration、`pnpm test:qualification:codex-native-performance:harness`；有精确 binary 时分别运行两个版本的 `pnpm qualification:codex-native-performance`，缺失版本必须报告证据缺口 |
+| User/Project Portable provider 行为 | 独立 qualification + Unit/Integration | 定向恢复测试与 `pnpm test:qualification:project-skills-provider:harness`；支持的本机运行 `pnpm qualification:project-skills-provider`，记录固定版本、OS、scope、Agent、lock、内容和失败证据，其他平台实测待补，不以实测范围建立 OS/架构门禁 |
 
 所有文档或代码改动最后运行 `git diff --check`。
 
@@ -208,13 +212,13 @@ AW_PERF_SUMMARY {"name":"..."}
 
 Performance gate 必须校验摘要名称集合。缺少、重复或未知名称都必须让门禁失败。
 
-性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖至少两个 Git source 与一个 Path source、large Catalog、Active store 读取、`sync --check`、sync、remote deadline 失败和进程清理确认；不依赖公网。TUI/Review 与公开 install/write 预算使用隔离 home 和受控 fake native runner，并通过结构化阶段事件验证单份 state snapshot、Active validation、依赖 collision 传播和 dependency plan。普通 warm 路径 provider 调用必须为零，本地 Catalog 阶段 p95 上限为 500ms；命令总时长只使用宽松的测试 runner 门槛，不代表第三方 native CLI 保证。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
+性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖至少两个 Git source 与一个 Path source、large Catalog、Active store 读取、`aw catalog source sync <id> --check`、普通 source sync、remote deadline 失败和进程清理确认；不依赖公网。TUI/Review 与公开 install/write 预算使用隔离 home 和受控 fake native runner，并通过结构化阶段事件验证单份 state snapshot、Active validation、依赖 collision 传播和 dependency plan。普通 warm 路径 provider 调用必须为零，本地 Catalog 阶段 p95 上限为 500ms；命令总时长只使用宽松的测试 runner 门槛，不代表第三方 native CLI 保证。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
 
 Codex 优化的主要门禁是确定性计数，不是 500ms fake runner 断言。最低层测试分别验证：成功 native CLI 的 process-table observation/scan 为 0；20 个同 marketplace target 的 project/all-scope list 不超过 2；user-only generation 不超过 1；所有 Codex list 都是 `plugin list --marketplace <name> --json`；锁内 no-op 不超过 2，真实 mutation 的 pre/post 合计不超过 4，含 Preview 的完整 TUI project mutation 不超过 6；root 和五个同源依赖只建立并提交一个 marketplace generation；plugin validate 使用一个 `cat-file --batch`，Git 总进程不超过 5。已有 timeout、abort 和进程树清理测试负责失败路径，不在 performance suite 重复。wall-clock 只保留线性时间回退、宽松 runner deadline 和显式真实 qualification 证据。
 
 ## Test Isolation
 
-- 使用测试提供的隔离 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 和 workspace。
+- 使用测试构造器提供的隔离 `AW_HOME`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 和 workspace。
 - 三个 package 的 Vitest 入口由统一进程树 wrapper 运行。正常结束、`SIGINT` 和 `SIGTERM` 会清理本次 wrapper 通过 PID 与 start identity 证实的进程树；清理期间再次收到中断信号时立即升级强制清理。只有确认清理成功时才返回标准信号退出码，清理无法验证时必须报告错误并以 `1` 退出。wrapper 自身被 `SIGKILL`、宿主崩溃或断电时不承诺清理。
 - 普通 Windows 测试未提供原生 context 时，wrapper 使用已有系统进程身份检查和 `taskkill` 清理，不要求 Go 或候选 EXE。显式原生测试提供本次候选 context 时使用 Job；损坏或 unavailable 的显式 context 仍阻断。source 测试准备还将当前架构候选接入 Eval 的正常依赖上下文，供生产入口解析，不让生产解析器读取测试 context。
 - CLI 源码测试显式提供原生 context 时，先完成同次 build；测试通过 Node ESM 加载该次 Eval dist，使平台包解析与已安装产品一致。无 context 的普通 unit 继续加载 Eval source。

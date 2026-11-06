@@ -29,6 +29,7 @@ function manifest(name: string, extra: Partial<PluginManifestSource> = {}): Plug
     name,
     version: '0.1.0',
     description: `${name} selection fixture.`,
+    platforms: ['codex'],
     marketplace: {
       category: 'test',
       strict: true,
@@ -69,7 +70,6 @@ describe('Review selection', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
     }))
@@ -114,7 +114,6 @@ describe('Review selection', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
       scripts: {
@@ -137,7 +136,6 @@ describe('Review selection', () => {
             states: ['present'],
             refreshKeys: ['mode'],
             skillKey: 'generated-a',
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           },
           {
             id: 'generated-b',
@@ -147,7 +145,6 @@ describe('Review selection', () => {
             states: ['present'],
             refreshKeys: ['mode'],
             skillKey: 'generated-b',
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           },
           {
             id: 'generated-needed',
@@ -157,7 +154,6 @@ describe('Review selection', () => {
             states: ['present'],
             refreshKeys: ['needed'],
             skillKey: 'generated-needed',
-            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
           },
         ],
       },
@@ -187,7 +183,7 @@ describe('Review selection', () => {
       skills: [{
         name: 'generated-a',
         sourcePath: rendererPath,
-        delivery: 'codex-native',
+        delivery: 'native',
         configScope: 'user',
       }],
       pluginConfigs: [{
@@ -218,7 +214,6 @@ describe('Review selection', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
       scripts: {
@@ -240,7 +235,6 @@ describe('Review selection', () => {
           states: ['present'],
           refreshKeys: ['mode'],
           skillKey: 'configured',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         }],
       },
     }))
@@ -270,7 +264,7 @@ describe('Review selection', () => {
       pluginConfigs: [{
         scope: 'user',
         values: { mode: 'custom' },
-        sources: { mode: 'user' },
+        sources: { mode: 'platform' },
       }],
     })
     expect(custom.profiles[0]!.profile.inputDigest)
@@ -293,7 +287,6 @@ describe('Review selection', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
     }))

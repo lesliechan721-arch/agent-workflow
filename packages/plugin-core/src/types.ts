@@ -2,6 +2,8 @@ import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js';
 import type { ManagedCommands, ManagedCommandPermission, PermissionCommand } from './managed-commands.js';
 
 export type PlatformName = 'codex' | 'claude';
+export type PortablePlatformTarget = 'antigravity' | 'cursor' | 'opencode' | 'pi' | 'generic';
+export type PlatformTarget = PlatformName | PortablePlatformTarget;
 export type DistributionName = 'agent-skills';
 export type Scope = 'project' | 'user';
 export type CatalogChannel = 'latest' | 'beta';
@@ -10,7 +12,7 @@ export type PluginVersion = string;
 export type PluginId = string;
 export type CatalogSourceId = string;
 export type SourceIdentity = string;
-export type SupportedPlatformSet = ReadonlySet<PlatformName>;
+export type SupportedPlatformSet = ReadonlySet<PlatformTarget>;
 export type CodexProjectManagedKind =
   | 'skill'
   | 'mcpServer'
@@ -28,12 +30,12 @@ export interface MarketplaceSourceMeta {
   interface: MarketplaceInterfaceMeta;
   catalog: { version: string };
 }
-export type MarketplacePolicy = PluginManifestSourceV3['marketplace']['policy'];
+export type MarketplacePolicy = PluginManifestSourceV3['marketplace']['policy'] & { products?: string[] };
 export type MarketplaceAuthenticationPolicy = MarketplacePolicy['authentication'];
 export type PluginMarketplaceMeta = PluginManifestSourceV3['marketplace'];
 
 export type TemplateValue = string | boolean;
-export interface TemplateVarByPlatform { claude: TemplateValue; codex: TemplateValue }
+export type TemplateVarByPlatform = Partial<Record<PlatformTarget, TemplateValue>>;
 export interface BuildConfigTemplates {
   vars: Record<string, TemplateVarByPlatform>;
   include: string[];
@@ -60,20 +62,19 @@ export interface BuildConfigBuildImport extends BuildConfigImportReference { env
 export interface BuildConfigSkillRuntimeFile {
   skill: string;
   target: string;
-  platforms?: PlatformName[];
-  distributions?: DistributionName[];
+  platforms?: PlatformTarget[];
   source?: string;
   import?: BuildConfigImportReference;
 }
 export interface BuildConfigGeneratedSkillRuntimeFile {
   skill: string;
   target: string;
-  distributions?: DistributionName[];
+  platforms?: PlatformTarget[];
 }
 export interface BuildConfig {
   cacheable?: true;
   templates?: BuildConfigTemplates;
-  fileRules?: Partial<Record<PlatformName, BuildConfigFileRuleSet>>;
+  fileRules?: Partial<Record<PlatformTarget, BuildConfigFileRuleSet>>;
   manifestOverrides?: BuildConfigManifestOverrides;
   runtimeExports?: BuildConfigRuntimeExport[];
   buildImports?: BuildConfigBuildImport[];
@@ -303,7 +304,7 @@ type PluginConfigLegacyArrayField = Omit<PluginConfigArrayField, 'default' | 'ch
     default?: never; required?: never; sensitive?: never;
   };
 };
-export type PluginConfigDefinition =
+export type PluginConfigCompiledDefinition =
   | {
       schemaVersion?: never;
       fields: Record<string, PluginConfigLegacyScalarField | PluginConfigLegacyObjectField>;
@@ -319,11 +320,24 @@ export type PluginConfigDefinition =
       fields: Record<string, PluginConfigSchemaField>;
       presentation?: PluginConfigPresentation;
     };
+export interface PluginConfigPlatformDefinition {
+  fields: Record<string, PluginConfigSchemaField>;
+  presentation?: PluginConfigPresentation;
+}
+export type PluginConfigDefinition = PluginConfigCompiledDefinition | {
+  schemaVersion: 5;
+  fields: Record<string, PluginConfigSchemaField>;
+  presentation?: PluginConfigPresentation;
+  /** Complete profiles compiled from raw common and platform declarations before reference expansion. */
+  platforms?: Partial<Record<PlatformTarget, PluginConfigPlatformDefinition>>;
+};
 export type PluginConfigSchema = PluginConfigDefinition;
-/** The caller binds every entry to the same Catalog source and resolves its config scope. */
+/** The caller binds entries to one Catalog source and supplies values resolved for this platform. */
 export interface PluginConfigReferenceContext {
   plugin: string;
   dependencies: readonly string[];
+  /** Omission selects the common profile. */
+  platform?: PlatformTarget;
   plugins: Readonly<Record<string, {
     definition: PluginConfigDefinition;
     dependencies: readonly string[];
@@ -375,13 +389,6 @@ export interface PluginExtensions {
 }
 
 export type ArtifactState = 'present' | 'disabled';
-export interface CodexNativeSkillDelivery {
-  mode: 'codex-native';
-  identity: 'shared';
-  renderProfile: 'user';
-}
-export interface AwExtensionSkillDelivery { mode: 'aw-extension' }
-export type CodexSkillDelivery = CodexNativeSkillDelivery | AwExtensionSkillDelivery;
 export type ArtifactTarget =
   | 'codex.developerInstructionsBlock'
   | 'codex.agentRole'
@@ -406,8 +413,6 @@ export interface ArtifactRuntimeImportDefinition extends BuildConfigImportRefere
 }
 interface PluginArtifactTargetDefinitionBase {
   id: string;
-  platform?: PlatformName;
-  distribution?: DistributionName;
   scopes: Scope[];
   kind?: Exclude<DynamicArtifactKind, 'commandSet' | 'commandPackage'>;
   projectManagedKind?: CodexProjectManagedKind;
@@ -420,18 +425,12 @@ interface PluginArtifactTargetDefinitionBase {
   runtimeImports?: ArtifactRuntimeImportDefinition[];
   runtimeConfig?: import('./runtime-config.js').PluginRuntimeConfigDeclaration;
 }
-export type PluginArtifactTargetDefinition =
-  | PluginArtifactTargetDefinitionBase & {
-      target: 'codex.skill';
-      delivery: CodexSkillDelivery;
-    }
-  | PluginArtifactTargetDefinitionBase & {
-      target: Exclude<ArtifactTarget, 'codex.skill' | 'aw.command-set' | 'aw.command-package'>;
-      delivery?: never;
-    };
+export type PluginArtifactTargetDefinition = PluginArtifactTargetDefinitionBase & (
+  | { target: 'codex.skill' | 'codex.developerInstructionsBlock' | 'codex.agentRole'; platform: 'codex'; distribution?: never }
+  | { target: 'claude.skill'; platform: 'claude'; distribution?: never }
+  | { target: 'agent-skills.skill'; platform: PortablePlatformTarget; distribution: 'agent-skills' }
+);
 export interface PluginArtifactsConfig { targets?: PluginArtifactTargetDefinition[] }
-export interface PluginAgentSkillsDistribution { skills?: string }
-export interface PluginDistributionsConfig { agentSkills?: PluginAgentSkillsDistribution }
 export interface PluginRequirements { aw: { capabilities?: string[] } }
 
 export type PluginManifestSource = PluginManifestSourceV3;
@@ -510,12 +509,14 @@ export interface CodexSharedHookGroup {
   event: string; matcher?: string | null; hooks: Record<string, unknown>[]; rawGroup: Record<string, unknown>;
 }
 export interface ArtifactPlanArtifactBase {
-  id: string; platform?: PlatformName; distribution?: DistributionName; target: ArtifactTarget;
+  id: string; platform?: PlatformTarget; distribution?: DistributionName; target: ArtifactTarget;
   kind: DynamicArtifactKind; state: ArtifactState; refreshKeys: string[]; disabledReason?: string;
 }
 export interface CodexSkillArtifact extends ArtifactPlanArtifactBase {
+  platform: 'codex';
   target: 'codex.skill'; kind: 'skill'; skillKey?: string; content?: { files?: Record<string, string> };
 }
 export interface ClaudeSkillArtifact extends ArtifactPlanArtifactBase {
+  platform: 'claude';
   target: 'claude.skill'; kind: 'skill'; skillKey?: string; content?: { files?: Record<string, string> };
 }

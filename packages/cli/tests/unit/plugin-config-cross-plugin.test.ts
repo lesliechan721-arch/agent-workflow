@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 import { getPluginConfigReferenceChoices, normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
@@ -14,6 +15,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 async function fixture() {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
+  execFileSync('git', ['init', '-q'], { cwd });
   const create = (name: string, fields: Record<string, unknown>, dependencies: string[] = []): PluginMeta => ({
     rootDir: path.join(cwd, name), manifestPath: path.join(cwd, name, '.agents-plugin/plugin.json'),
     sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`, catalogLogicalIdentity: 'team/catalog', pluginId: `team/${name}`,
@@ -41,7 +43,7 @@ async function fixture() {
     pluginName: plugin.manifest.name, scope, cwd, env: isolation.env,
   });
   const resolve = (plugin: PluginMeta, scope: 'user' | 'project' = 'user', selectedPlugins = plugins) => resolveEffectivePluginConfig({
-    ...store(plugin, scope), manifest: plugin.manifest, targetScope: scope, referencePlugins: selectedPlugins,
+    ...store(plugin, scope), manifest: plugin.manifest, platform: 'codex', targetScope: scope, referencePlugins: selectedPlugins,
   });
   const save = (plugin: PluginMeta, updates: Record<string, unknown>, extra: Record<string, unknown> = {}) => applyPluginConfigWrite({
     plugin, scope: 'user', cwd, env: isolation.env, apply: false, request: { updates }, rebuildRuntime: { referencePlugins: plugins }, ...extra,
@@ -58,64 +60,48 @@ describe('same-source configuration references', () => {
     declaration.refreshKeys = ['unrelated'];
     declaration.runtimeConfig = { keys: ['unrelated'] };
     declaration.delivery = { mode: 'codex-native', identity: 'shared', renderProfile: 'user' };
-    await writePluginConfigStore({ ...f.store(f.consumer, 'project'), values: { selected: 'remote' } });
+    await writePluginConfigStore({ ...f.store(f.consumer), platform: 'codex', values: { selected: 'remote' } });
     const target: ReceiptTargetIdentity = { pluginName: 'consumer', platform: 'codex', scope: 'project', projectKey: f.cwd };
-    const impact = await analyzePluginConfigMutationImpact({ plugin: f.provider, scope: 'user', cwd: f.cwd, env: f.env,
+    const impact = await analyzePluginConfigMutationImpact({ plugin: f.provider, scope: 'user', context: 'project', cwd: f.cwd, env: f.env,
       referencePlugins: f.plugins, visibleTargets: [target], mutation: { kind: 'patch', updates: { registry: [{ key: 'remote', label: 'Remote' }] } } });
     expect(impact.affectedTargets).toEqual([target]);
     expect(impact.noEffectiveChange).toBe(false);
     expect(impact.sharedNativeRenderTargets).toEqual([]);
   });
 
-  // Test Value Gate: a project activation can render shared user content; every writer must confirm it before writes.
-  it('uses the foreign native render scope and gates save, reset and replay before writing', async () => {
+  // Test Value Gate: a project activation can read a shared user artifact; replay must keep its write authorization boundary.
+  it('uses the platform native render profile and gates replay before output writes', async () => {
     const f = await fixture();
-    f.provider.manifest.artifacts!.targets![0]!.delivery = { mode: 'aw-extension' };
-    f.consumer.manifest.artifacts!.targets![0]!.delivery = { mode: 'codex-native', identity: 'shared', renderProfile: 'user' };
-    await writePluginConfigStore({ ...f.store(f.provider), values: { registry: [] } });
-    await writePluginConfigStore({ ...f.store(f.provider, 'project'), values: { registry: [] } });
     await writePluginConfigStore({ ...f.store(f.consumer), values: { selected: 'remote' } });
     const targets: ReceiptTargetIdentity[] = [{ pluginName: 'consumer', platform: 'codex', scope: 'project', projectKey: f.cwd }];
-    const impact = await analyzePluginConfigMutationImpact({ plugin: f.provider, scope: 'user', cwd: f.cwd, env: f.env,
+    const impact = await analyzePluginConfigMutationImpact({ plugin: f.provider, scope: 'user', context: 'project', cwd: f.cwd, env: f.env,
       referencePlugins: f.plugins, visibleTargets: targets, mutation: { kind: 'patch', updates: { registry: [{ key: 'remote', label: 'Remote' }] } } });
     expect(impact.affectedTargets).toEqual(targets);
     expect(impact.sharedNativeRenderTargets).toEqual([expect.objectContaining({ skillKey: 'consumer', pluginName: 'consumer' })]);
+    await writePluginConfigStore({ ...f.store(f.provider), values: { registry: [{ key: 'remote', label: 'Remote' }] } });
     const file = resolvePluginConfigStorePath(f.store(f.provider));
     const before = await fs.readFile(file);
     const apply = vi.fn(async (_selectors: string[], _options: unknown, runtime: { resolvePreApplyAuthorization?: boolean }) => {
       if (!runtime.resolvePreApplyAuthorization) throw new Error('Unexpected runtime write before confirmation');
       return { overallState: 'succeeded', preApplyAuthorization: [] } as unknown as RebuildCommandResult;
     });
-    const runtime = { referencePlugins: f.plugins };
-    await expect(f.save(f.provider, { registry: [{ key: 'remote', label: 'Remote' }] }, {
-      apply: true, applyTargets: targets, reinstallCommandImpl: apply,
-    })).rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
-    expect(await fs.readFile(file)).toEqual(before);
-    f.provider.manifest.config!.fields.registry!.default = [{ key: 'remote', label: 'Remote' }];
-    await expect(resetPluginConfigWithHelper({ plugin: f.provider, pluginName: 'provider', scope: 'user', cwd: f.cwd, env: f.env,
-      applyTargets: targets, apply: true, rebuildRuntime: runtime, reinstallCommandImpl: apply,
-    })).rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
-    expect(await fs.readFile(file)).toEqual(before);
-    await writePluginConfigStore({ ...f.store(f.provider), values: { registry: [{ key: 'remote', label: 'Remote' }] } });
-    const replayBefore = await fs.readFile(file);
     await expect(replayConfigRuntimeWrites({ plugin: f.provider, scope: 'user', cwd: f.cwd, env: f.env,
-      applyTargets: targets, rebuildRuntime: runtime, reinstallCommandImpl: apply,
+      applyTargets: targets, rebuildRuntime: { referencePlugins: f.plugins }, reinstallCommandImpl: apply,
     })).rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
-    expect(await fs.readFile(file)).toEqual(replayBefore);
-    expect(apply.mock.calls.every((call) => call[2].resolvePreApplyAuthorization === true)).toBe(true);
+    expect(await fs.readFile(file)).toEqual(before);
   });
 
   // Test Value Gate: source and layer confusion can accept a key that the installed provider cannot execute.
   it('uses only the same source and provider user-only layer, and keeps the registry out of runtime values', async () => {
     const f = await fixture();
     await writePluginConfigStore({ ...f.store(f.provider), values: { registry: [{ key: 'remote', label: 'Remote' }] } });
-    await writePluginConfigStore({ ...f.store(f.provider, 'project'), values: { registry: [{ key: 'project', label: 'Project' }] } });
-    await writePluginConfigStore({ ...f.store(f.consumer, 'project'), values: { selected: 'remote' } });
+    await fs.outputJson(path.join(f.cwd, '.agent-workflows/plugin-config/team/provider/config.json'), { registry: [{ key: 'project', label: 'Project' }] });
+    await writePluginConfigStore({ ...f.store(f.consumer), platform: 'codex', values: { selected: 'remote' } });
     const foreign = { ...f.provider, sourceId: 'other', manifest: { ...f.provider.manifest,
       config: normalizePluginConfigDefinition({ schemaVersion: 4, fields: { registry: { type: 'string', default: 'wrong' } } }) } };
     const config = await f.resolve(f.consumer, 'project', [foreign, ...f.plugins]);
     expect(config.values.selected).toBe('remote');
-    expect(config.referenceEvidence?.[0]?.sources.registry).toBe('user');
+    expect(config.referenceEvidence?.[0]?.sources.registry).toBe('common');
     const scalar = f.consumer.manifest.config!.fields.selected!;
     if (scalar.type !== 'string') throw new Error('Invalid fixture');
     expect(getPluginConfigReferenceChoices(f.consumer.manifest.config!, scalar, config.values, config.referenceContext)
@@ -129,7 +115,7 @@ describe('same-source configuration references', () => {
     expect(invalid.issues).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'selected', code: 'valueRefSource' })]));
     expect(getPluginConfigReferenceChoices(f.consumer.manifest.config!, scalar, invalid.values, invalid.referenceContext)).toMatchObject({ choices: [], issues: expect.arrayContaining([expect.objectContaining({ code: 'valueRefSource' })]) });
     await writePluginConfigStore({ ...f.store(f.provider), values: { registry: [{ key: 'native', label: 'Reserved collision' }] } });
-    await writePluginConfigStore({ ...f.store(f.consumer, 'project'), values: { selected: 'native' } });
+    await writePluginConfigStore({ ...f.store(f.consumer), platform: 'codex', values: { selected: 'native' } });
     const collision = await f.resolve(f.consumer, 'project');
     expect(collision.values.selected).toBeUndefined();
     expect(collision.issues).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'selected', code: 'valueRefSource',
@@ -138,19 +124,19 @@ describe('same-source configuration references', () => {
   });
 
   // Test Value Gate: configured consumers count even when they have no installation intent.
-  it('rejects a new dangling user or current-project reference without changing the provider store', async () => {
+  it('rejects a new dangling common or platform reference without changing the provider store', async () => {
     const f = await fixture();
     await f.save(f.provider, { registry: [{ key: 'remote', label: 'Remote' }, { key: 'other', label: 'Other' }] });
     await writePluginConfigStore({ ...f.store(f.consumer), values: { selected: 'remote', unrelated: 'invalid' } });
-    await writePluginConfigStore({ ...f.store(f.consumer, 'project'), values: { selected: 'other' } });
+    await writePluginConfigStore({ ...f.store(f.consumer), platform: 'codex', values: { selected: 'other' } });
     const file = resolvePluginConfigStorePath(f.store(f.provider));
     const before = await fs.readFile(file);
-    await expect(f.save(f.provider, { registry: [{ key: 'other', label: 'Other' }] })).rejects.toThrow(/provider.*key "remote".*consumer\/selected.*user.*provider\/registry/u);
-    await expect(f.save(f.provider, { registry: [{ key: 'remote', label: 'Remote' }] })).rejects.toThrow(/consumer.*project/u);
+    await expect(f.save(f.provider, { registry: [{ key: 'other', label: 'Other' }] })).rejects.toThrow(/provider.*key "remote".*consumer\/selected.*common.*provider\/registry/u);
+    await expect(f.save(f.provider, { registry: [{ key: 'remote', label: 'Remote' }] })).rejects.toThrow(/consumer.*codex/u);
     expect(await fs.readFile(file)).toEqual(before);
     await f.save(f.provider, { registry: [{ key: 'remote', label: 'Changed backend' }, { key: 'other', label: 'Other' }, { key: 'new', label: 'New' }] });
     await writePluginConfigStore({ ...f.store(f.consumer), values: { selected: 'native', unrelated: 'invalid' } });
-    await writePluginConfigStore({ ...f.store(f.consumer, 'project'), values: { selected: 'native' } });
+    await writePluginConfigStore({ ...f.store(f.consumer), platform: 'codex', values: { selected: 'native' } });
     await expect(f.save(f.provider, { registry: [] })).resolves.toMatchObject({ configWrite: 'succeeded', apply: { reason: 'notRequested' } });
   });
 
@@ -171,31 +157,27 @@ describe('same-source configuration references', () => {
       .resolves.toMatchObject({ configWrite: 'succeeded' });
   });
 
-  // Test Value Gate: optional project impact evidence must not prevent a valid user repair.
-  it('keeps unreadable project evidence unknown while saving a valid user edit and protecting deletion', async () => {
+  // Test Value Gate: old project values must never become source evidence for current user configuration.
+  it('ignores unreadable historical project values while protecting current saved consumer references', async () => {
     const f = await fixture();
     await f.save(f.provider, { registry: [{ key: 'remote', label: 'Remote' }] });
     await writePluginConfigStore({ ...f.store(f.consumer), values: { selected: 'remote' } });
-    const projectPath = resolvePluginConfigStorePath(f.store(f.provider, 'project'));
+    const projectPath = path.join(f.cwd, '.agent-workflows/plugin-config/team/provider/config.json');
     await fs.outputFile(projectPath, '{broken');
-    const before = await fs.readFile(projectPath);
     const saved = await f.save(f.consumer, { unrelated: 2 });
     expect(saved).toMatchObject({ configWrite: 'succeeded', apply: { reason: 'notRequested' } });
-    expect(saved.warnings.join(' ')).toMatch(/project.*(?:unavailable|cannot|unknown)/iu);
     expect((await f.resolve(f.consumer)).values).toEqual({ selected: 'remote', unrelated: 2 });
-    expect(await fs.readFile(projectPath)).toEqual(before);
     const evidence = () => analyzePluginConfigMutationImpact({ plugin: f.consumer, scope: 'user', cwd: f.cwd, env: f.env,
       referencePlugins: f.plugins, visibleTargets: [], mutation: { kind: 'patch', updates: { unrelated: 3 } } });
-    const initialEvidence = await evidence();
+    const before = await evidence();
     await fs.writeFile(projectPath, '{changed invalid bytes');
-    const changedEvidence = await evidence();
-    expect(changedEvidence.impactState).toBe('unknown');
-    expect(changedEvidence.storeDigest).not.toBe(initialEvidence.storeDigest);
+    expect((await evidence()).storeDigest).toBe(before.storeDigest);
     await expect(f.save(f.provider, { registry: [] })).rejects.toMatchObject({ code: 'configReferenceInUse' });
     const reset = await resetPluginConfigWithHelper({ plugin: f.provider, pluginName: 'provider', scope: 'user', cwd: f.cwd,
-      env: f.env, apply: false, rebuildRuntime: { referencePlugins: f.plugins } });
+      env: f.env, rebuildRuntime: { referencePlugins: f.plugins } });
     expect(reset.deleted).toBe(true);
-    expect(reset.warnings.join(' ')).toContain('project');
+    expect(reset.warnings.join(' ')).toContain('consumer');
+    expect(await fs.readFile(projectPath, 'utf8')).toBe('{changed invalid bytes');
   });
 
   // Test Value Gate: unreadable consumers must not turn deletion into a false guarantee or prevent repair/reset.
@@ -252,28 +234,16 @@ describe('same-source configuration references', () => {
     expect(after.referenceBlockers).not.toEqual([]);
   });
 
-  // Test Value Gate: provider failure must preserve committed config and must not report its consumer as applied.
-  it('keeps committed config and skips a dependent target when provider apply fails', async () => {
+  // Test Value Gate: saving an offline definition must not invent an installation for apply to refresh.
+  it('keeps committed config and skips apply when no existing output is visible', async () => {
     const f = await fixture();
     await writePluginConfigStore({ ...f.store(f.consumer), values: { selected: 'remote' } });
-    const targets: ReceiptTargetIdentity[] = ['provider', 'consumer'].map((pluginName) => ({ pluginName, platform: 'codex', scope: 'user' }));
-    const apply = vi.fn(async (names, options, runtime): Promise<RebuildCommandResult> => {
-      const target = { pluginName: names[0]!.split('/').at(-1)!, platform: options.platform, scope: options.scope } as ReceiptTargetIdentity;
-      const preview = runtime.resolvePreApplyAuthorization === true;
-      return { platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], receiptTargets: [target],
-        overallState: preview ? 'succeeded' : 'failed',
-        targetResults: preview ? [] : [{ target, action: 'reinstall', state: 'failed', message: 'provider failed' }],
-        ...(preview ? { preApplyAuthorization: [] } : {}) };
-    });
     const receipt = await f.save(f.provider, { registry: [{ key: 'remote', label: 'Remote' }] }, {
-      apply: true, applyTargets: targets, sharedNativeApplyConfirmed: true, preApplyConfirmed: true,
-      reinstallCommandImpl: apply,
+      apply: true, sharedNativeApplyConfirmed: true, preApplyConfirmed: true,
     });
     expect(receipt.configWrite).toBe('succeeded');
-    expect(receipt.apply).toMatchObject({ state: 'partial', targetResults: [
-      { target: { pluginName: 'provider' }, state: 'failed' },
-      { target: { pluginName: 'consumer' }, state: 'skipped', errorCode: 'dependencyApplyFailed' },
-    ] });
+    expect(receipt.apply).toMatchObject({ state: 'skipped', reason: 'noVisibleTarget' });
     expect((await f.resolve(f.provider)).values.registry).toEqual([{ key: 'remote', label: 'Remote' }]);
   });
+
 });

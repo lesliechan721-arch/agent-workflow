@@ -3,12 +3,14 @@
   "defaults": {},
   "profiles": {
     "project-default": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "dev-workflow": {}
       }
     },
     "project-composed": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "dev-workflow": {},
@@ -16,6 +18,7 @@
       }
     },
     "project-lifecycle": {
+      "platform": "codex",
       "scope": "project",
       "plugins": {
         "dev-workflow": {},

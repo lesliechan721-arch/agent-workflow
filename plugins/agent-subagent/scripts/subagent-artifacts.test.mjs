@@ -8,12 +8,16 @@ import { CONFIG_KEYS, SKILL_CONFIG_KEYS, renderArtifactPlan } from './render-art
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const codexIds = ['spawn-subagent-skill', 'subagent-role'];
+const sourceManifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
+const defaultValues = Object.fromEntries(Object.entries(sourceManifest.config.fields)
+  .filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default]));
 function context(values = {}, platform = 'codex', scope = 'user') {
   const id = platform === 'codex' ? codexIds[0] : 'spawn-subagent-claude-skill';
   const staged = path.join(root, '.agents-plugin/artifact-sources', platform, id, '0');
   const source = existsSync(staged) ? staged : path.join(root, 'skills/spawn-subagent');
   return { platform, scope, requestedArtifactIds: platform === 'codex' ? codexIds : [id],
-    artifactSources: [{ id, target: `${platform}.skill`, sourceDirs: [source] }], config: { values } };
+    artifactSources: [{ id, target: `${platform}.skill`, sourceDirs: [source] }],
+    config: { values: { ...structuredClone(defaultValues), ...values } } };
 }
 function files(plan) { return plan.artifacts.find((item) => item.kind === 'skill').content.files; }
 function rows(text, first) {
@@ -33,7 +37,7 @@ function rows(text, first) {
 test('owns generic configuration, optional native overrides and Codex command producers', async () => {
   const manifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'agent-subagent');
-  assert.equal(manifest.config.schemaVersion, 4);
+  assert.equal(manifest.config.schemaVersion, 5);
   assert.deepEqual(new Set(Object.keys(manifest.config.fields)), new Set(CONFIG_KEYS));
   const { definitions, fields, presentation } = manifest.config;
   const profile = definitions?.agentProfile ?? fields.generalTaskProfile;
@@ -43,8 +47,20 @@ test('owns generic configuration, optional native overrides and Codex command pr
   for (const property of ['model', 'reasoningEffort']) {
     const native = profile.variants.cases.native.properties[property];
     const external = profile.variants.otherwise.properties[property];
-    assert.equal(native.required, undefined); assert.deepEqual(native, external);
+    assert.equal(native.required, undefined);
+    assert.equal(external.required, undefined);
   }
+  const nativeProperties = profile.variants.cases.native.properties;
+  const nativeModel = definitions?.nativeAgentModel ?? nativeProperties.model;
+  const nativeEffort = definitions?.nativeAgentReasoningEffort ?? nativeProperties.reasoningEffort;
+  assert.equal(nativeModel.choices, undefined);
+  assert.equal(nativeEffort.choices, undefined);
+  const codex = manifest.config.platforms.codex;
+  const codexProperties = codex.fields?.generalTaskProfile.variants.cases.native.properties;
+  const codexModel = codex.definitions?.nativeAgentModel ?? codexProperties.model;
+  const codexEffort = codex.definitions?.nativeAgentReasoningEffort ?? codexProperties.reasoningEffort;
+  assert.deepEqual(codexModel, definitions?.agentModel ?? profile.variants.otherwise.properties.model);
+  assert.equal(codexEffort.choices.presets.some((entry) => entry.value === 'pro'), false);
   const executor = definitions?.agentExecutor ?? profile.properties.executor;
   assert.deepEqual(executor.valueRef, { field: 'subagentCommands', key: 'key', include: ['native'] });
   for (const key of ['simpleTaskProfile', 'generalTaskProfile', 'complexTaskProfile', 'advancedTaskProfile']) {
@@ -62,16 +78,19 @@ test('owns generic configuration, optional native overrides and Codex command pr
   assert.deepEqual(presentation.groups.find((group) => group.id === 'executors'), {
     id: 'executors', title: '外部执行器', fields: ['subagentCommands', 'subagentRetentionHours'], advanced: true,
   });
-  assert.deepEqual(manifest.marketplace.policy.products, ['CODEX', 'CLAUDE']);
+  assert.deepEqual(manifest.platforms, ['codex', 'claude']);
+  assert.equal(Object.hasOwn(manifest.marketplace.policy, 'products'), false);
   assert.deepEqual(manifest.artifacts.targets.map((target) => target.id), [...codexIds, 'spawn-subagent-claude-skill']);
   for (const target of manifest.artifacts.targets) {
-    assert.deepEqual(target.scopes, ['user', 'project']);
+    const expectedScopes = process.env.AW_PLUGIN_CONTEXT && target.target.endsWith('.skill')
+      ? ['user'] : ['user', 'project'];
+    assert.deepEqual(target.scopes, expectedScopes);
     if (target.target.endsWith('.skill')) {
       assert.deepEqual(target.sourceDirs, ['./skills/spawn-subagent']);
       assert.deepEqual(target.refreshKeys, SKILL_CONFIG_KEYS['spawn-subagent']);
     }
     if (target.target === 'codex.skill') {
-      assert.deepEqual(target.delivery, { mode: 'codex-native', identity: 'shared', renderProfile: 'user' });
+      assert.equal(Object.hasOwn(target, 'delivery'), false);
       assert.deepEqual(target.runtimeConfig, { keys: ['subagentCommands', 'subagentRetentionHours'] });
     }
     if (target.platform === 'claude') assert.deepEqual(target.runtimeConfig, { keys: ['subagentCommands', 'subagentRetentionHours'] });
@@ -180,4 +199,8 @@ test('returns exact subsets and rejects invalid platform targets', async () => {
   }
   await assert.rejects(renderArtifactPlan({ ...context({}, 'claude'), requestedArtifactIds: codexIds }));
   await assert.rejects(renderArtifactPlan({ ...context(), platform: 'other' }));
+  await assert.rejects(renderArtifactPlan({ ...context(), platform: undefined }));
+  const incomplete = context();
+  delete incomplete.config.values.generalTaskProfile;
+  await assert.rejects(renderArtifactPlan(incomplete), /Missing resolved config value: generalTaskProfile/);
 });

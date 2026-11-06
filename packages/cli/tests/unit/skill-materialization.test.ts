@@ -26,9 +26,9 @@ describe('Skill materialization', () => {
     { kind: 'static-skill', consumer: 'static' },
     { kind: 'artifact', consumer: 'static' },
     { kind: 'package', consumer: 'static' },
-    { kind: 'package', consumer: 'aw-extension' },
-    { kind: 'static-skill', consumer: 'codex-native' },
-    { kind: 'artifact', consumer: 'codex-native' },
+    { kind: 'package', consumer: 'dynamic' },
+    { kind: 'static-skill', consumer: 'dynamic' },
+    { kind: 'artifact', consumer: 'dynamic' },
   ] as const)(
     'resolves $consumer references to an unselected $kind producer using isolated candidates only',
     async ({ kind, consumer }) => {
@@ -40,10 +40,10 @@ describe('Skill materialization', () => {
         : kind === 'artifact' ? { kind, artifactId: 'provider' } : { kind, packageKey: 'provider' };
       const manifest: PluginManifestSource = {
         schemaVersion: 3, name: 'review-commands', version: '0.1.0',
-        description: 'Review command candidate fixture.', skills: './skills',
+        description: 'Review command candidate fixture.', platforms: ['codex'], skills: './skills',
         requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
         marketplace: { category: 'test', strict: true, policy: {
-          installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'],
+          installation: 'AVAILABLE', authentication: 'ON_INSTALL',
         } },
         scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
         managedCommands: {
@@ -54,7 +54,7 @@ describe('Skill materialization', () => {
         },
         ...(kind === 'artifact' ? { artifacts: { targets: [{
           id: 'provider', platform: 'codex', target: 'codex.skill', kind: 'skill',
-          delivery: { mode: 'aw-extension' }, scopes: ['user'], states: ['present'],
+          scopes: ['user'], states: ['present'],
           refreshKeys: [], skillKey: 'provider',
         }] } } : {}),
       };
@@ -62,10 +62,7 @@ describe('Skill materialization', () => {
         manifest.artifacts ??= { targets: [] };
         manifest.artifacts.targets!.push({
           id: 'consumer', platform: 'codex', target: 'codex.skill', kind: 'skill',
-          delivery: consumer === 'codex-native'
-            ? { mode: 'codex-native', identity: 'shared', renderProfile: 'user' }
-            : { mode: 'aw-extension' },
-          scopes: consumer === 'codex-native' ? ['user', 'project'] : ['user'],
+          scopes: ['user'],
           states: ['present'], refreshKeys: [], skillKey: 'consumer',
         });
       }
@@ -155,9 +152,9 @@ describe('Skill materialization', () => {
     const tracePath = path.join(root, 'render-contexts.jsonl');
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
       schemaVersion: 3, name: 'shared-claude', version: '0.1.0', description: 'Shared Claude Review fixture.',
-      skills: './skills', requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
+      platforms: ['claude'], skills: './skills', requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
       marketplace: { category: 'test', strict: true, policy: {
-        installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CLAUDE'],
+        installation: 'AVAILABLE', authentication: 'ON_INSTALL',
       } },
       config: { schemaVersion: 4, fields: { mode: { type: 'string', default: 'default' } } },
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
@@ -199,12 +196,10 @@ describe('Skill materialization', () => {
       const bundlePlugin = {
         ...prepared.bundlePlugin, sourceId: 'fixture', sourceIdentity, catalogLogicalIdentity: logicalIdentity,
       };
-      for (const scope of ['user', 'project'] as const) {
-        await writePluginConfigStore({
-          sourceId: 'fixture', sourceIdentity, logicalIdentity, pluginName: plugin.manifest.name,
-          scope, cwd: root, env, values: { mode: `from-${scope}` },
-        });
-      }
+      await writePluginConfigStore({
+        sourceId: 'fixture', sourceIdentity, logicalIdentity, pluginName: plugin.manifest.name,
+        scope: 'user', platform: 'claude', cwd: root, env, values: { mode: 'from-user' },
+      });
       const materialize = (output: string) => materializeReviewNativeSkills({
         plugin: bundlePlugin, platform: 'claude', scope: 'project', cwd: root, env,
         outputRoot: path.join(root, output), skills: [{ skill: 'consumer', targetId: null }],
@@ -274,6 +269,10 @@ describe('Skill materialization', () => {
       AW_HOME: '/unexpected/aw-home',
       AW_CODEX_HOME: '/unexpected/codex-home',
       AW_CLAUDE_HOME: '/unexpected/claude-home',
+      CODEX_HOME: '/unexpected/official-codex',
+      CLAUDE_CONFIG_DIR: '/unexpected/official-claude',
+      XDG_DATA_HOME: '/unexpected/xdg-data',
+      XDG_RUNTIME_DIR: '/unexpected/xdg-runtime',
       TMPDIR: '/unexpected/tmp',
     }, root);
 
@@ -281,23 +280,28 @@ describe('Skill materialization', () => {
       HOME: path.join(root, 'home'),
       USERPROFILE: path.join(root, 'home'),
       AW_HOME: path.join(root, 'aw-home'),
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
       CODEX_HOME: path.join(root, 'codex-home'),
+      CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
+      XDG_DATA_HOME: path.join(root, 'xdg-data'),
+      XDG_RUNTIME_DIR: path.join(root, 'xdg-runtime'),
       TMPDIR: path.join(root, 'tmp'),
       TEMP: path.join(root, 'tmp'),
       TMP: path.join(root, 'tmp'),
       NODE_PATH: '',
     });
+    expect(env).not.toHaveProperty('AW_CODEX_HOME');
+    expect(env).not.toHaveProperty('AW_CLAUDE_HOME');
     for (const key of [
       'HOME',
       'AW_HOME',
-      'AW_CODEX_HOME',
-      'AW_CLAUDE_HOME',
+      'CODEX_HOME',
+      'CLAUDE_CONFIG_DIR',
       'TMPDIR',
       'XDG_CACHE_HOME',
       'XDG_CONFIG_HOME',
       'XDG_STATE_HOME',
+      'XDG_DATA_HOME',
+      'XDG_RUNTIME_DIR',
     ] as const) {
       expect((await fs.stat(env[key]!)).isDirectory()).toBe(true);
     }
@@ -313,6 +317,7 @@ describe('Skill materialization', () => {
     await fs.writeJson(path.join(providerRoot, '.agents-plugin', 'plugin.json'), {
       schemaVersion: 3,
       name: 'runtime-provider',
+      platforms: ['codex'],
       version: '0.1.0',
       description: 'Runtime import provider for materialization.',
       marketplace: {
@@ -321,7 +326,6 @@ describe('Skill materialization', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
       buildConfig: {
@@ -337,6 +341,7 @@ describe('Skill materialization', () => {
     await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
       schemaVersion: 3,
       name: 'isolated-build',
+      platforms: ['codex'],
       version: '0.1.0',
       description: 'Plugin used to verify isolated Skill materialization.',
       skills: './skills',
@@ -346,7 +351,6 @@ describe('Skill materialization', () => {
         policy: {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
-          products: ['CODEX'],
         },
       },
       scripts: {
@@ -377,7 +381,7 @@ describe('Skill materialization', () => {
     await fs.writeFile(path.join(pluginRoot, 'build.mjs'), [
       "import fs from 'node:fs/promises';",
       "await fs.mkdir('skills/demo/references', { recursive: true });",
-      "const keys = ['HOME', 'AW_HOME', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME', 'TMPDIR'];",
+      "const keys = ['HOME', 'AW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'TMPDIR'];",
       'const values = Object.fromEntries(keys.map((key) => [key, process.env[key]]));',
       "await fs.writeFile('skills/demo/references/environment.json', JSON.stringify(values));",
     ].join('\n'));
@@ -402,8 +406,8 @@ describe('Skill materialization', () => {
     ))).resolves.toEqual({
       HOME: env.HOME,
       AW_HOME: env.AW_HOME,
-      AW_CODEX_HOME: env.AW_CODEX_HOME,
-      AW_CLAUDE_HOME: env.AW_CLAUDE_HOME,
+      CODEX_HOME: env.CODEX_HOME,
+      CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR,
       TMPDIR: env.TMPDIR,
     });
     await expect(fs.readJson(path.join(

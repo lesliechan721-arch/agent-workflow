@@ -1,4 +1,6 @@
+import type { PlatformTarget } from '@lesliechan721/aw-plugin-core';
 import type { PlatformName, Scope } from '../types.js';
+import type { AgentId } from '../intent/deployment-preferences.js';
 import {
   flattenStatusTargets,
   statusTargetActivation,
@@ -10,13 +12,16 @@ import {
   type StatusV8PluginSummary,
   type StatusV8State,
 } from '../commands/status-v6.js';
-import { platformLabel, scopeLabel } from './glossary.js';
+import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
 import { hasActualScopeEvidence, type PluginDependencyOverviewViewModel,
   type PluginListItemViewModel } from './model.js';
-import type { ProjectInventoryState, ProjectInventoryViewModel } from './project-inventory.js';
+import type { InventoryState as ProjectInventoryState,
+  InventoryRoot, ScopedInventoryViewModel, ScopedInventoryLoadResult } from './scoped-inventory.js';
 
 export interface PluginDetailPlacement {
-  platform: PlatformName;
+  platform?: PlatformName;
+  agent?: AgentId;
+  delivery?: 'native' | 'agent-skills';
   scope: Scope;
   platformLabel: string;
   scopeLabel: string;
@@ -31,11 +36,27 @@ export interface PluginDetailPlacement {
   reasonCodes: string[];
 }
 
+function agentForPlatform(platform: PlatformName): AgentId {
+  return platform === 'claude' ? 'claude' : 'codex';
+}
+
+function placementIdentity(placement: Pick<PluginDetailPlacement,
+  'platform' | 'agent' | 'delivery' | 'scope'>): string {
+  return [placement.agent ?? '', placement.delivery ?? '', placement.platform ?? '', placement.scope].join('\0');
+}
+
 export interface PluginDetailRelation {
   pluginId: string;
   displayName: string;
   declared: boolean;
   verified: boolean;
+}
+
+export interface PluginDetailDeclaration {
+  state: 'declared' | 'not-declared' | 'unobserved';
+  sourceState?: string;
+  targets: 'selected' | 'empty' | 'unobserved';
+  agents: AgentId[];
 }
 
 export interface PluginDetailSubject {
@@ -45,9 +66,12 @@ export interface PluginDetailSubject {
   description?: string;
   catalogVersion?: string;
   definitionAvailable: boolean;
+  supportedPlatforms?: PlatformTarget[];
+  selectedAgents?: PlatformTarget[];
   savedConfigScopes: Scope[];
   /** Existing overview is retained only for actions that already accept it. */
   plugin?: PluginListItemViewModel;
+  declarations: Record<Scope, PluginDetailDeclaration>;
   placements: PluginDetailPlacement[];
   relations: {
     outgoing: PluginDetailRelation[];
@@ -59,7 +83,25 @@ export interface PluginDetailSubject {
 
 type RelationFact = { from: string; to: string; declared: boolean; verified: boolean };
 
-function relationFacts(overviews: readonly PluginDependencyOverviewViewModel[]): {
+function declarationFact(inventory: ScopedInventoryViewModel | undefined,
+  pluginId: string): PluginDetailDeclaration {
+  const root = inventory?.declaredRoots.find((entry) => entry.pluginId === pluginId);
+  const state = root && inventory?.declarationState === 'ready' ? 'declared'
+    : inventory?.declarationState === 'ready' || inventory?.declarationState === 'absent'
+      ? 'not-declared' : 'unobserved';
+  const agents = inventory?.selectedAgents ?? [];
+  return {
+    state,
+    ...(state === 'declared' && root?.sourceState ? { sourceState: root.sourceState } : {}),
+    targets: !inventory || inventory.preferenceState === 'invalid'
+      || inventory.preferenceState === 'unreadable' ? 'unobserved'
+      : agents.length ? 'selected' : 'empty',
+    agents,
+  };
+}
+
+function relationFacts(overviews: readonly PluginDependencyOverviewViewModel[],
+  observed: Array<{ scope: Scope; overviews: readonly PluginDependencyOverviewViewModel[] }>): {
   facts: Map<string, RelationFact>;
   names: Map<string, string>;
   ids: Set<string>;
@@ -95,8 +137,16 @@ function relationFacts(overviews: readonly PluginDependencyOverviewViewModel[]):
       for (const reference of item.placementReferences ?? []) {
         add(reference.consumer.pluginId, reference.dependency.pluginId, true, false);
       }
-      for (const reference of item.availablePlacementReferences ?? []) {
-        add(reference.consumer.pluginId, reference.dependency.pluginId, true, true);
+
+    }
+  }
+  for (const observation of observed) {
+    for (const overview of observation.overviews) {
+      for (const item of [...overview.dependencies, ...overview.dependents]) {
+        for (const reference of item.availablePlacementReferences ?? []) {
+          if (reference.consumer.scope !== observation.scope) continue;
+          add(reference.consumer.pluginId, reference.dependency.pluginId, true, true);
+        }
       }
     }
   }
@@ -109,21 +159,38 @@ export function buildPluginDetailSubject(options: {
   pluginSummaries: readonly StatusV8PluginSummary[];
   targetRevisions?: readonly StatusTargetRevision[];
   plugins: readonly PluginListItemViewModel[];
-  projectInventory?: ProjectInventoryViewModel;
+  projectInventory?: { declaredRoots: InventoryRoot[]; extraInstalledRoots: InventoryRoot[] };
+  scopedInventories?: Partial<Record<Scope, ScopedInventoryViewModel>>;
   dependencyOverviews?: readonly PluginDependencyOverviewViewModel[];
+  scopedSnapshots?: Partial<Record<Scope, ScopedInventoryLoadResult['nativeSnapshot']>>;
+  latestScope?: Scope;
 }): PluginDetailSubject | undefined {
   const { pluginId } = options;
-  const summary = options.pluginSummaries.find((item) => item.pluginId === pluginId);
+  const latest = options.latestScope ? options.scopedSnapshots?.[options.latestScope] : undefined;
+  const overviews = latest?.dependencyOverviews ?? options.dependencyOverviews ?? [];
+  const summary = (latest?.pluginSummaries ?? options.pluginSummaries).find((item) => item.pluginId === pluginId);
   const plugin = options.plugins.find((item) => item.pluginId === pluginId);
-  const targets = flattenStatusTargets(options.status.targets)
-    .filter((target) => target.pluginId === pluginId);
+  const observed = (['user', 'project'] as const).map((scope) => ({ scope,
+    snapshot: options.scopedSnapshots?.[scope],
+  }));
+  const targets = observed.flatMap(({ scope, snapshot }) =>
+    flattenStatusTargets((snapshot?.payload ?? options.status).targets)
+      .filter((target) => target.scope === scope && target.pluginId === pluginId));
   const roots = [...(options.projectInventory?.declaredRoots ?? []),
-    ...(options.projectInventory?.extraInstalledRoots ?? [])]
+    ...(options.projectInventory?.extraInstalledRoots ?? []),
+    ...Object.values(options.scopedInventories ?? {}).flatMap((inventory) => [
+      ...inventory.declaredRoots, ...inventory.extraInstalledRoots,
+    ])]
     .filter((root) => root.pluginId === pluginId);
   const dependencies = [...(options.projectInventory?.declaredRoots ?? []),
-    ...(options.projectInventory?.extraInstalledRoots ?? [])]
+    ...(options.projectInventory?.extraInstalledRoots ?? []),
+    ...Object.values(options.scopedInventories ?? {}).flatMap((inventory) => [
+      ...inventory.declaredRoots, ...inventory.extraInstalledRoots,
+    ])]
     .flatMap((root) => root.dependencies.filter((item) => item.pluginId === pluginId));
-  const graph = relationFacts(options.dependencyOverviews ?? []);
+  const graph = relationFacts(overviews, observed.map(({ scope, snapshot }) => ({ scope,
+    overviews: snapshot?.dependencyOverviews ?? options.dependencyOverviews ?? [],
+  })));
   if (!summary && !plugin && targets.length === 0 && roots.length === 0
     && dependencies.length === 0 && !graph.ids.has(pluginId)) return undefined;
 
@@ -132,18 +199,25 @@ export function buildPluginDetailSubject(options: {
   const displayName = summary?.displayName ?? summary?.pluginName ?? plugin?.displayName
     ?? roots[0]?.displayName ?? dependencies[0]?.displayName ?? graph.names.get(pluginId)
     ?? targets[0]?.pluginName ?? pluginId.split('/').at(-1) ?? pluginId;
-  const revisions = new Map((options.targetRevisions ?? [])
-    .filter((item) => item.pluginId === pluginId)
+  const revisions = new Map(observed.flatMap(({ scope, snapshot }) =>
+    (snapshot?.targetRevisions ?? options.targetRevisions ?? [])
+      .filter((item) => item.scope === scope && item.pluginId === pluginId))
     .map((item) => [`${item.platform}\0${item.scope}`, item.revision]));
   const placements = new Map<string, PluginDetailPlacement>();
-  const ensure = (platform: PlatformName, scope: Scope): PluginDetailPlacement => {
-    const key = `${platform}\0${scope}`;
+  const ensure = (identity: { platform?: PlatformName; agent?: AgentId;
+    delivery?: 'native' | 'agent-skills' }, scope: Scope): PluginDetailPlacement => {
+    const resolvedAgent = identity.agent ?? (identity.platform ? agentForPlatform(identity.platform) : undefined);
+    const resolvedDelivery = identity.delivery ?? (identity.platform ? 'native' : undefined);
+    const key = placementIdentity({ ...identity, agent: resolvedAgent, delivery: resolvedDelivery, scope });
     const current = placements.get(key);
     if (current) return current;
     const placement: PluginDetailPlacement = {
-      platform,
+      ...identity,
+      ...(resolvedAgent ? { agent: resolvedAgent } : {}),
+      ...(resolvedDelivery ? { delivery: resolvedDelivery } : {}),
       scope,
-      platformLabel: platformLabel(platform),
+      platformLabel: identity.platform ? platformLabel(identity.platform)
+        : resolvedAgent ? agentLabel(resolvedAgent) : '目标',
       scopeLabel: scopeLabel(scope),
       observation: 'unknown',
       declared: false,
@@ -158,7 +232,8 @@ export function buildPluginDetailSubject(options: {
     const intent = statusTargetIntent(target);
     const actual = hasActualScopeEvidence(target);
     if (target.state === 'absent' && !actual && !intent.scopes.includes(target.scope)) continue;
-    const placement = ensure(target.platform, target.scope);
+    const placement = ensure({ platform: target.platform, agent: agentForPlatform(target.platform),
+      delivery: 'native' }, target.scope);
     const unobserved = statusTargetSharedNative(target)?.state === 'unobserved'
       || statusTargetActivation(target)?.evidence === 'unobserved'
       || statusTargetOwnershipState(target) === 'error';
@@ -173,23 +248,51 @@ export function buildPluginDetailSubject(options: {
   }
   for (const root of roots) {
     for (const target of root.targets) {
-      const placement = ensure(target.platform, target.scope);
+      if (target.delivery === 'agent-skills' && target.state === 'pending' && !target.actual) continue;
+      const placement = ensure({ ...(target.platform ? { platform: target.platform } : {}),
+        ...(target.agent ? { agent: target.agent } : {}),
+        ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
       placement.projectState = target.state;
+      if (target.delivery === 'agent-skills') {
+        placement.observation = target.observation ?? 'unknown';
+        placement.actual ||= target.actual === true;
+      }
+      if (target.state === 'unknown' || target.state === 'blocked') {
+        placement.observation = 'unknown';
+        placement.statusState = target.state === 'blocked' ? 'blocked' : undefined;
+      }
       placement.declared ||= root.section === 'declared';
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
-      const revision = revisions.get(`${target.platform}\0${target.scope}`);
+      const revision = target.platform ? revisions.get(`${target.platform}\0${target.scope}`) : undefined;
       if (revision?.installedVersion) placement.installedVersion = revision.installedVersion;
     }
   }
   for (const dependency of dependencies) {
     for (const target of dependency.targets) {
-      const placement = ensure(target.platform, target.scope);
+      if (target.delivery === 'agent-skills' && target.state === 'pending' && !target.actual) continue;
+      const key = target.platform ? `${target.platform}\0${target.scope}` : undefined;
+      // A later direct scope observation takes precedence over an older shared dependency check.
+      if (target.location === 'sharedUser' && options.latestScope === target.scope
+        && options.scopedSnapshots?.[target.scope]) continue;
+      const placement = ensure({ ...(target.platform ? { platform: target.platform } : {}),
+        ...(target.agent ? { agent: target.agent } : {}),
+        ...(target.delivery ? { delivery: target.delivery } : {}) }, target.scope);
       placement.projectState = target.state;
+      if (target.delivery === 'agent-skills') {
+        placement.observation = target.observation ?? 'unknown';
+        placement.actual ||= target.actual === true;
+      }
       placement.sharedWithCurrentProject ||= target.location === 'sharedUser';
       placement.reasonCodes = [...new Set([...placement.reasonCodes, ...target.reasonCodes])];
-      const revision = revisions.get(`${target.platform}\0${target.scope}`);
-      if (revision?.installedVersion) placement.installedVersion = revision.installedVersion;
+      if (!target.platform || !targets.some((entry) => entry.platform === target.platform && entry.scope === target.scope)) {
+        placement.observation = target.delivery === 'agent-skills' ? target.observation ?? 'unknown'
+          : target.state === 'ready' ? 'known' : 'unknown';
+        if (target.installedVersion) placement.installedVersion = target.installedVersion;
+      } else {
+        const revision = key ? revisions.get(key) : undefined;
+        if (revision?.installedVersion) placement.installedVersion = revision.installedVersion;
+      }
     }
   }
   const toRelation = (fact: RelationFact, otherId: string): PluginDetailRelation => ({
@@ -203,8 +306,8 @@ export function buildPluginDetailSubject(options: {
     .map((fact) => toRelation(fact, fact.to));
   const incoming = known.filter((fact) => fact.to === pluginId)
     .map((fact) => toRelation(fact, fact.from));
-  const overview = options.dependencyOverviews?.find((item) => item.pluginId === pluginId);
-  const source = options.status.catalog.sources.find((item) => item.id === sourceId);
+  const overview = overviews.find((item) => item.pluginId === pluginId);
+  const source = (latest?.payload ?? options.status).catalog.sources.find((item) => item.id === sourceId);
   const definitionAvailable = summary !== undefined && source !== undefined && !source.error;
   return {
     pluginId,
@@ -213,10 +316,16 @@ export function buildPluginDetailSubject(options: {
     ...(summary?.description ? { description: summary.description } : {}),
     ...(summary?.version ? { catalogVersion: summary.version } : {}),
     definitionAvailable,
+    ...(summary?.platforms ? { supportedPlatforms: summary.platforms } : {}),
+    selectedAgents: options.scopedInventories?.user?.selectedAgents ?? options.scopedInventories?.project?.selectedAgents,
     savedConfigScopes: plugin?.savedConfigScopes ?? [],
     ...(plugin ? { plugin } : {}),
+    declarations: {
+      user: declarationFact(options.scopedInventories?.user, pluginId),
+      project: declarationFact(options.scopedInventories?.project, pluginId),
+    },
     placements: [...placements.values()].sort((left, right) =>
-      `${left.platform}\0${left.scope}`.localeCompare(`${right.platform}\0${right.scope}`, 'en')),
+      placementIdentity(left).localeCompare(placementIdentity(right), 'en')),
     relations: {
       outgoing,
       incoming,

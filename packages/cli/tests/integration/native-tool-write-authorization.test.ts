@@ -4,13 +4,15 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
-import { syncWriteCommand, uninstallWriteCommand } from '../../src/commands/write-commands.js';
+import { syncWriteCommand as nativeSyncWriteCommand, uninstallWriteCommand as nativeUninstallWriteCommand } from '../../src/commands/write-commands.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
-import { listManagedCommandPackages, listManagedCommands, publishManagedCommandBindings, readInstalledCommandProducer, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
-import { readPluginIntentState, writePluginIntentState } from '../../src/utils/plugin-intent-state.js';
+import { listManagedCommandPackages, listManagedCommands, readInstalledCommandProducer, resolveManagedCommand, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
+import { readIntentFixture, writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
+import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
 import { managedCommandProducerIdentity } from '../../src/utils/managed-command-materialization.js';
 import { withResolvedCatalogPlugin } from '../../src/utils/multi-source-catalog.js';
-import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { resolvePreferencesPath, writePreferences } from '../../src/intent/deployment-preferences.js';
+import { observeIntent } from '../../src/intent/intent-store.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
@@ -25,9 +27,21 @@ vi.mock('../../src/utils/process-tree.js', async (importOriginal) => ({
   prepareWindowsJobHelper: async () => process.execPath,
 }));
 
+async function nativeWrite(command: typeof nativeSyncWriteCommand, names: string[],
+  options: Parameters<typeof nativeSyncWriteCommand>[1], runtime: Parameters<typeof nativeSyncWriteCommand>[2]) {
+  const execution = await createNativeTestExecution({ cwd: options.cwd!, scope: options.scope!, env: runtime!.env!,
+    selectedTargets: names.map((pluginId) => ({ pluginId, platform: 'claude' as const })) });
+  try { return await command(names, options, { ...runtime, executionInput: execution.executionInput }); }
+  finally { await execution.dispose(); }
+}
+const syncWriteCommand: typeof nativeSyncWriteCommand = (names, options, runtime) =>
+  nativeWrite(nativeSyncWriteCommand, names, options, runtime);
+const uninstallWriteCommand: typeof nativeUninstallWriteCommand = (names, options, runtime) =>
+  nativeWrite(nativeUninstallWriteCommand, names, options, runtime);
+
 describe('native declaration confirmation at ordinary write entries', () => {
   // Test Value Gate: projection-only tests cannot prove confirmation precedes
-  // producer, intent and platform writes. Use real CLI/catalog/installed state,
+  // producer and platform writes, while valid Intent commits independently. Use real CLI/catalog/installed state,
   // and the same accepted-plan contract used by the existing Review bridge.
   it('requires explicit confirmation for introduction, binding-only change and deletion, and rejects an old accepted plan', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -37,6 +51,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     const pluginRoot = path.join(sourceRoot, 'plugins/native-review');
     const required = nativeToolFixture();
     const preferred = nativeToolFixture({ policy: 'preferred' });
+    const scriptMarker = path.join(cwd, 'native-review-script-ran');
     const native = await createClaudeNativeTestRuntime(isolation);
     const settingsPath = path.join(native.claudeHome, 'settings.json');
     const intentOptions = { scope: 'user' as const, cwd, env };
@@ -47,7 +62,11 @@ describe('native declaration confirmation at ordinary write entries', () => {
         await fs.outputFile(path.join(pluginRoot, relative), content);
       }
       await fs.outputFile(path.join(pluginRoot, 'tools/run.mjs'), 'process.exit(0);\n');
+      await fs.outputFile(path.join(pluginRoot, 'scripts/pre-apply.mjs'),
+        `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(scriptMarker)}, 'executed');\n`);
       await createCatalogSnapshotFixture(sourceRoot, 'native-review', [], 'Native Review fixture\n', (manifest) => {
+        manifest.platforms = ['claude'];
+        manifest.scripts = { preApply: { path: './scripts/pre-apply.mjs' } };
         manifest.extensions = { permissions: [{ name: 'tool', allow: ['echo hello'] }] };
         manifest.managedCommands = {
           packages: [{ key: 'tools', sourceDir: './tools', scope: 'user', platforms: ['claude'] }],
@@ -65,45 +84,73 @@ describe('native declaration confirmation at ordinary write entries', () => {
         }
       });
     }
-    async function run(args: string[]) {
+    async function run(args: string[], json = true) {
       const output = createCapturedCliIo();
-      const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io,
+      const exitCode = await runSafeCli(json ? [...args, '--json'] : args, { cwd, env, io: output.io,
         interactive: false, nativeCliRunner: native.nativeCliRunner });
-      return { exitCode, receipt: JSON.parse(output.readStdout()), stderr: output.readStderr() };
+      return { exitCode, receipt: json ? JSON.parse(output.readStdout()) : undefined,
+        stdout: output.readStdout(), stderr: output.readStderr() };
     }
-    const publicWrite = (command: string, yes = false) => run([command, 'team/native-review',
-      '--platform', 'claude', '--scope', 'user', ...(yes ? ['--yes'] : [])]);
+    const publicWrite = (command: 'install' | 'sync' | 'reinstall', yes = false) => run([
+      'plugin', command === 'reinstall' ? 'sync' : command, 'team/native-review', '--context', 'user',
+      ...(command === 'install' ? ['--scope', 'user'] : ['--target', 'claude']),
+      ...(command === 'reinstall' ? ['--rebuild'] : []), ...(yes ? ['--yes'] : []),
+    ]);
     const sourceSync = () => run(['catalog', 'source', 'sync', 'team', '--yes']);
-    const beforeIntent = await readPluginIntentState(intentOptions);
+    await writePreferences(intentOptions, { schemaVersion: 2, kind: 'aw-deployment-preferences',
+      targets: ['claude'], exclusions: [] });
+    const beforeIntent = await readIntentFixture(intentOptions);
     await snapshot(required);
     expect(await run(['catalog', 'source', 'add', 'team', '--path', sourceRoot, '--no-auto-check']))
       .toMatchObject({ exitCode: 0 });
     expect(await sourceSync()).toMatchObject({ exitCode: 0 });
 
+    const preferencesPath = await resolvePreferencesPath(intentOptions);
+    const preferencesBefore = await fs.readFile(preferencesPath);
+    const writes = () => native.nativeCliRunner.mock.calls.filter(([call]) =>
+      call.args[0] === 'plugin' && (['install', 'uninstall', 'update'].includes(call.args[1] ?? '')
+        || call.args[1] === 'marketplace' && ['add', 'remove', 'update'].includes(call.args[2] ?? '')));
+    const writesBefore = writes().length;
     const refusedIntroduction = await publicWrite('install');
-    expect(refusedIntroduction).toMatchObject({ exitCode: 1, receipt: { overallState: 'failed' } });
+    expect(refusedIntroduction).toMatchObject({ exitCode: 1, receipt: { ok: false,
+      declarationChanged: true, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false } });
     expect(JSON.stringify(refusedIntroduction.receipt)).toContain('nativeToolAuthorizationRequired');
     expect((await listManagedCommandPackages(env)).packages).toEqual([]);
     expect(await fs.pathExists(settingsPath)).toBe(false);
-    expect(await readPluginIntentState(intentOptions)).toEqual(beforeIntent);
+    expect(beforeIntent.roots).toEqual([]);
+    expect(await observeIntent(intentOptions)).toMatchObject({ state: 'valid', value: {
+      schemaVersion: 3, roots: [{ pluginId: 'team/native-review' }],
+      sources: { team: { logicalIdentity: expect.any(String) } },
+    } });
+    expect(await fs.readFile(preferencesPath)).toEqual(preferencesBefore);
+    expect(await fs.pathExists(path.join(env.AW_HOME!, 'plugin-config/team/native-review/config.json'))).toBe(false);
+    expect(await fs.pathExists(path.join(env.AW_HOME!, 'marketplaces/team'))).toBe(false);
+    expect(await fs.pathExists(scriptMarker)).toBe(false);
+    expect(writes()).toHaveLength(writesBefore);
 
-    expect(await publicWrite('install', true)).toMatchObject({ exitCode: 0, receipt: { overallState: 'succeeded' } });
+    const installedText = await run(['plugin', 'install', 'team/native-review',
+      '--scope', 'user', '--context', 'user', '--yes'], false);
+    expect(installedText.exitCode, installedText.stdout).toBe(0);
+    expect(await fs.readFile(scriptMarker, 'utf8')).toBe('executed');
+    await fs.remove(scriptMarker);
+    expect(installedText.stdout).toContain('原生工具 team/native-review after: job · aw.windows-job.v1 · managed-command-set/tools · win32 · required');
     const installed = (await listManagedCommandPackages(env)).packages[0]!;
     const initialProducer = await readInstalledCommandProducer(installed.resourceRoot);
     const initialSettings = await fs.readFile(settingsPath, 'utf8');
-    const initialIntent = await readPluginIntentState(intentOptions);
+    const initialIntent = await readIntentFixture(intentOptions);
     expect(initialProducer.nativeTools).toEqual(required.closure);
     async function unchanged() {
       expect(await readInstalledCommandProducer(installed.resourceRoot)).toEqual(initialProducer);
       expect(await fs.readFile(settingsPath, 'utf8')).toBe(initialSettings);
-      expect(await readPluginIntentState(intentOptions)).toEqual(initialIntent);
+      expect(await readIntentFixture(intentOptions)).toEqual(initialIntent);
+      expect(await fs.pathExists(scriptMarker)).toBe(false);
     }
 
     await snapshot(preferred);
     expect(await sourceSync()).toMatchObject({ exitCode: 0 });
-    for (const command of ['sync', 'reinstall']) {
+    for (const command of ['sync', 'reinstall'] as const) {
       const refused = await publicWrite(command);
-      expect(refused).toMatchObject({ exitCode: 1, receipt: { overallState: 'failed' } });
+      expect(refused).toMatchObject({ exitCode: 1, receipt: { ok: false } });
       expect(JSON.stringify(refused.receipt)).toContain('nativeToolAuthorizationRequired');
       await unchanged();
     }
@@ -125,16 +172,21 @@ describe('native declaration confirmation at ordinary write entries', () => {
     });
     expect(accepted.overallState, JSON.stringify(accepted)).toBe('succeeded');
     const changedProducer = await readInstalledCommandProducer(installed.resourceRoot);
+    expect(await fs.readFile(scriptMarker, 'utf8')).toBe('executed');
+    await fs.remove(scriptMarker);
     expect(changedProducer.nativeTools!.definitions).toEqual(initialProducer.nativeTools!.definitions);
     expect(changedProducer.nativeTools!.consumers[0]!.tools[0]).toMatchObject({ policy: 'preferred', fallback: 'portable-two' });
 
     await snapshot(undefined);
     expect(await sourceSync()).toMatchObject({ exitCode: 0 });
     const refusedDeletion = await publicWrite('sync');
-    expect(refusedDeletion).toMatchObject({ exitCode: 1, receipt: { overallState: 'failed' } });
+    expect(refusedDeletion).toMatchObject({ exitCode: 1, receipt: { ok: false } });
     expect(JSON.stringify(refusedDeletion.receipt)).toContain('nativeToolAuthorizationRequired');
     expect(await readInstalledCommandProducer(installed.resourceRoot)).toEqual(changedProducer);
-    expect(await publicWrite('sync', true)).toMatchObject({ exitCode: 0, receipt: { overallState: 'succeeded' } });
+    const removedText = await run(['plugin', 'sync', 'team/native-review', '--target', 'claude',
+      '--context', 'user', '--yes'], false);
+    expect(removedText.exitCode, removedText.stdout).toBe(0);
+    expect(removedText.stdout).toContain('原生工具 team/native-review before: job · aw.windows-job.v1 · managed-command-set/tools · win32 · preferred · fallback=portable-two');
     expect((await readInstalledCommandProducer(installed.resourceRoot)).nativeTools).toBeUndefined();
   });
 
@@ -151,6 +203,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     await fs.outputFile(path.join(pluginRoot, 'skills/provider/SKILL.md'), '---\nname: provider\ndescription: Native removal fixture.\n---\n{{aw.command:tools/run}}\n');
     await fs.outputFile(path.join(pluginRoot, 'skills/provider/run.mjs'), 'process.exit(0);\n');
     const configure: NonNullable<Parameters<typeof createCatalogSnapshotFixture>[4]> = (manifest) => {
+      manifest.platforms = ['claude'];
       manifest.skills = './skills';
       manifest.managedCommands = { packages: [], sets: [{ set: 'tools',
         producer: { kind: 'static-skill', platform: 'claude', skillKey: 'provider' }, mode: 'static',
@@ -174,45 +227,53 @@ describe('native declaration confirmation at ordinary write entries', () => {
     }
     expect(await run(['catalog', 'source', 'add', 'team', '--path', sourceRoot, '--no-auto-check'])).toMatchObject({ exitCode: 0 });
     expect(await run(['catalog', 'source', 'sync', 'team'])).toMatchObject({ exitCode: 0 });
-    const selection = ['team/native-removal', '--platform', 'claude', '--scope', 'user'];
-    const installed = await run(['install', ...selection, '--yes']);
-    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, receipt: { overallState: 'succeeded' } });
+    await writePreferences({ scope: 'user', cwd, env }, { schemaVersion: 2, kind: 'aw-deployment-preferences',
+      targets: ['claude'], exclusions: [] });
+    const selection = ['team/native-removal', '--scope', 'user', '--context', 'user'];
+    const installed = await run(['plugin', 'install', ...selection, '--yes']);
+    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, receipt: { ok: true } });
     const command = (await listManagedCommands(env)).commands[0]!;
     const before = await readInstalledCommandProducer(command.resourceRoot!);
+    const installedNative = await fs.readJson(native.installedPath);
     const intentOptions = { cwd, env, scope: 'user' as const };
     expect(before.nativeTools).toEqual(fixture.closure);
     const preview = await uninstallWriteCommand(['team/native-removal'], { cwd, platform: 'claude', scope: 'user' },
       { ...native.runtime, previewOperationPlan: true });
     expect(preview.operationPlan!.actions.flatMap((action) => action.nativeToolChanges ?? [])).toEqual([]);
-    const removed = await run(['uninstall', ...selection]);
-    expect(removed, JSON.stringify(removed)).toMatchObject({ exitCode: 0, receipt: { overallState: 'succeeded' } });
+    const removed = await run(['plugin', 'remove', ...selection]);
+    expect(removed, JSON.stringify(removed)).toMatchObject({ exitCode: 0, receipt: { ok: true } });
     expect(removed.receipt.nativeToolChanges ?? []).toEqual([]);
     expect(await readInstalledCommandProducer(command.resourceRoot!)).toEqual(before);
     expect((await resolveManagedCommand(command.id, env)).producer!.nativeTools).toEqual(fixture.closure);
-    expect((await fs.readJson(native.installedPath)).plugins['native-removal@aw'] ?? []).toEqual([]);
-    expect((await readPluginIntentState(intentOptions)).roots).toEqual([]);
+    expect(await fs.readJson(native.installedPath)).toEqual(installedNative);
+    expect((await readIntentFixture(intentOptions)).roots).toEqual([]);
   });
 
-  // Test Value Gate: shared native Skill retention cannot prove the opposite
-  // boundary. A real owned Skill and binding must survive a refused public
-  // uninstall, then disappear together after the existing --yes confirmation.
-  it('requires confirmation before removing an AW-owned native Skill producer', async () => {
+  // Test Value Gate: a retained Native Skill does not exercise deletion of AW-owned
+  // command resources. A real command package must survive an unconfirmed removal,
+  // then disappear with its binding after the existing --yes confirmation.
+  it.each(['id', 'selector', 'force'] as const)('requires confirmation and reports removal of an owned command package through %s', async (entry) => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const env = isolation.env;
+    await fs.ensureDir(path.join(cwd, '.git'));
     const sourceRoot = path.join(cwd, 'owned-native-source');
     const fixture = nativeToolFixture();
     const pluginRoot = path.join(sourceRoot, 'plugins/owned-native');
+    const packageSource = path.join(pluginRoot, 'tools');
     for (const [relative, content] of Object.entries(fixture.files)) {
       await fs.outputFile(path.join(pluginRoot, relative), content);
+      await fs.outputFile(path.join(packageSource, relative), content);
     }
-    await fs.outputFile(path.join(pluginRoot, 'scripts/render.mjs'), 'throw new Error("uninstall must not render");\n');
+    await fs.outputFile(path.join(packageSource, 'run.mjs'), 'process.exit(0);\n');
     await createCatalogSnapshotFixture(sourceRoot, 'owned-native', [], 'Owned native fixture\n', (manifest) => {
-      manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
-      manifest.artifacts = { targets: [{ id: 'owned', platform: 'claude', scopes: ['project'],
-        target: 'claude.skill', states: ['present'], refreshKeys: [], skillKey: 'owned' }] };
-      manifest.managedCommands = { packages: [], sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'owned' },
-        mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'run.mjs' }] }] };
+      manifest.platforms = ['claude'];
+      manifest.extensions = { permissions: [{ name: 'tool', allow: ['echo hello'] }] };
+      manifest.managedCommands = {
+        packages: [{ key: 'tools', sourceDir: './tools', scope: 'project', platforms: ['claude'] }],
+        sets: [{ set: 'tools', producer: { kind: 'package', packageKey: 'tools' },
+          mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'run.mjs' }] }],
+      };
       manifest.nativeTools = { reader: fixture.closure.reader, definitions: fixture.closure.definitions.map((definition) => ({
         key: definition.key, protocol: definition.protocol,
       })), consumers: structuredClone(fixture.closure.consumers) };
@@ -227,37 +288,39 @@ describe('native declaration confirmation at ordinary write entries', () => {
     expect(await run(['catalog', 'source', 'add', 'team', '--path', sourceRoot, '--no-auto-check'])).toMatchObject({ exitCode: 0 });
     expect(await run(['catalog', 'source', 'sync', 'team'])).toMatchObject({ exitCode: 0 });
     const producer = await withResolvedCatalogPlugin({ selector: 'team/owned-native', cliVersion: '1.0.0', env,
-      consume: ({ plugin }) => managedCommandProducerIdentity({ plugin, producer: { kind: 'artifact', artifactId: 'owned' },
-        platform: 'claude', scope: 'project', cwd }) });
-    const skillsRoot = path.join(cwd, '.claude/skills');
-    const resourceRoot = path.join(skillsRoot, 'owned');
-    await fs.outputFile(path.join(resourceRoot, 'SKILL.md'), '---\nname: owned\ndescription: Owned native fixture.\n---\n');
-    await fs.outputFile(path.join(resourceRoot, 'run.mjs'), 'process.exit(0);\n');
-    for (const [relative, content] of Object.entries(fixture.files)) {
-      await fs.outputFile(path.join(resourceRoot, relative), content);
-    }
-    await writeSkillOwnerMarker({ skillRoot: resourceRoot, allowedRoot: skillsRoot,
-      identity: { owner: 'agent-workflows', sourceId: producer.sourceId, sourceIdentity: producer.sourceIdentity,
-        pluginId: 'team/owned-native', plugin: 'owned-native', artifactKey: 'owned', platform: 'claude', scope: 'project' } });
-    const [id] = await publishManagedCommandBindings({ producer, resourceRoot, nativeTools: fixture.closure,
+      consume: ({ plugin }) => managedCommandProducerIdentity({ plugin, producer: { kind: 'package', packageKey: 'tools' },
+        scope: 'project', cwd }) });
+    const installed = await syncManagedCommandPackage({ producer, sourceDirectory: packageSource,
+      nativeTools: fixture.closure,
       sets: [{ set: 'tools', state: 'present', entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'run.mjs' })] }], env });
+    const id = installed.commandIds[0]!;
+    const resourceRoot = installed.resourceRoot;
     const intentOptions = { cwd, env, scope: 'project' as const };
-    const beforeIntent = await writePluginIntentState(intentOptions, { schemaVersion: 2, kind: 'aw-plugin-intents',
-      roots: [{ pluginId: 'team/owned-native', platforms: ['claude'] }], dependencyScopeOverrides: [] });
+    await writeIntentFixture(intentOptions, { roots: [{ pluginId: 'team/owned-native' }], targets: ['claude'] });
+    const beforeIntent = await readIntentFixture(intentOptions);
+    const preferencesPath = await resolvePreferencesPath(intentOptions);
+    const beforePreferences = await fs.readFile(preferencesPath);
+    const beforePayload = await fs.readFile(path.join(resourceRoot, 'run.mjs'));
     const before = await readInstalledCommandProducer(resourceRoot);
-    expect((await resolveManagedCommand(id!, env)).producer).toEqual(before);
-    const selection = ['team/owned-native', '--platform', 'claude', '--scope', 'project'];
-    const refused = await run(['uninstall', ...selection]);
-    expect(refused, JSON.stringify(refused)).toMatchObject({ exitCode: 1, receipt: { overallState: 'failed' } });
-    expect(JSON.stringify(refused.receipt)).toContain('nativeToolAuthorizationRequired');
+    expect((await resolveManagedCommand(id, env)).producer).toEqual(before);
+    const request = ['command', 'package', 'remove',
+      ...(entry === 'selector' ? ['team/owned-native', 'tools', '--scope', 'project'] : [installed.id]),
+      ...(entry === 'force' ? ['--force'] : []),
+    ];
+    const refused = await run(request);
+    expect(refused, JSON.stringify(refused)).toMatchObject({ exitCode: 2, receipt: { ok: false,
+      errors: [{ code: 'invalidArguments', message: 'This write requires --yes in non-interactive mode.' }] } });
     expect(await readInstalledCommandProducer(resourceRoot)).toEqual(before);
-    expect((await resolveManagedCommand(id!, env)).producer).toEqual(before);
-    expect(await readPluginIntentState(intentOptions)).toEqual(beforeIntent);
-    const removed = await run(['uninstall', ...selection, '--yes']);
-    expect(removed, JSON.stringify(removed)).toMatchObject({ exitCode: 0, receipt: { overallState: 'succeeded' } });
+    expect((await resolveManagedCommand(id, env)).producer).toEqual(before);
+    expect(await readIntentFixture(intentOptions)).toEqual(beforeIntent);
+    expect(await fs.readFile(preferencesPath)).toEqual(beforePreferences);
+    expect(await fs.readFile(path.join(resourceRoot, 'run.mjs'))).toEqual(beforePayload);
+    const removed = await run([...request, '--yes']);
+    expect(removed, JSON.stringify(removed)).toMatchObject({ exitCode: 0, receipt: { ok: true } });
     expect(removed.receipt.nativeToolChanges).toEqual([{ producer, before: fixture.closure, after: null }]);
     expect(await fs.pathExists(resourceRoot)).toBe(false);
-    await expect(resolveManagedCommand(id!, env)).rejects.toMatchObject({ code: 'commandNotFound' });
-    expect((await readPluginIntentState(intentOptions)).roots).toEqual([]);
+    await expect(resolveManagedCommand(id, env)).rejects.toMatchObject({ code: 'commandNotFound' });
+    expect(await readIntentFixture(intentOptions)).toEqual(beforeIntent);
+    expect(await fs.readFile(preferencesPath)).toEqual(beforePreferences);
   });
 });

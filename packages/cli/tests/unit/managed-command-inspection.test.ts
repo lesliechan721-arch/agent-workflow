@@ -25,7 +25,7 @@ describe('managed command read-only inspection', () => {
       requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', delivery: { mode: 'aw-extension' }, scopes: ['project'], states: ['present'], refreshKeys: [], skillKey: 'provider' }] },
+      artifacts: { targets: [{ id: 'provider', platform: 'codex', target: 'codex.skill', scopes: ['project'], states: ['present'], refreshKeys: [], skillKey: 'provider' }] },
       managedCommands: { sets: [{ set: 'tools', producer: { kind: 'artifact', artifactId: 'provider' }, mode: 'static', entries: [{ key: 'run', runner: 'node', entry: 'tool.mjs' }] }] },
       extensions: { permissions: [{ name: 'managed', allow: [{ command: { set: 'tools', key: 'run' }, argsPrefix: ['start'] }] }] },
     });
@@ -34,7 +34,11 @@ describe('managed command read-only inspection', () => {
     const bindings = path.join(isolated.layout.awHomeDir, 'commands', 'bindings');
     const damagedPath = path.join(bindings, `cmdp_${'0'.repeat(16)}.json`);
     if (bindingState === 'damaged') await fs.outputFile(damagedPath, '{broken');
-    const context = createCommandExecutionContext({ env: isolated.env, nativeCliRunner: async () => { throw new Error('Inspection must not invoke native CLI.'); } });
+    const context = createCommandExecutionContext({ env: isolated.env, nativeCliRunner: async (invocation) => {
+      if (invocation.args.includes('--version')) return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
+      if (invocation.args.includes('--json')) return { exitCode: 0, stdout: '{"installed":[],"available":[]}', stderr: '' };
+      throw new Error('Inspection must not mutate native state.');
+    } });
     const integration = createRebuildIntegration({ context });
     const common = { plugin, platform: 'codex' as const, scope: 'project' as const, cwd: isolated.layout.fixtureCwd,
       catalog: { rootDir: isolated.layout.fixtureCwd, source: 'local' as const } };

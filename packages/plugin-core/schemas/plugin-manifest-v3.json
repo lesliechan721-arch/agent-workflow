@@ -13,6 +13,21 @@
     },
     "version": { "$ref": "#/$defs/semver" },
     "description": { "type": "string", "minLength": 1 },
+    "platforms": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "codex",
+          "claude",
+          "antigravity",
+          "cursor",
+          "opencode",
+          "pi",
+          "generic"
+        ]
+      }
+    },
     "dependencies": {
       "type": "array",
       "maxItems": 64,
@@ -27,7 +42,6 @@
     "slashCommands": { "$ref": "#/$defs/pluginPath" },
     "mcpServers": { "$ref": "#/$defs/pluginPath" },
     "apps": { "$ref": "#/$defs/pluginPath" },
-    "distributions": { "$ref": "#/$defs/distributions" },
     "marketplace": { "$ref": "#/$defs/marketplace" },
     "interface": { "$ref": "#/$defs/interface" },
     "extensions": { "$ref": "#/$defs/extensions" },
@@ -39,6 +53,70 @@
     "config": { "$ref": "#/$defs/config" }
   },
   "$defs": {
+    "configV5": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "fields"
+      ],
+      "properties": {
+        "fields": {
+          "$ref": "#/$defs/configV4/properties/fields"
+        },
+        "presentation": {
+          "$ref": "#/$defs/configV4/properties/presentation"
+        },
+        "schemaVersion": {
+          "const": 5
+        },
+        "definitions": {
+          "$ref": "#/$defs/configV4/properties/definitions"
+        },
+        "platforms": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "codex": {
+              "$ref": "#/$defs/configPlatformProfile"
+            },
+            "claude": {
+              "$ref": "#/$defs/configPlatformProfile"
+            },
+            "antigravity": {
+              "$ref": "#/$defs/configPlatformProfile"
+            },
+            "cursor": {
+              "$ref": "#/$defs/configPlatformProfile"
+            },
+            "opencode": {
+              "$ref": "#/$defs/configPlatformProfile"
+            },
+            "pi": {
+              "$ref": "#/$defs/configPlatformProfile"
+            },
+            "generic": {
+              "$ref": "#/$defs/configPlatformProfile"
+            }
+          }
+        }
+      }
+    },
+    "configPlatformProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "definitions": {
+          "$ref": "#/$defs/configV4/properties/definitions"
+        },
+        "fields": {
+          "$ref": "#/$defs/configV4/properties/fields"
+        },
+        "presentation": {
+          "$ref": "#/$defs/configV4/properties/presentation"
+        }
+      }
+    },
     "nativeToolBinding": {
       "oneOf": [
         {
@@ -607,41 +685,49 @@
         }
       }
     },
-    "distributions": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "agentSkills": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "skills": { "$ref": "#/$defs/pluginPath" }
-          }
-        }
-      }
-    },
     "marketplace": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["category", "strict", "policy"],
+      "required": [
+        "category",
+        "strict",
+        "policy"
+      ],
       "properties": {
-        "category": { "type": "string", "minLength": 1 },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
         "tags": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "strict": { "type": "boolean" },
+        "strict": {
+          "type": "boolean"
+        },
         "policy": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["installation", "authentication"],
+          "required": [
+            "installation",
+            "authentication"
+          ],
           "properties": {
-            "installation": { "enum": ["AVAILABLE", "NOT_AVAILABLE", "INSTALLED_BY_DEFAULT"] },
-            "authentication": { "enum": ["ON_INSTALL", "ON_USE"] },
-            "products": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": { "type": "string", "minLength": 1 }
+            "installation": {
+              "enum": [
+                "AVAILABLE",
+                "NOT_AVAILABLE",
+                "INSTALLED_BY_DEFAULT"
+              ]
+            },
+            "authentication": {
+              "enum": [
+                "ON_INSTALL",
+                "ON_USE"
+              ]
             }
           }
         }
@@ -727,20 +813,6 @@
       "type": "object", "additionalProperties": false, "required": ["plugin", "export"],
       "properties": { "plugin": { "type": "string" }, "export": { "type": "string" } }
     },
-    "codexSkillDelivery": {
-      "oneOf": [
-        {
-          "type": "object", "additionalProperties": false, "required": ["mode", "identity", "renderProfile"],
-          "properties": {
-            "mode": { "const": "codex-native" }, "identity": { "const": "shared" }, "renderProfile": { "const": "user" }
-          }
-        },
-        {
-          "type": "object", "additionalProperties": false, "required": ["mode"],
-          "properties": { "mode": { "const": "aw-extension" } }
-        }
-      ]
-    },
     "artifactRuntimeImports": {
       "type": "array", "items": {
         "type": "object", "additionalProperties": false, "required": ["name", "plugin", "export"],
@@ -762,35 +834,332 @@
     "artifactTarget": {
       "oneOf": [
         {
-          "type": "object", "additionalProperties": false,
-          "required": ["id", "scopes", "target", "states", "refreshKeys", "delivery"],
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "scopes",
+            "target",
+            "states",
+            "refreshKeys",
+            "platform"
+          ],
           "properties": {
-            "id": { "type": "string" }, "platform": { "enum": ["codex", "claude"] },
-            "distribution": { "const": "agent-skills" }, "scopes": { "type": "array", "items": { "enum": ["user", "project"] } },
-            "target": { "const": "codex.skill" }, "kind": { "enum": ["instruction", "codexRole", "skill"] },
-            "projectManagedKind": { "enum": ["skill", "mcpServer", "instruction", "permission", "hook", "agent"] },
-            "states": { "type": "array", "items": { "enum": ["present", "disabled"] } },
-            "refreshKeys": { "$ref": "#/$defs/stringArray" }, "requiresCodexProjectConfig": { "type": "boolean" },
-            "delivery": { "$ref": "#/$defs/codexSkillDelivery" },
-            "roleKey": { "type": "string" }, "skillKey": { "type": "string" }, "sourceDirs": { "$ref": "#/$defs/stringArray" },
-            "runtimeImports": { "$ref": "#/$defs/artifactRuntimeImports" },
-            "runtimeConfig": { "$ref": "#/$defs/runtimeConfig" }
+            "id": {
+              "type": "string"
+            },
+            "platform": {
+              "const": "codex"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "user",
+                  "project"
+                ]
+              }
+            },
+            "target": {
+              "const": "codex.skill"
+            },
+            "kind": {
+              "enum": [
+                "instruction",
+                "codexRole",
+                "skill"
+              ]
+            },
+            "projectManagedKind": {
+              "enum": [
+                "skill",
+                "mcpServer",
+                "instruction",
+                "permission",
+                "hook",
+                "agent"
+              ]
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "present",
+                  "disabled"
+                ]
+              }
+            },
+            "refreshKeys": {
+              "$ref": "#/$defs/stringArray"
+            },
+            "requiresCodexProjectConfig": {
+              "type": "boolean"
+            },
+            "roleKey": {
+              "type": "string"
+            },
+            "skillKey": {
+              "type": "string"
+            },
+            "sourceDirs": {
+              "$ref": "#/$defs/stringArray"
+            },
+            "runtimeImports": {
+              "$ref": "#/$defs/artifactRuntimeImports"
+            },
+            "runtimeConfig": {
+              "$ref": "#/$defs/runtimeConfig"
+            }
           }
         },
         {
-          "type": "object", "additionalProperties": false,
-          "required": ["id", "scopes", "target", "states", "refreshKeys"],
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "scopes",
+            "target",
+            "states",
+            "refreshKeys",
+            "platform"
+          ],
           "properties": {
-            "id": { "type": "string" }, "platform": { "enum": ["codex", "claude"] },
-            "distribution": { "const": "agent-skills" }, "scopes": { "type": "array", "items": { "enum": ["user", "project"] } },
-            "target": { "enum": ["codex.developerInstructionsBlock", "codex.agentRole", "claude.skill", "agent-skills.skill"] },
-            "kind": { "enum": ["instruction", "codexRole", "skill"] },
-            "projectManagedKind": { "enum": ["skill", "mcpServer", "instruction", "permission", "hook", "agent"] },
-            "states": { "type": "array", "items": { "enum": ["present", "disabled"] } },
-            "refreshKeys": { "$ref": "#/$defs/stringArray" }, "requiresCodexProjectConfig": { "type": "boolean" },
-            "roleKey": { "type": "string" }, "skillKey": { "type": "string" }, "sourceDirs": { "$ref": "#/$defs/stringArray" },
-            "runtimeImports": { "$ref": "#/$defs/artifactRuntimeImports" },
-            "runtimeConfig": { "$ref": "#/$defs/runtimeConfig" }
+            "id": {
+              "type": "string"
+            },
+            "platform": {
+              "const": "codex"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "user",
+                  "project"
+                ]
+              }
+            },
+            "target": {
+              "enum": [
+                "codex.developerInstructionsBlock",
+                "codex.agentRole"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "instruction",
+                "codexRole",
+                "skill"
+              ]
+            },
+            "projectManagedKind": {
+              "enum": [
+                "skill",
+                "mcpServer",
+                "instruction",
+                "permission",
+                "hook",
+                "agent"
+              ]
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "present",
+                  "disabled"
+                ]
+              }
+            },
+            "refreshKeys": {
+              "$ref": "#/$defs/stringArray"
+            },
+            "requiresCodexProjectConfig": {
+              "type": "boolean"
+            },
+            "roleKey": {
+              "type": "string"
+            },
+            "skillKey": {
+              "type": "string"
+            },
+            "sourceDirs": {
+              "$ref": "#/$defs/stringArray"
+            },
+            "runtimeImports": {
+              "$ref": "#/$defs/artifactRuntimeImports"
+            },
+            "runtimeConfig": {
+              "$ref": "#/$defs/runtimeConfig"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "scopes",
+            "target",
+            "states",
+            "refreshKeys",
+            "platform"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "platform": {
+              "const": "claude"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "user",
+                  "project"
+                ]
+              }
+            },
+            "target": {
+              "const": "claude.skill"
+            },
+            "kind": {
+              "enum": [
+                "instruction",
+                "codexRole",
+                "skill"
+              ]
+            },
+            "projectManagedKind": {
+              "enum": [
+                "skill",
+                "mcpServer",
+                "instruction",
+                "permission",
+                "hook",
+                "agent"
+              ]
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "present",
+                  "disabled"
+                ]
+              }
+            },
+            "refreshKeys": {
+              "$ref": "#/$defs/stringArray"
+            },
+            "requiresCodexProjectConfig": {
+              "type": "boolean"
+            },
+            "roleKey": {
+              "type": "string"
+            },
+            "skillKey": {
+              "type": "string"
+            },
+            "sourceDirs": {
+              "$ref": "#/$defs/stringArray"
+            },
+            "runtimeImports": {
+              "$ref": "#/$defs/artifactRuntimeImports"
+            },
+            "runtimeConfig": {
+              "$ref": "#/$defs/runtimeConfig"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "scopes",
+            "target",
+            "states",
+            "refreshKeys",
+            "platform",
+            "distribution"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "platform": {
+              "enum": [
+                "antigravity",
+                "cursor",
+                "opencode",
+                "pi",
+                "generic"
+              ]
+            },
+            "distribution": {
+              "const": "agent-skills"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "user",
+                  "project"
+                ]
+              }
+            },
+            "target": {
+              "const": "agent-skills.skill"
+            },
+            "kind": {
+              "enum": [
+                "instruction",
+                "codexRole",
+                "skill"
+              ]
+            },
+            "projectManagedKind": {
+              "enum": [
+                "skill",
+                "mcpServer",
+                "instruction",
+                "permission",
+                "hook",
+                "agent"
+              ]
+            },
+            "states": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "present",
+                  "disabled"
+                ]
+              }
+            },
+            "refreshKeys": {
+              "$ref": "#/$defs/stringArray"
+            },
+            "requiresCodexProjectConfig": {
+              "type": "boolean"
+            },
+            "roleKey": {
+              "type": "string"
+            },
+            "skillKey": {
+              "type": "string"
+            },
+            "sourceDirs": {
+              "$ref": "#/$defs/stringArray"
+            },
+            "runtimeImports": {
+              "$ref": "#/$defs/artifactRuntimeImports"
+            },
+            "runtimeConfig": {
+              "$ref": "#/$defs/runtimeConfig"
+            }
           }
         }
       ]
@@ -811,42 +1180,281 @@
       "properties": { "include": { "$ref": "#/$defs/stringArray" }, "exclude": { "$ref": "#/$defs/stringArray" } }
     },
     "buildConfig": {
-      "type": "object", "additionalProperties": false,
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "cacheable": { "const": true },
+        "cacheable": {
+          "const": true
+        },
         "templates": {
-          "type": "object", "additionalProperties": false, "required": ["vars", "include"],
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "vars",
+            "include"
+          ],
           "properties": {
-            "vars": { "type": "object", "additionalProperties": { "$ref": "#/$defs/platformTemplateValue" } },
-            "include": { "$ref": "#/$defs/stringArray" }
+            "vars": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/platformTemplateValue"
+              }
+            },
+            "include": {
+              "$ref": "#/$defs/stringArray"
+            }
           }
         },
         "fileRules": {
-          "type": "object", "additionalProperties": false,
-          "properties": { "claude": { "$ref": "#/$defs/fileRules" }, "codex": { "$ref": "#/$defs/fileRules" } }
-        },
-        "manifestOverrides": {
-          "type": "object", "additionalProperties": false,
+          "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "claude": {
-              "type": "object", "additionalProperties": false,
-              "properties": { "commands": { "type": "string" }, "outputStyles": { "type": "string" }, "lspServers": {}, "userConfig": {}, "channels": {} }
+            "codex": {
+              "$ref": "#/$defs/fileRules"
             },
-            "codex": { "type": "object", "maxProperties": 0 }
+            "claude": {
+              "$ref": "#/$defs/fileRules"
+            },
+            "antigravity": {
+              "$ref": "#/$defs/fileRules"
+            },
+            "cursor": {
+              "$ref": "#/$defs/fileRules"
+            },
+            "opencode": {
+              "$ref": "#/$defs/fileRules"
+            },
+            "pi": {
+              "$ref": "#/$defs/fileRules"
+            },
+            "generic": {
+              "$ref": "#/$defs/fileRules"
+            }
           }
         },
-        "runtimeExports": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["name", "source", "requires"], "properties": { "name": { "type": "string" }, "source": { "type": "string" }, "requires": { "$ref": "#/$defs/runtimeExportRequires" } } } },
-        "buildImports": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["plugin", "export", "env"], "properties": { "plugin": { "type": "string" }, "export": { "type": "string" }, "env": { "type": "string" } } } },
-        "skillRuntimeFiles": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["skill", "target"], "properties": { "skill": { "type": "string" }, "target": { "type": "string" }, "platforms": { "type": "array", "items": { "enum": ["codex", "claude"] } }, "distributions": { "type": "array", "items": { "const": "agent-skills" } }, "source": { "type": "string" }, "import": { "$ref": "#/$defs/importReference" } } } },
-        "generatedSkillRuntimeFiles": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["skill", "target"], "properties": { "skill": { "type": "string" }, "target": { "type": "string" }, "distributions": { "type": "array", "items": { "const": "agent-skills" } } } } }
+        "manifestOverrides": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "claude": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "commands": {
+                  "type": "string"
+                },
+                "outputStyles": {
+                  "type": "string"
+                },
+                "lspServers": {},
+                "userConfig": {},
+                "channels": {}
+              }
+            },
+            "codex": {
+              "type": "object",
+              "maxProperties": 0
+            }
+          }
+        },
+        "runtimeExports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "source",
+              "requires"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "requires": {
+                "$ref": "#/$defs/runtimeExportRequires"
+              }
+            }
+          }
+        },
+        "buildImports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "plugin",
+              "export",
+              "env"
+            ],
+            "properties": {
+              "plugin": {
+                "type": "string"
+              },
+              "export": {
+                "type": "string"
+              },
+              "env": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "skillRuntimeFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "skill",
+              "target"
+            ],
+            "properties": {
+              "skill": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "platforms": {
+                "type": "array",
+                          "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "codex",
+                    "claude",
+                    "antigravity",
+                    "cursor",
+                    "opencode",
+                    "pi",
+                    "generic"
+                  ]
+                }
+              },
+              "source": {
+                "type": "string"
+              },
+              "import": {
+                "$ref": "#/$defs/importReference"
+              }
+            }
+          }
+        },
+        "generatedSkillRuntimeFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "skill",
+              "target"
+            ],
+            "properties": {
+              "skill": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "platforms": {
+                "type": "array",
+                          "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "codex",
+                    "claude",
+                    "antigravity",
+                    "cursor",
+                    "opencode",
+                    "pi",
+                    "generic"
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "platformTemplateValue": {
-      "type": "object", "additionalProperties": false, "required": ["claude", "codex"],
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "claude": { "anyOf": [{ "type": "string" }, { "type": "boolean" }] },
-        "codex": { "anyOf": [{ "type": "string" }, { "type": "boolean" }] }
-      }
+        "codex": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "claude": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "antigravity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "opencode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "pi": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "generic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        }
+      },
+      "minProperties": 1
     },
     "scriptEntry": {
       "type": "object", "additionalProperties": false, "required": ["runner", "path"],
@@ -1418,7 +2026,22 @@
         }
       }
     },
-    "config": {"oneOf": [{"$ref": "#/$defs/configV2"}, {"$ref": "#/$defs/configV3"}, {"$ref": "#/$defs/configV4"}]},
+    "config": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/configV2"
+        },
+        {
+          "$ref": "#/$defs/configV3"
+        },
+        {
+          "$ref": "#/$defs/configV4"
+        },
+        {
+          "$ref": "#/$defs/configV5"
+        }
+      ]
+    },
     "configV4PlainStringField": {
       "type": "object",
       "additionalProperties": false,

@@ -6,6 +6,7 @@ import {
   type SelectedCaseSuiteKind,
 } from '@lesliechan721/agent-skill-eval'
 import fs from 'fs-extra'
+import { PLATFORM_TARGETS, compilePluginConfigDefinition, type PlatformTarget } from '@lesliechan721/aw-plugin-core'
 
 import type { PluginMeta, Scope } from '../types.js'
 
@@ -17,6 +18,7 @@ export interface AwSkillEvalManifestV1Defaults {
 
 export interface AwSkillEvalManifestV1Profile {
   id: string
+  platform: PlatformTarget
   scope: Scope
   plugins: Array<{ name: string; config: Record<string, unknown> }>
   configByScope?: Partial<Record<Scope, Array<{ name: string; config: Record<string, unknown> }>>>
@@ -130,7 +132,10 @@ function parseProfiles(value: unknown, ownerPlugin: string): AwSkillEvalManifest
   return Object.entries(profiles).map(([idValue, entry]) => {
     const id = safeId(idValue, 'eval manifest profile id')
     const row = record(entry, `eval manifest.profiles.${id}`)
-    onlyKeys(row, ['scope', 'plugins', 'configByScope'], `eval manifest.profiles.${id}`)
+    onlyKeys(row, ['platform', 'scope', 'plugins', 'configByScope'], `eval manifest.profiles.${id}`)
+    if (!PLATFORM_TARGETS.includes(row.platform as PlatformTarget)) {
+      throw new Error(`eval manifest.profiles.${id}.platform must be an explicit canonical platform.`)
+    }
     if (row.scope !== 'project' && row.scope !== 'user') {
       throw new Error(`eval manifest.profiles.${id}.scope must be project or user.`)
     }
@@ -167,6 +172,7 @@ function parseProfiles(value: unknown, ownerPlugin: string): AwSkillEvalManifest
     }
     const result: AwSkillEvalManifestV1Profile = {
       id,
+      platform: row.platform as PlatformTarget,
       scope: row.scope,
       plugins: pluginEntries,
       configByScope,
@@ -401,7 +407,7 @@ export function assertNoSensitiveProfileConfig(
   for (const installation of configs) {
     const plugin = byName.get(installation.name)
     if (!plugin) throw new Error(`Eval profile "${profile.id}" references unknown plugin "${installation.name}".`)
-    for (const [key, field] of Object.entries(plugin.manifest.config?.fields ?? {})) {
+    for (const [key, field] of Object.entries(compilePluginConfigDefinition(plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, profile.platform).fields)) {
       if (!Object.hasOwn(installation.config, key)) continue
       if (field.sensitive === true) {
         throw new Error(`Eval profile "${profile.id}" provides a sensitive config field for plugin "${installation.name}".`)

@@ -46,7 +46,7 @@ afterEach(async () => {
 });
 
 describe('config recovery commands', () => {
-  it('uses user stdin for required sensitive fields and keeps normal project commands', async () => {
+  it('uses stdin for secrets and the same explicit project definition context for normal fields', async () => {
     const { cwd, env } = await fixture();
     const pluginManifest = manifest({
       token: { type: 'string', required: true, sensitive: true },
@@ -63,17 +63,17 @@ describe('config recovery commands', () => {
     }).catch((failure: unknown) => failure as Error);
 
     expect(error.message).toContain(
-      'aw config set demo token --scope user --value-stdin',
+      'aw plugin config set team/demo token --context project --value-stdin',
     );
     expect(error.message).toContain(
-      "aw config set demo mode --scope project --value-json '<json>'",
+      "aw plugin config set team/demo mode --context project --value-json '<json>'",
     );
-    expect(error.message).not.toContain('demo token --scope project');
-    expect(error.message).not.toContain('demo token --scope user --value-json');
-    expect(error.message).not.toContain('demo token --scope user --preset');
+    expect(error.message).not.toContain('--scope');
+    expect(error.message).not.toContain('token --context project --value-json');
+    expect(error.message).not.toContain('token --context project --preset');
   });
 
-  it('uses user stdin for an invalid sensitive override', async () => {
+  it('uses stdin for an invalid sensitive override without exposing its saved value', async () => {
     const { cwd, env } = await fixture();
     const pluginManifest = manifest({
       token: {
@@ -97,7 +97,7 @@ describe('config recovery commands', () => {
     }).catch((failure: unknown) => failure as Error);
 
     expect(error.message).toContain(
-      'aw config set demo token --scope user --value-stdin',
+      'aw plugin config set team/demo token --context project --value-stdin',
     );
     expect(error.message).not.toContain('abc');
     expect(error.message).not.toContain('--value-json');

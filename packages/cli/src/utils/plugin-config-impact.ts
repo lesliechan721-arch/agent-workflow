@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 
 import {
-  canonicalizePluginConfigValues,
+  compilePluginConfigDefinition,
+  PLATFORM_TARGETS,
+  type PlatformTarget,
   getManagedCommandArtifactTargets,
   getPluginConfigDependencyKeys,
   stablePluginConfigStringify,
@@ -21,6 +23,7 @@ import {
 import {
   coercePluginConfigUpdates,
   readPluginConfigStore,
+  replacePluginConfigStoreLayer,
   resolveAwProjectRoot,
   resolveEffectivePluginConfigFromStores,
   type PluginConfigStore,
@@ -29,6 +32,7 @@ import {
 } from './plugin-config.js';
 import {
   analyzePluginConfigReferenceMutation,
+  collectPluginConfigReferenceEvidence,
   pluginConfigHasExternalReferences,
   resolvePluginConfigReferenceContext,
   resolvePluginConfigReferenceConsumers,
@@ -155,37 +159,15 @@ function digestStores(stores: {
   })).digest('hex')}`;
 }
 
-function cloneStore(
-  store: PluginConfigStore,
-  values: Record<string, PluginConfigValue>,
-): PluginConfigStore {
-  const canonical = canonicalizePluginConfigValues(values);
-  return {
-    path: store.path,
-    exists: Object.keys(canonical).length > 0,
-    state: Object.keys(canonical).length > 0 ? 'ready' : 'missing',
-    values: canonical,
-    issues: [],
-  };
-}
-
 function targetArtifactDeclarations(plugin: PluginMeta, target: ReceiptTargetIdentity) {
   return (plugin.manifest.artifacts?.targets ?? []).filter((declaration) =>
     declaration.platform === target.platform
-    && (declaration.target === 'codex.skill'
-      && declaration.delivery.mode === 'codex-native'
-      || declaration.scopes.includes(target.scope)));
+    && (declaration.target === 'codex.skill' || declaration.target === 'claude.skill' || declaration.scopes.includes(target.scope)));
 }
 
 function nativeDeclaration(declaration: PluginArtifactTargetDefinition):
-declaration is typeof declaration & {
-  target: 'codex.skill';
-  delivery: { mode: 'codex-native'; identity: 'shared'; renderProfile: 'user' };
-  skillKey: string;
-} {
-  return declaration.target === 'codex.skill'
-    && declaration.delivery.mode === 'codex-native'
-    && typeof declaration.skillKey === 'string';
+declaration is typeof declaration & { target: 'codex.skill' | 'claude.skill'; skillKey: string } {
+  return (declaration.target === 'codex.skill' || declaration.target === 'claude.skill') && typeof declaration.skillKey === 'string';
 }
 
 function targetConfigConsumers(plugin: PluginMeta, target: ReceiptTargetIdentity) {
@@ -304,304 +286,126 @@ function unknownImpact(options: {
 }
 
 export async function analyzePluginConfigMutationImpact(options: {
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  visibleTargets: readonly ReceiptTargetIdentity[];
-  mutation: PluginConfigImpactMutation;
-  commandDiscovery?: ManagedCommandPackageDiscovery;
-  referencePlugins?: readonly PluginMeta[];
+  plugin: PluginMeta; scope: Scope; context?: Scope; platform?: PlatformTarget; cwd: string; env?: NodeJS.ProcessEnv;
+  visibleTargets: readonly ReceiptTargetIdentity[]; mutation: PluginConfigImpactMutation;
+  commandDiscovery?: ManagedCommandPackageDiscovery; referencePlugins?: readonly PluginMeta[];
 }): Promise<PluginConfigMutationImpact> {
-  const commands = options.commandDiscovery ?? await discoverPluginConfigManagedCommandPackages({
-    plugin: options.plugin,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env ?? process.env,
-    platformTargets: options.visibleTargets,
-    referencePlugins: options.referencePlugins,
-  });
-  const schema = options.plugin.manifest.config?.fields;
-  const needsProjectStore = options.scope === 'project'
-    || options.scope === 'user'
-    || options.visibleTargets.some((target) => target.scope === 'project')
-    || commands.packages.some((target) => target.producer.scope === 'project');
+  options = { ...options, scope: options.context ?? options.scope };
+  const commands = options.commandDiscovery ?? await discoverPluginConfigManagedCommandPackages({ ...options,
+    env: options.env ?? process.env, platformTargets: options.visibleTargets });
+  const schema = options.plugin.manifest.config ? compilePluginConfigDefinition(options.plugin.manifest.config, options.platform).fields : undefined;
   const identity = configIdentity(options.plugin);
-  const readStore = async (scope: Scope): Promise<PluginConfigStore> => {
-    try {
-      return await readPluginConfigStore({
-        ...identity,
-        pluginName: options.plugin.manifest.name,
-        scope,
-        cwd: options.cwd,
-        env: options.env,
-        schema,
-      });
-    } catch {
-      return {
-        path: '',
-        exists: true,
-        state: 'invalid',
-        values: {},
-        invalidCode: 'invalidValues',
-        issues: ['The store cannot be read.'],
-      };
-    }
-  };
-  const [userStore, projectStore] = await Promise.all([
-    readStore('user'),
-    needsProjectStore
-      ? readStore('project')
-      : undefined,
-  ]);
-  const stores = { user: userStore, ...(projectStore ? { project: projectStore } : {}) };
-  const editedStore = options.scope === 'user' ? userStore : projectStore!;
-  const requestedRemoveKeys = [...new Set(
-    options.mutation.kind === 'patch' ? options.mutation.removeKeys ?? [] : [],
-  )];
-  let updatedKeys: string[] = [];
-  let removedKeys: string[] = [];
-  let staleRemovedKeys: string[] = [];
-  let coercedUpdates: Record<string, PluginConfigValue> = {};
-  let storeChanged = options.mutation.kind === 'reset' && editedStore.exists;
-
-  if (editedStore.state !== 'invalid' && options.mutation.kind === 'reset') {
-    removedKeys = Object.keys(editedStore.values);
-    staleRemovedKeys = schema
-      ? removedKeys.filter((key) => !schema[key])
-      : [...removedKeys];
+  let user: PluginConfigStore;
+  try { user = await readPluginConfigStore({ ...identity, pluginName: options.plugin.manifest.name,
+    scope: 'user', platform: options.platform, cwd: options.cwd, env: options.env }); }
+  catch { user = { path: '', exists: true, state: 'invalid', values: {}, invalidCode: 'invalidValues', issues: ['The store cannot be read.'] }; }
+  const stores = { user };
+  const requestedRemoveKeys = [...new Set(options.mutation.kind === 'patch' ? options.mutation.removeKeys ?? [] : [])];
+  const updates = options.mutation.kind === 'patch' && schema ? await coercePluginConfigUpdates({ schema,
+    updates: options.mutation.updates ?? {}, cwd: options.cwd }) : {};
+  if (options.mutation.kind === 'patch' && schema && user.state !== 'invalid') {
+    for (const key of requestedRemoveKeys) if (!schema[key] && !Object.hasOwn(user.values, key)) throw new Error(`Unknown config key "${key}".`);
   }
-  if (editedStore.state !== 'invalid' && options.mutation.kind === 'patch' && schema) {
-    coercedUpdates = await coercePluginConfigUpdates({
-      schema,
-      updates: options.mutation.updates ?? {},
-      cwd: options.cwd,
-    });
-    for (const key of requestedRemoveKeys) {
-      if (!schema[key] && !Object.hasOwn(editedStore.values, key)) {
-        throw new Error(`Unknown config key "${key}".`);
-      }
-    }
-    removedKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(editedStore.values, key));
-    staleRemovedKeys = removedKeys.filter((key) => !schema[key]);
-    updatedKeys = Object.entries(coercedUpdates)
-      .filter(([key, value]) => !Object.hasOwn(editedStore.values, key)
-        || stablePluginConfigStringify(editedStore.values[key]!)
-          !== stablePluginConfigStringify(value))
-      .map(([key]) => key);
-    storeChanged = updatedKeys.length > 0 || removedKeys.length > 0;
-  }
+  const removedKeys = options.mutation.kind === 'reset' ? Object.keys(user.values)
+    : requestedRemoveKeys.filter((key) => Object.hasOwn(user.values, key));
+  const updatedKeys = Object.entries(updates).filter(([key, value]) => !Object.hasOwn(user.values, key)
+    || stablePluginConfigStringify(user.values[key]!) !== stablePluginConfigStringify(value)).map(([key]) => key);
+  const staleRemovedKeys = removedKeys.filter((key) => !schema?.[key]);
   const changedKeys = [...updatedKeys, ...removedKeys];
-  if (!schema || editedStore.state === 'invalid') {
-    return unknownImpact({
-      plugins: await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env, plugins: options.referencePlugins }),
-      commands,
-      stores,
-      plugin: options.plugin,
-      scope: options.scope,
-      visibleTargets: options.visibleTargets,
-      storeChanged: options.mutation.kind === 'reset' ? editedStore.exists : true,
-      changedKeys: changedKeys.length > 0
-        ? changedKeys
-        : options.mutation.kind === 'patch'
-          ? [...Object.keys(options.mutation.updates ?? {}), ...requestedRemoveKeys]
-          : [],
-      updatedKeys,
-      removedKeys,
-      staleRemovedKeys,
-    });
+  const storeChanged = user.state === 'invalid' ? options.mutation.kind === 'reset' && user.exists || options.mutation.kind === 'patch'
+    : changedKeys.length > 0;
+  const visibleTargets = options.visibleTargets.filter((target) => (!options.platform || target.platform === options.platform)
+    && (options.scope === 'project' || target.scope === 'user'));
+  const selectedCommands = { ...commands, packages: commands.packages.filter((target) => (!options.platform || target.producer.platform === options.platform)
+    && (options.scope === 'project' || target.producer.scope === 'user')) };
+  let plugins: PluginMeta[];
+  let currentReferences: unknown;
+  try {
+    plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env, plugins: options.referencePlugins });
+    const profiles = plugins.flatMap((plugin) => (options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS])
+      .map((platform) => ({ pluginName: plugin.manifest.name, scope: options.scope, platform })));
+    currentReferences = await collectPluginConfigReferenceEvidence({ plugin: options.plugin, plugins,
+      profiles, cwd: options.cwd, env: options.env });
+  } catch {
+    plugins = [options.plugin];
+    currentReferences = { sourceUnavailable: true };
   }
-  if (!storeChanged) {
-    return {
-      impactState: commands.errors.length > 0 ? 'unknown' : 'known',
-      noEffectiveChange: true,
-      storeChanged: false,
-      storeDigest: digestStores(stores),
-      changedKeys: [],
-      updatedKeys: [],
-      removedKeys: [],
-      staleRemovedKeys: [],
-      affectedTargets: [],
-      sharedNativeRenderTargets: [],
-      commandPackages: commands.packages,
-      affectedCommandPackages: [],
-      commandDiscoveryErrors: commands.errors,
-    };
-  }
-
-  const nextValues = options.mutation.kind === 'reset' ? {} : { ...editedStore.values };
+  const currentStoreDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify({ stores: digestStores(stores),
+    platform: options.platform ?? null, references: currentReferences })).digest('hex')}`;
+  if (!schema || user.state === 'invalid') return { ...unknownImpact({ ...options, commands: selectedCommands, stores,
+    visibleTargets, storeChanged, changedKeys, updatedKeys, removedKeys, staleRemovedKeys, plugins }), storeDigest: currentStoreDigest };
+  if (!storeChanged) return { impactState: commands.errors.length ? 'unknown' : 'known', noEffectiveChange: true,
+    storeChanged: false, storeDigest: currentStoreDigest, changedKeys: [], updatedKeys: [], removedKeys: [], staleRemovedKeys: [],
+    affectedTargets: [], sharedNativeRenderTargets: [], commandPackages: selectedCommands.packages, affectedCommandPackages: [], commandDiscoveryErrors: commands.errors };
+  const values = options.mutation.kind === 'reset' ? {} : { ...user.values };
   if (options.mutation.kind === 'patch') {
-    for (const key of requestedRemoveKeys) delete nextValues[key];
-    for (const [key, value] of Object.entries(coercedUpdates)) nextValues[key] = value;
+    for (const key of requestedRemoveKeys) delete values[key];
+    for (const [key, value] of Object.entries(updates)) values[key] = value;
   }
-  const afterStores = {
-    user: options.scope === 'user' ? cloneStore(userStore, nextValues) : userStore,
-    ...(projectStore ? {
-      project: options.scope === 'project' ? cloneStore(projectStore, nextValues) : projectStore,
-    } : {}),
-  };
-  const projectRoot = resolveAwProjectRoot(options.cwd);
-  const referenceImpact = await analyzePluginConfigReferenceMutation({ plugin: options.plugin,
-    scope: options.scope, cwd: options.cwd, env: options.env, plugins: options.referencePlugins,
+  const afterStores = { user: replacePluginConfigStoreLayer(user, values, options.platform) };
+  const referenceImpact = await analyzePluginConfigReferenceMutation({ ...options, plugins: options.referencePlugins,
     beforeStores: stores, afterStores });
   const referenceWarnings: string[] = [];
-  if (pluginConfigHasExternalReferences(options.plugin.manifest)) {
-    for (const scope of needsProjectStore ? ['user', 'project'] as const : ['user'] as const) {
-      try {
-        const references = await resolvePluginConfigReferenceContext({ ...identity, manifest: options.plugin.manifest,
-          scope, cwd: options.cwd, env: options.env, plugins: options.referencePlugins });
-        referenceImpact.evidence.push({ scope, references: references.evidence });
-      } catch (error) {
-        referenceImpact.evidence.push({ scope, unavailable: true,
-          references: (error as { referenceEvidence?: unknown }).referenceEvidence });
-        referenceWarnings.push(`${scope} config reference impact is unknown because its dependencies cannot be read.`);
-      }
-    }
-  }
-  const referenceDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify({
-    stores: digestStores(stores), references: referenceImpact.evidence,
-  })).digest('hex')}`;
-  const resolved = new Map<Scope, {
-    before: ResolvedEffectivePluginConfig;
-    after: ResolvedEffectivePluginConfig;
-  }>();
-  const resolveScope = async (scope: Scope) => {
-    const existing = resolved.get(scope);
-    if (existing) return existing;
+  const resolved = new Map<string, { before: ResolvedEffectivePluginConfig; after: ResolvedEffectivePluginConfig }>();
+  const resolveProfile = async (platform?: PlatformTarget) => {
+    const key = platform ?? 'common';
+    if (resolved.has(key)) return resolved.get(key)!;
     const references = pluginConfigHasExternalReferences(options.plugin.manifest)
-      ? await resolvePluginConfigReferenceContext({ ...identity, manifest: options.plugin.manifest,
-          scope, cwd: options.cwd, env: options.env, plugins: options.referencePlugins }) : undefined;
-    const pair = {
-      before: await resolveEffectivePluginConfigFromStores({
-        pluginName: options.plugin.manifest.name,
-        manifest: options.plugin.manifest,
-        targetScope: scope,
-        projectRoot,
-        stores,
-        referenceContext: references?.context,
-      }),
-      after: await resolveEffectivePluginConfigFromStores({
-        pluginName: options.plugin.manifest.name,
-        manifest: options.plugin.manifest,
-        targetScope: scope,
-        projectRoot,
-        stores: afterStores,
-        referenceContext: references?.context,
-      }),
-    };
-    resolved.set(scope, pair);
-    return pair;
+      ? await resolvePluginConfigReferenceContext({ ...identity, manifest: options.plugin.manifest, scope: options.scope,
+        platform, cwd: options.cwd, env: options.env, plugins: options.referencePlugins }) : undefined;
+    if (references) referenceImpact.evidence.push({ platform: platform ?? null, references: references.evidence });
+    const resolve = (candidate: typeof stores) => resolveEffectivePluginConfigFromStores({ manifest: options.plugin.manifest,
+      platform, targetScope: options.scope, projectRoot: options.scope === 'project' ? resolveAwProjectRoot(options.cwd) : '', stores: candidate,
+      referenceContext: references?.context });
+    const [before, after] = await Promise.all([resolve(stores), resolve(afterStores)]);
+    const pair = { before, after }; resolved.set(key, pair); return pair;
   };
-
+  const consumerPair = (pluginName: string, platform?: PlatformTarget) => pluginName === options.plugin.manifest.name
+    ? resolveProfile(platform) : Promise.resolve(referenceImpact.consumers.find((consumer) => consumer.plugin.manifest.name === pluginName && consumer.platform === platform));
+  const allPlugins = new Map([options.plugin, ...referenceImpact.consumers.map((entry) => entry.plugin)].map((plugin) => [plugin.manifest.name, plugin]));
+  const affectedTargets: ReceiptTargetIdentity[] = [];
+  const affectedCommandPackages: ManagedCommandPackageDiscovery['packages'] = [];
+  const sharedNativeRenderTargets = new Map<string, PluginConfigImpactSharedNativeTarget>();
   try {
-    const affectedTargets: ReceiptTargetIdentity[] = [];
-    const affectedCommandPackages: ManagedCommandPackageDiscovery['packages'] = [];
-    const sharedNativeRenderTargets = new Map<string, PluginConfigImpactSharedNativeTarget>();
-    for (const target of dedupeTargets(options.visibleTargets)) {
-      if (target.pluginName !== options.plugin.manifest.name) {
-        const plugin = referenceImpact.consumers.find((entry) => entry.plugin.manifest.name === target.pluginName)?.plugin;
-        if (!plugin) continue;
-        let affected = false;
-        if (plugin.manifest.scripts?.preApply || (plugin.manifest.dependencies?.length ?? 0) > 0) {
-          const config = referenceImpact.consumers.find((entry) => entry.plugin.manifest.name === target.pluginName
-            && entry.scope === target.scope);
-          affected = !config?.before || !config.after
-            || !configValuesEqual(config.before.values, config.after.values);
-        }
-        for (const declaration of targetConfigConsumers(plugin, target)) {
-          if (declaration.refreshKeys.length === 0 || (options.scope === 'project' && declaration.scope === 'user')) continue;
-          const consumer = referenceImpact.consumers.find((entry) => entry.plugin.manifest.name === target.pluginName
-            && entry.scope === declaration.scope);
-          const refreshKeys = getPluginConfigDependencyKeys(plugin.manifest.config!, declaration.refreshKeys);
-          if (consumer?.before && consumer.after
-            && rendererProjectionEqual(consumer.before, consumer.after, refreshKeys)) continue;
-          affected = true;
-          addSharedNativeConsumer(sharedNativeRenderTargets, declaration);
-        }
-        if (affected) affectedTargets.push(target);
-        continue;
+    for (const target of dedupeTargets(visibleTargets)) {
+      const plugin = allPlugins.get(target.pluginName);
+      if (!plugin?.manifest.config) continue;
+      const pair = await consumerPair(target.pluginName, target.platform);
+      let affected = !pair?.before || !pair.after;
+      if (pair?.before && pair.after && (plugin.manifest.scripts?.preApply || plugin.manifest.dependencies?.length)) {
+        affected ||= !configValuesEqual(pair.before.values, pair.after.values);
       }
-      let affected = false;
-      const consumers = targetConfigConsumers(options.plugin, target);
-      if (options.plugin.manifest.scripts?.preApply
-        || (options.plugin.manifest.dependencies?.length ?? 0) > 0) {
-        const config = await resolveScope(target.scope);
-        affected = !configValuesEqual(config.before.values, config.after.values);
-      }
-      for (const consumer of consumers) {
-        if (consumer.refreshKeys.length === 0) continue;
-        const config = await resolveScope(consumer.scope);
-        const refreshKeys = getPluginConfigDependencyKeys(options.plugin.manifest.config!, consumer.refreshKeys);
-        const changed = !rendererProjectionEqual(
-          config.before,
-          config.after,
-          refreshKeys,
-        );
-        if (!changed) continue;
-        affected = true;
-        addSharedNativeConsumer(sharedNativeRenderTargets, consumer);
+      for (const consumer of targetConfigConsumers(plugin, target)) {
+        if (!consumer.refreshKeys.length) continue;
+        const keys = getPluginConfigDependencyKeys(compilePluginConfigDefinition(plugin.manifest.config, target.platform), consumer.refreshKeys);
+        if (pair?.before && pair.after && rendererProjectionEqual(pair.before, pair.after, keys)) continue;
+        affected = true; addSharedNativeConsumer(sharedNativeRenderTargets, consumer);
       }
       if (affected) affectedTargets.push(target);
     }
-    const packagePlugin = (target: ManagedCommandPackageDiscovery['packages'][number]) =>
-      target.producer.pluginName === options.plugin.manifest.name ? options.plugin
-        : referenceImpact.consumers.find((consumer) => consumer.plugin.manifest.name === target.producer.pluginName)?.plugin;
-    const commandPackages = commands.packages.filter((target) => target.installed
-      || affectedTargets.some((platformTarget) => platformTarget.pluginName === target.producer.pluginName
-        && packagePlugin(target)?.manifest.managedCommands?.packages.some((declaration) => declaration.key === target.packageKey
-          && declaration.platforms.includes(platformTarget.platform))));
-    for (const target of commandPackages) {
-      if (!target.declared) {
-        affectedCommandPackages.push(target);
-        continue;
-      }
-      const plugin = packagePlugin(target);
-      const config = target.producer.pluginName === options.plugin.manifest.name ? await resolveScope(target.producer.scope)
-        : referenceImpact.consumers.find((consumer) => consumer.plugin.manifest.name === target.producer.pluginName
-          && consumer.scope === target.producer.scope);
-      if (!plugin || !config?.before || !config.after) {
-        affectedCommandPackages.push(target);
-        continue;
-      }
-      const refreshKeys = getPluginConfigDependencyKeys(plugin.manifest.config!, target.refreshKeys);
-      if (!rendererProjectionEqual(config.before, config.after, refreshKeys)) {
-        affectedCommandPackages.push(target);
-      }
+    for (const target of selectedCommands.packages) {
+      const pair = await consumerPair(target.producer.pluginName, target.producer.platform ?? undefined);
+      const plugin = allPlugins.get(target.producer.pluginName);
+      if (!target.declared || !pair?.before || !pair.after || !plugin?.manifest.config) { affectedCommandPackages.push(target); continue; }
+      const keys = getPluginConfigDependencyKeys(compilePluginConfigDefinition(plugin.manifest.config, target.producer.platform ?? undefined), target.refreshKeys);
+      if (!rendererProjectionEqual(pair.before, pair.after, keys)) affectedCommandPackages.push(target);
     }
-    return {
-      impactState: commands.errors.length > 0 || referenceWarnings.length > 0 ? 'unknown' : 'known',
-      noEffectiveChange: affectedTargets.length === 0 && affectedCommandPackages.length === 0
-        && commands.errors.length === 0,
-      storeChanged: true,
-      storeDigest: referenceDigest,
-      changedKeys,
-      updatedKeys,
-      removedKeys,
-      staleRemovedKeys,
-      affectedTargets,
-      sharedNativeRenderTargets: [...sharedNativeRenderTargets.values()],
-      commandPackages,
-      affectedCommandPackages,
-      commandDiscoveryErrors: commands.errors,
-      referenceWarnings,
-      referenceBlockers: [...referenceImpact.blockedReferences,
-        ...referenceImpact.unreadableConsumers.map((location) => `Cannot check config references in ${location}.`)],
-    };
+    // Common edits bind every supported profile even when no installed output currently consumes it.
+    for (const platform of options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS]) {
+      try { await resolveProfile(platform); }
+      catch { referenceWarnings.push(`${platform ?? 'common'} configuration reference impact is unknown.`); }
+    }
+    const storeDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify({ stores: digestStores(stores),
+      platform: options.platform ?? null, references: currentReferences, mutationReferences: referenceImpact.evidence })).digest('hex')}`;
+    return { impactState: commands.errors.length || referenceWarnings.length ? 'unknown' : 'known',
+      noEffectiveChange: !affectedTargets.length && !affectedCommandPackages.length && !commands.errors.length,
+      storeChanged, storeDigest, changedKeys, updatedKeys, removedKeys, staleRemovedKeys, affectedTargets,
+      sharedNativeRenderTargets: [...sharedNativeRenderTargets.values()], commandPackages: selectedCommands.packages,
+      affectedCommandPackages, commandDiscoveryErrors: commands.errors, referenceWarnings,
+      referenceBlockers: [...referenceImpact.blockedReferences, ...referenceImpact.unreadableConsumers.map((location) => `Cannot check config references in ${location}.`)] };
   } catch {
-    return { ...unknownImpact({
-      plugins: referenceImpact.consumers.map((consumer) => consumer.plugin),
-      commands,
-      stores,
-      plugin: options.plugin,
-      scope: options.scope,
-      visibleTargets: options.visibleTargets,
-      storeChanged: true,
-      changedKeys,
-      updatedKeys,
-      removedKeys,
-      staleRemovedKeys,
-    }), storeDigest: referenceDigest, referenceWarnings,
-      referenceBlockers: [...referenceImpact.blockedReferences,
-        ...referenceImpact.unreadableConsumers.map((location) => `Cannot check config references in ${location}.`)] };
+    return { ...unknownImpact({ ...options, visibleTargets, commands: selectedCommands, stores, storeChanged,
+      changedKeys, updatedKeys, removedKeys, staleRemovedKeys, plugins: [...allPlugins.values()] }), storeDigest: currentStoreDigest, referenceWarnings,
+      referenceBlockers: [...referenceImpact.blockedReferences, ...referenceImpact.unreadableConsumers.map((location) => `Cannot check config references in ${location}.`)] };
   }
 }

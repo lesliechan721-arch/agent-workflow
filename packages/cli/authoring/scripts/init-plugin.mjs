@@ -71,6 +71,7 @@ function parseStrictSemVer(value, fieldName) {
 function buildPluginManifest(pluginName, version, description, displayName, shortDescription, opts) {
   const manifest = {
     schemaVersion: 3,
+    platforms: ['codex', 'claude'],
     name: pluginName,
     version,
     description,

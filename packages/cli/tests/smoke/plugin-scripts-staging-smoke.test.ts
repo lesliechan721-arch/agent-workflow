@@ -304,11 +304,7 @@ describe('plugin scripts staging smoke', () => {
       fs.readJson(path.join(tempRepo, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
       description: expect.not.stringContaining('Built smoke description'),
-      marketplace: {
-        policy: {
-          products: ['CLAUDE'],
-        },
-      },
+      platforms: ['claude'],
       scripts: {
         tests: {
           node: ['./scripts/source-only.test.mjs'],

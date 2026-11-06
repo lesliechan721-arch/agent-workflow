@@ -32,7 +32,7 @@ export async function verifyManagedCommandArtifactEvidence(options: {
   if (producer.kind === 'package') throw new Error('commandOwnerMismatch: package evidence must use its external owner marker.');
   const resourceRoot = path.resolve(options.resourceRoot);
   await assertDirectory(resourceRoot);
-  if (producer.kind === 'static-skill' && producer.platform === 'claude') {
+  if (producer.platform === 'claude' && producer.scope === 'user') {
     if (resourceRoot !== await resolveClaudeNativeSkillRoot({ producer, env: options.env })) throw new Error('commandOwnerMismatch: the command resource is outside its exact shared Claude native Skill path.');
     return;
   }

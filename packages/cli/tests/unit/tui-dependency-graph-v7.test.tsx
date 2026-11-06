@@ -15,6 +15,7 @@ import type {
   PluginListItemViewModel,
 } from '../../src/tui/model.js';
 import type { TuiPageContext, TuiRoute } from '../../src/tui/router.js';
+import { agentSettings } from '../helpers/tui-console-app-fixture.js';
 
 afterEach(() => cleanup());
 
@@ -127,9 +128,6 @@ class DependencyControllerStub {
     plugin('official/consumer', '当前依赖者'),
   ];
   readonly dependencies = overviews();
-  portableDraft?: { selectedCount: number; candidates: Array<{
-    selected: boolean; name: string; providerDisplayName: string; providerPluginId: string;
-  }> };
   listeners = new Set<(snapshot: TuiControllerSnapshot) => void>();
   route: TuiRoute = { name: 'pluginDependencies', pluginId: 'official/root' };
   context: TuiPageContext = {};
@@ -148,12 +146,15 @@ class DependencyControllerStub {
       operationHistorySummaries: [],
       progress: { messages: [] },
       progressTargets: [],
-      portableDraft: this.portableDraft,
       viewModel: { plugins: this.plugins, dependencyOverviews: this.dependencies },
     } as unknown as TuiControllerSnapshot;
   }
 
   get externalDrafts(): [] { return []; }
+
+  async readAgentSettings(): Promise<ReturnType<typeof agentSettings>> {
+    return agentSettings(['codex']);
+  }
 
   subscribe(listener: (snapshot: TuiControllerSnapshot) => void): () => void {
     this.listeners.add(listener);
@@ -178,7 +179,10 @@ class DependencyControllerStub {
     return {
       pluginId, sourceId: pluginId.split('/')[0]!, displayName: item?.displayName ?? relation!.displayName,
       description: item?.description, catalogVersion: item?.version, definitionAvailable: Boolean(item),
-      savedConfigScopes: [], placements: item ? [{
+      savedConfigScopes: [], declarations: {
+        user: { state: 'unobserved' as const, targets: 'unobserved' as const, agents: [] },
+        project: { state: 'unobserved' as const, targets: 'unobserved' as const, agents: [] },
+      }, placements: item ? [{
         platform: 'codex' as const, scope: 'project' as const,
         platformLabel: 'Codex', scopeLabel: '当前项目',
         observation: 'known' as const, declared: true, actual: true,
@@ -505,23 +509,4 @@ describe('dependency graph v7', () => {
     expect(instance.lastFrame()).toContain('没有修改任何安装');
   });
 
-  it.each([[80, 24], [60, 18]] as const)(
-    'uses the same graph in the portable flow and reads the frozen Skills selection at %ix%i',
-    async (columns, rows) => {
-      const controller = new DependencyControllerStub();
-      controller.route = { name: 'portableDependencies', pluginId: 'official/root' };
-      controller.portableDraft = { selectedCount: 1, candidates: [{ selected: true,
-        name: '完整审查 Skill', providerDisplayName: '根插件', providerPluginId: 'official/root' }] };
-      const instance = render(<ConsoleAppV4 controller={controller as unknown as TuiController}
-        size={{ columns, rows }} />);
-      await input(instance, '', '');
-      expect(instance.lastFrame()).toContain('使用它的插件 → 当前插件');
-      expect(instance.lastFrame()).toContain('◆ 根插件');
-      await input(instance, 'p');
-      expect(instance.lastFrame()).toContain('完整审查 Skill');
-      expect(instance.lastFrame()).toContain('1 /');
-      await input(instance, 'b');
-      expect(instance.lastFrame()).toContain('◆ 根插件');
-    },
-  );
 });

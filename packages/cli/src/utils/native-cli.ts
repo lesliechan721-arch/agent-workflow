@@ -173,6 +173,25 @@ export function setNativeCliRunnerOverrideForTests(
   nativeCliRunnerOverrideForTests = runner;
 }
 
+/** Bind cancellation to preparation reads without retaining it for later writes. */
+export function bindNativeCliRunnerSignal(runner: NativeCliRunner, signal?: AbortSignal): NativeCliRunner {
+  if (!signal) return runner;
+  return retainNativeCliRunnerBackend(async (invocation) => {
+    signal.throwIfAborted();
+    try {
+      const result = await runner({ ...invocation,
+        signal: invocation.signal ? AbortSignal.any([signal, invocation.signal]) : signal });
+      signal.throwIfAborted();
+      return result;
+    } catch (error) {
+      if (signal.aborted && error instanceof NativeCliError) error.name = 'AbortError';
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      signal.throwIfAborted();
+      throw error;
+    }
+  }, runner);
+}
+
 export function getDefaultNativeCliRunner(): NativeCliRunner {
   return nativeCliRunnerOverrideForTests ?? execFileNativeCliRunner;
 }

@@ -1,19 +1,18 @@
+import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
+import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
+import { scopedTarget, type ScopedTaskRequest, scopedPlan, deferred, scopedReceipt } from '../helpers/tui-console-app-fixture.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   StatusV8CodexTarget,
 } from '../../src/commands/status-v6.js';
-import { createOperationPlan } from '../../src/commands/operation-plan.js';
+
 import {
   ConsoleAppV4,
   type ConsoleV4ScreenId,
 } from '../../src/tui/console-app-v4.js';
-import {
-  userIssueKey,
-  type OperationEvidence,
-  type TuiStatusLoadResult,
-} from '../../src/tui/controller.js';
+import { type TuiStatusLoadResult } from '../../src/tui/controller.js';
 import { copyToClipboard } from '../../src/tui/clipboard.js';
 
 vi.mock('../../src/tui/clipboard.js', () => ({ copyToClipboard: vi.fn() }));
@@ -32,17 +31,26 @@ import {
   updatePlacement,
 } from '../helpers/tui-console-app-fixture.js';
 
-import {
-  acceptanceTraceStep,
-  confirmReview,
-  focusAction,
-  input,
-  nextTurn,
-  type AcceptanceTraceStep,
-  writeAcceptanceTrace,
-} from '../helpers/tui-console-app-input.js';
+import { acceptanceTraceStep, focusAction, input, nextTurn, type AcceptanceTraceStep, writeAcceptanceTrace } from '../helpers/tui-console-app-input.js';
 
 afterEach(() => cleanup());
+
+async function readScopedDetails(instance: ReturnType<typeof render>): Promise<string> {
+  await input(instance, 'd');
+  const frames: string[] = [];
+  for (let page = 0; page < 20; page += 1) {
+    const frame = instance.lastFrame() ?? '';
+    frames.push(frame);
+    const pager = frame.match(/(\d+)\s*\/\s*(\d+)/u);
+    expect(pager).not.toBeNull();
+    if (pager![1] === pager![2]) {
+      await input(instance, 'd');
+      return frames.join('\n');
+    }
+    await input(instance, '\u001B[C');
+  }
+  throw new Error('The technical details did not reach the last page.');
+}
 
 function mixedScopeConflictTarget(
   pluginName: string,
@@ -71,12 +79,12 @@ function mixedScopeConflictTarget(
     {
       command: 'uninstall',
       scope: 'user',
-      description: `运行 aw uninstall ${sourceId}/${pluginName} --platform codex --scope user，再运行 aw sync ${sourceId}/${pluginName} --platform codex --scope project。`,
+      description: `运行 aw plugin intent remove ${sourceId}/${pluginName} --scope user，再运行 aw plugin cleanup ${sourceId}/${pluginName} --target codex --scope user，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context project。`,
     },
     {
       command: 'uninstall',
       scope: 'project',
-      description: `运行 aw uninstall ${sourceId}/${pluginName} --platform codex --scope project，再运行 aw sync ${sourceId}/${pluginName} --platform codex --scope user。`,
+      description: `运行 aw plugin intent remove ${sourceId}/${pluginName} --scope project，再运行 aw plugin cleanup ${sourceId}/${pluginName} --target codex --scope project，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context user。`,
     },
   ];
   return value;
@@ -238,7 +246,10 @@ describe('ConsoleAppV4', () => {
       allTechnicalPages += instance.lastFrame() ?? '';
     }
     expect(allTechnicalPages).toContain('建议 1');
-    expect(allTechnicalPages).toContain('运行 aw status --json，记录公开错误 code。');
+    const manualSteps = allTechnicalPages.split('\n').filter((line) => /建议 \d+:/u.test(line))
+      .map((line) => line.replace(/^.*?建议 \d+:\s*/u, '').replace(/\s*│\s*$/u, ''))
+      .join('').replace(/\s/gu, '');
+    expect(manualSteps).toContain('运行awpluginstatus--json，记录公开错误code。');
     expect(allTechnicalPages).toContain('备份相关 AW 配置。');
     expect(allTechnicalPages).toContain('按技术详情使用受支持命令或人工处理。');
     expect(allTechnicalPages).toContain('再次运行状态检查。');
@@ -250,192 +261,18 @@ describe('ConsoleAppV4', () => {
     expect(frame).not.toContain('private legacy location');
   });
 
-  it('uses typed issue origin for I10-I12 and reloads the issue list after success', async () => {
-    const initial = loadResult();
-    initial.payload.catalog.sources = [initial.payload.catalog.sources[0]!];
-    initial.payload.targets = [target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'partial' })];
-    initial.pluginSummaries = [initial.pluginSummaries[1]!];
-    const resolved = structuredClone(initial);
-    updatePlacement(resolved.payload.targets[0]!, 'user', { state: 'ready', reasons: [] });
-    const loadStatus = vi.fn()
-      .mockResolvedValueOnce(initial)
-      .mockResolvedValue(resolved);
-    let completeExecution!: (value: unknown) => void;
-    const execution = new Promise((resolve) => { completeExecution = resolve; });
-    const executeIntent = vi.fn().mockReturnValue(execution);
-    const value = controller({ loadStatus, executeIntent });
-    await value.load();
-    const selected = value.listUserIssues().find((entry) => entry.category === 'incompleteInstallation')!;
-    value.push({ name: 'issueDetail', issueId: selected.issueId });
-    const screens: ConsoleV4ScreenId[] = [];
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
-    await nextTurn(2);
-    await input(instance, '\r');
-    expect(value.snapshot.activeReview?.originIssue).toMatchObject({
-      issueId: selected.issueId,
-      category: 'incompleteInstallation',
-      actionId: 'sync',
-    });
-    instance.unmount();
-    const reviewInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
-    await nextTurn(2);
-    expect(screens).toContain('I10');
-    await confirmReview(reviewInstance, value);
-    reviewInstance.unmount();
-    const progressInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
-    await nextTurn(2);
-    expect(screens).toContain('I11');
-    completeExecution({
-      overallState: 'succeeded',
-      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
-    });
-    await nextTurn(10);
-    progressInstance.unmount();
-    const resultInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
-    await nextTurn(2);
-    expect(screens).toContain('I12');
-    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      originIssue: expect.objectContaining({ issueId: selected.issueId }),
-    }), evidence);
-    expect(value.listUserIssues().some((entry) => entry.issueId === selected.issueId)).toBe(false);
-    resultInstance.unmount();
-  });
-
-  it('cleans a Catalog orphan through ordinary cleanup and removes it from both lists after refresh', async () => {
-    const initial = orphanLoadResult();
-    const resolved = structuredClone(initial);
-    resolved.payload.targets = [];
-    const cleanupEvidence: OperationEvidence = {
-      ...evidence,
-      operationPlan: createOperationPlan({
-        intentChanges: [{ scope: 'user', beforeDigest: 'sha256:before', afterDigest: 'sha256:after' }],
-        actions: [],
-        changes: ['official/retired-tool:codex:user:removeIntent'],
-        warnings: ['inventoryUnreadable: sha256:residual'],
-        evidence: {
-          catalogDigests: [],
-          intentDigests: [{ scope: 'user', digest: 'sha256:intent' }],
-          configDigests: [],
-          targetOwnerFingerprints: [],
-        },
-      }),
-      offlineCleanupPlans: [{
-        reason: 'bundleUnavailable',
-        pluginId: 'official/retired-tool',
-        pluginName: 'retired-tool',
-        sourceId: 'official',
-        sourceIdentity: 'identity:official',
-        platform: 'codex',
-        scope: 'user',
-        plan: {
-          schemaVersion: 1,
-          pluginId: 'official/retired-tool',
-          sourceIdentity: 'identity:official',
-          platform: 'codex',
-          scope: 'user',
-          actions: [{
-            action: 'removeOwnedOutput',
-            kind: 'owned-text-file',
-            target: '/private/aw-home/managed/retired-tool.md',
-          }],
-        },
-        planDigest: 'sha256:offline-plan',
-        targetFingerprint: 'sha256:offline-plan',
-      }],
-    };
-    const loadStatus = vi.fn()
-      .mockResolvedValueOnce(initial)
-      .mockResolvedValueOnce(resolved);
-    const executeIntent = vi.fn().mockResolvedValue({
-      overallState: 'succeeded',
-      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
-    });
-    const value = controller({
-      loadStatus,
-      captureEvidence: vi.fn().mockResolvedValue(cleanupEvidence),
-      executeIntent,
-    });
-    await value.load();
-
-    expect(value.listPlugins({ mode: 'browse', installFilter: 'uninstalled' }).map((plugin) => plugin.pluginId))
-      .toEqual([]);
-    expect(value.listPlugins({ mode: 'installed', installFilter: 'installed' }).map((plugin) => plugin.pluginId))
-      .toEqual(['official/retired-tool']);
-    const issue = value.listUserIssues()[0]!;
-    value.push({ name: 'issueDetail', issueId: issue.issueId });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(2);
-
-    expect(instance.lastFrame()).toContain('当前插件目录不再包含此插件');
-    expect(instance.lastFrame()).toContain('清理 AW 管理内容');
-    expect(instance.lastFrame()).not.toContain('--force');
-    await input(instance, '\r');
-
-    const reviewFrame = instance.lastFrame() ?? '';
-    expect(value.snapshot.activeReview).toMatchObject({
-      pluginAction: 'cleanup',
-      originIssue: { actionId: 'cleanup' },
-      equivalentCommand: 'aw cleanup official/retired-tool --platform codex --scope user',
-    });
-    expect(reviewFrame).toContain('先核验所选位置，再取消其使用设置，并尽力清理可验证的 AW 输出');
-    expect(reviewFrame).toContain('核验当前 AW 管理现场');
-    expect(reviewFrame).toContain('取消已保存的使用设置');
-    expect(reviewFrame).toContain('移除可验证的 AW 输出');
-    expect(reviewFrame).toContain('部分现场残留无法完整核验');
-    expect(reviewFrame).toContain('保留不属于插件或被共用的内容、插件设置、依赖使用范围和其他平台或位置');
-    expect(reviewFrame).toContain('其他根插件仍可按自己的设置使用或安装此依赖');
-    expect(reviewFrame).not.toContain('/private/aw-home/managed/retired-tool.md');
-    expect(reviewFrame).not.toContain('inventoryUnreadable');
-    expect(reviewFrame).not.toContain('lifecycle');
-    expect(reviewFrame).not.toContain('等价命令：');
-    expect(reviewFrame).not.toContain('--force');
-    await input(instance, 'd');
-    expect(instance.lastFrame()).toContain('等价命令：aw cleanup official/retired-tool --platform codex --scope user');
-    expect(instance.lastFrame()).not.toContain('/private/aw-home/managed/retired-tool.md');
-
-    const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
-    for (const size of [{ columns: 60, rows: 18 }, { columns: 80, rows: 24 }]) {
-      instance.rerender(<ConsoleAppV4 controller={value} size={size} />);
-      await nextTurn(2);
-      await input(instance, 'y');
-      await vi.waitFor(() => expect(instance.lastFrame()).toContain('全文已复制'));
-      expect(clipboard).toHaveBeenLastCalledWith(expect.stringContaining(
-        '等价命令：aw cleanup official/retired-tool --platform codex --scope user',
-      ));
-      expect(clipboard.mock.lastCall?.[0]).not.toContain('/private/aw-home/managed/retired-tool.md');
-      expect(executeIntent).not.toHaveBeenCalled();
-    }
-
-    await confirmReview(instance, value);
-    await nextTurn(4);
-
-    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'pluginWrite',
-      action: 'cleanup',
-      pluginId: 'official/retired-tool',
-      platform: 'codex',
-      scope: 'user',
-    }), cleanupEvidence);
-    expect(executeIntent.mock.calls[0]?.[0]).not.toHaveProperty('force');
-    expect(value.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })).toEqual([]);
-    expect(value.listPlugins({ mode: 'installed', installFilter: 'installed' })).toEqual([]);
-    expect(value.listUserIssues()).toEqual([]);
-    expect(instance.lastFrame()).toContain('问题已处理');
-  });
-
   it('keeps the Catalog orphan issue when ordinary cleanup is blocked by a dependent', async () => {
     const initial = orphanLoadResult();
+    const executeScopedTask = vi.fn(async (plan: ScopedTuiPlan) => ({
+      kind: 'recovery' as const,
+      receipt: { ...(plan as Extract<ScopedTuiPlan, { kind: 'recovery' }>).plan.receipt,
+        ok: false, targetResults: [{ ...scopedTarget('official/retired-tool', 'codex', 'failed', 'unknown'),
+          blockers: [{ code: 'dependencyStillRequired', message: '此输出仍被共享。' }] }],
+      },
+    }));
     const value = controller({
       loadStatus: vi.fn().mockResolvedValue(initial),
-      executeIntent: vi.fn().mockResolvedValue({
-        overallState: 'failed',
-        targetResults: [{
-          target: { pluginId: 'official/retired-tool', platform: 'codex', scope: 'user' },
-          action: 'cleanup',
-          state: 'failed',
-          errorCode: 'dependencyStillRequired',
-        }],
-      }),
+      executeScopedTask,
     });
     await value.load();
     const issue = value.listUserIssues()[0]!;
@@ -443,71 +280,15 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
     await input(instance, '\r');
-    await confirmReview(instance, value);
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('确认恢复可执行目标'));
+    await input(instance, '\r');
     await nextTurn(4);
 
-    expect(value.snapshot.result).toMatchObject({
-      state: 'blocked',
-      code: 'dependencyStillRequired',
-      originIssue: { issueId: issue.issueId, actionId: 'cleanup' },
-    });
+    expect(executeScopedTask).toHaveBeenCalledTimes(1);
     expect(value.listUserIssues()).toContainEqual(expect.objectContaining({ issueId: issue.issueId }));
-    expect(value.snapshot.result).not.toHaveProperty('writeMayHaveCompleted');
-    expect(instance.lastFrame()).toContain('问题仍未解决');
-    expect(instance.lastFrame()).toContain('操作被安全阻止');
+    expect(instance.lastFrame()).toContain('请求仍有未完成目标');
     expect(instance.lastFrame()).not.toContain('dependencyStillRequired');
     expect(instance.lastFrame()).not.toContain('--force');
-  });
-
-  it('keeps a failed issue and routes I13 back to its detail with a fixed error', async () => {
-    const initial = loadResult();
-    initial.payload.catalog.sources = [initial.payload.catalog.sources[0]!];
-    initial.payload.targets = [target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'partial' })];
-    initial.pluginSummaries = [initial.pluginSummaries[1]!];
-    const value = controller({
-      loadStatus: vi.fn().mockResolvedValue(initial),
-      executeIntent: vi.fn().mockRejectedValue(new Error('/Users/private/raw failure')),
-    });
-    await value.load();
-    const selected = value.listUserIssues().find((entry) => entry.category === 'incompleteInstallation')!;
-    value.push({ name: 'issueDetail', issueId: selected.issueId });
-    const screens: ConsoleV4ScreenId[] = [];
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
-    await nextTurn(2);
-    await input(instance, '\r');
-    await confirmReview(instance, value);
-    await nextTurn(3);
-    expect(screens).toContain('I13');
-    expect(instance.lastFrame()).not.toContain('/Users/private');
-    expect(instance.lastFrame()).toContain('返回问题详情');
-    expect(instance.lastFrame()).toContain('重新检查问题');
-    expect(instance.lastFrame()).not.toContain('重试失败部分');
-    expect(value.listUserIssues().some((entry) => entry.issueId === selected.issueId)).toBe(true);
-  });
-
-  it.each([
-    { key: '', actionId: 'keepProjectScope', removedScope: 'user' },
-    { key: '\u001B[B', actionId: 'keepUserScope', removedScope: 'project' },
-  ] as const)('maps the canonical scope choice $actionId to removing $removedScope', async ({ key, actionId, removedScope }) => {
-    const loaded = loadResult();
-    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
-    loaded.payload.targets = [mixedScopeConflictTarget('review-gate')];
-    loaded.pluginSummaries = [loaded.pluginSummaries[1]!];
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
-    await value.load();
-    const conflict = value.listUserIssues().find((entry) => entry.category === 'scopeConflict')!;
-    value.push({ name: 'issueDetail', issueId: conflict.issueId });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
-    await nextTurn(2);
-    await input(instance, ...(key ? [key] : []), '\r');
-    expect(value.snapshot.activeReview).toMatchObject({
-      pluginAction: 'uninstall',
-      originIssue: { issueId: conflict.issueId, issueKey: userIssueKey(conflict), category: 'scopeConflict', actionId },
-    });
-    expect((value.dependencies.captureEvidence as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toMatchObject({
-      pluginId: 'official/review-gate',
-      scope: removedScope,
-    });
   });
 
   it.each([
@@ -726,7 +507,7 @@ describe('ConsoleAppV4', () => {
     value.push({
       name: 'configFields',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { profile: 'common' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(4);
@@ -841,13 +622,13 @@ describe('ConsoleAppV4', () => {
           message: `${targetScope} expected=false, actual=true.`,
         }] : [],
         recoveryActions: targetScope === scope ? [{
-          command: projectOverride ? 'sync' : 'cleanup', scope: 'user', description: 'Restore selected activation.',
+          command: projectOverride ? 'sync' : 'cleanup', scope: targetScope, description: 'Restore selected activation.',
         }] : [],
       });
     }
     loaded.payload.targets = [codex];
-    const captureEvidence = vi.fn().mockResolvedValue(evidence);
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), prepareScopedTask });
     await value.load();
     expect(value.getPluginOverview('official/agent-lab')?.aggregateStatus).toBe('needsAttention');
     value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
@@ -863,11 +644,11 @@ describe('ConsoleAppV4', () => {
     await focusAction(instance, projectOverride ? '恢复在当前项目使用' : '清理多余的启用记录');
     await input(instance, '\r');
     await nextTurn(3);
-    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'pluginWrite', action: projectOverride ? 'sync' : 'cleanup',
-      pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'recovery', command: projectOverride ? 'sync' : 'cleanup', scope,
+      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'codex' }],
     }), expect.any(AbortSignal));
-    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(instance.lastFrame()).toContain('操作汇总');
   });
 
   it.each([
@@ -900,10 +681,10 @@ describe('ConsoleAppV4', () => {
       });
     }
     loaded.payload.targets.push(needsSync);
-    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
     const value = controller({
       loadStatus: vi.fn().mockResolvedValue(loaded),
-      captureEvidence,
+      prepareScopedTask,
     });
     await value.load();
     value.push({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
@@ -923,103 +704,11 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await nextTurn(3);
 
-    expect(captureEvidence).toHaveBeenCalledWith({
-      kind: 'pluginWrite',
-      action: 'sync',
-      pluginId: 'official/agent-lab',
-      platform: 'codex',
-      scope,
-    }, expect.any(AbortSignal));
-    expect(value.snapshot.router.current.route.name).toBe('review');
-    expect(instance.lastFrame()).toContain(`Codex · ${scopeLabel}`);
-  });
-
-  it('shows two real mixed-conflict recovery paths in issue and platform, then executes only the selected uninstall', async () => {
-    const recovery = [
-      {
-        command: 'uninstall' as const,
-        scope: 'user' as const,
-        description: '运行 aw uninstall official/agent-lab --platform codex --scope user，再运行 aw sync official/agent-lab --platform codex --scope project。',
-      },
-      {
-        command: 'uninstall' as const,
-        scope: 'project' as const,
-        description: '运行 aw uninstall official/agent-lab --platform codex --scope project，再运行 aw sync official/agent-lab --platform codex --scope user。',
-      },
-    ];
-    const loaded = loadResult();
-    loaded.pluginSummaries = [loaded.pluginSummaries[0]!];
-    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
-    const conflictTarget = mixedScopeConflictTarget('agent-lab');
-    conflictTarget.recoveryActions = recovery;
-    for (const conflictPlacement of conflictTarget.placements) conflictPlacement.components.push({
-      kind: 'activation', key: conflictPlacement.scope, state: 'enabled',
-      metadata: { effective: true, evidence: 'observed' },
-    });
-    loaded.payload.targets = [conflictTarget];
-    const resolved = structuredClone(loaded);
-    const resolvedTarget = resolved.payload.targets[0] as StatusV8CodexTarget;
-    resolvedTarget.reasons = [];
-    resolvedTarget.recoveryActions = [];
-    updatePlacement(resolvedTarget, 'user', { state: 'absent', reasons: [], recoveryActions: [], components: [
-      { kind: 'intent', key: 'desired', state: 'disabled', metadata: {
-        enabled: false, scopes: ['project'], relation: 'none',
-      } },
-      { kind: 'activation', key: 'user', state: 'disabled', metadata: { effective: false, evidence: 'observed' } },
-    ] });
-    updatePlacement(resolvedTarget, 'project', { state: 'ready', reasons: [], recoveryActions: [], components: [
-      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
-        enabled: true, scopes: ['project'], relation: 'root',
-      } },
-      { kind: 'ownership', key: 'fixture', state: 'present' },
-      { kind: 'activation', key: 'project', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
-      { kind: 'extension', key: 'aw', state: 'ready', metadata: { kinds: ['instruction'] } },
-    ] });
-    const loadStatus = vi.fn().mockResolvedValueOnce(loaded).mockResolvedValue(resolved);
-    const captureEvidence = vi.fn().mockResolvedValue(evidence);
-    const executeIntent = vi.fn().mockResolvedValue({
-      overallState: 'succeeded',
-      targetResults: [{
-        target: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'user' },
-        state: 'completed',
-      }],
-    });
-    const value = controller({ loadStatus, captureEvidence, executeIntent });
-    await value.load();
-    const issue = value.listUserIssues().find((entry) => entry.category === 'scopeConflict')!;
-    expect(issue).toBeDefined();
-    value.push({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(2);
-    expect(instance.lastFrame()).toContain('Codex [当前项目]');
-    expect(instance.lastFrame()).toContain('Codex [所有项目]');
-    expect(instance.lastFrame()).toContain('查看位置冲突问题');
-    expect(instance.lastFrame()).not.toContain('重新安装…');
-    expect(instance.lastFrame()).not.toContain('从所有项目移除…');
-    expect(instance.lastFrame()).not.toContain('从当前项目移除…');
-
-    await focusAction(instance, '查看位置冲突问题');
-    await input(instance, '\r');
-    await nextTurn(2);
-    expect(value.snapshot.router.current.route).toEqual({ name: 'issueDetail', issueId: issue.issueId });
-    expect(instance.lastFrame()).toContain('保留当前项目');
-    expect(instance.lastFrame()).toContain('保留所有项目');
-    await input(instance, '\r');
-    await nextTurn(4);
-    expect(value.snapshot.router.current.route.name).toBe('review');
-    expect(instance.lastFrame()).toContain('后续：同步当前项目位置');
-    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ description: '完成此操作后，同步要保留的使用位置。' }),
-    ]));
-    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'uninstall', pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'recovery', command: 'sync', scope,
+      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'codex' }],
     }), expect.any(AbortSignal));
-
-    await confirmReview(instance, value);
-    await nextTurn(5);
-    expect(executeIntent).toHaveBeenCalledTimes(1);
-    expect(executeIntent.mock.calls[0]?.[0]).toMatchObject({ action: 'uninstall', scope: 'user' });
-    expect(instance.lastFrame()).toContain('后续：同步当前项目位置');
+    expect(instance.lastFrame()).toContain('操作汇总');
   });
 
   it('opens a plugin config issue from detail and enters its correction flow', async () => {
@@ -1027,7 +716,7 @@ describe('ConsoleAppV4', () => {
     const loaded = loadResult();
     const value = controller({
       loadStatus: vi.fn().mockResolvedValue(loaded),
-      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      getConfigPage: vi.fn(async (pluginId, layer) => configPage(pluginId, layer)),
     });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
@@ -1044,7 +733,7 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'effective' },
+      name: 'configFields', pluginId: 'team-tools/review-gate', layer: { profile: 'common' },
     });
   });
 
@@ -1079,8 +768,8 @@ describe('ConsoleAppV4', () => {
       { pluginName: 'consumer-b', pluginId: 'official/consumer-b', description: 'B' },
       { pluginName: 'skill-toolkit', pluginId: 'official/skill-toolkit', description: 'Toolkit' },
     ];
-    const captureEvidence = vi.fn().mockResolvedValue(evidence);
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), prepareScopedTask });
     await value.load();
     const issue = value.listUserIssues().find((entry) => entry.issueId === rootIssueId)!;
     value.push({ name: 'issueDetail', issueId: issue.issueId });
@@ -1096,12 +785,10 @@ describe('ConsoleAppV4', () => {
       await input(instance, '\u001B[B');
     }
     await input(instance, '\r');
-    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'cleanup', pluginId: 'official/consumer-b', platform: 'codex', scope: 'project',
-      originIssue: expect.objectContaining({
-        consumerPluginId: 'official/consumer-b', consumerSourceIdentity: 'identity:official',
-        consumerPlatform: 'codex', consumerScope: 'project',
-      }),
+    expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'recovery', command: 'cleanup', scope: 'project',
+      selectors: ['official/consumer-b'],
+      exactTargets: [{ pluginId: 'official/consumer-b', agent: 'codex' }],
     }), expect.any(AbortSignal));
   });
 
@@ -1132,20 +819,17 @@ describe('ConsoleAppV4', () => {
     const after = structuredClone(loaded);
     after.payload.targets = after.payload.targets.filter((entry) =>
       entry.pluginId !== 'team-tools/offline-project');
-    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
+    const executeScopedTask = vi.fn(async (plan: ScopedTuiPlan) => ({
+      kind: 'recovery' as const,
+      receipt: { ...(plan as Extract<ScopedTuiPlan, { kind: 'recovery' }>).plan.receipt,
+        targetResults: [{ ...scopedTarget('team-tools/offline-project', 'codex', 'applied', 'verified'),
+          scope: 'project' as const }],
+      },
+    }));
     const value = controller({
       loadStatus: vi.fn().mockResolvedValueOnce(loaded).mockResolvedValue(after),
-      captureEvidence,
-      executeIntent: vi.fn().mockResolvedValue({
-        overallState: 'succeeded',
-        targetResults: [{
-          target: {
-            pluginId: 'team-tools/offline-project', platform: 'codex', scope: 'project',
-          },
-          action: 'cleanup',
-          state: 'completed',
-        }],
-      }),
+      prepareScopedTask, executeScopedTask,
     });
     await value.load();
     const issue = value.listUserIssues().find((entry) =>
@@ -1162,21 +846,16 @@ describe('ConsoleAppV4', () => {
     }
     await input(instance, '\r');
 
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'review' });
-    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'cleanup', pluginId: 'team-tools/offline-project', platform: 'codex', scope: 'project',
-      originIssue: expect.objectContaining({
-        issueId: issue.issueId, actionId: 'cleanup',
-        consumerPluginId: 'team-tools/offline-project',
-        consumerSourceIdentity: 'identity:team-tools',
-        consumerPlatform: 'codex', consumerScope: 'project',
-      }),
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'recovery', command: 'cleanup', scope: 'project',
+      selectors: ['team-tools/offline-project'],
+      exactTargets: [{ pluginId: 'team-tools/offline-project', agent: 'codex' }],
     }), expect.any(AbortSignal));
-    await confirmReview(instance, value);
-    await nextTurn(4);
-
-    expect(value.snapshot.result).toMatchObject({ state: 'succeeded' });
-    expect(value.snapshot.result).not.toHaveProperty('code', 'issueStillPresent');
+    await input(instance, '\r');
+    expect(executeScopedTask).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
+    expect(instance.lastFrame()).toContain('请求已完成');
     expect(value.listUserIssues()).toContainEqual(expect.objectContaining({
       issueId: issue.issueId,
       affectedTargets: [expect.objectContaining({
@@ -1291,4 +970,147 @@ describe('ConsoleAppV4', () => {
       ? '修复来源内容或修改选择，然后重新检查。' : '查看技术详情，确认字段定义不可用的原因。');
     await writeAcceptanceTrace(`review-repair/${name}-${columns}x${rows}`, trace);
   });
+  it('uses the exact issue target and reloads the issue list after scoped recovery succeeds', async () => {
+    const initial = loadResult();
+    initial.payload.catalog.sources = [initial.payload.catalog.sources[0]!];
+    initial.payload.targets = [target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'partial' })];
+    initial.pluginSummaries = [initial.pluginSummaries[1]!];
+    const resolved = structuredClone(initial);
+    updatePlacement(resolved.payload.targets[0]!, 'user', { state: 'ready', reasons: [] });
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(resolved);
+    const execution = deferred<{ kind: 'recovery'; receipt: RecoveryReceipt }>();
+    const executeScopedTask = vi.fn(() => execution.promise);
+    const value = controller({ loadStatus, executeScopedTask });
+    await value.load();
+    const selected = value.listUserIssues().find((entry) => entry.category === 'incompleteInstallation')!;
+    value.push({ name: 'issueDetail', issueId: selected.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('确认恢复可执行目标'));
+    expect(value.dependencies.prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'recovery', command: 'sync', scope: 'user',
+      selectors: ['official/review-gate'],
+      exactTargets: [{ pluginId: 'official/review-gate', agent: 'codex' }],
+    }), expect.any(AbortSignal));
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('正在执行恢复');
+    const plan = executeScopedTask.mock.calls[0]![0] as ScopedTuiPlan;
+    execution.resolve({ kind: 'recovery', receipt: (plan as Extract<ScopedTuiPlan, { kind: 'recovery' }>).plan.receipt });
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
+    await vi.waitFor(() => expect(value.listUserIssues().some((entry) => entry.issueId === selected.issueId)).toBe(false));
+  });
+
+  it('cleans a Catalog orphan in one scope and reloads both lists after refresh', async () => {
+    const initial = orphanLoadResult();
+    const resolved = structuredClone(initial);
+    resolved.payload.targets = [];
+    const loadStatus = vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(resolved);
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => {
+      const receipt = { ...scopedReceipt(request), targetResults: [
+        { ...scopedTarget('official/retired-tool', 'codex', 'not-run', 'unknown'),
+          backend: { target: '/private/aw-home/managed/retired-tool.md' } },
+      ] };
+      return scopedPlan(request, receipt);
+    });
+    const executeScopedTask = vi.fn(async (plan: ScopedTuiPlan) => ({
+      kind: 'recovery' as const,
+      receipt: { ...(plan as Extract<ScopedTuiPlan, { kind: 'recovery' }>).plan.receipt,
+        targetResults: [scopedTarget('official/retired-tool', 'codex', 'applied', 'missing')] },
+    }));
+    const value = controller({ loadStatus, prepareScopedTask, executeScopedTask });
+    await value.load();
+
+    expect(value.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })).toEqual([]);
+    expect(value.listPlugins({ mode: 'installed', installFilter: 'installed' }).map((plugin) => plugin.pluginId))
+      .toEqual(['official/retired-tool']);
+    const issue = value.listUserIssues()[0]!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('当前插件目录不再包含此插件');
+    expect(instance.lastFrame()).toContain('清理 AW 管理内容');
+    expect(instance.lastFrame()).not.toContain('--force');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('确认恢复可执行目标'));
+    expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'recovery', command: 'cleanup', scope: 'user',
+      selectors: ['official/retired-tool'],
+      exactTargets: [{ pluginId: 'official/retired-tool', agent: 'codex' }],
+    }), expect.any(AbortSignal));
+    expect(instance.lastFrame()).toContain('所有项目');
+    expect(instance.lastFrame()).toContain('− 移除 retired-tool（official）');
+    expect(instance.lastFrame()).not.toContain('/private/aw-home/managed/retired-tool.md');
+    const details = await readScopedDetails(instance);
+    expect(details).toContain('范围：个人（所有项目）');
+    expect(details).toContain('需求变更（计划）：无');
+    expect(details).toContain('official/retired-tool · Codex [个人] · 原生');
+    expect(details).not.toContain('/private/aw-home/managed/retired-tool.md');
+    expect(executeScopedTask).not.toHaveBeenCalled();
+
+    const clipboard = vi.mocked(copyToClipboard).mockReset().mockResolvedValue(undefined);
+    await input(instance, 'y');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('全文已复制'));
+    expect(clipboard).toHaveBeenCalledTimes(1);
+    expect(clipboard.mock.lastCall?.[0]).not.toContain('/private/aw-home/managed/retired-tool.md');
+    expect(executeScopedTask).not.toHaveBeenCalled();
+
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
+    expect(executeScopedTask).toHaveBeenCalledTimes(1);
+    expect(value.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })).toEqual([]);
+    await vi.waitFor(() => expect(value.listPlugins({ mode: 'installed', installFilter: 'installed' })).toEqual([]));
+    expect(value.listUserIssues()).toEqual([]);
+  });
+
+  it('keeps a failed issue and returns to its detail without exposing a private error', async () => {
+    const initial = loadResult();
+    initial.payload.catalog.sources = [initial.payload.catalog.sources[0]!];
+    initial.payload.targets = [target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'partial' })];
+    initial.pluginSummaries = [initial.pluginSummaries[1]!];
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(initial),
+      executeScopedTask: vi.fn().mockRejectedValue(new Error('/Users/private/raw failure')),
+    });
+    await value.load();
+    const selected = value.listUserIssues().find((entry) => entry.category === 'incompleteInstallation')!;
+    value.push({ name: 'issueDetail', issueId: selected.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('确认恢复可执行目标'));
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(instance.lastFrame()).toContain('恢复结果');
+    expect(instance.lastFrame()).not.toContain('/Users/private');
+    expect(instance.lastFrame()).toContain('当前无法完成，请查看详情');
+    const details = await readScopedDetails(instance);
+    expect(details).toContain('recoveryFailed');
+    expect(details).not.toContain('/Users/private');
+    expect(value.dependencies.executeScopedTask).toHaveBeenCalledTimes(1);
+    expect(value.listUserIssues().some((entry) => entry.issueId === selected.issueId)).toBe(true);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'issueDetail', issueId: selected.issueId });
+  });
+
+  it.each(['keepProjectScope', 'keepUserScope'] as const)(
+    'does not offer legacy cross-scope repair %s from the conflict issue', async (actionId) => {
+    const loaded = loadResult();
+    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+    loaded.payload.targets = [mixedScopeConflictTarget('review-gate')];
+    loaded.pluginSummaries = [loaded.pluginSummaries[1]!];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const conflict = value.listUserIssues().find((entry) => entry.category === 'scopeConflict')!;
+    value.push({ name: 'issueDetail', issueId: conflict.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    expect(conflict.actions.some((entry) => entry.id === actionId)).toBe(false);
+    await input(instance, '\r');
+    expect(value.dependencies.prepareScopedTask).not.toHaveBeenCalled();
+  });
+
 });

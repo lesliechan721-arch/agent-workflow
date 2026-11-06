@@ -1,5 +1,6 @@
 import type { PlatformName, Scope } from '../types.js';
 import type { PluginContentType } from './plugin-content.js';
+import type { ConfigProfileKey } from './model.js';
 
 export type PortableBlockerCode =
   | 'requiredConfigMissing'
@@ -15,12 +16,17 @@ export interface ConfigInvalidStoreEvidence {
   pathSummary: string;
 }
 
+export interface ConfigRouteLayer {
+  profile: ConfigProfileKey;
+  context?: Scope;
+}
+
 export type ConfigResumeRoute =
-  | { name: 'configFields'; pluginId: string; layer: { scope: Scope | 'effective' } }
+  | { name: 'configFields'; pluginId: string; layer: ConfigRouteLayer }
   | {
       name: 'configFieldEditor';
       pluginId: string;
-      layer: { scope: Scope | 'effective' };
+      layer: ConfigRouteLayer;
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object' | 'array';
       mode?: 'choices' | 'custom';
@@ -29,7 +35,7 @@ export type ConfigResumeRoute =
   | {
       name: 'configObjectPropertyEditor';
       pluginId: string;
-      layer: { scope: Scope | 'effective' };
+      layer: ConfigRouteLayer;
       fieldKey: string;
       propertyKey?: string;
       dynamic: boolean;
@@ -39,13 +45,14 @@ export type ConfigResumeRoute =
   | {
       name: 'configFieldAction';
       pluginId: string;
-      layer: { scope: Scope | 'effective' };
+      layer: ConfigRouteLayer;
       fieldKey: string;
     };
 
 export type TuiRoute =
   | { name: 'home' }
-  | { name: 'projectStatus' }
+  | { name: 'intentScopes' }
+  | { name: 'intentInventory'; scope: Scope; projectKey?: string }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
   | {
       name: 'pluginWriteTask';
@@ -107,6 +114,7 @@ export type TuiRoute =
   | {
       name: 'configLayer';
       pluginId: string;
+      layer?: ConfigRouteLayer;
       fieldKey?: string;
       groupId?: string;
       presetId?: string;
@@ -114,13 +122,13 @@ export type TuiRoute =
   | {
       name: 'configFields';
       pluginId: string;
-      layer: { scope: Scope | 'effective' };
+      layer: ConfigRouteLayer;
       view?: 'options' | 'values';
     }
   | {
       name: 'configFieldEditor';
       pluginId: string;
-      layer: { scope: Scope | 'effective' };
+      layer: ConfigRouteLayer;
       fieldKey: string;
       editor: 'boolean' | 'number' | 'string' | 'object' | 'array';
       mode?: 'choices' | 'custom';
@@ -129,7 +137,7 @@ export type TuiRoute =
   | {
       name: 'configObjectPropertyEditor';
       pluginId: string;
-      layer: { scope: Scope | 'effective' };
+      layer: ConfigRouteLayer;
       fieldKey: string;
       propertyKey?: string;
       dynamic: boolean;
@@ -139,14 +147,14 @@ export type TuiRoute =
   | {
       name: 'configFieldAction';
       pluginId: string;
-      layer: { scope: Scope | 'effective' };
+      layer: ConfigRouteLayer;
       fieldKey: string;
     }
   | {
       name: 'configUnavailable';
       pluginId: string;
       overviewFrameId?: string;
-      layer?: { scope: Scope };
+      layer?: ConfigRouteLayer;
       invalidStores?: ConfigInvalidStoreEvidence[];
       diagnosticCode?: string;
       diagnosticStage?: string;
@@ -161,7 +169,7 @@ export type TuiRoute =
   | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string; returnToDraft?: true }
   | { name: 'sourceEdit'; sourceId: string; owner?: string }
   | { name: 'sourceSave'; owner: string; view?: 'summary' | 'changes' }
-  | { name: 'configSave'; pluginId: string; layer: { scope: Scope | 'effective' }; view?: 'summary' | 'changes' }
+  | { name: 'configSave'; pluginId: string; layer: ConfigRouteLayer; view?: 'summary' | 'changes' }
   | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
   | { name: 'catalogStoreOverview' }
@@ -185,8 +193,8 @@ export interface TuiPageContext {
   focusedActionId?: string;
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
-  projectSection?: 'declared' | 'extraInstalled';
-  projectStatusFilter?: 'all' | 'pending' | 'blocked' | 'unknown' | 'ready';
+  inventorySection?: 'declared' | 'extraInstalled';
+  inventoryStatusFilter?: 'all' | 'blocked' | 'unknown' | 'pending' | 'ready';
   sourceTypeTab?: 'all' | 'git' | 'path';
   contentTypeTab?: 'all' | PluginContentType;
   platformSelectedScope?: Scope;

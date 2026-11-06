@@ -1,3 +1,5 @@
+import { compilePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
+
 import type {
   NormalizedPluginManifest,
   Scope,
@@ -199,7 +201,8 @@ export function analyzeCodexSurface(
   if (manifest.apps) declareNative('app', 'manifest.apps');
   if (manifest.slashCommands) unsupportedKinds.add('slashCommand');
 
-  const configInputs = Object.keys(manifest.config?.fields ?? {}).sort(compareText);
+  const configInputs = Object.keys(manifest.config === undefined
+    ? {} : compilePluginConfigDefinition(manifest.config, 'codex').fields).sort(compareText);
 
   for (const instruction of resolvePlatformEntries(manifest.extensions?.instructions, 'codex')) {
     extensionKinds.add('instruction');
@@ -238,13 +241,13 @@ export function analyzeCodexSurface(
       : target.target === 'codex.agentRole'
         ? 'agent'
         : 'instruction';
-    if (target.target === 'codex.skill' && target.delivery?.mode === 'codex-native') {
+    if (target.target === 'codex.skill') {
       nativeKinds.add('skill');
       components.push({
         key: `artifacts.targets:${target.id}`,
         kind: 'skill',
         owner: 'codex-native',
-        scopes: [...target.scopes],
+        scopes: [...BOTH_SCOPES],
         dynamic: true,
         refreshKeys: [...target.refreshKeys],
         name: target.skillKey,

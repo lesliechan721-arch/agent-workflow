@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { nativeToolFixture } from '../helpers/native-tools.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { runPluginScriptTests } from '../../scripts/test-plugin-scripts.js';
+import * as pluginTestRunner from '../../scripts/test-plugin-scripts.js';
 
 const tempDirs: string[] = [];
 
@@ -49,15 +50,13 @@ async function writeManifest(repoRoot: string, manifest: Record<string, unknown>
 
 async function configureTestManifest(options: {
   repoRoot: string;
-  products?: string[];
+  platforms?: Array<'codex' | 'claude'>;
   testEntries: string[];
   buildPath?: string;
 }): Promise<void> {
   const manifest = await readManifest(options.repoRoot);
-  const marketplace = manifest.marketplace as Record<string, unknown>;
-  const policy = marketplace.policy as Record<string, unknown>;
-  policy.products = options.products;
-  if (options.products && !options.products.includes('CODEX')) {
+  if (options.platforms) manifest.platforms = options.platforms;
+  if (options.platforms && !options.platforms.includes('codex')) {
     delete manifest.apps;
     await fs.remove(path.join(pluginRoot(options.repoRoot), '.app.json'));
   }
@@ -100,7 +99,7 @@ async function writePlatformProbeTest(repoRoot: string, fileName: string): Promi
   );
 }
 
-async function writeProductRewriteBuild(repoRoot: string, fileName: string, products: string[]): Promise<void> {
+async function writePlatformRewriteBuild(repoRoot: string, fileName: string, platforms: Array<'codex' | 'claude'>): Promise<void> {
   await writeNodeTestFile(
     repoRoot,
     fileName,
@@ -109,7 +108,7 @@ async function writeProductRewriteBuild(repoRoot: string, fileName: string, prod
       '',
       'const manifestUrl = new URL("../.agents-plugin/plugin.json", import.meta.url);',
       'const manifest = JSON.parse(await readFile(manifestUrl, "utf8"));',
-      `manifest.marketplace.policy.products = ${JSON.stringify(products)};`,
+      `manifest.platforms = ${JSON.stringify(platforms)};`,
       'await writeFile(manifestUrl, `${JSON.stringify(manifest, null, 2)}\\n`, "utf8");',
     ].join('\n'),
   );
@@ -199,7 +198,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CODEX'],
+      platforms: ['codex'],
       testEntries: ['./scripts/shard-*.test.mjs'],
     });
     const marker = path.join(pluginRoot(repoRoot), 'shard-events');
@@ -277,7 +276,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CODEX'],
+      platforms: ['codex'],
       testEntries: ['./scripts/worker-*.test.mjs'],
     });
     const defaultWorkers = Math.max(1, os.availableParallelism() - 1);
@@ -435,28 +434,46 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).not.toContain('bad-neighbor');
   });
 
-  it('runs the standard author helper against same-source dependency defaults', async () => {
+  // Test Value Gate: one user store must survive project context, while both
+  // Native profiles use the matching schema and same-platform provider defaults.
+  it.each(['user', 'project'] as const)('runs the author helper with %s context and exact Native profiles', async (scope) => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);
     manifest.dependencies = ['config-provider'];
     manifest.requires = { aw: { capabilities: ['aw.plugin-config-cross-plugin-value-ref.v1'] } };
     manifest.config = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       fields: {
         mode: {
           type: 'string',
-          default: 'default-mode',
+          default: 'common-mode',
           valueRef: { plugin: 'config-provider', field: 'registry', key: 'key' },
         },
+        shared: { type: 'string' },
+      },
+      platforms: {
+        codex: { fields: { mode: { type: 'string', default: 'codex-mode',
+          valueRef: { plugin: 'config-provider', field: 'registry', key: 'key' } } } },
+        claude: { fields: { mode: { type: 'string', default: 'claude-mode',
+          valueRef: { plugin: 'config-provider', field: 'registry', key: 'key' } } } },
       },
     };
     await fs.outputJson(path.join(repoRoot, 'plugins', 'config-provider', '.agents-plugin', 'plugin.json'), {
       schemaVersion: 3, name: 'config-provider', version: '0.1.0', description: 'Plugin test config provider.',
+      platforms: ['codex', 'claude'],
       marketplace: { category: 'test', strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-      config: { schemaVersion: 4, fields: { registry: { type: 'array', default: [{ key: 'default-mode' }],
-        validation: { uniqueBy: 'key' }, items: { type: 'object',
-          properties: { key: { type: 'string', required: true } }, additionalProperties: false } } } },
+      config: {
+        schemaVersion: 5,
+        fields: { registry: { type: 'array', default: [{ key: 'common-mode' }], validation: { uniqueBy: 'key' }, items: {
+          type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
+        } } },
+        platforms: Object.fromEntries(['codex', 'claude'].map((platform) => [platform, { fields: {
+          registry: { type: 'array', default: [{ key: `${platform}-mode` }], validation: { uniqueBy: 'key' }, items: {
+            type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
+          } },
+        } }])),
+      },
     });
     manifest.scripts = {
       helpers: {
@@ -486,22 +503,36 @@ describe('plugin script test runner', () => {
     await writeNodeTestFile(repoRoot, 'config-effective.test.mjs', [
       'import assert from "node:assert/strict";',
       'import { execFile } from "node:child_process";',
+      'import { readFile } from "node:fs/promises";',
       'import path from "node:path";',
       'import test from "node:test";',
       'import { promisify } from "node:util";',
       'const execFileAsync = promisify(execFile);',
       'test("effective config", async () => {',
+      '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      '  const expected = `${context.platform}-mode`;',
+      `  assert.equal(context.scope, ${JSON.stringify(scope)});`,
+      '  assert.equal(context.paths.configStores.user, context.paths.configStores.project);',
+      '  const store = JSON.parse(await readFile(context.paths.configStores.user, "utf8"));',
+      '  assert.equal(store.schemaVersion, 6);',
+      '  assert.equal(store.binding.kind, "source");',
+      '  assert.deepEqual(store.common, { shared: "common-input" });',
+      '  assert.deepEqual(store.platforms, {});',
+      '  assert.equal(Object.hasOwn(store, "values"), false);',
+      '  assert.equal(context.config.values.mode, expected);',
+      '  assert.equal(context.config.values.shared, "common-input");',
       '  const result = await execFileAsync(process.execPath, [',
       '    path.join(process.env.AW_PLUGIN_ROOT, "scripts", "aw-config.mjs"),',
       '    "get", "mode",',
       '  ], { env: process.env });',
-      '  assert.equal(result.stdout.trim(), "default-mode");',
+      '  assert.equal(result.stdout.trim(), expected);',
       '});',
     ].join('\n'));
     const output = captureOutput();
 
-    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'both', '--scope', scope], {
       repoRoot,
+      testConfigValues: { shared: 'common-input' },
       stdout: output.stdout,
       stderr: output.stderr,
       env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
@@ -602,7 +633,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CODEX'],
+      platforms: ['codex'],
       testEntries: ['./scripts/platform-probe.test.mjs'],
     });
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
@@ -625,7 +656,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CLAUDE'],
+      platforms: ['claude'],
       testEntries: ['./scripts/platform-probe.test.mjs'],
     });
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
@@ -648,7 +679,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CODEX', 'CLAUDE'],
+      platforms: ['codex', 'claude'],
       testEntries: ['./scripts/platform-probe.test.mjs'],
     });
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
@@ -687,7 +718,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CODEX'],
+      platforms: ['codex'],
       testEntries: ['./scripts/missing-platform-probe.test.mjs'],
     });
     const output = captureOutput();
@@ -702,7 +733,7 @@ describe('plugin script test runner', () => {
     expect(exitCode).toBe(1);
     expect(output.readStdout()).toBe('');
     expect(output.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=claude');
-    expect(output.readStderr()).toContain('marketplace.policy.products=[CODEX]');
+    expect(output.readStderr()).toContain('platforms=[codex]');
     expect(output.readStderr()).toContain('supported platforms=codex');
     expect(output.readStderr()).not.toContain('missing-platform-probe');
   });
@@ -711,7 +742,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CODEX'],
+      platforms: ['codex'],
       testEntries: ['./scripts/platform-probe.test.mjs'],
     });
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
@@ -733,7 +764,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CLAUDE'],
+      platforms: ['claude'],
       testEntries: ['./scripts/platform-probe.test.mjs'],
     });
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
@@ -746,20 +777,20 @@ describe('plugin script test runner', () => {
     });
     expect(codexExitCode).toBe(1);
     expect(codexOutput.readStderr()).toContain('Cannot run plugin tests for "git-commit" with --platform=codex');
-    expect(codexOutput.readStderr()).toContain('marketplace.policy.products=[CLAUDE]');
+    expect(codexOutput.readStderr()).toContain('platforms=[claude]');
     expect(codexOutput.readStderr()).toContain('supported platforms=claude');
   });
 
-  it('uses the staging manifest products when source and staging products differ', async () => {
+  it('uses the staging manifest platforms when source and staging platforms differ', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({
       repoRoot,
-      products: ['CLAUDE'],
+      platforms: ['claude'],
       testEntries: ['./scripts/platform-probe.test.mjs'],
-      buildPath: './scripts/rewrite-products.mjs',
+      buildPath: './scripts/rewrite-platforms.mjs',
     });
     await writePlatformProbeTest(repoRoot, 'platform-probe.test.mjs');
-    await writeProductRewriteBuild(repoRoot, 'rewrite-products.mjs', ['CODEX']);
+    await writePlatformRewriteBuild(repoRoot, 'rewrite-platforms.mjs', ['codex']);
     const output = captureOutput();
 
     const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'both'], {
@@ -773,13 +804,7 @@ describe('plugin script test runner', () => {
     expect(output.readStdout()).toContain('git-commit / codex: passed');
     expect(output.readStdout()).not.toContain('git-commit / claude');
     expect(output.readStderr()).toBe('');
-    await expect(readManifest(repoRoot)).resolves.toMatchObject({
-      marketplace: {
-        policy: {
-          products: ['CLAUDE'],
-        },
-      },
-    });
+    await expect(readManifest(repoRoot)).resolves.toMatchObject({ platforms: ['claude'] });
   });
 
   it('fails before running any tests when --all --platform codex selects an unsupported plugin', async () => {
@@ -787,7 +812,7 @@ describe('plugin script test runner', () => {
     await clonePlugin(repoRoot, 'git-commit', 'claude-only');
     await configureTestManifest({
       repoRoot,
-      products: ['CODEX'],
+      platforms: ['codex'],
       testEntries: ['./scripts/git-commit-marker.test.mjs'],
     });
     await writeMarkerTest(repoRoot, 'git-commit', 'git-commit-marker.test.mjs');
@@ -800,7 +825,7 @@ describe('plugin script test runner', () => {
       'plugin.json',
     );
     const claudeOnlyManifest = await fs.readJson(claudeOnlyManifestPath);
-    claudeOnlyManifest.marketplace.policy.products = ['CLAUDE'];
+    claudeOnlyManifest.platforms = ['claude'];
     claudeOnlyManifest.scripts = {
       tests: {
         node: ['./scripts/claude-only-marker.test.mjs'],
@@ -1013,27 +1038,24 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).toContain('No declared test file matches');
   }, 30_000);
 
-  it('redacts sensitive config values from node test output and failures', async () => {
+  it('redacts config marked sensitive by the selected Native profile from node output and failures', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);
     manifest.config = {
+      schemaVersion: 5,
       fields: {
-        token: {
-          type: 'string',
-          sensitive: true,
-        },
-        pin: {
-          type: 'string',
-          sensitive: true,
-        },
-        enabled: {
-          type: 'string',
-          sensitive: true,
-        },
-        accessKey: {
-          type: 'string',
-          sensitive: true,
-        },
+        token: { type: 'string' },
+        pin: { type: 'string' },
+        enabled: { type: 'string' },
+        accessKey: { type: 'string' },
+      },
+      platforms: {
+        codex: { fields: {
+          token: { type: 'string', sensitive: true },
+          pin: { type: 'string', sensitive: true },
+          enabled: { type: 'string', sensitive: true },
+          accessKey: { type: 'string', sensitive: true },
+        } },
       },
     };
     manifest.scripts = {
@@ -1099,6 +1121,7 @@ describe('plugin script test runner', () => {
       version: '0.1.0',
       description: 'registry provider',
       schemaVersion: 3,
+      platforms: ['codex', 'claude'],
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -1172,6 +1195,7 @@ describe('plugin test native preparation', () => {
     ].join('\n'));
     return { repoRoot, startedFile };
   }
+  const runNativeTests = runPluginScriptTests;
   const ready = { state: 'ready' as const, protocol: 'aw.windows-job.v1', executable: process.execPath };
 
   // Test Value Gate: use the public command and real Node consumer so option
@@ -1180,12 +1204,13 @@ describe('plugin test native preparation', () => {
     const { repoRoot, startedFile } = await prepareNativeTest();
     const contextFile = path.join(repoRoot, 'native-context.json');
     await fs.writeJson(contextFile, { schemaVersion: 1, tools: { job: ready } });
-    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    const runner = vi.spyOn(pluginTestRunner, 'runPluginScriptTests').mockImplementation((args, options) =>
+      runNativeTests(args, { ...options, nativePlatform: 'win32' }));
     let result: Awaited<ReturnType<typeof runCliEntry>>;
     try {
       result = await runCliEntry(['plugin', 'test', pluginRoot(repoRoot), '--workspace-root', repoRoot,
         '--native-mode', mode, '--native-context', contextFile, '--json'], { cwd: repoRoot });
-    } finally { platform.mockRestore(); }
+    } finally { runner.mockRestore(); }
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.parseJsonStdout()).toMatchObject({ command: 'plugin:test', ok: true, stdout: expect.stringContaining('native-backend=ready') });
     expect(await fs.readFile(startedFile, 'utf8')).toBe('started');
@@ -1196,12 +1221,13 @@ describe('plugin test native preparation', () => {
     const { repoRoot, startedFile } = await prepareNativeTest('required', protocol);
     const contextFile = path.join(repoRoot, 'native-context.json');
     await fs.writeJson(contextFile, { schemaVersion: 1, tools: { job: { ...ready, protocol } } });
-    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    const runner = vi.spyOn(pluginTestRunner, 'runPluginScriptTests').mockImplementation((args, options) =>
+      runNativeTests(args, { ...options, nativePlatform: 'win32' }));
     let result: Awaited<ReturnType<typeof runCliEntry>>;
     try {
       result = await runCliEntry(['plugin', 'test', pluginRoot(repoRoot), '--workspace-root', repoRoot,
         '--native-mode', 'source-candidate', '--native-context', contextFile, '--json'], { cwd: repoRoot });
-    } finally { platform.mockRestore(); }
+    } finally { runner.mockRestore(); }
     expect(result.exitCode).toBe(1);
     expect(result.parseJsonStdout()).toMatchObject({ command: 'plugin:test', ok: false, stderr: expect.stringContaining(protocol) });
     expect(await fs.pathExists(startedFile)).toBe(false);

@@ -10,20 +10,20 @@ import {
 function plugin(
   name: string,
   dependencies: string[] = [],
-  products?: string[],
+  platforms?: PluginManifestSource['platforms'],
 ): PluginManifestSource {
   return {
     name,
     version: '1.0.0',
     description: name,
     dependencies,
+    platforms,
     marketplace: {
       category: 'workflow',
       strict: true,
       policy: {
         installation: 'AVAILABLE',
         authentication: 'ON_INSTALL',
-        products,
       },
     },
   };
@@ -54,7 +54,7 @@ describe('plugin dependency graph', () => {
     ]);
   });
 
-  it('rejects missing dependencies, cycles, and incomplete marketplace product coverage', () => {
+  it('rejects missing dependencies, cycles, and incomplete platform coverage', () => {
     expect(() => validatePluginDependencyGraph([
       plugin('parent', ['missing']),
     ])).toThrow('requires missing plugin "missing" from the same source');
@@ -66,11 +66,11 @@ describe('plugin dependency graph', () => {
 
     expect(() => validatePluginDependencyGraph([
       plugin('parent', ['codex-only']),
-      plugin('codex-only', [], ['CODEX']),
-    ])).toThrow('CLAUDE'.toLowerCase());
+      plugin('codex-only', [], ['codex']),
+    ])).toThrow('claude');
 
     expect(() => validatePluginDependencyGraph([
-      plugin('codex-parent', ['both'], ['CODEX']),
+      plugin('codex-parent', ['both'], ['codex']),
       plugin('both'),
     ])).not.toThrow();
   });

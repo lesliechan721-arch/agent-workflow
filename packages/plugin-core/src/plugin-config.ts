@@ -1,4 +1,5 @@
 import { ConfigPatternMemoryError, testConfigPattern } from './config-pattern.js'
+import { isPlatformTarget } from './platform-support.js'
 
 import type {
   PluginConfigAdditionalPropertiesField,
@@ -7,6 +8,7 @@ import type {
   PluginConfigArrayItemField,
   PluginConfigArrayValidation,
   PluginConfigChoices,
+  PluginConfigCompiledDefinition,
   PluginConfigDefinition,
   PluginConfigDependencyField,
   PluginConfigReferenceContext,
@@ -28,6 +30,7 @@ import type {
   PluginConfigValidationIssue,
   PluginConfigValue,
   PluginConfigValueReference,
+  PlatformTarget,
 } from './types.js'
 
 const CONFIG_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/u
@@ -564,6 +567,7 @@ export function validatePluginConfigDocument(
   value: unknown,
   context?: PluginConfigReferenceContext,
 ): PluginConfigValidationIssue[] {
+  definition = selectConfigProfile(definition, context?.platform)
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return [createIssue('type', '$document', 'Expected a config object.')]
   }
@@ -600,6 +604,7 @@ export function getPluginConfigDependencyKeys(
   keys: readonly string[],
   context?: PluginConfigReferenceContext,
 ): string[] {
+  definition = selectConfigProfile(definition, context?.platform)
   if (context !== undefined) {
     return getPluginConfigDependencyFields(definition, keys, context)
       .filter((entry) => entry.plugin === context.plugin).map((entry) => entry.field)
@@ -622,11 +627,11 @@ function referencePlugin(
   definition: PluginConfigDefinition,
   context: PluginConfigReferenceContext | undefined,
   plugin: string,
-): { definition: PluginConfigDefinition; dependencies: readonly string[]; values?: Readonly<Record<string, unknown>> } {
-  if (plugin === (context?.plugin ?? '')) return { definition, dependencies: context?.dependencies ?? [] }
+): { definition: PluginConfigCompiledDefinition; dependencies: readonly string[]; values?: Readonly<Record<string, unknown>> } {
+  if (plugin === (context?.plugin ?? '')) return { definition: selectConfigProfile(definition, context?.platform), dependencies: context?.dependencies ?? [] }
   const provider = ownProperty(context?.plugins, plugin)
   if (provider === undefined) throw new Error(`valueRefContext: Missing config provider plugin "${plugin}" in the same source context.`)
-  return provider
+  return { ...provider, definition: selectConfigProfile(provider.definition, context?.platform) }
 }
 
 function assertReferenceSource(
@@ -662,6 +667,7 @@ export function getPluginConfigDependencyFields(
   keys: readonly string[],
   context?: PluginConfigReferenceContext,
 ): PluginConfigDependencyField[] {
+  definition = selectConfigProfile(definition, context?.platform)
   const result = new Map<string, PluginConfigDependencyField>()
   const visiting = new Set<string>()
   const visit = (plugin: string, field: string): void => {
@@ -704,11 +710,35 @@ export function getPluginConfigDependencyFields(
   return [...result.values()]
 }
 
-/** Associate definitions and their defaults. Pass the original config to include unused source definitions. */
+/** Associate common and declared platform profiles, or one explicit platform. Include source config to check unused definitions. */
 export function assertPluginConfigReferenceSchemas(
   definition: PluginConfigDefinition,
   context: PluginConfigReferenceContext,
   sourceConfig?: unknown,
+): void {
+  const profiles = new Set<PlatformTarget | undefined>([context.platform])
+  if (context.platform === undefined) {
+    for (const config of [definition, ...Object.values(context.plugins).map((entry) => entry.definition)]) {
+      if (config.schemaVersion === 5) {
+        for (const platform of Object.keys(config.platforms ?? {})) {
+          if (isPlatformTarget(platform)) profiles.add(platform)
+        }
+      }
+    }
+  }
+  for (const platform of profiles) {
+    const compiled = selectConfigProfile(definition, platform)
+    const profileContext = { ...context, platform }
+    const source = sourceConfig === undefined ? undefined : asObject(sourceConfig, 'config')
+    assertConfigProfileReferenceSchemas(compiled, profileContext,
+      source?.schemaVersion === 5 ? platformConfigSource(source, platform, 'config') : source)
+  }
+}
+
+function assertConfigProfileReferenceSchemas(
+  definition: PluginConfigCompiledDefinition,
+  context: PluginConfigReferenceContext,
+  sourceConfig?: Record<string, unknown>,
 ): void {
   getPluginConfigDependencyFields(definition, Object.keys(definition.fields), context)
   const defaults = (config: PluginConfigDefinition): Record<string, unknown> => Object.fromEntries(
@@ -717,16 +747,18 @@ export function assertPluginConfigReferenceSchemas(
   const defaultValues = defaults(definition)
   const defaultContext: PluginConfigReferenceContext = {
     ...context,
-    plugins: Object.fromEntries(Object.entries(context.plugins).map(([plugin, entry]) =>
-      [plugin, { ...entry, values: defaults(entry.definition) }])),
+    plugins: Object.fromEntries(Object.entries(context.plugins).map(([plugin, entry]) => {
+      const profile = selectConfigProfile(entry.definition, context.platform)
+      return [plugin, { ...entry, definition: profile, values: defaults(profile) }]
+    })),
   }
   const assertDefaults = (config: PluginConfigDefinition, values: Record<string, unknown>, keys: readonly string[]): void => {
     const issues = validatePluginConfigCandidate(config, values, keys, defaultContext)
-    if (issues.length > 0) throw new Error(`valueRefDefault: Invalid config.default for plugin "${context.plugin}": ${formatPluginConfigIssue(issues[0]!)}`)
+    if (issues.length > 0) throw new Error(`valueRefDefault: Invalid config.default for plugin "${context.plugin}" (${context.platform ?? 'common'}): ${formatPluginConfigIssue(issues[0]!)}`)
   }
   assertDefaults(definition, defaultValues, Object.keys(defaultValues))
   if (sourceConfig !== undefined) {
-    const source = asObject(sourceConfig, 'config')
+    const source = sourceConfig
     if (source.definitions !== undefined) {
       const definitions: Record<string, PluginConfigSchemaField> = createPropertyMap()
       expandConfigReferences(source, 'config', source.schemaVersion === 4, context, definitions)
@@ -892,18 +924,20 @@ export function validatePluginConfigCandidate(
   keys?: readonly string[],
   context?: PluginConfigReferenceContext,
 ): PluginConfigValidationIssue[] {
+  definition = selectConfigProfile(definition, context?.platform)
   if (!isSafeJsonRecord(values)) return [createIssue('type', '$document', 'Expected a config JSON object.')]
   if (keys === undefined) return validatePluginConfigDocument(definition, values, context)
   return validateConfigCandidateFields(definition, values, keys, context)
 }
 
-/** Project reference choices from an already resolved scope candidate, using the same validation as writes. */
+/** Project reference choices from an already resolved platform candidate, using the same validation as writes. */
 export function getPluginConfigReferenceChoices(
   definition: PluginConfigDefinition,
   scalar: PluginConfigScalarField,
   values: Record<string, unknown>,
   context?: PluginConfigReferenceContext,
 ): { choices: Array<{ value: PluginConfigScalar; title: string }>; issues: PluginConfigValidationIssue[] } {
+  definition = selectConfigProfile(definition, context?.platform)
   if (!('valueRef' in scalar) || scalar.valueRef === undefined) return { choices: [], issues: [] }
   const ref = scalar.valueRef
   const referenceField = '$reference'
@@ -1656,11 +1690,11 @@ function normalizeConfigSummaries(
   }
 }
 
-export function normalizePluginConfigDefinition(
+function normalizeCompiledConfigDefinition(
   value: unknown,
   path = 'config',
   owner?: { plugin?: string; dependencies?: readonly string[] },
-): PluginConfigDefinition {
+): PluginConfigCompiledDefinition {
   const input = asObject(value, path)
   const v4 = input.schemaVersion === 4
   const v3 = input.schemaVersion === 3 || v4
@@ -1727,5 +1761,77 @@ export function normalizePluginConfigDefinition(
       }),
     }
   }
-  return { ...(v3 ? { schemaVersion: v4 ? 4 as const : 3 as const } : {}), fields, presentation } as PluginConfigDefinition
+  return { ...(v3 ? { schemaVersion: v4 ? 4 as const : 3 as const } : {}), fields, presentation } as PluginConfigCompiledDefinition
+}
+
+function platformConfigSource(
+  input: Record<string, unknown>,
+  platform: PlatformTarget | undefined,
+  path: string,
+): Record<string, unknown> {
+  const platforms = input.platforms === undefined ? {} : asObject(input.platforms, `${path}.platforms`)
+  const rawBranch = platform === undefined ? undefined : ownProperty(platforms, platform)
+  const branchPath = platform === undefined ? path : `${path}.platforms.${platform}`
+  const branch = rawBranch === undefined ? {} : asObject(rawBranch, branchPath)
+  const record = (value: unknown, fieldPath: string): Record<string, unknown> => value === undefined ? {} : asObject(value, fieldPath)
+  return {
+    schemaVersion: 4,
+    definitions: { ...record(input.definitions, `${path}.definitions`), ...record(branch.definitions, `${branchPath}.definitions`) },
+    fields: { ...asObject(input.fields, `${path}.fields`), ...record(branch.fields, `${branchPath}.fields`) },
+    ...(Object.hasOwn(branch, 'presentation') ? { presentation: branch.presentation }
+      : input.presentation === undefined ? {} : { presentation: input.presentation }),
+  }
+}
+
+/** Normalize every profile before discarding source references, so overrides retain their original definitions. */
+export function normalizePluginConfigDefinition(
+  value: unknown,
+  path = 'config',
+  owner?: { plugin?: string; dependencies?: readonly string[] },
+): PluginConfigDefinition {
+  const input = asObject(value, path)
+  if (input.schemaVersion !== 5) return normalizeCompiledConfigDefinition(input, path, owner)
+  assertAllowedKeys(input, path, ['schemaVersion', 'definitions', 'fields', 'presentation', 'platforms'])
+  const common = normalizeCompiledConfigDefinition(platformConfigSource(input, undefined, path), path, owner)
+  const platforms: NonNullable<Extract<PluginConfigDefinition, { schemaVersion: 5 }>['platforms']> = createPropertyMap()
+  if (input.platforms !== undefined) {
+    for (const [platform, value] of Object.entries(asObject(input.platforms, `${path}.platforms`))) {
+      const branchPath = `${path}.platforms.${platform}`
+      if (!isPlatformTarget(platform)) throw new Error(`Invalid ${branchPath}: unknown config platform.`)
+      const branch = asObject(value, branchPath)
+      assertAllowedKeys(branch, branchPath, ['definitions', 'fields', 'presentation'])
+      const compiled = normalizeCompiledConfigDefinition(platformConfigSource(input, platform, path), branchPath, owner)
+      for (const [field, schema] of Object.entries(common.fields)) {
+        if ('sensitive' in schema && schema.sensitive === true && compiled.fields[field]?.sensitive !== true) {
+          throw new Error(`Invalid ${branchPath}.fields.${field}: a platform cannot weaken common sensitive protection.`)
+        }
+      }
+      platforms[platform] = { fields: compiled.fields, presentation: compiled.presentation }
+    }
+  }
+  return {
+    schemaVersion: 5, fields: common.fields, presentation: common.presentation,
+    ...(input.platforms === undefined ? {} : { platforms }),
+  }
+}
+
+function selectConfigProfile(
+  definition: PluginConfigDefinition,
+  platform?: PlatformTarget,
+): PluginConfigCompiledDefinition {
+  if (definition.schemaVersion !== 5) return definition
+  const profile = platform === undefined ? undefined : ownProperty(definition.platforms, platform)
+  return { schemaVersion: 4, fields: profile?.fields ?? definition.fields,
+    presentation: profile === undefined ? definition.presentation : profile.presentation }
+}
+
+/** Compile one canonical platform, or the common profile when platform is omitted. */
+export function compilePluginConfigDefinition(
+  value: unknown,
+  platform?: PlatformTarget,
+  path = 'config',
+  owner?: { plugin?: string; dependencies?: readonly string[] },
+): PluginConfigCompiledDefinition {
+  if (platform !== undefined && !isPlatformTarget(platform)) throw new Error(`Invalid ${path}.platform: unknown config platform.`)
+  return selectConfigProfile(normalizePluginConfigDefinition(value, path, owner), platform)
 }

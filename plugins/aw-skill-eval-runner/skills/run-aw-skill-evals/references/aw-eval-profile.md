@@ -52,7 +52,7 @@ parser 支持四个字段：`rationale`、`minimalCounterexample`、`allowedVari
 
 case.split 与显式 split 选择用于筛选用例；风险标签用于 Oracle 判断，Result.processManagement 记录实际进程管理证据。执行须满足 Audit、成本授权和进程管理要求。声明和格式通过不等于用例已运行；不可执行成功路径留在明确集成验收清单，不伪造 passing fixture。
 
-Profile 的 `plugins` 选择参与插件并提供公共配置；需要区分共享 Skill 与项目产物时，使用 profile 层的 `configByScope.user` 和 `configByScope.project`，各自以已声明插件名映射配置覆盖。覆盖按顶层配置键替换，不深度合并；未提供的键继承公共配置。共享 Codex 原生 Skill 从 user 配置渲染，普通产物从 profile 的 scope 渲染。配置来自隔离准备输入，不读取真实用户 store；作用域配置变化后重新核验来源绑定和 Eval 输入。
+每个 profile 必须显式声明七平台之一的 `platform`，与 executor/backend 独立。`plugins` 选择参与插件，并按所选平台 schema 提供非敏感配置。既有 `configByScope` 仅是隔离 Eval 的材料输入，覆盖按顶层键替换；它不创建生产项目配置值层。shared-user Native 包体仍消费所选平台配置。prepare 不读真实用户 Store；平台或输入变化后重新核验来源绑定，不能借跨平台产物证明当前 target。
 
 ## 格式辅助检查
 

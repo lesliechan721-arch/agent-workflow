@@ -1,4 +1,5 @@
 import type { ConfigReferenceContext, ConfigReferenceDraft } from './config-references.js';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 import crypto from 'node:crypto';
 
 import type {
@@ -11,12 +12,14 @@ import type {
   CommandProducerResult,
   DependencyScopeOverride,
   PlatformName,
+  PlatformTarget,
   Scope,
 } from '../types.js';
 import type { PortableReview, PortableInstallReceipt, PortableRetryReview } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
+import { NativeCliError } from '../utils/native-cli.js';
 import type {
   CatalogGenerationFreshnessState,
   CatalogGenerationFreshnessResult,
@@ -30,7 +33,6 @@ import type {
 import {
   flattenStatusTargets,
   statusTargetActivation,
-  statusTargetExtensions,
   statusTargetIntent,
   statusTargetOwnershipState,
   statusTargetSharedNative,
@@ -50,6 +52,9 @@ import { buildOperationResultModel } from '../commands/operation-planner.js';
 import { buildOperationReviewProjection } from './operation-review-planner.js';
 import {
   type ConfigPageViewModel,
+  type ConfigProfileOptions,
+  type ConfigReadOptions,
+  type ConfigProfileKey,
   type ConfigGroupViewModel,
   buildTuiViewModel,
   dependencyPlacementTargets,
@@ -80,12 +85,13 @@ import {
   type SaveOperationReportResult,
 } from './operation-history.js';
 import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
-import {
-  buildProjectInventory,
-  hasStatusInstallationEvidence,
-  type ProjectInventoryRoot,
-  type ProjectInventoryViewModel,
-} from './project-inventory.js';
+import { hasStatusInstallationEvidence } from './scoped-inventory.js';
+import { buildScopedInventory, type RecoveryInventoryInput,
+  type ScopedInventoryViewModel, type ScopedInventoryLoadResult, type InventoryRoot } from './scoped-inventory.js';
+import type { ScopedTuiPlan } from './scoped-flow.js';
+import type { RecoveryReceipt } from '../recovery/receipt.js';
+import type { RecoveryCommand } from '../recovery/coordinator.js';
+import type { AgentId } from '../intent/deployment-preferences.js';
 import {
   TuiRouter,
   type ConfigInvalidStoreEvidence,
@@ -152,9 +158,7 @@ export const PLUGIN_WRITE_BATCH_ACTIONS = [
 export type BatchPluginWriteAction = typeof PLUGIN_WRITE_BATCH_ACTIONS[number];
 export type PluginWriteBatchSelection =
   | { kind: 'selected'; pluginIds: string[] }
-  | { kind: 'targets'; targets: PluginWriteBatchTarget[] }
-  | { kind: 'currentProjectIntentTargets'; targets: PluginWriteBatchTarget[] }
-  | { kind: 'currentProjectIntentRoots' };
+  | { kind: 'targets'; targets: PluginWriteBatchTarget[] };
 
 export interface PluginWriteBatchTarget {
   pluginId: string;
@@ -218,6 +222,7 @@ export function pluginWriteBatchTargets(
 export interface PluginWriteBatchIntent {
   kind: 'pluginWriteBatch';
   dependencyScopeOverrides?: DependencyScopeOverride[];
+  saveDependencyScopeOverrides?: boolean;
   action: BatchPluginWriteAction;
   selection: PluginWriteBatchSelection;
   platform: PlatformName | 'both';
@@ -306,7 +311,8 @@ export interface ConfigOperationChange {
 
 export interface ConfigSaveBatchGroup {
   editEvidence?: Record<string, import('./model.js').ConfigEditEvidence>;
-  scope: Scope;
+  scope?: 'user';
+  platform?: PlatformTarget;
   updates?: Record<string, unknown>;
   removeKeys?: string[];
   sensitiveKeys?: string[];
@@ -315,7 +321,8 @@ export interface ConfigSaveBatchGroup {
 }
 
 export interface ConfigSaveBatchGroupResult {
-  scope: Scope;
+  scope: 'user';
+  platform?: PlatformTarget;
   status: 'succeeded' | 'failed';
   configSaved: boolean;
   applyRequested: boolean;
@@ -327,6 +334,12 @@ export interface ConfigSaveBatchGroupResult {
 export interface ConfigSaveBatchExecutionResult {
   status: 'succeeded' | 'partial' | 'failed';
   groups: ConfigSaveBatchGroupResult[];
+}
+
+export interface ConfigDraftSaveResult {
+  status: 'succeeded' | 'partial' | 'failed';
+  savedProfiles: ConfigProfileKey[];
+  failedProfiles: Array<{ profile: ConfigProfileKey; errorCode?: string }>;
 }
 
 export interface IssueOrigin {
@@ -352,6 +365,7 @@ export type OperationIntent =
       platform: PlatformName | 'both';
       scope: Scope;
       dependencyScopeOverrides?: DependencyScopeOverride[];
+      saveDependencyScopeOverrides?: boolean;
       expectedUpdate?: {
         installedVersion: string;
         activeVersion: string;
@@ -379,10 +393,14 @@ export type OperationIntent =
   | {
       kind: 'configSave';
       pluginId: string;
-      scope: Scope;
+      scope?: 'user';
+      platform?: PlatformTarget;
+      context?: Scope;
       apply: boolean;
+      targets?: PlatformTarget[];
       scriptTimeoutMs?: number;
       retryApply?: true;
+      editEvidence?: Record<string, import('./model.js').ConfigEditEvidence>;
       updates?: Record<string, unknown>;
       removeKeys?: string[];
       sensitiveKeys?: string[];
@@ -392,6 +410,7 @@ export type OperationIntent =
   | {
       kind: 'configSaveBatch';
       pluginId: string;
+      context?: Scope;
       apply: boolean;
       scriptTimeoutMs?: number;
       groups: ConfigSaveBatchGroup[];
@@ -399,7 +418,9 @@ export type OperationIntent =
   | {
       kind: 'configReset';
       pluginId: string;
-      scope: Scope;
+      scope?: 'user';
+      platform?: PlatformTarget;
+      context?: Scope;
       expectedStoreState?: 'invalid';
       changes?: ConfigOperationChange[];
     }
@@ -426,12 +447,18 @@ export type OperationIntent =
   | { kind: 'catalogStorePrune' };
 
 export interface ConfigOperationEvidence {
-  scope: Scope;
+  scope: 'user';
+  platform?: PlatformTarget;
+  context?: Scope;
   schemaIdentity?: string;
   storeDigest: string;
   impactState?: 'known' | 'unknown';
   noEffectiveChange?: true;
-  affectedTargets: Array<{ pluginName?: string; platform: PlatformName; scope: Scope }>;
+  affectedTargets: Array<{ pluginName?: string; platform: PlatformTarget; scope: Scope }>;
+  applyEvidence?: unknown;
+  applyChanges?: string[];
+  applyWarnings?: string[];
+  applyBlockers?: Array<{ code: string; message: string }>;
   commandPackages?: PluginConfigMutationImpact['affectedCommandPackages'];
   preApplyAuthorization?: PreApplyAuthorizationTarget[];
   sharedNativeRenderTargets?: Array<{ id: string; pluginName?: string; skillKey: string; refreshKeys: string[]; platform?: PlatformName }>;
@@ -473,7 +500,8 @@ export interface OperationEvidence {
   config?: ConfigOperationEvidence;
   configBatch?: {
     groups: Array<{
-      scope: Scope;
+      scope: 'user';
+      platform?: PlatformTarget;
       config: ConfigOperationEvidence;
       targetFingerprint: string;
     }>;
@@ -481,7 +509,9 @@ export interface OperationEvidence {
   resetTarget?: {
     sourceId: string;
     pluginName: string;
-    scope: Scope;
+    scope: 'user';
+    platform?: PlatformTarget;
+    context?: Scope;
     kind: 'absent' | 'regularFile' | 'symbolicLink' | 'directory';
     fingerprint: string;
   };
@@ -703,10 +733,20 @@ export interface OperationResultSummary {
   configApplied?: boolean;
   configApplySkippedReason?: 'invalidConfig';
   configScope?: Scope;
+  configPlatform?: PlatformTarget;
+  configContext?: Scope;
+  configTargets?: Array<{
+    pluginId?: string;
+    platform: PlatformTarget;
+    scope: Scope;
+    state: 'completed' | 'kept' | 'failed' | 'skipped';
+    errorCode?: string;
+  }>;
   configApplyRetryAvailable?: boolean;
   configRetryApply?: boolean;
   configGroups?: Array<{
     scope: Scope;
+    platform?: PlatformTarget;
     configSaved: boolean;
     applyRequested: boolean;
     applyStatus: ConfigSaveBatchGroupResult['applyStatus'];
@@ -800,13 +840,8 @@ export interface PluginOperationProgressLine {
 }
 
 export interface TuiStatusLoadResult {
+  scopedRecovery?: Partial<Record<Scope, RecoveryInventoryInput & Partial<Pick<ScopedInventoryLoadResult, 'nativeSnapshot'>>>>;
   projectRoot?: string;
-  projectIntent?:
-    | { state: 'ready'; roots: Array<{ pluginId: string; platforms: PlatformName[] }> }
-    | { state: 'absent' }
-    | { state: 'invalid' | 'unavailable'; code: string; message: string };
-  /** Compatibility input for older injected status fixtures. Production uses projectIntent. */
-  projectIntentRoots?: Array<{ pluginId: string; platforms: PlatformName[] }>;
   cliChannel?: 'latest' | 'beta';
   payload: StatusV8Payload;
   pluginSummaries: StatusV8PluginSummary[];
@@ -824,102 +859,6 @@ export interface TuiStatusLoadResult {
   }>;
   catalogGenerations?: CatalogSourceGenerationViewModel[];
   sessionGenerationKeys?: Record<string, string>;
-}
-
-export interface ProjectIntentReminderTarget extends PluginWriteBatchTarget {
-  reasonCodes: string[];
-}
-
-export interface ProjectIntentReminder {
-  projectRoot: string;
-  signature: string;
-  actionableTargets: ProjectIntentReminderTarget[];
-  blockedTargets: ProjectIntentReminderTarget[];
-  unconfirmedTargets: ProjectIntentReminderTarget[];
-}
-
-function projectReminderTargetKey(target: PluginWriteBatchTarget): string {
-  return [target.pluginId, target.platform, target.scope].join('\0');
-}
-
-export function projectCurrentIntentReminder(status: TuiStatusLoadResult): ProjectIntentReminder | undefined {
-  if (status.projectIntent && status.projectIntent.state !== 'ready') return undefined;
-  const actionableTargets: ProjectIntentReminderTarget[] = [];
-  const blockedTargets: ProjectIntentReminderTarget[] = [];
-  const unconfirmedTargets: ProjectIntentReminderTarget[] = [];
-  const projectRoots = new Map((status.projectIntent?.state === 'ready'
-    ? status.projectIntent.roots : status.projectIntentRoots ?? []).map((root) => [
-    root.pluginId,
-    new Set(root.platforms),
-  ]));
-  const projectTargets = flattenStatusTargets(status.payload.targets).filter((target) => {
-    const intent = statusTargetIntent(target);
-    return target.scope === 'project'
-      && projectRoots.get(target.pluginId)?.has(target.platform) === true
-      && intent.scopes.includes('project');
-  });
-  for (const target of projectTargets) {
-    if (target.state === 'ready') continue;
-    const reminderTarget = {
-      pluginId: target.pluginId,
-      platform: target.platform,
-      scope: 'project' as const,
-    };
-    const statusReasons = [
-      ...target.reasons,
-      ...(target.sharedReasons ?? []),
-    ];
-    const reasonCodes = [...new Set(statusReasons.flatMap((reason) => [
-      reason.code,
-      ...(reason.rootIssueCode ? [reason.rootIssueCode] : []),
-    ]))].sort((left, right) => left.localeCompare(right, 'en'));
-    const sharedNative = statusTargetSharedNative(target);
-    const activation = statusTargetActivation(target);
-    const extensions = statusTargetExtensions(target);
-    const ownership = statusTargetOwnershipState(target);
-    const blocking = target.state === 'blocked'
-      || [...target.reasons, ...(target.sharedReasons ?? [])]
-        .some((reason) => reason.severity === 'blocking');
-    const unobserved = ownership === 'error'
-      || (!blocking && (sharedNative?.state === 'unobserved'
-        || activation?.evidence === 'unobserved'
-        || reasonCodes.includes('codexSharedNativeUnobserved')
-        || target.components.some((component) =>
-          component.metadata?.rootIssueCode === 'codexSharedNativeUnobserved')));
-    const confirmedDifference = ownership === 'absent' || ownership === 'partial'
-      || sharedNative?.state === 'missing' || sharedNative?.state === 'replaceable'
-      || extensions?.state === 'missing' || extensions?.state === 'drifted'
-      || activation?.evidence === 'observed' && activation.project === false
-      || target.components.some((component) => component.kind === 'dependency'
-        && (component.state === 'absent' || component.state === 'incomplete'));
-    if (blocking && confirmedDifference) {
-      blockedTargets.push({ ...reminderTarget, reasonCodes });
-    } else if (!unobserved && target.state === 'needsSync' && confirmedDifference) {
-      actionableTargets.push({ ...reminderTarget, reasonCodes });
-    } else {
-      unconfirmedTargets.push({ ...reminderTarget, reasonCodes });
-    }
-  }
-  if (projectTargets.length === 0) return undefined;
-  const canonicalActionable = actionableTargets.sort((left, right) =>
-    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
-  const canonicalBlocked = blockedTargets.sort((left, right) =>
-    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
-  const canonicalUnconfirmed = unconfirmedTargets.sort((left, right) =>
-    projectReminderTargetKey(left).localeCompare(projectReminderTargetKey(right), 'en'));
-  const projectRoot = status.projectRoot ?? projectTargets[0]!.cwd;
-  const signature = crypto.createHash('sha256').update(JSON.stringify({
-    projectRoot,
-    actionableTargets: canonicalActionable.map(projectReminderTargetKey),
-    blockedTargets: canonicalBlocked.map(projectReminderTargetKey),
-  })).digest('hex');
-  return {
-    projectRoot,
-    signature: `sha256:${signature}`,
-    actionableTargets: canonicalActionable,
-    blockedTargets: canonicalBlocked,
-    unconfirmedTargets: canonicalUnconfirmed,
-  };
 }
 
 export interface InstallTargetOption {
@@ -945,10 +884,32 @@ export interface SourceReferenceSummaryViewModel {
 }
 
 export interface TuiControllerDependencies {
+  readAgentSettings?: () => Promise<import('./agent-settings.js').AgentSettings>;
+  previewAgentSettings?: (preferences: import('../intent/deployment-preferences.js').DeploymentPreferences,
+    pluginId?: string) => Promise<import('./agent-settings.js').AgentSettingsPreview>;
+  saveAgentSettings?: (request: Parameters<typeof import('./agent-settings.js').saveAgentSettings>[1]) =>
+    Promise<import('./agent-settings.js').AgentSettings>;
   beginCatalogSession?: (options?: {
     reuseValidatedGenerations?: boolean;
   }) => void;
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
+  loadScopedStatus?: (scope: Scope, signal: AbortSignal) => Promise<ScopedInventoryLoadResult>;
+  prepareScopedTask?: (request: {
+    scope: Scope;
+    kind: 'recovery'; command?: RecoveryCommand; selectors: string[];
+    exactTargets?: Array<{ pluginId: string; agent: AgentId }>;
+    targets?: AgentId[]; force?: boolean; refresh?: boolean; retireUnselectedTargets?: boolean;
+    dependencyScopeOverrides?: DependencyScopeOverride[];
+    saveDependencyScopeOverrides?: boolean; scriptTimeoutMs?: number;
+  } | { scope: Scope; kind: 'targets'; action: 'set' | 'reset'; agents: string[] }
+  | { scope: Scope; kind: 'retire'; selector: string; targets?: AgentId[]; deleteConfig?: boolean }
+  | { scope: Scope; kind: 'intent'; action: 'add' | 'remove'; selector: string },
+  signal: AbortSignal) => Promise<ScopedTuiPlan>;
+  executeScopedTask?: (plan: ScopedTuiPlan) => Promise<
+    { kind: 'recovery'; receipt: RecoveryReceipt }
+    | { kind: 'recoveryReview'; plan: ScopedTuiPlan }
+    | { kind: 'targets'; changed: boolean; agents: AgentId[] }
+  >;
   loadPluginContent?: (pluginId: string, signal: AbortSignal) => Promise<PluginContentOverview>;
   probeCatalogFreshness?: (
     sourceId: string,
@@ -980,20 +941,20 @@ export interface TuiControllerDependencies {
   ) => Promise<unknown>;
   getConfigGroups?: (
     pluginId: string,
-    layer: { scope: Scope },
+    options: ConfigReadOptions,
     signal: AbortSignal,
   ) => Promise<ConfigGroupViewModel[]>;
   getConfigPage?: (
     pluginId: string,
-    layer: { scope: Scope | 'effective' },
+    options: ConfigReadOptions,
     signal: AbortSignal,
   ) => Promise<ConfigPageViewModel>;
   getConfigReferenceContext?: (
-    pluginId: string, scope: Scope, draft: ConfigReferenceDraft, signal: AbortSignal,
+    pluginId: string, options: ConfigProfileOptions, draft: ConfigReferenceDraft, signal: AbortSignal,
   ) => Promise<ConfigReferenceContext>;
   getConfigResetAvailability?: (
     pluginId: string,
-    layer: { scope: Scope },
+    options: ConfigProfileOptions,
     signal: AbortSignal,
   ) => Promise<ConfigResetAvailability>;
   logError?: (
@@ -1056,19 +1017,12 @@ export interface TuiControllerSnapshot {
     description: string;
     operationRecordId?: string;
   };
-  projectIntentReminder?: ProjectIntentReminder;
-  projectInventory?: ProjectInventoryViewModel;
-  projectInventoryRefresh: {
+  projectRoot?: string;
+  scopedInventories: Partial<Record<Scope, ScopedInventoryViewModel>>;
+  scopedInventoryRefresh: Partial<Record<Scope, {
     state: 'idle' | 'checking' | 'error';
-    checkedAtMs?: number;
     errorCode?: string;
-  };
-  projectDeclarationAbsent?: boolean;
-  projectIntentIssue?: {
-    state: 'invalid' | 'unavailable';
-    code: string;
-    message: string;
-  };
+  }>>;
 }
 
 interface ReviewTicket {
@@ -1141,15 +1095,16 @@ function canonicalPluginWriteTaskTargets(
 }
 
 function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
-  if (intent.kind === 'configSave' && intent.retryApply && !intent.apply) {
-    return { ...intent, apply: true };
+  if (intent.kind === 'configSave' || intent.kind === 'configReset' || intent.kind === 'configSaveBatch') {
+    return { ...intent, context: intent.context ?? 'user',
+      ...(intent.kind === 'configSave' ? { scope: 'user' as const,
+        apply: intent.retryApply ? true : intent.apply } : {}) };
   }
   if (intent.kind === 'pluginWriteTask') {
     return { ...intent, targets: canonicalPluginWriteTaskTargets(intent.targets) };
   }
   if (intent.kind !== 'pluginWriteBatch') return intent;
-  if (intent.selection.kind === 'targets'
-    || intent.selection.kind === 'currentProjectIntentTargets') {
+  if (intent.selection.kind === 'targets') {
     return {
       ...intent,
       selection: {
@@ -1661,6 +1616,7 @@ export class TuiController {
     promise: Promise<OperationExecuteResult>;
   }>();
   readonly #pendingReads = new Set<Promise<unknown>>();
+  #readCleanupError?: NativeCliError;
   readonly #pluginContent = new Map<string, PluginContentOverview>();
   readonly #pluginContentInflight = new Map<string, Promise<void>>();
   #pluginContentEpoch = 0;
@@ -1693,10 +1649,18 @@ export class TuiController {
     promise: Promise<PortableInstallReceipt>;
   };
   #completionNotice?: TuiControllerSnapshot['completionNotice'];
-  #projectIntentReminder?: ProjectIntentReminder;
-  #projectInventory?: ProjectInventoryViewModel;
-  #projectInventoryRefresh: TuiControllerSnapshot['projectInventoryRefresh'] = { state: 'idle' };
-  #projectInventoryRefreshToken = 0;
+  #scopedInventories: Partial<Record<Scope, ScopedInventoryViewModel>> = {};
+  #lastRefreshedScope?: Scope;
+  #scopedInventoryRefresh: TuiControllerSnapshot['scopedInventoryRefresh'] = {};
+  #scopedRefreshToken: Record<Scope, number> = { user: 0, project: 0 };
+  #scopedPreparationAbort?: AbortController;
+  #scopedExecuted = new WeakSet<ScopedTuiPlan>();
+  #scopedTaskInflight?: { plan: ScopedTuiPlan; promise: Promise<
+    { kind: 'recovery'; receipt: RecoveryReceipt }
+    | { kind: 'recoveryReview'; plan: ScopedTuiPlan }
+    | { kind: 'targets'; changed: boolean; agents: AgentId[] }
+  > };
+  #configSaveInflight?: Promise<ConfigDraftSaveResult>;
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
   #recoverablePortableDraft?: TuiControllerSnapshot['portableDraft'];
@@ -1823,16 +1787,9 @@ export class TuiController {
           } }
         : {}),
       ...(this.#completionNotice ? { completionNotice: this.#completionNotice } : {}),
-      ...(this.#projectIntentReminder
-        ? { projectIntentReminder: this.#projectIntentReminder }
-        : {}),
-      ...(this.#projectInventory ? { projectInventory: this.#projectInventory } : {}),
-      projectInventoryRefresh: this.#projectInventoryRefresh,
-      ...(this.#status?.projectIntent?.state === 'absent' ? { projectDeclarationAbsent: true } : {}),
-      ...(this.#status?.projectIntent?.state === 'invalid'
-        || this.#status?.projectIntent?.state === 'unavailable'
-        ? { projectIntentIssue: this.#status.projectIntent }
-        : {}),
+      ...(this.#status?.projectRoot ? { projectRoot: this.#status.projectRoot } : {}),
+      scopedInventories: this.#scopedInventories,
+      scopedInventoryRefresh: this.#scopedInventoryRefresh,
     });
   }
 
@@ -1843,7 +1800,8 @@ export class TuiController {
   }
 
   get hasActiveWrite(): boolean {
-    return this.#inflightOperations.size > 0;
+    return this.#inflightOperations.size > 0 || this.#scopedTaskInflight !== undefined
+      || this.#configSaveInflight !== undefined;
   }
 
   get retiring(): boolean {
@@ -1923,9 +1881,16 @@ export class TuiController {
   }
 
   #trackRead<T>(promise: Promise<T>): Promise<T> {
-    this.#pendingReads.add(promise);
-    void promise.finally(() => this.#pendingReads.delete(promise)).catch(() => undefined);
-    return promise;
+    const tracked = promise.catch(async (error: unknown) => {
+      if (error instanceof NativeCliError && error.cleanupError) {
+        this.#readCleanupError ??= error;
+        await this.#logErrorSafe(error, issueCode(error));
+      }
+      throw error;
+    });
+    this.#pendingReads.add(tracked);
+    void tracked.finally(() => this.#pendingReads.delete(tracked)).catch(() => undefined);
+    return tracked;
   }
 
   beginRetirement(): void {
@@ -1935,9 +1900,13 @@ export class TuiController {
 
   async waitForWrites(): Promise<void> {
     this.beginRetirement();
-    while (this.#inflightOperations.size > 0) {
+    while (this.hasActiveWrite) {
       await Promise.allSettled(
-        [...this.#inflightOperations.values()].map((operation) => operation.promise),
+        [
+          ...[...this.#inflightOperations.values()].map((operation) => operation.promise),
+          ...(this.#scopedTaskInflight ? [this.#scopedTaskInflight.promise] : []),
+          ...(this.#configSaveInflight ? [this.#configSaveInflight] : []),
+        ],
       );
     }
   }
@@ -1955,6 +1924,7 @@ export class TuiController {
       await Promise.allSettled([...this.#pendingReads]);
     }
     await catalogDrain;
+    if (this.#readCleanupError) throw this.#readCleanupError;
     return !this.hasActiveWrite;
   }
 
@@ -2081,7 +2051,9 @@ export class TuiController {
           stage,
           fallbackCode: code,
           sensitiveValues,
-          ...(intent && 'pluginId' in intent && 'platform' in intent && intent.platform !== 'both'
+          ...(intent && 'pluginId' in intent && 'platform' in intent
+            && (intent.platform === 'codex' || intent.platform === 'claude')
+            && (intent.scope === 'user' || intent.scope === 'project')
             ? { target: { pluginId: intent.pluginId, platform: intent.platform, scope: intent.scope } }
             : {}),
         })],
@@ -2203,7 +2175,6 @@ export class TuiController {
 
   #project(): void {
     if (!this.#status) return;
-    this.#projectIntentReminder = projectCurrentIntentReminder(this.#status);
     this.#viewModel = buildTuiViewModel({
       status: this.#status.payload,
       pluginSummaries: this.#status.pluginSummaries,
@@ -2220,15 +2191,27 @@ export class TuiController {
       portablePluginIds: this.#status.portablePluginIds,
       configStoreInventory: this.#status.configStoreInventory,
     });
-    this.#projectInventory = buildProjectInventory({
-      projectRoot: this.#status.projectRoot,
-      projectIntent: this.#status.projectIntent,
-      status: this.#status.payload,
-      pluginSummaries: this.#viewModel.plugins,
-      targetRevisions: this.#status.targetRevisions,
-      dependencyOverviews: this.#status.dependencyOverviews,
-      actionableTargets: this.#projectIntentReminder?.actionableTargets,
-    });
+    for (const issue of this.#viewModel.issues) {
+      // Cross-scope recovery needs separate Intent, cleanup, and sync reviews.
+      issue.actions = issue.actions.filter((action) =>
+        action.id !== 'keepProjectScope' && action.id !== 'keepUserScope');
+    }
+    for (const scope of ['user', 'project'] as const) {
+      const recovery = this.#status.scopedRecovery?.[scope];
+      if (!recovery) {
+        delete this.#scopedInventories[scope];
+        continue;
+      }
+      this.#scopedInventories[scope] = buildScopedInventory({
+        recovery,
+        status: recovery.nativeSnapshot?.payload ?? this.#status.payload,
+        pluginSummaries: recovery.nativeSnapshot?.pluginSummaries ?? this.#viewModel.plugins,
+        targetRevisions: recovery.nativeSnapshot?.targetRevisions ?? this.#status.targetRevisions,
+        dependencyOverviews: recovery.nativeSnapshot?.dependencyOverviews ?? this.#status.dependencyOverviews,
+        ...(scope === 'project' && this.#status.projectRoot
+          ? { projectRoot: this.#status.projectRoot } : {}),
+      });
+    }
   }
 
   #normalizeRoute(route: TuiRoute): TuiRoute {
@@ -2247,8 +2230,8 @@ export class TuiController {
   #routeEntityState(): RouteEntityState {
     return {
       hasPlugin: (pluginId) => this.#viewModel?.plugins.some((plugin) => plugin.pluginId === pluginId)
-        || this.#projectInventory?.declaredRoots.some((root) => root.pluginId === pluginId)
-        || this.#projectInventory?.extraInstalledRoots.some((root) => root.pluginId === pluginId)
+        || Object.values(this.#scopedInventories).some((inventory) => inventory.declaredRoots.some((root) =>
+          root.pluginId === pluginId) || inventory.extraInstalledRoots.some((root) => root.pluginId === pluginId))
         || false,
       hasSource: (sourceId) => this.#viewModel?.sourceTabs.some((source) => source.id === sourceId) ?? false,
       hasIssue: (issueId) => this.#viewModel?.issues.some((issue) => issue.issueId === issueId) ?? false,
@@ -2433,9 +2416,7 @@ export class TuiController {
       ? {
           ...structuredClone(intent),
           selection: {
-            kind: intent.selection.kind === 'currentProjectIntentRoots'
-              || intent.selection.kind === 'currentProjectIntentTargets'
-              ? 'currentProjectIntentTargets' : 'targets',
+            kind: 'targets',
             targets: structuredClone(result.summary.batch.retryTargets!),
           },
       }
@@ -2463,7 +2444,11 @@ export class TuiController {
       ? result.returnRoute.batchOrigin.flowId
       : undefined;
     const completedPluginId = completedSinglePluginId(intent, result);
-    if (completedPluginId && target.name === 'pluginDetail') {
+    const hasUnreviewedTaskTargets = intent.kind === 'pluginWriteTask'
+      && 'returnRoute' in result && result.returnRoute?.name === 'pluginWriteTask'
+      && result.returnRoute.targetKeys?.some((key) =>
+        !intent.targets.some((candidate) => pluginWriteTaskTargetKey(candidate) === key));
+    if (completedPluginId && target.name === 'pluginDetail' && !hasUnreviewedTaskTargets) {
       this.#recordTerminalResult();
       const action = intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch'
         ? intent.action : 'sync';
@@ -2497,6 +2482,7 @@ export class TuiController {
   }
 
   #applyStatus(status: TuiStatusLoadResult): void {
+    this.#lastRefreshedScope = undefined;
     this.#pluginContentEpoch += 1;
     this.#pluginContent.clear();
     this.#pluginContentInflight.clear();
@@ -2566,8 +2552,10 @@ export class TuiController {
     this.#assertAcceptingActions();
     this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
-    this.#projectInventoryRefreshToken += 1;
-    this.#projectInventoryRefresh = { state: 'idle' };
+    this.#scopedRefreshToken.user += 1;
+    this.#scopedRefreshToken.project += 1;
+    this.#scopedInventoryRefresh = {};
+    this.#scopedInventories = {};
     this.#pluginContentEpoch += 1;
     this.#pluginContent.clear();
     this.#pluginContentInflight.clear();
@@ -2593,46 +2581,101 @@ export class TuiController {
     this.#publish();
   }
 
-  listProjectInventoryRoots(section: 'declared' | 'extraInstalled' = 'declared'): ProjectInventoryRoot[] {
+  listScopedInventoryRoots(scope: Scope, section: 'declared' | 'extraInstalled' = 'declared'): InventoryRoot[] {
+    const inventory = this.#scopedInventories[scope];
     return cloneFrozen(section === 'declared'
-      ? this.#projectInventory?.declaredRoots ?? []
-      : this.#projectInventory?.extraInstalledRoots ?? []);
+      ? inventory?.declaredRoots ?? [] : inventory?.extraInstalledRoots ?? []);
   }
 
-  getProjectInventoryRoot(pluginId: string): ProjectInventoryRoot | undefined {
-    const root = [...(this.#projectInventory?.declaredRoots ?? []),
-      ...(this.#projectInventory?.extraInstalledRoots ?? [])]
-      .find((entry) => entry.pluginId === pluginId);
-    return root ? cloneFrozen(root) : undefined;
-  }
-
-  async refreshProjectInventory(): Promise<boolean> {
+  async refreshScopedInventory(scope: Scope): Promise<boolean> {
     this.#assertAcceptingActions();
-    if (!this.#status || this.#phase !== 'ready') return false;
-    const token = ++this.#projectInventoryRefreshToken;
+    if (!this.#status || this.#phase !== 'ready' || !this.dependencies.loadScopedStatus) return false;
+    const token = ++this.#scopedRefreshToken[scope];
     const generation = this.#generation;
-    this.#projectInventoryRefresh = { state: 'checking' };
+    this.#scopedInventoryRefresh[scope] = { state: 'checking' };
     this.#publish();
     try {
-      const status = await this.#trackRead(this.dependencies.loadStatus(this.#abort.signal));
-      if (this.#disposed || generation !== this.#generation
-        || token !== this.#projectInventoryRefreshToken) return false;
-      this.#applyStatus(status);
-      this.#projectInventoryRefresh = {
-        state: 'idle',
-        checkedAtMs: this.#statusReadAtMs,
-      };
+      const recovery = await this.#trackRead(this.dependencies.loadScopedStatus(scope, this.#abort.signal));
+      if (this.#disposed || generation !== this.#generation || token !== this.#scopedRefreshToken[scope]) return false;
+      const inventory = buildScopedInventory({
+        recovery, status: recovery.nativeSnapshot.payload, pluginSummaries: recovery.nativeSnapshot.pluginSummaries,
+        targetRevisions: recovery.nativeSnapshot.targetRevisions,
+        dependencyOverviews: recovery.nativeSnapshot.dependencyOverviews,
+        ...(scope === 'project' && this.#status.projectRoot ? { projectRoot: this.#status.projectRoot } : {}),
+      });
+      this.#status.scopedRecovery = { ...this.#status.scopedRecovery, [scope]: structuredClone(recovery) };
+      this.#scopedInventories[scope] = inventory;
+      this.#lastRefreshedScope = scope;
+      this.#scopedInventoryRefresh[scope] = { state: 'idle' };
       this.#publish();
       return true;
     } catch (error) {
-      if (this.#disposed || generation !== this.#generation
-        || token !== this.#projectInventoryRefreshToken) return false;
+      if (this.#disposed || generation !== this.#generation || token !== this.#scopedRefreshToken[scope]) return false;
       const code = issueCode(error);
       await this.#logErrorSafe(error, code);
-      this.#projectInventoryRefresh = { state: 'error', errorCode: code };
+      if (this.#disposed || generation !== this.#generation || token !== this.#scopedRefreshToken[scope]) return false;
+      this.#scopedInventoryRefresh[scope] = { state: 'error', errorCode: code };
       this.#publish();
       return false;
     }
+  }
+
+  async prepareScopedTask(request: Parameters<NonNullable<TuiControllerDependencies['prepareScopedTask']>>[0]):
+  Promise<ScopedTuiPlan> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.prepareScopedTask) throw new Error('recoveryUnavailable');
+    this.#scopedPreparationAbort?.abort();
+    const abort = new AbortController();
+    this.#scopedPreparationAbort = abort;
+    try {
+      return await this.#trackRead(this.dependencies.prepareScopedTask(request,
+        AbortSignal.any([this.#abort.signal, abort.signal])));
+    } finally {
+      if (this.#scopedPreparationAbort === abort) this.#scopedPreparationAbort = undefined;
+    }
+  }
+
+  async readAgentSettings(): Promise<import('./agent-settings.js').AgentSettings> {
+    if (!this.dependencies.readAgentSettings) throw new Error('agentSettingsUnavailable');
+    return this.#trackRead(this.dependencies.readAgentSettings());
+  }
+
+  async previewAgentSettings(preferences: import('../intent/deployment-preferences.js').DeploymentPreferences,
+    pluginId?: string): Promise<import('./agent-settings.js').AgentSettingsPreview> {
+    if (!this.dependencies.previewAgentSettings) throw new Error('agentSettingsUnavailable');
+    return this.#trackRead(this.dependencies.previewAgentSettings(preferences, pluginId));
+  }
+
+  async saveAgentSettings(request: Parameters<typeof import('./agent-settings.js').saveAgentSettings>[1]):
+    Promise<import('./agent-settings.js').AgentSettings> {
+    this.#assertAcceptingActions();
+    if (this.hasActiveWrite || !this.dependencies.saveAgentSettings) throw new Error('agentSettingsUnavailable');
+    return this.dependencies.saveAgentSettings(request);
+  }
+
+  cancelScopedPreparation(): void { this.#scopedPreparationAbort?.abort(); }
+
+  async discardScopedPlan(plan: ScopedTuiPlan): Promise<void> {
+    this.#scopedExecuted.add(plan);
+    if (plan.kind === 'recovery' || plan.kind === 'retire') await plan.plan.context.dispose();
+  }
+
+  executeScopedTask(plan: ScopedTuiPlan): ReturnType<NonNullable<TuiControllerDependencies['executeScopedTask']>> {
+    if (this.#retiring || this.#disposed) return Promise.reject(new Error('sessionRetiring'));
+    if (!this.dependencies.executeScopedTask) return Promise.reject(new Error('recoveryUnavailable'));
+    if (this.#scopedTaskInflight?.plan === plan) return this.#scopedTaskInflight.promise;
+    if (this.hasActiveWrite || this.#scopedExecuted.has(plan)) {
+      return Promise.reject(new Error('reviewTicketInvalid'));
+    }
+    this.#scopedExecuted.add(plan);
+    this.#progressFeed?.clearCurrent();
+    this.#progress = { messages: [], startedAtMs: this.dependencies.now?.() ?? Date.now() };
+    this.#publish();
+    const promise = this.dependencies.executeScopedTask(plan).finally(() => {
+      if (this.#scopedTaskInflight?.promise === promise) this.#scopedTaskInflight = undefined;
+    });
+    this.#scopedTaskInflight = { plan, promise };
+    return promise;
   }
 
   push(route: TuiRoute, context?: TuiPageContext): void {
@@ -3003,12 +3046,12 @@ export class TuiController {
     this.#publish();
   }
 
-  beginConfigFlow(pluginId: string): void {
+  beginConfigFlow(pluginId: string, options: ConfigProfileOptions = {}): void {
     this.#router.beginConfigFlow(pluginId);
     this.#router.push({
       name: 'configFields',
       pluginId,
-      layer: { scope: 'effective' },
+      layer: { profile: options.platform ?? 'common', context: options.context ?? 'user' },
     });
     this.#publish();
   }
@@ -3027,8 +3070,9 @@ export class TuiController {
     if (this.#activeReview) this.#tickets.delete(this.#activeReview.reviewToken);
     this.#activeReview = undefined;
     this.#router.beginFlow('configEdit', route, this.#router.snapshot.currentFrameId, current.context);
-    this.#router.push({ name: 'configFields', pluginId, layer: { scope: 'effective' } });
-    this.#router.push({ name: 'configFieldEditor', pluginId, layer: { scope: 'effective' }, fieldKey, editor: 'array', mode: 'choices' });
+    const layer = ('layer' in route ? route.layer : undefined) ?? { profile: 'common' as const, context: 'user' as const };
+    this.#router.push({ name: 'configFields', pluginId, layer });
+    this.#router.push({ name: 'configFieldEditor', pluginId, layer, fieldKey, editor: 'array', mode: 'choices' });
     this.#publish();
   }
 
@@ -3043,9 +3087,7 @@ export class TuiController {
       name: 'configUnavailable',
       pluginId,
       storedScopes: plugin.savedConfigScopes,
-      ...(plugin.savedConfigScopes.length === 1
-        ? { layer: { scope: plugin.savedConfigScopes[0]! } }
-        : {}),
+      layer: { profile: 'common', context: 'user' },
       diagnosticCode: 'catalogSourceUnavailable',
       diagnosticStage: 'read-config',
     });
@@ -3066,11 +3108,11 @@ export class TuiController {
         '来源恢复只能从不可用的设置流程开始。',
       );
     }
-    const layer = route.layer?.scope ?? route.resumeRoute?.layer.scope ?? 'effective';
+    const layer = route.layer ?? route.resumeRoute?.layer ?? { profile: 'common' as const, context: 'user' as const };
     const returnTarget: ConfigResumeRoute = route.resumeRoute ?? {
       name: 'configFields',
       pluginId: route.pluginId,
-      layer: { scope: layer },
+      layer,
     };
     this.#router.beginFlow('sourceRecovery', returnTarget, undefined, route.resumeContext);
     this.#router.push({ name: 'sourceDetail', sourceId });
@@ -3087,37 +3129,29 @@ export class TuiController {
       kind: 'pluginWrite', action: 'cleanup', pluginId, platform, scope, force: true,
     };
     try {
-      const evidence = await this.#trackRead(this.dependencies.captureEvidence(intent, this.#abort.signal));
-      const candidate = (evidence.offlineCleanupPlans
-        ?? (evidence.offlineCleanup ? [evidence.offlineCleanup] : [])).find((entry) =>
-        entry.pluginId === pluginId
-        && entry.platform === platform
-        && entry.scope === scope);
-      if (!evidence.operationPlan
-        || !candidate
-        || candidate.platform !== platform
-        || candidate.scope !== scope
-        || (candidate.forceExclusive !== true && candidate.plan.actions.length > 0)
-        || (candidate.plan.actions.length === 0
-          && !evidence.operationPlan.intentChanges.some((change) => change.scope === scope))) {
-        return undefined;
-      }
-      return cloneFrozen({ pluginId, platform, scope, actionCount: candidate.plan.actions.length });
+      const prepared = await this.prepareScopedTask({ kind: 'recovery', command: 'cleanup',
+        scope, selectors: [pluginId], targets: [platform === 'claude' ? 'claude' : 'codex'],
+        exactTargets: [{ pluginId, agent: platform === 'claude' ? 'claude' : 'codex' }], force: true });
+      if (prepared.kind !== 'recovery') return undefined;
+      try {
+        const candidate = prepared.plan.nativeGroups.flatMap((group) =>
+          group.preview.operationPlan ? group.preview.offlineCleanupPlans ?? [] : [])
+          .find((entry) => entry.pluginId === pluginId && entry.platform === platform && entry.scope === scope);
+        if (prepared.plan.blockExecution || !candidate || candidate.forceExclusive !== true
+          || candidate.plan.actions.length === 0) return undefined;
+        return cloneFrozen({ pluginId, platform, scope, actionCount: candidate.plan.actions.length });
+      } finally { await this.discardScopedPlan(prepared); }
     } catch (error) {
       await this.#logOperationError(error, issueCode(error), intent);
       return undefined;
     }
   }
 
-  startForceCleanupReview(candidate: ForceCleanupCandidate): ReviewPreparationSnapshot {
-    return this.startReviewPreparation({
-      kind: 'pluginWrite',
-      action: 'cleanup',
-      pluginId: candidate.pluginId,
-      platform: candidate.platform,
-      scope: candidate.scope,
-      force: true,
-    });
+  startForceCleanupReview(candidate: ForceCleanupCandidate): Promise<ScopedTuiPlan> {
+    const agent = candidate.platform === 'claude' ? 'claude' : 'codex';
+    return this.prepareScopedTask({ kind: 'recovery', command: 'cleanup',
+      scope: candidate.scope, selectors: [candidate.pluginId], targets: [agent],
+      exactTargets: [{ pluginId: candidate.pluginId, agent }], force: true });
   }
 
   configOrigin(pluginId: string): TuiRoute | undefined {
@@ -3489,7 +3523,7 @@ export class TuiController {
       platform: draft.platforms.length === 2 ? 'both' : draft.platforms[0]!,
       scope: draft.rootScope,
       ...(draft.dependencyScopeOverrides.length > 0
-        ? { dependencyScopeOverrides: structuredClone(draft.dependencyScopeOverrides) } : {}),
+        ? { dependencyScopeOverrides: structuredClone(draft.dependencyScopeOverrides), saveDependencyScopeOverrides: true } : {}),
     };
     return {
       kind: 'pluginWrite',
@@ -3498,7 +3532,7 @@ export class TuiController {
       platform: draft.platforms.length === 2 ? 'both' : draft.platforms[0]!,
       scope: draft.rootScope,
       ...(draft.dependencyScopeOverrides.length > 0
-        ? { dependencyScopeOverrides: draft.dependencyScopeOverrides }
+        ? { dependencyScopeOverrides: draft.dependencyScopeOverrides, saveDependencyScopeOverrides: true }
         : {}),
     };
   }
@@ -3612,6 +3646,8 @@ export class TuiController {
   }): PluginListItemViewModel[] {
     const query = options.query?.trim().toLocaleLowerCase('en');
     const actualScopes = new Map<string, Set<Scope>>();
+    const portableObservedScopes = new Set<Scope>();
+    const uncertainPortablePlugins = new Set<string>();
     const statusTargets = flattenStatusTargets(this.#status?.payload.targets ?? []);
     const targetsByPlugin = new Map<string, StatusScopedTarget[]>();
     for (const target of statusTargets) {
@@ -3631,14 +3667,37 @@ export class TuiController {
       scopes.add(target.scope);
       actualScopes.set(target.pluginId, scopes);
     }
+    for (const inventory of Object.values(this.#scopedInventories)) {
+      if (inventory.coverage?.portable) {
+        for (const scope of inventory.coverage.scopes ?? [inventory.scope]) portableObservedScopes.add(scope);
+      }
+      for (const root of [...inventory.declaredRoots, ...inventory.extraInstalledRoots]) {
+        for (const plugin of [root, ...root.dependencies]) {
+          for (const target of plugin.targets) {
+            if (target.delivery !== 'agent-skills') continue;
+            if (target.actual !== true) {
+              if (target.observation !== 'known') uncertainPortablePlugins.add(plugin.pluginId);
+              continue;
+            }
+            const scopes = actualScopes.get(plugin.pluginId) ?? new Set<Scope>();
+            scopes.add(target.scope);
+            actualScopes.set(plugin.pluginId, scopes);
+          }
+        }
+      }
+    }
+    const portableAbsenceObserved = portableObservedScopes.has('user')
+      && (!this.#status?.projectRoot || portableObservedScopes.has('project'));
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
       && (options.installFilter !== 'installed'
         || (actualScopes.get(plugin.pluginId)?.size ?? 0) > 0)
       && (options.installFilter !== 'uninstalled'
         || plugin.aggregateStatus === 'available'
-          && (targetsByPlugin.get(plugin.pluginId)?.length ?? 0) > 0
-          && targetsByPlugin.get(plugin.pluginId)!.every((target) => target.state === 'absent')
+          && ((targetsByPlugin.get(plugin.pluginId)?.length ?? 0) > 0
+            || plugin.portableSkills && portableAbsenceObserved)
+          && (targetsByPlugin.get(plugin.pluginId) ?? []).every((target) => target.state === 'absent')
+          && !uncertainPortablePlugins.has(plugin.pluginId)
           && (actualScopes.get(plugin.pluginId)?.size ?? 0) === 0)
       && (options.installFilter !== 'project'
         || actualScopes.get(plugin.pluginId)?.has('project') === true)
@@ -3665,7 +3724,12 @@ export class TuiController {
       pluginSummaries: this.#status.pluginSummaries,
       targetRevisions: this.#status.targetRevisions,
       plugins: this.#viewModel.plugins,
-      projectInventory: this.#projectInventory,
+      scopedInventories: this.#scopedInventories,
+      scopedSnapshots: {
+        user: this.#status.scopedRecovery?.user?.nativeSnapshot,
+        project: this.#status.scopedRecovery?.project?.nativeSnapshot,
+      },
+      latestScope: this.#lastRefreshedScope,
       dependencyOverviews: this.#status.dependencyOverviews,
     });
     return subject ? cloneFrozen(subject) : undefined;
@@ -4204,7 +4268,7 @@ export class TuiController {
 
   async getConfigGroups(
     pluginId: string,
-    layer: { scope: Scope },
+    options: ConfigReadOptions,
   ): Promise<ConfigGroupViewModel[]> {
     this.#assertAcceptingActions();
     if (!this.dependencies.getConfigGroups) {
@@ -4212,14 +4276,14 @@ export class TuiController {
     }
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigGroups(
       pluginId,
-      structuredClone(layer),
+      structuredClone(options),
       this.#abort.signal,
     )));
   }
 
   async getConfigPage(
     pluginId: string,
-    layer: { scope: Scope | 'effective' },
+    options: ConfigReadOptions,
     signal?: AbortSignal,
   ): Promise<ConfigPageViewModel> {
     this.#assertAcceptingActions();
@@ -4231,20 +4295,68 @@ export class TuiController {
       : this.#abort.signal;
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigPage(
       pluginId,
-      structuredClone(layer),
+      structuredClone(options),
       combined,
     )));
   }
 
   async getConfigReferenceContext(
-    pluginId: string, scope: Scope, draft: ConfigReferenceDraft, signal?: AbortSignal,
+    pluginId: string, options: ConfigProfileOptions, draft: ConfigReferenceDraft, signal?: AbortSignal,
   ): Promise<ConfigReferenceContext> {
     this.#assertAcceptingActions();
     if (!this.dependencies.getConfigReferenceContext) return { selections: {} };
     const combined = signal ? AbortSignal.any([this.#abort.signal, signal]) : this.#abort.signal;
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigReferenceContext(
-      pluginId, scope, structuredClone(draft), combined,
+      pluginId, structuredClone(options), structuredClone(draft), combined,
     )));
+  }
+
+  async saveConfigDraft(
+    request: Extract<OperationIntent, { kind: 'configSave' | 'configSaveBatch' }>,
+    signal?: AbortSignal,
+  ): Promise<ConfigDraftSaveResult> {
+    this.#assertAcceptingActions();
+    if (this.hasActiveWrite) throw new TuiOperationBlockedError('writeInProgress', '另一个写操作仍在执行。');
+    if (request.apply || request.kind === 'configSave' && request.retryApply) {
+      throw new TuiOperationBlockedError('configSaveOnlyRequired', '此入口只保存配置。请单独准备插件更新。');
+    }
+    const intent = normalizeOperationIntent(structuredClone(request)) as typeof request;
+    const combined = signal ? AbortSignal.any([this.#abort.signal, signal]) : this.#abort.signal;
+    const promise = (async (): Promise<ConfigDraftSaveResult> => {
+      try {
+        this.#validateReviewIntent(intent);
+        const evidence = await this.#prepareReviewEvidence(intent, combined);
+        combined.throwIfAborted();
+        const execution = await this.dependencies.executeIntent(intent, evidence, combined);
+        if (intent.kind === 'configSaveBatch') {
+          const batch = execution as ConfigSaveBatchExecutionResult;
+          return {
+            status: batch.status,
+            savedProfiles: batch.groups.filter((group) => group.configSaved).map((group) => group.platform ?? 'common'),
+            failedProfiles: batch.groups.filter((group) => !group.configSaved).map((group) => ({
+              profile: group.platform ?? 'common',
+              ...(group.errorCode ? { errorCode: safeDiagnosticCode(group.errorCode, 'configWriteFailed') } : {}),
+            })),
+          };
+        }
+        const saved = typeof execution === 'object' && execution !== null
+          && (execution as { configWrite?: unknown }).configWrite === 'succeeded';
+        return { status: saved ? 'succeeded' : 'failed', savedProfiles: saved ? [intent.platform ?? 'common'] : [],
+          failedProfiles: saved ? [] : [{ profile: intent.platform ?? 'common', errorCode: 'configWriteUnconfirmed' }] };
+      } catch (error) {
+        await this.#logOperationError(error, issueCode(error), intent);
+        throw new TuiOperationBlockedError(issueCode(error), sanitizeDiagnosticText(
+          error instanceof Error ? error.message : '设置未保存。', [], collectOperationSensitiveValues(intent),
+        ));
+      }
+    })();
+    this.#configSaveInflight = promise;
+    this.#publish();
+    try { return cloneFrozen(await promise); }
+    finally {
+      if (this.#configSaveInflight === promise) this.#configSaveInflight = undefined;
+      this.#publish();
+    }
   }
 
   async previewConfigSaveImpact(
@@ -4266,7 +4378,7 @@ export class TuiController {
 
   async getConfigResetAvailability(
     pluginId: string,
-    layer: { scope: Scope },
+    options: ConfigProfileOptions,
   ): Promise<ConfigResetAvailability> {
     this.#assertAcceptingActions();
     if (!this.dependencies.getConfigResetAvailability) {
@@ -4277,7 +4389,7 @@ export class TuiController {
     }
     return cloneFrozen(await this.#trackRead(this.dependencies.getConfigResetAvailability(
       pluginId,
-      structuredClone(layer),
+      structuredClone(options),
       this.#abort.signal,
     )));
   }
@@ -4401,30 +4513,6 @@ export class TuiController {
       }
     }
     if (intent.kind === 'pluginWriteBatch') {
-      if ((intent.selection.kind === 'currentProjectIntentRoots'
-        || intent.selection.kind === 'currentProjectIntentTargets')
-        && (intent.action !== 'sync' || intent.scope !== 'project')) {
-        throw new TuiOperationBlockedError(
-          'batchSelectionInvalid',
-          '当前项目全部同步只支持 project scope sync。',
-        );
-      }
-      if (intent.selection.kind === 'currentProjectIntentTargets') {
-        const targets = intent.selection.targets;
-        const canonical = [...new Map(targets.map((target) => [
-          projectReminderTargetKey(target), target,
-        ])).values()].sort((left, right) => projectReminderTargetKey(left)
-          .localeCompare(projectReminderTargetKey(right), 'en'));
-        if (targets.length === 0
-          || targets.some((target) => target.scope !== 'project')
-          || JSON.stringify(targets) !== JSON.stringify(canonical)) {
-          throw new TuiOperationBlockedError(
-            'batchSelectionInvalid',
-            '当前项目同步目标必须是非空、规范且精确的 project 目标集合。',
-          );
-        }
-        for (const target of targets) sourceIdFromPluginId(target.pluginId);
-      }
       if (intent.selection.kind === 'selected') {
         const canonical = canonicalPluginIds(intent.selection.pluginIds);
         if (canonical.length === 0) {
@@ -4450,7 +4538,7 @@ export class TuiController {
     if (intent.kind === 'pluginWriteBatch') {
       return intent.selection.kind === 'selected'
         ? `${intent.selection.pluginIds.length} 个插件`
-        : '当前项目全部插件';
+        : `${intent.selection.targets.length} 个目标`;
     }
     if ('pluginId' in intent) {
       return this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.displayName
@@ -4671,7 +4759,7 @@ export class TuiController {
     const configImpact: OperationReviewModel['configImpact'] = configEvidence ? {
       state: configEvidence.some((group) => group.impactState !== 'known') ? 'unknown' : 'known',
       affectedTargetCount: new Set(configEvidence.flatMap((group) => group.affectedTargets
-        .map((target) => `${target.platform}\0${target.scope}`))).size
+        .map((target) => `${target.pluginName ?? ''}\0${target.platform}\0${target.scope}`))).size
         + new Set(configEvidence.flatMap((group) => (group.commandPackages ?? [])
           .map((target) => target.packageId))).size,
     } : undefined;
@@ -5109,6 +5197,19 @@ export class TuiController {
             summary: pluginSummary,
           });
         }
+        const concurrentScopeConflict = ticket.intent.kind === 'pluginWrite'
+          && ticket.intent.action === 'install'
+          && unsuccessfulTargets.length === pluginSummary.targets?.length
+          && unsuccessfulTargets.every((target) => target.errorCode === 'codexExtensionScopeConflict');
+        if (concurrentScopeConflict) {
+          return this.#setBlocked(operationId, 'codexExtensionScopeConflict', {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            summary: pluginSummary,
+            writeMayHaveCompleted: false,
+          });
+        }
         const dependencyStillRequired = unsuccessfulTargets.length > 0
           && unsuccessfulTargets.every((target) => target.errorCode === 'dependencyStillRequired');
         return this.#setBlocked(operationId, dependencyStillRequired ? 'dependencyStillRequired' : 'operationFailed', {
@@ -5126,7 +5227,11 @@ export class TuiController {
         });
       }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
+      const projectRemovalKeepsDemand = ticket.intent.kind === 'pluginWrite'
+        && ticket.intent.action === 'uninstall' && ticket.intent.scope === 'project'
+        && pluginSummary?.code === 'operationSucceeded';
       if (originIssue && !dependencyPartial
+        && !projectRemovalKeepsDemand
         && this.#viewModel?.issues.some((issue) => originIssueRemains(issue, originIssue))) {
         return this.#setBlocked(operationId, 'issueStillPresent', {
           intent: ticket.intent,
@@ -5136,7 +5241,7 @@ export class TuiController {
           verification: 'issueStillPresent',
         });
       }
-      if (ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset') {
+      if ((ticket.intent.kind === 'configSave' && !ticket.intent.retryApply) || ticket.intent.kind === 'configReset') {
         const configWrite = typeof execution === 'object' && execution !== null
           ? (execution as { configWrite?: unknown }).configWrite
           : undefined;
@@ -5217,7 +5322,7 @@ export class TuiController {
       };
       const configResultNeedsAttention = result.state === 'succeeded' && (result.summary.messages?.some((message) =>
         message.startsWith('警告：')
-        || message === '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。') ?? false);
+        || message === '提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。') ?? false);
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configSaveBatch'
         || ticket.intent.kind === 'configReset')
         && this.#portableRepreparePluginId === ticket.intent.pluginId
@@ -5307,7 +5412,7 @@ export class TuiController {
                 ? '设置已保存，但后续应用失败。'
                 : '设置已保存，但后续步骤未完成。',
           pluginId: ticket.intent.pluginId,
-          configScope: ticket.intent.scope,
+          configScope: 'user', configPlatform: ticket.intent.platform, configContext: ticket.intent.context ?? 'user',
           ...(ticket.intent.kind === 'configSave' && ticket.intent.apply
             ? { configApplyRetryAvailable: true } : {}),
           elapsedMs,
@@ -5515,6 +5620,7 @@ export class TuiController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#scopedPreparationAbort?.abort();
     this.#invalidatePortableResultRecheck();
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
@@ -5945,6 +6051,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         : false,
       configGroups: batch.groups.map((group) => ({
         scope: group.scope,
+        platform: group.platform,
         configSaved: group.configSaved,
         applyRequested: group.applyRequested,
         applyStatus: group.applyStatus,
@@ -5956,7 +6063,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         : []),
       messages: [
         ...batch.groups.map((group) => {
-          const label = group.scope === 'project' ? '当前项目' : '个人默认';
+          const label = group.platform ? `${group.platform} 平台配置` : '公共配置';
           return group.configSaved
             ? `${label}已保存${group.errorCode === 'invalidConfig'
               ? '，但当前配置无效，未应用'
@@ -5965,7 +6072,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         }),
         ...publicWarnings.map((warning) => `警告：${warning}`),
         ...(otherProjectsMayRequireSync
-          ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']
+          ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。']
           : []),
       ],
     };
@@ -5985,12 +6092,12 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       const target = typeof entry.target === 'object' && entry.target !== null
         ? entry.target as Record<string, unknown>
         : entry;
-      if ((target.platform !== 'codex' && target.platform !== 'claude')
+      if (!isPlatformTarget(target.platform)
         || (target.scope !== 'user' && target.scope !== 'project')
         || (entry.state !== 'completed' && entry.state !== 'failed' && entry.state !== 'skipped')) return [];
       return [{
         ...(typeof target.pluginId === 'string' ? { pluginId: target.pluginId } : {}),
-        platform: target.platform as PlatformName,
+        platform: target.platform,
         scope: target.scope as Scope,
         state: entry.state === 'skipped' || entry.action === 'skipped' ? 'skipped' as const
           : entry.state === 'failed' ? 'failed' as const
@@ -6019,13 +6126,12 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
           typeof warning === 'string'
           && warning.startsWith('projectConfigShareabilityUnverified:'))
       : [];
-    const otherProjectsMayRequireSync = intent.scope === 'user'
-      && typeof execution === 'object' && execution !== null
+    const otherProjectsMayRequireSync = typeof execution === 'object' && execution !== null
       && (execution as { otherProjectsMayRequireSync?: unknown }).otherProjectsMayRequireSync === true;
     const publicMessages = [
       ...publicWarnings.map((warning) => `警告：${warning}`),
       ...(otherProjectsMayRequireSync
-        ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']
+        ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw plugin sync --context project。']
         : []),
     ];
     const partial = overallState === 'partial'
@@ -6042,7 +6148,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       message: invalidConfig ? '设置已保存，但没有应用。当前配置仍无效。'
         : failed || partial ? '设置已保存，但插件内容重新应用失败或部分失败。' : '操作已完成。',
       pluginId: intent.pluginId,
-      configScope: intent.scope,
+      configScope: 'user', configPlatform: intent.platform, configContext: intent.context ?? 'user',
       configApplyRetryAvailable: intent.kind === 'configSave'
         && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable'),
       ...(intent.kind === 'configSave' && intent.retryApply ? { configRetryApply: true } : {}),
@@ -6062,7 +6168,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
               ? { quarantineBasename } : {}),
           }
         : {}),
-      ...(targets.length > 0 ? { targets } : {}),
+      ...(targets.length > 0 ? { configTargets: targets } : {}),
       ...(commandResults.length > 0 ? { commandResults,
         recoveryActions: [...new Set(commandResults.flatMap((result) => result.recoveryActions))] } : {}),
     };

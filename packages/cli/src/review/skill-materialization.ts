@@ -67,6 +67,10 @@ export async function prepareSkillPluginBundle(options: {
       bundleRoot,
       bundlePlugin: {
         ...activePrepared.plugin,
+        sourceId: options.plugin.sourceId,
+        sourceIdentity: options.plugin.sourceIdentity,
+        catalogLogicalIdentity: options.plugin.catalogLogicalIdentity,
+        pluginId: options.plugin.pluginId,
         rootDir: bundleRoot,
         manifestPath,
         manifest,
@@ -120,7 +124,7 @@ export async function prepareIsolatedSkillCommandReferences(options: {
           : undefined;
         if (producerRef.kind === 'static-skill' && producerRef.platform !== options.platform
           || producerRef.kind === 'artifact' && (declaration?.platform !== options.platform
-            || declaration.delivery?.mode !== 'codex-native' && !declaration.scopes.includes(consumer.scope))) {
+            || declaration.target !== 'codex.skill' && declaration.target !== 'claude.skill' && !declaration.scopes.includes(consumer.scope))) {
           throw new Error('commandReferenceInvalid: the producer is unavailable on this platform and scope.');
         }
         if (producerRef.kind === 'package') {
@@ -166,7 +170,7 @@ export async function prepareIsolatedSkillCommandReferences(options: {
             referencePlugins: options.plugins,
             platform: options.platform,
             scope: producer.scope,
-            ...(declaration?.delivery?.mode === 'codex-native' ? { configScope: 'user' as const } : {}),
+            ...((declaration?.target === 'codex.skill' || declaration?.target === 'claude.skill') ? { configScope: 'user' as const } : {}),
             event: 'materialize', cwd: options.cwd, commandEnv: options.env,
             requestedArtifactIds, previousArtifacts: [], scriptTimeoutMs: options.scriptTimeoutMs,
           });
@@ -242,24 +246,29 @@ export async function createIsolatedSkillEnv(
     XDG_CACHE_HOME: path.join(scopeRoot, 'xdg-cache'),
     XDG_CONFIG_HOME: path.join(scopeRoot, 'xdg-config'),
     XDG_STATE_HOME: path.join(scopeRoot, 'xdg-state'),
+    XDG_DATA_HOME: path.join(scopeRoot, 'xdg-data'),
+    XDG_RUNTIME_DIR: path.join(scopeRoot, 'xdg-runtime'),
     TMPDIR: temp,
     TEMP: temp,
     TMP: temp,
     AW_HOME: path.join(scopeRoot, 'aw-home'),
-    AW_CODEX_HOME: codexHome,
-    AW_CLAUDE_HOME: path.join(scopeRoot, 'claude-home'),
     CODEX_HOME: codexHome,
+    CLAUDE_CONFIG_DIR: path.join(scopeRoot, 'claude-home'),
     NODE_PATH: '',
   };
+  delete env.AW_CODEX_HOME;
+  delete env.AW_CLAUDE_HOME;
   await Promise.all([
     fs.ensureDir(env.HOME!),
     fs.ensureDir(env.XDG_CACHE_HOME!),
     fs.ensureDir(env.XDG_CONFIG_HOME!),
     fs.ensureDir(env.XDG_STATE_HOME!),
+    fs.ensureDir(env.XDG_DATA_HOME!),
+    fs.ensureDir(env.XDG_RUNTIME_DIR!),
     fs.ensureDir(env.TMPDIR!),
     fs.ensureDir(env.AW_HOME!),
-    fs.ensureDir(env.AW_CODEX_HOME!),
-    fs.ensureDir(env.AW_CLAUDE_HOME!),
+    fs.ensureDir(env.CODEX_HOME!),
+    fs.ensureDir(env.CLAUDE_CONFIG_DIR!),
   ]);
   return env;
 }
