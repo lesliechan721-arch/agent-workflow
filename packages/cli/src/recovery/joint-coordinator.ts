@@ -20,6 +20,7 @@ import { readJointDemand, deriveJointDemand, findPlacementConflicts, targetsConf
 import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, describeRecoveryPlan, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan } from './coordinator.js';
 import { readScopedRecoveryStatus, readRecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
+import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
 
 export interface JointRecoveryState {
   snapshot: JointDemandSnapshot;
@@ -454,14 +455,22 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
 export async function executeJointRecovery(plan: RecoveryPlan,
   execution: { yes?: boolean; runtime?: RebuildCommandRuntime }): Promise<RecoveryReceipt> {
   const joint = plan.joint!;
+  const performanceRuntime = { ...plan.runtime, ...execution.runtime };
+  let lockWaitStartedAt: number | undefined;
   try {
     if (plan.sourceRefreshes.length) {
       plan.receipt.blockers.push(diagnostic('sourceRefreshConfirmationRequired'));
       return mergeReceipts(plan, joint.children.map((child) => child.receipt));
     }
+    lockWaitStartedAt = performance.now();
+    await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'start', lockWaitStartedAt);
     return await withAwHomeMutationLock({ env: plan.options.env, token: execution.runtime?.awHomeMutationToken ?? plan.runtime.awHomeMutationToken,
       action: async (token) => {
-        const actual = await readJointDemand(joint.originalOptions);
+        const acquiredAt = lockWaitStartedAt!;
+        lockWaitStartedAt = undefined;
+        await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'success', acquiredAt);
+        const actual = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.demand', () =>
+          readJointDemand(joint.originalOptions));
         const currentIntent = (plan.options.scope === 'project' ? actual.project! : actual.user).intent;
         plan.receipt.intent = intentReceipt(currentIntent);
         if (currentIntent.state !== 'valid' && currentIntent.state !== 'absent') {
@@ -474,8 +483,9 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         if (plan.blockExecution) return plan.receipt;
         // Recheck all backend candidates before any strong-state or output write.
         (execution.runtime?.codexObservationSession ?? plan.runtime.codexObservationSession)?.invalidate();
-        const checked = await prepareJointRecovery(plan.command, joint.selectors, joint.originalOptions,
-          { ...plan.runtime, ...execution.runtime, awHomeMutationToken: token });
+        const checked = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.recheck', () =>
+          prepareJointRecovery(plan.command, joint.selectors, joint.originalOptions,
+            { ...plan.runtime, ...execution.runtime, awHomeMutationToken: token }));
         const stable = !checked.blockExecution && JSON.stringify(describeRecoveryPlan(plan)) === JSON.stringify(describeRecoveryPlan(checked));
         await checked.context.dispose();
         if (!stable) { plan.receipt.blockers.push(diagnostic('operationReviewStale')); return mergeReceipts(plan, []); }
@@ -506,10 +516,11 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         const executeChild = async (child: RecoveryPlan, pluginIds: string | string[], agent: import('../intent/deployment-preferences.js').AgentId): Promise<RecoveryReceipt> => {
           const currentIntent = await observeIntent(child.options);
           if (!joint.originalOptions.existingOnly) child.demand.intent = currentIntent;
-          const fresh = await prepareScopedRecovery(child.command, typeof pluginIds === 'string' ? [pluginIds] : pluginIds, {
-            ...child.options, targets: agent === 'codex' || agent === 'claude' ? child.options.targets : [agent], all: false,
-            exactTargets: child.options.exactTargets?.filter((target) => (typeof pluginIds === 'string' ? [pluginIds] : pluginIds).includes(target.pluginId)),
-          }, runtime);
+          const fresh = await measureRecoveryPerformanceStage(runtime, 'recovery.child.plan', () =>
+            prepareScopedRecovery(child.command, typeof pluginIds === 'string' ? [pluginIds] : pluginIds, {
+              ...child.options, targets: agent === 'codex' || agent === 'claude' ? child.options.targets : [agent], all: false,
+              exactTargets: child.options.exactTargets?.filter((target) => (typeof pluginIds === 'string' ? [pluginIds] : pluginIds).includes(target.pluginId)),
+            }, runtime));
           fresh.originalIntent = observationEvidence(currentIntent);
           for (const target of fresh.receipt.targetResults) {
             const reviewed = child.receipt.targetResults.find((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent);
@@ -538,7 +549,8 @@ export async function executeJointRecovery(plan: RecoveryPlan,
               `依赖提供者未完成。恢复后重试 aw plugin sync ${target.pluginId} --context ${target.scope} --target ${target.agent} --yes`));
             }
           }
-          const result = await executeScopedRecovery(fresh, { ...execution, runtime });
+          const result = await measureRecoveryPerformanceStage(runtime, 'recovery.child.execute', () =>
+            executeScopedRecovery(fresh, { ...execution, runtime }));
           if (joint.originalOptions.existingOnly) for (const target of result.targetResults) {
             if (!target.blockers.some((error) => error.code === 'dependencyInstallFailed')) continue;
             target.blockers = target.blockers.map((error) => error.code === 'dependencyInstallFailed'
@@ -700,10 +712,16 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         receipt.outputsMayHaveChanged ||= packageResults.some((result) => result.state === 'completed');
         receipt.errors.push(...results.flatMap((result) => result.targetResults.flatMap((target) => target.blockers)));
 
-        const status = await readRecoveryStatus({ ...joint.originalOptions, nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession, targets: undefined });
+        const status = await measureRecoveryPerformanceStage(runtime, 'recovery.status', () =>
+          readRecoveryStatus({ ...joint.originalOptions, nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession, targets: undefined }));
         receipt.allSatisfied = status.allSatisfied;
         receipt.inSync = status.inSync;
         return receipt;
       } });
+  } catch (error) {
+    if (lockWaitStartedAt !== undefined) {
+      await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'failure', lockWaitStartedAt);
+    }
+    throw error;
   } finally { await plan.context.dispose(); }
 }

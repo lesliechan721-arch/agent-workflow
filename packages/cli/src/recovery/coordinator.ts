@@ -56,6 +56,7 @@ import { createEmptyNativeDemandView } from '../utils/native-demand.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import { runPreApplyScript } from '../utils/plugin-scripts.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
+import { measureRecoveryPerformanceStage } from './performance.js';
 
 export type RecoveryCommand = 'sync' | 'install' | 'reinstall' | 'uninstall' | 'cleanup';
 export interface RecoveryOptions {
@@ -1257,11 +1258,13 @@ export async function runRecovery(command: RecoveryCommand, selectors: readonly 
 
 export async function prepareRecovery(command: RecoveryCommand, selectors: readonly string[],
   options: RecoveryOptions, runtime: RebuildCommandRuntime = {}): Promise<RecoveryPlan> {
-  if (command === 'cleanup') {
-    if (!options.scope) throw new Error('cleanupScopeRequired');
-    return prepareScopedRecovery(command, selectors, { ...options, scope: options.scope }, runtime);
-  }
-  return prepareJointRecovery(command, selectors, options, runtime);
+  return measureRecoveryPerformanceStage(runtime, 'recovery.plan', async () => {
+    if (command === 'cleanup') {
+      if (!options.scope) throw new Error('cleanupScopeRequired');
+      return prepareScopedRecovery(command, selectors, { ...options, scope: options.scope }, runtime);
+    }
+    return prepareJointRecovery(command, selectors, options, runtime);
+  });
 }
 
 export async function executeRecovery(plan: RecoveryPlan,

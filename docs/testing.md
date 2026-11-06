@@ -38,6 +38,8 @@ Linux Node 24 的插件测试使用独立 job，自行构建并将本次 CLI 加
 
 CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。测试在删除临时现场前向该目录保存脱敏 JSON；失败 job 只上传 `publisher/` 和 `npm/` 下的 JSON，保留 7 天。诊断不包含完整环境变量或原始 npm debug 日志。
 
+恢复性能诊断通过 debug logger 发出 `performance:stage`，记录 `recovery.plan`、`recovery.lock.wait`、`recovery.locked.demand`、`recovery.locked.recheck`、`recovery.child.plan`、`recovery.child.execute` 和 `recovery.status` 的开始、成功或失败及耗时。阶段可能嵌套，不应直接相加。`joint-recovery` 的 provider switch 用例将这些事件接入 `AW_TEST_TIMING`，以 `commandSequence` 关联外层命令；只有开始而没有结束的阶段可用于定位超时。双平台 TUI 并发用例在断言前输出 `AW_TEST_RESULT`，包含重新安装与配置保存双方的结果、错误码和脱敏诊断摘要，不输出原始 receipt 或完整异常。
+
 定向 Vitest 命令可用 `--maxWorkers=4` 覆盖合法的环境值，`--minWorkers` 必须是正安全整数且不能超过上限。`pnpm plugin:test <plugin> --test-concurrency=4` 同样支持显式覆盖。非法环境值始终失败，即使同时提供显式值。process-lifecycle、锁/子 runner、dist contract、smoke、performance 和 qualification 保持串行；通用环境变量不能解除约束，固定串行入口拒绝大于 1 的显式 worker 请求。日志中的 `AW_TEST_WORKERS` JSON 行显示生效上限和来源。worker 只控制单个 runner 的文件并发，不改变 package 执行顺序或 Actions 矩阵数量。
 
 `pnpm test:perf:gate` 隔离通用 worker 环境值；性能测量固定 1 worker，被测 fast lane 固定 2 workers。普通 `pnpm test:unit:fast` 使用 `AW_TEST_WORKERS`，性能门禁中的同一 fast lane 使用固定基线。

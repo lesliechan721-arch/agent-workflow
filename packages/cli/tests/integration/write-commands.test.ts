@@ -69,6 +69,7 @@ import fs from 'fs-extra';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import { projectExecutionDiagnostics } from '../../src/tui/diagnostic-projection.js';
+import { sanitizeTestDiagnostic } from '../helpers/test-command-diagnostics.js';
 import { listManagedCommands, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { PassThrough } from 'node:stream';
 import {
@@ -13042,7 +13043,7 @@ describe('five namespaced write commands', () => {
     controller.dispose();
   });
 
-  it('executes a real dual-platform TUI write under one complete locked review', async () => {
+  it('executes a real dual-platform TUI write under one complete locked review', async (test) => {
     const isolation = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
       ...createEmptyPreferences(), targets: ['codex', 'claude'],
@@ -13151,6 +13152,36 @@ describe('five namespaced write commands', () => {
       new Promise<never>((_resolve, reject) => setTimeout(() =>
         reject(new Error('ABBA operation lock timeout')), 5_000)),
     ]);
+    const safeMessage = (message: string) => sanitizeTestDiagnostic(message, isolation.env).slice(0, 1000);
+    const rejection = (result: PromiseSettledResult<unknown>) => result.status === 'rejected' ? {
+      code: typeof result.reason?.code === 'string' ? safeMessage(result.reason.code) : undefined,
+      message: safeMessage(result.reason instanceof Error ? result.reason.message : String(result.reason)),
+    } : undefined;
+    const reinstallReceipt = concurrentResults[0].status === 'fulfilled'
+      && concurrentResults[0].value.kind === 'recovery' ? concurrentResults[0].value.receipt : undefined;
+    const configResult = concurrentResults[1].status === 'fulfilled' ? concurrentResults[1].value : undefined;
+    const configDiagnostics = configResult?.operationRecordId
+      ? configController.getOperationDiagnostic(configResult.operationRecordId)?.diagnostics : undefined;
+    console.log('AW_TEST_RESULT', JSON.stringify({
+      test: test.task.name,
+      reinstall: {
+        status: concurrentResults[0].status,
+        ok: reinstallReceipt?.ok,
+        blockers: reinstallReceipt?.blockers.map(({ code }) => code),
+        errors: reinstallReceipt?.errors.map(({ code, message }) => ({ code, message: safeMessage(message) })),
+        rejection: rejection(concurrentResults[0]),
+      },
+      configSave: {
+        status: concurrentResults[1].status,
+        state: configResult?.state,
+        code: configResult && 'code' in configResult ? configResult.code : undefined,
+        message: configResult && 'message' in configResult ? safeMessage(configResult.message) : undefined,
+        summaryCode: configResult && 'summary' in configResult ? configResult.summary?.code : undefined,
+        effects: configResult?.effects,
+        diagnostics: configDiagnostics?.map(({ code, stage, safeMessage: message }) => ({ code, stage, message: safeMessage(message) })),
+        rejection: rejection(concurrentResults[1]),
+      },
+    }));
     if (concurrentResults[0].status === 'rejected') {
       expect(concurrentResults[0].reason).toMatchObject({ code: 'operationReviewStale' });
     } else {
