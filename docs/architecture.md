@@ -77,7 +77,7 @@ generated schema 7 snapshot
 ```
 
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。第三方 workspace 和本仓库 staging 都生成 schema 7 snapshot；生成目录不手工修改。
-- snapshot v7 transport validation 验证结构、路径、摘要、marketplace projection 和 release metadata。producer、publication、发布后核验和 destructive uninstall 使用 complete validation。destructive uninstall 在提交 Intent 或删除现场内容前完整验证所选 Active snapshot；失败时不修改 Intent，也不删除现场内容。安装先计算 selected dependency closure，检查 entry capability，再只验证该 closure 的 plugin。
+- snapshot v7 transport validation 验证结构、路径、摘要、marketplace projection 和 release metadata。producer、publication 的当前候选、发布后核验和 destructive uninstall 使用 complete validation。publication 读取已发布分支状态及上一版快照时使用 published transport validation，保留 published release state、Workspace identity、摘要和版本历史检查，不按当前插件合同重新校验历史插件。destructive uninstall 在提交 Intent 或删除现场内容前完整验证所选 Active snapshot；失败时不修改 Intent，也不删除现场内容。安装先计算 selected dependency closure，检查 entry capability，再只验证该 closure 的 plugin。
 - Catalog entry 的 artifact/content digest 继续绑定文件路径、节点类型、canonical Git 执行模式和内容。含可执行文件的 bundle 在生成时写入 `.agents-plugin/aw-executable-files.json`，保存按 codepoint 排序、无重复的 bundle-relative 执行文件路径；该文件本身为 `100644`，并进入 entry 和 snapshot 摘要。Windows 从该清单取得执行模式，Unix 继续核对实际执行位。Core 和 CLI 使用同一模式解析；没有清单时沿用实际模式，因此已有 Unix snapshot 的摘要合同不变。旧 snapshot 在 Windows 因执行位丢失而失败时，发布新 Catalog 版本以生成清单，不改写旧发布。
 - `aw catalog build` 和 `aw plugin build` 都在同父 staging 完整构建和验证后，才替换已证明为生成物的输出；它们拒绝 workspace 外、符号链接、`.git` 和其它受保护边界。`aw catalog init` 的合法 marker 是 schema 1、`kind: "aw-catalog-workspace"` 和稳定非空 `workspaceIdentity`；marker 不进入 snapshot digest。
 - source plugin 输入树不允许符号链接，也不能进入 `.git/` 或 `node_modules/`。Catalog complete validation 核对 source manifest、平台 projection 和 bundle 路径。
@@ -91,7 +91,7 @@ generated schema 7 snapshot
 
 公开 `PlatformTarget` 固定为 `codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`。`PlatformName` 仍只表示两个 Native 平台。Manifest 顶层 `platforms` 是支持集合的唯一来源：缺省或 `[]` 表示七平台，显式集合不得含重复或未知 ID。源码 `marketplace.policy.products`、`distributions`、build distribution selector 和 artifact `delivery` 均拒绝；Native marketplace products 从支持集合生成，Portable-only 插件不生成 Native 条目。
 
-每条依赖边要求 consumer 支持集合是 dependency 支持集合的子集。完整依赖链先校验，不能用本机选择的交集绕过。统一静态 `skills` 来源按目标投影；动态 Skill 声明具体 canonical platform。Codex 和 Claude 的静态、动态 Skill 固定进入各自 Native 包；共享包体按用户身份管理，项目 activation 与包体分开。Native 失败不降级到 Portable。
+每条依赖边要求 consumer 支持集合是 dependency 支持集合的子集。完整依赖链先校验，不能用本机选择的交集绕过。统一静态 `skills` 来源按目标投影；动态 Skill 声明具体 canonical platform。Codex 和 Claude 的静态、动态 Skill 固定进入各自 Native 包；共享包体按用户身份管理，项目 activation 与包体分开。Native manifest 声明的空 Skill 根目录由 bundle 生成 `.gitkeep` 保留，使 Catalog 经 Git 提交和检出后仍通过完整路径校验；占位文件不作为 Skill 发现。Native 失败不降级到 Portable。
 
 五个 Portable target 使用自有 writer。用户／项目固定根分别为：Antigravity `~/.gemini/config/skills`／`.agents/skills`；Cursor `~/.cursor/skills`／`.cursor/skills`；OpenCode `~/.config/opencode/skills`／`.opencode/skills`；Pi `~/.pi/agent/skills`／`.pi/skills`；Generic `~/.agents/skills`／`.agents/skills`。实际 home 按目标适用环境解析，不依赖第三方 skills CLI 或 provider lock。
 
@@ -166,7 +166,7 @@ primary development deactivate 把 remove 和 primary change 放入同一 invent
 
 `cleanup` 和 `cleanup --force` 使用专用 cleanup 流程，不进入恢复写入 pipeline。两种 scope 都只清理所选 Agent 中可证明归属的现场，不改 Intent、部署偏好或插件配置。无 Active 时仍可凭 live 或已绑定离线证据恢复，未知路径、foreign 与 shared 内容保持不动。`--force` 仅处理现有合同允许的专属损坏输出。两者都不运行 renderer 或 preApply。
 
-性能观察复用现有 debug event。`review.prepare.*` 记录 Review 准备阶段耗时；`performance:stage` 只记录 `catalog.load`、`catalog.validation`、`inventory`、`dependency.plan` 和 `target.build` 的阶段名与耗时，命令阶段另记录结果，Catalog load 另记录聚合 source/Active/validation 计数，不记录 digest、路径或错误文本。`native:start|success|error` 只记录白名单 `agent`、稳定 operation、`exitCode`、固定 reason 和 `durationMs`，不记录 args、cwd、stdout、stderr 或未知 error/cause 文本；`rebuild:action` 分别记录 `inspect`、`native.write`、`artifacts.write` 和 `postcheck.inspect` 等真实写阶段耗时。没有 native 或 artifact 动作时不伪造对应阶段。测试用 provider 调用次数、检查范围和阶段事件验证 write 性能边界。Warm install 的总时长只对受控 fake native runner 使用宽松门槛；本地 Catalog 阶段 p95 目标为 500ms，不能据此承诺第三方 CLI 时长。
+性能观察复用现有 debug event。`review.prepare.*` 记录 Review 准备阶段耗时；`performance:stage` 记录 `catalog.load`、`catalog.validation`、`inventory`、`dependency.plan`、`target.build` 及 `recovery.*` 的阶段名与耗时。恢复阶段覆盖规划、锁等待、锁内重查、子计划准备与执行及最终状态读取，记录开始、成功或失败；诊断失败不覆盖操作结果。命令阶段另记录结果，Catalog load 另记录聚合 source/Active/validation 计数，不记录 digest、路径或错误文本。`native:start|success|error` 只记录白名单 `agent`、稳定 operation、`exitCode`、固定 reason 和 `durationMs`，不记录 args、cwd、stdout、stderr 或未知 error/cause 文本；`rebuild:action` 分别记录 `inspect`、`native.write`、`artifacts.write` 和 `postcheck.inspect` 等真实写阶段耗时。没有 native 或 artifact 动作时不伪造对应阶段。测试用 provider 调用次数、检查范围和阶段事件验证 write 性能边界。Warm install 的总时长只对受控 fake native runner 使用宽松门槛；本地 Catalog 阶段 p95 目标为 500ms，不能据此承诺第三方 CLI 时长。
 
 首版不增加 authoritative installed-state DB、GC/read lease、新锁层级、全局事务或补偿状态机。Active snapshot 已是不可变内容寻址目录，操作直接引用它；当前可观察的重复 inventory 可以用操作内 snapshot 消除。这些事实不足以证明新增持久状态和协调协议的成本合理。
 
@@ -592,6 +592,8 @@ Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归
 官方自动发布由 GitHub Actions 分产品执行。本地维护入口 `pnpm release` 继续要求 `beta|release` 渠道和 `--cli|--catalog|--all` 中一个显式发布轴。
 
 `ci.yml` 验证 PR/main，只有同一 main SHA 的必要检查通过后才调用 `beta.yml`。规划复查该 SHA 仍为 main tip，分别比较 CLI 五包的规范化生产输入（包括原生源码、工具链和平台包生产逻辑）和 Catalog 完整生产内容。成功基线来自五包完整 npm 结果与 `cli-v*`，或 immutable Catalog snapshot 的 `release.sourceHead`；失败候选只占号。main 的旧声明不会降低已用版本线；稳定版后默认进入下一 patch beta，显式版本变更可以指定更高 base。
+
+自动 beta 比较 Catalog 时，当前候选执行完整校验；历史基线只执行 transport 校验，检查快照布局、摘要和 marketplace 投影，不按当前插件合同重新校验旧插件。历史快照无法读取或完整性校验失败时，按生产内容有变化选择新版本。发布元数据、源码来源、插件版本历史及已占用版本仍独立检查；此回退不放宽当前候选或待恢复发布材料的校验。
 
 自动 beta 的源码 tag 是 annotated tag，message 以 `Automatic beta` 开头，并包含 `AW-CI: <run-id>/<attempt>`。候选发布只在该记录指向同仓库 `ci.yml` 的 main push、SHA 等于已验证的候选 main 来源，且该次 attempt 的全部必要 CI jobs 成功时复用源码验证；此时 main 的 beta job 本身可以仍在运行。复用时仍构建精确候选、验证版本和产物，并执行完整的候选 smoke。手动候选、稳定版、记录缺失、检查失败或缺失以及 API 查询失败都运行所选产品的完整 release verify。CI job 名称变化时同步更新 `actions-inspection.mjs` 的必要检查列表；未更新会回退到完整验证。
 

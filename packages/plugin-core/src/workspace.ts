@@ -990,6 +990,18 @@ export async function validatePublishedCatalogSnapshot(snapshotDirectory: string
   return validation;
 }
 
+export async function validatePublishedCatalogSnapshotTransport(snapshotDirectory: string): Promise<{
+  rootDir: string;
+  manifest: CatalogManifestV7;
+  snapshotDigest: string;
+}> {
+  const validation = await validateCatalogSnapshotTransport(snapshotDirectory);
+  if (validation.manifest.release.state !== 'published') {
+    throw new Error('Published Catalog snapshot must have release.state published.');
+  }
+  return validation;
+}
+
 export async function preparePublishedCatalogWorkspace(options: {
   workspaceRoot: string;
   sourceHead: string;
@@ -1017,7 +1029,7 @@ export async function preparePublishedCatalogWorkspace(options: {
   const catalogVersion = catalogWorkspace.metadata.catalog.version;
   const channel = deriveCatalogChannel(catalogVersion);
   const previous = options.previousSnapshotRoot
-    ? await validatePublishedCatalogSnapshot(options.previousSnapshotRoot)
+    ? await validatePublishedCatalogSnapshotTransport(options.previousSnapshotRoot)
     : null;
   if (!previous && (options.historicalPluginEntries?.length ?? 0) > 0) {
     throw new Error('Published Plugin history requires a previous Catalog snapshot.');

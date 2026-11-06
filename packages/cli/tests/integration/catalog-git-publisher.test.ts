@@ -4,7 +4,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
-import { preparePublishedCatalogWorkspace } from '@lesliechan721/aw-plugin-core';
+import { preparePublishedCatalogWorkspace, validatePublishedCatalogSnapshot } from '@lesliechan721/aw-plugin-core';
 import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -27,6 +27,11 @@ import {
 } from '../../src/commands/catalog-publication-inspection.js';
 import { runCli } from '../../src/index.js';
 import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js';
+import {
+  calculateCatalogEntryArtifactDigest,
+  calculateCatalogEntryContentDigest,
+  calculateCatalogEntryManifestDigest,
+} from '../../src/utils/catalog-digests.js';
 import { prepareCatalogRelease } from '../../../../scripts/release/catalog-publication.mjs';
 import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
 import { TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
@@ -227,6 +232,7 @@ async function publishHistoryFixture(options: {
   branch?: string;
   previous?: { repositoryPath: string; commit: string };
   parent?: string;
+  mutateSnapshot?: (snapshotRoot: string) => Promise<void>;
 }): Promise<{ repositoryPath: string; commit: string }> {
   const prepared = await preparePublishedCatalogWorkspace({
     workspaceRoot: options.root,
@@ -243,6 +249,7 @@ async function publishHistoryFixture(options: {
     },
   });
   const repository = await temporaryRoot('aw-catalog-history-fixture-');
+  await options.mutateSnapshot?.(prepared.outputRoot);
   await git(repository, ['init', '--quiet']);
   const parent = options.parent ?? options.previous?.commit;
   if (parent !== undefined) {
@@ -264,6 +271,57 @@ async function publishHistoryFixture(options: {
 }
 
 describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
+  it('rejects damaged historical snapshot content before creating a new publication plan', async () => {
+    const { root, remote } = await createWorkspace();
+    const previous = await publishHistoryFixture({ root, remote,
+      mutateSnapshot: async (snapshotRoot) => {
+        await fs.writeFile(path.join(snapshotRoot, 'plugins', 'journal-test', 'README.md'), 'damaged history\n');
+      },
+    });
+    await setCatalogVersion(root, '1.0.1');
+    await commitAll(root, 'advance over damaged history');
+    await expect(plan(root)).rejects.toMatchObject({ code: 'remoteSnapshotInvalid',
+      message: expect.stringContaining('does not match its plugin bundle') });
+    expect(await git(root, ['ls-remote', remote, 'refs/heads/catalog/latest']))
+      .toBe(`${previous.commit}\trefs/heads/catalog/latest`);
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.0.1'))).resolves.toBe(false);
+  });
+
+  it('publishes a new Catalog over a legacy plugin snapshot without revalidating its plugin contract', async () => {
+    const { root, remote } = await createWorkspace();
+    const previous = await publishHistoryFixture({ root, remote,
+      mutateSnapshot: async (snapshotRoot) => {
+        const pluginRoot = path.join(snapshotRoot, 'plugins', 'journal-test');
+        const pluginPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+        const plugin = await fs.readJson(pluginPath);
+        plugin.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+        await fs.writeJson(pluginPath, plugin, { spaces: 2 });
+        const manifestPath = path.join(snapshotRoot, 'catalog-manifest.json');
+        const manifest = await fs.readJson(manifestPath);
+        Object.assign(manifest.entries[0], {
+          artifactDigest: await calculateCatalogEntryArtifactDigest(pluginRoot),
+          contentDigest: await calculateCatalogEntryContentDigest(pluginRoot),
+          manifestDigest: calculateCatalogEntryManifestDigest(plugin),
+        });
+        await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+        await expect(validatePublishedCatalogSnapshot(snapshotRoot)).rejects.toThrow('pluginPlatformsMigrationRequired');
+      },
+    });
+    await expect(readCatalogPublicationBranchState({
+      workspaceRoot: root, remote: 'origin', branch: 'catalog/latest', env: process.env,
+    })).resolves.toMatchObject({ commit: previous.commit, version: '1.0.0' });
+
+    await setCatalogVersion(root, '1.0.1');
+    await setPluginVersion(root, '0.1.1');
+    await commitAll(root, 'advance the Catalog and migrate the plugin contract');
+    const publication = await plan(root);
+    expect(publication.parent).toBe(previous.commit);
+    await expect(apply(root, publication)).resolves.toMatchObject({ state: 'published' });
+    await expect(readCatalogPublicationBranchState({
+      workspaceRoot: root, remote: 'origin', branch: publication.branch, env: process.env,
+    })).resolves.toMatchObject({ commit: publication.expectedCommit, version: '1.0.1' });
+  });
+
   it('preserves snapshot bytes when user Git settings enable CRLF conversion', async () => {
     await fs.ensureDir(process.env.HOME!);
     await execFileAsync('git', ['config', '--global', 'core.autocrlf', 'true']);

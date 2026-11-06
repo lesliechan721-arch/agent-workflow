@@ -14,6 +14,7 @@ import {
   readCatalogWorkspace,
   validatePublishedCatalogSnapshot,
   validatePublishedCatalogSnapshotMetadata,
+  validatePublishedCatalogSnapshotTransport,
   type CatalogManifestV7Entry,
   type CatalogWorkspace,
   type CatalogWorkspaceBuildAdapter,
@@ -394,7 +395,7 @@ async function validatePublishedCatalogSnapshotForWorkspace(
   workspaceIdentity: string,
 ): Promise<Awaited<ReturnType<typeof validatePublishedCatalogSnapshot>>> {
   try {
-    const validation = await validatePublishedCatalogSnapshot(snapshotRoot);
+    const validation = await validatePublishedCatalogSnapshotTransport(snapshotRoot);
     const markerPath = path.join(snapshotRoot, GENERATED_OUTPUT_MARKER_FILENAME);
     const markerStats = await fs.lstat(markerPath).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return null;

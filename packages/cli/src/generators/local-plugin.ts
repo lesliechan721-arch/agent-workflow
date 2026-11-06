@@ -2104,6 +2104,16 @@ export async function bundleLocalPlugin(
       preparedBuildImportProjections.get(buildPlugin.runtimeContext) ?? [],
     );
 
+    // Git must retain the skills root declared by a dynamic-only Native bundle.
+    for (const platform of PLATFORM_ORDER) {
+      const manifest = platformManifests[platform];
+      if (!manifest?.skills) continue;
+      const skillsRoot = path.join(outputRoot, stripDotSlash(manifest.skills));
+      if ((await fs.readdir(skillsRoot)).length === 0) {
+        await fs.writeFile(path.join(skillsRoot, '.gitkeep'), '');
+      }
+    }
+
     return {
       outputRoot,
       plugin,
