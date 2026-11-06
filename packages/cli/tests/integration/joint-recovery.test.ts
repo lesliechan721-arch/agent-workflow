@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
@@ -187,17 +188,24 @@ describe('joint recovery through real Catalog and owned Portable outputs', () =>
   }, 30000);
   // Test Value Gate: scope-switch hooks must run before deleting a working
   // provider, and failure must not prevent another target from switching.
-  it('retains project providers when user preApply fails and switches an independent target once', async () => {
-    const value = await fixture(false, ['cursor', 'pi'], true);
-    await writeIntent({ ...value.options, scope: 'user' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
-    await setTargets({ ...value.options, scope: 'user' }, ['cursor', 'pi']);
-    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+  it('retains project providers when user preApply fails and switches an independent target once', async (test) => {
+    const timing = createCommandTestTiming(test);
+    const value = await timing.measure('fixture', 'provider switch', async () => {
+      const value = await fixture(false, ['cursor', 'pi'], true);
+      await writeIntent({ ...value.options, scope: 'user' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
+      await setTargets({ ...value.options, scope: 'user' }, ['cursor', 'pi']);
+      return value;
+    });
+    expect((await timing.measure('command', 'initial sync', () =>
+      runRecovery('sync', [], value.options))).ok).toBe(true);
     const oldProvider = path.join(value.projectRoot, 'd', 'SKILL.md');
     const oldConsumer = path.join(value.projectRoot, 'b', 'SKILL.md');
     const oldContents = await Promise.all([fs.readFile(oldProvider, 'utf8'), fs.readFile(oldConsumer, 'utf8')]);
     await fs.writeFile(value.hookTrace, '');
-    const unauthorized = await prepareRecovery('install', ['team/b'], { ...value.options, scope: 'user', yes: false });
-    const denied = await executeRecovery(unauthorized, { yes: false });
+    const denied = await timing.measure('command', 'unauthorized install', async () => {
+      const unauthorized = await prepareRecovery('install', ['team/b'], { ...value.options, scope: 'user', yes: false });
+      return executeRecovery(unauthorized, { yes: false });
+    });
     expect(denied.ok).toBe(false);
     expect(denied.declarationChanged).toBe(true);
     await expectSavedIntent(denied, { ...value.options, scope: 'user' });
@@ -206,7 +214,8 @@ describe('joint recovery through real Catalog and owned Portable outputs', () =>
     expect(await Promise.all([fs.readFile(oldProvider, 'utf8'), fs.readFile(oldConsumer, 'utf8')])).toEqual(oldContents);
     await fs.writeFile(value.hookFailure, 'fail user Cursor provider');
 
-    const result = await runRecovery('install', ['team/b'], { ...value.options, scope: 'user' });
+    const result = await timing.measure('command', 'install with failing preApply', () =>
+      runRecovery('install', ['team/b'], { ...value.options, scope: 'user' }));
     expect(result.ok).toBe(false);
     expect(result.errors.some((error) => error.code === 'providerSwitchPreApplyFailed')).toBe(true);
     expect(result.declarationChanged).toBe(false);
