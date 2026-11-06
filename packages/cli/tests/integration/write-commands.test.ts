@@ -14951,376 +14951,387 @@ describe('five namespaced write commands', () => {
     });
   });
 
-  it('replays public namespaced config writes and keeps the store when rendering fails', async () => {
-    const machine = getCurrentSourceTestIsolation();
-    await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
-      { ...createEmptyPreferences(), targets: ['codex'] });
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-replay-source');
-    await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'render.mjs'), [
-      'import { readFile } from "node:fs/promises";',
-      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-      'const mode = context.config.values.mode ?? "safe";',
-      'if (mode === "fail") {',
-      '  console.error("file:///C:/Users/RUNNER%7E1/AppData/Local/Temp/private-renderer/render.mjs:4:28");',
-      '  throw new Error("renderer requested failure");',
-      '}',
-      'console.log(JSON.stringify({ version: 2, artifacts: [{',
-      '  id: "instruction", kind: "instruction", platform: "codex",',
-      '  target: "codex.developerInstructionsBlock", state: "present",',
-      '  refreshKeys: ["mode"], content: `mode=${mode}`',
-      '}] }));',
-    ].join('\n'));
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = {
-        schemaVersion: 5,
-        fields: {
-          mode: {
-            type: 'string',
-            default: 'safe',
-            choices: {
-              allowCustom: true,
-              presets: [{ id: 'safe', title: 'Safe', value: 'safe' }],
+  describe('namespaced config replay', () => {
+    async function createFixture(test: TestContext) {
+      const timing = createCodexEnhanceTestTiming(test);
+      const isolation = getCurrentSourceTestIsolation();
+      await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env },
+        { ...createEmptyPreferences(), targets: ['codex'] });
+      const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-replay-source');
+      await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'render.mjs'), [
+        'import { readFile } from "node:fs/promises";',
+        'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'const mode = context.config.values.mode ?? "safe";',
+        'if (mode === "fail") {',
+        '  console.error("file:///C:/Users/RUNNER%7E1/AppData/Local/Temp/private-renderer/render.mjs:4:28");',
+        '  throw new Error("renderer requested failure");',
+        '}',
+        'console.log(JSON.stringify({ version: 2, artifacts: [{',
+        '  id: "instruction", kind: "instruction", platform: "codex",',
+        '  target: "codex.developerInstructionsBlock", state: "present",',
+        '  refreshKeys: ["mode"], content: `mode=${mode}`',
+        '}] }));',
+      ].join('\n'));
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+        manifest.config = {
+          schemaVersion: 5,
+          fields: {
+            mode: {
+              type: 'string',
+              default: 'safe',
+              choices: {
+                allowCustom: true,
+                presets: [{ id: 'safe', title: 'Safe', value: 'safe' }],
+              },
+            },
+            labels: {
+              type: 'object',
+              additionalProperties: { type: 'string' },
+              validation: { key: { format: 'identifier' } },
             },
           },
-          labels: {
-            type: 'object',
-            additionalProperties: { type: 'string' },
-            validation: { key: { format: 'identifier' } },
-          },
+        };
+        manifest.scripts = {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        };
+        manifest.artifacts = {
+          targets: [{
+            id: 'instruction',
+            platform: 'codex',
+            scopes: ['project'],
+            target: 'codex.developerInstructionsBlock',
+            states: ['present'],
+            refreshKeys: ['mode'],
+            requiresCodexProjectConfig: true,
+          }],
+        };
+        manifest.platforms = ['codex'];
+      });
+      const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+      const sourceIdentity = await calculateCatalogSourceIdentity(source);
+      const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+      const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: { schemaVersion: 2, sources: [source] },
+        expectedDigest: before.digest,
+        env: isolation.env,
+      });
+      const nativeCliRunner = vi.fn(async () => ({
+        exitCode: 0,
+        stdout: 'codex-cli 0.200.0',
+        stderr: '',
+      }));
+      const runPublic = (args: string[]) => timing.measure(
+        'command',
+        args[1] === 'config' ? `plugin config ${args[2]}` : `plugin ${args[1]}`,
+        async () => {
+          const captured = createCapturedCliIo();
+          const exitCode = await runCli([...args, '--json'], {
+            cwd: isolation.layout.fixtureCwd,
+            env: isolation.env,
+            io: captured.io,
+            interactive: false,
+            nativeCliRunner,
+          });
+          return {
+            exitCode,
+            stdout: captured.readStdout(),
+            payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
+            stderr: captured.readStderr(),
+          };
         },
-      };
-      manifest.scripts = {
-        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
-      };
-      manifest.artifacts = {
-        targets: [{
-          id: 'instruction',
-          platform: 'codex',
-          scopes: ['project'],
-          target: 'codex.developerInstructionsBlock',
-          states: ['present'],
-          refreshKeys: ['mode'],
-          requiresCodexProjectConfig: true,
-        }],
-      };
-      manifest.platforms = ['codex'];
-    });
-    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
-    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [source] },
-      expectedDigest: before.digest,
-      env: isolation.env,
-    });
-    const nativeCliRunner = vi.fn(async () => ({
-      exitCode: 0,
-      stdout: 'codex-cli 0.200.0',
-      stderr: '',
-    }));
-    const runPublic = async (args: string[]) => {
-      const captured = createCapturedCliIo();
-      const exitCode = await runCli([...args, '--json'], {
+      );
+      const store = {
+        sourceId: 'team',
+        sourceIdentity,
+        logicalIdentity,
+        pluginName: 'demo',
+        scope: 'user' as const,
+        platform: 'codex' as const,
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
-        io: captured.io,
-        interactive: false,
-        nativeCliRunner,
-      });
-      return {
-        exitCode,
-        stdout: captured.readStdout(),
-        payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
-        stderr: captured.readStderr(),
       };
-    };
-    const readStore = () => readPluginConfigStore({
-      sourceId: 'team',
-      sourceIdentity,
-      logicalIdentity,
-      pluginName: 'demo',
-      scope: 'user',
-      platform: 'codex',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    });
-    const configPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
-
-    expect(await runPublic([
-      'plugin', 'install', 'team/demo', '--scope', 'project',
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
-
-    const sourceOnlyPreset = await runPublic([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(sourceOnlyPreset).toMatchObject({
-      exitCode: 0,
-      payload: {
-        updatedKeys: ['mode'],
-        apply: { state: 'succeeded' },
-      },
-    });
-    const equivalentPreset = await runPublic([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(equivalentPreset).toMatchObject({
-      exitCode: 0,
-      payload: {
-        updatedKeys: [],
-        apply: { state: 'skipped', reason: 'noConfigChange' },
-      },
-    });
-
-    await fs.remove(configPath);
-    await expect(statusCommandV8({
-      recoverySelection: { targets: ['codex'] },
-      plugins: ['team/demo'],
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      nativeCliRunner,
-      platform: 'codex',
-      scope: 'project',
-    })).resolves.toMatchObject({
-      payload: { targets: [expect.objectContaining({ state: 'needsSync' })] },
-    });
-
-    const set = await runPublic([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(set, JSON.stringify(set)).toMatchObject({
-      exitCode: 1,
-      payload: {
-        receiptSchemaVersion: 7,
-        configWrite: 'succeeded',
-        overallState: 'partial',
-        apply: { state: 'partial', targetResults: [expect.objectContaining({
-          target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
-          state: 'skipped', errorCode: 'configApplyRequiresExistingOutput',
-        })] },
-      },
-    });
-    expect(set.payload).not.toHaveProperty('targetResults');
-    expect(JSON.parse(set.stdout)).toEqual(set.payload);
-    expect(set.stderr).toBe('');
-    expect(JSON.stringify(set.payload)).not.toContain('projectConfigShareabilityUnverified');
-    expect(await fs.readJson(resolvePluginConfigStorePath({
-      sourceId: 'team', pluginName: 'demo', scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    }))).toMatchObject({ schemaVersion: 6, common: {}, platforms: { codex: { mode: 'fast' } } });
-    expect((await readStore()).values).toEqual({ mode: 'fast' });
-    await expect(fs.pathExists(configPath)).resolves.toBe(false);
-    expect(await runPublic(['plugin', 'sync', 'team/demo', '--target', 'codex', '--context', 'project']))
-      .toMatchObject({ exitCode: 0, payload: { ok: true } });
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
-
-    const human = createCapturedCliIo();
-    await expect(runCli([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"human-fast"', '--context', 'project', '--platform', 'codex',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: human.io,
-      interactive: false,
-      nativeCliRunner,
-    })).resolves.toBe(0);
-    expect(human.readStdout()).toContain('已保存 demo.mode');
-    expect(human.readStderr()).toContain('未请求应用');
-    expect(human.readStderr()).not.toContain('projectConfigShareabilityUnverified');
-    await runPublic([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex',
-    ]);
-
-    const runHumanConfig = async (args: string[]) => {
-      const output = createCapturedCliIo();
-      const exitCode = await runCli(args, {
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        io: output.io,
-        interactive: false,
-        nativeCliRunner,
+      const readStore = () => readPluginConfigStore(store);
+      const configPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+      const runHumanConfig = async (args: string[]) => timing.measure('command', `human config ${args[2]}`, async () => {
+        const output = createCapturedCliIo();
+        const exitCode = await runCli(args, {
+          cwd: isolation.layout.fixtureCwd,
+          env: isolation.env,
+          io: output.io,
+          interactive: false,
+          nativeCliRunner,
+        });
+        return { exitCode, stdout: output.readStdout(), stderr: output.readStderr() };
       });
-      return { exitCode, stdout: output.readStdout(), stderr: output.readStderr() };
-    };
-    const userSet = await runHumanConfig([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"user-fast"', '--context', 'user',
-    ]);
-    const userUnset = await runHumanConfig([
-      'plugin', 'config', 'unset', 'team/demo', 'mode', '--context', 'user',
-    ]);
-    await runHumanConfig([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"user-reset"', '--context', 'user',
-    ]);
-    const userReset = await runHumanConfig([
-      'plugin', 'config', 'reset', 'team/demo', '--context', 'user', '--yes',
-    ]);
-    for (const result of [userSet, userUnset, userReset]) {
-      expect(result.exitCode).toBe(0);
-      expect(result.stderr.match(/其它项目不会由本次命令扫描或更新/g)).toHaveLength(1);
+      return { isolation, nativeCliRunner, runPublic, runHumanConfig, readStore, configPath, store };
     }
 
-    setAtomicConfigBeforeRenameHookForTests(async () => {
-      throw new Error('injected config commit failure');
-    });
-    let atomicFailure;
-    try {
-      atomicFailure = await runPublic([
-        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"safe"', '--context', 'project', '--platform', 'codex',
+    // Test Value Gate: config writes refresh existing output; missing output remains absent until explicit sync.
+    it('replays presets, unset and reset while requiring sync for missing output', async (test) => {
+      const { isolation, nativeCliRunner, runPublic, readStore, configPath, store } = await createFixture(test);
+      expect(await runPublic([
+        'plugin', 'install', 'team/demo', '--scope', 'project',
+      ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+      const sourceOnlyPreset = await runPublic([
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--context', 'project', '--platform', 'codex', '--apply',
       ]);
-    } finally {
-      setAtomicConfigBeforeRenameHookForTests(undefined);
-    }
-    expect(atomicFailure).toMatchObject({
-      exitCode: 1,
-      payload: {
-        receiptSchemaVersion: 7,
-        configWrite: 'failed',
-        overallState: 'failed',
-      },
-    });
-    expect((await readStore()).values).toEqual({ mode: 'fast' });
-
-    const unset = await runPublic([
-      'plugin', 'config', 'unset', 'team/demo', 'mode', '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(unset).toMatchObject({
-      exitCode: 0,
-      payload: { receiptSchemaVersion: 7, configWrite: 'succeeded', overallState: 'succeeded' },
-    });
-    expect((await readStore()).values).toEqual({});
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
-
-    await writePluginConfigStore({
-      sourceId: 'team',
-      sourceIdentity,
-      logicalIdentity,
-      pluginName: 'demo',
-      scope: 'user',
-      platform: 'codex',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      values: { obsolete: 'old' },
-    });
-    const staleUnset = await runPublic([
-      'plugin', 'config', 'unset', 'team/demo', 'obsolete', '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(staleUnset).toMatchObject({
-      exitCode: 0,
-      payload: {
-        receiptSchemaVersion: 7,
-        configWrite: 'succeeded',
-        staleRemovedKeys: ['obsolete'],
-        affectedFields: [expect.objectContaining({ key: 'obsolete', stale: true })],
-        apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] },
-      },
-    });
-    expect(staleUnset.payload).not.toHaveProperty('targetResults');
-    expect((await readStore()).values).toEqual({});
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
-
-    await runPublic(['plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply']);
-    const reset = await runPublic([
-      'plugin', 'config', 'reset', 'team/demo', '--context', 'project', '--platform', 'codex', '--yes', '--apply',
-    ]);
-    expect(reset).toMatchObject({
-      exitCode: 0,
-      payload: {
-        receiptSchemaVersion: 7,
-        configWrite: 'succeeded',
-        overallState: 'succeeded',
-        deleted: true,
-      },
-    });
-    expect((await readStore()).exists).toBe(false);
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
-
-    await writePluginConfigStore({
-      sourceId: 'team',
-      sourceIdentity,
-      logicalIdentity,
-      pluginName: 'demo',
-      scope: 'user',
-      platform: 'codex',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      values: { labels: { 'bad key': 'preserved' } },
-    });
-    const partial = await runPublic([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(partial, JSON.stringify(partial)).toMatchObject({
-      exitCode: 1,
-      payload: {
-        receiptSchemaVersion: 7,
-        configWrite: 'succeeded',
-        overallState: 'partial',
-        apply: {
-          state: 'partial',
-          targetResults: [expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' })],
+      expect(sourceOnlyPreset).toMatchObject({
+        exitCode: 0,
+        payload: {
+          updatedKeys: ['mode'],
+          apply: { state: 'succeeded' },
         },
-        effective: {
-          fieldStates: {
-            labels: { invalidOverride: { source: 'platform' } },
-            mode: { effective: { source: 'platform', value: 'fast' } },
+      });
+      const equivalentPreset = await runPublic([
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--context', 'project', '--platform', 'codex', '--apply',
+      ]);
+      expect(equivalentPreset).toMatchObject({
+        exitCode: 0,
+        payload: {
+          updatedKeys: [],
+          apply: { state: 'skipped', reason: 'noConfigChange' },
+        },
+      });
+
+      await fs.remove(configPath);
+      await expect(statusCommandV8({
+        recoverySelection: { targets: ['codex'] },
+        plugins: ['team/demo'],
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        nativeCliRunner,
+        platform: 'codex',
+        scope: 'project',
+      })).resolves.toMatchObject({
+        payload: { targets: [expect.objectContaining({ state: 'needsSync' })] },
+      });
+
+      const set = await runPublic([
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply',
+      ]);
+      expect(set, JSON.stringify(set)).toMatchObject({
+        exitCode: 1,
+        payload: {
+          receiptSchemaVersion: 7,
+          configWrite: 'succeeded',
+          overallState: 'partial',
+          apply: { state: 'partial', targetResults: [expect.objectContaining({
+            target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
+            state: 'skipped', errorCode: 'configApplyRequiresExistingOutput',
+          })] },
+        },
+      });
+      expect(set.payload).not.toHaveProperty('targetResults');
+      expect(JSON.parse(set.stdout)).toEqual(set.payload);
+      expect(set.stderr).toBe('');
+      expect(JSON.stringify(set.payload)).not.toContain('projectConfigShareabilityUnverified');
+      expect(await fs.readJson(resolvePluginConfigStorePath({
+        sourceId: 'team', pluginName: 'demo', scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      }))).toMatchObject({ schemaVersion: 6, common: {}, platforms: { codex: { mode: 'fast' } } });
+      expect((await readStore()).values).toEqual({ mode: 'fast' });
+      await expect(fs.pathExists(configPath)).resolves.toBe(false);
+      expect(await runPublic(['plugin', 'sync', 'team/demo', '--target', 'codex', '--context', 'project']))
+        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
+
+      const unset = await runPublic([
+        'plugin', 'config', 'unset', 'team/demo', 'mode', '--context', 'project', '--platform', 'codex', '--apply',
+      ]);
+      expect(unset).toMatchObject({
+        exitCode: 0,
+        payload: { receiptSchemaVersion: 7, configWrite: 'succeeded', overallState: 'succeeded' },
+      });
+      expect((await readStore()).values).toEqual({});
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+      await writePluginConfigStore({ ...store, values: { mode: 'fast' } });
+      expect(await runPublic(['plugin', 'sync', 'team/demo', '--target', 'codex', '--context', 'project']))
+        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
+      const reset = await runPublic([
+        'plugin', 'config', 'reset', 'team/demo', '--context', 'project', '--platform', 'codex', '--yes', '--apply',
+      ]);
+      expect(reset).toMatchObject({
+        exitCode: 0,
+        payload: {
+          receiptSchemaVersion: 7,
+          configWrite: 'succeeded',
+          overallState: 'succeeded',
+          deleted: true,
+        },
+      });
+      expect((await readStore()).exists).toBe(false);
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+    }, 30_000);
+
+    // Test Value Gate: CLI save notices and atomic failure receipts must agree with the stored values.
+    it('saves without apply and preserves the previous store on atomic failure', async (test) => {
+      const { runPublic, runHumanConfig, readStore, configPath, store } = await createFixture(test);
+      const human = await runHumanConfig([
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex',
+      ]);
+      expect(human.exitCode).toBe(0);
+      expect(human.stdout).toContain('已保存 demo.mode');
+      expect(human.stderr).toContain('未请求应用');
+      expect(human.stderr).not.toContain('projectConfigShareabilityUnverified');
+      expect((await readStore()).values).toEqual({ mode: 'fast' });
+      await expect(fs.pathExists(configPath)).resolves.toBe(false);
+
+      const userSet = await runHumanConfig([
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"user-fast"', '--context', 'user',
+      ]);
+      const userUnset = await runHumanConfig([
+        'plugin', 'config', 'unset', 'team/demo', 'mode', '--context', 'user',
+      ]);
+      await writePluginConfigStore({ ...store, platform: undefined, values: { mode: 'user-reset' } });
+      const userReset = await runHumanConfig([
+        'plugin', 'config', 'reset', 'team/demo', '--context', 'user', '--yes',
+      ]);
+      for (const result of [userSet, userUnset, userReset]) {
+        expect(result.exitCode).toBe(0);
+        expect(result.stderr.match(/其它项目不会由本次命令扫描或更新/g)).toHaveLength(1);
+      }
+
+      setAtomicConfigBeforeRenameHookForTests(async () => {
+        throw new Error('injected config commit failure');
+      });
+      let atomicFailure;
+      try {
+        atomicFailure = await runPublic([
+          'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"safe"', '--context', 'project', '--platform', 'codex',
+        ]);
+      } finally {
+        setAtomicConfigBeforeRenameHookForTests(undefined);
+      }
+      expect(atomicFailure).toMatchObject({
+        exitCode: 1,
+        payload: {
+          receiptSchemaVersion: 7,
+          configWrite: 'failed',
+          overallState: 'failed',
+        },
+      });
+      expect((await readStore()).values).toEqual({ mode: 'fast' });
+    }, 30_000);
+
+    // Test Value Gate: invalid configuration remains repairable without overwriting valid output or unrelated fields.
+    it('removes stale keys and repairs invalid fields without refreshing unrelated output', async (test) => {
+      const { runPublic, runHumanConfig, readStore, configPath, store } = await createFixture(test);
+      expect(await runPublic(['plugin', 'install', 'team/demo', '--scope', 'project']))
+        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+      await writePluginConfigStore({
+        ...store,
+        values: { obsolete: 'old' },
+      });
+      const staleUnset = await runPublic([
+        'plugin', 'config', 'unset', 'team/demo', 'obsolete', '--context', 'project', '--platform', 'codex', '--apply',
+      ]);
+      expect(staleUnset).toMatchObject({
+        exitCode: 0,
+        payload: {
+          receiptSchemaVersion: 7,
+          configWrite: 'succeeded',
+          staleRemovedKeys: ['obsolete'],
+          affectedFields: [expect.objectContaining({ key: 'obsolete', stale: true })],
+          apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] },
+        },
+      });
+      expect(staleUnset.payload).not.toHaveProperty('targetResults');
+      expect((await readStore()).values).toEqual({});
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+      await writePluginConfigStore({
+        ...store,
+        values: { labels: { 'bad key': 'preserved' } },
+      });
+      const partial = await runPublic([
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply',
+      ]);
+      expect(partial, JSON.stringify(partial)).toMatchObject({
+        exitCode: 1,
+        payload: {
+          receiptSchemaVersion: 7,
+          configWrite: 'succeeded',
+          overallState: 'partial',
+          apply: {
+            state: 'partial',
+            targetResults: [expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' })],
+          },
+          effective: {
+            fieldStates: {
+              labels: { invalidOverride: { source: 'platform' } },
+              mode: { effective: { source: 'platform', value: 'fast' } },
+            },
           },
         },
-      },
-    });
-    expect((await readStore()).values).toEqual({
-      labels: { 'bad key': 'preserved' },
-      mode: 'fast',
-    });
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+      });
+      expect((await readStore()).values).toEqual({
+        labels: { 'bad key': 'preserved' },
+        mode: 'fast',
+      });
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
-    const unavailableHuman = await runHumanConfig([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"slow"', '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(unavailableHuman).toMatchObject({ exitCode: 1 });
-    expect(unavailableHuman.stdout).toContain('已保存 demo.mode');
-    expect(unavailableHuman.stderr).toContain('codex/project：[invalidConfig]');
-    expect(unavailableHuman.stderr).toContain(
-      'aw plugin sync demo --rebuild --target codex --context project',
-    );
-    expect(unavailableHuman.stderr).not.toContain('bad key');
+      const unavailableHuman = await runHumanConfig([
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"slow"', '--context', 'project', '--platform', 'codex', '--apply',
+      ]);
+      expect(unavailableHuman).toMatchObject({ exitCode: 1 });
+      expect(unavailableHuman.stdout).toContain('已保存 demo.mode');
+      expect(unavailableHuman.stderr).toContain('codex/project：[invalidConfig]');
+      expect(unavailableHuman.stderr).toContain(
+        'aw plugin sync demo --rebuild --target codex --context project',
+      );
+      expect(unavailableHuman.stderr).not.toContain('bad key');
 
-    const repaired = await runPublic([
-      'plugin', 'config', 'set', 'team/demo', 'labels', '--value-json', '{"good_key":"repaired"}',
-      '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(repaired).toMatchObject({
-      exitCode: 0,
-      payload: {
-        configWrite: 'succeeded',
-        overallState: 'succeeded',
-        apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
-      },
-    });
-    expect((await readStore()).values).toEqual({
-      labels: { good_key: 'repaired' },
-      mode: 'slow',
-    });
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+      const repaired = await runPublic([
+        'plugin', 'config', 'set', 'team/demo', 'labels', '--value-json', '{"good_key":"repaired"}',
+        '--context', 'project', '--platform', 'codex', '--apply',
+      ]);
+      expect(repaired).toMatchObject({
+        exitCode: 0,
+        payload: {
+          configWrite: 'succeeded',
+          overallState: 'succeeded',
+          apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
+        },
+      });
+      expect((await readStore()).values).toEqual({
+        labels: { good_key: 'repaired' },
+        mode: 'slow',
+      });
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+    }, 30_000);
 
-    await runPublic(['plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"safe"', '--context', 'project', '--platform', 'codex', '--apply']);
-    await runPublic(['plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply']);
-    const failed = await runHumanConfig([
-      'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--context', 'project', '--platform', 'codex', '--apply',
-    ]);
-    expect(failed).toMatchObject({ exitCode: 1 });
-    expect(failed.stderr).toContain('codex/project：[writeFailed]');
-    expect(failed.stderr).toContain(
-      'aw plugin sync demo --rebuild --target codex --context project',
-    );
-    expect(failed.stderr).not.toContain('file:///');
-    expect((await readStore()).values).toEqual({
-      labels: { good_key: 'repaired' },
-      mode: 'fail',
-    });
-    const configAfterFailure = await fs.readFile(configPath, 'utf8');
-    expect(configAfterFailure).toContain('mode=fast');
-    expect(configAfterFailure).not.toContain('mode=fail');
-  }, 30_000);
+    // Test Value Gate: a real renderer failure preserves the committed store and previous output, with safe recovery guidance.
+    it('keeps saved config and previous output when rendering fails', async (test) => {
+      const { runPublic, runHumanConfig, readStore, configPath, store } = await createFixture(test);
+      await writePluginConfigStore({ ...store, values: { labels: { good_key: 'repaired' }, mode: 'fast' } });
+      expect(await runPublic(['plugin', 'install', 'team/demo', '--scope', 'project']))
+        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
+
+      const failed = await runHumanConfig([
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--context', 'project', '--platform', 'codex', '--apply',
+      ]);
+      expect(failed).toMatchObject({ exitCode: 1 });
+      expect(failed.stderr).toContain('codex/project：[writeFailed]');
+      expect(failed.stderr).toContain(
+        'aw plugin sync demo --rebuild --target codex --context project',
+      );
+      expect(failed.stderr).not.toContain('file:///');
+      expect((await readStore()).values).toEqual({
+        labels: { good_key: 'repaired' },
+        mode: 'fail',
+      });
+      const configAfterFailure = await fs.readFile(configPath, 'utf8');
+      expect(configAfterFailure).toContain('mode=fast');
+      expect(configAfterFailure).not.toContain('mode=fail');
+    }, 30_000);
+  });
 
   it.each([
     ['SKILL.md', 'native-sensitive-skill'],

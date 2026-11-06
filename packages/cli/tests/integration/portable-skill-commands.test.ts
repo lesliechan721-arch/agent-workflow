@@ -126,9 +126,11 @@ describe('portable Skill materialize CLI', () => {
       expect(await fs.pathExists(out)).toBe(false);
     });
 
-  it('materializes a filtered tree and safely replaces only matching marked output', async () => {
+  it('materializes a filtered tree at a long path and safely replaces matching marked output', async () => {
+    // Test Value Gate: real staging and replacement must work beyond Windows MAX_PATH.
     const fixture = await configurePortableCatalog({ dependencySkill: true });
-    const out = path.join(fixture.cwd, 'portable-output');
+    const out = path.join(fixture.cwd, 'long-output-parent'.repeat(6), 'a'.repeat(64), 'b'.repeat(64));
+    expect(out.length).toBeGreaterThan(260);
     const firstIo = createCapturedCliIo();
     expect(await runCli(
       [
@@ -138,6 +140,7 @@ describe('portable Skill materialize CLI', () => {
       { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
     ), firstIo.readStdout()).toBe(0);
     const receipt = JSON.parse(firstIo.readStdout());
+    expect(receipt.out).toBe(out);
     expect(receipt.selectedSkills).toMatchObject([
       { name: 'alpha', providerPluginId: 'local/portable' },
       { name: 'dependency-skill', providerPluginId: 'local/future' },

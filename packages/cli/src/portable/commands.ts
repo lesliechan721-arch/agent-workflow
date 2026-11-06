@@ -419,7 +419,10 @@ export async function materializePortableSkillsToDirectory(options: {
     } catch {
       throw new PortableCommandError('portableOutputConflict', '输出目标的父目录不是安全的普通目录。');
     }
-    const staging = await fs.mkdtemp(path.join(path.dirname(target), `.${path.basename(target)}.aw-stage-`));
+    const stagingPrefix = path.join(path.dirname(target), `.${path.basename(target)}.aw-stage-`);
+    // Node's mkdtemp does not add the Windows extended-length prefix itself.
+    const createdStaging = await fs.mkdtemp(path.toNamespacedPath(stagingPrefix));
+    const staging = path.join(path.dirname(target), path.basename(createdStaging));
     let committed = false;
     try {
       await fs.ensureDir(path.join(staging, 'skills'));
