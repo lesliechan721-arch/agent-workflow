@@ -32,7 +32,7 @@ async function runAw(cliEntry: string, workspaceRoot: string, args: string[]) {
   });
 }
 
-it('publishes the built public CLI Catalog through an arbitrary branch and Git provider', async () => {
+it('publishes dynamic-only Native Skills through the built public CLI and Git provider', async () => {
   temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-catalog-smoke-'));
   const workspaceRoot = path.join(temporaryRoot, 'workspace');
   const remoteUrl = path.join(temporaryRoot, 'catalog.git');
@@ -51,6 +51,34 @@ it('publishes the built public CLI Catalog through an arbitrary branch and Git p
     'plugin', 'init', 'smoke-demo', '--description', 'Smoke demo.', '--no-skills',
     '--workspace-root', workspaceRoot,
   ]);
+  const pluginManifestPath = path.join(workspaceRoot, 'plugins', 'smoke-demo', '.agents-plugin', 'plugin.json');
+  const pluginManifest = await fs.readJson(pluginManifestPath);
+  await fs.writeJson(pluginManifestPath, {
+    ...pluginManifest,
+    platforms: ['codex', 'claude'],
+    scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+    artifacts: {
+      targets: (['codex', 'claude'] as const).map((platform) => ({
+        id: `${platform}-dynamic`, platform, target: `${platform}.skill`,
+        scopes: ['user', 'project'], states: ['present'],
+        ...(platform === 'codex' ? { projectManagedKind: 'skill' } : {}),
+        skillKey: 'dynamic', refreshKeys: [],
+      })),
+    },
+  }, { spaces: 2 });
+  await fs.writeFile(path.join(workspaceRoot, 'plugins', 'smoke-demo', 'render.mjs'), [
+    'import fs from "node:fs";',
+    'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+    `const files = ${JSON.stringify({
+      'SKILL.md': '---\nname: dynamic\ndescription: Dynamic smoke Skill.\n---\n# Dynamic\n',
+      'README.md': '# Dynamic\n\nDynamic smoke Skill.\n',
+      'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+    })};`,
+    'console.log(JSON.stringify({ version: 2, artifacts: context.requestedArtifactIds.map((id) => ({',
+    'id, platform: context.platform, target: `${context.platform}.skill`,',
+    'kind: "skill", state: "present", skillKey: "dynamic", refreshKeys: [], content: { files },',
+    '})) }));',
+  ].join('\n'));
   await execFileAsync('git', ['add', '.'], { cwd: workspaceRoot });
   await execFileAsync('git', [
     '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
@@ -89,6 +117,13 @@ it('publishes the built public CLI Catalog through an arbitrary branch and Git p
   });
   expect(resolved.resolvedCommit).toBe(receipt.commit);
   expect(resolved.manifest.catalogVersion).toBe('91.0.0');
+  for (const platform of ['codex', 'claude']) {
+    const pluginRoot = path.join(resolved.rootDir, 'plugins', 'smoke-demo');
+    await expect(fs.readJson(path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json')))
+      .resolves.toHaveProperty('skills', `./${platform}/skills`);
+    const entries = await fs.readdir(path.join(pluginRoot, platform, 'skills'), { withFileTypes: true });
+    expect(entries.filter((entry) => entry.isDirectory())).toEqual([]);
+  }
   await expect(fs.readJson(path.join(
     workspaceRoot,
     '.aw',

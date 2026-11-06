@@ -91,7 +91,7 @@ generated schema 7 snapshot
 
 公开 `PlatformTarget` 固定为 `codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`。`PlatformName` 仍只表示两个 Native 平台。Manifest 顶层 `platforms` 是支持集合的唯一来源：缺省或 `[]` 表示七平台，显式集合不得含重复或未知 ID。源码 `marketplace.policy.products`、`distributions`、build distribution selector 和 artifact `delivery` 均拒绝；Native marketplace products 从支持集合生成，Portable-only 插件不生成 Native 条目。
 
-每条依赖边要求 consumer 支持集合是 dependency 支持集合的子集。完整依赖链先校验，不能用本机选择的交集绕过。统一静态 `skills` 来源按目标投影；动态 Skill 声明具体 canonical platform。Codex 和 Claude 的静态、动态 Skill 固定进入各自 Native 包；共享包体按用户身份管理，项目 activation 与包体分开。Native 失败不降级到 Portable。
+每条依赖边要求 consumer 支持集合是 dependency 支持集合的子集。完整依赖链先校验，不能用本机选择的交集绕过。统一静态 `skills` 来源按目标投影；动态 Skill 声明具体 canonical platform。Codex 和 Claude 的静态、动态 Skill 固定进入各自 Native 包；共享包体按用户身份管理，项目 activation 与包体分开。Native manifest 声明的空 Skill 根目录由 bundle 生成 `.gitkeep` 保留，使 Catalog 经 Git 提交和检出后仍通过完整路径校验；占位文件不作为 Skill 发现。Native 失败不降级到 Portable。
 
 五个 Portable target 使用自有 writer。用户／项目固定根分别为：Antigravity `~/.gemini/config/skills`／`.agents/skills`；Cursor `~/.cursor/skills`／`.cursor/skills`；OpenCode `~/.config/opencode/skills`／`.opencode/skills`；Pi `~/.pi/agent/skills`／`.pi/skills`；Generic `~/.agents/skills`／`.agents/skills`。实际 home 按目标适用环境解析，不依赖第三方 skills CLI 或 provider lock。
 
