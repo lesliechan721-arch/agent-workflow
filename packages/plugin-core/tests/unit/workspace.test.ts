@@ -18,6 +18,7 @@ import {
   validateCatalogSnapshotTransport,
   validatePublishedCatalogSnapshot,
   validatePublishedCatalogSnapshotMetadata,
+  validatePublishedCatalogSnapshotTransport,
 } from '../../src/workspace.js'
 import { validateMarketplaceSourceMeta } from '../../src/manifest-contract.js'
 import { createAwPluginRequirementsReceipt } from '../../src/aw-capabilities.js'
@@ -704,6 +705,22 @@ describe('AW Catalog Workspace v1', () => {
     }, { spaces: 2 })
     await expect(validatePublishedCatalogSnapshotMetadata(metadataRoot))
       .rejects.toThrow(/source.*does not match its plugin bundle/u)
+  })
+
+  it('rejects a development snapshot as published transport history', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+    await expect(validateCatalogSnapshotTransport(built.outputRoot)).resolves.toMatchObject({
+      manifest: { release: { state: 'development' } },
+    })
+    await expect(validatePublishedCatalogSnapshotTransport(built.outputRoot)).rejects.toThrow(
+      'Published Catalog snapshot must have release.state published.',
+    )
   })
 
   it('rejects a schema 5 publication parent before building the next snapshot', async () => {

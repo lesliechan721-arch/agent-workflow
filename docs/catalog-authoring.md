@@ -52,6 +52,8 @@ Catalog beta 候选只读取 source metadata、`catalog-v<version>` tag 和 publ
 
 ## 发布计划、授权和恢复
 
+发布准备读取已发布分支和上一版快照时，只校验快照完整性、published release state 和 Workspace identity，不按当前插件合同重新校验历史插件；版本和插件身份仍从已验证的发布历史中检查。新候选、待恢复的发布材料和发布后核验继续执行完整校验。历史快照损坏时，发布准备会停止；自动 beta 的内容比较回退不能跳过此检查。
+
 使用 `nativeTools` 的插件按[原生工具合同](native-tools.md)声明受支持的宿主协议。普通 Catalog build 只处理协议声明和 reader，不取得 EXE，也不要求 Go；Windows 动态 renderer 和真实插件测试使用当前 CLI 已安装的配套 helper。第三方 `aw catalog` 使用当前安装的兼容 CLI，不自动安装全局 CLI，也不发布 npm 包。
 
 官方 Actions 和本仓库 `pnpm release` 的 Catalog-only 准备按渠道固定工具链：beta 解析 CLI 的 `beta` 标签，正式版解析 `latest`，并验证同渠道 CLI 已完成发布。正式版必须是无 prerelease 的 stable。工具链包含同版本五包，并随候选保存全部 tarball；恢复不重新查询浮动标签。缺少可用 CLI、渠道不符、五包不完整或能力不支持时，在 Catalog 远端写入前停止，并先发布对应渠道 CLI。Catalog-only 不编译 Go。
