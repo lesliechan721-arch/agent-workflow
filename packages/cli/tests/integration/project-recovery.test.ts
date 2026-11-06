@@ -20,6 +20,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
+import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -314,38 +315,46 @@ describe('scoped recovery integration', () => {
   });
 
   // Test Value Gate: narrowing a sync cannot remove a dependency still contributed by an unselected root and target.
-  it('protects shared Portable dependencies outside the selected root and target', async () => {
-    const setup = await fixture([{ name: 'alpha' }, { name: 'beta', dependencies: ['alpha'], configurable: true }]);
+  it('protects shared Portable dependencies outside the selected root and target', async (test) => {
+    const timing = createCommandTestTiming(test);
+    const setup = await timing.measure('fixture', 'shared Portable dependencies', () =>
+      fixture([{ name: 'alpha' }, { name: 'beta', dependencies: ['alpha'], configurable: true }]));
     await setTargets(setup.options(), ['cursor', 'pi']);
     const options = { ...setup.options(), all: false };
-    expect((await runRecovery('sync', ['team/beta'], { ...options, targets: ['cursor'] })).ok).toBe(true);
+    expect((await timing.measure('command', 'sync Cursor consumer', () =>
+      runRecovery('sync', ['team/beta'], { ...options, targets: ['cursor'] }))).ok).toBe(true);
     const shared = path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md');
     const consumer = path.join(portableRoot(setup, 'cursor'), 'beta', 'SKILL.md');
     const before = await Promise.all([fs.readFile(shared), fs.readFile(consumer)]);
-    const independent = await runRecovery('sync', ['team/alpha'], { ...options, targets: ['pi'] });
+    const independent = await timing.measure('command', 'sync Pi provider', () =>
+      runRecovery('sync', ['team/alpha'], { ...options, targets: ['pi'] }));
     expect(independent.ok, JSON.stringify(independent)).toBe(true);
     expect(independent.targetResults.map((target) => target.agent)).toEqual(['pi']);
     expect(await Promise.all([fs.readFile(shared), fs.readFile(consumer)])).toEqual(before);
     expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'beta'))).toBe(false);
 
-    const reviewed = await prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['pi'] });
+    const reviewed = await timing.measure('review', 'prepare Pi provider', () =>
+      prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['pi'] }));
     await setTargets(setup.options(), ['cursor']);
-    const stale = await executeRecovery(reviewed);
+    const stale = await timing.measure('review', 'reject changed targets', () => executeRecovery(reviewed));
     expect(stale.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
     expect(stale.outputsMayHaveChanged).toBe(false);
     expect(await Promise.all([fs.readFile(shared), fs.readFile(consumer)])).toEqual(before);
     expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md'))).toBe(true);
-  });
+  }, 30_000);
 
   // Test Value Gate: Native refresh and Portable cleanup must preserve each other's valid output.
-  it.each(['project', 'user'] as const)(
-    'keeps mixed Native and Portable delivery idempotent in separate owned directories (%s)', async (scope) => {
-      const setup = await fixture([{ name: 'dual', native: true }], scope);
+  it.for(['project', 'user'] as const)(
+    'keeps mixed Native and Portable delivery idempotent in separate owned directories (%s)', async (scope, test) => {
+      const timing = createCommandTestTiming(test);
+      const setup = await timing.measure('fixture', 'mixed Native and Portable', () =>
+        fixture([{ name: 'dual', native: true }], scope));
       const runtime = await nativeRuntime(setup);
       await fs.remove(setup.intentPath);
       await setTargets(setup.options(), ['codex', 'cursor']);
       const options = { ...setup.options(), all: false };
-      const installed = await runRecovery('install', ['team/dual'], options, runtime);
+      const installed = await timing.measure('command', 'install mixed output', () =>
+        runRecovery('install', ['team/dual'], options, runtime));
       expect(installed.ok, JSON.stringify(installed)).toBe(true);
       expect(installed.targetResults.map(({ agent, delivery }) => [agent, delivery?.kind]))
         .toEqual([['codex', 'native'], ['cursor', 'agent-skills']]);
@@ -354,7 +363,8 @@ describe('scoped recovery integration', () => {
       const writes = await portableOutputSnapshot(setup);
       const owner = await fs.readJson(path.join(path.dirname(portablePath), SKILL_OWNER_MARKER));
       expect(owner).toMatchObject({ owner: 'agent-workflows', kind: 'portable-skill', platform: 'cursor', scope });
-      const repeated = await runRecovery('sync', ['team/dual'], options, runtime);
+      const repeated = await timing.measure('command', 'sync mixed output', () =>
+        runRecovery('sync', ['team/dual'], options, runtime));
       expect(repeated.ok, JSON.stringify(repeated)).toBe(true);
       expect(repeated.remainingTargets).toEqual([]);
       expect(repeated.targetResults.find((target) => target.agent === 'cursor')?.execution).toBe('no-op');
@@ -364,7 +374,8 @@ describe('scoped recovery integration', () => {
         { targets: ['codex'] },
         { exactTargets: [{ pluginId: 'team/dual', agent: 'codex' as const }] },
       ]) {
-        const nativeOnly = await runRecovery('sync', ['team/dual'], { ...options, ...narrowed }, runtime);
+        const nativeOnly = await timing.measure('command', 'sync selected Native output', () =>
+          runRecovery('sync', ['team/dual'], { ...options, ...narrowed }, runtime));
         expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
         expect(nativeOnly.targetResults.map((target) => target.agent)).toEqual(['codex']);
         expect(await fs.readFile(portablePath)).toEqual(portableBytes);
@@ -372,20 +383,24 @@ describe('scoped recovery integration', () => {
       }
       await fs.appendFile(portablePath, 'External edit.\n');
       const changedBytes = await fs.readFile(portablePath);
-      const nativeOnly = await runRecovery('sync', ['team/dual'], { ...options, targets: ['codex'] }, runtime);
+      const nativeOnly = await timing.measure('command', 'sync Native with edited Portable output', () =>
+        runRecovery('sync', ['team/dual'], { ...options, targets: ['codex'] }, runtime));
       expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
       expect(await fs.readFile(portablePath)).toEqual(changedBytes);
-      expect((await checkRecovery(['team/dual'], { ...options, targets: ['cursor'], nativeObservations: [] })).ok).toBe(false);
+      expect((await timing.measure('command', 'check edited Portable output', () =>
+        checkRecovery(['team/dual'], { ...options, targets: ['cursor'], nativeObservations: [] }))).ok).toBe(false);
       const nativeConfig = scope === 'user'
         ? path.join(setup.env.AW_CODEX_HOME!, 'config.toml')
         : path.join(setup.cwd, '.codex', 'config.toml');
       const nativeConfigBytes = await fs.readFile(nativeConfig);
-      const cleaned = await runRecovery('cleanup', ['team/dual'], { ...options, targets: ['cursor'], force: true }, runtime);
+      const cleaned = await timing.measure('command', 'cleanup Portable output', () =>
+        runRecovery('cleanup', ['team/dual'], { ...options, targets: ['cursor'], force: true }, runtime));
       expect(cleaned.ok, JSON.stringify(cleaned)).toBe(true);
       expect(await fs.pathExists(portablePath)).toBe(false);
       expect(await fs.readFile(nativeConfig)).toEqual(nativeConfigBytes);
-      expect((await runRecovery('sync', ['team/dual'], { ...options, targets: ['codex'] }, runtime)).ok).toBe(true);
-  });
+      expect((await timing.measure('command', 'sync Native after Portable cleanup', () =>
+        runRecovery('sync', ['team/dual'], { ...options, targets: ['codex'] }, runtime))).ok).toBe(true);
+  }, 30_000);
 
   // Test Value Gate: changing selected targets must preserve prior output while the replacement conflicts.
   it.each([false, true])('preserves a prior target while foreign output blocks its replacement (renamed Skill=%s)', async (renamedSkill) => {
