@@ -562,7 +562,7 @@ export async function runArtifactRenderer(options: {
   scriptTimeoutMs?: number;
   signal?: AbortSignal;
   runner?: PluginProcessRunner;
-  /** Validated process output owned by one rebuild execution context. */
+  /** Validated process output owned by one operation, including its rechecks. */
   preparedResults?: Map<string, PluginProcessResult>;
 }): Promise<RunArtifactRendererResult> {
   options.signal?.throwIfAborted();

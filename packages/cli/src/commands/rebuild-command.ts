@@ -718,6 +718,7 @@ async function runSingleSourceRebuildCommand(options: {
   };
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
+    preparedArtifactRenderResults: options.runtime?.preparedArtifactRenderResults,
     signal: options.runtime?.signal,
     scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
     env: options.runtime?.env ?? process.env,
@@ -3571,6 +3572,7 @@ async function runRebuildCommandInSession(
         }
       }
       const executionContext: RebuildExecutionContext = {
+        preparedArtifactRenderResults: options.runtime?.preparedArtifactRenderResults,
         signal: options.runtime?.signal,
         referencePlugins: options.runtime?.referencePlugins,
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,

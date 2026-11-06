@@ -137,6 +137,64 @@ async function nativeRuntime(setup: Fixture) {
 }
 
 describe('scoped recovery integration', () => {
+  // Test Value Gate: preparation must retain a useful failure stage and known errno without exposing arbitrary error data.
+  it.each(['ENAMETOOLONG', 'private-config-value'])('reports safe Portable preparation diagnostics (%s)', async (code) => {
+    const setup = await fixture([{ name: 'alpha' }]);
+    const privateMessage = 'renderer-secret-value C:\\private\\sensitive-config.json';
+    const rename = fs.rename.bind(fs);
+    const failure = vi.spyOn(fs, 'rename').mockImplementation(async (source, target) => {
+      if (String(source).includes('.aw-stage-')
+        && String(target).startsWith(path.join(setup.cwd, '.agent-workflows', '.local', 'portable'))) {
+        throw Object.assign(new Error(privateMessage, { cause: new Error('private-cause') }), {
+          code, path: 'private-path', syscall: 'private-syscall', stack: 'private-stack',
+        });
+      }
+      return rename(source, target);
+    });
+    try {
+      const plan = await prepareRecovery('sync', [], setup.options());
+      const blocker = plan.receipt.targetResults[0]?.blockers.find((entry) => entry.code === 'portablePreparationFailed');
+      expect(blocker?.message).toContain('materialize');
+      if (code === 'ENAMETOOLONG') expect(blocker?.message).toContain(code);
+      const serialized = JSON.stringify(plan.receipt);
+      for (const secret of [privateMessage, 'private-config-value', 'private-cause', 'private-path', 'private-syscall', 'private-stack']) {
+        expect(serialized).not.toContain(secret);
+      }
+      expect(plan.receipt.targetResults[0]).toMatchObject({ execution: 'not-run', observation: 'unknown' });
+      expect(await portableOutputSnapshot(setup)).toEqual([]);
+    } finally {
+      failure.mockRestore();
+    }
+    expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
+  });
+
+  // Test Value Gate: read-only status must preserve the same safe failure context and must not prepare or publish output.
+  it('reports the Portable generation path failure in status', async () => {
+    const setup = await fixture([{ name: 'alpha' }]);
+    const generationRoot = path.join(setup.cwd, '.agent-workflows', '.local', 'portable');
+    await fs.ensureDir(generationRoot);
+    const lstat = fs.lstat.bind(fs);
+    const failure = vi.spyOn(fs, 'lstat').mockImplementation(async (candidate) => {
+      if (String(candidate) === generationRoot) {
+        throw Object.assign(new Error('private-config-value'), { code: 'EIO' });
+      }
+      return lstat(candidate);
+    });
+    try {
+      const status = await readRecoveryStatus({ ...setup.options(), nativeObservations: [] });
+      const blocker = status.inventory?.[0]?.targetResults[0]?.blockers
+        .find((entry) => entry.code === 'portablePreparationFailed');
+      expect(blocker, JSON.stringify(status)).toBeDefined();
+      expect(blocker?.message).toContain('generation-path');
+      expect(blocker?.message).toContain('EIO');
+      expect(JSON.stringify(status)).not.toContain('private-config-value');
+      expect(await portableOutputSnapshot(setup)).toEqual([]);
+    } finally {
+      failure.mockRestore();
+    }
+    expect(await fs.readdir(generationRoot)).toEqual([]);
+  });
+
   it('reads complete Native inventory before filtering a User check and retains an unreadable inventory error', async () => {
     const setup = await fixture([{ name: 'alpha', native: true }, { name: 'beta', native: true }], 'user');
     await setTargets(setup.options(), ['claude']);

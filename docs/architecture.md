@@ -35,7 +35,7 @@
 ### Module Invariants
 
 - renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；`config.schema/values/sources/issues` 和 `changedConfigKeys` 只包含这些 target 的 `refreshKeys` 并集。`artifactSources` 提供当前 surface/scope 全部 Skill target 的真实 `sourceDirs`，供其它 target 复用声明的静态资源；这些来源不扩大配置或输出范围。同一 surface/scope 同时包含 Skill target 和读取 sensitive config 的非 Skill target 时，AW 把它们放入两个请求；两个请求使用同一份不可变 `previousArtifacts`，且各自只接受与本批 ID 精确相等的 `ArtifactPlan`。context 不公开 config store 路径，且 context 中的 home 与 renderer 进程的 `AW_HOME`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 都指向本次请求的临时目录。该输入隔离不是 OS sandbox。renderer 不直接写平台文件。AW direct writer 不写 Native Skill target。标准 config helper 只读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config，不读取 config store，也不重复 schema 或 value validation；缺少 context 或请求 user/project scope 时 fail closed。
-- 同一写操作因原生 CLI 管理器解析而重新准备目标时，可复用输入相同且已验证成功的普通 renderer 输出。复用仅存在于该操作的内存 context；每轮仍重新读取配置、解析来源和 renderer，并验证敏感值及 ArtifactPlan。请求、配置、scope、cwd、previousArtifacts、manifest 或 renderer 摘要变化时重新渲染；后续命令不复用前次结果。复用不跳过锁内重新规划、路径、ownership、授权或平台后置检查。
+- 同一写操作在计划准备、锁内重查、子计划执行或原生 CLI 管理器解析时重新准备目标，可复用输入相同且已验证成功的 renderer 进程输出，包括 Native Skill。复用仅存在于该操作共享的内存结果 Map，不跨命令保留完整 Native 准备结果；每轮仍重新读取配置、解析来源和 renderer，并验证敏感值及 ArtifactPlan。请求、配置、scope、cwd、previousArtifacts、manifest 或 renderer 摘要变化时重新渲染；后续命令不复用前次结果。复用不跳过锁内重新规划、路径、ownership、授权或平台后置检查。
 - renderer 输出在 JSON 解析后、envelope 和 `ArtifactPlan` 详细结构验证前，统一拒绝包含 effective sensitive config 明文或其 JSON 转义形态的普通及 Portable dynamic artifact；扫描通过后仍执行完整 envelope 和结构验证。阻断只匹配至少 8 个 Unicode code point 的 string；此阈值是减少短值误报的产物门禁，不表示 secret 强度。preApply 和 renderer 在插件执行边界清理错误与输出摘要中的原值和 JSON 转义形态，再交给 debug、文本输出或 Receipt；日志和诊断脱敏所有长度的 sensitive 值。只有 AW 已生成或按内容验证的精确 receipt path 才从扫描中排除；不得按 basename 或通配符排除。错误只公开稳定 code，不回显 sensitive 值。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - Skill 文件引用遵循[资源引用规范](../plugins/agent-skill-toolkit/references/skill-format.md#资源引用)；闭包检查校验目标存在、包内边界及普通文件节点。
@@ -98,6 +98,8 @@ generated schema 7 snapshot
 物化按完整同来源依赖闭包、具体平台 schema 和配置准备最终 Skill 树。静态资源、runtime imports 与 renderer 文件合并后验证名字、路径、符号链接、模板、敏感值和完整资源闭包。runtime export 继续携带作者声明的 capability 与 provenance，只传播实际 runtime import 使用的 capability。先在临时目录验证完整候选，再真实复制；不把缓存目录链接到宿主。
 
 writer 的可重建 owner marker 绑定 source/plugin、target、scope、Skill 与内容清单。观察区分 absent、satisfied、drifted、conflict、unknown。只替换或清理可证明属于当前部署的输出；foreign、共享或未知归属内容保留。更新可撤销同部署旧 Skill，独立残留保留。离线 cleanup 不要求来源或 generation 存活；force 只处理仍有充分身份依据的损坏输出，不能认领第三方内容。失败保留成功输出及精确恢复入口，不承诺补偿回滚。
+
+Portable 准备失败保留原有 blocker code；恢复回执与只读 status 的错误消息补充固定的准备阶段及白名单文件系统 errno。诊断只在当前操作内存中传递，不回显异常正文、stack、cause、路径或 renderer/config 数据，不增加持久状态。
 
 作者导出使用 `aw skill materialize --platform <五个Portable目标>`；Review 使用七个具体平台；Eval profile 必填 `platform`，与 executor/backend 分开。凭据绑定具体平台，旧 `agent-skills` profile 不再有效。作者物化不是宿主安装资格，文件系统测试也不代表实际客户端已加载。
 

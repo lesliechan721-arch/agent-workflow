@@ -10,7 +10,7 @@ import { createScopeContext } from '../intent/scope-context.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
-import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
@@ -83,11 +83,14 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
 /** Complete requirements determine placement before execution selectors are applied. */
 export async function prepareJointRecovery(command: RecoveryCommand, selectors: readonly string[],
   options: RecoveryOptions, runtime: RebuildCommandRuntime): Promise<RecoveryPlan> {
+  runtime = { ...runtime, preparedArtifactRenderResults: runtime.preparedArtifactRenderResults ?? new Map() };
   const snapshot = await readJointDemand(options);
   if (runtime.codexObservationSession) return prepareJointRecoveryInSession(command, selectors, options, runtime, snapshot);
   const observationContext = await createScopeContext({ ...options, scope: snapshot.context.context });
+  const executionRunner = runtime.nativeCliRunner ?? getDefaultNativeCliRunner();
+  let sessionRunner = bindNativeCliRunnerSignal(executionRunner, options.signal);
   const session = await createCodexNativeObservationSession({ exactCwd: observationContext.executionCwd,
-    env: observationContext.env, runner: runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), manager: runtime.codexManager });
+    env: observationContext.env, runner: (invocation) => sessionRunner(invocation), manager: runtime.codexManager });
   try {
     const plan = await prepareJointRecoveryInSession(command, selectors, options, { ...runtime, codexObservationSession: session }, snapshot);
     const dispose = plan.context.dispose;
@@ -98,6 +101,9 @@ export async function prepareJointRecovery(command: RecoveryCommand, selectors: 
   } catch (error) {
     try { await session.dispose(); } finally { await observationContext.dispose(); }
     throw error;
+  } finally {
+    // The same observation session also serves confirmed writes, which cannot use preparation cancellation.
+    sessionRunner = executionRunner;
   }
 }
 
@@ -260,9 +266,10 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     coverage: { scopes: snapshot.context.scopes, ...(snapshot.context.projectRoot ? { projectRoot: snapshot.context.projectRoot } : {}) },
   };
   const children: RecoveryPlan[] = [];
-  const joint: JointRecoveryState = { snapshot, demand, children, originalOptions: options,
+  const { signal: _signal, ...executionOptions } = options;
+  const joint: JointRecoveryState = { snapshot, demand, children, originalOptions: executionOptions,
     selectors: [...selectors], declaration, evidence };
-  const plan: RecoveryPlan = { command, options: { ...options, scope }, receipt, context, demand: baseDemand,
+  const plan: RecoveryPlan = { command, options: { ...executionOptions, scope }, receipt, context, demand: baseDemand,
     originalIntent: observationEvidence(original.intent), preferencesEvidence: observationEvidence(snapshot.user.preferences),
     plannedImpact: { declaration: Boolean(declaration), preferences: false, config: false, outputs: false },
     changes: declaration ? [`保存 ${scope} 插件需求。`] : [], warnings: [], nativeGroups: [],

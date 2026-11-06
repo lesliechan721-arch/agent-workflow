@@ -33,6 +33,7 @@ import {
 } from '../utils/catalog-source-impact.js';
 import {
   preparePortableRecovery,
+  portablePreparationDiagnostic,
   preparePortableCleanup,
   inspectPortableRecovery,
   inspectPortableResidue,
@@ -185,8 +186,8 @@ function agentForPlatform(platform: PlatformName): AgentId {
 function pair(plan: RecoveryPlan, pluginId: string, agent: AgentId): RecoveryTarget | undefined {
   return plan.receipt.targetResults.find((target) => target.pluginId === pluginId && target.agent === agent);
 }
-function block(target: RecoveryTarget, code: string): void {
-  if (!target.blockers.some((entry) => entry.code === code)) target.blockers.push(diagnostic(code));
+function block(target: RecoveryTarget, code: string, detail = diagnostic(code)): void {
+  if (!target.blockers.some((entry) => entry.code === code)) target.blockers.push(detail);
 }
 function completeReceipt(receipt: RecoveryReceipt): RecoveryReceipt {
   receipt.requestedTargets = receipt.targetResults.map(({ pluginId, agent, scope, delivery }) => ({ pluginId, agent, scope, delivery }));
@@ -409,7 +410,7 @@ function portableResults(plan: RecoveryPlan, prepared: PortablePreparation): voi
     target.observation = target.content === 'satisfied' ? 'verified'
       : target.content === 'absent' ? 'missing' : 'unknown';
     for (const code of [...prepared.globalBlockers, ...observations.flatMap((entry) => entry.blocker ? [entry.blocker] : [])]) {
-      block(target, code);
+      block(target, code, portablePreparationDiagnostic(prepared, diagnostic(code), agent));
     }
     target.backend = observations.map((entry) => ({ skill: entry.skill, providerPluginId: entry.providerPluginId,
       requiredBy: portableRequiredBy(plan, prepared, entry), observation: entry.observation,
@@ -606,6 +607,7 @@ async function checkFootprints(plan: RecoveryPlan): Promise<void> {
 
 export async function prepareScopedRecovery(command: RecoveryCommand, selectors: readonly string[],
   options: RecoveryOptions & { scope: Scope }, runtime: RebuildCommandRuntime = {}): Promise<RecoveryPlan> {
+  runtime = { ...runtime, preparedArtifactRenderResults: runtime.preparedArtifactRenderResults ?? new Map() };
   options.signal?.throwIfAborted();
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env });
   try {

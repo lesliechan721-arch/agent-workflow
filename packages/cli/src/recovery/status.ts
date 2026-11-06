@@ -3,7 +3,7 @@ import { selectAgents, type AgentId } from '../intent/deployment-preferences.js'
 import { createScopeContext, type ScopeContext } from '../intent/scope-context.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { statusCommandV8, flattenStatusTargets, statusTargetHasLiveConfigConsumer, type StatusScopedTarget } from '../commands/status-v6.js';
-import { inspectPortableExtraInstalled, inspectPortableRecovery } from '../portable/recovery.js';
+import { inspectPortableExtraInstalled, inspectPortableRecovery, portablePreparationDiagnostic } from '../portable/recovery.js';
 import { readJointDemand, deriveJointDemand, findPlacementConflicts } from './joint-demand.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './receipt.js';
@@ -134,7 +134,8 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
             cliVersion: options.cliVersion ?? '0.0.0', catalogOperationContext: demand.catalogOperationContext,
             excludedPluginIds: demand.userProviders?.[agent] });
           options.signal?.throwIfAborted();
-          target.blockers.push(...portable.blockers.map(diagnostic));
+          target.blockers.push(...portable.blockers.map((code) => portablePreparationDiagnostic(portable, diagnostic(code),
+            agent as import('../portable/recovery-layout.js').PortableAgent)));
           const observed = portable.targets.filter((entry) => entry.agent === agent);
           target.blockers.push(...observed.flatMap((entry) => entry.blocker ? [diagnostic(entry.blocker)] : []));
           target.content = (['conflict', 'drifted', 'absent', 'unknown'] as const)

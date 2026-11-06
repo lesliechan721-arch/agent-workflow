@@ -192,7 +192,7 @@ describe('Codex source-qualified native identity', () => {
     });
     const runtime = await createNativeRuntime(isolation);
     const installed = await runRecovery('install', ['first/demo', 'second/demo'], {
-      cwd: isolation.layout.fixtureCwd, scope: 'user', cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, scope: 'user', cliVersion: '1.0.0',
       yes: true,
     }, runtime);
     expect(installed.ok, JSON.stringify(installed)).toBe(true);
@@ -266,7 +266,7 @@ describe('Codex source-qualified native identity', () => {
     });
     const runtime = await createNativeRuntime(isolation);
     const installed = await runRecovery('install', ['first/demo', 'second/demo'], {
-      cwd: isolation.layout.fixtureCwd, scope: 'user', cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, scope: 'user', cliVersion: '1.0.0',
       yes: true,
     }, runtime);
     expect(installed.ok, JSON.stringify(installed)).toBe(true);
@@ -319,7 +319,7 @@ describe('Codex source-qualified native identity', () => {
     });
     const runtime = await createNativeRuntime(isolation);
     const installed = await runRecovery('install', ['first/demo'], {
-      cwd: isolation.layout.fixtureCwd, scope: 'user', cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, scope: 'user', cliVersion: '1.0.0',
       yes: true,
     }, runtime);
     expect(installed.ok, JSON.stringify(installed)).toBe(true);

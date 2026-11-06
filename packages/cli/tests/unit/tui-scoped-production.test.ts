@@ -8,12 +8,15 @@ import { TuiController } from '../../src/tui/controller.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { addRoot, observeIntent } from '../../src/intent/intent-store.js';
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
+import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration, type CatalogGenerationServiceRuntime } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
+import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(portable = false) {
@@ -168,16 +171,20 @@ describe('scoped TUI production reads', () => {
     controller.dispose();
   });
 
-  it('cancels Native preview before the next platform group starts', async () => {
+  it.each([true, false])('cancels Native preview before the next platform group starts (system Codex: %s)', async (systemCodex) => {
     const value = await fixture();
+    value.env.PATH = '';
+    if (systemCodex) await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     const beforeIntent = await observeIntent({ ...value, scope: 'user' });
+    const beforePreferences = await observePreferences({ ...value, scope: 'user' });
     let started!: () => void;
     const ready = new Promise<void>((resolve) => { started = resolve; });
-    let received: AbortSignal | undefined;
-    const calls: string[] = [];
+    const calls: NativeCliInvocation[] = [];
     value.context.nativeCliRunner = async (invocation) => {
-      calls.push(invocation.command);
-      received = invocation.signal;
+      calls.push(invocation);
+      if (invocation.args.includes('--version')) {
+        return { exitCode: 0, stdout: 'codex-cli 0.200.0\n', stderr: '' };
+      }
       started();
       return new Promise((_resolve, reject) => {
         invocation.signal?.addEventListener('abort', () => reject(invocation.signal!.reason), { once: true });
@@ -191,13 +198,36 @@ describe('scoped TUI production reads', () => {
     })]);
     const rejected = expect(preparing).rejects.toMatchObject({ name: 'AbortError' });
     controller.cancelScopedPreparation();
-    expect(received?.aborted).toBe(true);
     await rejected;
-    expect(calls).toHaveLength(1);
-    expect(['codex', 'claude']).toContain(path.basename(calls[0]!));
+    const reads = calls.filter((call) => !call.args.includes('--version'));
+    expect(reads.length).toBeGreaterThan(0);
+    for (const read of reads) {
+      expect(read.args).toEqual(expect.arrayContaining(['plugin', 'list', '--marketplace', 'aw', '--json']));
+      expect(read.signal?.aborted).toBe(true);
+    }
+    expect(calls.every((call) => call.agentKind === 'codex')).toBe(true);
     expect(await observeIntent({ ...value, scope: 'user' })).toEqual(beforeIntent);
+    expect(await observePreferences({ ...value, scope: 'user' })).toEqual(beforePreferences);
     expect(await fs.pathExists(path.join(value.env.AW_HOME!, 'marketplaces/local'))).toBe(false);
+    expect(await controller.cancelAndWaitForReads()).toBe(true);
     controller.dispose();
+  });
+
+  it('releases Native preparation cancellation before confirmed execution', async () => {
+    const value = await fixture();
+    value.env.PATH = '';
+    const runtime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
+    const preparation = new AbortController();
+    const plan = await prepareRecovery('sync', ['local/demo'], {
+      scope: 'user', cwd: value.cwd, env: value.env, cliVersion: '1.0.0',
+      targets: ['codex'], signal: preparation.signal,
+    }, runtime);
+    try {
+      preparation.abort();
+      const receipt = await executeRecovery(plan, { yes: true });
+      expect(receipt.ok).toBe(true);
+      expect(runtime.installed.size).toBe(1);
+    } finally { await plan.context.dispose(); }
   });
 
   it.each(['recovery', 'retire'] as const)('cancels a Portable directory read during %s preparation', async (kind) => {

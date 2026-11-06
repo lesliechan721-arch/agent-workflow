@@ -18,6 +18,7 @@ import {
 import { taskWriteCommand } from '../../src/commands/write-commands.js';
 import { createCommandExecutionContext as createBaseCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { CatalogResolution, PluginMeta } from '../../src/types.js';
+import type { PluginProcessResult } from '../../src/utils/plugin-scripts.js';
 import {
   SYSTEM_CODEX_MANAGER,
   type NativeCliInvocation,
@@ -2412,7 +2413,8 @@ describe('rebuild adapter integration', () => {
     expect((await fs.readFile(callsPath, 'utf8')).trim().split('\n')).toHaveLength(4);
   });
 
-  it('renders mixed Skill and sensitive non-Skill targets in exact isolated batches', async () => {
+  it('reuses isolated Skill and sensitive role batches across operation rechecks with current inputs', async () => {
+    // Rechecks share successful process output, but config, renderer and operation changes must render again.
     const isolation = getCurrentSourceTestIsolation();
     const pluginRoot = path.join(isolation.layout.rootDir, 'mixed-sensitive-batches');
     const callsPath = path.join(pluginRoot, 'renderer-calls.jsonl');
@@ -2432,13 +2434,13 @@ describe('rebuild adapter integration', () => {
           strict: true,
           policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
         },
-        config: { fields: { token: { type: 'string', sensitive: true } } },
+        config: { fields: { token: { type: 'string', sensitive: true }, style: { type: 'string', default: 'first' } } },
         scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
         artifacts: { targets: [
           {
             id: 'safe-skill', platform: 'codex', target: 'codex.skill',
             scopes: ['user'], states: ['present'],
-            refreshKeys: [], skillKey: 'safe-skill',
+            refreshKeys: ['style'], skillKey: 'safe-skill',
           },
           {
             id: 'sensitive-role', platform: 'codex', target: 'codex.agentRole',
@@ -2454,8 +2456,8 @@ describe('rebuild adapter integration', () => {
       `fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ ids: context.requestedArtifactIds, config: context.config.values, previousArtifacts: context.previousArtifacts }) + "\\n");`,
       'const artifacts = context.requestedArtifactIds.map((id) => id === "safe-skill" ? {',
       '  id, kind: "skill", platform: "codex", target: "codex.skill", state: "present",',
-      '  skillKey: "safe-skill", refreshKeys: [], content: { files: {',
-      '    "SKILL.md": "---\\nname: safe-skill\\ndescription: Safe Skill.\\n---\\nBody.\\n",',
+      '  skillKey: "safe-skill", refreshKeys: ["style"], content: { files: {',
+      '    "SKILL.md": "---\\nname: safe-skill\\ndescription: Safe Skill.\\n---\\nBody: " + context.config.values.style + "\\n",',
       '    "README.md": "# Safe Skill\\n",',
       '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n"',
       '  } }',
@@ -2476,25 +2478,29 @@ describe('rebuild adapter integration', () => {
       env: isolation.env,
       values: { token: 'mixed-sensitive-secret' },
     });
-    const integration = createRebuildIntegration({
-      context: createCommandExecutionContext({
-        env: isolation.env,
-        nativeCliRunner: async () => { throw new Error('AW-delivered artifacts must not call native CLI'); },
-      }),
-    });
-
-    const target = await integration.buildTarget({
-      plugin,
-      platform: 'codex',
-      scope: 'user',
-      cwd: isolation.layout.fixtureCwd,
-      command: 'install',
-      catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-    });
+    const preparedArtifactRenderResults = new Map<string, PluginProcessResult>();
+    const build = async (results = preparedArtifactRenderResults) => {
+      const integration = createRebuildIntegration({ context: {
+        ...createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async () => { throw new Error('AW-delivered artifacts must not call native CLI'); },
+        }),
+        preparedArtifactRenderResults: results,
+      } });
+      return integration.buildTarget({
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
+      });
+    };
+    const target = await build();
     const calls = (await fs.readFile(callsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
 
     expect(calls).toEqual([
-      { ids: ['safe-skill'], config: {}, previousArtifacts: [] },
+      { ids: ['safe-skill'], config: { style: 'first' }, previousArtifacts: [] },
       {
         ids: ['sensitive-role'],
         config: { token: 'mixed-sensitive-secret' },
@@ -2506,6 +2512,23 @@ describe('rebuild adapter integration', () => {
     expect(target.operationActions).toContainEqual(expect.objectContaining({
       kind: 'materializeNativeSkill', platform: 'codex', scope: 'user', artifactId: 'safe-skill',
     }));
+    const readCalls = async () => (await fs.readFile(callsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    await build();
+    expect(await readCalls()).toHaveLength(2);
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+      pluginName: plugin.manifest.name, scope: 'user', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env, values: { token: 'mixed-sensitive-secret', style: 'second' },
+    });
+    await build();
+    expect(await readCalls()).toEqual([...calls,
+      { ids: ['safe-skill'], config: { style: 'second' }, previousArtifacts: [] },
+    ]);
+    await fs.appendFile(path.join(pluginRoot, 'render.mjs'), '\n// Updated renderer.\n');
+    await build();
+    expect(await readCalls()).toHaveLength(5);
+    await build(new Map());
+    expect(await readCalls()).toHaveLength(7);
   });
 
   it.each([

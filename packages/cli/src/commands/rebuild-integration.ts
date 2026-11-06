@@ -240,6 +240,16 @@ const commandPackagePreparationCaches = new WeakMap<RebuildExecutionContext, Map
 const staticCommandPreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<ValidatedArtifactPlanArtifact[]>>>();
 const dynamicArtifactPreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, PluginProcessResult>>();
 
+function artifactRenderResults(context: RebuildExecutionContext): Map<string, PluginProcessResult> {
+  if (context.preparedArtifactRenderResults) return context.preparedArtifactRenderResults;
+  let results = dynamicArtifactPreparationCaches.get(context);
+  if (!results) {
+    results = new Map();
+    dynamicArtifactPreparationCaches.set(context, results);
+  }
+  return results;
+}
+
 async function prepareStaticCommandArtifacts(options: {
   plugin: PluginMeta; platform: PlatformName; cwd: string; env: NodeJS.ProcessEnv; context: RebuildExecutionContext;
 }): Promise<ValidatedArtifactPlanArtifact[]> {
@@ -428,6 +438,8 @@ export class CodexActivationPostcheckError extends Error {
 }
 
 export interface RebuildExecutionContext {
+  /** Validated renderer process output shared only by preparations of this operation. */
+  preparedArtifactRenderResults?: Map<string, PluginProcessResult>;
   signal?: AbortSignal;
   scriptTimeoutMs?: number;
   referencePlugins?: readonly PluginMeta[];
@@ -1622,11 +1634,7 @@ async function resolveDynamicArtifacts(options: {
     return { artifacts: [], sourceDirs: () => [], sensitiveValues: [] };
   }
   const previousArtifacts = [...options.previousArtifacts];
-  let preparedResults = options.context && dynamicArtifactPreparationCaches.get(options.context);
-  if (options.context && !preparedResults) {
-    preparedResults = new Map();
-    dynamicArtifactPreparationCaches.set(options.context, preparedResults);
-  }
+  const preparedResults = options.context && artifactRenderResults(options.context);
   const renders: Awaited<ReturnType<typeof runArtifactRenderer>>[] = [];
   for (const requestedArtifactIds of requestBatches) {
     renders.push(await runArtifactRenderer({
@@ -3731,6 +3739,7 @@ async function assertNoSensitiveValuesInNativeSkillPayload(options: {
 }
 
 async function prepareNativeSkillRender(options: {
+  preparedResults?: Map<string, PluginProcessResult>;
   referencePlugins?: readonly PluginMeta[];
   plugin: PluginMeta;
   platform: PlatformName;
@@ -3782,6 +3791,7 @@ async function prepareNativeSkillRender(options: {
         const producer = target.producer;
         return producer.kind === 'artifact' && group.some((skill) => skill.id === producer.artifactId);
       }).map((target) => target.id)],
+      preparedResults: options.preparedResults,
       scriptTimeoutMs: options.scriptTimeoutMs,
       signal: options.signal,
     });
@@ -3894,6 +3904,7 @@ function prepareNativeSkillRenderCached(options: {
   let preparation = cache.get(options.plugin);
   if (!preparation) {
     preparation = prepareNativeSkillRender({
+      preparedResults: artifactRenderResults(options.context),
       referencePlugins: options.context.referencePlugins,
       plugin: options.plugin,
       platform: options.platform,

@@ -104,7 +104,7 @@ describe('multi-source performance budgets', () => {
     const agentPlugin = (name: string) => ({
       name,
       configureManifest: (manifest: PluginMeta['manifest']) => {
-        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.platforms = ['codex'];
         manifest.extensions = {
           agents: [{ name: `${name}-role`, description: `${name} role.`, prompt: `${name}.` }],
         };
@@ -118,7 +118,7 @@ describe('multi-source performance budgets', () => {
       {
         name: 'config-target',
         configureManifest: (manifest) => {
-          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.platforms = ['codex'];
           manifest.extensions = {
             instructions: [{ name: 'config-target', title: 'Config target', content: 'Config target.' }],
           };

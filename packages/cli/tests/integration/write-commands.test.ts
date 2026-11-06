@@ -453,11 +453,12 @@ async function createCodexNativeTestRuntime(
   };
 }
 
-// Keep diagnostics local to the two timeout-prone tests. Only fixed labels and
+// Keep diagnostics local to the timeout-prone tests. Only fixed labels and
 // selected timing fields are logged; command values, paths and errors stay out.
 function createCodexEnhanceTestTiming(test: TestContext) {
   const startedAt = performance.now();
   let sequence = 0;
+  let rendererCalls = 0;
   const active = new Map<number, { stage: string; name: string; startedAt: number }>();
   const emit = (event: Record<string, unknown>) => {
     console.log('AW_TEST_TIMING', JSON.stringify({
@@ -505,8 +506,11 @@ function createCodexEnhanceTestTiming(test: TestContext) {
   };
   const runRenderer = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
   const rendererSpy = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(
-    (invocation, options) => measure('renderer', path.basename(invocation.args[0] ?? invocation.command),
-      () => runRenderer(invocation, options)),
+    (invocation, options) => {
+      rendererCalls += 1;
+      return measure('renderer', path.basename(invocation.args[0] ?? invocation.command),
+        () => runRenderer(invocation, options));
+    },
   );
   test.onTestFinished(() => {
     rendererSpy.mockRestore();
@@ -515,7 +519,7 @@ function createCodexEnhanceTestTiming(test: TestContext) {
         durationMs: Math.round(performance.now() - pending.startedAt) });
     }
   });
-  return { measure, commandEvent };
+  return { measure, commandEvent, get rendererCalls() { return rendererCalls; } };
 }
 
 async function prepareCodexEnhancePublicCommandFixture(timing?: ReturnType<typeof createCodexEnhanceTestTiming>) {
@@ -5051,7 +5055,7 @@ describe('five namespaced write commands', () => {
     expect(nativeCalls.filter((call) => call === 'plugin add demo@aw')).toHaveLength(1);
     expect(nativeCalls).not.toContain('plugin remove demo@aw');
     const binRoot = await writeStatusSystemCodexPackage(
-      path.join(isolation.layout.fixtureCwd, 'pure-native-second-scope-prefix'), '0.151.0',
+      path.join(isolation.layout.fixtureCwd, 'pure-native-second-scope-prefix'), '0.200.0',
     );
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
     try {
@@ -11999,7 +12003,7 @@ describe('five namespaced write commands', () => {
         }),
         errorCode: 'stateInventoryFailed',
         message: expect.stringContaining(
-          'ownerHeaderParse@[catalog-source]/agents/aw-leaf-shared-name.toml',
+          `ownerHeaderParse@${path.join('[catalog-source]', 'agents', 'aw-leaf-shared-name.toml')}`,
         ),
       }),
     ]);
@@ -16675,14 +16679,20 @@ describe('five namespaced write commands', () => {
     }
   }, 90000);
 
-  it('cleans codex-enhance project roles when its shared command binding is missing', async () => {
+  it('cleans codex-enhance project roles when its shared command binding is missing', async (test) => {
     // Missing weak command state must not block cleanup of exact scoped output.
     const machine = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: machine.layout.fixtureCwd, env: machine.env },
       { ...createEmptyPreferences(), targets: ['codex'] });
-    const { isolation, subagentCacheRoot, runPublic } = await prepareCodexEnhancePublicCommandFixture();
+    const timing = createCodexEnhanceTestTiming(test);
+    const { isolation, subagentCacheRoot, runPublic } = await timing.measure(
+      'fixture', 'codex-enhance', () => prepareCodexEnhancePublicCommandFixture(timing),
+    );
     expect(await runPublic([
       'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes'])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    // Two plugins each render one shared Skill batch and one project role batch.
+    // Lock rechecks and manager resolution must reuse these successful inputs.
+    expect(timing.rendererCalls).toBe(4);
     const guideCommand = (await listManagedCommands(isolation.env)).commands
       .find((command) => command.name === 'guide/subagent/default')!;
     await fs.remove(path.join(isolation.env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`));
@@ -16692,6 +16702,7 @@ describe('five namespaced write commands', () => {
     expect(await runPublic([
       'plugin', 'cleanup', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
     ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    expect(timing.rendererCalls).toBe(4);
     for (const role of ['codex-explore', 'codex-advisor']) {
       await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'agents',
         `aw-codex-enhance-${role}.toml`))).resolves.toBe(false);
@@ -16701,7 +16712,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(intentPath)).resolves.toEqual(intentBefore);
     await expect(fs.pathExists(path.join(subagentCacheRoot, 'codex', 'skills', 'spawn-subagent', 'SKILL.md')))
       .resolves.toBe(true);
-  });
+  }, 30_000);
 
   it('rematerializes codex-enhance shared Skills without changing project roles through public commands', async (test) => {
     // Test Value Gate: real config writes rematerialize only affected shared Skills and bindings, while project roles keep their bytes and scope.
@@ -16856,7 +16867,7 @@ describe('five namespaced write commands', () => {
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
     ))).snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
-  }, 60_000);
+  }, 120_000);
 
   it('restores codex-enhance project providers after removing the user root through public commands', async (test) => {
     // Test Value Gate: both declarations keep their scope while the joint plan switches exact owned providers.
@@ -16921,6 +16932,6 @@ describe('five namespaced write commands', () => {
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(false);
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('developer_instructions = "foreign bytes"\n');
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
-  }, 60_000);
+  }, 120_000);
 
 });

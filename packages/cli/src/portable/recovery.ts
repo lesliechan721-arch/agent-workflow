@@ -65,6 +65,26 @@ export interface PortablePreparation {
   bindingDigest?: string;
   mode?: 'deploy' | 'cleanup';
   cleanupOptions?: PortableCleanupOptions;
+  diagnostics?: PortablePreparationDiagnostic[];
+}
+interface PortablePreparationDiagnostic {
+  code: string;
+  agent: PortableAgent;
+  stage: 'catalog-binding' | 'generation-path' | 'materialize' | 'materialization-read' | 'skill-validation' | 'output-observation';
+  systemCode?: string;
+}
+
+const SAFE_FILESYSTEM_CODES = new Set([
+  'EACCES', 'EBUSY', 'EEXIST', 'EIO', 'EISDIR', 'ELOOP', 'EMFILE', 'ENAMETOOLONG',
+  'ENFILE', 'ENOENT', 'ENOSPC', 'ENOTDIR', 'ENOTEMPTY', 'EPERM', 'EROFS', 'EXDEV', 'EINVAL',
+]);
+
+/** Supplement the existing blocker with fixed stages and known errno names only. */
+export function portablePreparationDiagnostic(prepared: PortablePreparation,
+  diagnostic: { code: string; message: string }, agent: PortableAgent): { code: string; message: string } {
+  const detail = prepared.diagnostics?.find((entry) => entry.code === diagnostic.code && entry.agent === agent);
+  if (!detail) return diagnostic;
+  return { ...diagnostic, message: `${diagnostic.message}准备阶段：${detail.stage}${detail.systemCode ? `；文件系统错误：${detail.systemCode}` : ''}。` };
 }
 export interface PortableExecutionTarget extends PortableTarget {
   execution: 'not-run' | 'no-op' | 'applied' | 'failed';
@@ -150,6 +170,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
   const bindings: Array<[PortableAgent, string]> = [];
   for (const agent of options.agents) {
     options.signal?.throwIfAborted();
+    let stage: PortablePreparationDiagnostic['stage'] = 'catalog-binding';
     try {
       const { providerConfigs = [], ...bindingInput } = await resolvePortableCatalogBindingInput({
         ...options, platform: agent, cwd: layout.cwd });
@@ -157,19 +178,23 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
         portableJsonDigest({ platform: agent, bindingInput }).slice(7));
       base.generations![agent] = generation;
       if (!base.generation) base.generation = generation;
+      stage = 'generation-path';
       if (!await assertPortablePath(path.parse(generation).root, generation)) {
         if (!allowMaterialize) {
           base.logicalIdentity = bindingInput.source.logicalIdentity;
           bindings.push([agent, portableJsonDigest(bindingInput)]);
+          stage = 'output-observation';
           base.targets.push(...await observeUnpreparedOwnedTargets({ destinationRoot: layout.targetRoot(agent),
             agent, scope: options.scope, logicalIdentity: base.logicalIdentity, providerConfigs,
             excludedPluginIds: options.excludedPluginIds, signal: options.signal }));
           base.globalBlockers.push('needs-preparation');
           continue;
         }
+        stage = 'materialize';
         await materializePortableSkillsToDirectory({ ...options, platform: agent, cwd: layout.cwd,
           out: generation, allowEmpty: true });
       }
+      stage = 'materialization-read';
       const materialized = await readHistoricalPortableMaterialization({ generationRoot: layout.generationRoot,
         scope: options.scope, rootDir: generation, pluginId: options.selector,
         logicalIdentity: bindingInput.source.logicalIdentity, platform: agent });
@@ -181,6 +206,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       bindings.push([agent, materialized.binding.finalDigest]);
       const candidates = materialized.marker.selectedSkills.filter((candidate) =>
         !options.excludedPluginIds?.includes(candidate.providerPluginId));
+      stage = 'skill-validation';
       if (new Set(candidates.map((candidate) => normalizePortableSkillName(candidate.name))).size !== candidates.length) {
         base.globalBlockers.push('portableOutputConflict'); continue;
       }
@@ -189,6 +215,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
         await validatePortableSkillDirectory(source);
         await validateRuntimeSkillClosure(source);
       }
+      stage = 'output-observation';
       for (const candidate of candidates) {
         options.signal?.throwIfAborted();
         const identity: PortableOwnerIdentity = { pluginId: candidate.providerPluginId,
@@ -219,6 +246,9 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       const code = error instanceof Error && /^(?:portable|operationReview)/u.test(error.message)
         ? error.message.split(':')[0]! : 'portablePreparationFailed';
       base.globalBlockers.push(code);
+      const systemCode = error && typeof error === 'object' && 'code' in error
+        && typeof error.code === 'string' && SAFE_FILESYSTEM_CODES.has(error.code) ? error.code : undefined;
+      (base.diagnostics ??= []).push({ code, agent, stage, ...(systemCode ? { systemCode } : {}) });
     }
   }
   base.globalBlockers = [...new Set(base.globalBlockers)];
