@@ -290,14 +290,23 @@ async function compareCatalog(artifacts, baseline, cache, temporaryRoot, options
   const validate = artifacts.validateCatalogSnapshot;
   if (typeof validate !== 'function') throw new Error('Catalog production comparison requires complete snapshot validation.');
   const current = await validate(artifacts.catalogRoot);
-  let productionChanged = baseline === null;
+  let productionChanged = true;
   let previousSnapshot;
   if (baseline !== null) {
+    const validateBaseline = artifacts.validateCatalogSnapshotTransport;
+    if (typeof validateBaseline !== 'function') throw new Error('Catalog baseline comparison requires transport snapshot validation.');
     const destination = path.join(temporaryRoot, 'catalog-baseline');
-    await exportSnapshot(cache, baseline.commit, destination, options.env);
-    previousSnapshot = await validate(destination);
-    productionChanged = await catalogProductionContent(artifacts.catalogRoot, current.manifest)
-      !== await catalogProductionContent(destination, previousSnapshot.manifest);
+    const currentContent = await catalogProductionContent(artifacts.catalogRoot, current.manifest);
+    try {
+      await exportSnapshot(cache, baseline.commit, destination, options.env);
+      // Published plugins can predate the current authoring contract. Check their
+      // snapshot integrity without applying the current plugin schema again.
+      previousSnapshot = await validateBaseline(destination);
+      productionChanged = currentContent !== await catalogProductionContent(destination, previousSnapshot.manifest);
+    } catch {
+      // An unreadable historical snapshot requires a new version. Publication
+      // metadata and occupied versions are still checked independently.
+    }
   }
   const pluginHistory = await artifacts.readCatalogPublicationPluginHistory({
     workspaceRoot: options.repoRoot, remoteUrl: cache,
@@ -347,6 +356,7 @@ async function withProductionArtifacts({ repoRoot, sourceHead, env }, callback) 
         catalogRoot: snapshot.catalogOutputRoot,
         catalogError: catalog.status === 'rejected' ? catalog.reason : null,
         validateCatalogSnapshot: core?.validateCatalogSnapshotComplete,
+        validateCatalogSnapshotTransport: core?.validateCatalogSnapshotTransport,
         resolvePublishedPluginVersions: core?.resolvePublishedPluginVersions,
         readCatalogPublicationPluginHistory: inspection?.readCatalogPublicationPluginHistory,
       });

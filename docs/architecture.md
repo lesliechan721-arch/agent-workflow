@@ -593,6 +593,8 @@ Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归
 
 `ci.yml` 验证 PR/main，只有同一 main SHA 的必要检查通过后才调用 `beta.yml`。规划复查该 SHA 仍为 main tip，分别比较 CLI 五包的规范化生产输入（包括原生源码、工具链和平台包生产逻辑）和 Catalog 完整生产内容。成功基线来自五包完整 npm 结果与 `cli-v*`，或 immutable Catalog snapshot 的 `release.sourceHead`；失败候选只占号。main 的旧声明不会降低已用版本线；稳定版后默认进入下一 patch beta，显式版本变更可以指定更高 base。
 
+自动 beta 比较 Catalog 时，当前候选执行完整校验；历史基线只执行 transport 校验，检查快照布局、摘要和 marketplace 投影，不按当前插件合同重新校验旧插件。历史快照无法读取或完整性校验失败时，按生产内容有变化选择新版本。发布元数据、源码来源、插件版本历史及已占用版本仍独立检查；此回退不放宽当前候选或待恢复发布材料的校验。
+
 自动 beta 的源码 tag 是 annotated tag，message 以 `Automatic beta` 开头，并包含 `AW-CI: <run-id>/<attempt>`。候选发布只在该记录指向同仓库 `ci.yml` 的 main push、SHA 等于已验证的候选 main 来源，且该次 attempt 的全部必要 CI jobs 成功时复用源码验证；此时 main 的 beta job 本身可以仍在运行。复用时仍构建精确候选、验证版本和产物，并执行完整的候选 smoke。手动候选、稳定版、记录缺失、检查失败或缺失以及 API 查询失败都运行所选产品的完整 release verify。CI job 名称变化时同步更新 `actions-inspection.mjs` 的必要检查列表；未更新会回退到完整验证。
 
 插件确定性测试由普通矩阵 job 调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64、macOS arm64 和 Windows x64。Windows 的三个文件分片及其原生文件资格都属于发布前必要检查。自动 beta 复用要求全部对应作业成功；未复用 main CI 的发布候选按精确源码 tag 运行相同测试流程，失败会阻止候选工作流成功及后续发布。模型 Eval 和真实长时资格保持显式授权及启用。

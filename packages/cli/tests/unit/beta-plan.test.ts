@@ -7,12 +7,18 @@ import { promisify } from 'node:util';
 import {
   resolvePublishedPluginVersions,
   validateCatalogSnapshotComplete,
+  validateCatalogSnapshotTransport,
 } from '@lesliechan721/aw-plugin-core';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { planAutomaticBeta } from '../../../../scripts/release/beta-plan.mjs';
 import { computePackageTarballTreeDigest } from '../../../../scripts/release/common.mjs';
 import { readCatalogPublicationPluginHistory } from '../../src/commands/catalog-publication-inspection.js';
+import {
+  calculateCatalogEntryArtifactDigest,
+  calculateCatalogEntryContentDigest,
+  calculateCatalogEntryManifestDigest,
+} from '../../src/utils/catalog-digests.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
@@ -193,6 +199,7 @@ async function fixture(published = true) {
       builds += 1;
       return callback({ cli: currentPackages, catalogRoot: currentCatalog,
         validateCatalogSnapshot: validateCatalogSnapshotComplete,
+        validateCatalogSnapshotTransport,
         resolvePublishedPluginVersions, readCatalogPublicationPluginHistory });
     },
   };
@@ -244,6 +251,62 @@ it.each([
 });
 
 describe('automatic beta product planning', () => {
+  it('compares a legacy plugin baseline without requiring the current plugin contract', async () => {
+    const f = await fixture();
+    const snapshot = await catalogAt(path.join(f.root, 'legacy-plugin-baseline'), '# Legacy production README\n');
+    await f.publishCatalog('1.0.1-beta.7', f.baselineSource, snapshot, {
+      mutateSnapshot: async (directory) => {
+        const pluginRoot = path.join(directory, 'plugins', 'demo');
+        const pluginPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+        const plugin = await readJson(pluginPath);
+        plugin.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+        await writeJson(pluginPath, plugin);
+        const manifestPath = path.join(directory, 'catalog-manifest.json');
+        const manifest = await readJson(manifestPath);
+        Object.assign(manifest.entries[0], {
+          artifactDigest: await calculateCatalogEntryArtifactDigest(pluginRoot),
+          contentDigest: await calculateCatalogEntryContentDigest(pluginRoot),
+          manifestDigest: calculateCatalogEntryManifestDigest(plugin),
+        });
+        await writeJson(manifestPath, manifest);
+        const verificationRoot = path.join(f.root, 'legacy-verification');
+        await fs.cp(directory, verificationRoot, { recursive: true,
+          filter: (source) => path.basename(source) !== '.git' });
+        await expect(validateCatalogSnapshotTransport(verificationRoot)).resolves.toHaveProperty('manifest');
+        await expect(validateCatalogSnapshotComplete(verificationRoot)).rejects.toThrow('pluginPlatformsMigrationRequired');
+      },
+    });
+
+    const result = await planAutomaticBeta(f.options);
+    expect(result.products.catalog).toMatchObject({ changed: true, version: '1.0.1-beta.8',
+      baselineVersion: '1.0.1-beta.7', affectedPlugins: ['demo'] });
+    expect(result.products.catalog).not.toHaveProperty('error');
+    expect(result.products.cli.changed).toBe(false);
+  });
+
+  it.each(['missing plugin manifest', 'damaged plugin content'])(
+    'plans a new version when the historical baseline has %s', async (scenario) => {
+      const f = await fixture();
+      const snapshot = await catalogAt(path.join(f.root, 'damaged-baseline'));
+      await f.publishCatalog('1.0.1-beta.7', f.baselineSource, snapshot, {
+        mutateSnapshot: async (directory) => {
+          const pluginRoot = path.join(directory, 'plugins', 'demo');
+          if (scenario === 'missing plugin manifest') {
+            await fs.rm(path.join(pluginRoot, '.agents-plugin', 'plugin.json'));
+          } else {
+            await fs.writeFile(path.join(pluginRoot, 'README.md'), 'damaged baseline\n');
+          }
+        },
+      });
+
+      const result = await planAutomaticBeta(f.options);
+      expect(result.products.catalog).toMatchObject({ changed: true, version: '1.0.1-beta.8',
+        baselineVersion: '1.0.1-beta.7' });
+      expect(result.products.catalog).not.toHaveProperty('error');
+      expect(result.products.cli.changed).toBe(false);
+    },
+  );
+
   it.each([
     { cli: true, catalog: false },
     { cli: false, catalog: true },
