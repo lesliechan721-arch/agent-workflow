@@ -236,10 +236,7 @@ async function runPublicWriteCommand(options: {
   runtime: RebuildCommandRuntime;
   all?: boolean;
 }): Promise<RebuildCommandResult> {
-  const runtime = options.commandOptions.allowManagedCodexInstall === true
-    && !options.runtime.managedCodexAuthorizer
-    ? { ...options.runtime, managedCodexAuthorizer: async () => true }
-    : options.runtime;
+  const runtime = options.runtime;
   const execution = runtime.previewOperationPlan === true
     ? runRebuildCommand({
         command: options.command,
@@ -310,10 +307,7 @@ export async function taskWriteCommand(
 ): Promise<RebuildCommandResult> {
   const commandOptions = { ...options };
   delete commandOptions.repairTargets;
-  const taskRuntime = options.allowManagedCodexInstall === true
-    && !runtime.managedCodexAuthorizer
-    ? { ...runtime, managedCodexAuthorizer: async () => true }
-    : runtime;
+  const taskRuntime = runtime;
   const execution = taskRuntime.previewOperationPlan === true
     ? runRebuildTaskCommand(targets, options, taskRuntime)
     : (async () => {

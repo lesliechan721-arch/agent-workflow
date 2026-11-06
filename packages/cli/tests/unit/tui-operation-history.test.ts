@@ -138,6 +138,21 @@ describe('TUI operation history', () => {
 });
 
 describe('TUI operation diagnostic projection', () => {
+  // Test Value Gate: local Codex discovery failures must keep their recovery code without exposing candidate paths or probe output in reports.
+  it.each(['codexCliNotFound', 'codexSystemCliUnsupported'])(
+    'keeps %s from an untyped discovery failure without raw details',
+    (code) => {
+      const diagnostic = projectThrownOperationDiagnostic({
+        error: Object.assign(new Error('/Users/private/Codex.app token=private-probe-output'), { code }),
+        id: 'codex-discovery', stage: 'execute', fallbackCode: 'operationFailed',
+      });
+
+      expect(diagnostic.code).toBe(code);
+      expect(JSON.stringify(diagnostic)).not.toContain('/Users/private');
+      expect(JSON.stringify(diagnostic)).not.toContain('private-probe-output');
+    },
+  );
+
   it('keeps safe blocked target diagnostic fields without copying private values', () => {
     const projected = projectExecutionDiagnostics({
       taskPlan: {

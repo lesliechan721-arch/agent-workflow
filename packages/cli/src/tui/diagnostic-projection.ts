@@ -28,7 +28,7 @@ const FIXED_STAGE_MESSAGES: Record<string, string> = {
 const SAFE_ERROR_CODES = new Set([
   'EACCES', 'ENOENT', 'EPERM',
   'catalogGitAuthorizationFailed', 'catalogGitExecutableMissing', 'catalogGitTimedOut',
-  'managedCodexAuthorizationRequired', 'managedCodexUnavailable',
+  'codexCliNotFound', 'codexSystemCliUnsupported',
   'nativeCliExecutableMissing', 'nativeCliFailed', 'nativeCliTimedOut',
   'preApplyExecutableMissing', 'preApplyExited', 'preApplyInputFailed', 'preApplyStartFailed', 'preApplyTimedOut',
   'tuiStateReloadFailed', 'issueVerificationFailed',

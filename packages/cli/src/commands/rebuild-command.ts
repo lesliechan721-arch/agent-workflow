@@ -19,11 +19,11 @@ import fs from 'fs-extra';
 import type { RebuildActionEvent } from '../output/model.js';
 import { getCodexOperationRequirement, probeAgentVersion } from '../utils/agent-version.js';
 import {
+  CodexManagerError,
   previewCodexManager,
   resolveCodexManager,
   resolveCodexOperationConsumer,
   type CodexManagerPreview,
-  type ManagedCodexAuthorizer,
 } from '../utils/codex-manager.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { createNoopReporter } from '../output/reporter.js';
@@ -222,7 +222,6 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   preApplyConfirmed?: boolean;
   scriptTimeoutMs?: number;
   directCli?: boolean;
-  managedCodexAuthorizer?: ManagedCodexAuthorizer;
   codexManagerResolver?: typeof resolveCodexManager;
   codexOperationConsumerResolver?: typeof resolveCodexOperationConsumer;
   codexManagerPreviewer?: typeof previewCodexManager;
@@ -3590,6 +3589,40 @@ async function runRebuildCommandInSession(
         nativeActivationOnlyTargets: options.runtime?.nativeActivationOnlyTargets,
         commandResults: options.runtime?.commandResults,
       };
+      let planningManagerPreview: CodexManagerPreview | undefined;
+      let planningManagerError: unknown;
+      const needsCodexObservation = executionSelections.some(({ entry, platform }) =>
+        platform === 'codex' && analyzeCodexSurface(entry.plugin.manifest).nativeKinds.length > 0);
+      if (needsCodexObservation && !executionContext.codexManager) {
+        const managerOptions = {
+          cwd: options.commandOptions.cwd,
+          env: runtimeEnv,
+          runner: executionContext.nativeCliRunner,
+          signal: options.runtime?.signal,
+          operationRequirement: getCodexOperationRequirement(options.commandOptions.scope),
+        };
+        try {
+          const useExecutionResolver = !options.runtime?.previewOperationPlan
+            && ['install', 'sync', 'reinstall'].includes(options.command);
+          if (useExecutionResolver && options.runtime?.codexManagerResolver) {
+            executionContext.codexManager = await options.runtime.codexManagerResolver(managerOptions);
+          } else if (useExecutionResolver && options.runtime?.codexOperationConsumerResolver) {
+            executionContext.codexManager = (await options.runtime.codexOperationConsumerResolver(managerOptions)).manager;
+          } else {
+            planningManagerPreview = await (options.runtime?.codexManagerPreviewer ?? previewCodexManager)(managerOptions);
+            if (planningManagerPreview.state === 'system') {
+              executionContext.codexManager = planningManagerPreview.manager;
+            } else {
+              planningManagerError = new CodexManagerError(planningManagerPreview.code, planningManagerPreview.diagnostic);
+            }
+          }
+        } catch (error) {
+          if (readSafeOperationError(error) || error instanceof Error && error.name === 'AbortError') throw error;
+          planningManagerError = error;
+        }
+        // Never let an unselected PATH entry decide native state or target readiness.
+        executionContext.codexObservationSession?.setManager(executionContext.codexManager);
+      }
       const inspection = createRebuildIntegration({
         context: executionContext,
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
@@ -4665,31 +4698,7 @@ async function runRebuildCommandInSession(
           exactSkillMarkerTargets(initialPlan),
         );
         const provisionalCodexPlans = await createCodexPlans(initialPlan);
-        const previewNeedsNativeMaterialization = provisionalCodexPlans.some((plan) =>
-          plan.sharedNativeActions.some((action) =>
-            action.action === 'install'
-            || action.action === 'replace'
-            || action.action === 'repair'));
-        const previewActivationOnly = !previewNeedsNativeMaterialization
-          && provisionalCodexPlans.some((plan) =>
-            plan.postcheck.support === 'observed'
-            && plan.postcheck.plugins.length > 0);
-        const previewActivationScope: Scope = provisionalCodexPlans.some((plan) =>
-          plan.requirement.scope === 'project') ? 'project' : 'user';
-        const previewConsumer = previewActivationOnly
-          ? await (
-              options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
-            )({
-              cwd: options.commandOptions.cwd,
-              env: runtimeEnv,
-              runner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
-              operationRequirement: getCodexOperationRequirement(previewActivationScope),
-              requiresNativeMaterialization: false,
-            })
-          : undefined;
-        const initialCodexPlans = previewConsumer?.support === 'assumed'
-          ? await createCodexPlans(initialPlan, 'assumed')
-          : provisionalCodexPlans;
+        const initialCodexPlans = provisionalCodexPlans;
         const previewPreparation = await prepareRenderedTargets(
           initialPlan,
           initialCodexPlans,
@@ -4710,15 +4719,15 @@ async function runRebuildCommandInSession(
         }), runtimeEnv);
         if (initialCodexPlans.length > 0) preview.codexReconcilePlans = initialCodexPlans;
         if (initialCodexPlans.some((plan) => plan.sharedNativeActions.some((action) =>
-          action.action === 'install'
-          || action.action === 'replace'
-          || action.action === 'repair'))) {
-          preview.codexManagerPreview = await (
+          action.action === 'install' || action.action === 'replace' || action.action === 'repair')
+          || plan.postcheck.plugins.length > 0)) {
+          preview.codexManagerPreview = planningManagerPreview ?? await (
             options.runtime.codexManagerPreviewer ?? previewCodexManager
           )({
             cwd: options.commandOptions.cwd,
             env: runtimeEnv,
             runner: options.runtime?.nativeCliRunner,
+            signal: options.runtime?.signal,
           });
         }
         return preview;
@@ -4843,7 +4852,7 @@ async function runRebuildCommandInSession(
         const prepareLockedTargets = async (preparationOptions: {
           eligibleKeys?: ReadonlySet<string>;
           skipPreApply?: boolean;
-          deferManagedNativeInspection?: boolean;
+          deferCodexNativeInspection?: boolean;
         }): Promise<{
           preparations: Map<string, PreparedRebuildOperation>;
           failures: Map<string, RebuildResult>;
@@ -4919,7 +4928,7 @@ async function runRebuildCommandInSession(
               target: prepared.target,
               driver: integration.driver,
               ...(preparationOptions.skipPreApply ? { skipPreApply: true } : {}),
-              ...(preparationOptions.deferManagedNativeInspection
+              ...(preparationOptions.deferCodexNativeInspection
                 && platform === 'codex'
                 && executionContext.codexManager === undefined
                 && (prepared.target.writeNativeRequired ?? prepared.target.requiresNative)
@@ -4939,7 +4948,7 @@ async function runRebuildCommandInSession(
         };
         if (lifecycleCommand) {
           const initialPreparation = await prepareLockedTargets({
-            deferManagedNativeInspection: codexManagerRequired,
+            deferCodexNativeInspection: codexManagerRequired,
           });
           for (const [key, preparation] of initialPreparation.preparations) {
             operationPreparations.set(key, preparation);
@@ -4973,7 +4982,7 @@ async function runRebuildCommandInSession(
               ? 'project'
               : 'user';
           };
-          let refreshManagedNativePlan = false;
+          let refreshCodexNativePlan = false;
           const failPreparedTargets = (keys: ReadonlySet<string>, error: unknown): void => {
             const message = error instanceof Error ? error.message : String(error);
             for (const key of keys) {
@@ -4989,12 +4998,13 @@ async function runRebuildCommandInSession(
           if (executionContext.codexManager === undefined
             && nativePreparationKeys.size > 0) {
             try {
+              if (planningManagerError) throw planningManagerError;
               if (options.runtime?.codexManagerResolver) {
                 executionContext.codexManager = await options.runtime.codexManagerResolver({
                   cwd: options.commandOptions.cwd,
                   env: runtimeEnv,
                   runner: executionContext.nativeCliRunner,
-                  authorizer: options.runtime?.managedCodexAuthorizer,
+                  signal: options.runtime?.signal,
                   operationRequirement: getCodexOperationRequirement(
                     codexRequirementScopeFor(nativePreparationKeys),
                   ),
@@ -5006,47 +5016,37 @@ async function runRebuildCommandInSession(
                   cwd: options.commandOptions.cwd,
                   env: runtimeEnv,
                   runner: executionContext.nativeCliRunner,
-                  authorizer: options.runtime?.managedCodexAuthorizer,
+                  signal: options.runtime?.signal,
                   operationRequirement: getCodexOperationRequirement(
                     codexRequirementScopeFor(nativePreparationKeys),
                   ),
-                  requiresNativeMaterialization: true,
                 });
                 if (consumer.support !== 'observed') {
                   throw new Error('Codex native materialization requires an observed CLI consumer.');
                 }
                 executionContext.codexManager = consumer.manager;
               }
-              refreshManagedNativePlan = true;
+              refreshCodexNativePlan = true;
             } catch (error) {
               failPreparedTargets(nativePreparationKeys, error);
             }
           } else if (executionContext.codexManager === undefined
             && activationPreparationKeys.size > 0) {
             try {
+              if (planningManagerError) throw planningManagerError;
               const consumer = await (
                 options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
               )({
                 cwd: options.commandOptions.cwd,
                 env: runtimeEnv,
                 runner: executionContext.nativeCliRunner,
+                signal: options.runtime?.signal,
                 operationRequirement: getCodexOperationRequirement(
                   codexRequirementScopeFor(activationPreparationKeys),
                 ),
-                requiresNativeMaterialization: false,
               });
-              if (consumer.support === 'observed') {
-                executionContext.codexManager = consumer.manager;
-              } else {
-                lockedCodexPlans = lockedCodexPlans.map((plan) => ({
-                  ...plan,
-                  warnings: [...new Set([
-                    ...plan.warnings,
-                    'codexProjectActivationAssumed',
-                  ])],
-                  postcheck: { ...plan.postcheck, support: 'assumed' },
-                }));
-              }
+              executionContext.codexManager = consumer.manager;
+              refreshCodexNativePlan = true;
             } catch (error) {
               failPreparedTargets(activationPreparationKeys, error);
             }
@@ -5055,7 +5055,7 @@ async function runRebuildCommandInSession(
             executionContext.codexObservationSession?.setManager(executionContext.codexManager);
           }
 
-          if (refreshManagedNativePlan) {
+          if (refreshCodexNativePlan) {
             if (executionContext.codexManager) {
               lockedPlan = await createPlan(stateInventory, executionContext.codexManager);
               assertWriteInventoryComplete(
@@ -5171,7 +5171,7 @@ async function runRebuildCommandInSession(
                 cwd: options.commandOptions.cwd,
                 env: runtimeEnv,
                 runner: executionContext.nativeCliRunner,
-                authorizer: options.runtime?.managedCodexAuthorizer,
+                signal: options.runtime?.signal,
                 operationRequirement: getCodexOperationRequirement(options.commandOptions.scope),
               };
               if (options.runtime?.codexManagerResolver) {
@@ -5179,7 +5179,7 @@ async function runRebuildCommandInSession(
               } else {
                 const consumer = await (
                   options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
-                )({ ...managerOptions, requiresNativeMaterialization: true });
+                )(managerOptions);
                 if (consumer.support !== 'observed') {
                   throw new Error('Codex native removal requires an observed CLI consumer.');
                 }

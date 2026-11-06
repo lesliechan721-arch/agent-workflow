@@ -505,7 +505,13 @@ describe('TUI plugin write batches', () => {
           sharedImpact: { pluginIds: ['shared/native'], warning: '会影响其它项目。' },
         },
       }],
-      codexManagerPreview: { state: 'requires-install' },
+      codexManagerPreview: {
+        state: 'system', manager: {
+          kind: 'app', version: '0.153.0', command: '/private/review-codex/Codex.app/Contents/Resources/codex',
+          argsPrefix: [],
+        },
+        diagnostics: ['A Codex CLI candidate failed its version query or returned an invalid version and was excluded.'],
+      },
     } as unknown as PluginWriteBatchEvidence['groups'][number]['preview'];
     const evidence: PluginWriteBatchEvidence = {
       ...baseEvidence,
@@ -548,7 +554,9 @@ describe('TUI plugin write batches', () => {
         pluginId: 'official/dependency',
         relation: 'direct',
       }),
-      expect.objectContaining({ title: '获取 Codex 运行组件' }),
+      expect.objectContaining({ title: '本机 Codex CLI', description: 'Codex App · 0.153.0' }),
+      expect.objectContaining({ kind: 'warning', title: 'Codex 候选诊断',
+        description: preview.codexManagerPreview!.diagnostics![0] }),
       expect.objectContaining({
         pluginId: 'official/root-a', description: expect.stringContaining('已有安装，版本待确认'),
       }),
@@ -556,6 +564,8 @@ describe('TUI plugin write batches', () => {
         pluginId: 'official/root-b', description: expect.stringContaining('新增当前项目安装'),
       }),
     ]));
+    expect(review.technicalDetails).toContain(`Codex 候选诊断：${preview.codexManagerPreview!.diagnostics![0]}`);
+    expect(JSON.stringify(review)).not.toContain('/private/review-codex');
   });
 
   it('identifies a missing saved user target as an all-project installation in Review', () => {
@@ -5051,13 +5061,15 @@ describe('TUI v4 Review safety', () => {
     ]));
   });
 
-  it('shows managed Codex acquisition without making manager selection stale evidence', async () => {
+  // Test Value Gate: Review must describe the selected local CLI without requiring installation consent or invalidating Review after a CLI change.
+  it.each(['system', 'app'] as const)('shows the %s Codex CLI without making manager selection stale evidence', async (source) => {
     const evidence: OperationEvidence = {
       ...baseEvidence,
       codexManager: {
-        state: 'requires-install',
-        packageName: '@openai/codex',
-        version: '0.151.0',
+        state: 'system',
+        source,
+        version: '0.153.0',
+        diagnostics: ['A Codex CLI candidate failed its version query or returned an invalid version and was excluded.'],
       },
     };
     const controller = new TuiController(dependencies({
@@ -5071,15 +5083,19 @@ describe('TUI v4 Review safety', () => {
     });
 
     expect(review.changes).toContainEqual(expect.objectContaining({
-      kind: 'add',
+      kind: 'keep',
       group: 'runtime',
-      title: '获取 Codex 运行组件',
-      description: '@openai/codex@0.151.0 · AW 管理缓存',
+      title: '本机 Codex CLI',
+      description: `${source === 'app' ? 'Codex App' : 'PATH'} · 0.153.0`,
     }));
-    expect(review.equivalentCommand).toContain('--allow-managed-codex-install');
+    expect(review.changes).toContainEqual(expect.objectContaining({
+      kind: 'warning', title: 'Codex 候选诊断', description: evidence.codexManager!.diagnostics![0],
+    }));
+    expect(review.technicalDetails).toContain(`Codex 候选诊断：${evidence.codexManager!.diagnostics![0]}`);
+    expect(review.equivalentCommand).not.toContain('--allow-managed-codex-install');
     expect(operationEvidenceFingerprint(evidence)).toBe(operationEvidenceFingerprint({
       ...baseEvidence,
-      codexManager: { state: 'system', packageName: '@openai/codex', version: '0.200.0' },
+      codexManager: { state: 'system', source: source === 'system' ? 'app' : 'system', version: '0.200.0' },
     }));
   });
 
@@ -5111,23 +5127,21 @@ describe('TUI v4 Review safety', () => {
 
   it.each([
     {
-      label: 'managed acquisition failure',
-      managerState: 'requires-install' as const,
-      errorCode: 'managedCodexUnavailable' as const,
-      recovery: '升级 AW',
+      label: 'local CLI missing after Review',
+      errorCode: 'codexCliNotFound' as const,
+      recovery: '安装 Codex CLI 或 Codex App',
     },
     {
-      label: 'cached Review followed by a missing runtime',
-      managerState: 'cached' as const,
-      errorCode: 'managedCodexAuthorizationRequired' as const,
-      recovery: '--allow-managed-codex-install',
+      label: 'local CLI unsupported after Review',
+      errorCode: 'codexSystemCliUnsupported' as const,
+      recovery: '升级或修复本机 Codex CLI 或 Codex App',
     },
-  ])('reports $label as a Codex pre-write blocker', async ({ managerState, errorCode, recovery }) => {
+  ])('reports $label as a Codex pre-write blocker', async ({ errorCode, recovery }) => {
     const evidence: OperationEvidence = {
       ...baseEvidence,
       codexManager: {
-        state: managerState,
-        packageName: '@openai/codex',
+        state: 'system',
+        source: 'app',
         version: '0.151.0',
       },
     };

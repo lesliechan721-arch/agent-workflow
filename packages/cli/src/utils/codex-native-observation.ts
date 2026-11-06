@@ -71,7 +71,7 @@ export interface CodexNativeObservationSession {
   }>;
   snapshot(marketplace: string, scope?: 'user' | 'project' | 'both'):
     Promise<CodexNativeObservationSnapshot>;
-  setManager(manager: CodexManager): void;
+  setManager(manager: CodexManager | undefined): void;
   invalidate(marketplace?: string): void;
   dispose(): Promise<void>;
 }
@@ -101,7 +101,7 @@ export async function createCodexNativeObservationSession(options: {
 }): Promise<CodexNativeObservationSession> {
   const neutral = await createSafeNeutralCwd(options.env);
   const neutralCwd = neutral.executionCwd;
-  let manager = options.manager ?? SYSTEM_CODEX_MANAGER;
+  let manager: CodexManager | undefined = options.manager ?? SYSTEM_CODEX_MANAGER;
   const snapshots = new Map<string, Promise<CodexObservationEntries>>();
   const pendingReads = new Set<Promise<CodexObservationEntries>>();
   let cleanupFailure: NativeCliError | undefined;
@@ -113,7 +113,7 @@ export async function createCodexNativeObservationSession(options: {
     let result = snapshots.get(key);
     if (!result) {
       result = (async () => {
-        if (!options.runner) return { unobserved: true };
+        if (!options.runner || !manager) return { unobserved: true };
         try {
           const invocation = buildCodexPluginListJsonInvocation(
             manager,
@@ -191,11 +191,10 @@ export async function createCodexNativeObservationSession(options: {
       };
     },
     setManager(nextManager) {
-      if (manager.kind === nextManager.kind
-        && manager.command === nextManager.command
-        && manager.runtimeRoot === nextManager.runtimeRoot
-        && manager.argsPrefix.length === nextManager.argsPrefix.length
-        && manager.argsPrefix.every((value, index) => value === nextManager.argsPrefix[index])) {
+      if (manager?.kind === nextManager?.kind
+        && manager?.command === nextManager?.command
+        && manager?.argsPrefix.length === nextManager?.argsPrefix.length
+        && manager?.argsPrefix.every((value, index) => value === nextManager?.argsPrefix[index])) {
         manager = nextManager;
         return;
       }

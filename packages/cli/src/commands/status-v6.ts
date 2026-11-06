@@ -157,7 +157,8 @@ export function statusTargetPlacements(target: StatusV8Target): StatusScopedTarg
     sharedComponents: target.components.filter((component) =>
       component.kind !== 'systemConsumer' || component.key === `codex:${placement.scope}`),
     sharedReasons: target.reasons.filter((reason) =>
-      reason.code.startsWith('codexSharedNative') || reason.code === 'staleCacheObserved'),
+      reason.code.startsWith('codexSharedNative') || reason.code === 'staleCacheObserved'
+      || reason.code === 'codexCandidateExcluded'),
   }));
 }
 
@@ -291,12 +292,15 @@ export function projectStatusSharedNativeReasons(
   ];
 }
 
+type StatusSystemCodexInspection = Exclude<SystemCodexInspection, { state: 'compatible' }>
+  | Omit<Extract<SystemCodexInspection, { state: 'compatible' }>, 'manager'>;
+
 export interface StatusActivationProjection {
   user?: boolean;
   project?: boolean;
   effective?: boolean;
   evidence: 'observed' | 'assumed' | 'unobserved';
-  systemConsumer?: SystemCodexInspection;
+  systemConsumer?: StatusSystemCodexInspection;
 }
 
 export interface StatusExtensionProjection {
@@ -406,7 +410,7 @@ export function statusTargetActivation(
   const activation = user ?? project ?? consumer;
   const evidence = activation?.metadata?.evidence;
   const requiredMinVersion = consumer?.metadata?.requiredMinVersion;
-  let systemConsumer: SystemCodexInspection | undefined;
+  let systemConsumer: StatusSystemCodexInspection | undefined;
   if (consumer && typeof requiredMinVersion === 'string') {
     const detectedVersion = consumer.metadata?.detectedVersion;
     const code = consumer.metadata?.code;
@@ -425,6 +429,10 @@ export function statusTargetActivation(
             && typeof diagnostic === 'string'
             ? { state: 'unresolved', code, diagnostic, requiredMinVersion }
             : undefined;
+    const diagnostics = consumer.metadata?.diagnostics;
+    if (systemConsumer && Array.isArray(diagnostics) && diagnostics.length > 0) {
+      systemConsumer = { ...systemConsumer, diagnostics: diagnostics.filter((value): value is string => typeof value === 'string') };
+    }
   }
   return {
     ...(user ? { user: user.state === 'enabled' } : {}),
@@ -1345,18 +1353,25 @@ async function statusCommandV8InSession(options: {
     });
   }
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
-  const codexSystemConsumerInspections = new Map<Scope, Promise<SystemCodexInspection>>();
+  let codexSystemConsumerInspection: Promise<SystemCodexInspection> | undefined;
   const inspectCodexSystemConsumer = (scope: Scope) => {
     throwIfCancelled();
-    let inspection = codexSystemConsumerInspections.get(scope);
+    let inspection = codexSystemConsumerInspection;
     if (!inspection) {
       inspection = inspectSystemCodex({
         runner: nativeCliRunner,
         cwd: options.cwd,
         env,
+        signal: options.signal,
         operationRequirement: getCodexOperationRequirement(scope),
-      }).then((result) => { throwIfCancelled(); return result; });
-      codexSystemConsumerInspections.set(scope, inspection);
+      }).then((result) => {
+        throwIfCancelled();
+        if (result.state === 'compatible') {
+          options.codexObservationSession.setManager(result.manager);
+        }
+        return result;
+      });
+      codexSystemConsumerInspection = inspection;
     }
     return inspection;
   };
@@ -1381,6 +1396,7 @@ async function statusCommandV8InSession(options: {
         cwd: options.cwd,
         env,
         nativeCliRunner,
+        manager: consumer.manager,
         scope: options.scope === 'user' ? 'user' : 'both',
         observationSession: options.codexObservationSession,
       });
@@ -3213,6 +3229,8 @@ async function statusCommandV8InSession(options: {
             consumerIssue.diagnostic,
           )]
         : []),
+      ...(activation?.systemConsumer?.diagnostics ?? []).map((diagnostic) =>
+        warning('codexCandidateExcluded', diagnostic)),
     ];
     const targetErrors = [...baseTargetErrors, ...stableErrors];
     const dedupedErrors = [...new Map(targetErrors.map((error) => [
@@ -3281,6 +3299,9 @@ async function statusCommandV8InSession(options: {
           ...('code' in activation.systemConsumer ? { code: activation.systemConsumer.code } : {}),
           ...('diagnostic' in activation.systemConsumer
             ? { diagnostic: activation.systemConsumer.diagnostic }
+            : {}),
+          ...(activation.systemConsumer.diagnostics?.length
+            ? { diagnostics: activation.systemConsumer.diagnostics }
             : {}),
         },
       }] : []),
@@ -3373,7 +3394,8 @@ async function statusCommandV8InSession(options: {
       .filter((component) => component.kind === 'sharedNative' || component.kind === 'systemConsumer')
       .map((component) => [`${component.kind}\0${component.key}`, component] as const)).values()];
     const sharedReason = (reason: StatusV8Reason): boolean =>
-      reason.code.startsWith('codexSharedNative') || reason.code === 'staleCacheObserved';
+      reason.code.startsWith('codexSharedNative') || reason.code === 'staleCacheObserved'
+      || reason.code === 'codexCandidateExcluded';
     const sharedReasons = decorated.flatMap((target) => target.reasons.filter(sharedReason));
     const placements = decorated.map((target): StatusV8Placement => ({
       scope: target.scope,

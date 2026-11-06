@@ -23,10 +23,20 @@ import {
   parseScriptTimeoutMs,
   SCRIPT_TIMEOUT_DEFAULT_MS,
 } from '../commands/options.js';
-import { MANAGED_CODEX_VERSION } from '../utils/codex-manager.js';
 import { agentLabel, platformLabel, scopeLabel } from './glossary.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import { normalizeInstalledCommandProducer, type InstalledCommandProducer } from '../utils/managed-command-store.js';
+import type { CodexManagerPreview } from '../utils/codex-manager.js';
+import { sanitizeDiagnosticText } from './diagnostics.js';
+
+function codexManagerEvidence(preview: CodexManagerPreview | undefined): OperationEvidence['codexManager'] {
+  return preview?.state === 'system' ? {
+    state: 'system',
+    source: preview.manager.kind,
+    version: preview.manager.version,
+    ...(preview.diagnostics?.length ? { diagnostics: preview.diagnostics } : {}),
+  } : undefined;
+}
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -549,18 +559,16 @@ function reviewChanges(
       ...preApplyScopeChanges(operationPreApplyTargets(evidence)),
       ...(evidence?.codexManager
       ? [{
-          kind: evidence.codexManager.state === 'requires-install' ? 'add' : 'keep',
+          kind: 'keep',
           group: 'runtime',
-          title: evidence.codexManager.state === 'requires-install'
-            ? '获取 Codex 运行组件'
-            : 'Codex 运行组件',
-          description: evidence.codexManager.state === 'requires-install'
-            ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · AW 管理缓存`
-            : evidence.codexManager.state === 'cached'
-              ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · 复用 AW 管理缓存`
-              : `使用兼容的系统 Codex ${evidence.codexManager.version}`,
+          title: '本机 Codex CLI',
+          description: `${evidence.codexManager.source === 'app' ? 'Codex App' : 'PATH'} · ${evidence.codexManager.version}`,
         } satisfies OperationReviewChange]
       : []),
+      ...(evidence?.codexManager?.diagnostics ?? []).map((diagnostic): OperationReviewChange => ({
+        kind: 'warning', group: 'runtime', title: 'Codex 候选诊断',
+        description: sanitizeDiagnosticText(diagnostic),
+      })),
     ];
     const codexChanges = (evidence?.codexReconcilePlans ?? []).flatMap((codexPlan) => [
       ...codexPlan.sharedNativeActions.map((action): OperationReviewChange => ({
@@ -979,7 +987,7 @@ function batchGroupEvidence(
   evidence: PluginWriteBatchEvidence,
   group: PluginWriteBatchGroupEvidence,
 ): OperationEvidence {
-  const manager = group.preview.codexManagerPreview;
+  const manager = codexManagerEvidence(group.preview.codexManagerPreview);
   return {
     catalog: evidence.catalog,
     ...(group.preview.offlineCleanupPlans
@@ -988,15 +996,7 @@ function batchGroupEvidence(
     ...(group.preview.dependencyPlan ? { dependencyPlan: group.preview.dependencyPlan } : {}),
     ...(group.preview.codexReconcilePlans ? { codexReconcilePlans: group.preview.codexReconcilePlans } : {}),
     ...(group.preview.operationPlan ? { operationPlan: group.preview.operationPlan } : {}),
-    ...(manager && manager.state !== 'blocked' ? {
-      codexManager: {
-        state: manager.state,
-        packageName: '@openai/codex',
-        version: manager.state === 'requires-install'
-          ? MANAGED_CODEX_VERSION
-          : manager.manager.version,
-      },
-    } : {}),
+    ...(manager ? { codexManager: manager } : {}),
   };
 }
 
@@ -1004,12 +1004,14 @@ function taskSourceEvidence(
   evidence: PluginWriteTaskEvidence,
   source: PluginWriteTaskSourceEvidence,
 ): OperationEvidence {
+  const manager = codexManagerEvidence(source.preview.codexManagerPreview);
   return {
     catalog: evidence.catalog,
     ...(source.preview.dependencyPlan ? { dependencyPlan: source.preview.dependencyPlan } : {}),
     ...(source.preview.codexReconcilePlans
       ? { codexReconcilePlans: source.preview.codexReconcilePlans } : {}),
     ...(source.preview.operationPlan ? { operationPlan: source.preview.operationPlan } : {}),
+    ...(manager ? { codexManager: manager } : {}),
   };
 }
 
@@ -1216,6 +1218,15 @@ function technicalDetails(evidence: OperationEvidence): string[] {
   }
   if (evidence.targetFingerprint) details.push(`目标状态：${short(evidence.targetFingerprint)}`);
   details.push(...(evidence.preparationWarnings ?? []).map((warning) => `刷新警告：${warning}`));
+  const codexDiagnostics = [
+    ...(evidence.codexManager?.diagnostics ?? []),
+    ...('groups' in evidence ? (evidence as PluginWriteBatchEvidence).groups
+      .flatMap((group) => group.preview.codexManagerPreview?.diagnostics ?? []) : []),
+    ...('taskPlan' in evidence ? (evidence as PluginWriteTaskEvidence).taskPlan.sources
+      .flatMap((source) => source.preview.codexManagerPreview?.diagnostics ?? []) : []),
+  ];
+  details.push(...[...new Set(codexDiagnostics)].map((diagnostic) =>
+    `Codex 候选诊断：${sanitizeDiagnosticText(diagnostic)}`));
   for (const target of offlineCleanupPlans(evidence)) {
     details.push(`离线清理目标：${target.pluginId} · ${target.platform}/${target.scope}`);
     details.push(`离线清理计划：${target.plan.actions.length} 个动作 · ${short(target.planDigest)}`);
@@ -1371,7 +1382,6 @@ export function buildOperationReviewProjection(options: {
       + (intent.action === 'refreshAndSync' ? ' --refresh' : '')
       + (scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : '')
       + (intent.action === 'cleanup' && intent.force === true ? ' --force' : '')
-      + (evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : '')
       + (requiresConfirmation || hasPreApply ? ' --yes' : '')).join(' && ');
   }
   return {

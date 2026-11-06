@@ -4529,7 +4529,7 @@ describe('rebuild adapter integration', () => {
       taskResult = await taskWriteCommand([{
         pluginId: pluginB.pluginId!, platform: 'codex', scope: 'user', method: 'reinstall',
       }], {
-        cwd: isolation.layout.fixtureCwd, allowManagedCodexInstall: true,
+        cwd: isolation.layout.fixtureCwd,
       }, { env: isolation.env, nativeCliRunner: runner,
         executionInput: native.executionInput });
     } finally {

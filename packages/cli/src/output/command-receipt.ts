@@ -92,8 +92,8 @@ function recoveryForTarget(state: ReceiptTargetResult['state'], errorCode: strin
   if (state === 'completed') return [];
   if (errorCode === 'exclusiveOwnerEvidenceInvalid'
     || errorCode === 'forceCleanupPathUnavailable') return [];
-  if (errorCode === 'codexSystemCliUnsupported') {
-    return ['upgrade or repair the official system Codex CLI, then retry the original operation'];
+  if (errorCode === 'codexSystemCliUnsupported' || errorCode === 'codexCliNotFound') {
+    return ['install, upgrade, or repair Codex CLI/App and PATH, then retry the original operation'];
   }
   const pluginId = target.pluginId ?? target.pluginName;
   const sync = `aw plugin sync ${pluginId} --target ${target.platform} --context ${target.scope}`;
@@ -134,8 +134,8 @@ function rebuildErrorCode(message: string): string {
 }
 
 function earlyFailureRecovery(command: RebuildReceiptJson['command'], errorCode?: string): string[] {
-  if (errorCode === 'codexSystemCliUnsupported') {
-    return ['upgrade or repair the official system Codex CLI, then retry the original operation'];
+  if (errorCode === 'codexSystemCliUnsupported' || errorCode === 'codexCliNotFound') {
+    return ['install, upgrade, or repair Codex CLI/App and PATH, then retry the original operation'];
   }
   if (errorCode === 'syncSelectorConflict') {
     return ['remove either plugin selectors or --all, then rerun aw plugin sync'];

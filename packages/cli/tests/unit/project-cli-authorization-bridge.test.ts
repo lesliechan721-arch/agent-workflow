@@ -19,8 +19,8 @@ beforeEach(() => {
 });
 
 describe('scoped CLI authorization bridge', () => {
-  // Test Value Gate: the public CLI must keep preApply and managed downloads as separate grants.
-  it('does not turn --yes into managed Codex authorization', async () => {
+  // Test Value Gate: the public CLI must preserve the explicit preApply grant at the recovery boundary.
+  it('passes --yes as preApply authorization', async () => {
     const output = createCapturedCliIo();
     expect(await runCli([
       'plugin', 'sync', '--context', 'user', '--target', 'codex', '--yes', '--json',
@@ -28,17 +28,15 @@ describe('scoped CLI authorization bridge', () => {
     expect(JSON.parse(output.readStdout())).toMatchObject({ kind: 'aw-recovery', ok: true });
     const runtime = vi.mocked(runRecovery).mock.calls[0]?.[3];
     expect(runtime).toMatchObject({ preApplyConfirmed: true, directCli: true });
-    expect(runtime?.managedCodexAuthorizer).toBeUndefined();
   });
 
-  it('passes managed authorization only from its explicit flag', async () => {
+  it('keeps preApply unconfirmed without --yes', async () => {
     const output = createCapturedCliIo();
     expect(await runCli([
       'plugin', 'sync', '--context', 'user', '--target', 'codex',
-      '--allow-managed-codex-install', '--json',
+      '--json',
     ], { interactive: false, io: output.io })).toBe(0);
     const runtime = vi.mocked(runRecovery).mock.calls[0]?.[3];
     expect(runtime).toMatchObject({ preApplyConfirmed: false, directCli: true });
-    expect(await runtime?.managedCodexAuthorizer?.()).toBe(true);
   });
 });

@@ -65,7 +65,8 @@ function safeNativePlacement(target: StatusScopedTarget): unknown {
     ...(metadata ? { metadata: Object.fromEntries(Object.entries(metadata).filter(([name]) =>
       ['enabled', 'scopes', 'relation', 'errorCode', 'shared', 'version', 'desiredVersion',
         'staleCacheObserved', 'effective', 'requiredMinVersion', 'detectedVersion', 'code',
-        'kinds', 'platform', 'scope', 'project', 'rootIssueId', 'rootIssueCode'].includes(name))) } : {}),
+        'kinds', 'platform', 'scope', 'project', 'rootIssueId', 'rootIssueCode'].includes(name)
+        || (kind === 'systemConsumer' && name === 'diagnostics'))) } : {}),
   });
   const reason = ({ code, severity, dependencyPluginId, dependencyPlatform, dependencyScope,
     dependencyProject, rootIssueId, rootIssueCode }: StatusScopedTarget['reasons'][number]) => ({

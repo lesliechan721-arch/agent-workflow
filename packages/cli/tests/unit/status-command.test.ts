@@ -30,6 +30,9 @@ import {
 import { createSharedOwnerToken, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { NativeCliError, type NativeCliRunner, setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
 import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
+import { inspectSystemCodex } from '../../src/utils/codex-manager.js';
+import { setCodexDiscoveryOverridesForTests } from '../../src/utils/codex-executable-discovery.js';
+import { getCodexOperationRequirement } from '../../src/utils/agent-version.js';
 import { resolveAwHome, resolveClaudePaths, resolveCodexPaths } from '../../src/utils/paths.js';
 import { getCodexHome } from '../../src/utils/state-paths.js';
 import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
@@ -165,6 +168,15 @@ async function writeSystemCodexPackage(options: {
     await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
   }
   return binRoot;
+}
+
+async function systemCodexEntry(binRoot: string): Promise<{ command: string; argsPrefix: string[] }> {
+  return process.platform === 'win32'
+    ? {
+        command: process.execPath,
+        argsPrefix: [await fs.realpath(path.join(binRoot, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'))],
+      }
+    : { command: await fs.realpath(path.join(binRoot, 'codex')), argsPrefix: [] };
 }
 
 describe('status v8 current behavior', () => {
@@ -2033,10 +2045,127 @@ describe('status v8 current behavior', () => {
     expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
     expect(await filesystemSnapshot(isolation.layout.codexHomeDir)).toEqual(codexHomeBefore);
     expect(nativeRunner).toHaveBeenCalledTimes(2);
-    expect(nativeRunner.mock.calls.every(([invocation]) =>
-      invocation.command === 'codex'
-      && invocation.args.slice(0, 3).join(' ') === 'plugin list --marketplace'
-      && invocation.args[4] === '--json')).toBe(true);
+    const entry = await systemCodexEntry(binRoot);
+    for (const [invocation] of nativeRunner.mock.calls) {
+      expect(invocation).toMatchObject({
+        command: entry.command,
+        args: [...entry.argsPrefix, 'plugin', 'list', '--marketplace', 'aw', '--json'],
+      });
+    }
+  });
+
+  // Test Value Gate: status must use the selected App CLI for live reads when PATH is older, without publishing candidate paths or failed probe output.
+  it.runIf(process.platform === 'darwin')('uses the higher App Codex entry for status and recovery reads without exposing its path', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'app-status-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.platforms = ['codex'];
+      manifest.apps = './.app.json';
+    });
+    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    await writeCodexNativeResidue({
+      cwd: isolation.layout.fixtureCwd, env, sourceIdentity, version: '1.0.0', userEnabled: true,
+    });
+    const binRoot = await writeSystemCodexPackage({
+      root: path.join(isolation.layout.fixtureCwd, 'old-path-codex'), version: '0.150.0',
+    });
+    const pathCommand = await fs.realpath(path.join(binRoot, 'codex'));
+    const invalidBinRoot = path.join(isolation.layout.fixtureCwd, 'invalid-path-codex');
+    const invalidCommand = path.join(invalidBinRoot, 'codex');
+    const applications = path.join(env.HOME!, 'Applications');
+    setCodexDiscoveryOverridesForTests({ macApplicationsDirectories: [applications] });
+    const bundle = path.join(applications, 'Codex.app');
+    const appCommand = path.join(bundle, 'Contents', 'Resources', 'codex');
+    await Promise.all([
+      fs.outputFile(path.join(bundle, 'Contents', 'Info.plist'), [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.openai.codex</string></dict></plist>',
+      ].join('\n')),
+      fs.outputFile(appCommand, '#!/bin/sh\nexit 99\n'),
+      fs.outputFile(invalidCommand, '#!/bin/sh\nexit 99\n'),
+    ]);
+    await Promise.all([fs.chmod(appCommand, 0o755), fs.chmod(invalidCommand, 0o755)]);
+    const selectedCommand = await fs.realpath(appCommand);
+    const observedEnv = { ...env, PATH: [binRoot, invalidBinRoot].join(path.delimiter) };
+    const privateProbeOutput = 'private-status-probe-output';
+    const runner = vi.fn<NativeCliRunner>(async (invocation) => {
+      if (invocation.args.at(-1) === '--version') {
+        const version = invocation.command === selectedCommand ? '0.153.0'
+          : invocation.command === pathCommand ? '0.150.0' : undefined;
+        return { exitCode: 0, stdout: version ? `codex-cli ${version}` : privateProbeOutput, stderr: '' };
+      }
+      expect(invocation.command).toBe(selectedCommand);
+      expect(invocation.args).toEqual(['plugin', 'list', '--marketplace', 'aw-local', '--json']);
+      return { exitCode: 0, stdout: JSON.stringify({
+        installed: [{ pluginId: 'demo@aw-local', installed: true, enabled: true, version: '1.0.0' }],
+        available: [],
+      }), stderr: '' };
+    });
+    const inspection = await inspectSystemCodex({
+      cwd: isolation.layout.fixtureCwd, env: observedEnv, runner,
+      operationRequirement: getCodexOperationRequirement('user'),
+    });
+    expect(inspection).toMatchObject({
+      state: 'compatible', detectedVersion: '0.153.0', manager: { kind: 'app', command: selectedCommand },
+      diagnostics: expect.arrayContaining([expect.stringContaining('invalid version')]),
+    });
+    const diagnostics = JSON.stringify(inspection.diagnostics);
+    expect(diagnostics).not.toContain(privateProbeOutput);
+    expect(diagnostics).not.toContain(invalidCommand);
+
+    const assertSelectedReads = () => {
+      for (const command of [pathCommand, invalidCommand, selectedCommand]) {
+        expect(runner.mock.calls.filter(([invocation]) => invocation.command === command
+          && invocation.args.at(-1) === '--version')).toHaveLength(1);
+      }
+      expect(runner.mock.calls.filter(([invocation]) => invocation.args[0] === 'plugin'))
+        .toEqual([[expect.objectContaining({ command: selectedCommand })]]);
+    };
+    runner.mockClear();
+    const status = await statusCommandV8({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env: observedEnv,
+      platform: 'codex', scope: 'user', json: true, nativeCliRunner: runner,
+    });
+    assertSelectedReads();
+    expect(statusTargetActivation(status.payload.targets[0]!)).toMatchObject({
+      evidence: 'observed', systemConsumer: {
+        state: 'compatible', detectedVersion: '0.153.0', diagnostics: inspection.diagnostics,
+      },
+    });
+    expect(status.payload.targets[0]!.reasons).toContainEqual(expect.objectContaining({
+      code: 'codexCandidateExcluded', severity: 'warning',
+      message: expect.stringContaining(inspection.diagnostics![0]!),
+    }));
+    const publicStatus = JSON.stringify(JSON.parse(status.output));
+    expect(publicStatus).toContain(inspection.diagnostics![0]!);
+    expect(publicStatus).not.toContain(selectedCommand);
+    expect(publicStatus).not.toContain(pathCommand);
+    expect(publicStatus).not.toContain(invalidCommand);
+    expect(publicStatus).not.toContain(privateProbeOutput);
+
+    runner.mockClear();
+    const recovery = await readRecoveryStatus({
+      scope: 'user', context: 'user', cwd: isolation.layout.fixtureCwd,
+      env: observedEnv, nativeCliRunner: runner,
+    });
+    assertSelectedReads();
+    expect(recovery.errors).toEqual([]);
+    expect(recovery).toMatchObject({
+      ok: true, coverage: { native: true },
+      inventory: [{ pluginId: 'local/demo', targetResults: [{ agent: 'codex', content: 'satisfied' }] }],
+    });
+    const publicRecovery = JSON.stringify(recovery);
+    expect(publicRecovery).toContain(inspection.diagnostics![0]!);
+    expect(publicRecovery).toContain('codexCandidateExcluded');
+    expect(publicRecovery).not.toContain(selectedCommand);
+    expect(publicRecovery).not.toContain(pathCommand);
+    expect(publicRecovery).not.toContain(invalidCommand);
+    expect(publicRecovery).not.toContain(privateProbeOutput);
   });
 
   it('uses one marketplace snapshot for twenty Codex native status targets', async () => {
@@ -2341,9 +2470,13 @@ describe('status v8 current behavior', () => {
       setNativeCliRunnerOverrideForTests(null);
     }
 
-    expect(nativeRunner.mock.calls.every(([invocation]) =>
-      invocation.command === 'codex'
-      && invocation.args.join(' ') === 'plugin list --marketplace aw-local --json')).toBe(true);
+    const entry = await systemCodexEntry(binRoot);
+    for (const [invocation] of nativeRunner.mock.calls) {
+      expect(invocation).toMatchObject({
+        command: entry.command,
+        args: [...entry.argsPrefix, 'plugin', 'list', '--marketplace', 'aw-local', '--json'],
+      });
+    }
   });
 
   it('reports a probed Codex 0.150 project consumer as incompatible', async () => {

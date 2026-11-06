@@ -158,7 +158,6 @@ import {
   describeCurrentAw,
   inspectPluginRequirements,
 } from './commands/aw-capabilities.js';
-import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
 import { readRecoveryStatus, checkRecovery } from './recovery/status.js';
 import { intentAdd, intentRemove, intentList } from './commands/intent-command.js';
@@ -746,7 +745,6 @@ interface RawRecoveryOptions extends RawDiagnosticsOptions {
   scriptTimeout?: string;
   json?: boolean;
   force?: boolean;
-  allowManagedCodexInstall?: boolean;
   dependencyScope?: string[];
   deleteConfig?: boolean;
   yes?: boolean;
@@ -791,33 +789,15 @@ function renderRecoveryStatus(write: (text: string) => void, value: Awaited<Retu
   for (const error of value.errors) writeLine(write, `${error.code}: ${error.message}`);
 }
 
-export function createManagedCodexAuthorizer(
-  rawOptions: Pick<RawRecoveryOptions, 'allowManagedCodexInstall' | 'json'>,
-  context: Pick<CliExecutionContext, 'interactive' | 'isTty' | 'isCi' | 'prompt'>,
-): ManagedCodexAuthorizer | undefined {
-  if (rawOptions.allowManagedCodexInstall === true) return async () => true;
-  if (!(context.interactive && context.isTty && !context.isCi && rawOptions.json !== true)
-    || !context.prompt.confirm) return undefined;
-  return async () => {
-    const response = await context.prompt.confirm!({
-      message: '系统中没有可用的 Codex CLI。是否获取本次操作所需的 AW-managed Codex runtime？',
-      defaultValue: false,
-    });
-    return !response.cancelled && response.value === true;
-  };
-}
-
 function recoveryRuntime(
   context: CliExecutionContext,
   rawOptions: RawRecoveryOptions,
   directCli: boolean,
 ) {
-  const managedCodexAuthorizer = createManagedCodexAuthorizer(rawOptions, context);
   return {
     ...context,
     directCli,
     preApplyConfirmed: rawOptions.yes === true,
-    ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
   };
 }
 
@@ -2573,7 +2553,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--target <target>', 'limit output changes to a platform target', collectUniqueOption)
     .option('--delete-config', 'also delete saved user plugin configuration', false)
     .option('-y, --yes', 'confirm the reviewed retirement changes', false)
-    .option('--allow-managed-codex-install', 'allow acquisition of the pinned AW-managed Codex runtime', false)
     .action(async (selector: string, rawOptions: RawRecoveryOptions) =>
       runRecoveryAction('intent:retire', rawOptions, (context) =>
         runRetire({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env, selector,
@@ -2622,8 +2601,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     const entry = command === 'cleanup'
       ? scopedCommand(plugin.command(command).argument('[plugins...]'))
       : contextualCommand(plugin.command(command).argument(command === 'sync' ? '[plugins...]' : '<plugins...>'));
-    entry.option('-y, --yes', 'authorize reviewed scripts or output changes', false)
-      .option('--allow-managed-codex-install', 'allow acquisition of the pinned AW-managed Codex runtime', false);
+    entry.option('-y, --yes', 'authorize reviewed scripts or output changes', false);
     if (command === 'install' || command === 'remove') entry
       .addOption(strictValueOption('--scope <scope>', 'requirement document to edit', ['user', 'project']));
     if (command === 'remove') entry.option('--workspace-root <path>', 'delete plugin source from this explicit Catalog Workspace');
@@ -2650,7 +2628,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           targets: targetValues === undefined ? undefined : normalizeWriteRequest(() => normalizeAgents(targetValues)),
           all: command === 'sync' && plugins.length === 0,
           yes: rawOptions.yes, force: rawOptions.force, refresh: rawOptions.refresh,
-          allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
           scriptTimeoutMs: normalizeWriteRequest(() => resolveScriptTimeoutMs(rawOptions)),
           interactive: isWizardAvailable(context, rawOptions), prompt: context.prompt,
         };

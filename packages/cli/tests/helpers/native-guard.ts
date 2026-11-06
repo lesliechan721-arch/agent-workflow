@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { setCodexDiscoveryOverridesForTests } from '../../src/utils/codex-executable-discovery.js';
 
 import {
   execFileNativeCliRunner,
@@ -121,6 +122,10 @@ export function createTestNativeCliGuard(options: {
 }
 
 export function installSourceTestNativeGuards(): void {
+  setCodexDiscoveryOverridesForTests({
+    macApplicationsDirectories: [],
+    queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }),
+  });
   setNativeCliRunnerOverrideForTests(createTestNativeCliGuard({
     cwdSource: 'runNativeCli()/createCommandExecutionContext() invocation.cwd',
     envSource: 'runNativeCli()/createCommandExecutionContext() invocation.env',
@@ -128,5 +133,6 @@ export function installSourceTestNativeGuards(): void {
 }
 
 export function resetSourceTestNativeGuards(): void {
+  setCodexDiscoveryOverridesForTests(undefined);
   setNativeCliRunnerOverrideForTests(null);
 }
