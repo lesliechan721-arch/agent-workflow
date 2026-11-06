@@ -25,8 +25,8 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       }
     },
@@ -47,8 +47,8 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       }
     },
@@ -75,8 +75,8 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       }
     },
@@ -97,8 +97,8 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       }
     },
@@ -119,8 +119,8 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       }
     },
@@ -141,8 +141,8 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       }
     },
@@ -192,7 +192,11 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       }
     },
     {
@@ -216,7 +220,11 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       }
     },
     {
@@ -234,7 +242,11 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       }
     },
     {
@@ -259,7 +271,11 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       }
     },
     {
@@ -282,7 +298,11 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       }
     }
   ]

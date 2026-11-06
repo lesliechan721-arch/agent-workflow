@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "dev-workflow",
-  "version": "0.1.0-beta.18",
+  "version": "0.1.0-beta.19",
   "description": "从需求设计到实现交付的可组合工作流，项目规范与本地过程资料分工清楚。",
   "marketplace": {
     "category": "workflow",
@@ -22,6 +22,10 @@
     "human-content"
   ],
   "skills": "./skills",
+  "platforms": [
+    "codex",
+    "claude"
+  ],
   "interface": {
     "displayName": "Dev Workflow",
     "shortDescription": "先设计或完整交付；本地恢复、独立审查和有界修复",

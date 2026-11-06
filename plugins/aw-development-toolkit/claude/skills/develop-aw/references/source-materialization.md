@@ -29,11 +29,11 @@ aw review prepare <plugin-or-source-skill> --platform <platform> \
   --scope <scope> --out <new-directory> --json
 ```
 
-按需提供 `--config <file>` 或 `--skill`。采用用户指定的新目录，或规范化可写临时根下的新目录。准备不依赖 Eval suite，也不授权修改源、真实安装或模型运行。Native 包无需 Portable 声明；`agent-skills` 产物仍需显式分发声明。
+按需提供 `--config <file>` 或 `--skill`。采用用户指定的新目录，或规范化可写临时根下的新目录。准备不依赖 Eval suite，也不授权修改源、真实安装或模型运行。platform 必须是七个 canonical target 之一；Portable 导出也必须选择具体目标，旧 agent-skills profile 拒绝。
 
 从成功回执取得 `skills[].finalPath`、profile、digest 与 `sourceBindingPath`，使用真实返回路径。本次检查可直接使用该回执；跨请求复用，或 source/profile/依赖/产物变化后重新 inspect。失败时保留实际错误和可支持的源码结论，不匹配的绑定通过公开入口重新生成。
 
-跨插件 valueRef 使用所选 Workspace/snapshot 的同次依赖定义，配置只取 defaults 与本次非敏感覆盖。`--config` 的 `{plugin: {field: value}}` 可以同时提供消费方和 provider；需要外部 key 时先提供对应注册项，不从真实 AW_HOME 或已安装插件补取。必要校验依赖会进入 profile 和 source-binding 证据，但不扩大所选 Skill 产物或 renderer 获准字段。
+跨插件 valueRef 使用所选 Workspace/snapshot 的同次依赖定义；consumer/provider 使用同一个平台 profile，配置只取 defaults 与本次非敏感覆盖。`--config` 的 `{plugin: {field: value}}` 可以同时提供消费方和 provider；需要外部 key 时先提供对应注册项，不从真实 AW_HOME 或已安装插件补取。必要校验依赖会进入 profile 和 source-binding 证据，但不扩大所选 Skill 产物或 renderer 获准字段。
 
 ## 确认修改 owner
 

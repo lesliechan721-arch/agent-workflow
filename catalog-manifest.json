@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.63",
+  "catalogVersion": "0.1.0-beta.66",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "95344043d020d8d817f28ce1b2a970b7fd6b3a41"
+    "sourceHead": "c09f6221931e3ffdc74e73ef1adb66ba457678f0"
   },
   "entries": [
     {
@@ -40,23 +40,24 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.plugin-manifest.v3",
-            "aw.plugin-skills.v1"
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:7dce413ba27fe5681d49d463f9a3fcfc60470b353760541146cb6ac66105b5a1",
-      "manifestDigest": "sha256:c9f5a0aeb213d07f68d0c18a345b02c7af1c3603a6a07a1c2b73fc2e57e4e413",
-      "contentDigest": "sha256:85c131cb1b9accdca79e30ea584a3dc7a8ba9a930d2582a3c25ff83db69edd19"
+      "artifactDigest": "sha256:665e9433e2355ceb96f0d50ae860ea929c31e76a5906469f87d1787d7e9b6ede",
+      "manifestDigest": "sha256:0057d8962db1f33fccc4c707f88077c9e697b3b57cc64532d49db9122a4c686f",
+      "contentDigest": "sha256:f072942024f9266eba136c791f88e50213678f6882518caa860c7092d1c82a9c"
     },
     {
       "name": "agent-skill-toolkit",
@@ -75,11 +76,11 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       },
-      "version": "0.1.0-beta.13",
+      "version": "0.1.0-beta.14",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -92,9 +93,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:732af7ac9d9f838b664df05fefd1631a7f7204b9b679bb71548f987326b19117",
-      "manifestDigest": "sha256:f5eda2d936199042f4eef2c5848a7d43752172a7602785f50e196fc81f387992",
-      "contentDigest": "sha256:9193daeb08db8155cecb3a89b0bd017194bc88d0e4e92fc1581ea0eb9dc64749"
+      "artifactDigest": "sha256:1cf5d5b6db26ca92153025468d7bdf50e6f1939cfbf78f5f8a15042656507a4d",
+      "manifestDigest": "sha256:a308e39267ad390b6655643cdbe8f3287e15404fe6f4d7a3e833b8e0b7e05f5a",
+      "contentDigest": "sha256:a03f1c15efedc2449950e4d808f865d58aafc8add3351188f18d8f85fb8a91cf"
     },
     {
       "name": "agent-subagent",
@@ -119,11 +120,11 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -140,13 +141,14 @@
             "aw.plugin-config.v2",
             "aw.plugin-config.v3",
             "aw.plugin-config.v4",
+            "aw.plugin-config.v5",
             "aw.plugin-manifest.v3"
           ]
         }
       },
-      "artifactDigest": "sha256:af00ddb15432c099b212f9fe749fc7d281839caa6dd44f2c430fb9d4658db26a",
-      "manifestDigest": "sha256:94a494f0355415b5df66fae39b21e788dcc971e8a5fa9ac0ecf2c3032381aadb",
-      "contentDigest": "sha256:e7359569ef50e6ef6125d734e8638487579f4654f3f1a40b217de8f2b9b84a71"
+      "artifactDigest": "sha256:85e677a773224cc8e2b6bc5bc7e096b245498dd0dc024449d183ff224e7cbe5b",
+      "manifestDigest": "sha256:8daa0cf4566806169d6544f918b31deaf93148c6d1951bf1df5b60b9672d7bec",
+      "contentDigest": "sha256:45e2e03c0051f68bd7a69d8518747697a19f99c7df789c975ec3c7e409f43364"
     },
     {
       "name": "aw-development-toolkit",
@@ -165,11 +167,11 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       },
-      "version": "0.1.0-beta.12",
+      "version": "0.1.0-beta.13",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -193,9 +195,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:5da367ff3859e67b430b2b552bed3642a2e454a4b74eeab46f292c5362775ee5",
-      "manifestDigest": "sha256:ab07198a7b2d9b05e3b018240be07979564266da3b0635e5cb666a02b28a4a3d",
-      "contentDigest": "sha256:c58d6a4fc440b4fba168430a5bb3f0ef1b7800d892511a4ff27811f897a7b1e5"
+      "artifactDigest": "sha256:6d48ed4fae3e96cc5e723b0a5bf64510e5d39fee2586912982ff1186949668e4",
+      "manifestDigest": "sha256:b0efa00f09315381de528ac6d3e1b8164771b65669f7ab7c8a06749dbfd4313f",
+      "contentDigest": "sha256:7176090c47047e5f81a2954760bc7943097a238f24927e29ced30349200ee787"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -214,11 +216,11 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [
         "agent-skill-toolkit"
       ],
@@ -231,9 +233,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:c3e1e42de4e09eaf1099fd942397f979f00cdc1bafc508e688db89d1cd0a6e65",
-      "manifestDigest": "sha256:2e0762c816f7d7e36934f9fb99a87dea9f9c0aa61757b71a9881fbe53d5a82fb",
-      "contentDigest": "sha256:c78f11263c6fea2ad97ecd5b465d39bf8c1b942851f6db9276c5850617815adf"
+      "artifactDigest": "sha256:b9f46516fe1a37b2ac3f7e418f9420a3995f1308032310af0bf5fe6325dc6315",
+      "manifestDigest": "sha256:54934ac3eac96b328ab77d6c53b6abf51dc392fbd23c8dc3feb8ecf100a1ba56",
+      "contentDigest": "sha256:b68bbf51f0aab723a9c01d720a046144ab59ca7038f4d834a94d67550fed1919"
     },
     {
       "name": "browser-use",
@@ -252,24 +254,25 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
-          "CODEX",
-          "CLAUDE"
+          "CLAUDE",
+          "CODEX"
         ]
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.plugin-manifest.v3",
             "aw.plugin-pre-apply.v1",
-            "aw.plugin-skills.v1"
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:001e7e6eb4fc5a5b7128acae7ab5ff5e81d1c591073046aa56f7cace03a8b893",
-      "manifestDigest": "sha256:640b70f857eaf234c1b1816285eb1350f2eb2e6110687e28f670ac5a1f38a17f",
-      "contentDigest": "sha256:05aee713aac5b31047e54ec4e6b8c6d24fa7d2b332e893dff037f581b94ce71d"
+      "artifactDigest": "sha256:3b3a168d5a61e3d2471b10a447340856cc1b078bd93eedc9bbf5e5f94ea83536",
+      "manifestDigest": "sha256:335c8843ab599f4f7c9b282c74c16b50056e1b93932ef5a92da1e02651e149f4",
+      "contentDigest": "sha256:a6ebaf08010ad78b2f4c433b69c18b6411af3421ff888cfc6938905021821985"
     },
     {
       "name": "codex-enhance",
@@ -301,7 +304,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.25",
+      "version": "0.2.0-beta.26",
       "dependencies": [
         "agent-subagent"
       ],
@@ -316,13 +319,14 @@
             "aw.plugin-config.v2",
             "aw.plugin-config.v3",
             "aw.plugin-config.v4",
+            "aw.plugin-config.v5",
             "aw.plugin-manifest.v3"
           ]
         }
       },
-      "artifactDigest": "sha256:751d00d6cf9639d1978d3c5397a643d70a0690dd2fb2ed0b55b04521114b9c62",
-      "manifestDigest": "sha256:bbbf0c23237d612e0a131edfa526569fbcadcf2bc52fb4582c67bae4ec9e9caf",
-      "contentDigest": "sha256:82dc71b97347333726726a201c7dfbb49a402490929569b663eb45487e64ac4f"
+      "artifactDigest": "sha256:27c140df63f873ac3fb5fa34d99a376663c2ce00cdc9fdd9dae5478a6599fe48",
+      "manifestDigest": "sha256:d01053ebc6d8e2f1e9d2fde0dfb3255d1ad4367437aa9a8496bd3ac9b9599cbe",
+      "contentDigest": "sha256:c1bd27dc1928ca67ea8c8409c3944dbff1542d20462ab520ad5baa4e2428287f"
     },
     {
       "name": "decision-kit",
@@ -339,9 +343,13 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       },
-      "version": "0.1.0-beta.7",
+      "version": "0.1.0-beta.8",
       "dependencies": [
         "human-content"
       ],
@@ -354,9 +362,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:83085145b84778ab6bc3801ff24f7080495bb7f74d6a6c271f043c71cbe37201",
-      "manifestDigest": "sha256:73ac2d863e5b0f579a2a19c8031599c29a0f0b062a8660643f1ee1cf9ce0cb99",
-      "contentDigest": "sha256:535936acbda9351c9d945d02372ba948af7aab71d69b3e82087d0330cc6ba49a"
+      "artifactDigest": "sha256:8542c329f80bc2a5f2f2dbb674d27f42989a348b31db87cc95aebdcde5f2b6a1",
+      "manifestDigest": "sha256:3cab306dc9bf156a34db07f2f25b2628ab10e3ff0e4aa028d7631124b17785b5",
+      "contentDigest": "sha256:5cb04ccf5fbc2128ef978bf8ab361640808eb24168b1166fc99f08f821ee5084"
     },
     {
       "name": "dev-workflow",
@@ -379,9 +387,13 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       },
-      "version": "0.1.0-beta.18",
+      "version": "0.1.0-beta.19",
       "dependencies": [
         "decision-kit",
         "human-content"
@@ -395,9 +407,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:77df64737e9b1d856b7640a3849f9db366fa2d873fcafae4be5c03263d15602d",
-      "manifestDigest": "sha256:ae00622878c40c4216ae65ddc17a4ef8eb5e9183188fd6b099185d7b789a1bb3",
-      "contentDigest": "sha256:abd7bee1b53b98261495a5c4dbd0af6060839838e716c27307521a04c23f53a9"
+      "artifactDigest": "sha256:a3e279b936ba4625989e96ff22f1355e0f60e7ec89f2a7c999c7ae49d9820701",
+      "manifestDigest": "sha256:1fdf0e2c95029fbf59096a8a5d02cdfea37107d87f76f37d1360bb7f1c113e3d",
+      "contentDigest": "sha256:01eeb7c49c57eec8d6f8b8b103813a9ba254e7918d28694f3a4466de3e93f4b4"
     },
     {
       "name": "frontend-design",
@@ -414,21 +426,26 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.plugin-manifest.v3",
-            "aw.plugin-skills.v1"
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:1a6c249f3c2fabf0c7a0fc5441fbb306020a1b2f08155515fc00e399c1b61be5",
-      "manifestDigest": "sha256:2397f5c44eb2be02bf98168c2760b7121e9fd46b54dace021dbf259a0410e031",
-      "contentDigest": "sha256:aadc10c1ecc9446ea7ca3b3bb448cd96d3d78cc9d6d04e4191538c709d870d27"
+      "artifactDigest": "sha256:db2578d990ee13815c781273a419ba8494e50dc119390a576316af7c1f2ae10e",
+      "manifestDigest": "sha256:ac496579f43ba39cb33eb469dc48b204f08a0ef647705970d12de423f1118cb5",
+      "contentDigest": "sha256:412bc16d3140b0b1392f59a96afb0d69c0db075a925f13be5efd093d4310f2a2"
     },
     {
       "name": "git-toolkit",
@@ -452,9 +469,13 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -464,9 +485,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:f9b8fc21952e1fa913145d274f1aa1ac489b7339be0a71581896e024e7f8e093",
-      "manifestDigest": "sha256:0b3047b4052e46015d068ff1bbd24197f0419417fd3b07636194ea0b58a98761",
-      "contentDigest": "sha256:05c9597cd83888d0f420a0d2c9c049b15c11d274613231fbcfb0d1e60decfd6f"
+      "artifactDigest": "sha256:4ac27b6ac788a0791d63783e85447aa614e132c831511a46f832e17f7282b509",
+      "manifestDigest": "sha256:73d9be71f64842ddb3c55001b78d0b32b78697ec9c98be9330fded88cb4548ba",
+      "contentDigest": "sha256:9a0f13d963732c197930d0cd008c1fcb277c6dfb1447cebb15e445876bd6fb22"
     },
     {
       "name": "human-content",
@@ -488,9 +509,13 @@
       "strict": true,
       "policy": {
         "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -501,9 +526,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:dfdee9676c47a235997dde162e80d9cfce76fcd01c01097eb1a285f4656ec51a",
-      "manifestDigest": "sha256:1b454de21d1183887a241632b087c334e0918385cd103f18bc168864e2cab87d",
-      "contentDigest": "sha256:344322eea248a057eb3dffc2410bc6c29c648e8b04abd3c265efaf436bf168b2"
+      "artifactDigest": "sha256:3f776dabfd6088a914ff687b6cb3bdb56ffb84604c7d9539f28c6a70d79d9d1e",
+      "manifestDigest": "sha256:fb002c0dec0922a7e19207838fd8d43551a5a86e9ef0aa48c0fd66dcaa69b6b1",
+      "contentDigest": "sha256:1305cba4b51950342eea954c5291679a1614e20b731ab8bf2b882008f6d2efbe"
     }
   ]
 }

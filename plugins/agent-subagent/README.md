@@ -5,8 +5,10 @@
 ## 安装
 
 ```bash
-aw install agent-subagent -p codex
-aw install agent-subagent -p claude
+aw plugin targets set codex
+aw plugin install agent-subagent --scope user
+aw plugin targets set claude
+aw plugin install agent-subagent --scope user
 ```
 
 两个平台均支持 user/project 安装。共享配置在个人层维护；项目安装没有独立配置。

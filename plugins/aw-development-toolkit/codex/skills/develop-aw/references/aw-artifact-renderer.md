@@ -6,25 +6,23 @@
 
 ## 请求与配置
 
-从 `AW_PLUGIN_CONTEXT` 读取 surface、适用时的 platform/distribution、scope、已验证 config、`requestedArtifactIds`、`artifactSources`、changed keys 和前一状态。
+从 `AW_PLUGIN_CONTEXT` 读取 surface、适用时的 canonical platform、scope、已验证 config、`requestedArtifactIds`、`artifactSources`、changed keys 和前一状态。
 
 `requestedArtifactIds` 非空、无重复，并按 manifest 顺序规范化。只为这些 ID 各返回一个 artifact。config 和 changed keys 只含本批 targets 的 refreshKeys 并集；context 不提供 config store 路径。`artifactSources` 可列出当前 surface/scope 的 Skill 静态来源，用于按声明读取 sourceDirs，不扩大本批配置或输出范围。
 
-context home 和进程的 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 都是请求级临时路径。这是输入隔离，不是 OS sandbox。user 配置按 default < user 合并，project 配置按 default < user < project 合并，交给 renderer 前已验证。
+context home 和进程的 `AW_HOME`、`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 都是请求级临时路径。这是输入隔离，不是 OS sandbox。配置按 defaults(compileSchema(P)) < user.common < user.platforms[P] 合并，交给 renderer 前已验证；项目 scope 不增加项目配置值。
 
 同一 surface 与 scope 内 target ID 唯一；不同 surface 或不重叠 scope 可以复用 ID。共享 codex-native projection 的 target ID 与 Skill key 分别在整个 projection 中全局唯一。
 
 ## 敏感字段与批次
 
-所有 codex.skill delivery、claude.skill 和 agent-skills.skill 的 refreshKeys 都不能包含 sensitive 字段；命令 target 及其依赖闭包同样必须非敏感，其它非 Skill target 可以使用。相同 surface/scope 同时包含 Skill 和读取 sensitive 字段的非 Skill target 时，AW 分成两批请求。两批使用相同且不可变的 previousArtifacts；每批只获得自己的配置，并返回精确匹配其 ID 的 plan。
+所有 codex.skill、claude.skill 和 agent-skills.skill 的 refreshKeys 都不能包含 sensitive 字段；命令 target 及其依赖闭包同样必须非敏感，其它非 Skill target 可以使用。相同 surface/scope 同时包含 Skill 和读取 sensitive 字段的非 Skill target 时，AW 分成两批请求。两批使用相同且不可变的 previousArtifacts；每批只获得自己的配置，并返回精确匹配其 ID 的 plan。
 
-## 生成 Skill 与 Native delivery
+## 生成 Skill 与 Native 包体
 
 Skill target 先合并声明的 sourceDirs，再以 content.files 覆盖安全的 UTF-8 相对文件。最终树保留 README、平台原生调用 metadata 和完整资源闭包。role、instruction 与 Skill 的静态 key 必须匹配 plan。
 
-codex.skill 按当前 capability 显式选择 delivery。共享 native 使用 `mode: "codex-native"`、`identity: "shared"`、`renderProfile: "user"`；其他支持的模式按公开合同声明。非 codex.skill target 不声明 delivery。
-
-共享 native 的 refresh key 只能引用 user-only、非敏感字段；渲染使用 user 有效配置，即使任务 scope 为 project。动态 native Skill 不能与静态 Skill 同名。同一插件的全部 native target 使用相同 scopes；存在静态 Codex Skill、MCP、Hook 或 App 时，scopes 固定为 project 与 user。Slash command 不因此变成 native 组件约束的成员。
+codex.skill 与 claude.skill 固定进入各自共享 Native 包，不声明 delivery。共享包体按 user 身份渲染，仍使用相应 Codex/Claude 平台配置；project activation 单独处理。动态 Skill 不能与同平台静态 Skill 同名。其它组件的 scope 规则以当前 validator 为准，不把包体 user 身份误作项目不受支持。
 
 ## 共享资源与输出
 
@@ -36,10 +34,8 @@ AW 在 staging/live 写入前扫描内容。长度至少 8 个 Unicode code poin
 
 ## AW-owned 命令包
 
-独立包使用 `{kind:"aw",name:"managed-commands"}` 和固定 scope，只设置 `AW_PLUGIN_SURFACE=managed-commands`，不设置 platform/distribution。从 commandSources 按 packageKey 读取本批只读 bundle 目录。动态集合每次完整返回 entries，空集合撤销本集合命令；生成包返回完整普通配置文件集，不覆盖可执行 entry 或保留 receipt。沿用 ArtifactPlan v2 和原输出限值；字段由 managed-commands capability surface 提供。
+独立包使用 `{kind:"aw",name:"managed-commands"}` 和固定 scope，只设置 `AW_PLUGIN_SURFACE=managed-commands`，不设置 platform，配置只读公共 schema/common。从 commandSources 按 packageKey 读取本批只读 bundle 目录。动态集合每次完整返回 entries，空集合撤销本集合命令；生成包返回完整普通配置文件集，不覆盖可执行 entry 或保留 receipt。沿用 ArtifactPlan v2 和原输出限值；字段由 managed-commands capability surface 提供。
 
-## Portable distribution
+## Portable 目标
 
-在 agent-skills distribution 下，环境设置 `AW_PLUGIN_DISTRIBUTION=agent-skills`，不设置 `AW_PLUGIN_PLATFORM`。context 的 surface 为 `{ "kind": "distribution", "name": "agent-skills" }`，distribution 为 agent-skills，scope 继续区分 user/project。
-
-按 sourceDirs、distribution skillRuntimeFiles、renderer files 的合同顺序形成 final。为当前请求的每个 target 返回 artifact；disabled target 也返回 disabled，不直接省略。声明与导出使用 Portable 分发（`references/portable-skills.md`），不能以 Native final 代替其验证。
+动态 Portable target 显式指定五个 canonical platform 之一。renderer 接收实际 platform；不能用抽象 agent-skills profile 推断配置或 backend。按 sourceDirs、该平台 runtime files、renderer files 的顺序形成 final。每个请求 ID 都返回产物或明确 disabled 状态，不直接省略。声明与导出使用 Portable 分发（`references/portable-skills.md`），不能以 Native final 代替其验证。

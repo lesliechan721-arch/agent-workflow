@@ -20,7 +20,7 @@ MCP/App 的凭据值不进入 Skill、日志或分发包。生命周期由实际
 
 ## 声明配置
 
-插件配置使用 Config Definition v4，在 manifest 的 `config` 中声明 `schemaVersion: 4`，对应 capability 为 `aw.plugin-config.v4`。配置 schema、preset、作用域与验证使用同一合同。
+插件配置使用 Config Definition v5，在 manifest 的 `config` 中声明 `schemaVersion: 5`，对应 capability 为 `aw.plugin-config.v5`。common 与 platforms 保存原始定义；平台按名称替换完整 definition/field 后才展开 $ref。用户值按 defaults < common < platforms[P] 解析，无项目配置值层。
 
 条件对象、固定标量和对象内叶级数组/KV 使用该合同提供的结构能力；保存、呈现和运行资源共用该合同，不另写插件专用校验，也不把容器改存成 JSON 字符串。只在 Agent 内容中说明影响任务选择的非显然规则，字段表和默认值保留在其权威声明。
 
@@ -28,7 +28,7 @@ MCP/App 的凭据值不进入 Skill、日志或分发包。生命周期由实际
 
 配置 helper 只完成合同允许的辅助任务；输出应确定、可测试。不要用 helper 重建另一套配置状态或隐式安装依赖。
 
-需要从另一插件的对象数组选择标量 key 时，使用 v4 `valueRef.plugin`，并显式声明同 source 的直接安装依赖和 `aw.plugin-config-cross-plugin-value-ref.v1`。省略 plugin 仍是本地引用。provider 必须满足原有字段、uniqueBy、类型及非敏感约束；候选使用已保存配置，不读取另一插件的未保存草稿。字段与关联校验以当前 capability registry 和完整作者验证为准，不在 renderer 自建跨插件配置读取。
+需要从另一插件的对象数组选择标量 key 时，使用 `valueRef.plugin`，并显式声明同 source 的直接安装依赖和 `aw.plugin-config-cross-plugin-value-ref.v1`。省略 plugin 仍是本地引用。provider 必须满足原有字段、uniqueBy、类型及非敏感约束；consumer/provider 采用同一平台，候选使用已保存配置，不读取另一插件的未保存草稿。字段与关联校验以当前 capability registry 和完整作者验证为准，不在 renderer 自建跨插件配置读取。
 
 ## 读取本次安装生效的配置
 
@@ -36,7 +36,7 @@ MCP/App 的凭据值不进入 Skill、日志或分发包。生命周期由实际
 
 对受支持的 target，查询 `runtimeConfig` 的当前声明与 capability 要求，声明所需键及其依赖闭包。runtimeConfig 键须属于该 target 声明的 refreshKeys，闭包保持非敏感。AW 在 final Skill 中注入 reader，并按本次安装的有效配置提供值。
 
-从脚本真实调用位置解析该 final 的 reader 和已安装配置。不能读“最新全局 store”替代本产物的生效配置，不能手写保留 receipt 或增加内容一致性门禁。按实际 user/project scope 验证；共享 Codex native projection 的 user 配置规则见 renderer 方法。
+从脚本真实调用位置解析该 final 的 reader 和已安装配置。不能读“最新全局 store”替代本产物的生效配置，不能手写保留 receipt 或增加内容一致性门禁。按实际平台及输出 scope 验证；共享 Native 包体物理身份与平台配置规则见 renderer 方法。
 
 为独立托管包配置运行参数或文件时，采用 托管命令（`references/managed-commands.md`）中的资源与配置方法。
 

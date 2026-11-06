@@ -18,11 +18,11 @@ Skill 脚本需要读取本次安装生效的配置时，采用 组件方法（`
 
 ## 区分 Native 与 Portable
 
-Native 平台是 Codex/Claude；Portable 是显式 `agent-skills` distribution，不增加为第三个 PlatformName。原生声明不自动创建 Portable 包。
+`PlatformName` 仍为 Codex/Claude；公开 `PlatformTarget` 有 codex、claude、antigravity、cursor、opencode、pi、generic 七项。Manifest 顶层 platforms 是唯一支持集合：缺省或空数组表示全部，显式集合不可含未知或重复 ID。依赖支持集合须覆盖消费者，不能用本机选中交集绕过。不要写旧 products、distributions 或 delivery。
 
-skillRuntimeFiles 的 selector 按声明区分：未声明 distributions 时保持 Native 行为，platforms 缺省为 consumer 支持的全部原生平台；仅声明 distributions 时只进入对应分发；同时声明 platforms 与 distributions 时进入两组明确选择的 surface。generatedSkillRuntimeFiles 使用其当前合同支持的 distributions 字段，不照搬 skillRuntimeFiles 的 platforms 字段。核对每项资源实际适用的产物，不能只凭 source 中存在文件就判断 Portable 已包含它。
+统一 skills 来源按具体目标生成。Codex/Claude Skill 固定进入 Native 包；五个 Portable 目标使用标准 Skill 投影，允许 Portable-only 插件。skillRuntimeFiles 和 generatedSkillRuntimeFiles 用 platforms 选择实际平台，省略时覆盖插件支持平台；核对资源最终存在及引用闭包，不用源码存在代替产物验证。
 
-Portable 声明、导出和环境限制见 Portable 分发（`references/portable-skills.md`）。动态 renderer 从当前 surface/context 判断目标，不依赖未设置的环境变量或 bundle 私有布局。
+配置定义 v5 的平台替换先作用于原始 definitions/fields，再展开 $ref；内容消费始终使用当前平台的 common/平台覆盖。Native shared-user 是物理包体身份，不把它转换为 common 或其它平台配置。Portable 声明、导出和限制见 Portable 分发（`references/portable-skills.md`）。
 
 ## 维护 capabilities
 

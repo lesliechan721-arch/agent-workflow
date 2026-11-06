@@ -1,18 +1,14 @@
 {
   "schemaVersion": 3,
   "name": "aw-development-toolkit",
-  "version": "0.1.0-beta.12",
+  "version": "0.1.0-beta.13",
   "description": "处理 AW 插件及 Skill 的来源、开发、验证与物化，维护 Catalog，并通过手动入口发布。",
   "marketplace": {
     "category": "workflow",
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX",
-        "CLAUDE"
-      ]
+      "authentication": "ON_INSTALL"
     }
   },
   "requires": {
@@ -39,6 +35,10 @@
     "agent-skill-toolkit"
   ],
   "skills": "./skills",
+  "platforms": [
+    "codex",
+    "claude"
+  ],
   "interface": {
     "displayName": "AW Development Toolkit",
     "shortDescription": "处理 AW 插件与 Skill，提供来源和物化方法",

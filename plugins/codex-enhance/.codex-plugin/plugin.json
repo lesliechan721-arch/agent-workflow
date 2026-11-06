@@ -1,6 +1,6 @@
 {
   "name": "codex-enhance",
-  "version": "0.2.0-beta.25",
+  "version": "0.2.0-beta.26",
   "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
   "interface": {
     "displayName": "Codex Enhance",
@@ -9,5 +9,6 @@
       "Skills",
       "Agents"
     ]
-  }
+  },
+  "skills": "./codex/skills"
 }

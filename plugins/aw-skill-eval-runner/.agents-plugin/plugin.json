@@ -1,18 +1,14 @@
 {
   "schemaVersion": 3,
   "name": "aw-skill-eval-runner",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.8",
   "description": "准备和验证 AW Skill Eval，核验独立 Audit 与执行条件，通过 aw-skill-eval 运行并验证结果。",
   "marketplace": {
     "category": "workflow",
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX",
-        "CLAUDE"
-      ]
+      "authentication": "ON_INSTALL"
     }
   },
   "requires": {
@@ -28,6 +24,10 @@
     "agent-skill-toolkit"
   ],
   "skills": "./skills",
+  "platforms": [
+    "codex",
+    "claude"
+  ],
   "interface": {
     "displayName": "AW Skill Eval Runner",
     "shortDescription": "准备 AW Skill Eval、核验独立准入、执行并验证实际结果",

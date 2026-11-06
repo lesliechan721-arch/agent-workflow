@@ -7,7 +7,7 @@
 - “分析这个 AW Skill 的职责，先不执行代码。”使用源码和声明即可开始。
 - “把共享脚本提供给另一个插件，并让 Skill 能读取它。”核对共享方式、修改位置和实际包。
 - “检查这个 Skill 的 Codex/project 内容。”核对匹配的产物，缺少时说明并准备隔离副本。
-- “把这个 AW Skill 导出为标准 Agent Skills。”核对显式 Portable 声明，再导出所选包。
+- “把这个 AW Skill 导出为标准 Agent Skills。”明确选择具体 Portable 平台，核对插件支持集合，再导出所选包。
 
 Skill 内容采用通用作者方法。用户显式启动的 Reviewer 和 Simplifier 可以采用本技能的 AW 方法，仍各自负责质量判断和候选接受。
 

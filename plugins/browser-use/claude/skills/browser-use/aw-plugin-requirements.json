@@ -3,12 +3,13 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "browser-use",
-    "version": "0.1.0-beta.2"
+    "version": "0.1.0-beta.3"
   },
   "requiredCapabilities": [
     "aw.plugin-manifest.v3",
     "aw.plugin-pre-apply.v1",
-    "aw.plugin-skills.v1"
+    "aw.plugin-skills.v1",
+    "aw.portable-skills.v1"
   ],
-  "digest": "sha256:2a26a844f3597c12df0c084beefe9a1a980a870873f507dbbecf9a76cd4496df"
+  "digest": "sha256:1b33ecd44c9690bdfaa5b01c77b05df814b4314afbe629bf99a0ef1b1ab10962"
 }

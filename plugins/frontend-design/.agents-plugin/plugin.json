@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "frontend-design",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "面向网页与产品界面的通用前端设计，兼顾视觉方向、交互细节和实际验证。",
   "marketplace": {
     "category": "workflow",
@@ -12,6 +12,15 @@
     }
   },
   "skills": "./skills",
+  "platforms": [
+    "codex",
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "generic"
+  ],
   "interface": {
     "displayName": "Frontend Design",
     "shortDescription": "按页面用途设计并完善可用、清晰的前端界面",
@@ -23,7 +32,8 @@
     "aw": {
       "capabilities": [
         "aw.plugin-manifest.v3",
-        "aw.plugin-skills.v1"
+        "aw.plugin-skills.v1",
+        "aw.portable-skills.v1"
       ]
     }
   }

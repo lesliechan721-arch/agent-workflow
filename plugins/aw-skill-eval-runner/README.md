@@ -3,10 +3,11 @@
 准备、验证或执行 AW Agent Skill Eval，复用独立审核并验证运行结果。依赖 `agent-skill-toolkit`。
 
 ```bash
-aw install aw-skill-eval-runner -p codex
+aw plugin targets set codex
+aw plugin install aw-skill-eval-runner --scope user
 ```
 
-也支持 Claude，可将平台改为 `claude`。需要 PATH 中兼容的 `aw` 和 `aw-skill-eval`。包含公开能力 `run-aw-skill-evals`，其它 Skill 也可按当前任务使用它。
+也支持 Claude Code，可改用 `--target claude-code`。需要 PATH 中兼容的 `aw` 和 `aw-skill-eval`。包含公开能力 `run-aw-skill-evals`，其它 Skill 也可按当前任务使用它。
 
 例如：“为这个 Skill 准备 Eval，但不要调用模型。”或“在已批准的预算内运行这个 Spec，使用其当前 Audit。”准备、验证和执行有各自的完成点；只验证 Spec、Audit 或 Result 时不启动模型。用例设计由 Author 负责，Oracle 与异常结果的语义判断由独立 Auditor 负责，本插件落实格式、绑定和运行条件。
 

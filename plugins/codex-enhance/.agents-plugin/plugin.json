@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.25",
+  "version": "0.2.0-beta.26",
   "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
@@ -17,10 +17,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX"
-      ]
+      "authentication": "ON_INSTALL"
     }
   },
   "requires": {
@@ -34,12 +31,16 @@
         "aw.plugin-config.v2",
         "aw.plugin-config.v3",
         "aw.plugin-config.v4",
+        "aw.plugin-config.v5",
         "aw.plugin-manifest.v3"
       ]
     }
   },
   "dependencies": [
     "agent-subagent"
+  ],
+  "platforms": [
+    "codex"
   ],
   "interface": {
     "displayName": "Codex Enhance",
@@ -58,7 +59,7 @@
     }
   },
   "config": {
-    "schemaVersion": 4,
+    "schemaVersion": 5,
     "fields": {
       "quickProfile": {
         "type": "object",
@@ -2000,8 +2001,7 @@
         "id": "codex-explore-skill",
         "platform": "codex",
         "scopes": [
-          "user",
-          "project"
+          "user"
         ],
         "target": "codex.skill",
         "kind": "skill",
@@ -2015,11 +2015,6 @@
           "deepProfile",
           "exploreCustomProfiles"
         ],
-        "delivery": {
-          "mode": "codex-native",
-          "identity": "shared",
-          "renderProfile": "user"
-        },
         "skillKey": "codex-explore",
         "sourceDirs": [
           "./skills/codex-explore"
@@ -2046,8 +2041,7 @@
         "id": "codex-advisor-skill",
         "platform": "codex",
         "scopes": [
-          "user",
-          "project"
+          "user"
         ],
         "target": "codex.skill",
         "kind": "skill",
@@ -2061,11 +2055,6 @@
           "advisorExpertProfile",
           "advisorCustomProfiles"
         ],
-        "delivery": {
-          "mode": "codex-native",
-          "identity": "shared",
-          "renderProfile": "user"
-        },
         "skillKey": "codex-advisor",
         "sourceDirs": [
           "./skills/codex-advisor"
