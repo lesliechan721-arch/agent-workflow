@@ -4305,9 +4305,14 @@ describe('five namespaced write commands', () => {
       } else {
         expect(dependency).toMatchObject({ relation: 'dependency', state, action });
       }
-      expect(nativeCliRunner.mock.calls.every(([invocation]) =>
-        invocation.args.includes('--version')
-        || invocation.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
+      for (const [invocation] of nativeCliRunner.mock.calls) {
+        if (invocation.args.includes('--version')) continue;
+        const pluginIndex = invocation.args.indexOf('plugin');
+        expect(pluginIndex).toBeGreaterThanOrEqual(0);
+        expect(invocation.args.slice(pluginIndex)).toEqual([
+          'plugin', 'list', '--marketplace', 'aw', '--json',
+        ]);
+      }
     },
   );
 

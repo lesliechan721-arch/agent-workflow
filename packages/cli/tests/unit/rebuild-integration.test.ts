@@ -4530,7 +4530,7 @@ describe('rebuild adapter integration', () => {
         pluginId: pluginB.pluginId!, platform: 'codex', scope: 'user', method: 'reinstall',
       }], {
         cwd: isolation.layout.fixtureCwd,
-      }, { env: isolation.env, nativeCliRunner: runner,
+      }, { env: isolation.env, nativeCliRunner: runner, codexManager: SYSTEM_CODEX_MANAGER,
         executionInput: native.executionInput });
     } finally {
       await native.dispose();
