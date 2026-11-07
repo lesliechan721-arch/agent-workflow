@@ -26,7 +26,7 @@ Windows 原子 JSON 的有界重试使用文件系统失败注入验证短暂占
 
 插件入口实时输出 `AW_PLUGIN_TEST` 进度，包含插件、目标平台、文件、用例开始/结果、耗时及诊断；运行中每 30 秒输出心跳。进度事件在输出前脱敏。测试入口只将明确为 `1` 的 `AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS` 传给子测试；该例外不开放其它宿主变量或长时资格开关。敏感值替换按字段进行，数值命中敏感值时变成脱敏字符串，事件仍为有效 JSON。原始 stdout/stderr 仍在该插件进程结束后整体脱敏输出，以保留跨写入块的敏感值保护。`--test-file <plugin-relative-path>` 只运行一个已声明文件，找不到时失败；它只接受单个插件且不能与 `--exclude-test-file` 同用。`--exclude-test-file <plugin-relative-path>` 在分片前排除该精确文件；CI 必须另行运行被排除的文件。
 
-Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。第 3 片同时运行完整的串行 integration process-lifecycle、命令诊断与超时收尾回归和 pack smoke，全部分片成功才满足发布门禁。其他平台保留入口默认值。
+Windows x64 CI 的普通 integration 分为三个独立 runner 的 Vitest shard，每片默认使用 1 worker；仓库变量 `AW_TEST_WORKERS` 的显式配置优先。写命令按 Native 命令、Catalog、恢复、依赖放置、清理、TUI、CLI runtime、配置应用和真实插件闭环拆为九个文件，共用 `tests/helpers/write-command-fixture.ts`。第 3 片同时运行完整的串行 integration process-lifecycle、命令诊断与超时收尾回归和 pack smoke，均衡负载时须计入这些串行步骤。新增或重命名文件后，在 `packages/cli` 用 `node ../../scripts/test/run-vitest.mjs list --project integration tests/integration --shard <index/3> --json` 收集三片，核对覆盖完整且互斥，并按实际 CI 耗时检查分布；Vitest 3.2.4 的 `list --filesOnly` 不执行 shard 分配，不能用它验证分片。全部分片成功才满足发布门禁。其他平台保留入口默认值。
 
 Linux Node 22/24 的普通测试按 Node 版本和 unit/integration 分为四个独立 runner。每个 runner 正式 build 后运行对应入口；unit 入口包含三个 package 的单元测试及 `test:workers`，随后运行 `test:types`；integration 入口包含普通 integration 和串行 process-lifecycle。各入口保留原有 worker 约束。
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import type { PluginConfigReferenceContext } from '@lesliechan721/aw-plugin-core/manifest';
-import { compilePluginConfigDefinition, type PlatformTarget, type PluginConfigCompiledDefinition } from '@lesliechan721/aw-plugin-core/manifest';
+import { selectPluginConfigProfile, type PlatformTarget, type PluginConfigCompiledDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   ArtifactPlan,
@@ -189,7 +189,7 @@ export async function resolveArtifactRenderConfig(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedArtifactRenderConfig> {
   const pluginName = options.pluginName ?? options.manifest.name;
-  const schema = options.manifest.config ? compilePluginConfigDefinition(options.manifest.config, options.platform).fields : undefined;
+  const schema = options.manifest.config ? selectPluginConfigProfile(options.manifest.config, options.platform).fields : undefined;
   if (!schema) {
     const userStore = await readPluginConfigStore({
       sourceId: options.sourceId,

@@ -10,7 +10,7 @@ import {
 } from '@lesliechan721/agent-skill-eval'
 import {
   calculateCatalogWorkspaceSourceIdentity,
-  compilePluginConfigDefinition,
+  selectPluginConfigProfile,
   PLATFORM_TARGETS,
   isPortablePlatformTarget,
   type PlatformTarget,
@@ -563,9 +563,9 @@ export async function resolvePortablePluginProfileConfig(options: {
     const resolved = resolveReviewPluginProfileConfig({ plugin: options.plugin, plugins: options.plugins,
       platform: options.platform, scope: options.scope, config: options.offlineConfig })
     const config: ResolvedArtifactRenderConfig = {
-      mode: 'artifact-render', targetScope: options.scope, schema: compilePluginConfigDefinition(options.plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform).fields,
+      mode: 'artifact-render', targetScope: options.scope, schema: selectPluginConfigProfile(options.plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform).fields,
       values: resolved.values, sources: {
-        ...Object.fromEntries(Object.keys(compilePluginConfigDefinition(options.plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform).fields).map((key) => [key, 'missing' as const])),
+        ...Object.fromEntries(Object.keys(selectPluginConfigProfile(options.plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform).fields).map((key) => [key, 'missing' as const])),
         ...resolved.sources,
       }, issues: [], stores: {},
     }

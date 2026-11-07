@@ -7,7 +7,7 @@ import {
   AW_RUNTIME_NATIVE_RECEIPT_PATH,
   createRuntimeConfigBinding,
   createRuntimeConfigSnapshot,
-  compilePluginConfigDefinition,
+  selectPluginConfigProfile,
   getPluginConfigDependencyKeys,
   type RuntimeConfigBinding,
   type RuntimeConfigSnapshot,
@@ -47,7 +47,7 @@ export function createArtifactRuntimeConfigSnapshots(options: {
       skillKey: target.skillKey!,
     };
     if (!options.manifest.config) throw new Error('runtimeConfigInvalid: Runtime config requires a config definition.');
-    const definition = options.config.definition ?? compilePluginConfigDefinition(options.manifest.config, options.platform);
+    const definition = options.config.definition ?? selectPluginConfigProfile(options.manifest.config, options.platform);
     const dependencyKeys = new Set(getPluginConfigDependencyKeys(definition, target.runtimeConfig.keys));
     if (options.config.issues.some((issue) => dependencyKeys.has(issue.key))) {
       throw new Error('runtimeConfigInvalid: Effective runtime config dependencies are invalid; fix config and sync or reinstall.');

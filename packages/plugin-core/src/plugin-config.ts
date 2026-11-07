@@ -1825,6 +1825,19 @@ function selectConfigProfile(
     presentation: profile === undefined ? definition.presentation : profile.presentation }
 }
 
+/**
+ * Select a profile from an already normalized definition without validating it again.
+ * Fields and presentation share the input's mutable objects; copy them before editing.
+ */
+export function selectPluginConfigProfile(
+  definition: PluginConfigDefinition,
+  platform?: PlatformTarget,
+  path = 'config',
+): PluginConfigCompiledDefinition {
+  if (platform !== undefined && !isPlatformTarget(platform)) throw new Error(`Invalid ${path}.platform: unknown config platform.`)
+  return selectConfigProfile(definition, platform)
+}
+
 /** Compile one canonical platform, or the common profile when platform is omitted. */
 export function compilePluginConfigDefinition(
   value: unknown,

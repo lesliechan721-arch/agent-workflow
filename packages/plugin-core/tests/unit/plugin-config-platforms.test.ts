@@ -5,10 +5,12 @@ import {
   compilePluginConfigDefinition,
   getPluginConfigReferenceChoices,
   normalizePluginConfigDefinition,
+  selectPluginConfigProfile,
   validatePluginConfigCandidate,
 } from '../../src/plugin-config.js'
 import type { PluginConfigReferenceContext, PluginConfigScalarField } from '../../src/types.js'
 import { createBundleSourceManifest, deriveAwCapabilitiesFromManifest, validatePluginManifest } from '../../src/manifest.js'
+import { PLATFORM_TARGETS } from '../../src/platform-support.js'
 
 const ref = (name: string) => ({ $ref: `#/config/definitions/${name}` })
 
@@ -45,6 +47,9 @@ describe('Config platform profiles', () => {
     expect(compilePluginConfigDefinition(normalized).fields.profile?.default).toEqual({ model: 'common' })
     expect(compilePluginConfigDefinition(normalized, 'cursor').fields.cursorOnly?.default).toBe(false)
     expect(compilePluginConfigDefinition(normalized, 'generic').fields.cursorOnly).toBeUndefined()
+    for (const platform of [undefined, ...PLATFORM_TARGETS]) {
+      expect(selectPluginConfigProfile(normalized, platform)).toEqual(compilePluginConfigDefinition(normalized, platform))
+    }
     const manifest = validatePluginManifest('/tmp/platform-config', {
       schemaVersion: 3, name: 'platform-config', version: '1.0.0', description: 'Example',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
@@ -57,6 +62,29 @@ describe('Config platform profiles', () => {
     expect(compilePluginConfigDefinition(bundled, 'codex')).toEqual(codex)
   })
 
+  it('selects current mutable normalized profiles without freezing or retaining an earlier selection', () => {
+    const definition = normalizePluginConfigDefinition({ schemaVersion: 5,
+      fields: { mode: { type: 'string', default: 'common' } },
+      platforms: { codex: { fields: { mode: { type: 'string', default: 'codex' } } } },
+    })
+    expect(selectPluginConfigProfile(definition).fields).toBe(definition.fields)
+    const profile = selectPluginConfigProfile(definition, 'codex')
+    expect(profile.fields.mode?.default).toBe('codex')
+    definition.fields = { mode: { type: 'string', title: 'Common mode', default: 'updated common' } }
+    profile.fields.mode!.title = 'Codex mode'
+    expect(selectPluginConfigProfile(definition, 'codex').fields.mode?.title).toBe('Codex mode')
+    expect(selectPluginConfigProfile(definition, 'generic').fields.mode?.title).toBe('Common mode')
+    expect(selectPluginConfigProfile(definition).fields.mode?.default).toBe('updated common')
+    const compiled = compilePluginConfigDefinition(definition, 'codex')
+    compiled.fields.mode!.title = 'Isolated compile'
+    expect(selectPluginConfigProfile(definition, 'codex').fields.mode?.title).toBe('Codex mode')
+    const legacy = normalizePluginConfigDefinition({ fields: { enabled: { type: 'boolean' } } })
+    expect(selectPluginConfigProfile(legacy, 'codex')).toEqual(legacy)
+    expect(() => selectPluginConfigProfile(definition, 'agent-skills' as never, 'plugin.config'))
+      .toThrow('Invalid plugin.config.platform: unknown config platform.')
+    expect(() => selectPluginConfigProfile(legacy, 'agent-skills' as never)).toThrow('config.platform')
+  })
+
   // Invalid inactive profiles and unused definitions must fail at the definition boundary.
   it('rejects invalid declarations in every profile, including unused definitions and combined limits', () => {
     const base = { schemaVersion: 5, fields: {} }
@@ -67,7 +95,13 @@ describe('Config platform profiles', () => {
       { definitions: JSON.parse('{"__proto__":{"type":"string"}}') },
       { presentation: { groups: [{ id: 'missing', title: 'Missing', fields: ['absent'] }] } },
     ]) {
-      expect(() => normalizePluginConfigDefinition({ ...base, platforms: { pi: branch } })).toThrow()
+      const invalid = { ...base, platforms: { pi: branch } }
+      expect(() => normalizePluginConfigDefinition(invalid)).toThrow()
+      expect(() => compilePluginConfigDefinition(invalid, 'codex')).toThrow()
+    }
+    for (const invalid of [null, [], 1, { fields: { bad: { type: 'unknown' } } },
+      { fields: { bad: { type: 'string', validation: { pattern: '(', maxLength: 10 } } } }]) {
+      expect(() => compilePluginConfigDefinition(invalid, 'codex')).toThrow()
     }
     expect(() => normalizePluginConfigDefinition({ ...base, platforms: { unknown: {} } })).toThrow()
     expect(() => compilePluginConfigDefinition(base, 'agent-skills' as never)).toThrow()

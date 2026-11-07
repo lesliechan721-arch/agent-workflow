@@ -539,13 +539,45 @@ describe('AW Catalog Workspace v1', () => {
         artifactDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
         contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
       })
-      // One snapshot hash and one shared entry-digest pass.
-      expect(read.mock.calls.filter(([file]) => file === payload)).toHaveLength(2)
+      // Snapshot and entry digests share one payload read in this validation.
+      expect(read.mock.calls.filter(([file]) => file === payload)).toHaveLength(1)
     } finally {
       read.mockRestore()
     }
     await fs.appendFile(payload, 'changed')
     await expect(validateCatalogSnapshotTransport(built.outputRoot)).rejects.toThrow(/artifactDigest/u)
+  })
+
+  it('rejects a payload changed after its snapshot hash was read', async () => {
+    // Test Value Gate: sharing digest reads must not hide a file changed during validation.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          await fs.writeFile(path.join(outputRoot, 'payload.bin'), 'original')
+        },
+      },
+    })
+    const payload = path.join(built.outputRoot, 'plugins', String(manifest.name), 'payload.bin')
+    const originalRead = fs.readFile.bind(fs)
+    let changed = false
+    const read = vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+      const bytes = await originalRead(...args)
+      if (args[0] === payload && !changed) {
+        changed = true
+        await fs.writeFile(payload, 'changed while validating')
+      }
+      return bytes
+    })
+    try {
+      await expect(validateCatalogSnapshotTransport(built.outputRoot)).rejects.toThrow(/artifactDigest/u)
+    } finally {
+      read.mockRestore()
+    }
   })
 
   it.skipIf(process.platform === 'win32')('validates executable Catalog bundles after Windows drops Unix mode bits', async () => {

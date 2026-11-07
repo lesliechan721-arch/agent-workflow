@@ -5,7 +5,7 @@ import type {
   PluginArtifactTargetDefinition,
   Scope,
 } from '../types.js';
-import { compilePluginConfigDefinition, getManagedCommandArtifactTargets, type PlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
+import { selectPluginConfigProfile, getManagedCommandArtifactTargets, type PlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 
 export type ArtifactRequestDeclaration = PluginArtifactTargetDefinition | (ManagedCommandArtifactTargetDefinition & {
   distribution?: undefined;
@@ -46,7 +46,7 @@ export function requiresNonSensitiveArtifactInput(target: Pick<ArtifactRequestDe
 }
 
 function sensitiveConfigKeys(manifest: NormalizedPluginManifest, platform?: PlatformTarget): Set<string> {
-  return new Set(Object.entries(manifest.config ? compilePluginConfigDefinition(manifest.config, platform).fields : {})
+  return new Set(Object.entries(manifest.config ? selectPluginConfigProfile(manifest.config, platform).fields : {})
     .filter(([, field]) => field.sensitive === true)
     .map(([key]) => key));
 }

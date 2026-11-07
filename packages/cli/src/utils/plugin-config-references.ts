@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import {
   validatePluginConfigCandidate,
-  compilePluginConfigDefinition,
+  selectPluginConfigProfile,
   PLATFORM_TARGETS,
   type PlatformTarget,
   getPluginConfigDependencyFields,
@@ -42,7 +42,7 @@ export interface PluginConfigReferenceEvidence {
 function createReferenceEvidence(plugin: PluginMeta, platform?: PlatformTarget): PluginConfigReferenceEvidence {
   return { plugin: plugin.manifest.name, platform: platform ?? null, sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
     logicalIdentity: plugin.catalogLogicalIdentity,
-    definitionDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify({ platform: platform ?? null, config: plugin.manifest.config ? compilePluginConfigDefinition(plugin.manifest.config, platform) : null,
+    definitionDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify({ platform: platform ?? null, config: plugin.manifest.config ? selectPluginConfigProfile(plugin.manifest.config, platform) : null,
       dependencies: plugin.manifest.dependencies ?? [] })).digest('hex')}`,
     stores: {}, sources: {} };
 }
@@ -129,7 +129,7 @@ export async function resolvePluginConfigReferenceContext(options: {
   const entries: Record<string, PluginConfigReferenceContext['plugins'][string]> = {};
   for (const plugin of closure) {
     if (!plugin.manifest.config) continue;
-    entries[plugin.manifest.name] = { definition: compilePluginConfigDefinition(plugin.manifest.config, options.platform),
+    entries[plugin.manifest.name] = { definition: selectPluginConfigProfile(plugin.manifest.config, options.platform),
       dependencies: plugin.manifest.dependencies ?? [] };
   }
   const completeContext = { ...context, plugins: entries };
@@ -205,17 +205,17 @@ export interface PluginConfigReferenceConsumerImpact {
 }
 
 function providerReferences(consumer: PluginMeta, provider: PluginMeta, plugins: readonly PluginMeta[], platform?: PlatformTarget): Array<{ field: string; key: string }> {
-  const definition = consumer.manifest.config ? compilePluginConfigDefinition(consumer.manifest.config, platform) : undefined;
+  const definition = consumer.manifest.config ? selectPluginConfigProfile(consumer.manifest.config, platform) : undefined;
   if (!definition) return [];
   const context: PluginConfigReferenceContext = { plugin: consumer.manifest.name, platform,
     dependencies: consumer.manifest.dependencies ?? [],
     plugins: Object.fromEntries(plugins.filter((plugin) => plugin.manifest.config).map((plugin) => [plugin.manifest.name, {
-      definition: compilePluginConfigDefinition(plugin.manifest.config!, platform), dependencies: plugin.manifest.dependencies ?? [],
+      definition: selectPluginConfigProfile(plugin.manifest.config!, platform), dependencies: plugin.manifest.dependencies ?? [],
     }])) };
   return getPluginConfigDependencyFields(definition, Object.keys(definition.fields), context)
     .filter((entry) => entry.plugin === provider.manifest.name)
     .flatMap(({ field }) => {
-      const schema = provider.manifest.config ? compilePluginConfigDefinition(provider.manifest.config, platform).fields[field] : undefined;
+      const schema = provider.manifest.config ? selectPluginConfigProfile(provider.manifest.config, platform).fields[field] : undefined;
       return schema?.type === 'array' && schema.items.type === 'object' && schema.validation?.uniqueBy
         ? [{ field, key: schema.validation.uniqueBy }] : [];
     });
@@ -258,11 +258,11 @@ export async function analyzePluginConfigReferenceMutation(options: {
     unreadableConsumers: [] as string[], removesCandidates: false, evidence: [] as unknown[] };
   const profiles: Array<PlatformTarget | undefined> = options.platform ? [options.platform] : [undefined, ...PLATFORM_TARGETS];
   const potentialFields = profiles.some((platform) => options.plugin.manifest.config
-    && Object.values(compilePluginConfigDefinition(options.plugin.manifest.config, platform).fields).some((field) => field.type === 'array' && field.items.type === 'object'));
+    && Object.values(selectPluginConfigProfile(options.plugin.manifest.config, platform).fields).some((field) => field.type === 'array' && field.items.type === 'object'));
   if (!potentialFields) return result;
   const identity = { sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
     logicalIdentity: options.plugin.catalogLogicalIdentity };
-  const canRemove = profiles.some((platform) => Object.entries(compilePluginConfigDefinition(options.plugin.manifest.config!, platform).fields).some(([field, schema]) => {
+  const canRemove = profiles.some((platform) => Object.entries(selectPluginConfigProfile(options.plugin.manifest.config!, platform).fields).some(([field, schema]) => {
     if (schema.type !== 'array' || schema.items.type !== 'object') return false;
     const key = schema.validation?.uniqueBy;
     if (!key) return false;
