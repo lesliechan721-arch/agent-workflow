@@ -73,7 +73,6 @@ export interface RecoveryOptions {
   yes?: boolean;
   force?: boolean;
   refresh?: boolean;
-  allowManagedCodexInstall?: boolean;
   scriptTimeoutMs?: number;
   interactive?: boolean;
   prompt?: CliPrompt;
@@ -274,7 +273,6 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
     commandOptions: {
       cwd: plan.context.executionCwd, scope: plan.options.scope, platform,
       yes: plan.options.yes,
-      allowManagedCodexInstall: plan.options.allowManagedCodexInstall,
       scriptTimeoutMs: plan.options.scriptTimeoutMs,
       ...(plan.options.dependencyScopeOverrides ? { dependencyScopeOverrides: plan.options.dependencyScopeOverrides } : {}),
       ...(command === 'cleanup' ? { force: plan.options.force } : {}),
@@ -1034,11 +1032,11 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
         return completeReceipt(receipt);
       }
       const previewManager = plan.nativeGroups.map((group) => group.preview.codexManagerPreview)
-        .find((entry) => entry?.state === 'system' || entry?.state === 'cached');
+        .find((entry) => entry?.state === 'system');
       const session = plan.runtime.codexObservationSession ?? (plan.nativeGroups.length ? await createCodexNativeObservationSession({
         exactCwd: plan.context.executionCwd, env: plan.context.env,
         runner: plan.runtime.nativeCliRunner ?? getDefaultNativeCliRunner(),
-        manager: plan.runtime.codexManager ?? (previewManager?.state === 'system' || previewManager?.state === 'cached'
+        manager: plan.runtime.codexManager ?? (previewManager?.state === 'system'
           ? previewManager.manager : undefined),
       }) : undefined);
       const nativeRuntime = { ...plan.runtime, awHomeMutationToken: token,

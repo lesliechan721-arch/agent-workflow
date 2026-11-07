@@ -493,9 +493,10 @@ export interface OperationEvidence {
   operationPlan?: OperationPlan;
   preparationWarnings?: string[];
   codexManager?: {
-    state: 'system' | 'cached' | 'requires-install';
-    packageName: '@openai/codex';
+    state: 'system';
+    source: 'system' | 'app';
     version: string;
+    diagnostics?: string[];
   };
   config?: ConfigOperationEvidence;
   configBatch?: {
@@ -5187,8 +5188,7 @@ export class TuiController {
           target.state === 'failed' || target.state === 'skipped') ?? [];
         const managerFailureCode = unsuccessfulTargets.map((target) => target.errorCode).find((code) =>
           code === 'codexSystemCliUnsupported'
-          || code === 'managedCodexAuthorizationRequired'
-          || code === 'managedCodexUnavailable');
+          || code === 'codexCliNotFound');
         if (managerFailureCode) {
           return this.#setBlocked(operationId, managerFailureCode, {
             intent: ticket.intent,
@@ -5556,13 +5556,11 @@ export class TuiController {
     if (!this.#operationDiagnostics.has(operationId)) {
       this.#captureThrownProjection(operationId, undefined, code, 'execute', options?.intent);
     }
-    const message = code === 'managedCodexAuthorizationRequired'
-      ? '操作在插件写入前停止。请在 Review 中确认获取 Codex runtime，或在命令行传入 --allow-managed-codex-install。'
+    const message = code === 'codexCliNotFound'
+      ? '操作在插件写入前停止。未找到本机 Codex CLI。请检查 PATH，或安装 Codex CLI 或 Codex App 后重试。'
       : code === 'codexSystemCliUnsupported'
-        ? '操作在插件写入前停止。系统 Codex CLI 版本不受支持。请升级官方 Codex CLI 后重试。'
-        : code === 'managedCodexUnavailable'
-          ? '操作在插件写入前停止。Codex runtime 当前不可用。请重试、升级 AW，或安装官方 Codex CLI。'
-          : code === 'portableSkillsCliInstallFailed'
+        ? '操作在插件写入前停止。本机 Codex CLI 版本不受支持或无法确认。请升级或修复本机 Codex CLI 或 Codex App 后重试。'
+        : code === 'portableSkillsCliInstallFailed'
       ? 'Skills CLI 安装失败。请修改 Agent 或重试。'
       : options?.writeMayHaveCompleted
       ? '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。'

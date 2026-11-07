@@ -26,6 +26,13 @@ interface DistNativeCliModule {
   setNativeCliRunnerOverrideForTests: (runner: NativeCliRunner | null) => void;
 }
 
+interface DistCodexDiscoveryModule {
+  setCodexDiscoveryOverridesForTests: (options: {
+    macApplicationsDirectories: readonly string[];
+    queryRunner: NativeCliRunner;
+  } | undefined) => void;
+}
+
 interface DistTestPathFenceModule {
   setTestPathFenceHookForTests: (hook: TestPathFenceHook | null) => void;
 }
@@ -33,6 +40,7 @@ interface DistTestPathFenceModule {
 interface DistStateModules {
   paths: DistPathsModule | null;
   nativeCli: DistNativeCliModule | null;
+  codexDiscovery: DistCodexDiscoveryModule | null;
   testPathFence: DistTestPathFenceModule | null;
 }
 
@@ -44,6 +52,7 @@ interface CachedDistStateModules {
 const distStateModulePaths = {
   paths: 'src/utils/paths.js',
   nativeCli: 'src/utils/native-cli.js',
+  codexDiscovery: 'src/utils/codex-executable-discovery.js',
   testPathFence: 'src/utils/test-path-fence.js',
 } as const;
 
@@ -109,11 +118,13 @@ async function loadDistStateModules(cliPackageRoot: string): Promise<DistStateMo
 
   const rawPaths = await importDistModule<DistPathsModule>(cliPackageRoot, distStateModulePaths.paths);
   const rawNativeCli = await importDistModule<DistNativeCliModule>(cliPackageRoot, distStateModulePaths.nativeCli);
+  const rawCodexDiscovery = await importDistModule<DistCodexDiscoveryModule>(cliPackageRoot, distStateModulePaths.codexDiscovery);
   const rawTestPathFence = await importDistModule<DistTestPathFenceModule>(cliPackageRoot, distStateModulePaths.testPathFence);
 
   const modules = {
     paths: hasFunctionExport(rawPaths, 'setEmbeddedPluginsRootOverrideForTests') ? rawPaths : null,
     nativeCli: hasFunctionExport(rawNativeCli, 'setNativeCliRunnerOverrideForTests') ? rawNativeCli : null,
+    codexDiscovery: hasFunctionExport(rawCodexDiscovery, 'setCodexDiscoveryOverridesForTests') ? rawCodexDiscovery : null,
     testPathFence: hasFunctionExport(rawTestPathFence, 'setTestPathFenceHookForTests') ? rawTestPathFence : null,
   };
 
@@ -157,6 +168,10 @@ export async function installDistStateForTests(
   const modules = await loadDistStateModules(cliPackageRoot);
 
   modules.paths?.setEmbeddedPluginsRootOverrideForTests(null);
+  modules.codexDiscovery?.setCodexDiscoveryOverridesForTests({
+    macApplicationsDirectories: [],
+    queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }),
+  });
   modules.nativeCli?.setNativeCliRunnerOverrideForTests(createTestNativeCliGuard({
     cwdSource: 'dist runNativeCli()/createCommandExecutionContext() invocation.cwd',
     envSource: 'dist runNativeCli()/createCommandExecutionContext() invocation.env',
@@ -168,6 +183,7 @@ export async function resetDistStateForTests(): Promise<void> {
   for (const { modules } of cachedDistStateModules.values()) {
     modules.paths?.setEmbeddedPluginsRootOverrideForTests(null);
     modules.nativeCli?.setNativeCliRunnerOverrideForTests(null);
+    modules.codexDiscovery?.setCodexDiscoveryOverridesForTests(undefined);
     modules.testPathFence?.setTestPathFenceHookForTests(null);
   }
 }

@@ -322,14 +322,14 @@ describe('Codex native observation session', () => {
     }
   });
 
-  it('clears system snapshots when a managed manager is selected', async () => {
+  it('clears system snapshots when an App manager is selected', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const calls: NativeCliInvocation[] = [];
-    const managedManager = {
-      kind: 'aw-managed' as const,
-      version: '0.151.0',
-      command: '/managed/node',
-      argsPrefix: ['/managed/codex.js'],
+    const appManager = {
+      kind: 'app' as const,
+      version: '0.153.0',
+      command: '/Applications/Codex.app/Contents/Resources/codex',
+      argsPrefix: [],
     };
     const session = await createCodexNativeObservationSession({
       exactCwd: isolation.layout.fixtureCwd,
@@ -345,11 +345,11 @@ describe('Codex native observation session', () => {
     try {
       expect((await session.inspectPlugin({ pluginId: 'demo@aw' })).observation)
         .toEqual({ state: 'unobserved' });
-      session.setManager(managedManager);
+      session.setManager(appManager);
       expect((await session.inspectPlugin({ pluginId: 'demo@aw' })).observation)
         .toMatchObject({ state: 'observed', value: 'installed' });
       expect(calls.filter((call) => call.command === 'codex')).toHaveLength(2);
-      expect(calls.filter((call) => call.command === managedManager.command)).toHaveLength(2);
+      expect(calls.filter((call) => call.command === appManager.command)).toHaveLength(2);
     } finally {
       await session.dispose();
     }

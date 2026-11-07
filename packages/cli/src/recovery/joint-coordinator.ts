@@ -444,8 +444,8 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     plan.receipt = mergeReceipts(plan, children.map((child) => child.receipt));
     const observedManager = children.flatMap((child) => child.nativeGroups)
       .map((group) => group.preview.codexManagerPreview)
-      .find((entry) => entry?.state === 'system' || entry?.state === 'cached');
-    if (observedManager?.state === 'system' || observedManager?.state === 'cached') {
+      .find((entry) => entry?.state === 'system');
+    if (observedManager?.state === 'system') {
       runtime.codexObservationSession?.setManager(observedManager.manager);
     }
     return plan;

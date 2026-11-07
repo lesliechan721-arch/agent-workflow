@@ -583,12 +583,47 @@ describe('pack smoke', () => {
     const externalNativeBin = await createExternalNativeCliFixture(tempRoot);
     const inheritedPath = Object.entries(envWithoutNodePath)
       .find(([key]) => key.toLowerCase() === 'path')?.[1] ?? '';
+    const externalNodeBin = path.join(tempRoot, 'external-node-bin');
+    await fs.ensureDir(externalNodeBin);
+    if (process.platform === 'win32') {
+      await fs.copyFile(process.execPath, path.join(externalNodeBin, 'node.exe'));
+    } else {
+      await fs.symlink(process.execPath, path.join(externalNodeBin, 'node'));
+    }
+    let gitExecutable: string | undefined;
+    for (const directory of inheritedPath.split(path.delimiter).filter(Boolean)) {
+      const candidate = path.join(directory, process.platform === 'win32' ? 'git.exe' : 'git');
+      if (await fs.pathExists(candidate)) {
+        gitExecutable = await fs.realpath(candidate);
+        break;
+      }
+    }
+    if (!gitExecutable) throw new Error('The pack smoke requires an installed Git executable.');
+    const childToolPath = [externalNativeBin, externalNodeBin];
+    const systemRoot = Object.entries(envWithoutNodePath)
+      .find(([key]) => key.toLowerCase() === 'systemroot')?.[1];
+    // Git source sync also extracts archives with system tar.
+    const systemToolDirectories = process.platform === 'win32'
+      ? [path.dirname(gitExecutable), ...(systemRoot ? [path.join(systemRoot, 'System32')] : [])]
+      : [path.dirname(gitExecutable), '/usr/bin', '/bin'];
+    if (process.platform === 'win32') {
+      // Git needs sh.exe for local transports; the Git executable directory alone is insufficient.
+      const { stdout: gitShellPath } = await execFileAsync(gitExecutable, ['var', 'GIT_SHELL_PATH'], {
+        env: envWithoutNodePath,
+      });
+      systemToolDirectories.push(path.dirname(await fs.realpath(gitShellPath.trim())));
+    }
+    for (const directory of new Set(systemToolDirectories)) {
+      const entries = await fs.readdir(directory);
+      expect(entries.some((entry) => /^codex(?:\.(?:exe|com|cmd|bat))?$/iu.test(entry))).toBe(false);
+      childToolPath.push(directory);
+    }
     const externalAuthoringEnv = {
       ...Object.fromEntries(Object.entries(envWithoutNodePath).filter(([key]) => key.toLowerCase() !== 'path')),
       AW_HOME: path.join(tempRoot, 'external-aw-home'),
       CODEX_HOME: path.join(tempRoot, 'external-codex-home'),
       CLAUDE_CONFIG_DIR: path.join(tempRoot, 'external-claude-home'),
-      PATH: `${externalNativeBin}${path.delimiter}${inheritedPath}`,
+      PATH: childToolPath.join(path.delimiter),
     };
     await Promise.all([
       fs.ensureDir(externalAuthoringEnv.AW_HOME),
@@ -614,14 +649,31 @@ describe('pack smoke', () => {
       bin: { aw: string };
     };
     const installedAwEntry = path.resolve(installedCliRoot, installedCliManifest.bin.aw);
+    const discoveryPrelude = path.join(tempRoot, 'external-codex-discovery.mjs');
+    const installedDiscoveryImport = pathToFileURL(path.join(
+      installedCliRoot, 'dist', 'src', 'utils', 'codex-executable-discovery.js',
+    )).href;
+    await fs.outputFile(discoveryPrelude, [
+      `import { setCodexDiscoveryOverridesForTests } from ${JSON.stringify(installedDiscoveryImport)};`,
+      'setCodexDiscoveryOverridesForTests({',
+      '  macApplicationsDirectories: [],',
+      "  queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }),",
+      '});',
+    ].join('\n'));
+    const discoveryPreludeImport = pathToFileURL(discoveryPrelude).href;
     await expect(fs.pathExists(awBin)).resolves.toBe(true);
     const execAw = async (args: string[], options: ExecFileOptions): Promise<{ stdout: string; stderr: string }> => {
       const stage = `aw ${args.slice(0, 3).join(' ')}`;
       markStage(`${stage} start`);
+      const commandEnv = options.env ?? process.env;
       const result = await execFileAsync(
         process.platform === 'win32' ? process.execPath : awBin,
         [...(process.platform === 'win32' ? [installedAwEntry] : []), ...args],
-        { ...options, encoding: 'utf8' },
+        { ...options, encoding: 'utf8', env: {
+          ...Object.fromEntries(Object.entries(commandEnv).filter(([key]) => key.toLowerCase() !== 'path')),
+          PATH: externalAuthoringEnv.PATH,
+          NODE_OPTIONS: [commandEnv.NODE_OPTIONS, `--import=${discoveryPreludeImport}`].filter(Boolean).join(' '),
+        } },
       );
       markStage(`${stage} end`);
       return result;
@@ -677,33 +729,53 @@ describe('pack smoke', () => {
       'utils',
       'codex-manager.js',
     )).href;
+    // Test Value Gate: installed production imports must discover a local CLI without repository modules or managed installation.
     const installedRuntimeHome = path.join(tempRoot, 'installed-manager-aw-home');
-    markStage('installed pnpm resolver start');
+    const oldRuntimeRoot = path.join(installedRuntimeHome, 'runtimes', 'codex',
+      '0.151.0', `${process.platform}-${process.arch}`);
+    await fs.outputFile(path.join(oldRuntimeRoot, '.aw-managed-runtime.json'), '{old runtime residue\n');
+    const oldLauncher = path.join(oldRuntimeRoot, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    await fs.outputFile(oldLauncher, 'throw new Error("Old AW runtime must not run");\n');
+    const oldRuntimeFiles = await listFilesRecursively(oldRuntimeRoot);
+    const oldRuntimeMarker = await fs.readFile(path.join(oldRuntimeRoot, '.aw-managed-runtime.json'), 'utf8');
+    markStage('installed local Codex resolver start');
     const installedManagerProbe = await execFileAsync(
       process.execPath,
       [
         '--input-type=module',
         '--eval',
         [
+          "import path from 'node:path';",
           'const { resolveCodexManager } = await import(process.argv[1]);',
-          'let pnpmEntry;',
+          'const awHome = process.argv[2];',
+          'const fixtureBin = process.argv[3];',
+          'const discovery = {',
+          '  macApplicationsDirectories: [],',
+          "  queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }),",
+          '};',
+          'const env = { ...process.env, AW_HOME: awHome,',
+          '  PATH: [fixtureBin, process.argv[4]].join(path.delimiter) };',
+          'const manager = await resolveCodexManager({ ...discovery, env });',
+          'const missingCalls = [];',
+          'let missingCode;',
           'try {',
           '  await resolveCodexManager({',
-          "    env: { ...process.env, AW_HOME: process.argv[2], PATH: '' },",
-          '    authorizer: async () => true,',
+          '    ...discovery, env: { ...env, PATH: "" },',
           '    runner: async (invocation) => {',
-          '      pnpmEntry = invocation.args[0];',
-          "      return { exitCode: 1, stdout: '', stderr: '' };",
+          '      missingCalls.push({ command: invocation.command, args: invocation.args });',
+          "      throw new Error('No CLI may be invoked without a local candidate.');",
           '    },',
           '  });',
           '} catch (error) {',
-          "  if (error?.code !== 'managedCodexUnavailable') throw error;",
+          "  if (error?.code !== 'codexCliNotFound') throw error;",
+          '  missingCode = error.code;',
           '}',
-          "if (!pnpmEntry) throw new Error('The installed CLI did not resolve pnpm.');",
-          'console.log(JSON.stringify({ pnpmEntry }));',
+          'console.log(JSON.stringify({ manager, missingCode, missingCalls }));',
         ].join('\n'),
         installedCodexManagerImport,
         installedRuntimeHome,
+        externalNativeBin,
+        externalNodeBin,
       ],
       {
         cwd: tempRoot,
@@ -714,191 +786,28 @@ describe('pack smoke', () => {
         maxBuffer: 10 * 1024 * 1024,
       },
     );
-    markStage('installed pnpm resolver end');
-    const installedPnpmEntry = (JSON.parse(installedManagerProbe.stdout) as {
-      pnpmEntry: string;
-    }).pnpmEntry;
-    await expect(fs.pathExists(installedPnpmEntry)).resolves.toBe(true);
-    const relativeToInstall = path.relative(globalNodeModules, installedPnpmEntry);
-    expect(path.isAbsolute(relativeToInstall)).toBe(false);
-    expect(relativeToInstall).not.toBe('..');
-    expect(relativeToInstall.startsWith(`..${path.sep}`)).toBe(false);
-    const relativeToRepo = path.relative(repoRoot(), installedPnpmEntry);
-    expect(
-      path.isAbsolute(relativeToRepo)
-      || relativeToRepo === '..'
-      || relativeToRepo.startsWith(`..${path.sep}`),
-    ).toBe(true);
-    expect(installedPnpmEntry).toContain(`${path.sep}pnpm${path.sep}`);
-
-    const parentWorkspace = path.join(tempRoot, 'managed-runtime-parent-workspace');
-    const managedRuntimeHome = path.join(parentWorkspace, 'state', 'aw-home');
-    const localCodexFixture = path.join(tempRoot, 'local-managed-codex');
-    const localCodexPack = path.join(tempRoot, 'local-managed-codex-pack');
-    const parentLockfile = path.join(parentWorkspace, 'pnpm-lock.yaml');
-    const parentMarker = path.join(parentWorkspace, 'workspace.marker');
-    const parentNodeModules = path.join(parentWorkspace, 'node_modules');
-    const workspaceAppNodeModules = path.join(
-      parentWorkspace,
-      'packages',
-      'workspace-app',
-      'node_modules',
-    );
-    await Promise.all([
-      fs.outputJson(path.join(parentWorkspace, 'package.json'), {
-        name: 'managed-runtime-parent-workspace',
-        private: true,
-      }),
-      fs.outputFile(
-        path.join(parentWorkspace, 'pnpm-workspace.yaml'),
-        "packages:\n  - 'packages/*'\n  - 'state/**'\n",
-      ),
-      fs.outputJson(path.join(parentWorkspace, 'packages', 'workspace-app', 'package.json'), {
-        name: 'workspace-app',
-        private: true,
-        dependencies: { 'workspace-marker-package': 'workspace:*' },
-      }),
-      fs.outputJson(path.join(parentWorkspace, 'packages', 'workspace-marker', 'package.json'), {
-        name: 'workspace-marker-package',
-        version: '1.0.0',
-      }),
-      fs.outputJson(path.join(localCodexFixture, 'package.json'), {
-        name: '@openai/codex',
-        version: '0.151.0',
-        bin: { codex: 'bin/codex.js' },
-      }),
-      fs.outputFile(path.join(localCodexFixture, 'bin', 'codex.js'), [
-        "const args = process.argv.slice(2);",
-        "if (args.length === 1 && args[0] === '--version') { console.log('codex-cli 0.151.0'); process.exit(0); }",
-        "if (args[0] === 'plugin' && args[1] === '--help') { console.log('plugin help'); process.exit(0); }",
-        'process.exit(2);',
-      ].join('\n')),
-      fs.outputFile(parentLockfile, [
-        "lockfileVersion: '9.0'",
-        '',
-        'settings:',
-        '  autoInstallPeers: true',
-        '  excludeLinksFromLockfile: false',
-        '',
-        'importers:',
-        '',
-        '  .: {}',
-        '',
-      ].join('\n')),
-      fs.outputFile(parentMarker, 'parent-workspace-marker\n'),
-      fs.outputFile(path.join(parentNodeModules, 'parent-node-modules.marker'), 'unchanged\n'),
-      fs.ensureDir(localCodexPack),
-      fs.ensureDir(path.dirname(managedRuntimeHome)),
-    ]);
-    markStage('pack managed Codex fixture start');
-    await execFileAsync(process.execPath, [npmCli, 'pack', ...npmDiagnosticsArgs, '--pack-destination', localCodexPack], {
-      cwd: localCodexFixture,
-      env: envWithoutNodePath,
-    });
-    markStage('pack managed Codex fixture end');
-    const localCodexTarball = path.join(
-      localCodexPack,
-      (await fs.readdir(localCodexPack)).find((entry) => entry.endsWith('.tgz'))!,
-    );
-    const parentLockfileBefore = await fs.readFile(parentLockfile, 'utf8');
-    const parentMarkerBefore = await fs.readFile(parentMarker, 'utf8');
-    const parentNodeModulesBefore = await listFilesRecursively(parentNodeModules);
-    markStage('install managed Codex fixture start');
-    const managedRuntimeResult = await execFileAsync(
-      process.execPath,
-      [
-        '--input-type=module',
-        '--eval',
-        [
-          "import fs from 'node:fs/promises';",
-          "import { execFile } from 'node:child_process';",
-          "import path from 'node:path';",
-          "import { promisify } from 'node:util';",
-          'const execFileAsync = promisify(execFile);',
-          'const { resolveCodexManager } = await import(process.argv[1]);',
-          'const awHome = process.argv[2];',
-          'const fixtureTarball = process.argv[3];',
-          'let pnpmEntry;',
-          'const commands = [];',
-          'const runner = async (invocation) => {',
-          "  if (invocation.args[1] === 'install') {",
-          '    pnpmEntry = invocation.args[0];',
-          "    const packageJsonPath = path.join(invocation.cwd, 'package.json');",
-          "    const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));",
-          "    if (packageJson.dependencies?.['@openai/codex'] !== '0.151.0') throw new Error('Unexpected managed Codex dependency.');",
-          "    packageJson.dependencies['@openai/codex'] = `file:${fixtureTarball}`;",
-          "    await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\\n`);",
-          '  }',
-          '  try {',
-          '    const result = await execFileAsync(invocation.command, invocation.args, {',
-          '      cwd: invocation.cwd, env: invocation.env, maxBuffer: 10 * 1024 * 1024,',
-          '    });',
-          '    commands.push({ args: invocation.args, exitCode: 0, stdout: result.stdout, stderr: result.stderr });',
-          "    return { exitCode: 0, stdout: result.stdout, stderr: result.stderr };",
-          '  } catch (error) {',
-          '    commands.push({ args: invocation.args, exitCode: error.code, stdout: error.stdout, stderr: error.stderr });',
-          "    return { exitCode: typeof error.code === 'number' ? error.code : 1, stdout: error.stdout ?? '', stderr: error.stderr ?? String(error) };",
-          '  }',
-          '};',
-          'let manager;',
-          'try {',
-          '  manager = await resolveCodexManager({',
-          "    env: { ...process.env, AW_HOME: awHome, PATH: '' },",
-          '    authorizer: async () => true,',
-          '    runner,',
-          '  });',
-          '} catch (error) {',
-          "  const packageRoot = path.join(awHome, 'runtimes', 'codex', '0.151.0', `${process.platform}-${process.arch}`, 'node_modules', '@openai', 'codex');",
-          '  const packageLink = await fs.readlink(packageRoot).catch(() => undefined);',
-          '  const packageTarget = await fs.realpath(packageRoot).catch((error) => ({ code: error.code }));',
-          '  console.error(JSON.stringify({ commands, packageRoot, packageLink, packageTarget }, null, 2));',
-          '  throw error;',
-          '}',
-          'console.log(JSON.stringify({ manager, pnpmEntry }));',
-        ].join('\n'),
-        installedCodexManagerImport,
-        managedRuntimeHome,
-        localCodexTarball,
-      ],
-      {
-        cwd: parentWorkspace,
-        env: {
-          ...envWithoutNodePath,
-          HOME: path.join(tempRoot, 'managed-runtime-home'),
-        },
-        maxBuffer: 10 * 1024 * 1024,
-      },
-    );
-    markStage('install managed Codex fixture end');
-    const managedRuntime = JSON.parse(managedRuntimeResult.stdout) as {
-      manager: { kind: string; runtimeRoot: string };
-      pnpmEntry: string;
+    markStage('installed local Codex resolver end');
+    const installedManager = JSON.parse(installedManagerProbe.stdout) as {
+      manager: { kind: string; version: string; command: string; argsPrefix: string[] };
+      missingCode: string;
+      missingCalls: unknown[];
     };
-    const expectedRuntimeRoot = path.join(
-      managedRuntimeHome,
-      'runtimes',
-      'codex',
-      '0.151.0',
-      `${process.platform}-${process.arch}`,
-    );
-    expect(managedRuntime).toEqual({
-      manager: expect.objectContaining({
-        kind: 'aw-managed',
-        runtimeRoot: expectedRuntimeRoot,
-      }),
-      pnpmEntry: installedPnpmEntry,
+    expect(installedManager).toMatchObject({
+      manager: { kind: 'system', version: '0.151.0' },
+      missingCode: 'codexCliNotFound', missingCalls: [],
     });
-    await expect(fs.readJson(path.join(
-      expectedRuntimeRoot,
-      'node_modules',
-      '@openai',
-      'codex',
-      'package.json',
-    ))).resolves.toMatchObject({ name: '@openai/codex', version: '0.151.0' });
-    await expect(fs.readFile(parentLockfile, 'utf8')).resolves.toBe(parentLockfileBefore);
-    await expect(fs.readFile(parentMarker, 'utf8')).resolves.toBe(parentMarkerBefore);
-    await expect(listFilesRecursively(parentNodeModules)).resolves.toEqual(parentNodeModulesBefore);
-    await expect(fs.pathExists(workspaceAppNodeModules)).resolves.toBe(false);
+    const localEntry = installedManager.manager.command === process.execPath
+      ? installedManager.manager.argsPrefix[0]!
+      : installedManager.manager.command;
+    const relativeLocalEntry = path.relative(await fs.realpath(externalNativeBin), await fs.realpath(localEntry));
+    expect(path.isAbsolute(relativeLocalEntry)).toBe(false);
+    expect(relativeLocalEntry).not.toBe('..');
+    expect(relativeLocalEntry.startsWith(`..${path.sep}`)).toBe(false);
+    await expect(listFilesRecursively(oldRuntimeRoot)).resolves.toEqual(oldRuntimeFiles);
+    await expect(fs.readFile(path.join(oldRuntimeRoot, '.aw-managed-runtime.json'), 'utf8'))
+      .resolves.toBe(oldRuntimeMarker);
+    await expect(fs.readFile(oldLauncher, 'utf8'))
+      .resolves.toBe('throw new Error("Old AW runtime must not run");\n');
 
     await expect(execAw(['--version'], {
       cwd: tempRoot,

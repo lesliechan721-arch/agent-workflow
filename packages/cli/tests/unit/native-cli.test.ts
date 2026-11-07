@@ -515,13 +515,12 @@ describe('native-cli', () => {
     );
   });
 
-  it('runs an AW-managed Codex invocation through its launcher prefix with the Codex default timeout', async () => {
+  it('runs a local Codex launcher prefix with the Codex default timeout', async () => {
     const manager: CodexManager = {
-      kind: 'aw-managed',
-      version: '0.145.0',
+      kind: 'system',
+      version: '0.153.0',
       command: process.execPath,
       argsPrefix: ['/tmp/codex-launcher.js'],
-      runtimeRoot: '/tmp/codex-runtime',
     };
     let receivedInvocation: NativeCliInvocation | undefined;
 

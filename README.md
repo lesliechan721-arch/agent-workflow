@@ -213,9 +213,9 @@ aw plugin sync official/git-toolkit --context user --target codex --rebuild
 
 除 `cleanup` 和 `cleanup --force` 外，普通写操作在锁内复用一次 ordinary live inventory，并只对依赖计划中的目标执行 ownership、native、config 和 Active snapshot 重验。删除保护需要历史 project consumer 时，会使用独立范围的 inventory。需要定位耗时时，使用 `--debug --log-file <path>`，查看 `review.prepare.*`、`native:success|error` 和 `rebuild:action` 的 `durationMs`。原生事件只包含 agent、稳定 operation、退出状态和固定 reason，不包含 args、cwd、stdout、stderr 或未知错误文本。原生 CLI 时间单独记录，不计入 Catalog 读取时间。
 
-`install`、`reinstall`、`uninstall`、`cleanup` 和 `sync` 都接受 `--allow-managed-codex-install`。只有计划实际需要写入、替换或移除 Codex shared native package，且 system Codex CLI 缺失、AW-managed cache 也不可用时，AW 才需要获取固定的 `@openai/codex@0.151.0` runtime。直接 TTY 会在首次获取或安全重建前询问一次，默认不允许；JSON 和非交互模式必须显式传该 flag。有效 cache 可直接复用，不再次询问。PATH 中已有但过旧、版本不可解析或探测失败的 system CLI 会停止操作，不能用 managed runtime 绕过。
+Codex 插件安装、同步和重建会合并 PATH 与 Codex App 内置 CLI 候选，选择版本最高者，最低要求 `0.151.0`。相同版本优先使用 PATH。macOS 检查标准 Applications 目录中的 Codex App，Windows 检查已注册 Codex 应用；Linux 使用 PATH。单个候选损坏时继续检查其他候选；没有可用 CLI 或版本不支持时，安装、升级或修复本机 Codex CLI/App 后重试。AW 不下载或维护 Codex CLI，不提供 `--allow-managed-codex-install`。
 
-该 runtime 位于 `AW_HOME` 的可删除弱缓存中，不加入 `PATH`，也不检测 Codex App。只修改已有 shared native 的 project activation 时不需要 manager；项目 intent 缺少 shared native package 时仍需要兼容的 system 或 AW-managed CLI。cleanup 和 uninstall 在没有可证明的 AW-owned native residue 时不会探测、提示或下载；移除失败会保留 residue，用户可重试命令、升级 AW，或安装兼容的官方 Codex CLI 后恢复。AW 不直接删除 Codex 私有 plugin storage，也不删除 foreign 内容。
+只启用或刷新已有 shared native 的 project activation 也需要兼容的本机 CLI。只读状态检查使用同一选择规则，无法观察时报告未确认。公开 cleanup/force 保留 shared/native 包体，缺少 CLI 不阻止合法离线清理；实际原生移除失败会保留恢复证据。旧 `AW_HOME/runtimes/codex` 缓存不再隐式使用，也不会自动删除。AW 不直接删除 Codex 私有 plugin storage 或 foreign 内容。
 
 ### 托管命令
 

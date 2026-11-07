@@ -36,11 +36,10 @@ export interface NativeCliInvocation {
 }
 
 export interface CodexManager {
-  kind: 'system' | 'aw-managed';
+  kind: 'system' | 'app';
   version: string;
   command: string;
   argsPrefix: string[];
-  runtimeRoot?: string;
 }
 
 export const SYSTEM_CODEX_MANAGER: CodexManager = {
@@ -180,7 +179,8 @@ export function bindNativeCliRunnerSignal(runner: NativeCliRunner, signal?: Abor
     signal.throwIfAborted();
     try {
       const result = await runner({ ...invocation,
-        signal: invocation.signal ? AbortSignal.any([signal, invocation.signal]) : signal });
+        signal: invocation.signal && invocation.signal !== signal
+          ? AbortSignal.any([signal, invocation.signal]) : signal });
       signal.throwIfAborted();
       return result;
     } catch (error) {

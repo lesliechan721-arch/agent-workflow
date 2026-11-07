@@ -171,10 +171,10 @@ describe('scoped TUI production reads', () => {
     controller.dispose();
   });
 
-  it.each([true, false])('cancels Native preview before the next platform group starts (system Codex: %s)', async (systemCodex) => {
+  it('cancels Native preview before the next platform group starts', async () => {
     const value = await fixture();
     value.env.PATH = '';
-    if (systemCodex) await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
+    await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     const beforeIntent = await observeIntent({ ...value, scope: 'user' });
     const beforePreferences = await observePreferences({ ...value, scope: 'user' });
     let started!: () => void;

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { createManagedCodexAuthorizer, runCli } from '../../src/index.js';
+import { runCli } from '../../src/index.js';
 
 function capture() {
   let stdout = '';
@@ -39,10 +39,15 @@ describe('CLI entry', () => {
   });
 
   it.each(['install', 'remove', 'cleanup', 'sync'])(
-    'publishes managed Codex authorization on %s', async (command) => {
+    'rejects the removed managed Codex flag on %s', async (command) => {
       const output = capture();
-      expect(await runCli(['plugin', command, '--help'], { io: output.io })).toBe(0);
-      expect(output.stdout()).toContain('--allow-managed-codex-install');
+      expect(await runCli([
+        'plugin', command, 'team/demo',
+        ...(command === 'cleanup' ? ['--scope', 'project', '--target', 'codex'] : []),
+        '--allow-managed-codex-install',
+      ], { io: output.io })).toBe(2);
+      expect(output.stdout()).toBe('');
+      expect(output.stderr()).toContain("unknown option '--allow-managed-codex-install'");
     });
 
   it('keeps install targets in the saved policy and physical cleanup explicit', async () => {
@@ -73,35 +78,6 @@ describe('CLI entry', () => {
     const output = capture();
     expect(await runCli(['plugin', 'intent', 'retire', '--help'], { io: output.io })).toBe(0);
     expect(output.stdout()).toContain('--delete-config');
-  });
-
-  it('asks once at the first interactive managed Codex acquisition', async () => {
-    const confirm = vi.fn().mockResolvedValue({ cancelled: false, value: true });
-    const authorizer = createManagedCodexAuthorizer(
-      {},
-      { interactive: true, isTty: true, isCi: false, prompt: { confirm } },
-    );
-
-    await expect(authorizer?.()).resolves.toBe(true);
-    expect(confirm).toHaveBeenCalledOnce();
-    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ defaultValue: false }));
-  });
-
-  it('requires the explicit managed Codex flag outside an interactive terminal', async () => {
-    const confirm = vi.fn();
-    expect(createManagedCodexAuthorizer(
-      { json: true },
-      { interactive: true, isTty: true, isCi: false, prompt: { confirm } },
-    )).toBeUndefined();
-    expect(createManagedCodexAuthorizer(
-      {},
-      { interactive: false, isTty: false, isCi: false, prompt: { confirm } },
-    )).toBeUndefined();
-    await expect(createManagedCodexAuthorizer(
-      { allowManagedCodexInstall: true, json: true },
-      { interactive: false, isTty: false, isCi: false, prompt: { confirm } },
-    )?.()).resolves.toBe(true);
-    expect(confirm).not.toHaveBeenCalled();
   });
 
   it('publishes the standalone Skill validator options', async () => {

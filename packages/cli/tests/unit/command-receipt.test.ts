@@ -374,8 +374,8 @@ describe('command receipt v6', () => {
     });
   });
 
-  it('keeps early failure recovery without inventing a plan fingerprint or changes', () => {
-    const errorCode = 'codexSystemCliUnsupported';
+  it.each(['codexSystemCliUnsupported', 'codexCliNotFound'])(
+    'keeps %s recovery without inventing a plan fingerprint or changes', (errorCode) => {
     const receipt = buildRebuildReceiptJson('install', {
       platforms: ['codex'], plugins: ['team/demo'], warnings: [], overallState: 'failed',
       errors: [{ code: errorCode, message: `${errorCode}: consumer probe failed` }],
@@ -383,7 +383,7 @@ describe('command receipt v6', () => {
     });
 
     const recovery = [
-      'upgrade or repair the official system Codex CLI, then retry the original operation',
+      'install, upgrade, or repair Codex CLI/App and PATH, then retry the original operation',
     ];
     expect(receipt).toMatchObject({
       ok: false,

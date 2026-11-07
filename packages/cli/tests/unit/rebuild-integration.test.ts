@@ -4529,8 +4529,8 @@ describe('rebuild adapter integration', () => {
       taskResult = await taskWriteCommand([{
         pluginId: pluginB.pluginId!, platform: 'codex', scope: 'user', method: 'reinstall',
       }], {
-        cwd: isolation.layout.fixtureCwd, allowManagedCodexInstall: true,
-      }, { env: isolation.env, nativeCliRunner: runner,
+        cwd: isolation.layout.fixtureCwd,
+      }, { env: isolation.env, nativeCliRunner: runner, codexManager: SYSTEM_CODEX_MANAGER,
         executionInput: native.executionInput });
     } finally {
       await native.dispose();

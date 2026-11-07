@@ -24,7 +24,6 @@ export type RawCommandOptions = {
   platform?: string;
   scriptTimeout?: string | number;
   scriptTimeoutMs?: string | number;
-  allowManagedCodexInstall?: boolean;
   yes?: boolean;
 };
 
@@ -205,7 +204,6 @@ export function normalizeCommandOptions(
     scope: parseScopeValue(raw.scope ?? defaults.defaultScope ?? 'user'),
     platform: parsePlatformValue(platformInput ?? 'both'),
     ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
-    ...(raw.allowManagedCodexInstall === true ? { allowManagedCodexInstall: true } : {}),
     ...(raw.yes === true ? { yes: true } : {}),
   };
 }
@@ -266,7 +264,6 @@ export function normalizeUninstallCommandOptions(
     cwd: raw.cwd,
     scope: raw.scope,
     platform: raw.platform,
-    allowManagedCodexInstall: raw.allowManagedCodexInstall,
     yes: raw.yes,
   };
   return {
@@ -290,7 +287,6 @@ export function normalizeCleanupCommandOptions(
     cwd: raw.cwd,
     scope: raw.scope,
     platform: raw.platform,
-    allowManagedCodexInstall: raw.allowManagedCodexInstall,
     yes: raw.yes,
   };
   const normalized = {

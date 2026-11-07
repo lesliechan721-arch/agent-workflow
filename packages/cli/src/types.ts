@@ -628,7 +628,6 @@ export interface CommandOptions {
   platform: PlatformSelection;
   cwd: string;
   scriptTimeoutMs?: number;
-  allowManagedCodexInstall?: boolean;
   yes?: boolean;
 }
 
