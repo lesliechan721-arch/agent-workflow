@@ -606,6 +606,13 @@ describe('pack smoke', () => {
     const systemToolDirectories = process.platform === 'win32'
       ? [path.dirname(gitExecutable), ...(systemRoot ? [path.join(systemRoot, 'System32')] : [])]
       : [path.dirname(gitExecutable), '/usr/bin', '/bin'];
+    if (process.platform === 'win32') {
+      // Git needs sh.exe for local transports; the Git executable directory alone is insufficient.
+      const { stdout: gitShellPath } = await execFileAsync(gitExecutable, ['var', 'GIT_SHELL_PATH'], {
+        env: envWithoutNodePath,
+      });
+      systemToolDirectories.push(path.dirname(await fs.realpath(gitShellPath.trim())));
+    }
     for (const directory of new Set(systemToolDirectories)) {
       const entries = await fs.readdir(directory);
       expect(entries.some((entry) => /^codex(?:\.(?:exe|com|cmd|bat))?$/iu.test(entry))).toBe(false);
