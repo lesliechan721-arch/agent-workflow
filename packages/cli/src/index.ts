@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
-import { compilePluginConfigDefinition, PLATFORM_TARGETS, PORTABLE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
+import { compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARGETS, PORTABLE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { initCommand } from './commands/init.js';
 import { resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
@@ -2719,7 +2719,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             if (!plugin.manifest.config) throw Object.assign(new Error(
               `configSchemaUnavailable: Plugin "${plugin.manifest.name}" does not declare an AW config schema.`),
             { code: 'configSchemaUnavailable' });
-            const fields = compilePluginConfigDefinition(plugin.manifest.config, platform).fields;
+            const fields = selectPluginConfigProfile(plugin.manifest.config, platform).fields;
             if (command === 'edit') {
               const selected = await context.prompt.select!({ message: `编辑用户${platform ?? 'common'}配置`,
                 choices: Object.entries(fields).map(([value, field]) => ({ value, label: field.title ?? value })) });

@@ -2,7 +2,7 @@ import path from 'node:path'
 
 import {
   calculateCatalogWorkspaceSourceIdentity,
-  compilePluginConfigDefinition,
+  selectPluginConfigProfile,
   PLATFORM_TARGETS,
   getPluginConfigDependencyFields,
   readCatalogWorkspace,
@@ -421,12 +421,12 @@ function buildProfile(options: {
   for (const skill of selectedSkills.filter((entry) => entry.dynamic)) {
     for (const refreshKey of skill.refreshKeys) {
       const scope = skill.configScopes[refreshKey] ?? skill.configScope
-      const dependencies = getPluginConfigDependencyFields(compilePluginConfigDefinition(skill.plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform), [refreshKey], {
+      const dependencies = getPluginConfigDependencyFields(selectPluginConfigProfile(skill.plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform), [refreshKey], {
         platform: options.platform,
         plugin: skill.pluginName,
         dependencies: skill.plugin.manifest.dependencies ?? [],
         plugins: Object.fromEntries(options.workspace.plugins.map((plugin) => [plugin.manifest.name, {
-          definition: compilePluginConfigDefinition(plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform),
+          definition: selectPluginConfigProfile(plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform),
           dependencies: plugin.manifest.dependencies ?? [],
         }])),
       })

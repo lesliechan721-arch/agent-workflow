@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
+import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
 import {
   createRebuildIntegration,
@@ -3119,13 +3120,13 @@ describe('rebuild adapter integration', () => {
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
         mode: 'bundle',
       });
-      plugin.manifest.config = {
+      plugin.manifest.config = normalizePluginConfigDefinition({
         ...plugin.manifest.config,
         fields: {
           ...plugin.manifest.config?.fields,
           token: { type: 'string', sensitive: true },
         },
-      };
+      });
       await writePluginConfigStore({
         sourceId: plugin.sourceId,
         sourceIdentity: plugin.sourceIdentity,

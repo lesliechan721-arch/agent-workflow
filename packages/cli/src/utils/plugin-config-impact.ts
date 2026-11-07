@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 import {
-  compilePluginConfigDefinition,
+  selectPluginConfigProfile,
   PLATFORM_TARGETS,
   type PlatformTarget,
   getManagedCommandArtifactTargets,
@@ -293,7 +293,7 @@ export async function analyzePluginConfigMutationImpact(options: {
   options = { ...options, scope: options.context ?? options.scope };
   const commands = options.commandDiscovery ?? await discoverPluginConfigManagedCommandPackages({ ...options,
     env: options.env ?? process.env, platformTargets: options.visibleTargets });
-  const schema = options.plugin.manifest.config ? compilePluginConfigDefinition(options.plugin.manifest.config, options.platform).fields : undefined;
+  const schema = options.plugin.manifest.config ? selectPluginConfigProfile(options.plugin.manifest.config, options.platform).fields : undefined;
   const identity = configIdentity(options.plugin);
   let user: PluginConfigStore;
   try { user = await readPluginConfigStore({ ...identity, pluginName: options.plugin.manifest.name,
@@ -377,7 +377,7 @@ export async function analyzePluginConfigMutationImpact(options: {
       }
       for (const consumer of targetConfigConsumers(plugin, target)) {
         if (!consumer.refreshKeys.length) continue;
-        const keys = getPluginConfigDependencyKeys(compilePluginConfigDefinition(plugin.manifest.config, target.platform), consumer.refreshKeys);
+        const keys = getPluginConfigDependencyKeys(selectPluginConfigProfile(plugin.manifest.config, target.platform), consumer.refreshKeys);
         if (pair?.before && pair.after && rendererProjectionEqual(pair.before, pair.after, keys)) continue;
         affected = true; addSharedNativeConsumer(sharedNativeRenderTargets, consumer);
       }
@@ -387,7 +387,7 @@ export async function analyzePluginConfigMutationImpact(options: {
       const pair = await consumerPair(target.producer.pluginName, target.producer.platform ?? undefined);
       const plugin = allPlugins.get(target.producer.pluginName);
       if (!target.declared || !pair?.before || !pair.after || !plugin?.manifest.config) { affectedCommandPackages.push(target); continue; }
-      const keys = getPluginConfigDependencyKeys(compilePluginConfigDefinition(plugin.manifest.config, target.producer.platform ?? undefined), target.refreshKeys);
+      const keys = getPluginConfigDependencyKeys(selectPluginConfigProfile(plugin.manifest.config, target.producer.platform ?? undefined), target.refreshKeys);
       if (!rendererProjectionEqual(pair.before, pair.after, keys)) affectedCommandPackages.push(target);
     }
     // Common edits bind every supported profile even when no installed output currently consumes it.

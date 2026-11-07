@@ -6,7 +6,7 @@ import {
   type SelectedCaseSuiteKind,
 } from '@lesliechan721/agent-skill-eval'
 import fs from 'fs-extra'
-import { PLATFORM_TARGETS, compilePluginConfigDefinition, type PlatformTarget } from '@lesliechan721/aw-plugin-core'
+import { PLATFORM_TARGETS, selectPluginConfigProfile, type PlatformTarget } from '@lesliechan721/aw-plugin-core'
 
 import type { PluginMeta, Scope } from '../types.js'
 
@@ -407,7 +407,7 @@ export function assertNoSensitiveProfileConfig(
   for (const installation of configs) {
     const plugin = byName.get(installation.name)
     if (!plugin) throw new Error(`Eval profile "${profile.id}" references unknown plugin "${installation.name}".`)
-    for (const [key, field] of Object.entries(compilePluginConfigDefinition(plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, profile.platform).fields)) {
+    for (const [key, field] of Object.entries(selectPluginConfigProfile(plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, profile.platform).fields)) {
       if (!Object.hasOwn(installation.config, key)) continue
       if (field.sensitive === true) {
         throw new Error(`Eval profile "${profile.id}" provides a sensitive config field for plugin "${installation.name}".`)

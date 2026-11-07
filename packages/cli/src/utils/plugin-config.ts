@@ -6,7 +6,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import {
   canonicalizePluginConfigValues,
-  compilePluginConfigDefinition,
+  selectPluginConfigProfile,
   PLATFORM_TARGETS,
   type PlatformTarget,
   type PluginConfigCompiledDefinition,
@@ -1437,7 +1437,7 @@ export async function resolveEffectivePluginConfigFromStores(options: {
   };
 }): Promise<ResolvedEffectivePluginConfig> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName ?? options.manifest.name);
-  const definition = options.manifest.config ? compilePluginConfigDefinition(options.manifest.config, options.platform) : undefined;
+  const definition = options.manifest.config ? selectPluginConfigProfile(options.manifest.config, options.platform) : undefined;
   const schema = definition?.fields;
   if (!schema) {
     throw new PluginConfigSchemaResolutionError('configSchemaUnavailable', `Plugin "${pluginName}" does not declare an AW config schema.`);
@@ -1930,7 +1930,7 @@ export async function resolveConfigRead(options: {
     scope: options.scope,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     ...(schemaAccess.plugin?.manifest.config?.fields
-      ? { fieldDefinitions: compilePluginConfigDefinition(schemaAccess.plugin.manifest.config, options.platform).fields }
+      ? { fieldDefinitions: selectPluginConfigProfile(schemaAccess.plugin.manifest.config, options.platform).fields }
       : {}),
     fields: manifestFields,
   };
@@ -1987,7 +1987,7 @@ export function createPluginConfigSchemaIdentity(
       name: manifest.name,
       version: manifest.version,
       platform: platform ?? null,
-      config: manifest.config ? compilePluginConfigDefinition(manifest.config, platform) : null,
+      config: manifest.config ? selectPluginConfigProfile(manifest.config, platform) : null,
     }))
     .digest('hex');
   return `${manifest.name}:${hash}`;

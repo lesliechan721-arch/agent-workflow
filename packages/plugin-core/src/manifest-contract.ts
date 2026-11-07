@@ -11,7 +11,7 @@ import {
   PLUGIN_MANIFEST_SCHEMA_VERSION,
   SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION,
 } from './manifest.js';
-import { compilePluginConfigDefinition, getPluginConfigDependencyKeys, normalizePluginConfigDefinition } from './plugin-config.js';
+import { selectPluginConfigProfile, getPluginConfigDependencyKeys, normalizePluginConfigDefinition } from './plugin-config.js';
 
 import type {
   CatalogMarketplaceIdentity,
@@ -1896,7 +1896,7 @@ function normalizeArtifactTargetEntry(
     throw new Error(`Invalid ${fieldName}.runtimeImports: runtimeImports are only supported for agent-skills.skill targets.`);
   }
 
-  const platformSchema = schema === undefined ? undefined : compilePluginConfigDefinition(schema, platform);
+  const platformSchema = schema === undefined ? undefined : selectPluginConfigProfile(schema, platform);
   const refreshKeys = normalizeArtifactRefreshKeys(
     input.refreshKeys,
     `${fieldName}.refreshKeys`,

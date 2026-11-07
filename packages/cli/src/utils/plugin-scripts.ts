@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import type { CommandExecutionContext } from '../commands/runtime.js';
 import type { DistributionName, NormalizedPluginManifest, PlatformTarget, PluginConfigValue, PluginMeta, Scope } from '../types.js';
-import { compilePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
+import { selectPluginConfigProfile } from '@lesliechan721/aw-plugin-core/manifest';
 import { redactString } from '../output/redact.js';
 import {
   createWindowsJobInvocation,
@@ -140,7 +140,7 @@ function collectScalarLeafTokens(value: unknown): string[] {
 }
 
 export function collectSensitivePluginConfigValues(manifest: NormalizedPluginManifest, values: Record<string, PluginConfigValue>, platform?: PlatformTarget): string[] {
-  const fields = manifest.config ? compilePluginConfigDefinition(manifest.config, platform).fields : {};
+  const fields = manifest.config ? selectPluginConfigProfile(manifest.config, platform).fields : {};
   return Object.entries(fields).flatMap(([key, field]) => {
     const value = values[key];
     if (value === undefined) return [];

@@ -608,10 +608,21 @@ interface CatalogPathRecord {
   digest: string;
 }
 
+interface CatalogDigestFile {
+  digest: string;
+  stat: fs.Stats;
+  bytes?: Buffer;
+}
+
+const VERSIONED_CATALOG_MANIFEST_PATHS = new Set([
+  '.agents-plugin/plugin.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json',
+]);
+
 async function catalogPathRecords(
   root: string,
   relative: string,
   executableFiles?: ReadonlySet<string>,
+  observedFiles?: ReadonlyMap<string, CatalogDigestFile>,
 ): Promise<{ artifact: CatalogPathRecord; content: CatalogPathRecord }> {
   const filePath = path.join(root, ...relative.split('/'));
   const stat = await fs.lstat(filePath);
@@ -620,16 +631,25 @@ async function catalogPathRecords(
     return { artifact: record, content: record };
   }
   if (!stat.isFile()) throw new Error(`Catalog digest path must be a regular file or symlink: ${filePath}.`);
-  const bytes = await fs.readFile(filePath);
+  let observed = observedFiles?.get(filePath);
+  if (observed && (observed.stat.dev !== stat.dev || observed.stat.ino !== stat.ino
+    || observed.stat.size !== stat.size || observed.stat.mode !== stat.mode
+    || observed.stat.mtimeMs !== stat.mtimeMs || observed.stat.ctimeMs !== stat.ctimeMs)) {
+    observed = undefined;
+  }
+  if (!observed) {
+    const bytes = await fs.readFile(filePath);
+    observed = { digest: sha256(bytes), stat, bytes };
+  }
   const artifact: CatalogPathRecord = {
     path: relative,
     kind: 'file',
     mode: catalogFileMode(relative, stat.mode, executableFiles),
-    digest: sha256(bytes),
+    digest: observed.digest,
   };
-  const manifests = new Set(['.agents-plugin/plugin.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json']);
   let contentDigest = artifact.digest;
-  if (manifests.has(relative)) {
+  if (VERSIONED_CATALOG_MANIFEST_PATHS.has(relative)) {
+    const bytes = observed.bytes ?? await fs.readFile(filePath);
     // Match readJson's UTF-8 BOM handling while reusing the original bytes.
     const manifest = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u, '')) as Record<string, unknown>;
     contentDigest = sha256(stableStringify({
@@ -637,6 +657,7 @@ async function catalogPathRecords(
       version: '<plugin-version>',
     }));
   } else if (path.posix.basename(relative) === AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME) {
+    const bytes = observed.bytes ?? await fs.readFile(filePath);
     const receipt = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u, '')) as Record<string, unknown>;
     const plugin = receipt.plugin && typeof receipt.plugin === 'object' && !Array.isArray(receipt.plugin)
       ? receipt.plugin as Record<string, unknown>
@@ -649,10 +670,13 @@ async function catalogPathRecords(
   return { artifact, content: contentDigest === artifact.digest ? artifact : { ...artifact, digest: contentDigest } };
 }
 
-async function calculateEntryDigests(root: string): Promise<{ artifactDigest: string; contentDigest: string }> {
+async function calculateEntryDigests(
+  root: string,
+  observedFiles?: ReadonlyMap<string, CatalogDigestFile>,
+): Promise<{ artifactDigest: string; contentDigest: string }> {
   const files = await listBundleFiles(root);
   const executableFiles = await readCatalogExecutableFiles(root, files);
-  const records = await Promise.all(files.map((file) => catalogPathRecords(root, file, executableFiles)));
+  const records = await Promise.all(files.map((file) => catalogPathRecords(root, file, executableFiles, observedFiles)));
   return {
     artifactDigest: sha256(stableStringify(records.map((record) => record.artifact))),
     contentDigest: sha256(stableStringify(records.map((record) => record.content))),
@@ -1219,7 +1243,7 @@ async function assertGeneratedOutput(root: string, expected: Record<string, unkn
   }
 }
 
-async function digestDirectory(root: string): Promise<string> {
+async function digestDirectory(root: string, observedFiles?: Map<string, CatalogDigestFile>): Promise<string> {
   const entries: string[] = [];
   const walk = async (directory: string): Promise<void> => {
     for (const name of (await fs.readdir(directory)).sort()) {
@@ -1229,7 +1253,18 @@ async function digestDirectory(root: string): Promise<string> {
       const stat = await fs.lstat(filePath);
       if (stat.isSymbolicLink()) throw new Error(`Generated output contains a symbolic link: ${relative}`);
       if (stat.isDirectory()) await walk(filePath);
-      else if (stat.isFile()) entries.push(`${relative}\0${crypto.createHash('sha256').update(await fs.readFile(filePath)).digest('hex')}`);
+      else if (stat.isFile()) {
+        const bytes = await fs.readFile(filePath);
+        const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+        entries.push(`${relative}\0${digest}`);
+        // Entry digests can reuse this read. Retain bytes only for the small JSON
+        // files whose content digest normalizes the embedded plugin version.
+        if (observedFiles) {
+          const versioned = [...VERSIONED_CATALOG_MANIFEST_PATHS].some((manifest) => relative.endsWith(`/${manifest}`))
+            || path.posix.basename(relative) === AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME;
+          observedFiles.set(filePath, { digest: `sha256:${digest}`, stat, ...(versioned ? { bytes } : {}) });
+        }
+      }
       else throw new Error(`Generated output contains an unsupported entry: ${relative}`);
     }
   };
@@ -1279,7 +1314,10 @@ async function validateCatalogSnapshotTransportInternal(
   await assertLayout(path.join(rootDir, '.claude-plugin'), ['marketplace.json']);
   await readRegularJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), 'Codex marketplace');
   await readRegularJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), 'Claude marketplace');
-  const snapshotDigest = await digestDirectory(rootDir);
+  // This map belongs to one validation. Later validations always read again;
+  // entry traversal still checks current node types and executable modes.
+  const observedFiles = new Map<string, CatalogDigestFile>();
+  const snapshotDigest = await digestDirectory(rootDir, observedFiles);
   const manifest = normalizeCatalogManifestV7(await readRegularJson(
     path.join(rootDir, CATALOG_MANIFEST_FILENAME),
     'Catalog manifest v7',
@@ -1301,7 +1339,7 @@ async function validateCatalogSnapshotTransportInternal(
       path.join(pluginRoot, SOURCE_MANIFEST_PATH),
       `Catalog plugin ${JSON.stringify(name)} bundle manifest`,
     );
-    const digests = await calculateEntryDigests(pluginRoot);
+    const digests = await calculateEntryDigests(pluginRoot, observedFiles);
     const expectedDigests = {
       artifactDigest: digests.artifactDigest,
       manifestDigest: sha256(normalizeManifestDigestInput(rawBundleManifest as PluginMeta['manifest'])),

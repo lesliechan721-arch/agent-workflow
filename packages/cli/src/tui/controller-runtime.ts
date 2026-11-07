@@ -1,5 +1,5 @@
 import { readAgentSettings, previewAgentSettings, saveAgentSettings } from './agent-settings.js';
-import { compilePluginConfigDefinition, getPluginConfigReferenceChoices, PLATFORM_TARGETS, resolveSupportedPlatforms } from '@lesliechan721/aw-plugin-core';
+import { selectPluginConfigProfile, getPluginConfigReferenceChoices, PLATFORM_TARGETS, resolveSupportedPlatforms } from '@lesliechan721/aw-plugin-core';
 import { configReferenceKey, configReferenceScalars, type ConfigReferenceContext } from './config-references.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -229,7 +229,7 @@ function digest(value: unknown): string {
 
 function configSchemaIdentity(plugin: PluginMeta, manifestDigest: string | undefined, platform?: PlatformTarget): string {
   return digest({ manifestDigest, profile: platform ?? 'common',
-    definition: compilePluginConfigDefinition(plugin.manifest.config!, platform) });
+    definition: selectPluginConfigProfile(plugin.manifest.config!, platform) });
 }
 
 export function statusTargetFingerprint(
@@ -289,7 +289,7 @@ export function configAffectedStatusTargets(
 function configNeedsReferencePlugins(plugin: PluginMeta): boolean {
   return pluginConfigHasExternalReferences(plugin.manifest)
     || (plugin.manifest.config !== undefined && [undefined, ...PLATFORM_TARGETS].some((platform) =>
-      Object.values(compilePluginConfigDefinition(plugin.manifest.config!, platform).fields)
+      Object.values(selectPluginConfigProfile(plugin.manifest.config!, platform).fields)
         .some((field) => field.type === 'array' && field.items.type === 'object')));
 }
 
@@ -1748,7 +1748,7 @@ export function createTuiControllerDependencies(
           if (!plugin.manifest.config) {
             throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
           }
-          const definition = compilePluginConfigDefinition(plugin.manifest.config, intent.platform);
+          const definition = selectPluginConfigProfile(plugin.manifest.config, intent.platform);
           if (intent.kind === 'configSave') {
             await coercePluginConfigUpdates({
               schema: definition.fields,
@@ -1893,7 +1893,7 @@ export function createTuiControllerDependencies(
               if (!plugin.manifest.config) {
                 throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
               }
-              const definition = compilePluginConfigDefinition(plugin.manifest.config, intent.platform);
+              const definition = selectPluginConfigProfile(plugin.manifest.config, intent.platform);
               await coercePluginConfigUpdates({
                 schema: definition.fields,
                 updates: intent.updates ?? {},
@@ -2257,7 +2257,7 @@ export function createTuiControllerDependencies(
             if (!plugin.manifest.config) {
               throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
             }
-            const definition = compilePluginConfigDefinition(plugin.manifest.config, intent.platform);
+            const definition = selectPluginConfigProfile(plugin.manifest.config, intent.platform);
             await coercePluginConfigUpdates({
               schema: definition.fields,
               updates: intent.updates ?? {},
@@ -2321,7 +2321,7 @@ export function createTuiControllerDependencies(
           if (!plugin.manifest.config) {
             throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
           }
-          const definition = compilePluginConfigDefinition(plugin.manifest.config, config.platform);
+          const definition = selectPluginConfigProfile(plugin.manifest.config, config.platform);
           const stores = await readConfigStoresForTui({
             sourceId: plugin.sourceId,
             sourceIdentity: plugin.sourceIdentity,
@@ -2401,7 +2401,7 @@ export function createTuiControllerDependencies(
         ...(sessionContextForPlugin(pluginId) ? { operationContext: sessionContextForPlugin(pluginId)! } : {}),
         consume: async ({ plugin }) => {
           if (!plugin.manifest.config) throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
-          const definition = compilePluginConfigDefinition(plugin.manifest.config, config.platform);
+          const definition = selectPluginConfigProfile(plugin.manifest.config, config.platform);
           const scalars = Object.values(definition.fields).flatMap(configReferenceScalars);
           if (!scalars.length) return { platform: config.platform, selections: {} };
           const stores = await readConfigStoresForTui({

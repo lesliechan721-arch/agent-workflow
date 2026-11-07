@@ -73,9 +73,10 @@ async function configureTwoPaths(validRoot: string, invalidRoot: string): Promis
 }
 
 async function withSuccessfulCodexPluginList<T>(operation: () => Promise<T>): Promise<T> {
-  setNativeCliRunnerOverrideForTests(async () => ({
+  setNativeCliRunnerOverrideForTests(async (invocation) => ({
     exitCode: 0,
-    stdout: JSON.stringify({ installed: [], available: [] }),
+    stdout: invocation.args.includes('--version') ? 'codex-cli 0.200.0'
+      : JSON.stringify({ installed: [], available: [] }),
     stderr: '',
   }));
   try {
@@ -290,7 +291,12 @@ describe('multi-source read commands', () => {
     expect(JSON.stringify(unreadable)).not.toContain('private invalid config');
   });
 
-  it('keeps an incomplete Project Skill out of ready state and reports a damaged marker safely', () => withSuccessfulCodexPluginList(async () => {
+  it('keeps unobserved Codex output out of ready state and reports damaged legacy Project Skill markers safely', () => withSuccessfulCodexPluginList(async () => {
+    // A legacy project Skill is not Native installation evidence. Keep the
+    // Codex version probe explicitly unavailable while testing safe diagnostics.
+    setNativeCliRunnerOverrideForTests(async (invocation) => invocation.args.includes('--version')
+      ? { exitCode: 1, stdout: '', stderr: 'Fixture Codex version is unavailable.' }
+      : { exitCode: 0, stdout: JSON.stringify({ installed: [], available: [] }), stderr: '' });
     const isolation = getCurrentSourceTestIsolation();
     await ensureProjectRepository();
     const sourceRoot = fixturePath('verbose-components');

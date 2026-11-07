@@ -7,7 +7,7 @@ import type {
   PreApplyAuthorizationTarget,
   RebuildCommandRuntime,
 } from '../commands/rebuild-command.js';
-import { compilePluginConfigDefinition, type PlatformTarget, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
+import { selectPluginConfigProfile, type PlatformTarget, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import {
   flattenStatusTargets,
   statusCommandV8,
@@ -1445,7 +1445,7 @@ async function applyPluginConfigWriteUnlocked(options: ApplyPluginConfigWriteOpt
   const schemaAccess = await resolvePluginConfigSchemaAccess({ pluginName, currentPlugin: options.plugin,
     currentPluginError: options.pluginError, scope: options.scope, platform: options.platform, cwd: options.cwd, env: options.env });
   const plugin = schemaAccess.plugin;
-  const definition = plugin?.manifest.config ? compilePluginConfigDefinition(plugin.manifest.config, options.platform) : undefined;
+  const definition = plugin?.manifest.config ? selectPluginConfigProfile(plugin.manifest.config, options.platform) : undefined;
   if (!plugin || !definition) throw new PluginConfigSchemaResolutionError('configSchemaUnavailable', `Plugin "${pluginName}" does not declare an AW config schema.`);
   const updates = await coercePluginConfigUpdates({ schema: definition.fields, updates: requestedUpdates, cwd: options.cwd });
   const impact = await analyzePluginConfigMutationImpact({ plugin, scope: options.scope, platform: options.platform,

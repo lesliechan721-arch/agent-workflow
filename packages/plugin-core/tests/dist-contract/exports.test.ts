@@ -8,6 +8,7 @@ import {
   getAwCapabilityRegistry,
   PLATFORM_TARGETS,
   resolvePluginConfigObjectProperties,
+  selectPluginConfigProfile,
   type PluginConfigObjectField,
 } from '@lesliechan721/aw-plugin-core'
 import {
@@ -28,6 +29,7 @@ import {
   validatePluginManifest,
   resolveSupportedPlatforms,
   compilePluginConfigDefinition,
+  selectPluginConfigProfile as selectManifestConfigProfile,
 } from '@lesliechan721/aw-plugin-core/manifest'
 
 const require = createRequire(import.meta.url)
@@ -46,6 +48,9 @@ describe('public package exports', () => {
     expect([...resolveSupportedPlatforms(manifest)]).toEqual(['cursor', 'pi'])
     expect(compilePluginConfigDefinition(manifest.config, 'cursor').fields.agent?.default).toBe('Cursor')
     expect(compilePluginConfigDefinition(manifest.config, 'pi').fields.agent?.default).toBe('common')
+    expect(selectPluginConfigProfile(manifest.config!, 'cursor').fields.agent?.default).toBe('Cursor')
+    expect(selectManifestConfigProfile(manifest.config!, 'pi').fields.agent?.default).toBe('common')
+    expect(() => selectManifestConfigProfile(manifest.config!, 'agent-skills' as never)).toThrow('config.platform')
     expect(getAwCapabilityRegistry()).toContain('aw.plugin-config.v5')
   })
 

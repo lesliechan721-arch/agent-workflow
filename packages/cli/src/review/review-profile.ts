@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import { canonicalJson } from '@lesliechan721/agent-skill-eval'
 import {
   canonicalizePluginConfigValues,
-  compilePluginConfigDefinition,
+  selectPluginConfigProfile,
   formatPluginConfigIssue,
   getPluginConfigDependencyFields,
   validatePluginConfigCandidate,
@@ -169,7 +169,7 @@ export function resolveReviewPluginProfileConfig(options: {
 }): ReviewPluginProfileConfig {
   const plugins = options.plugins ?? [options.plugin]
   const definitions = new Map(plugins.map((plugin) => [plugin.manifest.name,
-    compilePluginConfigDefinition(plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform)]))
+    selectPluginConfigProfile(plugin.manifest.config ?? { schemaVersion: 5, fields: {} }, options.platform)]))
   const definition = definitions.get(options.plugin.manifest.name)!
   const context: PluginConfigReferenceContext = {
     platform: options.platform,

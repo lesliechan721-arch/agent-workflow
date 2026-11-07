@@ -4,7 +4,7 @@ import { forceOfflineCleanupEvidence } from './offline-cleanup-evidence.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { catalogFileMode, compilePluginConfigDefinition, type RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
+import { catalogFileMode, selectPluginConfigProfile, type RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
 import { COMMAND_PRODUCER_RECORD_FILE, getManagedCommandArtifactTargets, getCommandPackageId, type ManagedCommandProducerRef } from '@lesliechan721/aw-plugin-core/manifest';
 import os from 'node:os';
 import {
@@ -3631,7 +3631,7 @@ async function resolveSensitiveUserConfigValues(
   referencePlugins?: readonly PluginMeta[],
   platform: PlatformName = 'codex',
 ): Promise<string[]> {
-  const hasSensitiveFields = Object.values(plugin.manifest.config ? compilePluginConfigDefinition(plugin.manifest.config, platform).fields : {}).some((field) =>
+  const hasSensitiveFields = Object.values(plugin.manifest.config ? selectPluginConfigProfile(plugin.manifest.config, platform).fields : {}).some((field) =>
     field.sensitive === true);
   if (!hasSensitiveFields) return [];
   const config = await resolveArtifactRenderConfig({

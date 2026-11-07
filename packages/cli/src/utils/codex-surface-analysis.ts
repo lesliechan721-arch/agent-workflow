@@ -1,4 +1,4 @@
-import { compilePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
+import { selectPluginConfigProfile } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   NormalizedPluginManifest,
@@ -202,7 +202,7 @@ export function analyzeCodexSurface(
   if (manifest.slashCommands) unsupportedKinds.add('slashCommand');
 
   const configInputs = Object.keys(manifest.config === undefined
-    ? {} : compilePluginConfigDefinition(manifest.config, 'codex').fields).sort(compareText);
+    ? {} : selectPluginConfigProfile(manifest.config, 'codex').fields).sort(compareText);
 
   for (const instruction of resolvePlatformEntries(manifest.extensions?.instructions, 'codex')) {
     extensionKinds.add('instruction');
