@@ -1,0 +1,153 @@
+# 持续集成（CI）规范
+
+本文件面向仓库维护者，定义官方 GitHub Actions 持续集成管线的职责、触发机制、矩阵配置、Windows 两套独立三路分片规则、自动 Beta 验证复用与产物验证边界。本地测试执行参见 [测试指南](testing.md)，发版流水线参见 [官方发布与失败恢复指南](release.md)。
+
+---
+
+## 1. CI 职责与触发条件
+
+官方 CI 管线分为日常集成验证与发布候选验证两类：
+
+1. **Pull Request 与 main 分支集成（`ci.yml`）**：
+   - **触发条件**：对 `main` 分支提交 PR，或向 `main` 分支推送。
+   - **职责**：运行代码风格检查（Lint）、类型检查（TypeScript 类型检查包含在 `pnpm build` 中）、单元测试、集成测试、Check-only 源码类型合同测试、Dist 契约测试（`pnpm test:dist:contracts`）以及三操作系统插件矩阵测试。
+2. **自动 Beta 触发（`beta.yml`）**：
+   - 只有同一 main push 的精确 SHA 在 `ci.yml` 的全部必要检查成功后才调用 `beta.yml`。
+   - 规划器复查该 SHA 仍为 main tip，分别比较 CLI 五包的规范化生产输入（包括原生源码、工具链和平台包生产逻辑）与 Catalog 完整生产内容。
+   - 有变化的产品自动准备 beta，版本提交和源码 tag 只放在 `release-source/<product>/<version>` 分支，**`main` 分支绝不接收自动版本提交**。默认稳定版后从下一 patch beta 开始；显式修改稳定目标可指定 major/minor。
+3. **发布候选验证（Release Candidate CI）**：
+   - 触发条件：发布工作流启动时准备的候选分支或 tag。
+   - 职责：在全量矩阵上执行完整验证，包括两架构真实 Windows 资格测试与六平台候选 smoke，成功后方准许进入发布步骤。
+
+---
+
+## 2. 操作系统与环境矩阵
+
+### 2.1 基础环境与普通测试 Runner
+
+CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux Node 22 兼容验证）：
+
+- **Linux Node 22/24 普通测试**：按 Node 版本和 unit/integration 分为四个独立 runner：
+  - **Unit 入口**：运行三个 package 的单元测试、`test:workers`，随后运行 `test:types`。
+  - **Integration 入口**：运行普通 integration 与串行 `process-lifecycle`。
+- **Linux 插件环境**：Linux 插件测试执行独立的构建，并将构建出的 CLI 严格配置到 `PATH` 中。
+- **矩阵复合 Action**：插件测试由普通矩阵 job 调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64、macOS arm64 和 Windows x64。
+
+### 2.2 Windows 独立测试分片与长时任务（CI1）
+
+为应对 Windows 上文件系统与子进程创建耗时较高的特点，Windows CI 分别为**普通集成测试**与**插件测试**设计了两套完全独立的 Runner、分片算法与超时配置：
+
+#### 2.2.1 Windows 普通集成测试三路分片（Vitest Runner）
+
+- **Job 名称**：`win32 x64 / Node 24 / integration 1 of 3`、`2 of 3`、`3 of 3`。
+- **工作目录**：`packages/cli`。
+- **执行命令**：
+  ```bash
+  node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --shard "<index>/3"
+  ```
+- **并发与 Runner**：采用三个独立的 Vitest runner，默认使用 1 worker（并发解析遵循优先级：串行约束优先，其次显式参数，再环境变量 `AW_TEST_WORKERS`；CI 环境变量默认配置为 1）。
+- **完整互斥校验入口**：
+  为验证各分片在测试文件分配上的严格互斥与完整性，在 `packages/cli` 目录下执行：
+  ```bash
+  node ../../scripts/test/run-vitest.mjs list --project integration tests/integration --shard <index>/3 --json
+  ```
+  **必须使用 `list --shard --json` 检查，严禁使用 `list --filesOnly`**。
+- **分片 3 附加任务**：
+  除集成测试外，分片 3 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）、诊断回归以及 `pnpm test:smoke:pack:cli`。
+- **作业超时**：该集成测试 Job 超时上限设置为 60 分钟。
+
+#### 2.2.2 Windows 插件测试三路分片（Node File Shard）
+
+- **Job 名称**：`Windows x64 / Node 24 / plugins 1 of 3`、`2 of 3`、`3 of 3`。
+- **复合 Action**：调用 `.github/actions/plugin-tests/action.yml`。
+- **执行命令**：
+  ```bash
+  pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --native-mode source-candidate --native-context "$env:RUNNER_TEMP/aw-native-context.json"
+  ```
+- **分片分配算法**：
+  Node 启动脚本按测试文件相对路径的字母顺序排序后轮流分配。分片绝不拆分单个测试文件。每个插件及其所选目标平台使用同一分片编号。
+  新增或重命名的测试文件必须根据真实耗时测算平衡分配到各分片中；所有三个分片均属于发布前的必要检查项。
+- **分片 1 附加任务**：分片 1 额外承接真实文件占用与跨卷移动资格测试。
+- **作业超时与诊断**：
+  插件 Job 超时上限设置为 90 分钟（此为故障观察上限，非正常等待时长）。
+  每个分片均启用命令阶段耗时、PowerShell 调用次数、累计耗时及最大耗时诊断。
+  真实 30 分钟长时资格用例保持显式触发，不混入普通 CI 阻塞流水线。
+
+---
+
+## 3. 自动 Beta 验证复用与检查同步机制
+
+为避免在发布自动 Beta 时无谓重复耗时极长的全量源码验证，系统支持安全的 CI 验证复用机制：
+
+### 3.1 复用证据与门禁条件
+
+自动 Beta 的源码 tag 是 annotated tag，message 以 `Automatic beta` 开头，并包含 `AW-CI: <run-id>/<attempt>` 标记：
+
+1. **同仓库与同 SHA**：候选发布查询同一 main SHA 的该次运行，验证运行记录确属于同仓库 `ci.yml` 的 main push，且 SHA 等于已验证的候选 main 来源。
+2. **精确 Attempt 与全部必要 Job 成功**：核验该次 attempt 的全部必要 CI jobs 均为 `completed` 且 `success`（此时 main 的 beta job 本身可以仍在运行）。
+3. **跳过的耗时步骤**：仅在上述条件全部严格满足时，省去重复的 `release:verify:cli|catalog` 及 Go 可复现构建。
+4. **保留的候选验证**：精确候选仍必须正式 build，并必须通过六种 OS/CPU 及最低 Node 版本的候选产物 smoke。
+5. **回退至全量验证**：手动候选、稳定版、证据记录缺失、必要检查失败或缺失、以及 GitHub API 查询失败时，一律执行所选产品的完整 release verify。
+
+### 3.2 检查清单同步与 API 容错
+
+- **Job 名称硬性同步**：CI job 名称发生变更时，**必须同步更新 `scripts/release/actions-inspection.mjs` 中的必要检查列表**。两者名称若未同步，系统因无法确认全部检查均已成功而安全回退至完整验证。
+- **历史快照 Transport 校验**：自动 Beta 比较 Catalog 时，当前候选执行完整校验；历史基线快照只执行 transport 校验（检查快照布局、摘要与 marketplace 投影），不按当前插件合同重新校验旧插件。历史快照无法读取或完整性校验失败时，按生产内容有变化选择新版本。
+
+---
+
+## 4. 发布候选验证与跨平台 Smoke
+
+Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及两架构资格成功，再运行 `release:verify:delivery`、`test:perf:gate`、`test:smoke:cli:after-delivery`、Catalog bootstrap 和 `release:verify:publish`：
+
+- **单次正式构建**：`delivery` 负责一次正式 strict Catalog build、dist contract 和 build smoke，job 不再单独前置 build。CLI 的 fetch smoke 已包含 Catalog publish smoke。
+- **跨平台 Smoke 消费同一候选**：六种 OS/CPU（Linux x64、Linux arm64、macOS x64、macOS arm64、Windows x64、Windows arm64）的 Node 24 smoke 和精确 Node 22.0.0 最低版本 smoke 消费同一恢复包，绝不重新编译源码。
+- **Fake 边界**：fake native runner 的 Catalog smoke 仅用于确定性参数接线测试，**绝不能冒充真实 Codex/Claude 已通过 qualification**。任一门禁未通过就不准许发布。
+
+---
+
+## 5. 门禁、生成物边界与测试诊断规范
+
+### 5.1 严格要求门禁（Strict Requirements）
+
+- 官方 CI 的 `pnpm build` 必须启用 `--strict-requirements` 语义，若插件声明了当前宿主不支持的 capability，立即阻断构建。`release:verify:catalog:core` 通过此官方 build 覆盖 strict 门禁。
+- 第三方公开 `aw catalog build` 默认仅提供 advisory 建议，不作强阻断。
+
+### 5.2 构建生成物与 Check-Only 源码合同测试
+
+维护者必须严格区分**构建生成物**与**纳管源码合同**的生命周期边界：
+
+- **构建生成物（`dist/` 与 `packages/cli/plugins-dist/`）**：
+  - 这两个目录是工程构建产物，已在 `.gitignore` 中明确忽略，**绝对禁止手工修改，也绝对禁止提交到 Git 源码中**。
+  - CI 在运行测试与验证前，通过 `pnpm build` 命令清理并重新生成这些目录。
+- **Check-Only 纳管源码合同测试与准确命令**：
+  - 项目中由脚本生成的 TypeScript 类型定义、JSON Schema 与交付规范属于纳管源码（如 `packages/plugin-core/scripts/generate-manifest-types.mjs` 生成的 manifest 类型）。
+  - 这些文件必须通过 Check-Only 模式验证，确保提交的源码类型与生成器定义严格一致。
+  - **准确执行上下文**：脚本 `generate:check` 仅定义在 `packages/plugin-core/package.json` 中，根 `package.json` 没有该 script。维护者执行时必须指定包上下文：
+    ```bash
+    # 从仓库根目录执行：
+    pnpm --filter @lesliechan721/aw-plugin-core run generate:check
+
+    # 或在包目录执行：
+    cd packages/plugin-core && pnpm run generate:check
+    ```
+    底层执行命令为 `node scripts/generate-manifest-types.mjs --check`。
+  - **CI 严禁自动改写受检源码文件**：若开发者修改了源定义但未在本地重新运行生成脚本并提交更新后的纳管代码，Check-Only 测试将直接失败报错。
+- **Dist 契约测试真实命令**：
+  验证构建后 dist 制品与对外公开契约一致性的正式测试命令是：
+  ```bash
+  pnpm test:dist:contracts
+  ```
+  该命令对 `@lesliechan721/agent-skill-eval`、`@lesliechan721/aw-plugin-core` 和 `@lesliechan721/aw` 分别运行 `test:dist`，并执行 `test:smoke:build`。
+
+### 5.3 CI 诊断目录与脱敏收集
+
+- CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。
+- 测试在删除临时现场前向该目录保存脱敏 JSON；失败 job 只上传 `publisher/` 和 `npm/` 下的 JSON，保留 7 天。诊断不包含完整环境变量或原始 npm debug 日志。
+
+### 5.4 性能阶段与时序诊断
+
+- 恢复性能诊断通过 debug logger 发出 `performance:stage`，记录 `recovery.plan`、`recovery.lock.wait`、`recovery.locked.demand`、`recovery.locked.recheck`、`recovery.child.plan`、`recovery.child.execute` 和 `recovery.status` 的开始、成功/失败及耗时。
+- **时序诊断（`AW_TEST_TIMING`）**：
+  CI 通过 `AW_TEST_TIMING` 记录 `commandSequence` 时序诊断。注意：嵌套 stage 的耗时不可直接简单相加（因为包含等待与并发阶段，累计值不等于实际 wall-clock 耗时）。
+- 双平台 TUI 并发用例在断言前输出 `AW_TEST_RESULT`，包含重新安装与配置保存双方的结果、错误码和脱敏诊断摘要，不输出原始 receipt 或完整异常。

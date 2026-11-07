@@ -69,7 +69,7 @@ Codex 的 `codexCliSource` 为 auto/cli/app，缺省 auto；`codexBypassHookTrus
 
 这是字段值示例，不是完整 store。外部 profile 的 model/effort 可省略，调用方按本次显式要求、已选配置、后端默认确定参数，再传给脚本；运行层不查找 profile 或继承其模型参数；省略不生成空参数。通用 native profile 的 model 和 reasoningEffort 也可省略，表示不主动覆盖宿主选择。非法配置或不可用执行器不触发换后端或近似模型替换。
 
-Config Definition v4 的有限对象分支、标量 const 和叶级数组/KV 由 Core 统一实现，CLI、TUI、生效值与物化共用。Manifest v3、Store v5、Catalog v7 和 installed-runtime-config v2 不联动改号。正式字段合同见 [架构说明](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/architecture.md)，作者维护入口见 [插件维护指南](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/plugin-maintenance.md)。
+Config Definition v5 的有限对象分支、标量 const 和叶级数组/KV 由 Core 统一实现，CLI、TUI、生效值与物化共用。Manifest v3、Store v6、Catalog v7 和 installed-runtime-config v2 不联动改号。正式字段合同见 [Plugin Manifest 与配置声明合同](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/reference/manifest-and-config.md)，作者维护入口见 [维护者指南](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/maintainers/README.md)。
 
 renderer 只在 Guide 的 external-delegation 中生成执行器表，只显示 key、mode；不展示未经本次初始化的能力，不把表塞进所有 Skill 或角色。profile 表对外部省略的 model/effort 显示“后端默认”；native 省略值显示“宿主默认”。Guide 的四个档位默认均为 native，表位于按需读取的 execution-profiles reference。Advisor/Explore 专用配置属于 codex-enhance，其 executor 引用同 source 的 agent-subagent 注册表；注册表不复制到专用 Skill。
 
@@ -87,11 +87,11 @@ run 资料放在用户 home 下的 `~/.aw-subagent`。恢复只保留最新执�
 
 ## 托管 custom adapter
 
-先使用 `aw command install` 托管完整 adapter 运行目录，再把返回的 cmdp_/cmdu_ 规范 ID 写入 commandId。Config v4 将 custom-managed 显示为“自定义（托管命令）”；它沿用 custom Adapter v5，不增加后端协议。mode 必填，command/entrypoint、permissionMode 及 Codex/Oracle 专属字段均拒绝。保存只检查 ID 语法，start 由 AW resolver 检查实际可用性，不按展示名、scope 或来源回退。
+先使用 `aw command install` 托管完整 adapter 运行目录，再把返回的 cmdp_/cmdu_ 规范 ID 写入 commandId。Config v5 将 custom-managed 显示为“自定义（托管命令）”；它沿用 custom Adapter v5，不增加后端协议。mode 必填，command/entrypoint、permissionMode 及 Codex/Oracle 专属字段均拒绝。保存只检查 ID 语法，start 由 AW resolver 检查实际可用性，不按展示名、scope 或来源回退。
 
 Guide 从生成的 AW 命令入口启动，使用经过校验的 schema 1 AW_COMMAND_HOST 和受保护的 AW_HOME；缺失报 managedCommandHostMissing，非法报 managedCommandHostInvalid。主机包含当前 Node executable、真实 JS CLI entry 与已固定 awHome；不从 PATH 查另一个 AW，也不把 npm shim 当 Node 脚本。worker 的 adapter argv 固定为 `[host.nodeExecutable, host.cliEntry, "command", "run", commandId, "--"]`。executor args 只进入 Adapter v5 start.args；绑定的 fixed args 才进入 adapter argv。
 
-Guide 先应用 executor env/envFrom，再启动嵌套 AW；命令绑定的普通 env/envFrom 随后覆盖，AW/Guide 控制项最后注入。AW_COMMAND_HOST 单独校验后传给 worker 和嵌套 AW，不进入 v5 请求；嵌套 AW 重签描述但不改 AW_HOME。命令 binding 可显式 cwd=resource，v5 workspace 仍保留任务值。完整主机、环境保护与 runner 合同见 [托管命令合同](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/managed-commands.md#b3-运行参数环境与主机描述)。原绝对 custom 入口继续可用，不要求 CommandHost。
+Guide 先应用 executor env/envFrom，再启动嵌套 AW；命令绑定的普通 env/envFrom 随后覆盖，AW/Guide 控制项最后注入。AW_COMMAND_HOST 单独校验后传给 worker 和嵌套 AW，不进入 v5 请求；嵌套 AW 重签描述但不改 AW_HOME。命令 binding 可显式 cwd=resource，v5 workspace 仍保留任务值。完整主机、环境保护与 runner 合同见 [托管命令合同](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/reference/managed-commands.md#b3-运行参数环境与主机描述)。原绝对 custom 入口继续可用，不要求 CommandHost。
 
 custom-managed 首次启动还使用同一已验证 CommandHost 与固定 AW_HOME 调用 command show <id> --json，只接受成功且 availability=ready、launch/resourceRoot 完整的结果。保存 id/owner/resourceRoot 与 launch.runner/entry/args/env/envFrom/cwd；恢复前经同一入口重读并比较，任何执行相关差异返回 resumeExecutionChanged，展示 name 不参与。实际仍经原 command run 执行，不直接运行保存路径，不保存旧程序副本或新增摘要合同，也不承诺与外部同时更新强一致。
 
