@@ -14,6 +14,7 @@ packages/cli/plugins-dist
 .tmp/
 .aw/
 .browser-use/
-/.dev-workflows/
+.dev-workflows/
 
-/.native/
+.native/
+.codex/

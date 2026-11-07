@@ -1,8 +1,0 @@
-[plugins."agent-skill-toolkit@aw"]
-enabled = true
-
-[plugins."aw-development-toolkit@aw"]
-enabled = true
-
-[plugins."aw-skill-eval-runner@aw"]
-enabled = true
