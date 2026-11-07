@@ -33,4 +33,4 @@ aw plugin install frontend-design --scope user
 
 实现请求会修改授权范围内的文件，并可能运行项目已有的构建、测试或预览命令。仅建议、只读检查不会隐式写入。插件不自带运行器、外部服务、浏览器、字体或素材，不自动安装依赖、创建设计记录、提交 Git 或部署；外部访问和有副作用的操作遵守当前工具及授权。
 
-技能说明：[frontend-design](skills/frontend-design/README.md)。
+技能说明：[frontend-design](skills/frontend-design/README.md)。维护与设计来源取舍见[设计来源与取舍](https://github.com/lesliechan721-arch/agent-workflow/blob/main/plugins/frontend-design/docs/design-sources.md)。

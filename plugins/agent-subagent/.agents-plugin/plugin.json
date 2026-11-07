@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "agent-subagent",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
   "marketplace": {
     "category": "workflow",

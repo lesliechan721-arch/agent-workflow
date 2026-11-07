@@ -248,10 +248,41 @@ Windows 原子 JSON 发布对 rename 的 EPERM、EACCES 和 EBUSY 最多重试�
 
 ## 升级与验证
 
-开发阶段直接更新 v5 的 start/ready/session 结构，不支持旧 ready 的顶层 communication/communicationSupported，也不支持缺少 communication/resume 或适用 permissionMode 的 start 请求，不增加版本协商或迁移。不保留旧 run/poll/v4 执行器、preview 参数或结果文件旁路。result 支持普通报告和 --output-file PATH；--export 按未知参数拒绝。Manifest v3、Config Definition v4、Store v5、Catalog v7、installed-runtime-config v2 和 Eval instruction-v2 不联动改号。新目录直接生效，不读取、迁移或自动删除旧临时目录，不兼容旧 run。通过正常 build/sync/reinstall 更新产物；升级、重装或删除前先完成或 stop 所有活跃外部任务；旧运行由原工具完成或停止，不扫描、接管或删除旧协议资源。
+开发阶段直接更新 v5 的 start/ready/session 结构，不支持旧 ready 的顶层 communication/communicationSupported，也不支持缺少 communication/resume 或适用 permissionMode 的 start 请求，不增加版本协商或迁移。不保留旧 run/poll/v4 执行器、preview 参数或结果文件旁路。result 支持普通报告和 --output-file PATH；--export 按未知参数拒绝。Manifest v3、Config Definition v5、Store v6、Catalog v7、installed-runtime-config v2 和 Eval instruction-v2 不联动改号。新目录直接生效，不读取、迁移或自动删除旧临时目录，不兼容旧 run。通过正常 build/sync/reinstall 更新产物；升级、重装或删除前先完成或 stop 所有活跃外部任务；旧运行由原工具完成或停止，不扫描、接管或删除旧协议资源。
 
-确定性验证采用 `pnpm plugin:test agent-subagent` 和 [测试指南](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/testing.md) 的最低足够真实层级。协议、helper 和 fake 后端保护本地合同及副作用；产物测试须从实际 build/materialization 的 resourceRoot 启动 worker、adapter、脚本和 MCP 工具，保留角色资源、配置表与通信模板注入点与原生角色局部边界。不得依赖开发 checkout、宿主 node_modules 或临时下载 helper。
+确定性验证采用 `pnpm plugin:test agent-subagent` 和 [测试指南](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/maintainers/testing.md) 的最低足够真实层级。协议、helper 和 fake 后端保护本地合同及副作用；产物测试须从实际 build/materialization 的 resourceRoot 启动 worker、adapter、脚本和 MCP 工具，保留角色资源、配置表与通信模板注入点与原生角色局部边界。不得依赖开发 checkout、宿主 node_modules 或临时下载 helper。
 
-[最低合同验收](protocol.md#8-最低合同验收)、32 KiB 实际工具链完整交付和 --output-file 完整保存分别取得证据。fake 不能关闭 Codex 自动收件、Claude 会话输入、真实后端停止、模型效果或原生 OS 的证据缺口。Windows 须在真实 Windows runner 验证，macOS/Linux 证据不外推。文案和结构自检不证明模型理解或任务效果；真实模型与 Eval 遵守 [插件维护流程](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/plugin-maintenance.md) 的独立审核和授权要求。
+### 插件专属测试与 Windows 原生验证边界
+
+Agent Subagent 的 Adapter 原生集成测试分为四个文件，Runtime 原生集成测试按通信、初始化、故障恢复、会话恢复、恢复输出、报告和结果分为七个文件。在 CI 中随 Node 文件分片执行（Windows 通过 `pnpm plugin:test --all --test-concurrency 1 --test-shard <index/total>` 分为三片）。Node 按文件路径排序后轮流分配；Windows 作业超时上限为 90 分钟。Windows 第一片额外运行真实文件占用与跨卷资格，真实 30 分钟用例保持显式启用。
+
+#### 1. Runtime 与 Adapter 分层验证
+
+- Runtime 的消息数量、输出预算和消费失败边界使用真实模块与临时状态验证；CLI 保留安装闭包、通信、真实管道失败、worker 发布竞态和清理闭环。
+- Adapter 的共享停止触发和长截止时间使用受控时间验证，每个后端仍保留真实停止接线和特有协议行为。
+- 参数组合直接验证解析与输入边界，CLI 只保留代表性退出码、stdin 和无副作用证据。
+- 降低测试层级不能删除不同队列的独立覆盖，也不能用 mock 代替原生 ACL、进程归属和跨卷资格。
+
+#### 2. 会话恢复、TTL 存储与后端桥接
+
+- 会话恢复保留真实 worker/Adapter/后端闭环，覆盖同一句柄的新执行、已停止进程、会话保留和新消息交付。bundle 恢复的请求准备、缺少 session 和未确认停止等拒绝分支在模块层验证；参数与配置组合不重复启动完整原生任务。
+- 测试辅助的就绪轮询只读本 fixture 的已知状态文件，不反复调用公开归属校验。启动和恢复均允许 `starting`，测试继续等待同一句柄的新状态，不检查旧 stdout 推断后续能力。
+- worker 退出注入等待父侧保存启动身份后再退出，区分已登记 worker 失联与启动身份捕获失败。
+- 存储 TTL、容量上限和扫描规则使用真实文件与受控宿主边界；原生代表用例独立验证新目录布局的 ACL、归属、活动进程保护和过期删除。扫描并发测试先等待遍历就绪，再核对独占，失败收尾先释放同步 gate 后等待子进程。
+- Adapter 的拒绝与能力组合使用真实协议入口、后端协议实现和内存通道；Codex、Claude 各自保留原生双进程恢复及真实文件桥验证。
+- Antigravity 的通信状态分支使用真实内存通道与受控后端事件；代表用例保留真实文件扫描、私有权限和 Adapter 的就绪判断及自动提交接线。初始化集成测试区分 `start` 已观察到结果与观察窗口结束后的 `pending`，后者须经 `wait` 补报；两种路径都验证固定结果和导出保留初始化信息。
+
+#### 3. Windows 原生与原子 JSON 边界
+
+- **执行与清理期限**：Runtime 原生用例在 Windows 上有 180 秒整体期限，已有其它更具体的期限保持；每个 fixture 的清理共用 45 秒期限。测试取消会终止当前命令子进程；真实长时资格保留自己的显式期限。
+- **所有权读取与 ACL 操作**：所有权读取把根目录、运行目录和 owner 文件的 Windows 校验合并到一个短命原生 helper，同次校验的共用路径链只读取一次，每个资源仍执行 owner 和 ACL 检查；下一次读取重新验证，不跨调用缓存。新建运行时，同批子目录和初始 JSON 临时文件分别共用一次原生权限操作，每个资源仍完成保护前后的路径检查和 ACL 回读；JSON 逐文件原子发布。清理前的 Windows 后代扫描共用一个原生进程，逐节点检查后再枚举子目录，完整扫描成功后才删除。
+- **Windows 身份与批次限制**：Windows 身份查询使用系统目录中的 `whoami.exe /user /fo csv /nh`，只读取 SID 列；原生平台测试将它与当前 Windows token 的 SID 对照。过期扫描和多目标 wait 分别批量验证本轮的运行目录及 owner 文件；ACL 批次仍按实际 UTF-8 JSON 大小限制为 18 KiB，通过有界 stdin 传输，不使用 base64 环境变量。批量失败时逐项重验，健康目标仍可继续。下一轮等待、下一条命令和过期删除前重新验证，不共享跨调用的 ACL 证据。确定性测试校验原生调用数、128 个运行与长路径的传输大小、失败目标隔离和等待后的权限变化；真实 ACL、进程归属和跨卷边界仍由原生测试负责。
+- **原子 JSON 与错误诊断**：Windows 原子 JSON 的有界重试使用文件系统失败注入验证短暂占用恢复、持续失败保留旧文件和临时文件清理；原生文件资格同时验证持续持锁失败与首次真实 rename 冲突后释放锁的恢复。worker 文件错误通过真实 CLI 验证固定结果中的安全诊断、未发送输入和后端停止；命令阶段日志保留 DIAGNOSTIC 块，便于定位失败操作和资源类别。
+- **跨卷资格与协议状态**：跨卷资格的实际 ready 帧在普通协议测试中执行并校验；就绪等待遇到失败终态时立即报告状态和错误码，完整跨卷资格仍只在原生 Windows 执行。
+- **性能与调用诊断**：`AW_SUBAGENT_NATIVE_TIMING` 的总计覆盖该父 CLI 的 PowerShell 与 whoami `execFile` 调用。`hosts` 按可执行程序汇总，`operations` 按身份、ACL 读取/保护、路径、进程和 Job 观察/停止分类；各组记录次数、累计耗时、最大耗时、失败数和超时数。比较旧版 PowerShell 总计时使用 `hosts["powershell.exe"]`。该诊断不统计 worker、Adapter 或 `spawn` 的全部原生工作，也不把累计调用耗时解释为作业实际耗时。
+
+#### 4. 真实证据与平台资格边界
+
+[最低合同验收](protocol.md#8-最低合同验收)、32 KiB 实际工具链完整交付和 --output-file 完整保存分别取得证据。fake 不能关闭 Codex 自动收件、Claude 会话输入、真实后端停止、模型效果或原生 OS 的证据缺口。Windows 须在真实 Windows runner 验证，macOS/Linux 证据不外推。文案和结构自检不证明模型理解或任务效果；真实模型与 Eval 遵守 [维护者指南](https://github.com/lesliechan721-arch/agent-workflow/blob/main/docs/maintainers/README.md) 的独立审核和授权要求。
 
 仍需分别记录真实证据的范围包括：Codex profile精确字段的实际消费者、config/read层完整性、hook来源与信任/bypass；Windows注册包内CLI发现与握手；Antigravity复杂路径、用户/共享/项目策略组合、沙箱文件与PID可见性、auto账户资格及原生平台行为。macOS App的无模型握手不证明profile消费者或Windows行为。Antigravity消息发送以实际父侧通道收到消息为依据；模型结果正文、回执标记或随机文本比较不用于决定通讯能力是否存在。组合命令权限拒绝保留为该次调用失败，不能仅因此认定所有通讯不支持。协议、投递分类、输入不重放和停止事实仍须验证；help、fake和文档不替代真实后端证据，不声明未经证明的平台支持。
