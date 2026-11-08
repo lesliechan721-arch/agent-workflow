@@ -156,6 +156,8 @@ describe('five namespaced write commands', () => {
 
   it('prints an executable stdin-only repair command for invalid sensitive config', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    // Keep the invalid token distinct from hexadecimal source identity digests.
+    const invalidToken = 'x!?';
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'sensitive-config-repair-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
@@ -182,7 +184,7 @@ describe('five namespaced write commands', () => {
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      values: { token: 'abc' },
+      values: { token: invalidToken },
     });
     const output = createCapturedCliIo();
 
@@ -204,7 +206,7 @@ describe('five namespaced write commands', () => {
         requiresConfirmation: false
       })])
     });
-    expect(output.readStdout()).not.toContain('abc');
+    expect(output.readStdout()).not.toContain(invalidToken);
     expect(output.readStdout()).not.toContain('--value-json');
     expect(output.readStdout()).not.toContain('--preset');
     // Both formats must use the same safe action and preserve the selected profile.
@@ -219,7 +221,7 @@ describe('five namespaced write commands', () => {
         const stdout = captured.readStdout();
         if (json) expect(JSON.parse(stdout).nextActions).toContainEqual(expect.objectContaining({ kind: 'command', argv: expectedArgv, requiresConfirmation: false }));
         else expect(stdout).toContain(`Next: ${expectedArgv.join(' ')}`);
-        for (const forbidden of ['abc', '--value-json', '--preset', '--apply', '--yes']) expect(stdout).not.toContain(forbidden);
+        for (const forbidden of [invalidToken, '--value-json', '--preset', '--apply', '--yes']) expect(stdout).not.toContain(forbidden);
       }
     }
   });
