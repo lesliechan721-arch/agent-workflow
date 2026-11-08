@@ -64,7 +64,7 @@ export async function loadCatalogGenerationViewModels(options: {
   let reusedValidationCount = 0;
   const validationStartedAt = now();
   const viewModels = await Promise.all(sources.map(async (source): Promise<CatalogSourceGenerationViewModel> => {
-    const instruction = `aw catalog source sync ${source.id}`;
+    const instruction = `aw source sync ${source.id}`;
     const wasValidated = options.validatedStoreEntries?.size ?? 0;
     try {
       const active = await resolveActiveCatalogGeneration({

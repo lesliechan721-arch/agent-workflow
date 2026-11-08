@@ -7,10 +7,10 @@
 在包含本插件的 Catalog 中选择客户端：
 
 ```bash
-aw plugin targets set codex
+aw target set codex
 aw plugin install browser-use --scope user --yes
 # 或
-aw plugin targets set claude
+aw target set claude
 aw plugin install browser-use --scope user --yes
 ```
 

@@ -2,10 +2,10 @@
 
 ## 准备与运行
 
-`aw skill eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
+`aw dev eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
 
 ```bash
-aw skill eval prepare git-toolkit \
+aw dev eval prepare git-toolkit \
   reconciling-git-merges --suite router --profile project-default \
   --output /tmp/aw-eval-specs/git-merge-materialization --json
 ```
@@ -32,8 +32,8 @@ aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-s
 
 ```bash
 pnpm plugin:test git-toolkit
-aw skill eval prepare git-toolkit reconciling-git-merges --suite router --profile project-default --split validation --runs 1 --output /tmp/aw-eval-specs/git-merge-router-validation --json
-aw skill eval prepare git-toolkit reconciling-git-merges --suite behavior --profile project-default --runs 3 --output /tmp/aw-eval-specs/git-merge-behavior --json
+aw dev eval prepare git-toolkit reconciling-git-merges --suite router --profile project-default --split validation --runs 1 --output /tmp/aw-eval-specs/git-merge-router-validation --json
+aw dev eval prepare git-toolkit reconciling-git-merges --suite behavior --profile project-default --runs 3 --output /tmp/aw-eval-specs/git-merge-behavior --json
 ```
 
 所选 trigger 路由和 Git fixture 行为用例应分别准备 Spec 并交给 `$run-aw-skill-evals`；materialization 诊断只使用前面的 prepare 命令。

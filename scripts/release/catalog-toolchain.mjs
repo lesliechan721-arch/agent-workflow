@@ -138,7 +138,7 @@ export async function prepareCatalogToolchain(channel, options = {}) {
     }, installRoot, env);
     const cliDistRoot = path.join(installRoot, 'node_modules/@lesliechan721/aw/dist');
     const capability = await (options.loadToolchainCapabilities ?? (async () => import(pathToFileURL(path.join(cliDistRoot, 'src/commands/aw-capabilities.js')).href)))();
-    const requiredCapabilities = new Set(['aw.catalog-publication.v1', 'aw.catalog-snapshot.v7', 'aw.catalog-authoring.v1']);
+    const requiredCapabilities = new Set(['aw.catalog-publication.v2', 'aw.catalog-snapshot.v7', 'aw.catalog-authoring.v2']);
     const plugins = await fs.readdir(path.join(repoRoot, 'plugins'), { withFileTypes: true }).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
     for (const plugin of plugins.filter((entry) => entry.isDirectory())) {
       let manifest;

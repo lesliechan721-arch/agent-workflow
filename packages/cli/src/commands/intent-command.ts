@@ -1,12 +1,13 @@
 import type { Scope } from '../types.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
-import { resolvePartialCatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { resolvePartialCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { addIntentRoot, calculateIntentDigest, createEmptyIntent, removeIntentRoot, type PluginIntent } from '../intent/intent-codec.js';
 import { observeIntent, writeIntent, resolveIntentPath } from '../intent/intent-store.js';
 import { observePreferences, selectAgents, resolvePreferencesPath } from '../intent/deployment-preferences.js';
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
+import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import type { RecoveryDiagnostic, RecoveryReceipt } from '../recovery/receipt.js';
 
 export interface IntentCommandOptions { scope: Scope; cwd: string; env?: NodeJS.ProcessEnv; token?: AwHomeMutationToken }
@@ -35,7 +36,7 @@ function errorCode(error: unknown, fallback: string): string {
 }
 
 export async function addRequirements(options: IntentCommandOptions & {
-  selectors: readonly string[]; dryRun?: boolean; installSelectors?: boolean;
+  selectors: readonly string[]; dryRun?: boolean; installSelectors?: boolean; catalogOperationContext?: CatalogOperationContext;
 }): Promise<IntentAddResult> {
   let roots = [...new Set(options.selectors)];
   let selectors: ReturnType<typeof parsePluginId>[];
@@ -59,7 +60,7 @@ export async function addRequirements(options: IntentCommandOptions & {
       if (sourceIds.some((sourceId) => !configured.has(sourceId))) {
         return { changed: false, roots, errors: [diagnostic('sourceMissing')] };
       }
-      const context = await resolvePartialCatalogOperationContext({ env: options.env, configSnapshot: config, sourceIds });
+      const context = options.catalogOperationContext ?? await resolvePartialCatalogOperationContext({ env: options.env, configSnapshot: config, sourceIds });
       if (short && context.catalog.sources.some((source) => source.error)) {
         return { changed: false, roots, errors: [diagnostic('sourceActiveUnavailable')] };
       }
@@ -74,6 +75,11 @@ export async function addRequirements(options: IntentCommandOptions & {
         resolved.push(`${matches[0]!.sourceId}/${selector.pluginName}`);
       }
       roots = [...new Set(resolved)];
+      for (const sourceId of new Set(roots.map((root) => root.split('/')[0]!))) {
+        const source = context.catalog.sources.find((entry) => entry.sourceId === sourceId)?.resolution;
+        if (!source) return { changed: false, roots, errors: [diagnostic('sourceActiveUnavailable')] };
+        await validateCatalogSnapshotComplete(source.rootDir);
+      }
       let next = current.state === 'valid' ? current.value : createEmptyIntent();
       for (const root of roots) {
         const [sourceId, pluginName] = root.split('/');

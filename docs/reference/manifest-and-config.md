@@ -14,11 +14,11 @@ AW 各模块采用独立版本演进，不要将不同合同的版本号混淆�
 | Runtime Config | `schemaVersion: 2` | 运行时产物内生效配置注入与读取合同 |
 | Catalog Snapshot | `schemaVersion: 7` | Catalog 聚合与分发快照格式 |
 
-字段定义、约束和接受值可通过已安装的 CLI 查询获取，无需缓存静态字段表：
+CLI 结果使用[统一外壳](cli.md)，业务字段位于 `data`。字段定义、约束和接受值可通过已安装的 CLI 查询获取，无需缓存静态字段表：
 
 ```bash
-aw plugin capabilities --surface manifest --json
-aw plugin capabilities --surface config --json
+aw dev plugin capabilities --surface manifest --json
+aw dev plugin capabilities --surface config --json
 ```
 
 仓库内完整的公开 JSON Schema 位于 `packages/plugin-core/schemas/plugin-manifest-v3.json`。Manifest 顶层严格设定了 `additionalProperties: false`，**严禁在 Manifest 中书写 `$schema` 键**，否则会被当前 schema 校验器直接拒绝。
@@ -51,7 +51,7 @@ aw plugin capabilities --surface config --json
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.plugin-recovery.v1",
+        "aw.plugin-recovery.v2",
         "aw.plugin-config.v5"
       ]
     }
@@ -82,7 +82,8 @@ aw plugin capabilities --surface config --json
   - `policy`：包含 `installation` 与 `authentication` 枚举。
 - `skills`：插件相对目录路径字符串，指向 Skill 集合所在的目录，规范目录固定为 `"./skills"`（不是可任选目录）。注意 `skills` 是路径字符串，严禁书写为对象。
 - `requires.aw.capabilities`：声明插件生产行为所必需的 AW 能力标识集合。仅声明实际依赖的能力，不要用 CLI 版本字符串替代：
-  - `aw.plugin-recovery.v1`：插件生产内容实际调用 User/Project 恢复入口时声明。
+  - `aw.plugin-recovery.v2`：插件生产内容实际调用当前 User/Project 生命周期入口时声明。
+  - `aw.cli-output.v1`：脚本读取统一 CLI JSON 外壳时声明。
   - `aw.plugin-config.v5`：使用 Config Definition v5 时声明。
   - `aw.plugin-config-unique-by.v1`：使用对象数组唯一键声明时派生要求。
   - `aw.plugin-config-value-ref.v1`：使用本地值引用时派生要求。
@@ -296,7 +297,7 @@ Store v6 内部隔离维护两类配置值容器：
 在 `Config Mutation Receipt v7` 中，配置保存与实际应用完全解耦：
 1. **保存提交（configWrite）**：进行 schema 预检与依赖闭包校验，验证通过后原子提交用户文档。一旦写入成功，回执标记 `configWrite: "succeeded"`。
 2. **应用刷新（apply）**：刷新已安装现场产物（重新物化受影响的 Native、Portable 或命令包）。
-3. **失败保留原则**：若保存成功后应用阶段失败（例如目标平台缺少依赖、preApply 异常或现场被占用），**已保存的强配置绝不回滚**。回执与 CLI 状态将状态报告为部分完成（`overallState: "partial"`）并附带明确的安全恢复入口（如 `aw plugin sync`），不得判定为“配置未修改”。
+3. **失败保留原则**：若保存成功后应用阶段失败（例如目标平台缺少依赖、preApply 异常或现场被占用），**已保存的强配置绝不回滚**。回执与 CLI 状态将状态报告为部分完成（`status: "partial"`）并附带明确的安全恢复入口（如 `aw plugin sync`），不得判定为“配置未修改”。
 
 ### 4.3 配置变更命令行为
 

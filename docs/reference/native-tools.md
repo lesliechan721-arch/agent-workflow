@@ -7,7 +7,7 @@
 Plugin Manifest v3 的 `nativeTools` 要求 `aw.native-tools.v2`。从当前工具查询字段和限制：
 
 ```bash
-aw plugin capabilities --surface native-tools --json
+aw dev plugin capabilities --surface native-tools --json
 ```
 
 ### 1.1 协议定义与消费者声明
@@ -61,16 +61,16 @@ aw plugin capabilities --surface native-tools --json
 
 ## 2. 构建与第三方 Workspace 边界
 
-- **无编译依赖**：`aw plugin validate/build`、Catalog build 和静态 Skill materialization 处理声明、binding 和 reader，不取得真实 EXE，不要求 Go 编译环境。
+- **无编译依赖**：`aw dev plugin validate/build`、Catalog build 和静态 Skill materialization 处理声明、binding 和 reader，不取得真实 EXE，不要求 Go 编译环境。
 - **动态执行前置门禁**：Windows 上执行动态 renderer 或真实插件测试时，使用当前 CLI 的配套 helper；缺少依赖时在启动前停止。
 - **Fixture 证据范围**：测试 fixture 仅能证明声明、准备与协议接线正确，**不能证明真实的 Windows ACL、Job containment 或取消行为**。
 - **第三方作者使用流程**：
   第三方作者只需要本机已安装的兼容 AW CLI，即可完成验证、构建与测试，无需检出本 monorepo，无需 Go 环境，无需全局 Eval 或官方发布脚本：
 
   ```bash
-  aw plugin validate plugins/example --workspace-root /workspace --json
-  aw plugin build plugins/example --workspace-root /workspace --json
-  aw plugin test plugins/example --workspace-root /workspace --json
+  aw dev plugin validate plugins/example --workspace-root /workspace --json
+  aw dev plugin build plugins/example --workspace-root /workspace --json
+  aw dev plugin test plugins/example --workspace-root /workspace --json
   ```
 
 ---

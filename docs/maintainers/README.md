@@ -52,6 +52,7 @@
 | 平台边界、原生/Portable 投影或 Windows helper | [平台边界](architecture/platforms.md) | 涉及命令或原生制品追加[托管命令](../reference/managed-commands.md)或[原生工具](../reference/native-tools.md)。 |
 | Review/Eval 准备、取证、执行或来源绑定 | [Review 与 Eval 架构说明](architecture/review-eval.md) 与 [Review 取证与 Eval 评估合同](../reference/review-and-eval.md) | 具体 runner 用法和插件协议读取所属插件的 README、SKILL 和条件引用。 |
 | 持久/协调机制、并发、配置/状态写入、恢复、跨系统一致性及相关评审 | 本页的[项目设计约束](#项目设计约束) | 再读相应架构主题；发布与发布恢复另读[发布流程](release.md)。 |
+| CLI 命令、输出协议或非交互边界 | [CLI 合同](../reference/cli.md) | 业务语义再读对应架构；同批更新调用方、能力声明、脚本与 TUI 等价命令。 |
 | 修改 TypeScript | [编码约定](coding-conventions.md) | 再读本次变更触及的产品合同。 |
 | 添加或修改测试、选择测试层级或验证命令 | [测试指南](testing.md) | 须通过 Test Value Gate；涉及 CI 读[CI 说明](ci.md)；涉及发版读[发布流程](release.md)。 |
 | CI 工作流或发版流水线 | [CI 说明](ci.md) | 涉及发版流程读[发布流程](release.md)。 |

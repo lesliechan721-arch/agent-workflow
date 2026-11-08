@@ -1492,8 +1492,8 @@ describe('five namespaced write commands', () => {
     expect(repeated.declarationChanged).toBe(false);
   });
 
-  // Test Value Gate: a receipt retry must retain config deletion and the original output target boundary.
-  it('retries config deletion through the retirement receipt without expanding output targets', async () => {
+  // Test Value Gate: a config-only failure must not suggest a retry that expands output deletion.
+  it('requires a new review for config deletion without expanding the original output targets', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const sourceRoot = path.join(cwd, 'removed-config-receipt-source');
@@ -1528,17 +1528,16 @@ describe('five namespaced write commands', () => {
       blockers: expect.arrayContaining([expect.objectContaining({ code: 'configResetFailed' })]) });
     expect(await fs.pathExists(configPath)).toBe(true);
 
-    const retry = failed.recoveryActions.find((action) => action.startsWith('aw plugin intent retire '));
-    expect(retry).toBeDefined();
-    const captured = createCapturedCliIo();
-    const exitCode = await runCli([...retry!.split(' ').slice(1), '--yes', '--json'], {
-      cwd, env: isolation.env, io: captured.io, interactive: false,
-      nativeCliRunner: runtime.nativeCliRunner,
-    });
-    const recovered = JSON.parse(captured.readStdout());
-    expect(exitCode, JSON.stringify(recovered)).not.toBe(2);
-    expect(recovered).toMatchObject({ command: 'intent:retire', configChanged: true, declarationChanged: false });
-    expect(recovered.requestedTargets.map((target: { agent: string }) => target.agent)).toEqual(['codex']);
+    expect(failed.recoveryActions.filter((action) => action.startsWith('aw ')))
+      .not.toEqual(expect.arrayContaining([expect.stringContaining('--delete-config')]));
+    expect(failed.recoveryActions.some((action) => !action.startsWith('aw ')
+      && action.includes('--delete-config'))).toBe(true);
+    // A new domain review retains the prior exact target choice; the CLI does not
+    // invent a target-filtered normal remove command that its public contract forbids.
+    const recovered = await runRetire({ scope: 'user', cwd, env: isolation.env,
+      selector: 'team/demo', targets: ['codex'], deleteConfig: true, yes: true }, runtime.runtime);
+    expect(recovered).toMatchObject({ configChanged: true, declarationChanged: false });
+    expect(recovered.requestedTargets.map((target) => target.agent)).toEqual(['codex']);
     expect(recovered.recoveryActions.join('\n')).not.toContain('--delete-config');
     expect(await fs.pathExists(configPath)).toBe(false);
     expect(await fs.readFile(claudeSettingsPath)).toEqual(claudeBefore);
@@ -3466,7 +3465,7 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({
         errorCode: 'exclusiveOwnerEvidenceInvalid',
         recoveryActions: [
-          'run aw plugin cleanup local/demo --target codex --scope project --force',
+          'run aw plugin remove --only outputs local/demo --target codex --scope project --force',
           'then run aw plugin sync local/demo --target codex --context project --rebuild',
         ],
       }),
@@ -3474,7 +3473,7 @@ describe('five namespaced write commands', () => {
     const blockedReceipt = (await import('../../src/output/command-receipt.js'))
       .buildRebuildReceiptJson('reinstall', blockedReinstall);
     expect(blockedReceipt.recoveryActions).toEqual([
-      'run aw plugin cleanup local/demo --target codex --scope project --force',
+      'run aw plugin remove --only outputs local/demo --target codex --scope project --force',
       'then run aw plugin sync local/demo --target codex --context project --rebuild',
     ]);
     await expect(fs.pathExists(rolePath)).resolves.toBe(true);
@@ -3656,7 +3655,7 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({
         errorCode: 'exclusiveOwnerEvidenceInvalid',
         recoveryActions: [
-          'run aw plugin cleanup team/demo --target codex --scope project --force',
+          'run aw plugin remove --only outputs team/demo --target codex --scope project --force',
           'then run aw plugin sync team/demo --target codex --context project --rebuild',
         ],
       }),
@@ -3938,7 +3937,7 @@ describe('five namespaced write commands', () => {
         }),
         errorCode: 'exclusiveOwnerEvidenceInvalid',
         recoveryActions: [
-          'run aw plugin cleanup team/leaf --target codex --scope project --force',
+          'run aw plugin remove --only outputs team/leaf --target codex --scope project --force',
           'then run aw plugin sync team/leaf --target codex --context project --rebuild',
         ],
       }),

@@ -17,14 +17,14 @@ function capture() {
 
 describe('review command options', () => {
   it.each([
-    ['unknown option', ['review', 'inspect', 'target', '--unknown', '--json']],
+    ['unknown option', ['dev', 'review', 'inspect', 'target', '--unknown', '--json']],
     ['repeated single-value option', [
-      'review', 'inspect', 'target', '--scope', 'user', '--scope', 'project', '--json',
+      'dev', 'review', 'inspect', 'target', '--scope', 'user', '--scope', 'project', '--json',
     ]],
-    ['missing option value', ['review', 'inspect', 'target', '--scope', '--json']],
-    ['extra positional argument', ['review', 'inspect', 'target', 'extra', '--json']],
+    ['missing option value', ['dev', 'review', 'inspect', 'target', '--json', '--scope']],
+    ['extra positional argument', ['dev', 'review', 'inspect', 'target', 'extra', '--json']],
     ...['both', 'agent-skills', 'claude-code', 'gemini'].map((platform) => [
-      `invalid platform ${platform}`, ['review', 'inspect', 'target', '--platform', platform, '--json'],
+      `invalid platform ${platform}`, ['dev', 'review', 'inspect', 'target', '--platform', platform, '--json'],
     ] as [string, string[]]),
   ])('returns one inspect JSON argument failure for %s', async (_label, argv) => {
     const output = capture()
@@ -32,53 +32,47 @@ describe('review command options', () => {
     const exitCode = await runCli(argv, { io: output.io })
 
     expect(exitCode).toBe(2)
-    expect(output.stderr()).toBe('')
     expect(JSON.parse(output.stdout())).toEqual(expect.objectContaining({
-      schemaVersion: 2,
-      command: 'review:inspect',
-      view: 'review',
-      ok: false,
-      target: null,
-      skills: [],
-      issues: [expect.objectContaining({ code: 'invalidArguments' })],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'dev.review.inspect',
+      diagnostics: [expect.objectContaining({ code: _label.startsWith('invalid platform') || _label === 'repeated single-value option' ? 'invalidOptionValue' : 'invalidArguments' })],
+      data: {}
     }))
   })
 
   it.each([
     ['unknown option', [
-      'review', 'prepare', 'target', '--platform', 'codex', '--scope', 'user',
+      'dev', 'review', 'prepare', 'target', '--platform', 'codex', '--scope', 'user',
       '--out', 'prepared', '--unknown', '--json',
     ]],
     ['repeated single-value option', [
-      'review', 'prepare', 'target', '--platform', 'codex', '--platform', 'claude',
+      'dev', 'review', 'prepare', 'target', '--platform', 'codex', '--platform', 'claude',
       '--scope', 'user', '--out', 'prepared', '--json',
     ]],
     ['missing required option', [
-      'review', 'prepare', 'target', '--platform', 'codex', '--out', 'prepared', '--json',
+      'dev', 'review', 'prepare', 'target', '--platform', 'codex', '--out', 'prepared', '--json',
     ]],
     ['extra positional argument', [
-      'review', 'prepare', 'target', 'extra', '--platform', 'codex', '--scope', 'user',
+      'dev', 'review', 'prepare', 'target', 'extra', '--platform', 'codex', '--scope', 'user',
       '--out', 'prepared', '--json',
     ]],
     ...['both', 'agent-skills', 'claude-code', 'gemini'].map((platform) => [
-      `invalid platform ${platform}`, ['review', 'prepare', 'target', '--platform', platform, '--scope', 'user', '--out', 'prepared', '--json'],
+      `invalid platform ${platform}`, ['dev', 'review', 'prepare', 'target', '--platform', platform, '--scope', 'user', '--out', 'prepared', '--json'],
     ] as [string, string[]]),
-    ['missing platform', ['review', 'prepare', 'target', '--scope', 'user', '--out', 'prepared', '--json']],
+    ['missing platform', ['dev', 'review', 'prepare', 'target', '--scope', 'user', '--out', 'prepared', '--json']],
   ])('returns one prepare JSON argument failure for %s', async (_label, argv) => {
     const output = capture()
 
     const exitCode = await runCli(argv, { io: output.io })
 
     expect(exitCode).toBe(2)
-    expect(output.stderr()).toBe('')
     expect(JSON.parse(output.stdout())).toEqual(expect.objectContaining({
       schemaVersion: 1,
-      command: 'review:prepare',
-      ok: false,
-      target: null,
-      sourceBindingPath: null,
-      skills: [],
-      issues: [expect.objectContaining({ code: 'invalidArguments' })],
+      status: 'failed',
+      command: 'dev.review.prepare',
+      diagnostics: [expect.objectContaining({ code: _label.startsWith('invalid platform') || _label === 'repeated single-value option' ? 'invalidOptionValue' : 'invalidArguments' })],
+      data: {}
     }))
   })
 
@@ -86,14 +80,13 @@ describe('review command options', () => {
     const output = capture()
 
     const exitCode = await runCli([
-      'review', 'prepare', 'missing-target',
+      'dev', 'review', 'prepare', 'missing-target',
       '--platform', 'codex', '--scope', 'user', '--out', 'prepared',
     ], { io: output.io })
 
-    expect(exitCode).toBe(2)
-    expect(output.stderr()).toBe('')
-    expect(output.stdout()).toContain('Review preparation: failed')
-    expect(output.stdout()).toContain('targetNotFound:')
+    expect(exitCode).toBe(3)
+    expect(output.stdout()).toContain('BLOCKED')
+    expect(output.stderr()).toContain('catalogWorkspaceMissing:')
     expect(() => JSON.parse(output.stdout())).toThrow()
   })
 })

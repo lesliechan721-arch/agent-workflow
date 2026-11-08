@@ -574,6 +574,19 @@ async function readCandidateContinuity(
   };
 }
 
+/** Keep a validated temporary candidate available for read-only operation preparation. */
+export async function withCatalogSourceCandidate<T>(options: {
+  sourceId: string;
+  cliVersion: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  runtime?: CatalogGenerationServiceRuntime;
+}, action: (value: { resolution: CatalogSourceResolution; candidate: CatalogGenerationCandidateEvidence }) => Promise<T>): Promise<T> {
+  const resolved = await resolveCandidate({ ...options, env: options.env ?? process.env });
+  try { return await action(resolved); }
+  finally { await resolved.resolution.cleanup().catch(() => warnCleanupFailure(options.sourceId)); }
+}
+
 export async function probeCatalogSourceGeneration(options: {
   sourceId: string;
   source?: CatalogSource;

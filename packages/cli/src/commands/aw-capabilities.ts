@@ -27,6 +27,7 @@ import {
 } from './catalog-workspace-resolution.js'
 
 export const IMPLEMENTED_AW_CAPABILITIES = [
+  'aw.cli-output.v1',
   'aw.plugin-manifest.v3',
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
@@ -47,18 +48,18 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.portable-skills.v1',
   'aw.runtime-imports.v1',
   'aw.installed-runtime-config.v2',
-  'aw.skill-validation.v1',
-  'aw.skill-eval.v2',
-  'aw.plugin-authoring.v1',
-  'aw.catalog-authoring.v1',
-  'aw.catalog-source.v2',
-  'aw.catalog-dev-source.v1',
-  'aw.catalog-publication.v1',
-  'aw.review-preparation.v1',
-  'aw.review-inspection.v2',
+  'aw.skill-validation.v2',
+  'aw.skill-eval.v3',
+  'aw.plugin-authoring.v2',
+  'aw.catalog-authoring.v2',
+  'aw.catalog-source.v3',
+  'aw.catalog-dev-source.v2',
+  'aw.catalog-publication.v2',
+  'aw.review-preparation.v2',
+  'aw.review-inspection.v3',
   'aw.catalog-snapshot.v7',
-  'aw.self-check.v1',
-  'aw.plugin-recovery.v1',
+  'aw.self-check.v2',
+  'aw.plugin-recovery.v2',
 ] as const satisfies readonly RegisteredAwCapabilityId[]
 
 export class AwCapabilityUnsupportedError extends Error {
@@ -265,7 +266,7 @@ async function resolveCanonicalPluginRequirementsTarget(options: {
     throw error
   })
   if (!stat?.isDirectory() || stat.isSymbolicLink()) {
-    throw new Error(`Plugin directory must be a regular non-symbolic-link directory: ${requestedPluginRoot}`)
+    throw new Error('Plugin directory must be a regular non-symbolic-link directory.')
   }
   const canonicalPluginRoot = await realpath(requestedPluginRoot)
   const plugin = workspace.plugins.find((entry) => entry.manifest.name === path.basename(canonicalPluginRoot))
@@ -276,7 +277,7 @@ async function resolveCanonicalPluginRequirementsTarget(options: {
     !plugin
     || expectedPluginRoot !== canonicalPluginRoot
   ) {
-    throw new Error(`Plugin directory is not a canonical plugin in this Catalog Workspace: ${requestedPluginRoot}`)
+    throw new Error('Plugin directory is not a canonical plugin in the selected Catalog Workspace.')
   }
   return {
     plugin: { ...plugin, rootDir: canonicalPluginRoot },

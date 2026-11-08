@@ -3,7 +3,7 @@
 准备、验证或执行 AW Agent Skill Eval，复用独立审核并验证运行结果。依赖 `agent-skill-toolkit`。
 
 ```bash
-aw plugin targets set codex
+aw target set codex
 aw plugin install aw-skill-eval-runner --scope user
 ```
 

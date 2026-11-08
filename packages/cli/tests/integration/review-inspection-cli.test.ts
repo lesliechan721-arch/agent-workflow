@@ -76,36 +76,37 @@ describe('review inspect CLI entry', () => {
     ].join('\n'))
     const output = capture()
 
-    const code = await runCli(['review', 'inspect', pluginRoot, '--json'], {
+    const code = await runCli(['dev', 'review', 'inspect', pluginRoot, '--json'], {
       cwd: outside,
       io: output.io,
     })
 
     expect(code).toBe(0)
-    expect(output.stderr()).toBe('')
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 2,
-      command: 'review:inspect',
-      view: 'review',
-      ok: true,
-      target: { kind: 'plugin', path: pluginRoot },
-      skills: expect.arrayContaining([
-        expect.objectContaining({
-          skill: 'fixture',
-          sourcePath: path.join(pluginRoot, 'skills', 'fixture'),
-          finalPath: null,
-          digest: null,
-          state: 'missing',
-          evidencePath: null,
-        }),
-      ]),
-      issues: expect.arrayContaining([
+      schemaVersion: 1,
+      status: 'success',
+      command: 'dev.review.inspect',
+      diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'requiredFinalMissing' }),
       ]),
+      data: {
+        view: 'review',
+        target: { kind: 'plugin', path: pluginRoot },
+        skills: expect.arrayContaining([
+          expect.objectContaining({
+            skill: 'fixture',
+            sourcePath: path.join(pluginRoot, 'skills', 'fixture'),
+            finalPath: null,
+            digest: null,
+            state: 'missing',
+            evidencePath: null,
+          }),
+        ])
+      }
     })
 
     const explicitReviewOutput = capture()
-    expect(await runCli(['review', 'inspect', pluginRoot, '--view', 'review', '--json'], {
+    expect(await runCli(['dev', 'review', 'inspect', pluginRoot, '--view', 'review', '--json'], {
       cwd: outside,
       io: explicitReviewOutput.io,
     })).toBe(0)
@@ -113,13 +114,13 @@ describe('review inspect CLI entry', () => {
 
     const repeatedSkillOutput = capture()
     expect(await runCli([
-      'review', 'inspect', pluginRoot,
+      'dev', 'review', 'inspect', pluginRoot,
       '--skill', 'fixture', '--skill', 'fixture', '--json',
     ], {
       cwd: outside,
       io: repeatedSkillOutput.io,
     })).toBe(0)
-    const repeatedSkills = JSON.parse(repeatedSkillOutput.stdout()).skills as Array<{
+    const repeatedSkills = JSON.parse(repeatedSkillOutput.stdout()).data.skills as Array<{
       skill: string
       profile: { platform: string; scope: string }
     }>
@@ -129,13 +130,14 @@ describe('review inspect CLI entry', () => {
       `${entry.skill}:${entry.profile.platform}:${entry.profile.scope}`)).size).toBe(repeatedSkills.length)
 
     const textOutput = capture()
-    expect(await runCli(['review', 'inspect', pluginRoot], {
+    expect(await runCli(['dev', 'review', 'inspect', pluginRoot], {
       cwd: outside,
       io: textOutput.io,
     })).toBe(0)
-    expect(textOutput.stderr()).toBe('')
-    expect(textOutput.stdout()).toContain('Review inspection (review): ok')
-    expect(textOutput.stdout()).toContain('fixture\t')
+    expect(textOutput.stderr()).toContain('requiredFinalMissing')
+    expect(textOutput.stdout()).toContain('SUCCESS')
+    expect(textOutput.stdout()).toContain('fixture')
+    expect(textOutput.stdout()).toContain('missing')
     expect(await fs.pathExists(executionMarker)).toBe(false)
     expect(await fs.pathExists(path.join(root, '.aw', 'catalog'))).toBe(false)
     expect(await fs.readFile(historicalReport)).toEqual(historicalBytes)
@@ -154,24 +156,20 @@ describe('review inspect CLI entry', () => {
     for (const viewArgs of [['--view', 'release'], ['--view=release']]) {
       const output = capture()
       expect(await runCli([
-        'review', 'inspect', root, ...viewArgs, '--json',
+        'dev', 'review', 'inspect', root, ...viewArgs, '--json',
       ], { cwd: root, io: output.io })).toBe(2)
-      expect(output.stderr()).toBe('')
       expect(JSON.parse(output.stdout())).toMatchObject({
-        schemaVersion: 2,
-        command: 'review:inspect',
-        view: 'review',
-        ok: false,
-        target: null,
-        sources: [],
-        skills: [],
-        issues: [{ code: 'invalidArguments', message: expect.stringContaining('release') }],
+        schemaVersion: 1,
+        status: 'failed',
+        command: 'dev.review.inspect',
+        diagnostics: [{ code: 'invalidOptionValue', subject: { field: 'view' } }],
+        data: {}
       })
     }
     for (const command of ['digest', 'publish', 'verify', 'list', 'show']) {
       const output = capture()
-      expect(await runCli(['review', command], { cwd: root, io: output.io })).not.toBe(0)
-      expect(output.stderr()).toContain(`unknown command '${command}'`)
+      expect(await runCli(['dev', 'review', command], { cwd: root, io: output.io })).not.toBe(0)
+      expect(output.stderr()).toMatch(/unknown command/iu)
     }
 
     expect(await fs.readFile(reportPath)).toEqual(report)
@@ -183,18 +181,15 @@ describe('review inspect CLI entry', () => {
   it('keeps argument failures in the stable JSON failure shape', async () => {
     const output = capture()
 
-    const code = await runCli(['review', 'inspect', '--json'], { io: output.io })
+    const code = await runCli(['dev', 'review', 'inspect', '--json'], { io: output.io })
 
     expect(code).toBe(2)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 2,
-      command: 'review:inspect',
-      view: 'review',
-      ok: false,
-      target: null,
-      sources: [],
-      skills: [],
-      issues: [{ code: 'invalidArguments', path: null }],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'dev.review.inspect',
+      diagnostics: [{ code: 'invalidArguments' }],
+      data: {}
     })
   })
 
@@ -236,27 +231,28 @@ describe('review inspect CLI entry', () => {
     const output = capture()
 
     const code = await runCli([
-      'review', 'inspect', useSkillTarget ? skillRoot : pluginRoot,
+      'dev', 'review', 'inspect', useSkillTarget ? skillRoot : pluginRoot,
       '--platform', 'codex',
       '--scope', 'user',
       '--materialization', bindingPath,
       '--json',
     ], { cwd: root, io: output.io })
 
-    expect(code).toBe(2)
-    expect(output.stderr()).toBe('')
+    expect(code).toBe(1)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 2,
-      command: 'review:inspect',
-      view: 'review',
-      ok: false,
-      target: {
-        kind: expectedKind,
-        path: useSkillTarget ? skillRoot : pluginRoot,
-      },
-      sources: [],
-      skills: [],
-      issues: [{ code: 'sourceBindingInvalid', path: null }],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'dev.review.inspect',
+      diagnostics: [{ code: 'sourceBindingInvalid' }],
+      data: {
+        view: 'review',
+        target: {
+          kind: expectedKind,
+          path: useSkillTarget ? skillRoot : pluginRoot,
+        },
+        sources: [],
+        skills: []
+      }
     })
   })
 
@@ -335,7 +331,7 @@ describe('review inspect CLI entry', () => {
       }],
     })
     const args = [
-      'review', 'inspect', pluginRoot,
+      'dev', 'review', 'inspect', pluginRoot,
       '--platform', 'cursor', '--scope', 'user',
       '--materialization', written.bindingPath,
       '--json',
@@ -345,11 +341,14 @@ describe('review inspect CLI entry', () => {
     expect(await runCli(args, { cwd: root, io: ambientOutput.io })).toBe(0)
     const ambientReceipt = JSON.parse(ambientOutput.stdout())
     expect(ambientReceipt).toMatchObject({
-      view: 'review',
-      skills: [{ state: 'missing', evidencePath: null }],
-      issues: expect.arrayContaining([
+      schemaVersion: 1,
+      diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'materializationNotSelected' }),
       ]),
+      data: {
+        view: 'review',
+        skills: [{ state: 'missing', evidencePath: null }]
+      }
     })
 
     const injectedOutput = capture()
@@ -370,8 +369,11 @@ describe('review inspect CLI entry', () => {
       ...args.slice(0, -1), '--config', configFile, '--json',
     ], { cwd: root, io: explicitConfigOutput.io })).toBe(0)
     expect(JSON.parse(explicitConfigOutput.stdout())).toMatchObject({
-      view: 'review',
-      skills: [{ state: 'ready', evidencePath: written.bindingPath }],
+      schemaVersion: 1,
+      data: {
+        view: 'review',
+        skills: [{ state: 'ready', evidencePath: written.bindingPath }]
+      }
     })
 
   })

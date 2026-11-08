@@ -15,6 +15,7 @@ import {
 import fs from 'fs-extra'
 
 import {
+  CatalogWorkspaceMissingError,
   resolveCatalogWorkspaceRoot,
   type CatalogWorkspaceResolution,
 } from '../commands/catalog-workspace-resolution.js'
@@ -188,6 +189,9 @@ async function resolveWorkspace(options: {
       mode: 'existing',
     })
   } catch (error) {
+    if (error instanceof CatalogWorkspaceMissingError) {
+      throw new ReviewSelectionError(error.code, error.message, 3)
+    }
     throw new ReviewSelectionError(
       'targetNotFound',
       error instanceof Error ? error.message : 'Catalog Workspace cannot be resolved.',

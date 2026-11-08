@@ -59,9 +59,9 @@ export const AW_SOURCE_BINDING_FILENAME = 'aw-source-binding.json'
 const digestPattern = /^sha256:[0-9a-f]{64}$/u
 const safeIdPattern = /^[a-z0-9][a-z0-9-]*$/u
 const unsupportedV1Message =
-  'AW source binding schema version 1 is unsupported. Run "aw skill eval prepare" or "aw skill materialize" again.'
+  'AW source binding schema version 1 is unsupported. Run "aw dev eval prepare" or "aw dev skill export" again.'
 const legacyPortableDependencyEvidenceMessage =
-  'Legacy Portable binding does not bind dependency config. Run "aw review prepare" for current Review evidence.'
+  'Legacy Portable binding does not bind dependency config. Run "aw dev review prepare" for current Review evidence.'
 
 export interface AwWorkspaceBindingSource {
   kind: 'workspace'

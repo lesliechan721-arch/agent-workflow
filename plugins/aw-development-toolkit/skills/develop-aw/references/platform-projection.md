@@ -35,7 +35,7 @@ Skill 脚本需要读取本次安装生效的配置时，采用 组件方法（`
 
 Detected 不提供完整运行证明。扫描只覆盖其支持的 SKILL shell 代码块和 manifest executable 等入口，不能穷尽 references、脚本或动态调用。缺少可推导声明时，按实际运行需求补充；不要为消除提示给所有插件添加能力全集。
 
-需要调整 manifest 的直接要求时，读取 `aw plugin requirements --help`，通过 `aw plugin requirements <plugin-dir> --add <capability> --json` 或对应 remove 操作维护。该入口只更新 requires，不替代代码、import 或目标平台的实现。共享资源的传播条件见 构建与共享（`references/build-and-sharing.md`）。
+需要调整 manifest 的直接要求时，读取 `aw dev plugin requirements --help`，通过 `aw dev plugin requirements <plugin-dir> --add <capability> --json` 或对应 remove 操作维护。该入口只更新 requires，不替代代码、import 或目标平台的实现。共享资源的传播条件见 构建与共享（`references/build-and-sharing.md`）。
 
 ## 验证选择的结果
 

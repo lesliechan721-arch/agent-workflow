@@ -3,7 +3,7 @@
 创建、维护、评审和简化 Agent Skill，并审核用例与组合架构。提供最小创建与静态包检查工具。
 
 ```bash
-aw plugin targets set codex
+aw target set codex
 aw plugin install agent-skill-toolkit --scope user
 ```
 

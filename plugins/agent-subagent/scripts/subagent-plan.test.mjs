@@ -177,7 +177,7 @@ test('managed host validation fixes nested AW argv and environment without expos
   const descriptor = { id: commandId, owner: { kind: 'user' }, resourceRoot: directory,
     availability: 'ready', launch: { runner: 'node', entry: 'adapter.mjs', args: [], env: {}, envFrom: {}, cwd: 'caller' } };
   const cliEntry = path.join(directory, 'aw cli 中文.mjs');
-  await fs.writeFile(cliEntry, `process.stdout.write(JSON.stringify(${JSON.stringify({ schemaVersion: 1, command: 'command.show', ok: true, overallState: 'completed', commands: [descriptor] })}));`);
+  await fs.writeFile(cliEntry, `process.stdout.write(JSON.stringify(${JSON.stringify({ schemaVersion: 1, command: 'command.show', status: 'success', data: { commands: [descriptor] }, diagnostics: [], nextActions: [] })}));`);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: directory };
   const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), AW_COMMAND_OLD: 'old', AW_PLUGIN_CONTEXT: 'temporary', AW_NATIVE_TOOL_CONTEXT: 'resolved-native-context', SOURCE: '', KEEP: 'original' };
   await assert.rejects(validateCommandHost({ AW_HOME: directory }), { code: 'managedCommandHostMissing' });

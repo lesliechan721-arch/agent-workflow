@@ -48,7 +48,7 @@ export interface PreparedCatalogStoreRepair {
 function metadataError(message: string, cause?: unknown): CatalogGenerationError {
   return new CatalogGenerationError({
     code: 'catalogGenerationMetadataInvalid',
-    message: `${message} Remove the damaged store entry and run aw catalog source sync.`,
+    message: `${message} Remove the damaged store entry and run aw source sync.`,
     cause,
   });
 }

@@ -16,16 +16,17 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('console entry', () => {
-  it('rejects the bare console in a non-interactive runtime with copyable live commands', async () => {
+  it('shows help for bare aw in a non-interactive runtime', async () => {
     const captured = createCapturedCliIo();
     const exitCode = await runCli([], {
       interactive: false,
       io: captured.io,
     });
 
-    expect(exitCode).toBe(1);
-    expect(captured.readStderr()).toContain('当前运行环境不可交互');
-    expect(captured.readStderr()).toContain('aw plugin status --context user --json');
+    expect(exitCode).toBe(0);
+    expect(captured.readStderr()).toBe('');
+    expect(captured.readStdout()).toContain('Usage: aw');
+    expect(captured.readStdout()).toContain('plugin');
   });
 
   it('launches one V4 controller session, completes through onExit, and disposes ownership once', async () => {
@@ -121,7 +122,7 @@ describe('console entry', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(captured.readStderr()).toContain('调试：command:start');
+    expect(captured.readStderr()).toContain('command:start');
     expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({
       type: 'command:start',
       data: expect.objectContaining({ verbose: true, debug: true, logFile }),
@@ -167,7 +168,7 @@ describe('console entry', () => {
       io: captured.io,
     });
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(3);
     const debugLog = await fs.readFile(logFile, 'utf8');
     expect(debugLog).not.toContain(secret);
     expect(debugLog).not.toContain('unknown-sensitive-key');
@@ -182,8 +183,8 @@ describe('console entry', () => {
         io: captured.io,
       });
 
-      expect(exitCode).toBe(1);
-      expect(captured.readStderr()).toContain('argument missing');
+      expect(exitCode).toBe(2);
+      expect(captured.readStderr()).toContain('invalidArguments');
     },
   );
 
@@ -191,8 +192,8 @@ describe('console entry', () => {
     const captured = createCapturedCliIo();
     const exitCode = await runCli(['invalid-command'], { io: captured.io });
 
-    expect(exitCode).toBe(1);
-    expect(captured.readStderr()).toContain('unknown command');
-    expect(captured.readStdout()).toBe('');
+    expect(exitCode).toBe(2);
+    expect(captured.readStderr()).toMatch(/unknown command/iu);
+    expect(captured.readStdout()).toContain('FAILED');
   });
 });

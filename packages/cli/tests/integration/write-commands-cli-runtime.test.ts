@@ -489,19 +489,21 @@ describe('five namespaced write commands', () => {
       io: captured.io,
       interactive: false,
       nativeCliRunner,
-    }))).toBe(1);
+    }))).toBe(4);
     const applyReceipt = JSON.parse(captured.readStdout());
     expect(applyReceipt, JSON.stringify(applyReceipt)).toMatchObject({
-      configWrite: 'succeeded',
-      overallState: 'partial',
-      apply: {
-        state: 'partial',
-        targetResults: expect.arrayContaining([
-          expect.objectContaining({
-            target: expect.objectContaining({ platform: 'claude' }),
-            state: 'failed',
-          }),
-        ]),
+      schemaVersion: 1, command: 'plugin.config.set', status: 'partial',
+      data: {
+        configWrite: 'succeeded',
+        apply: {
+          state: 'partial',
+          targetResults: expect.arrayContaining([
+            expect.objectContaining({
+              target: expect.objectContaining({ platform: 'claude' }),
+              state: 'failed',
+            }),
+          ]),
+        }
       },
     });
     const dualSourceIdentity = await calculateCatalogSourceIdentity({
@@ -529,15 +531,15 @@ describe('five namespaced write commands', () => {
       io: lifecycleCaptured.io,
       interactive: false,
       nativeCliRunner,
-    }))).toBe(1);
+    }))).toBe(4);
     expect(JSON.parse(lifecycleCaptured.readStdout())).toMatchObject({
-      ok: false,
-      command: 'sync',
-      kind: 'aw-recovery',
-      targetResults: expect.arrayContaining([
-        expect.objectContaining({ agent: 'codex', execution: 'applied' }),
-        expect.objectContaining({ agent: 'claude', execution: 'failed' }),
-      ]),
+      schemaVersion: 1, command: 'plugin.sync', status: 'partial',
+      data: {
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({ target: 'codex', execution: 'applied' }),
+          expect.objectContaining({ target: 'claude', execution: 'failed' }),
+        ])
+      },
     });
   }, 30_000);
 
@@ -629,8 +631,11 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     }), captured.readStdout()).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      configWrite: 'succeeded', overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'noVisibleTarget', targetResults: [] },
+      schemaVersion: 1, command: 'plugin.config.set', status: 'success',
+      data: {
+        configWrite: 'succeeded',
+        apply: { state: 'skipped', reason: 'noVisibleTarget', targetResults: [] }
+      },
     });
     expect(nativeCliRunner).not.toHaveBeenCalled();
     expect((await readPluginConfigStore({
@@ -1003,23 +1008,22 @@ describe('five namespaced write commands', () => {
       io: output.io,
       interactive: false,
       nativeCliRunner,
-    })).toBe(1);
+    })).toBe(4);
     expect(JSON.parse(output.readStdout())).toMatchObject({
-      schemaVersion: 1,
-      kind: 'aw-recovery',
-      scope: 'user',
-      ok: false,
-      declarationChanged: true,
-      targetResults: [expect.objectContaining({
-        agent: 'codex', execution: 'failed',
-        blockers: [expect.objectContaining({ code: 'codexCliNotFound' })],
-        backend: expect.objectContaining({
-          overallState: 'failed',
-          targetResults: [expect.objectContaining({ errorCode: 'codexCliNotFound' })],
-        }),
-      })],
+      schemaVersion: 1, command: 'plugin.install', status: 'partial',
+      data: {
+        request: { plugins: ['team/demo'], scope: 'user' },
+        changes: { requirements: 'changed' },
+        targetResults: [expect.objectContaining({
+          target: 'codex', execution: 'failed', blockerCodes: ['codexCliNotFound'],
+        })],
+      },
+      diagnostics: expect.arrayContaining([expect.objectContaining({
+        code: 'codexCliNotFound',
+        subject: { pluginId: 'team/demo', target: 'codex', scope: 'user' },
+      })]),
     });
-    expect(output.readStderr()).toBe('');
+    expect(output.readStderr()).toContain('codexCliNotFound');
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.agentKind === 'codex'
       && (invocation.args.includes('--version')

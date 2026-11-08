@@ -4,7 +4,7 @@
 
 Agent Workflows (AW) 不试图将单一开发方法强加给所有任务。它把需求澄清、原型制作、结构化开发、Git 操作、代码探索、内容编写与插件工具解耦为独立能力：用户可显式触发宏流程，模型也可在对话中按需调用轻量 Skill。
 
-项目提供全局 `@lesliechan721/aw` CLI，用于发现、安装、配置、同步、检查与清理跨平台插件。完整 25 个活动主文档索引见 [AW 文档导航总览](docs/README.md)。
+项目提供全局 `@lesliechan721/aw` CLI，用于发现、安装、配置、同步、检查与清理跨平台插件。完整文档索引见 [AW 文档导航总览](docs/README.md)。
 
 ---
 
@@ -42,31 +42,27 @@ Agent Workflows (AW) 不试图将单一开发方法强加给所有任务。它�
 # 1. 全局安装 CLI
 npm install -g @lesliechan721/aw
 
-# 2. 同步并激活官方 Catalog 快照（首次安装插件前必须取得本地 Active 快照）
-aw catalog source sync official
-
-# 3. 启动交互式管理控制台 (TUI)
+# 2. 启动交互式管理控制台 (TUI)
 aw
 ```
 
-> [!TIP]
-> `aw init` 是纯离线就绪检查命令，不会联网，也不在磁盘生成或写入配置文件。在尚未同步快照的新环境中运行 `aw init` 会因缺少 Active 快照报告未就绪（非零退出）；先执行上述 `source sync official` 激活快照即可顺利通过检查。
+普通 CLI 不补问参数，默认输出英文纯文本；Agent 使用 `--json` 取得统一结果。首次安装会按需获取尚无 Active 的来源，已有 Active 不自动升级。
 
 非交互命令行使用示例：
 
 ```bash
 # 配置本机启用的平台目标（例如 Codex 与 Claude Code）
-aw plugin targets set codex claude
+aw target set codex claude
 
 # 为当前用户安装核心工作流插件
-aw plugin install decision-kit --scope user
-aw plugin install dev-workflow --scope user
+aw plugin install official/decision-kit --scope user
+aw plugin install official/dev-workflow --scope user
 
 # 检查当前现场安装状态
 aw plugin status --context user
 ```
 
-完整用户入门教程见 [用户快速入门指南](docs/guide/getting-started.md)；遇到异常见 [用户排障指南](docs/guide/troubleshooting.md)。
+命令和 JSON 合同见 [CLI 参考](docs/reference/cli.md)。完整用户入门教程见 [用户快速入门指南](docs/guide/getting-started.md)；遇到异常见 [用户排障指南](docs/guide/troubleshooting.md)。
 
 ---
 

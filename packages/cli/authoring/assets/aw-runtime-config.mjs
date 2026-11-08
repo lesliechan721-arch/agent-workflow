@@ -8,7 +8,7 @@ const isRecord = (value) => value !== null && typeof value === 'object' && !Arra
 
 export class RuntimeConfigError extends Error {
   constructor(code, detail = 'Installed runtime config is unavailable.') {
-    super(`${code}: ${detail} Fix the configuration, then run aw sync or aw reinstall.`);
+    super(`${code}: ${detail} Fix the configuration, then run aw plugin sync <source/plugin> --context <user|project>, or repeat that command with --rebuild.`);
     this.name = 'RuntimeConfigError';
     this.code = code;
     this.recoveryActions = ['sync', 'reinstall'];

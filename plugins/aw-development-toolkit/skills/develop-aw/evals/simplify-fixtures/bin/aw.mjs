@@ -12,6 +12,7 @@ while (!fs.existsSync(path.join(root, 'fixture-control.json'))) {
 
 const control = JSON.parse(fs.readFileSync(path.join(root, 'fixture-control.json'), 'utf8'));
 const args = process.argv.slice(2);
+const route = args.slice(0, args[0] === 'dev' ? 3 : 2).join('.');
 const logRoot = path.join(root, '_simplify-log');
 fs.mkdirSync(logRoot, { recursive: true });
 fs.appendFileSync(path.join(logRoot, 'commands.jsonl'), `${JSON.stringify({ args, cwd: process.cwd(), testDouble: true })}\n`);
@@ -23,7 +24,14 @@ const sourceManifest = path.join(sourceWorkspace, control.manifestRelative);
 const sourceProvider = path.join(sourceWorkspace, control.providerRelative);
 const sha256 = (value) => `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 const send = (value, code = 0) => {
-  console.log(JSON.stringify(value));
+  if (typeof value === 'string') console.log(value);
+  else {
+    const { ok, command, schemaVersion, issues, ...data } = value;
+    console.log(JSON.stringify({
+      schemaVersion: 1, command: route, status: ok === false ? 'failed' : 'success',
+      data, diagnostics: issues ?? [], nextActions: [],
+    }));
+  }
   process.exitCode = code;
 };
 const option = (name) => {
@@ -95,12 +103,12 @@ if (
   && args.includes('--json')
 ) {
   send({ ok: true, missingCapabilities: [], fixture: true });
-} else if (args[0] === 'review' && args[1] === 'prepare' && args.includes('--help')) {
-  send('TEST DOUBLE: aw review prepare <source> --workspace-root <root> --platform codex --scope project --out <dir> --json');
-} else if (args[0] === 'review' && args[1] === 'inspect') {
-  const target = path.resolve(process.cwd(), args[2] ?? '');
+} else if (args[0] === 'dev' && args[1] === 'review' && args[2] === 'prepare' && args.includes('--help')) {
+  send('TEST DOUBLE: aw dev review prepare <source> --workspace-root <root> --platform codex --scope project --out <dir> --json');
+} else if (args[0] === 'dev' && args[1] === 'review' && args[2] === 'inspect') {
+  const target = path.resolve(process.cwd(), args[3] ?? '');
   if (
-    !hasExactOptions(3, new Set(['--view', '--json']))
+    !hasExactOptions(4, new Set(['--view', '--json']))
     || option('--view') !== 'review'
     || !args.includes('--json')
     || target !== sourceSkill
@@ -136,13 +144,13 @@ if (
       fixture: true,
     });
   }
-} else if (args[0] === 'review' && args[1] === 'prepare') {
-  const target = path.resolve(process.cwd(), args[2] ?? '');
+} else if (args[0] === 'dev' && args[1] === 'review' && args[2] === 'prepare') {
+  const target = path.resolve(process.cwd(), args[3] ?? '');
   const snapshot = snapshotForTarget(target);
   const workspace = option('--workspace-root');
   const output = option('--out');
   const validOptions = snapshot
-    && hasExactOptions(3, new Set(['--workspace-root', '--platform', '--scope', '--out', '--json']))
+    && hasExactOptions(4, new Set(['--workspace-root', '--platform', '--scope', '--out', '--json']))
     && workspace
     && path.resolve(process.cwd(), workspace) === snapshot.workspace
     && output

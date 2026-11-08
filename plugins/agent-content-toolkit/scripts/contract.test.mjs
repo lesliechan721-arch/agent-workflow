@@ -27,7 +27,7 @@ test('publishes one model-callable Skill with valid public metadata', () => {
 
   const skillRoot = codexSkill('agent-content');
   const args = [
-    'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
+    'dev', 'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
     '--frontmatter-profile', 'portable-agent-skills',
     '--codex-metadata', 'required',
     '--json',
@@ -40,5 +40,5 @@ test('publishes one model-callable Skill with valid public metadata', () => {
     })
     : spawnSync('aw', args, { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.equal(JSON.parse(result.stdout).ok, true);
+  assert.equal(JSON.parse(result.stdout).status, 'success');
 });

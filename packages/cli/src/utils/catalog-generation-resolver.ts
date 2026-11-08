@@ -107,7 +107,7 @@ async function resolveFromState(options: {
     throw new CatalogGenerationError({
       code: 'catalogGenerationUnavailable',
       sourceId: options.source.id,
-      message: `Catalog source "${options.source.id}" has no Active snapshot. Run aw catalog source sync ${options.source.id}.`,
+      message: `Catalog source "${options.source.id}" has no Active snapshot. Run aw source sync ${options.source.id}.`,
     });
   }
   const fingerprint = calculateCatalogSourceConfigFingerprint(options.source);
@@ -117,7 +117,7 @@ async function resolveFromState(options: {
   ) throw new CatalogGenerationError({
     code: 'catalogGenerationIdentityMismatch',
     sourceId: options.source.id,
-    message: `Active Catalog snapshot for source "${options.source.id}" does not match the current source configuration. Run aw catalog source sync ${options.source.id}.`,
+    message: `Active Catalog snapshot for source "${options.source.id}" does not match the current source configuration. Run aw source sync ${options.source.id}.`,
   });
   const storeKey = createCatalogStoreKey(options.active.logicalIdentity, options.active.snapshotDigest);
   const entry = await readValidatedCatalogGenerationStoreEntry({
@@ -131,7 +131,7 @@ async function resolveFromState(options: {
     throw new CatalogGenerationError({
       code: 'catalogGenerationIdentityMismatch',
       sourceId: options.source.id,
-      message: `Active Catalog snapshot for source "${options.source.id}" does not match store metadata. Run aw catalog source sync ${options.source.id}.`,
+      message: `Active Catalog snapshot for source "${options.source.id}" does not match store metadata. Run aw source sync ${options.source.id}.`,
     });
   }
   const compatibility = projectCatalogCapabilityCompatibility(

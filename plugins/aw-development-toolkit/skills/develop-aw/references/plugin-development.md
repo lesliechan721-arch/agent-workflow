@@ -4,7 +4,7 @@
 
 ## 创建与注册
 
-创建插件使用 `aw plugin init`，参数以公开帮助为准，不预建空目录。Workspace 初始化属于 Catalog 维护（`references/catalog-development.md`），普通插件修改不隐式初始化其他目录。
+创建插件使用 `aw dev plugin create`，参数以公开帮助为准，不预建空目录。Workspace 初始化属于 Catalog 维护（`references/catalog-development.md`），普通插件修改不隐式初始化其他目录。
 
 先从当前 capability receipt 确认所需组件和字段，再维护 source manifest 与对应文件。Plugin version 按项目发版约定维护；Catalog version 独立通过公开命令管理。安装依赖由 manifest `dependencies` 声明，构建共享不自动建立安装依赖。
 

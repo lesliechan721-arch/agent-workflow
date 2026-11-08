@@ -49,7 +49,6 @@ import {
   writeStatusSystemCodexPackage,
   writeIntentRoundTripCodexPackage,
   runIntentRoundTripCliChild,
-  parseIntentRoundTripReceipt,
   createNativeDependencyCatalog,
   writeDynamicRoleRenderer,
 } from '../helpers/write-command-fixture.js';
@@ -1136,16 +1135,22 @@ describe('five namespaced write commands', () => {
       PATH: `${fakeCodexBin}${path.delimiter}${isolation.env.PATH ?? ''}`,
       npm_config_offline: 'true',
       NPM_CONFIG_OFFLINE: 'true',
-    }, 1);
-    const syncReceipt = parseIntentRoundTripReceipt(syncOutput);
-    expect(syncReceipt.targetResults.find((target) =>
-      target.target.pluginId === 'team/b')).toMatchObject({
-      target: { pluginId: 'team/b', scope: 'user' },
-    });
-    expect(syncReceipt.targetResults.find((target) =>
-      target.target.pluginId === 'team/independent')).toMatchObject({
-      target: { pluginId: 'team/independent', scope: 'project' },
-      state: 'completed',
+    }, 4);
+    const syncResults = syncOutput.split(/\r?\n/u).filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
+    expect(syncResults).toHaveLength(1);
+    const syncReceipt = syncResults[0];
+    expect(syncReceipt).toMatchObject({
+      schemaVersion: 1, command: 'plugin.sync', status: 'partial',
+      data: {
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({ pluginId: 'team/b', target: 'codex', scope: 'user', execution: 'failed', blockerCodes: ['codexNativeInstallIncomplete'] }),
+          expect.objectContaining({ pluginId: 'team/a', target: 'codex', scope: 'project', execution: 'not-run', blockerCodes: ['userProviderNotSatisfied'] }),
+          expect.objectContaining({ pluginId: 'team/independent', target: 'codex', scope: 'project', execution: 'applied', content: 'satisfied' }),
+        ]), remainingTargets: [
+          { pluginId: 'team/b', target: 'codex', scope: 'user' },
+          { pluginId: 'team/a', target: 'codex', scope: 'project' },
+        ]
+      },
     });
     await expect(readFixtureRequirements(intentLocation)).resolves.toMatchObject({
       schemaVersion: 3,

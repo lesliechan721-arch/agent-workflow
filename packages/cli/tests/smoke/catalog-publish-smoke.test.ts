@@ -44,11 +44,11 @@ it('publishes dynamic-only Native Skills through the built public CLI and Git pr
   ]);
   await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
   await runAw(cliEntry, workspaceRoot, [
-    'catalog', 'init', '--workspace-root', workspaceRoot, '--catalog-version', '91.0.0',
+    'dev', 'catalog', 'create', '--workspace-root', workspaceRoot, '--catalog-version', '91.0.0',
     '--owner-url', 'https://catalog.example.com/smoke-demo',
   ]);
   await runAw(cliEntry, workspaceRoot, [
-    'plugin', 'init', 'smoke-demo', '--description', 'Smoke demo.', '--no-skills',
+    'dev', 'plugin', 'create', 'smoke-demo', '--description', 'Smoke demo.', '--no-skills',
     '--workspace-root', workspaceRoot,
   ]);
   const pluginManifestPath = path.join(workspaceRoot, 'plugins', 'smoke-demo', '.agents-plugin', 'plugin.json');
@@ -87,16 +87,56 @@ it('publishes dynamic-only Native Skills through the built public CLI and Git pr
   await execFileAsync('git', ['remote', 'add', 'origin', remoteUrl], { cwd: workspaceRoot });
 
   const plan = await runAw(cliEntry, workspaceRoot, [
-    'catalog', 'publish', 'plan', '--workspace-root', workspaceRoot,
+    'dev', 'catalog', 'publish', 'plan', '--workspace-root', workspaceRoot,
     '--remote', 'origin', '--branch', 'catalog/smoke', '--json',
   ]);
-  const planDigest = JSON.parse(plan.stdout).planDigest;
+  const planResult = JSON.parse(plan.stdout);
+  expect(planResult).toMatchObject({
+    schemaVersion: 1, command: 'dev.catalog.publish.plan', status: 'success',
+    data: { prepared: true, state: 'prepared', planDigest: expect.stringMatching(/^sha256:/u) },
+    diagnostics: expect.any(Array), nextActions: expect.any(Array),
+  });
+  const planDigest = planResult.data.planDigest as string;
+  // A rejected real push must retain execution evidence through the shipped CLI boundary.
+  const hook = path.join(remoteUrl, 'hooks', 'pre-receive');
+  await fs.writeFile(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  try {
+    const failure = await runAw(cliEntry, workspaceRoot, [
+      'dev', 'catalog', 'publish', 'apply', '--workspace-root', workspaceRoot,
+      '--remote', 'origin', '--branch', 'catalog/smoke',
+      '--expected-plan-digest', planDigest, '--yes', '--json',
+    ]).then(() => null, (error: unknown) => error as { code: number; stdout: string });
+    expect(failure?.code).toBe(4);
+    expect(JSON.parse(failure!.stdout)).toMatchObject({
+      schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'partial',
+      data: {
+        state: 'uncertain', journalState: 'uncertain', planDigest,
+        expectedCommit: planResult.data.expectedCommit,
+        catalogVersion: '91.0.0', branch: 'catalog/smoke', tag: 'catalog-v91.0.0',
+        remoteWriteAttempted: true, remoteVerified: false,
+      },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'catalogPublicationFailed', severity: 'error' })]),
+      nextActions: expect.any(Array),
+    });
+    await expect(fs.readJson(path.join(workspaceRoot, '.aw', 'publish', '91.0.0', 'journal.json')))
+      .resolves.toMatchObject({ schemaVersion: 2, state: 'uncertain', planDigest });
+    await expect(fs.pathExists(path.join(workspaceRoot, '.aw', 'publish', '91.0.0', 'repository')))
+      .resolves.toBe(true);
+  } finally {
+    await fs.remove(hook);
+  }
   const result = await runAw(cliEntry, workspaceRoot, [
-    'catalog', 'publish', 'apply', '--workspace-root', workspaceRoot,
+    'dev', 'catalog', 'publish', 'apply', '--workspace-root', workspaceRoot,
     '--remote', 'origin', '--branch', 'catalog/smoke',
     '--expected-plan-digest', planDigest, '--yes', '--json',
   ]);
-  const receipt = JSON.parse(result.stdout) as { commit: string; snapshotDigest: string };
+  const appliedResult = JSON.parse(result.stdout);
+  expect(appliedResult).toMatchObject({
+    schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'success',
+    data: { state: 'published', planDigest, commit: planResult.data.expectedCommit },
+    diagnostics: expect.any(Array), nextActions: expect.any(Array),
+  });
+  const receipt = appliedResult.data as { commit: string; snapshotDigest: string };
   expect((await execFileAsync('git', [
     '--git-dir', remoteUrl, 'rev-parse', 'refs/heads/catalog/smoke',
   ])).stdout.trim()).toBe(receipt.commit);
@@ -155,12 +195,12 @@ it('uses the compiled Core version owner to prepare only changed official Plugin
   ]);
   await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
   await runAw(cliEntry, workspaceRoot, [
-    'catalog', 'init', '--workspace-root', workspaceRoot, '--catalog-version', '1.0.0',
+    'dev', 'catalog', 'create', '--workspace-root', workspaceRoot, '--catalog-version', '1.0.0',
     '--owner-url', 'https://catalog.example.com/base-smoke',
   ]);
   for (const name of ['unchanged-plugin', 'changed-plugin']) {
     await runAw(cliEntry, workspaceRoot, [
-      'plugin', 'init', name, '--description', 'Base smoke.', '--no-skills',
+      'dev', 'plugin', 'create', name, '--description', 'Base smoke.', '--no-skills',
       '--workspace-root', workspaceRoot,
     ]);
   }
@@ -181,10 +221,10 @@ it('uses the compiled Core version owner to prepare only changed official Plugin
   const manifest = await fs.readJson(manifestPath);
   await fs.writeJson(manifestPath, { ...manifest, description: 'Changed production content.' }, { spaces: 2 });
   await runAw(cliEntry, workspaceRoot, [
-    'catalog', 'version', '1.0.1-beta.1', '--workspace-root', workspaceRoot,
+    'dev', 'catalog', 'version', '1.0.1-beta.1', '--workspace-root', workspaceRoot,
   ]);
   await commitSource();
-  await runAw(cliEntry, workspaceRoot, ['catalog', 'build', '--workspace-root', workspaceRoot]);
+  await runAw(cliEntry, workspaceRoot, ['dev', 'catalog', 'build', '--workspace-root', workspaceRoot]);
   const sourceHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: workspaceRoot })).stdout.trim();
   await expect(resolveCatalogPluginBaseVersions({
     channel: 'stable', repoRoot: workspaceRoot, remoteUrl, sourceHead, env, cliDistRoot,

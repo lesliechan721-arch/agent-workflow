@@ -294,7 +294,7 @@ describe('status v8 current behavior', () => {
   });
 
   // Test Value Gate: an observation failure must fail public status without leaking raw errors.
-  it('returns one failed recovery-status JSON for a Native read error and succeeds for ordinary missing output', async () => {
+  it('returns one blocked status JSON for a Native read error and succeeds for ordinary missing output', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-status-read-error-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
@@ -324,23 +324,25 @@ describe('status v8 current behavior', () => {
       .mockRejectedValue(new Error('nativeStateUnreadable: secret-native-state-detail'));
     try {
       const failed = await invoke();
-      expect(failed.exit).toBe(1);
+      expect(failed.exit).toBe(3);
       expect(failed.payload).toMatchObject({
-        schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: false, allSatisfied: null,
-        errors: expect.arrayContaining([expect.objectContaining({ code: 'nativeStateUnreadable' })]),
+        schemaVersion: 1, command: 'plugin.status', status: 'blocked', data: { context: 'project', allSatisfied: null },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'nativeStateUnreadable' })]),
       });
       expect(failed.stdout).not.toContain('secret-native-state-detail');
-      expect(failed.payload.coverage.projectRoot).toBe(cwd);
-      expect(JSON.stringify(failed.payload.inventory)).not.toContain(cwd);
-      expect(failed.stderr).toBe('');
+      expect(failed.payload.data.coverage.currentProject).toBe(true);
+      expect(JSON.stringify(failed.payload.data.inventory)).not.toContain(cwd);
+      expect(failed.stderr).toContain('nativeStateUnreadable');
+      expect(failed.stderr).not.toContain('secret-native-state-detail');
     } finally {
       inspect.mockRestore();
     }
     const missing = await invoke();
     expect(missing.exit).toBe(0);
     expect(missing.payload).toMatchObject({
-      ok: true, errors: [], allSatisfied: false,
-      inventory: [{ targetResults: [{ content: 'absent', observation: 'missing' }] }],
+      command: 'plugin.status', status: 'success', diagnostics: [], data: { allSatisfied: false,
+        inventory: [{ targetResults: [{ content: 'absent', observation: 'missing' }] }],
+      },
     });
     expect(missing.stderr).toBe('');
   });

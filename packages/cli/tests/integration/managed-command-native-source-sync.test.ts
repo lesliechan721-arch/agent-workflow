@@ -5,12 +5,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { type prepareWindowsJobHelper } from '@lesliechan721/agent-skill-eval';
 import type { CommandManagementResult } from '../../src/commands/managed-commands.js';
+import type { CommandResult } from '../../src/output/public-result.js';
+type ManagedResult = CommandResult<Pick<CommandManagementResult, 'commands' | 'packages' | 'changes' | 'nativeToolChanges'>>;
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createRebuildIntegration } from '../../src/commands/rebuild-integration.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { runManagedCommand } from '../../src/utils/managed-command-runtime.js';
-import { readInstalledCommandProducer } from '../../src/utils/managed-command-store.js';
+import { resolveManagedCommand, readInstalledCommandProducer } from '../../src/utils/managed-command-store.js';
 import { withResolvedCatalogPlugin } from '../../src/utils/multi-source-catalog.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
@@ -76,20 +78,32 @@ describe('installed native declaration across Catalog and producer sync', () => 
           return { action: 'select' as const, cancelled: false, value: confirmation.accepted };
         } } } : {}),
       });
-      return { exitCode, receipt: JSON.parse(output.readStdout()) as CommandManagementResult, stderr: output.readStderr() };
+      return { exitCode, receipt: JSON.parse(output.readStdout()) as ManagedResult, stderr: output.readStderr() };
     }
 
     await writeSnapshot(v1, '1.0.0');
-    expect(await run(['catalog', 'source', 'add', 'team', '--path', sourceRoot, '--no-auto-check']))
+    expect(await run(['source', 'add', 'team', '--path', sourceRoot, '--no-auto-check']))
       .toMatchObject({ exitCode: 0, stderr: '' });
-    expect(await run(['catalog', 'source', 'sync', 'team']))
-      .toMatchObject({ exitCode: 0, stderr: '', receipt: { ok: true } });
+    expect(await run(['source', 'sync', 'team']))
+      .toMatchObject({
+        exitCode: 0, stderr: '', receipt: {
+          schemaVersion: 1,
+          status: 'success',
+          data: {}
+        }
+      });
     const activeV1 = (await readCatalogGenerationState(env)).sources.team!.active!;
     const packageSync = ['command', 'package', 'sync', 'team/native-sync', 'tools', '--scope', 'user'];
     const installed = await run([...packageSync, '--yes']);
-    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, stderr: '', receipt: { overallState: 'completed' } });
-    const commandId = installed.receipt.commands[0]!.id;
-    const resourceRoot = installed.receipt.packages[0]!.resourceRoot!;
+    expect(installed, JSON.stringify(installed)).toMatchObject({
+      exitCode: 0, stderr: '', receipt: {
+        schemaVersion: 1,
+        status: 'success',
+        data: {}
+      }
+    });
+    const commandId = installed.receipt.data.commands[0]!.id;
+    const resourceRoot = installed.receipt.data.packages[0]!.resourceRoot!;
     const initialProducer = await readInstalledCommandProducer(resourceRoot);
     expect(initialProducer.nativeTools).toEqual(v1.closure);
 
@@ -110,8 +124,14 @@ describe('installed native declaration across Catalog and producer sync', () => 
     expect(await readInstalledCommandProducer(resourceRoot)).toEqual(initialProducer);
 
     await writeSnapshot(v2, '2.0.0');
-    expect(await run(['catalog', 'source', 'sync', 'team', '--yes']))
-      .toMatchObject({ exitCode: 0, stderr: '', receipt: { ok: true } });
+    expect(await run(['source', 'sync', 'team', '--yes']))
+      .toMatchObject({
+        exitCode: 0, stderr: '', receipt: {
+          schemaVersion: 1,
+          status: 'success',
+          data: {}
+        }
+      });
     const activeV2 = (await readCatalogGenerationState(env)).sources.team!.active!;
     expect(activeV2.snapshotDigest).not.toBe(activeV1.snapshotDigest);
     expect(activeV2.sourceIdentity).toBe(activeV1.sourceIdentity);
@@ -139,18 +159,24 @@ describe('installed native declaration across Catalog and producer sync', () => 
     expect(after).toContain('fallback=portable');
 
     const confirmation = { accepted: false, messages: [] as string[] };
-    expect((await run(packageSync, confirmation)).exitCode).toBe(2);
-    expect(confirmation.messages).toHaveLength(1);
-    expect(confirmation.messages[0]).toContain('aw.windows-job.v1');
-    expect(confirmation.messages[0]).toContain('fallback=portable');
+    const blocked = await run(packageSync, confirmation);
+    expect(blocked.exitCode).toBe(3);
+    expect(blocked.receipt).toMatchObject({ status: 'blocked', data: { confirmation: { required: true, provided: false } }, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]) });
+    expect(confirmation.messages).toHaveLength(0);
     expect(await readInstalledCommandProducer(resourceRoot)).toEqual(initialProducer);
     await invokeInstalled('1.0.0');
 
     confirmation.accepted = true;
-    const updated = await run(packageSync, confirmation);
-    expect(updated, JSON.stringify(updated)).toMatchObject({ exitCode: 0, stderr: '', receipt: { overallState: 'completed' } });
-    expect(updated.receipt.nativeToolChanges).toEqual([{ producer: initialProducer.producer, before: v1.closure, after: v2.closure }]);
-    expect(updated.receipt.commands.map((command) => command.id)).toEqual([commandId]);
+    const updated = await run([...packageSync, '--yes'], confirmation);
+    expect(updated, JSON.stringify(updated)).toMatchObject({
+      exitCode: 0, stderr: '', receipt: {
+        schemaVersion: 1,
+        status: 'success',
+        data: {}
+      }
+    });
+    expect(updated.receipt.data.nativeToolChanges).toEqual([{ producer: initialProducer.producer, before: v1.closure, after: v2.closure }]);
+    expect(updated.receipt.data.commands.map((command) => command.id)).toEqual([commandId]);
     expect((await readInstalledCommandProducer(resourceRoot)).nativeTools).toEqual(v2.closure);
     await invokeInstalled('2.0.0');
     expect(await fs.pathExists(path.join(isolation.layout.awHomeDir, 'native-artifacts'))).toBe(false);

@@ -64,7 +64,7 @@ function readOptionValue(args, index, flag) {
 
 function printUsage() {
   console.log(`Usage:
-  aw plugin add-skill <plugin-name> \\
+  aw dev skill create <plugin-name> \\
     --skill-name <name> --skill-description <text> [options]
 
 Options:
@@ -78,8 +78,8 @@ Options:
 
 The command only adds one static Skill. It does not edit the plugin README.
 During development, keep the current stable target when production content changes.
-Next, run aw plugin validate, aw plugin test, aw plugin build, and aw catalog build.
-Publish only as an explicit later step; inspect aw catalog publish plan --help first.
+Next, run aw dev plugin validate, aw dev plugin test, aw dev plugin build, and aw dev catalog build.
+Publish only as an explicit later step; inspect aw dev catalog publish plan --help first.
 `);
 }
 
@@ -395,11 +395,11 @@ function main() {
     console.log('[OK] Keep the current stable target during development.');
     const printablePluginRoot = JSON.stringify(pluginRoot);
     const printableRepoRoot = JSON.stringify(repoRoot);
-    console.log(`[NEXT] aw plugin validate ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
-    console.log(`[NEXT] aw plugin test ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
-    console.log(`[NEXT] aw plugin build ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
-    console.log(`[NEXT] aw catalog build --workspace-root ${printableRepoRoot}`);
-    console.log(`[LATER] Publish only when explicitly requested: aw catalog publish plan --workspace-root ${printableRepoRoot}`);
+    console.log(`[NEXT] aw dev plugin validate ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+    console.log(`[NEXT] aw dev plugin test ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+    console.log(`[NEXT] aw dev plugin build ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+    console.log(`[NEXT] aw dev catalog build --workspace-root ${printableRepoRoot}`);
+    console.log(`[LATER] Publish only when explicitly requested: aw dev catalog publish plan --workspace-root ${printableRepoRoot}`);
     console.log(`[WARN] Plugin README was not changed: ${path.join(pluginRoot, 'README.md')}`);
   } catch (error) {
     if (installedSkill && lstatOrNull(finalSkillRoot)) {

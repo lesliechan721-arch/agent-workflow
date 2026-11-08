@@ -323,7 +323,7 @@ describe('ConsoleAppV4', () => {
     const unavailableDefault = unavailableInstance.lastFrame() ?? '';
     expect(unavailableDefault).toContain('来源没有可用的启用版本');
     expect(unavailableDefault).toContain('恢复来源');
-    expect(unavailableDefault).not.toContain('aw catalog source sync research');
+    expect(unavailableDefault).not.toContain('aw source sync research');
     expect(unavailableDefault).not.toContain('catalogSourceUnavailable');
     for (const privateText of ['native stderr', 'bearer-secret', 'alice', 'url-secret', 'query-secret',
       '/Users/private-user', '/workspace/private', '/tmp/private', '/private/source/root']) {

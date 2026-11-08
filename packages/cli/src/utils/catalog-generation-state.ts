@@ -20,7 +20,7 @@ const COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64}|path:sha256:[0-9a-f]{64})$
 function stateError(message: string, cause?: unknown): CatalogGenerationError {
   return new CatalogGenerationError({
     code: 'catalogGenerationStateInvalid',
-    message: `${message} Repair or remove catalog-state.json, then run aw catalog source sync. This state never authorizes plugin deletion.`,
+    message: `${message} Repair or remove catalog-state.json, then run aw source sync. This state never authorizes plugin deletion.`,
     cause,
   });
 }

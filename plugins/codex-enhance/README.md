@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-aw plugin targets set codex
+aw target set codex
 aw plugin install codex-enhance --scope user
 ```
 

@@ -98,6 +98,26 @@ export interface CatalogPublishApplyReceipt extends CatalogPublishReceiptBase {
   warnings: string[];
 }
 
+export interface CatalogPublicationFailureOutcome {
+  state: 'uncertain' | 'published';
+  planDigest: string;
+  expectedCommit: string;
+  catalogVersion: string;
+  branch: string;
+  tag: string;
+  journalState: CatalogPublicationJournal['state'] | 'unknown';
+  remoteWriteAttempted: boolean;
+  remoteVerified: boolean;
+}
+
+/** Execution evidence survives failures even when the journal write itself fails. */
+export class CatalogPublicationApplyFailure extends Error {
+  constructor(cause: unknown, readonly outcome: CatalogPublicationFailureOutcome) {
+    super(cause instanceof Error ? cause.message : 'Catalog publication could not complete.', { cause });
+    this.name = 'CatalogPublicationApplyFailure';
+  }
+}
+
 export const CATALOG_PUBLICATION_CLEANUP_WARNING =
   'Catalog publication succeeded, but local repository cleanup did not complete. Retry apply with the same plan digest.';
 
@@ -914,6 +934,10 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
   const authorized = await readAuthorizedPublicationPlan(options);
   const { context, journalPath, repositoryPath, tagRef } = authorized;
   let { journal } = authorized;
+  let journalState: CatalogPublicationJournal['state'] | 'unknown' = journal.state;
+  let remoteWriteAttempted = false;
+  let remoteVerified = false;
+  try {
   if (journal.state === 'published') {
     const state = await remoteRefState(
       context.repoRoot,
@@ -927,6 +951,7 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
         `Catalog ${journal.display.catalogVersion} published journal conflicts with remote refs. Increase the Catalog version.`,
       );
     }
+    remoteVerified = true;
     const warnings = await cleanupPublishedRepository(
       repositoryPath,
       journal,
@@ -976,6 +1001,7 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
         reconciliation = 'already-remote';
       } else if (state.branchCommit === journal.descriptor.parent && !state.tagPresent) {
         reconciliation = 'atomic';
+        remoteWriteAttempted = true;
         await publicationGit(repositoryPath, [
           'push', '--atomic',
           `--force-with-lease=${writeContext.branchRef}:${journal.descriptor.parent ?? ''}`,
@@ -985,18 +1011,22 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
         ], writeContext.env, 'publicationUncertain', 'Catalog atomic push failed or its result is uncertain.');
       } else if (state.branchCommit === journal.expectedCommit && !state.tagPresent) {
         reconciliation = 'tag';
+        remoteWriteAttempted = true;
         await publicationGit(repositoryPath, [
           'push', writeContext.pushUrl, `${tagRef}:${tagRef}`,
         ], writeContext.env, 'publicationUncertain', 'Catalog tag push failed or its result is uncertain.');
       } else {
         reconciliation = 'branch';
+        remoteWriteAttempted = true;
         await publicationGit(repositoryPath, [
           'push', `--force-with-lease=${writeContext.branchRef}:${journal.descriptor.parent ?? ''}`,
           writeContext.pushUrl, `${journal.expectedCommit}:${writeContext.branchRef}`,
         ], writeContext.env, 'publicationUncertain', 'Catalog branch push failed or its result is uncertain.');
       }
     } catch (error) {
+      journalState = 'unknown';
       journal = await markUncertain(journalPath, journal);
+      journalState = journal.state;
       throw new Error(
         `Catalog ${journal.display.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
         { cause: error },
@@ -1011,19 +1041,24 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
         writeContext.env,
       );
     } catch (error) {
+      journalState = 'unknown';
       journal = await markUncertain(journalPath, journal);
+      journalState = journal.state;
       throw new Error(
         `Catalog ${journal.display.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
         { cause: error },
       );
     }
     if (state.branchCommit !== journal.expectedCommit || !state.tagAnnotated || state.tagCommit !== journal.expectedCommit) {
+      journalState = 'unknown';
       journal = await markUncertain(journalPath, journal);
+      journalState = journal.state;
       throw new Error(
         `Catalog ${journal.display.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
       );
     }
   }
+  remoteVerified = true;
   const published: CatalogPublicationJournal = {
     schemaVersion: 2,
     state: 'published',
@@ -1035,7 +1070,9 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
     preparedAt: journal.preparedAt,
     publishedAt: new Date().toISOString(),
   };
+  journalState = 'unknown';
   await writeCatalogPublicationJournalAtomic(journalPath, published);
+  journalState = 'published';
   const warnings = await cleanupPublishedRepository(
     repositoryPath,
     published,
@@ -1050,6 +1087,16 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
     warnings,
     ...receiptBase(context, published, options),
   };
+  } catch (error) {
+    if (!remoteWriteAttempted && !remoteVerified && journal.state !== 'uncertain') throw error;
+    throw new CatalogPublicationApplyFailure(error, {
+      state: remoteVerified ? 'published' : 'uncertain',
+      planDigest: journal.planDigest, expectedCommit: journal.expectedCommit,
+      catalogVersion: journal.display.catalogVersion, branch: journal.descriptor.branch, tag: journal.descriptor.tag,
+      journalState, remoteWriteAttempted, remoteVerified,
+    });
+  }
+
 }
 
 export async function runCatalogPublishPlanCommand(options: {

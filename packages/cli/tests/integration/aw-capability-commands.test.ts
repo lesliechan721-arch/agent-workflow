@@ -22,24 +22,27 @@ describe('AW capability CLI commands', () => {
   it('emits one self describe JSON object', async () => {
     const result = await runCliEntry(['self', 'describe', '--json'])
     expect(result.exitCode, result.stdout + result.stderr).toBe(0)
-    expect(result.stderr).toBe('')
+
     expect(result.parseJsonStdout()).toMatchObject({
       schemaVersion: 1,
-      command: 'self:describe',
-      awVersion: expect.any(String),
-      coreVersion: expect.any(String),
-      capabilities: expect.arrayContaining([
-        'aw.self-check.v1',
-        'aw.skill-eval.v2',
-        'aw.review-preparation.v1',
-        'aw.review-inspection.v2',
-      ]),
-      capabilitySetDigest: expect.stringMatching(/^sha256:/u),
+      command: 'self.describe',
+      status: 'success',
+      data: {
+        awVersion: expect.any(String),
+        coreVersion: expect.any(String),
+        capabilities: expect.arrayContaining([
+          'aw.self-check.v2',
+          'aw.skill-eval.v3',
+          'aw.review-preparation.v2',
+          'aw.review-inspection.v3',
+        ]),
+        capabilitySetDigest: expect.stringMatching(/^sha256:/u)
+      },
     })
   })
 
   it.each(['aw.future-feature.v3', 'aw.review-publication.v1'])(
-    'returns a single failure JSON object and exit 1 for unsupported %s',
+    'returns a single blocked JSON object and exit 3 for unsupported %s',
     async (capability) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-missing-'))
       tempDirs.push(root)
@@ -52,15 +55,16 @@ describe('AW capability CLI commands', () => {
         digest: computeAwCapabilitySetDigest(capabilities),
       })
       const result = await runCliEntry(['self', 'check', '--from', root, '--json'], { cwd: root })
-      expect(result.exitCode).toBe(1)
-      expect(result.stderr).toBe('')
+      expect(result.exitCode).toBe(3)
+
       expect(result.parseJsonStdout()).toMatchObject({
-        schemaVersion: 1,
-        command: 'self:check',
-        ok: false,
+      command: 'self.check',
+      status: 'blocked',
+      data: {
         plugin: { name: 'future' },
-        missingCapabilities: capabilities,
-      })
+        missingCapabilities: capabilities
+      },
+    })
     },
   )
 
@@ -69,10 +73,11 @@ describe('AW capability CLI commands', () => {
     tempDirs.push(root)
     const result = await runCliEntry(['self', 'check', '--from', root, '--json'], { cwd: root })
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toBe('')
+
     expect(result.parseJsonStdout()).toMatchObject({
-      command: 'self:check', ok: false, source: null,
-      error: expect.stringContaining('No aw-plugin-requirements.json'),
+      command: 'self.check',
+      status: 'failed',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining('No aw-plugin-requirements.json') })]),
     })
   })
 
@@ -93,14 +98,16 @@ describe('AW capability CLI commands', () => {
       'self', 'check', '--from', path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'), '--json',
     ], { cwd: root })
     expect(result.exitCode, result.stdout + result.stderr).toBe(0)
-    expect(result.stderr).toBe('')
+
     expect(result.parseJsonStdout()).toMatchObject({
-      command: 'self:check',
-      ok: true,
-      source: { kind: 'manifest', path: manifestPath },
-      plugin: { name: 'git-commit', version: version ?? '0.1.0' },
-      requiredCapabilities: expect.arrayContaining(['aw.plugin-skills.v1']),
-      missingCapabilities: [],
+      command: 'self.check',
+      status: 'success',
+      data: {
+        source: { kind: 'manifest', path: manifestPath },
+        plugin: { name: 'git-commit', version: version ?? '0.1.0' },
+        requiredCapabilities: expect.arrayContaining(['aw.plugin-skills.v1']),
+        missingCapabilities: []
+      },
     })
   })
 
@@ -116,12 +123,14 @@ describe('AW capability CLI commands', () => {
 
     const result = await runCliEntry(['self', 'check', '--from', pluginRoot, '--json'], { cwd: root })
     expect(result.exitCode, result.stdout + result.stderr).toBe(0)
-    expect(result.stderr).toBe('')
+
     expect(result.parseJsonStdout()).toMatchObject({
-      command: 'self:check',
-      ok: true,
-      missingCapabilities: [],
-      observations: [],
+      command: 'self.check',
+      status: 'success',
+      data: {
+        missingCapabilities: [],
+        observations: []
+      },
     })
   })
 
@@ -132,27 +141,31 @@ describe('AW capability CLI commands', () => {
     const pluginRoot = path.join(root, 'plugins', 'git-commit')
     const before = await fs.readFile(path.join(pluginRoot, '.agents-plugin', 'plugin.json'))
     const result = await runCliEntry([
-      'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root, '--json',
+      'dev', 'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root, '--json',
     ], { cwd: root })
     expect(result.exitCode, result.stdout + result.stderr).toBe(0)
-    expect(result.stderr).toBe('')
+
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
-      command: 'plugin:requirements',
-      plugin: { name: 'git-commit' },
-      workspaceRoot: await fs.realpath(root),
-      workspaceRootResolvedFrom: 'explicit',
-      declared: [],
-      derived: expect.any(Array),
-      detected: expect.any(Array),
-      effective: expect.any(Array),
-      unsupportedByCurrentAw: expect.any(Array),
-      observations: expect.any(Array),
+      command: 'dev.plugin.requirements',
+      status: 'success',
+      data: {
+        plugin: { name: 'git-commit' },
+        workspaceRoot: await fs.realpath(root),
+        workspaceRootResolvedFrom: 'explicit',
+        declared: [],
+        derived: expect.any(Array),
+        detected: expect.any(Array),
+        effective: expect.any(Array),
+        unsupportedByCurrentAw: expect.any(Array),
+        observations: expect.any(Array)
+      },
     })
     expect(result.parseJsonStdout()).not.toMatchObject({
-      observations: expect.arrayContaining([
-        expect.objectContaining({ code: 'aw-command-unmapped' }),
-      ]),
+      data: {
+        observations: expect.arrayContaining([
+          expect.objectContaining({ code: 'aw-command-unmapped' }),
+        ])
+      },
     })
     expect(await fs.readFile(path.join(pluginRoot, '.agents-plugin', 'plugin.json'))).toEqual(before)
     expect(await fs.pathExists(path.join(pluginRoot, 'aw-plugin-requirements.json'))).toBe(false)
@@ -171,42 +184,51 @@ describe('AW capability CLI commands', () => {
     await fs.outputFile(path.join(pluginRoot, 'skills', 'commit', 'README.md'), '# Commit\n')
 
     const requirements = await runCliEntry([
-      'plugin', 'requirements', pluginRoot, '--workspace-root', root, '--json',
+      'dev', 'plugin', 'requirements', pluginRoot, '--workspace-root', root, '--json',
     ], { cwd: root })
     expect(requirements.exitCode).toBe(0)
     expect(requirements.parseJsonStdout()).toMatchObject({
-      declared: [],
-      detected: expect.not.arrayContaining(['aw.catalog-authoring.v1']),
-      effective: expect.not.arrayContaining(['aw.catalog-authoring.v1']),
-      unsupportedByCurrentAw: [],
-      observations: expect.arrayContaining([
-        expect.objectContaining({
-          code: 'aw-command-unmapped',
-          blocking: false,
-          path: 'skills/commit/SKILL.md',
-          provenance: 'shell-fence',
-          command: 'aw catalog status',
-        }),
-      ]),
+      status: 'success',
+      data: {
+        declared: [],
+        detected: expect.not.arrayContaining(['aw.catalog-authoring.v2']),
+        effective: expect.not.arrayContaining(['aw.catalog-authoring.v2']),
+        unsupportedByCurrentAw: [],
+        observations: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'aw-command-unmapped',
+            blocking: false,
+            path: 'skills/commit/SKILL.md',
+            provenance: 'shell-fence',
+            command: 'aw catalog status',
+          }),
+        ])
+      },
     })
 
     const validation = await runCliEntry([
-      'plugin', 'validate', pluginRoot, '--workspace-root', root, '--json',
+      'dev', 'plugin', 'validate', pluginRoot, '--workspace-root', root, '--json',
     ], { cwd: root })
     expect(validation.exitCode, validation.stdout).toBe(0)
-    expect(validation.stderr).toBe('')
+
     expect(validation.parseJsonStdout()).toMatchObject({
-      ok: true,
-      warnings: expect.arrayContaining([
-        expect.stringContaining('AW CLI command has no capability mapping: aw catalog status.'),
+      status: 'success',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ severity: 'warning', message: expect.stringContaining('AW CLI command has no capability mapping: aw catalog status.') }),
       ]),
     })
     const build = await runCliEntry([
-      'catalog', 'build', '--workspace-root', root, '--json',
+      'dev', 'catalog', 'build', '--workspace-root', root, '--json',
     ], { cwd: root })
     expect(build.exitCode).toBe(0)
-    expect(build.stderr).toBe('')
-    expect(build.parseJsonStdout()).toMatchObject({ command: 'catalog:build', ok: true })
+
+    expect(build.parseJsonStdout()).toMatchObject({
+      command: 'dev.catalog.build',
+      status: 'success',
+      data: {
+
+      },
+    })
   })
 
   it('adds and removes a declared capability without changing the plugin version', async () => {
@@ -216,14 +238,17 @@ describe('AW capability CLI commands', () => {
     const manifestPath = path.join(root, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')
 
     const added = await runCliEntry([
-      'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root,
+      'dev', 'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root,
       '--add', 'aw.future-feature.v3', '--json',
     ], { cwd: root })
     expect(added.exitCode, added.stdout + added.stderr).toBe(0)
     expect(added.parseJsonStdout()).toMatchObject({
-      mutation: { action: 'add', capability: 'aw.future-feature.v3', changed: true },
-      declared: ['aw.future-feature.v3'],
-      unsupportedByCurrentAw: ['aw.future-feature.v3'],
+      status: 'success',
+      data: {
+        mutation: { action: 'add', capability: 'aw.future-feature.v3', changed: true },
+        declared: ['aw.future-feature.v3'],
+        unsupportedByCurrentAw: ['aw.future-feature.v3']
+      },
     })
     await expect(fs.readJson(manifestPath)).resolves.toMatchObject({
       version: '0.1.0',
@@ -231,32 +256,34 @@ describe('AW capability CLI commands', () => {
     })
 
     const removed = await runCliEntry([
-      'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root,
+      'dev', 'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root,
       '--remove', 'aw.future-feature.v3', '--json',
     ], { cwd: root })
     expect(removed.exitCode).toBe(0)
     expect(removed.parseJsonStdout()).toMatchObject({
-      mutation: { action: 'remove', capability: 'aw.future-feature.v3', changed: true },
-      declared: [],
+      status: 'success',
+      data: {
+        mutation: { action: 'remove', capability: 'aw.future-feature.v3', changed: true },
+        declared: []
+      },
     })
     await expect(fs.readJson(manifestPath)).resolves.toMatchObject({ version: '0.1.0' })
   })
 
-  it('emits one plugin requirements error JSON object with exit 1 and empty stderr', async () => {
+  it('emits one plugin requirements error JSON object with exit 1', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-error-'))
     tempDirs.push(root)
     await fs.copy(fixturePath('repo-template'), root)
     const pluginRoot = path.join(root, 'plugins', 'git-commit')
     await fs.writeFile(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), '{broken', 'utf8')
 
-    const result = await runCliEntry(['plugin', 'requirements', pluginRoot, '--json'], { cwd: root })
+    const result = await runCliEntry(['dev', 'plugin', 'requirements', pluginRoot, '--json'], { cwd: root })
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toBe('')
+
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
-      command: 'plugin:requirements',
-      ok: false,
-      error: expect.any(String),
+      command: 'dev.plugin.requirements',
+      status: 'failed',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ message: expect.any(String) })]),
     })
   })
 
@@ -273,49 +300,52 @@ describe('AW capability CLI commands', () => {
     await fs.ensureDir(invalidRoot)
     await fs.writeFile(path.join(invalidRoot, '.aw-workspace.json'), '{broken', 'utf8')
     const invalidExplicit = await runCliEntry([
-      'plugin', 'requirements', pluginRoot, '--workspace-root', invalidRoot,
+      'dev', 'plugin', 'requirements', pluginRoot, '--workspace-root', invalidRoot,
       '--add', 'aw.future-feature.v3', '--json',
     ], { cwd: workspaceRoot })
     expect(invalidExplicit.exitCode).toBe(1)
     expect(invalidExplicit.parseJsonStdout()).toMatchObject({
-      command: 'plugin:requirements',
-      ok: false,
-      error: expect.stringContaining('Invalid Catalog Workspace marker'),
+      command: 'dev.plugin.requirements',
+      status: 'failed',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining('Invalid Catalog Workspace marker') })]),
     })
     expect(await fs.readFile(manifestPath)).toEqual(before)
 
     const outsidePlugin = path.join(root, 'outside-plugin')
     await fs.copy(fixturePath('repo-template', 'plugins', 'git-commit'), outsidePlugin)
     const outside = await runCliEntry([
-      'plugin', 'requirements', outsidePlugin, '--workspace-root', workspaceRoot, '--json',
+      'dev', 'plugin', 'requirements', outsidePlugin, '--workspace-root', workspaceRoot, '--json',
     ], { cwd: workspaceRoot })
     expect(outside.exitCode).toBe(1)
     expect(outside.parseJsonStdout()).toMatchObject({
-      command: 'plugin:requirements',
-      ok: false,
-      error: expect.stringContaining('not a canonical plugin'),
+      command: 'dev.plugin.requirements',
+      status: 'failed',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining('not a canonical plugin') })]),
     })
 
     const deepCwd = path.join(pluginRoot, 'skills', 'commit')
     const discovered = await runCliEntry([
-      'plugin', 'requirements', '../..', '--json',
+      'dev', 'plugin', 'requirements', '../..', '--json',
     ], { cwd: deepCwd })
     expect(discovered.exitCode).toBe(0)
     expect(discovered.parseJsonStdout()).toMatchObject({
-      pluginDirectory: await fs.realpath(pluginRoot),
-      workspaceRoot: await fs.realpath(workspaceRoot),
-      workspaceRootResolvedFrom: 'workspace-marker',
+      status: 'success',
+      data: {
+        pluginDirectory: await fs.realpath(pluginRoot),
+        workspaceRoot: await fs.realpath(workspaceRoot),
+        workspaceRootResolvedFrom: 'workspace-marker'
+      },
     })
 
     await fs.writeFile(path.join(pluginRoot, '.aw-workspace.json'), '{broken', 'utf8')
     const damagedNearest = await runCliEntry([
-      'plugin', 'requirements', pluginRoot, '--json',
+      'dev', 'plugin', 'requirements', pluginRoot, '--json',
     ], { cwd: workspaceRoot })
     expect(damagedNearest.exitCode).toBe(1)
     expect(damagedNearest.parseJsonStdout()).toMatchObject({
-      command: 'plugin:requirements',
-      ok: false,
-      error: expect.stringContaining('Invalid Catalog Workspace marker'),
+      command: 'dev.plugin.requirements',
+      status: 'failed',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining('Invalid Catalog Workspace marker') })]),
     })
     expect(await fs.readFile(manifestPath)).toEqual(before)
   })

@@ -81,7 +81,7 @@ export function renderPluginReadme(pluginName, description, skillName, options =
     ...(skillName ? [`| Skill \`${skillName}\` | ${description.replace(/[。.]$/u, '')} | 自动或 \`$${skillName}\` |`] : []),
     ...(options.withMcp ? ['| MCP server | 提供插件声明的工具连接 | 安装后由平台使用 |'] : []),
     ...(options.withApps ? ['| App | 提供插件声明的应用能力 | 安装后由平台使用 |'] : []),
-    ...(options.withConfigApi ? ['| 配置 | 保存插件运行所需的用户配置 | 使用 AW 配置页或 `aw config` |'] : []),
+    ...(options.withConfigApi ? ['| 配置 | 保存插件运行所需的用户配置 | 使用 AW 配置页或 `aw plugin config` |'] : []),
   ];
   return `# ${titleCaseSlug(pluginName)}
 
@@ -100,7 +100,7 @@ ${capabilities.join('\n')}
 ## 快速开始
 
 \`\`\`bash
-aw install ${pluginName} -p both -s user
+aw plugin install ${pluginName} --scope user
 \`\`\`
 
 示例请求：

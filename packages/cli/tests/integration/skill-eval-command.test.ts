@@ -72,13 +72,13 @@ async function createWorkspace(): Promise<{
     CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
   }
   await fs.ensureDir(env.HOME)
-  expect(await runCli(['catalog', 'init', '--workspace-root', root], {
+  expect(await runCli(['dev', 'catalog', 'create', '--workspace-root', root], {
     cwd: root,
     env,
     io: capture().io,
   })).toBe(0)
   expect(await runCli([
-    'plugin', 'init', 'participant-plugin',
+    'dev', 'plugin', 'create', 'participant-plugin',
     '--description', 'Participant plugin for Eval materialization tests.',
     '--skill-name', 'participant-skill',
     '--skill-description', 'Use this participant Skill in deterministic Eval materialization tests.',
@@ -86,7 +86,7 @@ async function createWorkspace(): Promise<{
     '--workspace-root', root,
   ], { cwd: root, env, io: capture().io })).toBe(0)
   expect(await runCli([
-    'plugin', 'init', 'eval-owner',
+    'dev', 'plugin', 'create', 'eval-owner',
     '--description', 'Owner plugin for deterministic Eval command tests.',
     '--skill-name', 'owner-skill',
     '--skill-description', 'Use this owner Skill in deterministic Eval command tests.',
@@ -176,7 +176,7 @@ afterEach(async () => {
   setSkillEvalCommandTestHooksForTests(undefined)
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)))
 })
-describe('aw skill eval commands', () => {
+describe('aw dev eval commands', () => {
   it('binds explicit non-sensitive config overrides and rejects changes before commit', async () => {
     // Protect the public prepare boundary: actual paths can be supplied without editing
     // a profile or signing a runtime receipt, and the same values can be revalidated.
@@ -221,13 +221,13 @@ describe('aw skill eval commands', () => {
     const output = path.join(fixture.outputRoot, 'configured')
     const io = capture()
     const args = [
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--workspace-root', fixture.root, '--config-file', configFile, '--output', output, '--json',
     ]
     expect(await runCli(args, { cwd: fixture.root, env: fixture.env, io: io.io }), io.stdout()).toBe(0)
     expect(await fs.readJson(path.join(output, 'workspace', 'subject', '.agents', 'skills', 'configured-skill', 'render.json')))
       .toEqual({ mode: 'explicit-value' })
-    const sourceBindingPath = JSON.parse(io.stdout()).sourceBindingPath as string
+    const sourceBindingPath = JSON.parse(io.stdout()).data.sourceBindingPath as string
     expect((await fs.readJson(sourceBindingPath)).profile.config).toEqual({ 'eval-owner': { mode: 'explicit-value' } })
     const workspaceContext = await createAwSourceBindingWorkspaceValidationContext(fixture.root)
     expect((await validateAwSourceBindingForWorkspace({
@@ -258,7 +258,7 @@ describe('aw skill eval commands', () => {
     const fixture = await createWorkspace()
     const providerInit = capture()
     expect(await runCli([
-      'plugin', 'init', 'runtime-provider',
+      'dev', 'plugin', 'create', 'runtime-provider',
       '--description', 'Runtime provider for Eval materialization tests.',
       '--skill-name', 'provider-skill',
       '--skill-description', 'Provide runtime data in Eval materialization tests.',
@@ -457,7 +457,7 @@ describe('aw skill eval commands', () => {
       const output = path.join(fixture.outputRoot, profile)
       const command = capture()
       expect(await runCli([
-        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
         '--suite', 'trigger-suite', '--profile', profile,
         '--workspace-root', fixture.root, '--output', output, '--json',
       ], { cwd: fixture.root, env: fixture.env, io: command.io }), command.stdout()).toBe(0)
@@ -487,7 +487,7 @@ describe('aw skill eval commands', () => {
     const optionalOutput = path.join(fixture.outputRoot, 'optional-disabled')
     const optional = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--suite', 'optional-suite', '--profile', 'optional-disabled',
       '--workspace-root', fixture.root, '--output', optionalOutput, '--json',
     ], { cwd: fixture.root, env: fixture.env, io: optional.io }), optional.stdout()).toBe(0)
@@ -507,7 +507,7 @@ describe('aw skill eval commands', () => {
     const requiredDisabledOutput = path.join(fixture.outputRoot, 'required-native-disabled')
     const requiredDisabled = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--suite', 'required-native-suite', '--profile', 'optional-disabled',
       '--workspace-root', fixture.root, '--output', requiredDisabledOutput, '--json',
     ], { cwd: fixture.root, env: fixture.env, io: requiredDisabled.io })).toBe(1)
@@ -549,7 +549,7 @@ describe('aw skill eval commands', () => {
     const dynamicTargetOutput = path.join(fixture.outputRoot, 'user-dynamic-target')
     const dynamicTarget = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'dynamic-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'dynamic-skill',
       '--suite', 'dynamic-target', '--profile', 'user-target',
       '--workspace-root', fixture.root, '--output', dynamicTargetOutput, '--json',
     ], { cwd: fixture.root, env: fixture.env, io: dynamicTarget.io }), dynamicTarget.stdout()).toBe(0)
@@ -574,7 +574,7 @@ describe('aw skill eval commands', () => {
     const failedOutput = path.join(fixture.outputRoot, 'renderer-failed')
     const failed = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--suite', 'trigger-suite', '--profile', 'project-scoped',
       '--workspace-root', fixture.root, '--output', failedOutput, '--json',
     ], { cwd: fixture.root, env: fixture.env, io: failed.io })).toBe(1)
@@ -662,15 +662,20 @@ describe('aw skill eval commands', () => {
     const sourceBefore = await treeDigests(fixture.ownerRoot)
     const validation = capture()
     expect(await runCli([
-      'plugin', 'validate', fixture.ownerRoot,
+      'dev', 'plugin', 'validate', fixture.ownerRoot,
       '--workspace-root', fixture.root,
       '--json',
     ], { cwd: fixture.root, env: fixture.env, io: validation.io }), validation.stdout() + validation.stderr()).toBe(0)
-    expect(JSON.parse(validation.stdout())).toMatchObject({ ok: true, errors: [] })
+    expect(JSON.parse(validation.stdout())).toMatchObject({
+      schemaVersion: 1,
+      status: 'success',
+      diagnostics: [],
+      data: {}
+    })
     const blockedOutput = path.join(fixture.root, 'prepared-v1')
     const blocked = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--suite', 'trigger-suite',
       '--workspace-root', fixture.root,
       '--output', blockedOutput,
@@ -696,7 +701,7 @@ describe('aw skill eval commands', () => {
     ] as const) {
       const rejected = capture()
       expect(await runCli([
-        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
         '--suite', 'trigger-suite',
         '--workspace-root', fixture.root,
         '--output', rejectedOutput,
@@ -712,7 +717,7 @@ describe('aw skill eval commands', () => {
     if (resolvedAlias === fixture.root && aliasRoot !== fixture.root) {
       const aliased = capture()
       expect(await runCli([
-        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
         '--suite', 'trigger-suite',
         '--workspace-root', fixture.root,
         '--output', path.join(aliasRoot, 'case-alias-bypass'),
@@ -724,7 +729,7 @@ describe('aw skill eval commands', () => {
     const output = path.join(workspaceEvalRoot, 'prepared-v1')
     const command = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--suite', 'trigger-suite',
       '--workspace-root', fixture.root,
       '--split', 'validation',
@@ -738,18 +743,20 @@ describe('aw skill eval commands', () => {
     const receipt = JSON.parse(command.stdout())
     expect(receipt).toMatchObject({
       schemaVersion: 1,
-      command: 'skill:eval:prepare',
-      ok: true,
-      suite: 'trigger-suite',
-      profile: 'project-default',
-      specPath: path.join(output, 'spec.json'),
-      sourceBindingPath: path.join(output, 'aw-source-binding.json'),
+      status: 'success',
+      command: 'dev.eval.prepare',
+      data: {
+        suite: 'trigger-suite',
+        profile: 'project-default',
+        specPath: path.join(output, 'spec.json'),
+        sourceBindingPath: path.join(output, 'aw-source-binding.json')
+      }
     })
     await expect(validateEvalSpecFile(path.join(output, 'spec.json'))).resolves.toMatchObject({ valid: true })
     expect((await fs.readdir(output)).sort()).toEqual([
       'aw-source-binding.json', 'cases.json', 'spec.json', 'targets', 'workspace',
     ])
-    await expect(fs.readJson(receipt.sourceBindingPath)).resolves.toMatchObject({
+    await expect(fs.readJson(receipt.data.sourceBindingPath)).resolves.toMatchObject({
       schemaVersion: 2,
       kind: 'aw-source-binding',
       profile: { kind: 'eval' },
@@ -790,7 +797,7 @@ describe('aw skill eval commands', () => {
 
     const bindingContext = await createAwSourceBindingWorkspaceValidationContext(fixture.root)
     const bindingOptions = {
-      bindingPath: receipt.sourceBindingPath,
+      bindingPath: receipt.data.sourceBindingPath,
       context: bindingContext,
       expectedSubject: { plugin: 'eval-owner', skill: 'owner-skill', suite: 'trigger-suite' },
       cwd: fixture.root,
@@ -941,7 +948,7 @@ describe('aw skill eval commands', () => {
       setSkillEvalCommandTestHooksForTests({ beforePrepareCommit: mutation.mutate })
       const changedDuringPrepare = capture()
       expect(await runCli([
-        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
         '--suite', 'trigger-suite',
         '--workspace-root', fixture.root,
         '--output', changedDuringPrepareOutput,
@@ -960,12 +967,15 @@ describe('aw skill eval commands', () => {
     const beforeDoctor = await treeDigests(fixture.root)
     const doctor = capture()
     expect(await runCli([
-      'skill', 'eval', 'doctor', '--json',
+      'dev', 'eval', 'check', '--json',
     ], { cwd: fixture.root, env: fixture.env, io: doctor.io }), doctor.stdout()).toBe(0)
     expect(JSON.parse(doctor.stdout())).toMatchObject({
-      providers: ['codex-trigger', 'codex-conversation'],
-      codex: { requestedExecutable: 'fixture-isolated-codex' },
-      cleanup: { supported: expect.any(Boolean) },
+      schemaVersion: 1,
+      data: {
+        providers: ['codex-trigger', 'codex-conversation'],
+        codex: { requestedExecutable: 'fixture-isolated-codex' },
+        cleanup: { supported: expect.any(Boolean) }
+      }
     })
     expect(await treeDigests(fixture.root)).toEqual(beforeDoctor)
 
@@ -994,7 +1004,7 @@ describe('aw skill eval commands', () => {
     const customOutput = path.join(fixture.outputRoot, 'custom-v1')
     const custom = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--workspace-root', fixture.root, '--output', customOutput, '--json',
     ], { cwd: fixture.root, env: fixture.env, io: custom.io }), custom.stdout()).toBe(0)
     await expect(fs.readJson(path.join(customOutput, 'spec.json'))).resolves.toMatchObject({
@@ -1035,7 +1045,7 @@ describe('aw skill eval commands', () => {
     const workflowOutput = path.join(fixture.outputRoot, 'workflow-v1')
     const workflow = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--workspace-root', fixture.root, '--output', workflowOutput, '--json',
     ], { cwd: fixture.root, env: fixture.env, io: workflow.io }), workflow.stdout()).toBe(0)
     await expect(fs.readJson(path.join(workflowOutput, 'spec.json'))).resolves.toMatchObject({
@@ -1065,7 +1075,7 @@ describe('aw skill eval commands', () => {
       const unsafeOutput = path.join(fixture.outputRoot, `unsafe-custom-v1-${index}`)
       const unsafe = capture()
       expect(await runCli([
-        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
         '--workspace-root', fixture.root, '--output', unsafeOutput, '--json',
       ], { cwd: fixture.root, env: fixture.env, io: unsafe.io })).toBe(1)
       await expect(fs.pathExists(unsafeOutput)).resolves.toBe(false)
@@ -1083,7 +1093,7 @@ describe('aw skill eval commands', () => {
     const invalidOwnerProfile = capture()
     const invalidOwnerOutput = path.join(fixture.outputRoot, 'invalid-owner-profile-v1')
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--suite', 'trigger-suite',
       '--workspace-root', fixture.root,
       '--output', invalidOwnerOutput,
@@ -1103,7 +1113,7 @@ describe('aw skill eval commands', () => {
     const sensitiveOutput = path.join(fixture.outputRoot, 'sensitive-v1')
     const sensitive = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--suite', 'trigger-suite',
       '--workspace-root', fixture.root, '--output', sensitiveOutput, '--json',
     ], { cwd: fixture.root, env: fixture.env, io: sensitive.io })).toBe(1)
@@ -1115,7 +1125,7 @@ describe('aw skill eval commands', () => {
     const atomicOutput = path.join(fixture.outputRoot, 'atomic-v1')
     const atomic = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      'dev', 'eval', 'prepare', 'eval-owner', 'owner-skill',
       '--suite', 'trigger-suite',
       '--workspace-root', fixture.root,
       '--previous-version', path.join(fixture.root, 'missing-previous'),
@@ -1145,34 +1155,36 @@ describe('aw skill eval commands', () => {
 
     const legacyManifest = capture()
     expect(await runCli([
-      'plugin', 'validate', fixture.ownerRoot,
+      'dev', 'plugin', 'validate', fixture.ownerRoot,
       '--workspace-root', fixture.root,
       '--json',
     ], { cwd: fixture.root, env: fixture.env, io: legacyManifest.io })).toBe(1)
     expect(legacyManifest.stdout(), legacyManifest.stderr()).not.toBe('')
     expect(JSON.parse(legacyManifest.stdout())).toMatchObject({
-      ok: false,
-      errors: expect.arrayContaining([
-        expect.stringContaining('unknown field "schemaVersion"'),
+      schemaVersion: 1,
+      status: 'failed',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ message: expect.stringContaining('unknown field "schemaVersion"') }),
       ]),
+      data: {}
     })
 
     const legacyOption = capture()
     expect(await runCli([
-      'skill', 'eval', 'prepare', 'eval-owner',
+      'dev', 'eval', 'prepare', 'eval-owner',
       '--skill', 'owner-skill',
       '--workspace-root', fixture.root,
       '--output', path.join(fixture.outputRoot, 'legacy-option-output'),
       '--json',
-    ], { cwd: fixture.root, env: fixture.env, io: legacyOption.io })).toBe(1)
-    expect(legacyOption.stderr()).toContain("unknown option '--skill'")
+    ], { cwd: fixture.root, env: fixture.env, io: legacyOption.io })).toBe(2)
+    expect(legacyOption.stderr()).toContain('--skill')
 
     for (const command of ['check', 'provider']) {
       const removedCommand = capture()
       expect(await runCli([
         'skill', 'eval', command,
-      ], { cwd: fixture.root, env: fixture.env, io: removedCommand.io })).toBe(1)
-      expect(removedCommand.stderr()).toContain('unknown command')
+      ], { cwd: fixture.root, env: fixture.env, io: removedCommand.io })).toBe(2)
+      expect(removedCommand.stderr()).toMatch(/unknown command/iu)
     }
   }, 20_000)
 })

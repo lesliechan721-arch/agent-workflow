@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 export const AW_CAPABILITY_IDS = [
+  'aw.cli-output.v1',
   'aw.plugin-manifest.v3',
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
@@ -21,18 +22,18 @@ export const AW_CAPABILITY_IDS = [
   'aw.portable-skills.v1',
   'aw.runtime-imports.v1',
   'aw.installed-runtime-config.v2',
-  'aw.skill-validation.v1',
-  'aw.skill-eval.v2',
-  'aw.plugin-authoring.v1',
-  'aw.catalog-authoring.v1',
-  'aw.catalog-source.v2',
-  'aw.catalog-dev-source.v1',
-  'aw.catalog-publication.v1',
-  'aw.review-preparation.v1',
-  'aw.review-inspection.v2',
+  'aw.skill-validation.v2',
+  'aw.skill-eval.v3',
+  'aw.plugin-authoring.v2',
+  'aw.catalog-authoring.v2',
+  'aw.catalog-source.v3',
+  'aw.catalog-dev-source.v2',
+  'aw.catalog-publication.v2',
+  'aw.review-preparation.v2',
+  'aw.review-inspection.v3',
   'aw.catalog-snapshot.v7',
-  'aw.self-check.v1',
-  'aw.plugin-recovery.v1',
+  'aw.self-check.v2',
+  'aw.plugin-recovery.v2',
 ] as const
 
 export type RegisteredAwCapabilityId = typeof AW_CAPABILITY_IDS[number]

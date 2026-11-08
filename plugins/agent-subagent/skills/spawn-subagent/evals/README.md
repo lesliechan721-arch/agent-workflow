@@ -6,10 +6,10 @@ Eval adapter 不固定主代理模型。Engine 为 V1 case 使用 `gpt-5.6-luna`
 
 ## 准备与运行
 
-`aw skill eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
+`aw dev eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
 
 ```bash
-aw skill eval prepare agent-subagent \
+aw dev eval prepare agent-subagent \
   spawn-subagent --suite trigger --profile project-default \
   --output /tmp/aw-eval-specs/spawn-subagent-materialization --json
 ```
@@ -40,11 +40,11 @@ standard 组合性诊断语料另有 8 条，并把 `spawn-subagent` 与 `codex-
 每条 query 默认在干净会话运行三次。普通 trigger 以 `0.5` 为分界；trigger-composition 的精确 loaded-skill 路由要求 `1.0`，并保留用例声明的组合加载集合。strict suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 只表示请求调用；加载证据来自正确 participant 的成功 `SKILL.md` 读取，或匹配本次线程、轮次、名称和完整路径的受信任原生注入记录。必要证据不可用时记录执行错误；spawn 还要求原始 rollout 参数证据。
 
 ```bash
-aw skill eval prepare agent-subagent spawn-subagent --suite trigger --profile project-default --split train --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-train --json
-aw skill eval prepare agent-subagent spawn-subagent --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-validation --json
-aw skill eval prepare agent-subagent spawn-subagent --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-sanity --json
-aw skill eval prepare agent-subagent spawn-subagent --suite trigger-composition --profile project-default --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-composition --json
-aw skill eval prepare agent-subagent spawn-subagent --suite trigger-dev-build --profile project-dev-build --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-dev-build --json
+aw dev eval prepare agent-subagent spawn-subagent --suite trigger --profile project-default --split train --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-train --json
+aw dev eval prepare agent-subagent spawn-subagent --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-validation --json
+aw dev eval prepare agent-subagent spawn-subagent --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-sanity --json
+aw dev eval prepare agent-subagent spawn-subagent --suite trigger-composition --profile project-default --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-composition --json
+aw dev eval prepare agent-subagent spawn-subagent --suite trigger-dev-build --profile project-dev-build --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-trigger-dev-build --json
 ```
 
 ## Routing 参数评估
@@ -54,13 +54,13 @@ aw skill eval prepare agent-subagent spawn-subagent --suite trigger-dev-build --
 canonical task role 为 `subagent`。四个通用档位默认均为 native；普通 V1/V2 调用省略未配置的 model/effort，不主动覆盖宿主选择。明确配置或本次要求的值按字段传递，保留 task role。V2 全历史继承省略 model/effort，硬参数与全历史冲突时继续阻断。默认配置下，role 或模型参数不能区分复杂度档位；配置选择用例使用显式自定义项和非默认配置取证。
 
 ```bash
-aw skill eval prepare agent-subagent spawn-subagent --suite routing --profile project-default --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-routing --json
+aw dev eval prepare agent-subagent spawn-subagent --suite routing --profile project-default --runs 3 --output /tmp/aw-eval-specs/spawn-subagent-routing --json
 ```
 
 调试时可限制 case；profile/variant 组合仍由领域 runner 完整覆盖：
 
 ```bash
-aw skill eval prepare agent-subagent spawn-subagent --suite routing --profile project-default --runs 1 --case full_history_preset --output /tmp/aw-eval-specs/spawn-subagent-routing-full-history-preset --json
+aw dev eval prepare agent-subagent spawn-subagent --suite routing --profile project-default --runs 1 --case full_history_preset --output /tmp/aw-eval-specs/spawn-subagent-routing-full-history-preset --json
 ```
 
 `provider-evals.json` 的 42 个展开 case 都是独立的 routing 输入；V1/V2 的期望值直接绑定各自 case，不依赖 provider 内部参数或额外组合。
@@ -72,8 +72,8 @@ aw skill eval prepare agent-subagent spawn-subagent --suite routing --profile pr
 lifecycle case 覆盖正常终态、部分执行后的同交付续接、新交付的最小上下文和当前版本独立重审；独立的 timeout case 验证真实超时。`lifecycle-evals.json` 的正常路径要求模型启动一个 simple 子代理，用例显式要求首次等待 10 分钟，并且只有观察到真实终态结果才完成。`lifecycle-timeout-evals.json` 由用户请求显式指定 1 分钟窗口；子代理必须运行一个 75 秒只读 helper，使首次 wait 确定超时，然后继续处理到真实终态。结果仍未到达时必须再次等待；终态通知已经到达时不补一次无意义的等待。如果当前 schema 提供清理工具，每个清理目标必须唯一对应已启动代理，并且只在该目标自己的结果已保留后清理。grade 只从 `workflow-evidence.json` 读取 collaboration order、wait output/status、terminal result 和 Engine cleanup 确认，不用最终文案或 raw trace 代替工具证据。
 
 ```bash
-aw skill eval prepare agent-subagent spawn-subagent --suite lifecycle --profile project-default --runs 1 --output /tmp/aw-eval-specs/spawn-subagent-lifecycle --json
-aw skill eval prepare agent-subagent spawn-subagent --suite lifecycle-timeout --profile project-default --runs 1 --output /tmp/aw-eval-specs/spawn-subagent-lifecycle-timeout --json
+aw dev eval prepare agent-subagent spawn-subagent --suite lifecycle --profile project-default --runs 1 --output /tmp/aw-eval-specs/spawn-subagent-lifecycle --json
+aw dev eval prepare agent-subagent spawn-subagent --suite lifecycle-timeout --profile project-default --runs 1 --output /tmp/aw-eval-specs/spawn-subagent-lifecycle-timeout --json
 ```
 
 等待窗口由本次用例明确指定；lifecycle suite 分别验证正常终态路径和真实 timeout 后继续处理路径。确定性 timeline 测试还覆盖缺少 timeout、timeout 后没有等待或终态、终态通知直接到达、逐目标清理、未知目标和清理其它未完成代理的情况。罕见乱序、强制取消和不存在的清理工具分支不扩展为复杂模型门禁。

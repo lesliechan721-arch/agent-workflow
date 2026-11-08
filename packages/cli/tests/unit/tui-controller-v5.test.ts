@@ -1739,7 +1739,7 @@ describe('TUI v4 router and ViewModel', () => {
 
   // Test Value Gate: a scope-conflict menu must bind the public cleanup command to the typed scope and canonical platform.
   it.each(['codex', 'claude'] as const)('recognizes canonical %s cleanup recovery without changing its scope', (platform) => {
-    const description = `运行 aw plugin cleanup official/demo --target ${platform} --scope project，再运行 aw plugin sync official/demo --target ${platform} --context user。`;
+    const description = `运行 aw plugin remove --only outputs official/demo --target ${platform} --scope project，再运行 aw plugin sync official/demo --target ${platform} --context user。`;
     const plugin = menuPlugin({ supportedPlatforms: [platform], installedPlacements: [{
       platform, state: 'installed', scope: 'project', health: 'error', actualState: 'blocked',
       recovery: [
@@ -1820,12 +1820,12 @@ describe('TUI v4 router and ViewModel', () => {
         {
           command: 'uninstall' as const,
           scope: 'user' as const,
-          description: '运行 aw plugin intent remove official/demo --scope user，再运行 aw plugin cleanup official/demo --target codex --scope user，最后 aw plugin sync official/demo --target codex --context project。',
+          description: '运行 aw plugin remove official/demo --only requirements --scope user，再运行 aw plugin remove --only outputs official/demo --target codex --scope user，最后 aw plugin sync official/demo --target codex --context project。',
         },
         {
           command: 'uninstall' as const,
           scope: 'project' as const,
-          description: '运行 aw plugin intent remove official/demo --scope project，再运行 aw plugin cleanup official/demo --target codex --scope project，最后 aw plugin sync official/demo --target codex --context user。',
+          description: '运行 aw plugin remove official/demo --only requirements --scope project，再运行 aw plugin remove --only outputs official/demo --target codex --scope project，最后 aw plugin sync official/demo --target codex --context user。',
         },
       ],
     };
@@ -3032,7 +3032,7 @@ describe('TUI v4 router and ViewModel', () => {
       pluginAction: 'cleanup',
       title: '强制清理插件',
       description: expect.stringContaining('依赖者会变为不完整'),
-      equivalentCommand: 'aw plugin cleanup official/toolkit --scope user --target codex --force',
+      equivalentCommand: 'aw plugin remove official/toolkit --scope user --target codex --only outputs --force --yes',
       changes: expect.arrayContaining([
         expect.objectContaining({ kind: 'warning', title: '跳过依赖保护' }),
       ]),
@@ -4682,8 +4682,8 @@ describe('TUI v4 Review safety', () => {
     ['sync', 'aw plugin sync official/demo --context project --target claude --script-timeout 12000'],
     ['refreshAndSync', 'aw plugin sync official/demo --context project --target claude --refresh --script-timeout 12000'],
     ['reinstall', 'aw plugin sync official/demo --context project --target claude --rebuild --script-timeout 12000'],
-    ['uninstall', 'aw plugin remove official/demo --scope project'],
-    ['cleanup', 'aw plugin cleanup official/demo --scope project --target claude --force'],
+    ['uninstall', 'aw plugin remove official/demo --scope project --yes'],
+    ['cleanup', 'aw plugin remove official/demo --scope project --target claude --only outputs --force --yes'],
   ] as const)('renders the public plugin command for %s', (action, expected) => {
     const review = buildOperationReviewProjection({
       intent: { kind: 'pluginWrite', action, pluginId: 'official/demo', platform: 'claude', scope: 'project',
@@ -4699,8 +4699,8 @@ describe('TUI v4 Review safety', () => {
       intent: { kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/demo',
         platform: 'both', scope: 'user', force: true }, evidence: baseEvidence,
     });
-    expect(review.equivalentCommand).toBe('aw plugin cleanup official/demo --scope user --target codex --force'
-      + ' && aw plugin cleanup official/demo --scope user --target claude --force');
+    expect(review.equivalentCommand).toBe('aw plugin remove official/demo --scope user --target codex --only outputs --force --yes'
+      + ' && aw plugin remove official/demo --scope user --target claude --only outputs --force --yes');
   });
 
   it('finishes nested source recovery at the exact config editor route with the parent draft flow active', async () => {

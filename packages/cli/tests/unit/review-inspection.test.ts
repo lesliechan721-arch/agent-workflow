@@ -327,7 +327,7 @@ describe('AW Review static inspection', () => {
       scope: 'project', materializations: [binding.bindingPath] })
     expect(receipt.skills).toEqual([expect.objectContaining({ skill: 'portable-selected', state: 'stale' })])
     expect(receipt.issues).toContainEqual(expect.objectContaining({ code: 'sourceBindingDrifted',
-      message: expect.stringContaining('aw review prepare') }))
+      message: expect.stringContaining('aw dev review prepare') }))
   })
 
   it('uses explicit Eval platform config when selecting Review evidence', async () => {

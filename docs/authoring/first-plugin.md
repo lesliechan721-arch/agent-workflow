@@ -14,7 +14,7 @@
 插件必须放置在一个合法的 **Catalog Workspace** 目录下。若您还没有工作区，请先按 [Catalog 作者指南](catalog.md#2-catalog-workspace-结构与初始化) 初始化：
 
 ```bash
-aw catalog init --workspace-root /path/to/my-workspace
+aw dev catalog create --workspace-root /path/to/my-workspace
 ```
 
 ### Plugin Source 目录规范
@@ -41,7 +41,7 @@ aw catalog init --workspace-root /path/to/my-workspace
 
 ## 2. 从零创建最小合法插件
 
-使用公开的 `aw plugin init` 命令初始化确定性脚手架：
+使用公开的 `aw dev plugin create` 命令初始化确定性脚手架：
 
 ```bash
 workspace=/path/to/my-workspace
@@ -49,7 +49,7 @@ plugin=my-first-plugin
 
 # 初始化插件骨架与首个 Skill
 # 注意：--skill-short-description 必须为 25-64 个字符
-aw plugin init "$plugin" \
+aw dev plugin create "$plugin" \
   --description "我的首个可组合 Agent 工作流插件" \
   --skill-name "$plugin" \
   --skill-description "提供工作区文件完整性检查与依赖配置核验能力" \
@@ -59,7 +59,7 @@ aw plugin init "$plugin" \
 
 ### 真实 Manifest v3 结构解析 (`.agents-plugin/plugin.json`)
 
-`aw plugin init` 生成的 `plugin.json` 采用合法的 **Plugin Manifest v3** 格式：
+`aw dev plugin create` 生成的 `plugin.json` 采用合法的 **Plugin Manifest v3** 格式：
 
 ```json
 {
@@ -105,11 +105,11 @@ aw plugin init "$plugin" \
 
 ### 编写 Skill 正文并消除 TODO 占位符
 
-`aw plugin init` 会在 `skills/<plugin-name>/` 目录下生成 `SKILL.md`、`README.md`、`agents/` 及 `evals/` 目录。
+`aw dev plugin create` 会在 `skills/<plugin-name>/` 目录下生成 `SKILL.md`、`README.md`、`agents/` 及 `evals/` 目录。
 
 > [!IMPORTANT]
 > **消除 TODO 占位符是验证通过的前提**：
-> 生成的 `SKILL.md` 模板包含 `[TODO: ...]` 占位符（例如目标、前置判断、工作流与 Gotchas 提示）。若脚手架生成后未经编辑直接执行 `aw plugin validate`，验证器会因存在未完成项而明确报错阻断：
+> 生成的 `SKILL.md` 模板包含 `[TODO: ...]` 占位符（例如目标、前置判断、工作流与 Gotchas 提示）。若脚手架生成后未经编辑直接执行 `aw dev plugin validate`，验证器会因存在未完成项而明确报错阻断：
 > ```text
 > "errors": [
 >   "skills/my-first-plugin/SKILL.md still contains TODO placeholders"
@@ -119,10 +119,10 @@ aw plugin init "$plugin" \
 
 ### 添加更多静态 Skill
 
-使用 `aw plugin add-skill` 向现有插件追加新的静态 Skill（同样须提供 25-64 字符的简述）：
+使用 `aw dev skill create --plugin` 向现有插件追加新的静态 Skill（同样须提供 25-64 字符的简述）：
 
 ```bash
-aw plugin add-skill "$plugin" \
+aw dev skill create --plugin "$plugin" \
   --skill-name second-skill \
   --skill-description "执行辅助代码格式化与规范检查任务" \
   --skill-short-description "提供自动化代码排版格式化与项目静态规范核验辅助功能" \
@@ -146,16 +146,16 @@ aw plugin add-skill "$plugin" \
 
 ```bash
 # 1. 验证源码合同与 Schema 合法性（可能会运行 renderer fixture 测试动态产物）
-aw plugin validate "$workspace/plugins/$plugin" --workspace-root "$workspace" --json
+aw dev plugin validate "$workspace/plugins/$plugin" --workspace-root "$workspace" --json
 
 # 2. 运行插件声明的确定性 Node 自动化测试
-aw plugin test "$workspace/plugins/$plugin" --workspace-root "$workspace" --json
+aw dev plugin test "$workspace/plugins/$plugin" --workspace-root "$workspace" --json
 
 # 3. 构建本地插件 Bundle
-aw plugin build "$workspace/plugins/$plugin" --workspace-root "$workspace" --json
+aw dev plugin build "$workspace/plugins/$plugin" --workspace-root "$workspace" --json
 
 # 4. 检查插件状态事实与变更差异（在需要时可能会准备 bundle）
-aw plugin status "$plugin" --workspace-root "$workspace" --json
+aw dev plugin status "$plugin" --workspace-root "$workspace" --json
 ```
 
 ### 验证行为与取证边界
@@ -164,9 +164,9 @@ aw plugin status "$plugin" --workspace-root "$workspace" --json
 - `test`：执行在 Manifest `scripts.tests.node` 中声明的确定性 Node 自动化测试。
 - `build`：在本地生成打包后的确定性产物，验证 bundle digest 计算。
 - `status`：静态读取 Workspace 元数据与依赖事实，在需要时可能会准备 bundle。
-- **纯只读取证 (`aw review inspect`)**：
+- **纯只读取证 (`aw dev review inspect`)**：
   ```bash
-  aw review inspect "$workspace/plugins/$plugin" --workspace-root "$workspace" --json
+  aw dev review inspect "$workspace/plugins/$plugin" --workspace-root "$workspace" --json
   ```
   **`review inspect` 是唯一纯只读的静态取证命令**。它仅读取源码、已有快照与物化凭据，返回源码事实与证据缺口，**绝不执行被审插件的任何生产或渲染代码**。详细规范见 [Review 与 Eval 参考合同](../reference/review-and-eval.md)。
 
@@ -209,7 +209,7 @@ AW 允许插件按需声明配置、运行时资源、托管命令与原生工�
 当需要从 Catalog Workspace 中废弃或移除一个插件时，使用公开的带保护删除命令：
 
 ```bash
-aw plugin remove "$plugin" --workspace-root "$workspace" --yes --json
+aw dev plugin remove "$plugin" --workspace-root "$workspace" --yes --json
 ```
 
 ### 删除保护机制与前提

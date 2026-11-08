@@ -79,13 +79,13 @@ describe('five namespaced write commands', () => {
       await fs.copyFile(path.join(fixture.directory, 'fake-adapter.mjs'), path.join(adapterSource, 'adapter.mjs'));
       const adapter = await runPublic(['command', 'install', adapterSource, '--name', 'public-v5-adapter', '--runner', 'node', '--entry', 'adapter.mjs', '--args-json', '["fixed-argv"]', '--yes']);
       expect(adapter.exitCode).toBe(0);
-      const adapterId = (adapter.payload.commands as Array<{ id: string }>)[0]!.id;
+      const adapterId = (adapter.payload.data as { commands: Array<{ id: string }> }).commands[0]!.id;
       expect(await runPublic(['plugin', 'config', 'set', 'team/agent-subagent', 'subagentCommands', '--context', 'user', '--value-json', JSON.stringify([{ key: 'fixture', adapter: 'custom-managed', mode: 'workspace', commandId: adapterId, args: ['v5-request-only'] }])])).toMatchObject({ exitCode: 0 });
       const preview = await installWriteCommand(['team/agent-subagent'], { cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project' }, { ...runtime, previewOperationPlan: true });
       const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/agent-subagent', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
       expect(review.changes).toContainEqual(expect.objectContaining({ title: 'guide/subagent/default', description: expect.stringContaining('node · scripts/subagent.mjs') }));
       const installed = await runPublic(['plugin', 'install', 'team/agent-subagent', '--scope', 'project', '--yes']);
-      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
       const guideCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!;
       expect(guideCommand.owner).toMatchObject({ kind: 'plugin', producer: {
         pluginName: 'agent-subagent', kind: 'artifact', key: 'spawn-subagent-skill',
@@ -152,7 +152,7 @@ describe('five namespaced write commands', () => {
       'fixture', 'codex-enhance', () => prepareCodexEnhancePublicCommandFixture(timing),
     );
     expect(await runPublic([
-      'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes'])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes'])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     // Two plugins each render one shared Skill batch and one project role batch.
     // Lock rechecks and manager resolution must reuse these successful inputs.
     expect(timing.rendererCalls).toBe(4);
@@ -163,8 +163,8 @@ describe('five namespaced write commands', () => {
     const intentBefore = await fs.readFile(intentPath);
 
     expect(await runPublic([
-      'plugin', 'cleanup', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      'plugin', 'remove', '--only', 'outputs', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     expect(timing.rendererCalls).toBe(4);
     for (const role of ['codex-explore', 'codex-advisor']) {
       await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'agents',
@@ -214,12 +214,12 @@ describe('five namespaced write commands', () => {
       '--value-json', '{"model":"user-standard","reasoningEffort":"max"}',
     ])).toMatchObject({
       exitCode: 0,
-      payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
+      payload: { status: 'success', data: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } } },
     });
     const projectInstall = await runPublic([
       'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes']);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
-      .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      .toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     const skillKeys = ['codex-explore', 'codex-advisor'];
     const skillPaths = skillKeys.map((skill) =>
       path.join(cacheRoot, 'codex', 'skills', skill, 'SKILL.md'));
@@ -285,7 +285,7 @@ describe('five namespaced write commands', () => {
       '--value-json', '{"model":"saved-standard","reasoningEffort":"medium"}',
     ])).toMatchObject({
       exitCode: 0,
-      payload: { apply: { state: 'skipped', reason: 'notRequested' } },
+      payload: { status: 'success', data: { apply: { state: 'skipped', reason: 'notRequested' } } },
     });
     await expect(fs.readJson(guideBindingPath)).resolves.toEqual(initialBinding);
     for (const [index, file] of skillPaths.entries()) {
@@ -319,13 +319,13 @@ describe('five namespaced write commands', () => {
     const guideCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!;
     await fs.remove(path.join(isolation.env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`));
     expect(await runPublic([
-      'plugin', 'cleanup', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      'plugin', 'remove', '--only', 'outputs', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     for (const file of rolePaths) await expect(fs.pathExists(file)).resolves.toBe(false);
     await expect(fs.pathExists(subagentRolePath)).resolves.toBe(true);
     expect(await runPublic([
-      'plugin', 'cleanup', 'team/agent-subagent', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      'plugin', 'remove', '--only', 'outputs', 'team/agent-subagent', '--target', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     await expect(fs.pathExists(subagentRolePath)).resolves.toBe(false);
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
@@ -347,7 +347,7 @@ describe('five namespaced write commands', () => {
     const projectRoles = roleNames.map((role) => path.join(cwd, '.codex', 'agents', `aw-codex-enhance-${role}.toml`));
     const userRoles = roleNames.map((role) => path.join(env.CODEX_HOME!, 'agents', `aw-codex-enhance-${role}.toml`));
     const projectInstall = await runPublic(['plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes']);
-    expect(projectInstall, JSON.stringify(projectInstall)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    expect(projectInstall, JSON.stringify(projectInstall)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(true);
     const projectLocation = { scope: 'project' as const, cwd, env };
     const userLocation = { scope: 'user' as const, cwd, env };
@@ -357,7 +357,7 @@ describe('five namespaced write commands', () => {
     const foreignRole = path.join(cwd, '.codex', 'agents', 'foreign.toml');
     await fs.outputFile(foreignRole, 'developer_instructions = "foreign bytes"\n');
     const userInstall = await runPublic(['plugin', 'install', 'team/codex-enhance', '--scope', 'user', '--yes']);
-    expect(userInstall, JSON.stringify(userInstall)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    expect(userInstall, JSON.stringify(userInstall)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     for (const file of userRoles) await expect(fs.pathExists(file)).resolves.toBe(true);
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(false);
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
@@ -369,7 +369,7 @@ describe('five namespaced write commands', () => {
     const userBeforeSync = await observeIntent(userLocation);
     const userRoleBytes = await Promise.all(userRoles.map((file) => fs.readFile(file)));
     const synced = await runPublic(['plugin', 'sync', 'team/codex-enhance', '--context', 'project', '--yes']);
-    expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     await expect(observeIntent(userLocation)).resolves.toEqual(userBeforeSync);
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
     for (const [index, file] of userRoles.entries()) await expect(fs.readFile(file)).resolves.toEqual(userRoleBytes[index]);
@@ -377,7 +377,7 @@ describe('five namespaced write commands', () => {
     await fs.writeFile(path.join(env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`), '{broken');
     const removed = await runPublic(['plugin', 'remove', 'team/codex-enhance', '--scope', 'user', '--yes']);
     expect(removed, JSON.stringify(removed)).toMatchObject({ exitCode: 0, payload: {
-      ok: true, declarationChanged: true,
+      status: 'success', data: { changes: { requirements: 'changed' } },
     } });
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
     await expect(readFixtureRequirements(userLocation)).resolves.toMatchObject({ roots: [] });
@@ -389,8 +389,8 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('developer_instructions = "foreign bytes"\n');
     await expect(fs.readFile(preferencesPath)).resolves.toEqual(preferencesBefore);
     for (const pluginId of ['team/codex-enhance', 'team/agent-subagent']) {
-      const cleaned = await runPublic(['plugin', 'cleanup', pluginId, '--target', 'codex', '--scope', 'project', '--yes']);
-      expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      const cleaned = await runPublic(['plugin', 'remove', '--only', 'outputs', pluginId, '--target', 'codex', '--scope', 'project', '--yes']);
+      expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     }
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(false);
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('developer_instructions = "foreign bytes"\n');

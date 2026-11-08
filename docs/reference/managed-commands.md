@@ -1,6 +1,6 @@
 # 托管命令合同 v1
 
-本文件定义 Plugin Manifest v3 的托管命令声明、ArtifactPlan v2 扩展、稳定身份、权限引用、管理接口和运行边界。字段与校验的机器真值由 Core schema/types、canonical capability registry 和当前 CLI 提供；使用 `aw plugin capabilities --surface managed-commands --json` 查询作者合同。
+本文件定义 Plugin Manifest v3 的托管命令声明、ArtifactPlan v2 扩展、稳定身份、权限引用、管理接口和运行边界。字段与校验的机器真值由 Core schema/types、canonical capability registry 和当前 CLI 提供；使用 `aw dev plugin capabilities --surface managed-commands --json` 查询作者合同。
 
 Guide 的参数、输出、文件与消费合同由 [Guide 运行生命周期](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md) 维护，Adapter v5 由 [适配器协议](../../plugins/agent-subagent/skills/spawn-subagent/docs/protocol.md) 维护。Manifest、Config、ArtifactPlan、命令主机与 Adapter 的版本互相独立。
 
@@ -261,10 +261,13 @@ run 必须有字面分隔符 `--`，即使目标参数为空。其前只接受�
 
 list 只扫描本 AW_HOME 命令目录、索引与其明确指向的资源，不扫描所有项目。它可列出以前已绑定但当前不在 cwd 的 project producer；不按 cwd 改写绑定。包含用户命令、插件命令和包；空集合/损坏包也有 package 项。show 的输入仍是 command ID，不把 package key 当命令 ID；包信息通过 list 或命令的 producer 字段读取。
 
-管理输出用下列 schema 1。所有字段必填，空集合为 `[]`；JSON 单对象加 LF 写 stdout，诊断不混入 JSON。人读输出可以排版，但必须保留同样的成功、部分成功与恢复信息。
+管理命令使用 [CLI 统一结果 schema 1](cli.md)。下列业务字段位于 `data`；空集合为 `[]`。写命令另有 `confirmation`，完整诊断与安全下一步分别位于顶层 `diagnostics` 和 `nextActions`。
 
 ```ts
-type Diagnostic = { code: string; message: string; subject?: string };
+type CommandIssue = {
+  code: string; message: string; subject?: string;
+  path?: string; blocking?: boolean; stage?: string; severity?: string;
+};
 type Launch = { runner: "node" | "executable"; entry: string;
   args: string[]; env: Record<string,string>; envFrom: Record<string,string>;
   cwd: "caller" | "resource" };
@@ -275,8 +278,8 @@ type CommandView = {
   availability: "ready" | "unavailable";
   resourceRoot: string | null;
   launch: Launch | null; // 损坏而无法安全解析时为 null
-  errors: Diagnostic[];
-  recoveryActions: string[];
+  errors: CommandIssue[];
+  blockerCodes: string[];
 };
 type PackageView = {
   id: string; // pkg-id，供精确 remove 使用
@@ -284,46 +287,46 @@ type PackageView = {
   resourceRoot: string;
   availability: "ready" | "empty" | "unavailable";
   sets: Array<{ set: string; state: "present" | "disabled"; commandIds: string[] }>;
-  errors: Diagnostic[];
-  recoveryActions: string[];
+  errors: CommandIssue[];
+  blockerCodes: string[];
 };
-type CommandManagementResult = {
-  schemaVersion: 1;
-  command: "command.install" | "command.update" | "command.remove" |
-    "command.list" | "command.show" | "command.package.sync" | "command.package.remove";
-  ok: boolean;
-  overallState: "completed" | "partial" | "failed";
+type CommandManagementData = {
   commands: CommandView[];
   packages: PackageView[];
   changes: Array<{ kind: "command" | "package"; id: string;
     action: "created" | "updated" | "removed" | "retained" }>;
-  errors: Diagnostic[];
-  recoveryActions: string[];
+  nativeToolChanges?: NativeToolChange[];
+  confirmation?: Confirmation | null; // 写命令必有，读命令省略
 };
 ```
 
-`ProducerIdentity` 见 A4；package change 的 id 为 `pkg_` 加 `SHA256(UTF8(C(ProducerIdentity)))` 的小写完整 hex，用于展示、目录定位和精确 package remove，不作为 run ID。用户写操作成功返回受影响命令；remove 后 commands 可为空，changes 保留被删除 ID；package 操作返回受影响包/命令，删除后以 changes 保留身份。list 返回全部可观察项，show 最多返回一个命令及其所属独立包。秘密的解析值从不进入 Launch 或 errors。
+`ProducerIdentity` 见 A4；package change 的 id 为 `pkg_` 加 `SHA256(UTF8(C(ProducerIdentity)))` 的小写完整 hex，用于展示、目录定位和精确 package remove，不作为 run ID。用户写操作成功返回受影响命令；remove 后 commands 可为空，changes 保留被删除 ID；package 操作返回受影响包/命令，删除后以 changes 保留身份。list 返回全部可观察项，show 最多返回一个命令及其所属独立包。秘密的解析值从不进入 Launch 或 errors。`resourceRoot` 与 launch 是 show/list 明确请求的既有命令身份信息，运行时调用方用它们验证生产者与资源树；这些字段保留，但不附带其它内部 AW_HOME 目录、临时执行上下文或 backend。
 
 `package remove <pkg-id>` 是精确现场选择分支，与 source/plugin + package-key + scope 分支互斥，不接受 `--scope`。它读取本 AW_HOME 中该 pkg-id 的独立 owner marker，校验目录、完整 ProducerIdentity 与重算 pkg-id 一致，再按既有边界删除这个专属包。它不读取当前 Catalog、不要求旧项目根仍存在、不用当前 sourceIdentity 替换 marker 的来源；Review 展示旧来源身份、旧项目根及全部命令失效影响。删除范围仍仅为 AW_HOME 内该包与其派生绑定，不删除旧项目目录或平台设置。原选择器分支要求当前 scope/project 和可核验来源唯一匹配；有歧义时报告候选 pkg-id，用户可用精确分支移除。marker 损坏或冲突时两个分支都不能绕过 ownership。
 
-管理命令退出 0 表示完整完成，1 表示 failed/partial，2 表示参数错误；`ok` 仅在 completed 为 true。list/show 发现资源不可用时仍返回可读记录，同时 overallState=partial、exit=1；无命令的健康 list 为 completed。记录连身份也无法解析时只放 errors，subject 使用安全的本 AW_HOME 相对定位，不伪造 PackageView。show 找不到 ID 为 `commandNotFound`。
+`errors` 保留单个命令或包的问题，`blockerCodes` 供调用方按稳定 code 判断；这些问题同时汇入顶层 `diagnostics`。后续操作统一读取顶层 `nextActions`。`Confirmation` 见公共 CLI 合同；`NativeToolChange` 保留原生工具声明变更的 before/after 事实。
 
-插件恢复写命令使用 `aw-recovery` schema 1，在顶层以可选 `commandResults` 报告实际命令结果，无相关动作时省略。底层原生执行保留内部 Receipt v6，并由统一恢复协调器汇总。TUI 使用同一投影，不新增第三个平台：
+管理命令退出码遵循统一合同：success 为 0，failed 执行错误为 1，参数错误为 2，blocked 为 3，partial 为 4。list/show 发现资源不可用但有有效记录时保留记录并返回 partial；无命令的健康 list 为 success。记录连身份也无法解析时只在顶层 `diagnostics` 报告，不伪造 PackageView。show 找不到 ID 为 `commandNotFound`。
+
+插件生命周期 data 以可选 `commandResults` 报告实际命令结果，无相关动作时省略。底层原生执行保留内部 Receipt v6，并由统一恢复协调器汇总。TUI 保留内部回执，公开 CLI 使用以下投影，不新增第三个平台：
 
 ```ts
-commandResults?: Array<{
+type LifecycleCommandResult = {
   producer: ProducerIdentity;
   state: "completed" | "partial" | "failed";
   commandIds: string[];
   removedCommandIds: string[];
-  errors: Diagnostic[];
-  recoveryActions: string[];
-}>;
+  blockerCodes: string[];
+};
+// plugin install/remove/sync 的 data 字段
+commandResults?: LifecycleCommandResult[];
 ```
 
 producer 写入或绑定失败参与整体 failed/partial 计算；权限写入仍计入其真实平台结果。Review 展示 package 的共享影响、固定参数和权限变化，不能因为没有平台枚举值就漏掉 AW-owned 包。
 
-Config Mutation Receipt v7 的 `apply` 对象增加可选 `commandResults`，元素与上述恢复回执的 commandResults 完全相同；它与 `apply.targetResults` 并列，不向 ConfigApplyTargetIdentity 填入假平台。所有 apply union 分支都接受此字段：没有命令目标时省略，skipped 时只能省略或为空；其它分支保留已经取得的实际结果。TUI 配置 Review、Progress 和 Result 同时消费这两组结果。
+生命周期 `commandResults` 使用 `blockerCodes` 关联诊断；诊断与恢复操作分别汇入顶层 `diagnostics` 和 `nextActions`。
+
+底层 Config Mutation Receipt v7 的 `apply` 对象保留可选 `commandResults`，与 `apply.targetResults` 并列，不向 ConfigApplyTargetIdentity 填入假平台。公开配置命令的 `data.apply.commandResults` 元素为 `LifecycleCommandResult & { errors: CommandIssue[] }`：除 `blockerCodes` 外，保留每个 producer 的问题，同时汇入顶层诊断；后续操作读取顶层 `nextActions`。所有 apply union 分支都接受此字段：没有命令目标时省略，skipped 时只能省略或为空；其它分支保留已经取得的实际结果。TUI 配置 Review、Progress 和 Result 继续消费内部的平台与命令两组结果。
 
 配置 apply 的发现范围固定为：本次 sourceId + sourceIdentity + pluginName 下，独立 owner marker 可核验的已安装包，加上本次既有平台 apply 计划明确引用的 package producer，按完整 ProducerIdentity 去重。user 配置 apply 检查 user 包和当前规范项目的 project 包；project 配置 apply 只检查当前项目的 project 包。它只扫描 AW_HOME 的包 marker，不扫描其它项目，也不刷新其它 projectRoot 的包。旧来源身份的包保留并提示精确 remove/sync，不按当前配置接管。
 
@@ -331,7 +334,7 @@ Config Mutation Receipt v7 的 `apply` 对象增加可选 `commandResults`，元
 
 独立包的配置 apply/replay 不得引入未确认的 native 闭包。当前 native 声明与已安装 producer 不同时，在 renderer 和 producer 写入前拒绝刷新，保留旧产物，并提示先通过 `sync` 或 `command package sync` 确认变化；配置保存及部分失败结果仍按下述合同处理。
 
-`noVisibleTarget` 仅在平台目标和包目标都为空时成立。`apply.state=succeeded` 要求两组中所有实际目标成功；任一包失败、部分完成或发现错误时，保存成功的配置仍保留，`apply.state=partial` 并带 commandResults/现有 stage 错误，Config Mutation Receipt 整体为 partial、ok=false、exit=1。前置 source/schema/effectiveConfig 不可用继续使用既有 unavailable 分支，并保留其已知目标证据。`notRequested`、`noConfigChange`、`noEffectiveConfigChange` 仍按现有合同判断，但不得只看平台目标而漏掉包。一次平台/配置操作内，同一 producer 最多刷新一次，不增加持久 claim。
+`noVisibleTarget` 仅在平台目标和包目标都为空时成立。`apply.state=succeeded` 要求两组中所有实际目标成功；任一包失败、部分完成或发现错误时，保存成功的配置仍保留，`apply.state=partial` 并带 commandResults/现有 stage 错误，公开 CLI 结果为 `status=partial`、退出码 `4`。前置 source/schema/effectiveConfig 不可用继续使用既有 unavailable 分支，并保留其已知目标证据。`notRequested`、`noConfigChange`、`noEffectiveConfigChange` 仍按现有合同判断，但不得只看平台目标而漏掉包。一次平台/配置操作内，同一 producer 最多刷新一次，不增加持久 claim。
 
 ## B2. 持久定义、派生绑定与独立 owner 证据
 

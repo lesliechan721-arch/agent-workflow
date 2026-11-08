@@ -110,7 +110,7 @@ describe('scoped demand and execution context', () => {
     expect(demand.roots).toBeNull();
     expect(demand.errors[0]?.message).toContain(file);
     expect(demand.errors[0]?.message).toContain('备份');
-    expect(demand.errors[0]?.message).toContain('aw plugin intent add');
+    expect(demand.errors[0]?.message).toContain('aw plugin install <source/plugin> --scope user --only requirements');
     expect(await fs.readFile(file, 'utf8')).toBe(bytes);
   });
 

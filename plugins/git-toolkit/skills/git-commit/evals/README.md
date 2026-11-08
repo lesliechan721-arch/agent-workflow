@@ -2,10 +2,10 @@
 
 ## 准备与运行
 
-`aw skill eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
+`aw dev eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
 
 ```bash
-aw skill eval prepare git-toolkit \
+aw dev eval prepare git-toolkit \
   git-commit --suite trigger --profile project-default \
   --output /tmp/aw-eval-specs/git-commit-materialization --json
 ```
@@ -35,8 +35,8 @@ aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-s
 ## 准备触发与行为评测 Spec
 
 ```bash
-aw skill eval prepare git-toolkit git-commit --suite trigger --profile project-default --split validation --runs 1 --output /tmp/aw-eval-specs/git-commit-trigger-validation-debug --json
-aw skill eval prepare git-toolkit git-commit --suite behavior --profile project-default --case staged_only_with_unstaged_hunks --output /tmp/aw-eval-specs/git-commit-behavior-debug --json
+aw dev eval prepare git-toolkit git-commit --suite trigger --profile project-default --split validation --runs 1 --output /tmp/aw-eval-specs/git-commit-trigger-validation-debug --json
+aw dev eval prepare git-toolkit git-commit --suite behavior --profile project-default --case staged_only_with_unstaged_hunks --output /tmp/aw-eval-specs/git-commit-behavior-debug --json
 ```
 
 每个所选 suite/profile 应分别准备对应 Spec 并交给 `$run-aw-skill-evals`。

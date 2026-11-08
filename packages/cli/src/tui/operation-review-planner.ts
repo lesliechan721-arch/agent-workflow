@@ -1372,17 +1372,18 @@ export function buildOperationReviewProjection(options: {
   let equivalentCommand: string | undefined;
   if (intent.kind === 'pluginWrite') {
     const sync = intent.action === 'sync' || intent.action === 'refreshAndSync' || intent.action === 'reinstall';
-    const action = sync ? 'sync' : intent.action === 'uninstall' ? 'remove' : intent.action;
+    const action = sync ? 'sync' : intent.action === 'uninstall' || intent.action === 'cleanup' ? 'remove' : intent.action;
     const agents = intent.platform === 'both' ? ['codex', 'claude'] : [intent.platform];
     const targets = intent.action === 'cleanup' ? agents.map((agent) => ` --target ${agent}`)
       : [sync ? agents.map((agent) => ` --target ${agent}`).join('') : ''];
     equivalentCommand = targets.map((target) =>
       `aw plugin ${action} ${intent.pluginId} --${sync ? 'context' : 'scope'} ${intent.scope}${target}`
+      + (intent.action === 'cleanup' ? ' --only outputs' : '')
       + (intent.action === 'reinstall' ? ' --rebuild' : '')
       + (intent.action === 'refreshAndSync' ? ' --refresh' : '')
       + (scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : '')
       + (intent.action === 'cleanup' && intent.force === true ? ' --force' : '')
-      + (requiresConfirmation || hasPreApply ? ' --yes' : '')).join(' && ');
+      + (requiresConfirmation || hasPreApply || intent.action === 'cleanup' || intent.action === 'uninstall' ? ' --yes' : '')).join(' && ');
   }
   return {
     title: labels.title,

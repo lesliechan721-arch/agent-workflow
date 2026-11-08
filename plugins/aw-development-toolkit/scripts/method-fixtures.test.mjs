@@ -56,16 +56,16 @@ for (const selected of cases.filter(entry => entry.tags.includes('workspace_vali
   test(`public status and validate accept method fixture ${selected.id}`, t => {
     const { root, run } = fixture(t, selected);
     const workspaceRoot = path.join(root, selected.id === 'comparable_finals' ? 'project' : 'catalog');
-    const status = JSON.parse(run('aw', ['catalog', 'status', '--workspace-root', workspaceRoot, '--json']));
-    assert.equal(status.ok, true);
-    assert.equal(status.workspace.valid, true);
-    assert.equal(status.catalog.valid, true);
-    assert.equal(status.dependencyGraph.valid, true);
-    assert.equal(status.snapshot.state, 'absent');
-    assert.ok(status.plugins.length > 0);
-    for (const plugin of status.plugins) {
-      const receipt = JSON.parse(run('aw', ['plugin', 'validate', path.join(workspaceRoot, 'plugins', plugin.name), '--json']));
-      assert.equal(receipt.ok, true);
+    const status = JSON.parse(run('aw', ['dev', 'catalog', 'status', '--workspace-root', workspaceRoot, '--json']));
+    assert.equal(status.status, 'success');
+    assert.equal(status.data.workspace.valid, true);
+    assert.equal(status.data.catalog.valid, true);
+    assert.equal(status.data.dependencyGraph.valid, true);
+    assert.equal(status.data.snapshot.state, 'absent');
+    assert.ok(status.data.plugins.length > 0);
+    for (const plugin of status.data.plugins) {
+      const receipt = JSON.parse(run('aw', ['dev', 'plugin', 'validate', path.join(workspaceRoot, 'plugins', plugin.name), '--json']));
+      assert.equal(receipt.status, 'success');
     }
   });
 }
@@ -79,13 +79,13 @@ test('public remove accepts the isolated clean fixture and leaves an empty Catal
   run('git', ['init'], repo);
   run('git', ['add', '.'], repo);
   run('git', ['-c', 'user.name=AW Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture'], repo);
-  const receipt = JSON.parse(run('aw', ['plugin', 'remove', 'notes', '--workspace-root', workspaceRoot, '--yes', '--json']));
-  assert.equal(receipt.ok, true);
+  const receipt = JSON.parse(run('aw', ['dev', 'plugin', 'remove', 'notes', '--workspace-root', workspaceRoot, '--yes', '--json']));
+  assert.equal(receipt.status, 'success');
   assert.equal(existsSync(path.join(workspaceRoot, 'plugins/notes')), false);
-  const status = JSON.parse(run('aw', ['catalog', 'status', '--workspace-root', workspaceRoot, '--json']));
-  assert.equal(status.ok, true);
-  assert.deepEqual(status.plugins, []);
-  assert.deepEqual(status.dependencyGraph.order, []);
+  const status = JSON.parse(run('aw', ['dev', 'catalog', 'status', '--workspace-root', workspaceRoot, '--json']));
+  assert.equal(status.status, 'success');
+  assert.deepEqual(status.data.plugins, []);
+  assert.deepEqual(status.data.dependencyGraph.order, []);
 });
 
 test('comparison fixture has actual dirty and untracked inputs and rejects an incomplete copy', t => {
@@ -98,14 +98,14 @@ test('comparison fixture has actual dirty and untracked inputs and rejects an in
   const control = JSON.parse(readFileSync(path.join(root, 'fixture-control.json'), 'utf8'));
   const baseline = path.join(root, control.baselineWorkspace);
   cpSync(path.join(root, 'project'), baseline, { recursive: true });
-  const args = [path.join(evalRoot, 'simplify-fixtures/bin/aw.mjs'), 'review', 'prepare',
+  const args = [path.join(evalRoot, 'simplify-fixtures/bin/aw.mjs'), 'dev', 'review', 'prepare',
     path.join(baseline, control.skillRelative), '--workspace-root', baseline, '--platform', 'codex', '--scope', 'project',
     '--out', path.join(root, control.baselineOutput), '--json'];
   rmSync(path.join(baseline, control.additionalInputs[0]));
   const rejected = JSON.parse(run(process.execPath, args, root, 2));
-  assert.equal(rejected.ok, false);
+  assert.equal(rejected.status, 'failed');
   cpSync(path.join(root, 'project', control.additionalInputs[0]), path.join(baseline, control.additionalInputs[0]));
   const prepared = JSON.parse(run(process.execPath, args));
-  assert.equal(prepared.ok, true);
-  assert.equal(existsSync(prepared.sourceBindingPath), true);
+  assert.equal(prepared.status, 'success');
+  assert.equal(existsSync(prepared.data.sourceBindingPath), true);
 });

@@ -15,7 +15,7 @@ const CODEX_METADATA_POLICIES = new Set(['required', 'optional', 'ignore']);
 
 function usage() {
   return `Usage:
-  aw skill validate <skill-directory> [options]
+  aw dev skill validate <skill-directory> [options]
 
 Options:
   --frontmatter-profile <profile>

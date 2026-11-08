@@ -1,24 +1,29 @@
 #!/usr/bin/env node
 import { describeNativeToolClosure } from './utils/native-tool-review.js';
 
+import { preparePublicConfigConfirmation } from './commands/public-config-confirmation.js';
+import { createPublicCommandInterruption } from './commands/public-interruption.js';
+import { commandResult, publicExitCode, renderPublicResult, safePublicMessage, type CommandResult, type Confirmation } from './output/public-result.js';
+import { projectReceipt } from './output/receipt-projection.js';
+import { runPublicLifecycle } from './commands/public-lifecycle.js';
+import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from './commands/public-plugin-query.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { defaultPluginProcessRunner } from './utils/plugin-scripts.js';
+import type { PublicCommandInterruption } from './commands/public-interruption.js';
 import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
 import { compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARGETS, PORTABLE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 
-import { initCommand } from './commands/init.js';
-import { resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
+import { CatalogWorkspaceMissingError, resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
 import {
   addCatalogSourceCommand,
   preflightCatalogSourceMutation,
   explicitRefPolicy,
   listCatalogSources,
   removeCatalogSourceCommand,
-  setPrimaryCatalogSourceCommand,
   updateCatalogSourceCommand,
   type CatalogSourceMutationReceipt,
 } from './commands/catalog-source.js';
@@ -32,7 +37,6 @@ import {
   catalogStoreStatus,
 } from './commands/catalog-store.js';
 import {
-  formatInteractiveConsoleUnavailableMessage,
   runConsoleController,
 } from './commands/console.js';
 import {
@@ -53,17 +57,14 @@ import {
   resolveScriptTimeoutMs,
 } from './commands/options.js';
 import {
-  isCommandWarningError,
   type RebuildReceiptOverallState,
 } from './types.js';
-import { formatWarnings } from './output/reporter.js';
+import { createNoopReporter, formatWarnings } from './output/reporter.js';
 import { redactString, redactValue } from './output/redact.js';
-import {
-  buildInitReceiptJson,
-  renderInitReceipt,
-} from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
 import {
+  coercePluginConfigUpdates,
+  assertPluginConfigMutationCandidate,
   findConfigFieldEntry,
   formatPluginConfigSetRecoveryCommand,
   listNamespacedPluginConfigStores,
@@ -132,12 +133,12 @@ import {
   runPluginTestCommand,
 } from './authoring/workspace-commands.js';
 import {
+  CatalogPublicationApplyFailure,
   runCatalogPublishApplyCommand,
   runCatalogPublishPlanCommand,
 } from './commands/catalog-publish.js';
 import {
   catalogPublicationFailure,
-  CatalogPublicationInspectionError,
 } from './commands/catalog-publication-inspection.js';
 import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
 import {
@@ -159,11 +160,7 @@ import {
   inspectPluginRequirements,
 } from './commands/aw-capabilities.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
-import { readRecoveryStatus, checkRecovery } from './recovery/status.js';
-import { intentAdd, intentRemove, intentList } from './commands/intent-command.js';
 import { targetsSet, targetsList, targetsChangeExclusion } from './commands/targets-command.js';
-import { runRecovery } from './recovery/coordinator.js';
-import { runRetire } from './recovery/retirement.js';
 import type { RecoveryReceipt } from './recovery/receipt.js';
 import { normalizeAgents } from './intent/deployment-preferences.js';
 import { resolveWorkContext } from './intent/work-context.js';
@@ -180,6 +177,7 @@ export type {
   CatalogStoreStatusResult,
 } from './commands/catalog-store.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
+const receiptSinks = new WeakMap<(text: string) => void, (value: unknown) => void>();
 
 function createDefaultIo(): CliIo {
   return {
@@ -199,6 +197,7 @@ function strictValueOption(
 ): Option {
   let seen = false;
   const option = new Option(flags, description);
+  if (choices) option.choices([...choices]);
   return option.argParser((value: string) => {
     if (seen) throw new InvalidArgumentError(`${option.long} can be specified only once.`);
     if (choices && !choices.includes(value)) {
@@ -247,21 +246,6 @@ function renderReviewPreparation(
   writeLine(write, `Review preparation: ${receipt.ok ? 'complete' : 'failed'}`);
   if (receipt.sourceBindingPath) writeLine(write, `Source binding: ${receipt.sourceBindingPath}`);
   renderReviewSkills(write, receipt.skills, receipt.issues);
-}
-
-function createReviewPreparationFailure(
-  message: string,
-  code = 'invalidArguments',
-): ReviewPreparationV1 {
-  return {
-    schemaVersion: 1,
-    command: 'review:prepare',
-    ok: false,
-    target: null,
-    sourceBindingPath: null,
-    skills: [],
-    issues: [{ code, path: null, message }],
-  };
 }
 
 function writeWarnings(
@@ -313,144 +297,17 @@ function normalizeWriteRequest<T>(normalize: () => T): T {
   }
 }
 
-function writeCommandFailure(error: unknown): { code: string; message: string } {
-  const message = redactString(error instanceof Error ? error.message : String(error));
-  if (error instanceof CommanderError || error instanceof WriteCommandRequestError) {
-    return { code: 'invalidArguments', message };
-  }
-  const explicitCode = (error as { code?: unknown })?.code;
-  if (typeof explicitCode === 'string' && /^[A-Za-z][A-Za-z0-9]*$/u.test(explicitCode)) {
-    return { code: explicitCode, message };
-  }
-  const separator = message.indexOf(':');
-  const prefix = separator > 0 ? message.slice(0, separator) : '';
-  return {
-    code: /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'writeCommandFailed',
-    message,
-  };
-}
-
-function recoveryRequest(argv: string[]): { command: string; scope: Scope | null; json: boolean } | null {
-  const nested = argv[0] === 'plugin';
-  const args = nested ? argv.slice(1) : argv;
-  const family = args[0] ?? '';
-  if (nested && ['remove', 'status'].includes(family)
-    && args.some((value) => value === '--workspace-root' || value.startsWith('--workspace-root='))) return null;
-  if (!['intent', 'targets', 'sync', 'install', 'remove', 'reinstall', 'uninstall', 'cleanup', 'status', 'project'].includes(family)) return null;
-  let rawScope: string | undefined;
-  let json = false;
-  for (let index = 1; index < args.length; index++) {
-    const value = args[index]!;
-    if (value === '--') break;
-    if (value === '--scope') rawScope = args[++index];
-    else if (value.startsWith('--scope=')) rawScope = value.slice('--scope='.length);
-    else if (value === '--json' || (/^-[ajvyD]+$/u.test(value) && value.includes('j'))) json = true;
-    else if (['--target', '--context', '--script-timeout', '--log-file'].includes(value)) index++;
-  }
-  return {
-    command: ['intent', 'targets', 'project'].includes(family) ? `${family}:${args[1] ?? ''}` : family,
-    scope: rawScope === 'user' || rawScope === 'project' ? rawScope : null,
-    json,
-  };
-}
-
-function recoveryFailureReceipt(command: string, scope: Scope | null, error: unknown) {
-  const failure = writeCommandFailure(error);
-  return {
-    schemaVersion: 1, kind: 'aw-recovery', scope, command, ok: false,
-    intent: { state: 'unreadable', roots: null }, requestedRoots: [], requestedTargets: [],
-    selection: { agents: [], origin: 'none', preferences: 'unreadable' },
-    blockers: [failure], errors: [failure], targetResults: [], remainingTargets: [], recoveryActions: [],
-    declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false,
-  };
-}
-
 interface PreparsedConfigMutationJsonRequest {
   command: ConfigMutationCommand;
   plugin?: string;
-}
-
-function scanConfigMutationShortOptions(
-  token: string,
-): { json: boolean; consumesNextValue: boolean } {
-  if (!/^-[^-].*/u.test(token)) return { json: false, consumesNextValue: false };
-  let json = false;
-
-  for (let index = 1; index < token.length; index += 1) {
-    const option = token[index]!;
-    if (option === 's') {
-      return {
-        json,
-        consumesNextValue: index === token.length - 1,
-      };
-    }
-    if (option === 'j') {
-      json = true;
-      continue;
-    }
-    if (option === 'v' || option === 'D' || option === 'y') {
-      continue;
-    }
-    break;
-  }
-
-  return { json, consumesNextValue: false };
-}
-
-function jsonConfigMutationRequest(argv: string[]): PreparsedConfigMutationJsonRequest | null {
-  const args = argv[0] === 'plugin' ? argv.slice(1) : argv;
-  if (args[0] !== 'config' || !['set', 'edit', 'unset', 'reset', 'apply'].includes(args[1] ?? '')) {
-    return null;
-  }
-  const command = `config:${args[1]}` as ConfigMutationCommand;
-  let json = false;
-  let plugin: string | undefined;
-  const valueOptions = new Set(['--platform', '--context', '--target', '--value-json', '--preset', '--log-file', '--script-timeout']);
-
-  for (let index = 2; index < args.length; index += 1) {
-    const token = args[index]!;
-    if (token === '--') break;
-    if (valueOptions.has(token)) {
-      index += 1;
-      continue;
-    }
-    if (token === '--json') {
-      json = true;
-      continue;
-    }
-    const shortOptions = scanConfigMutationShortOptions(token);
-    if (shortOptions.json) json = true;
-    if (shortOptions.consumesNextValue) index += 1;
-    if (token.startsWith('-')) continue;
-    plugin ??= token;
-  }
-
-  if (!json) return null;
-  return {
-    command,
-    ...(plugin ? { plugin } : {}),
-  };
-}
-
-function jsonConfigReadRequested(argv: readonly string[]): boolean {
-  if (argv[0] !== 'plugin' || argv[1] !== 'config'
-    || !['schema', 'list', 'get'].includes(argv[2] ?? '')) return false;
-  const values = new Set(['--platform', '--context', '--target', '--script-timeout', '--log-file']);
-  for (let index = 3; index < argv.length; index++) {
-    const token = argv[index]!;
-    if (token === '--') break;
-    if (values.has(token)) { index++; continue; }
-    if (token === '--json' || /^-[jvD]+$/u.test(token) && token.includes('j')) return true;
-  }
-  return false;
 }
 
 function configMutationFailure(
   error: unknown,
   env: NodeJS.ProcessEnv,
   cwd: string,
-): { code: string; message: string; configWrite: 'notStarted' | 'failed' } {
-  const configWrite = configWriteStateForError(error);
+): { code: string; message: string; configWrite: 'notStarted' | 'failed' | 'succeeded' } {
+  const configWrite = (error as { configWrite?: unknown })?.configWrite === 'succeeded' ? 'succeeded' : configWriteStateForError(error);
   if (error instanceof CommanderError) {
     return {
       code: 'invalidArguments',
@@ -487,7 +344,7 @@ function configMutationFailure(
 function writeConfigMutationFailureReceipt(
   write: (text: string) => void,
   request: PreparsedConfigMutationJsonRequest,
-  failure: { code: string; message: string; configWrite: 'notStarted' | 'failed' },
+  failure: { code: string; message: string; configWrite: 'notStarted' | 'failed' | 'succeeded' },
 ): void {
   let plugin: string | undefined;
   try {
@@ -513,6 +370,7 @@ async function runAuthoringScript(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   io: CliIo;
+  interruption?: PublicCommandInterruption;
 }): Promise<number> {
   const scriptPath = path.join(
     resolveCliPackageRoot(),
@@ -521,23 +379,22 @@ async function runAuthoringScript(options: {
     'scripts',
     options.scriptName,
   );
-  return new Promise<number>((resolve, reject) => {
-    const child = spawn(process.execPath, [scriptPath, ...options.args], {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+  try {
+    const result = await defaultPluginProcessRunner.run({ command: process.execPath, args: [scriptPath, ...options.args], cwd: options.cwd, env: options.env }, {
+      // Authoring has no CLI timeout option. Keep the largest Node timer while
+      // using the existing process-tree cleanup contract for interruption.
+      timeoutMs: 2_147_483_647, signal: options.interruption?.signal, maxStdoutBytes: 32 * 1024 * 1024,
     });
-    child.stdout.on('data', (chunk: Buffer | string) => options.io.stdout(String(chunk)));
-    child.stderr.on('data', (chunk: Buffer | string) => options.io.stderr(String(chunk)));
-    child.once('error', reject);
-    child.once('close', (code, signal) => {
-      if (signal) {
-        reject(new Error(`Plugin authoring command terminated by signal ${signal}.`));
-        return;
-      }
-      resolve(code ?? 1);
-    });
-  });
+    options.io.stdout(result.stdout);
+    options.io.stderr(result.stderr);
+    return result.exitCode ?? 1;
+  } catch (error) {
+    if (options.interruption?.signal.aborted && error !== options.interruption.signal.reason) options.interruption.cleanupFailed = true;
+    if (options.interruption?.signal.aborted && ['init-plugin.mjs', 'add-skill.mjs', 'remove-plugin.mjs'].includes(options.scriptName)) {
+      throw Object.assign(new Error('The authoring command was interrupted after execution started.'), { code: 'operationInterrupted', authoringChanges: 'unknown' });
+    }
+    throw error;
+  }
 }
 
 function toCliDiagnosticsOptions(
@@ -778,17 +635,6 @@ function renderRecoveryReceipt(write: (text: string) => void, value: RecoveryRec
   for (const action of value.recoveryActions) writeLine(write, action);
 }
 
-function renderRecoveryStatus(write: (text: string) => void, value: Awaited<ReturnType<typeof readRecoveryStatus>>): void {
-  writeLine(write, `status [${value.scope}]: ${value.ok ? 'ok' : 'failed'}`);
-  writeLine(write, `本机工具：${value.selection.agents.join('、') || '未配置'}`);
-  writeLine(write, `全部满足：${value.allSatisfied === null ? '未知' : value.allSatisfied ? '是' : '否'}`);
-  for (const root of value.inventory ?? []) {
-    writeLine(write, `${root.pluginId}: ${root.targetResults.length ? root.targetResults.map((target) =>
-      `${target.agent}/${target.content ?? target.observation}`).join(', ') : 'localTargetsRequired'}`);
-  }
-  for (const error of value.errors) writeLine(write, `${error.code}: ${error.message}`);
-}
-
 function recoveryRuntime(
   context: CliExecutionContext,
   rawOptions: RawRecoveryOptions,
@@ -873,7 +719,7 @@ async function runActionWithContext<T>(
       Promise.resolve().then(() => context.debugLogger.flush?.()),
     ]);
     if (context.diagnostics.debug && context.debugLogger.logFile) {
-      writeLine(context.io.stderr, `调试日志：${context.debugLogger.logFile}`);
+      writeLine(context.io.stderr, `Debug log: ${context.debugLogger.logFile}`);
     }
     return result;
   } catch (error) {
@@ -911,14 +757,16 @@ async function runActionWithContext<T>(
       Promise.resolve().then(() => context.debugLogger.flush?.()),
     ]);
     if (context.diagnostics.debug && context.debugLogger.logFile) {
-      writeLine(context.io.stderr, `调试日志：${context.debugLogger.logFile}`);
+      writeLine(context.io.stderr, `Debug log: ${context.debugLogger.logFile}`);
     }
     throw error;
   }
 }
 
 function writeJsonReceipt(write: (text: string) => void, payload: unknown): void {
-  writeLine(write, JSON.stringify(payload, null, 2));
+  const sink = receiptSinks.get(write);
+  if (sink) sink(payload);
+  else writeLine(write, JSON.stringify(payload, null, 2));
 }
 
 function writeConfigApplyNotice(
@@ -1058,11 +906,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       cwd,
       env,
       io,
-      interactive: options.interactive,
+      interactive: false,
+      reporter: options.reporter ?? createNoopReporter(),
       diagnostics: toCliDiagnosticsOptions(commandName, rawOptions, options.diagnostics),
     });
 
-  const program = new Command();
+  if (io.result) receiptSinks.set(io.stdout, io.result);
+  const program = new Command().enablePositionalOptions();
   program
     .name('aw')
     .description('Agent workflow marketplace installer')
@@ -1074,11 +924,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       outputError: (text, write) => write(text),
     });
 
+  const dev = program.command('dev').description('Create, validate, build, and publish author sources');
+  const devPlugin = dev.command('plugin').description('Manage plugin source code');
   const plugin = program
     .command('plugin')
     .description('Manage plugin demand, outputs, configuration, and author sources');
 
-  registerManagedCommandCli(program, () => createActionContext('command', {}), {
+  registerManagedCommandCli(program, (rawOptions = {}) => createActionContext('command', rawOptions), {
     cliEntry: fileURLToPath(import.meta.url),
     cliVersion: resolveCliVersion(),
   }, (code) => { commandExitState.exitCode = code; });
@@ -1109,7 +961,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = result.ok ? 0 : 1;
     });
 
-  plugin
+  devPlugin
     .command('capabilities')
     .description('Show the current plugin manifest authoring surface')
     .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | pre-apply | artifacts')
@@ -1131,7 +983,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
-  plugin
+  devPlugin
     .command('requirements')
     .description('Inspect or update effective AW capabilities required by a plugin')
     .argument('<plugin-directory>', 'plugin source directory')
@@ -1157,6 +1009,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           commandExitState.exitCode = 1;
         }
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         writeJsonReceipt(io.stdout, {
           schemaVersion: 1,
           command: 'plugin:requirements',
@@ -1167,16 +1020,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
-  const skill = program
+  const skill = dev
     .command('skill')
     .description('Install, materialize, or validate Agent Skills');
 
-  const skillEval = skill
+  const skillEval = dev
     .command('eval')
     .description('Prepare or diagnose deterministic Agent Skill Eval inputs');
 
   skillEval
-    .command('doctor')
+    .command('check')
     .description('Inspect Agent Skill Eval provider readiness without model execution')
     .requiredOption('--json', 'emit one provider doctor JSON object')
     .action(async () => {
@@ -1263,6 +1116,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         writeJsonReceipt(io.stdout, receipt);
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         writeJsonReceipt(io.stdout, {
           schemaVersion: 1,
           command: 'skill:eval:prepare',
@@ -1276,7 +1130,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
-  const review = program
+  const review = dev
     .command('review')
     .description('Inspect and prepare Skill review materializations');
 
@@ -1403,7 +1257,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   skill
-    .command('materialize')
+    .command('export')
     .description('Write portable Skills to a safe output directory')
     .argument('<plugin>', 'plugin or source/plugin selector')
     .addOption(strictValueOption('--platform <target>', 'Portable platform target', PORTABLE_PLATFORM_TARGETS).makeOptionMandatory())
@@ -1468,14 +1322,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
-  plugin
-    .command('init')
+  devPlugin
+    .command('create')
     .description('Create a new deterministic plugin scaffold')
     .addHelpText('after', [
       '',
       'During development, keep the current stable target when production content changes.',
-      'Next, run `aw plugin validate`, `aw plugin test`, `aw plugin build`, and `aw catalog build`.',
-      'Publish only as an explicit later step; inspect `aw catalog publish plan --help` first.',
+      'Next, run `aw dev plugin validate`, `aw dev plugin test`, `aw dev plugin build`, and `aw dev catalog build`.',
+      'Publish only as an explicit later step; inspect `aw dev catalog publish plan --help` first.',
       '',
     ].join('\n'))
     .argument('<plugin-name>', 'lowercase hyphen-case plugin name')
@@ -1494,24 +1348,24 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--with-config-api', 'add AW config schema and helper', false)
     .option('--with-pre-apply', 'add an idempotent Node preApply environment check', false);
 
-  plugin
-    .command('add-skill')
+  skill
+    .command('create')
     .description('Add one static Skill scaffold to an existing plugin')
     .addHelpText('after', [
       '',
       'During development, keep the current stable target when production content changes.',
-      'Next, run `aw plugin validate`, `aw plugin test`, `aw plugin build`, and `aw catalog build`.',
-      'Publish only as an explicit later step; inspect `aw catalog publish plan --help` first.',
+      'Next, run `aw dev plugin validate`, `aw dev plugin test`, `aw dev plugin build`, and `aw dev catalog build`.',
+      'Publish only as an explicit later step; inspect `aw dev catalog publish plan --help` first.',
       '',
     ].join('\n'))
-    .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
+    .requiredOption('--plugin <name>', 'Plugin that owns the Skill')
     .option('--skill-name <name>', 'new static Skill name (required)')
     .option('--skill-description <text>', 'Skill goal and discovery description (required)')
     .option('--skill-short-description <text>', 'Skill UI summary (25-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)');
 
-  plugin
+  devPlugin
     .command('validate')
     .description('Validate one source plugin directory')
     .argument('<plugin-directory>', 'source plugin directory')
@@ -1521,7 +1375,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
     .option('--json', 'emit one machine-readable JSON result', false);
 
-  plugin
+  devPlugin
     .command('test')
     .description('Run deterministic Node tests declared by one source plugin')
     .argument('<plugin-directory>', 'source plugin directory')
@@ -1550,6 +1404,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           io,
         });
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'plugin:test', ok: false, errors: [{ message }] });
         writeLine(io.stderr, message);
@@ -1557,7 +1412,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
-  plugin
+  devPlugin
     .command('build')
     .description('Build and inspect one source plugin bundle')
     .argument('<plugin-directory>', 'source plugin directory')
@@ -1586,6 +1441,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           io,
         });
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'plugin:build', ok: false, errors: [{ message }] });
         writeLine(io.stderr, message);
@@ -1604,12 +1460,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--codex-metadata <policy>', 'required | optional | ignore (default: optional)')
     .option('--json', 'emit one machine-readable JSON result', false);
 
-  const catalog = program
+  const catalog = dev
     .command('catalog')
     .description('Build and manage catalogs');
 
   catalog
-    .command('init')
+    .command('create')
     .description('Initialize a local AW Catalog Workspace')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor, then Git worktree root, then current directory)')
     .option('--owner-name <name>', 'catalog owner name')
@@ -1673,6 +1529,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           io,
         });
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'catalog:version', ok: false, errors: [{ message }] });
         writeLine(io.stderr, message);
@@ -1702,6 +1559,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           io,
         });
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'catalog:build', ok: false, errors: [{ message }] });
         writeLine(io.stderr, message);
@@ -1788,6 +1646,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           writeLine(io.stdout, `Plan digest: ${result.planDigest}`);
         }
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         const failure = catalogPublicationFailure({
           error,
           env,
@@ -1846,9 +1705,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           writeLine(io.stdout, `Branch: refs/heads/${result.branch}`);
           writeLine(io.stdout, `Tag: refs/tags/${result.tag}`);
           writeLine(io.stdout, `Commit: ${result.commit}`);
-          writeLine(io.stdout, `Add it as a source: aw catalog source add <id> --git ${result.fetchUrl} --ref refs/heads/${result.branch}`);
+          writeLine(io.stdout, `Add it as a source: aw source add <id> --git ${result.fetchUrl} --ref refs/heads/${result.branch}`);
         }
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         const failure = catalogPublicationFailure({
           error,
           env,
@@ -1857,14 +1717,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             ...(rawOptions.workspaceRoot ? [path.resolve(cwd, rawOptions.workspaceRoot)] : []),
           ],
         });
-        if (rawOptions.json) writeJsonReceipt(io.stdout, failure);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { ...failure, ...(error instanceof CatalogPublicationApplyFailure ? { overallState: 'partial', ...error.outcome } : {}) });
         writeLine(io.stderr, failure.message);
         commandExitState.exitCode = 1;
       }
     });
 
-  const catalogDev = catalog
-    .command('dev')
+  const catalogDev = dev
+    .command('source')
     .description('Manage the current Catalog Workspace development source');
 
   catalogDev
@@ -1896,6 +1756,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeJsonReceipt(io.stdout, receipt);
         commandExitState.exitCode = receipt.ok ? 0 : 1;
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         const failure = catalogDevSourceError(error);
         writeJsonReceipt(io.stdout, createCatalogDevFailureReceipt({
           command: 'activate', cwd, workspaceRoot: rawOptions.workspaceRoot,
@@ -1945,6 +1806,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeJsonReceipt(io.stdout, receipt);
         commandExitState.exitCode = receipt.ok ? 0 : 1;
       } catch (error) {
+        if (error instanceof CatalogWorkspaceMissingError) throw error;
         const failure = catalogDevSourceError(error);
         writeJsonReceipt(io.stdout, createCatalogDevFailureReceipt({
           command: 'deactivate', cwd, workspaceRoot: rawOptions.workspaceRoot,
@@ -1954,7 +1816,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
-  const catalogSource = catalog
+  const catalogSource = program
     .command('source')
     .description('Manage catalog sources');
 
@@ -1983,6 +1845,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         sourceId,
         primaryChange: failure.impact?.primaryChange ?? null,
         references: failure.impact?.references ?? failure.inventory?.references ?? [],
+        impact: failure.impact ?? failure.inventory ?? null,
         errors: [{ code: failure.code ?? failure.name ?? 'catalogSourceMutationFailed', message }],
       });
     }
@@ -2023,6 +1886,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     error: unknown,
   ): void => {
     const failure = configMutationFailure(error, env, cwd);
+    const confirmation = (error as { confirmation?: Confirmation })?.confirmation;
+    if (confirmation) {
+      writeJsonReceipt(io.stdout, { command, ok: false, pluginId: plugin, configWrite: 'notStarted', confirmation, errors: [failure] });
+      commandExitState.exitCode = 3;
+      return;
+    }
     if (json) {
       writeConfigMutationFailureReceipt(io.stdout, {
         command,
@@ -2074,24 +1943,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   })();
 
   catalogSource
-    .command('list')
-    .option('-j, --json', 'print catalog sources as JSON', false)
-    .action(async (rawOptions: { json?: boolean }) => {
-      const payload = await listCatalogSources({ env });
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, payload);
-        return;
-      }
-      writeLine(io.stdout, `Primary source: ${payload.primarySourceId}`);
-      for (const source of payload.sources) {
-        writeLine(io.stdout, `${source.primary ? '*' : '-'} ${source.id} ${source.type} ${source.sourceIdentity}`);
-      }
-    });
-
-  catalogSource
     .command('sync')
     .argument('<id>')
-    .option('--check', 'fetch and validate without changing the Catalog store or Active state', false)
     .option('--replace-damaged', 'replace a damaged Active entry with the current candidate', false)
     .option('-y, --yes', 'confirm affected, unknown, or damaged Active replacement impact', false)
     .option('-j, --json', 'print the source sync result as JSON', false)
@@ -2190,15 +2043,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     }) => {
       try {
         if ((rawOptions.git === undefined) === (rawOptions.path === undefined)) {
-          throw new Error('catalog source add requires exactly one of `--git` or `--path`.');
+          throw new WriteCommandRequestError('catalog source add requires exactly one of `--git` or `--path`.');
         }
         if (rawOptions.git !== undefined && ((rawOptions.ref === undefined) === (rawOptions.defaultRef !== true))) {
-          throw new Error('Git catalog source add requires exactly one of `--ref` or `--default-ref`.');
+          throw new WriteCommandRequestError('Git catalog source add requires exactly one of `--ref` or `--default-ref`.');
         }
         if (rawOptions.path !== undefined && (
           rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
         )) {
-          throw new Error('Path catalog source add only accepts `--path`, `--primary`, `--no-auto-check`, and `--yes`.');
+          throw new WriteCommandRequestError('Path catalog source add only accepts `--path`, `--primary`, `--no-auto-check`, and `--yes`.');
         }
         const source = rawOptions.git !== undefined
           ? {
@@ -2235,7 +2088,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           requireImpactConfirmation: true,
           confirmImpact: rawOptions.yes === true,
         });
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { ...receipt, impact: preview?.references ?? null, confirmation: sourceConfirmation(id, rawOptions.yes, preview) });
         else writeLine(io.stdout, `Catalog source ${id} added.`);
         for (const diagnostic of receipt.errors) writeLine(io.stderr, `Warning: ${diagnostic.message}`);
       } catch (error) {
@@ -2269,31 +2122,32 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       defaultRef?: boolean;
       subdir?: string | false;
       autoCheck?: boolean;
+      primary?: boolean;
       yes?: boolean;
       json?: boolean;
     }) => {
       try {
         if (rawOptions.git !== undefined && rawOptions.path !== undefined) {
-          throw new Error('catalog source update cannot combine `--git` and `--path`.');
+          throw new WriteCommandRequestError('catalog source update cannot combine `--git` and `--path`.');
         }
         if (rawOptions.ref !== undefined && rawOptions.defaultRef === true) {
-          throw new Error('catalog source update cannot combine `--ref` and `--default-ref`.');
+          throw new WriteCommandRequestError('catalog source update cannot combine `--ref` and `--default-ref`.');
         }
-        const hasUpdate = rawOptions.git !== undefined
+        const hasUpdate = rawOptions.primary === true || rawOptions.git !== undefined
           || rawOptions.path !== undefined
           || rawOptions.ref !== undefined
           || rawOptions.defaultRef === true
           || rawOptions.subdir !== undefined
           || rawOptions.autoCheck !== undefined;
-        if (!hasUpdate) throw new Error('catalog source update requires at least one update option.');
+        if (!hasUpdate) throw new WriteCommandRequestError('catalog source update requires at least one update option.');
         if (rawOptions.path !== undefined && (
           rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
-        )) throw new Error('Path catalog source update only accepts `--path` and auto-check options.');
+        )) throw new WriteCommandRequestError('Path catalog source update only accepts `--path` and auto-check options.');
         const hasGitUpdate = rawOptions.git !== undefined
           || rawOptions.ref !== undefined
           || rawOptions.defaultRef === true
           || rawOptions.subdir !== undefined;
-        const update = rawOptions.path !== undefined
+        const transportUpdate = rawOptions.path !== undefined
           ? {
               type: 'path' as const,
               path: rawOptions.path,
@@ -2311,12 +2165,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 : {}),
             }
             : { autoCheck: rawOptions.autoCheck! };
+        const update = transportUpdate;
         const preview = await preflightCatalogSourceMutation({
-          request: { action: 'update', sourceId: id, update }, cwd, env,
+          request: { action: 'update', sourceId: id, update, ...(rawOptions.primary ? { primary: true as const } : {}) }, cwd, env,
         });
         const receipt = await updateCatalogSourceCommand({
           sourceId: id,
           update,
+          ...(rawOptions.primary ? { primary: true as const } : {}),
+          requireImpactConfirmation: true,
+          confirmImpact: rawOptions.yes === true,
           cliVersion: resolveCliVersion(),
           cwd,
           env,
@@ -2326,7 +2184,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           requireIdentityChangeConfirmation: true,
           confirmIdentityChange: rawOptions.yes === true,
         });
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { ...receipt, impact: preview.references, confirmation: sourceConfirmation(id, rawOptions.yes, preview) });
         else writeLine(io.stdout, `Catalog source ${id} updated.`);
         for (const diagnostic of receipt.errors) writeLine(io.stderr, `Warning: ${diagnostic.message}`);
       } catch (error) {
@@ -2341,33 +2199,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   catalogSource
-    .command('set-primary')
-    .argument('<id>')
-    .option('-y, --yes', 'confirm affected or unknown primary source references', false)
-    .option('-j, --json', 'print mutation receipt as JSON', false)
-    .action(async (id: string, rawOptions: { yes?: boolean; json?: boolean }) => {
-      try {
-        const receipt = await setPrimaryCatalogSourceCommand({
-          sourceId: id,
-          cwd,
-          env,
-          requireImpactConfirmation: true,
-          confirmImpact: rawOptions.yes === true,
-        });
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
-        else writeLine(io.stdout, `Primary catalog source set to ${id}.`);
-      } catch (error) {
-        await writeCatalogSourceFailure('catalog:source:set-primary', id, rawOptions.json === true, error);
-      }
-    });
-
-  catalogSource
     .command('remove')
     .argument('<id>')
     .option('-y, --yes', 'confirm affected or unknown source references', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
     .action(async (id: string, rawOptions: { yes?: boolean; json?: boolean }) => {
       try {
+        const preview = await preflightCatalogSourceMutation({ request: { action: 'remove', sourceId: id }, cwd, env });
         const receipt = await removeCatalogSourceCommand({
           sourceId: id,
           cwd,
@@ -2375,15 +2213,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           requireImpactConfirmation: true,
           confirmImpact: rawOptions.yes === true,
         });
-        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { ...receipt, impact: preview.references, confirmation: sourceConfirmation(id, rawOptions.yes, preview) });
         else writeLine(io.stdout, `Catalog source ${id} removed.`);
       } catch (error) {
         await writeCatalogSourceFailure('catalog:source:remove', id, rawOptions.json === true, error);
       }
     });
 
-  const catalogStore = catalog
-    .command('store')
+  const catalogStore = program
+    .command('cache')
     .description('Inspect or prune the immutable Catalog store');
 
   catalogStore
@@ -2440,7 +2278,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           writeJsonReceipt(io.stdout, result);
         } else if (dryRun) {
           writeLine(io.stdout, `Dry run: ${result.entries.filter((entry) => entry.status === 'reclaimable').length} item(s) are reclaimable.`);
-          writeLine(io.stdout, 'Run `aw catalog store prune --yes` to delete them.');
+          writeLine(io.stdout, 'Run `aw cache prune --yes` to delete them.');
           if (result.errors.length > 0) writeLine(io.stderr, `${result.errors.length} item(s) could not be fully inspected and were retained.`);
         } else {
           writeLine(io.stdout, `Deleted ${result.deleted.length} Catalog store item(s) (${result.deletedBytes} bytes).`);
@@ -2469,47 +2307,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
-  program
-    .command('init')
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (rawOptions: {
-      json?: boolean;
-    } & RawDiagnosticsOptions) => {
-      const context = createActionContext('init', rawOptions);
-      const result = await runActionWithContext(context, () =>
-        initCommand({
-          env: context.env,
-        }),
-      );
-      if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildInitReceiptJson(result));
-      } else {
-        for (const line of renderInitReceipt(result)) {
-          writeLine(io.stdout, line);
-        }
-      }
-      for (const source of result.sources) {
-        if (!source.ok && source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
-      }
-      commandExitState.exitCode = result.ok ? 0 : 1;
-    });
-
   const recoveryCommand = (command: Command): Command => command
     .option('-j, --json', 'print one recovery receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file');
-  const scopedCommand = (command: Command): Command => recoveryCommand(command)
-    .addOption(strictValueOption('--scope <scope>', 'requirement or physical scope', ['user', 'project']).makeOptionMandatory());
   const contextualCommand = (command: Command): Command => recoveryCommand(command)
     .addOption(strictValueOption('--context <context>', 'user only, or user and current project', ['user', 'project']));
   const recoveryScope = (rawOptions: RawRecoveryOptions): Scope =>
     normalizeWriteRequest(() => parseScopeValue(rawOptions.scope));
-  const recoveryTargets = (rawOptions: RawRecoveryOptions) => rawOptions.target === undefined
-    ? undefined : normalizeWriteRequest(() => normalizeAgents(typeof rawOptions.target === 'string' ? [rawOptions.target] : rawOptions.target!));
   const recoveryContext = (rawOptions: RawRecoveryOptions): Scope | undefined => rawOptions.context === undefined
     ? undefined : normalizeWriteRequest(() => parseContextValue(rawOptions.context));
   const runRecoveryAction = async (
@@ -2535,33 +2341,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     return work;
   };
 
-  const intent = plugin.command('intent').description('Manage user or project plugin requirements');
-  scopedCommand(intent.command('add').argument('<plugins...>'))
-    .action(async (plugins: string[], rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('intent:add', rawOptions, (context) =>
-        intentAdd({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env, selectors: plugins })));
-  scopedCommand(intent.command('remove').argument('<plugins...>'))
-    .action(async (plugins: string[], rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('intent:remove', rawOptions, (context) =>
-        intentRemove({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env, selectors: plugins })));
-  scopedCommand(intent.command('list'))
-    .action(async (rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('intent:list', rawOptions, (context) =>
-        intentList({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env })));
-  scopedCommand(intent.command('retire').argument('<plugin>'))
-    .description('Retire a plugin proven absent from its healthy Catalog')
-    .option('--target <target>', 'limit output changes to a platform target', collectUniqueOption)
-    .option('--delete-config', 'also delete saved user plugin configuration', false)
-    .option('-y, --yes', 'confirm the reviewed retirement changes', false)
-    .action(async (selector: string, rawOptions: RawRecoveryOptions) =>
-      runRecoveryAction('intent:retire', rawOptions, (context) =>
-        runRetire({ scope: recoveryScope(rawOptions), cwd: context.cwd, env: context.env, selector,
-          cliVersion: resolveCliVersion(), targets: recoveryTargets(rawOptions),
-          deleteConfig: rawOptions.deleteConfig, yes: rawOptions.yes,
-          interactive: isWizardAvailable(context, rawOptions), prompt: context.prompt,
-        }, recoveryRuntime(context, rawOptions, true))));
-
-  const targets = plugin.command('targets').description('Manage the local platform policy');
+  const targets = program.command('target').description('Manage the local platform policy');
   contextualCommand(targets.command('set').argument('[targets...]'))
     .option('--none', 'save an empty target set', false)
     .option('--apply', 'apply the saved target policy in this work context', false)
@@ -2597,49 +2377,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       });
   }
 
-  for (const command of ['sync', 'install', 'remove', 'cleanup'] as const) {
-    const entry = command === 'cleanup'
-      ? scopedCommand(plugin.command(command).argument('[plugins...]'))
-      : contextualCommand(plugin.command(command).argument(command === 'sync' ? '[plugins...]' : '<plugins...>'));
-    entry.option('-y, --yes', 'authorize reviewed scripts or output changes', false);
-    if (command === 'install' || command === 'remove') entry
-      .addOption(strictValueOption('--scope <scope>', 'requirement document to edit', ['user', 'project']));
-    if (command === 'remove') entry.option('--workspace-root <path>', 'delete plugin source from this explicit Catalog Workspace');
-    if (command === 'sync') entry
-      .option('--target <target>', 'limit execution to a canonical platform target', collectUniqueOption)
-      .option('--rebuild', 'rebuild selected desired outputs', false)
-      .option('--check', 'observe without preparing or writing', false)
-      .option('--refresh', 'refresh required Catalog sources before review', false);
-    if (command === 'cleanup') entry
-      .addOption(strictValueOption('--target <target>', 'physical platform target to clean', PLATFORM_TARGETS).makeOptionMandatory())
-      .option('--force', 'clean provably owned output despite damaged weak state', false);
-    if (command === 'install' || command === 'sync') entry
-      .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds');
-    entry.action(async (plugins: string[], rawOptions: RawRecoveryOptions) => {
-      if (rawOptions.check && (rawOptions.refresh || rawOptions.rebuild)) {
-        throw new WriteCommandRequestError('--check cannot be combined with --refresh or --rebuild.');
-      }
-      await runRecoveryAction(command, rawOptions, async (context) => {
-        if (command !== 'cleanup') await showWorkContext(context, rawOptions);
-        const targetValues = typeof rawOptions.target === 'string' ? [rawOptions.target] : rawOptions.target;
-        const options = {
-          ...(rawOptions.scope === undefined ? {} : { scope: recoveryScope(rawOptions) }),
-          context: recoveryContext(rawOptions), cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
-          targets: targetValues === undefined ? undefined : normalizeWriteRequest(() => normalizeAgents(targetValues)),
-          all: command === 'sync' && plugins.length === 0,
-          yes: rawOptions.yes, force: rawOptions.force, refresh: rawOptions.refresh,
-          scriptTimeoutMs: normalizeWriteRequest(() => resolveScriptTimeoutMs(rawOptions)),
-          interactive: isWizardAvailable(context, rawOptions), prompt: context.prompt,
-        };
-        const backendCommand = command === 'remove' ? 'uninstall'
-          : command === 'sync' && rawOptions.rebuild ? 'reinstall' : command;
-        const result = rawOptions.check ? await checkRecovery(plugins, options)
-          : await runRecovery(backendCommand, plugins, options, recoveryRuntime(context, rawOptions, true));
-        return { ...result, command };
-      });
-    });
-  }
-
   const config = plugin.command('config').description('Manage user common and platform configuration');
   const configCommand = (command: Command): Command => command
     .addOption(strictValueOption('--platform <target>', 'configuration platform; omitted means common', PLATFORM_TARGETS))
@@ -2664,7 +2401,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     ? undefined : normalizeWriteRequest(() => parsePlatformTargetValue(rawOptions.platform));
 
   for (const command of ['schema', 'list', 'get'] as const) {
-    const entry = configCommand(config.command(command).argument('<plugin>'));
+    const entry = configCommand((command === 'list' ? new Command(command) : config.command(command)).argument('<plugin>'));
     if (command === 'get') entry.argument('[key]');
     entry.action(async (...args: unknown[]) => {
       const selector = args[0] as string;
@@ -2675,22 +2412,33 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const resolved = await runActionWithContext(context, () => resolveMultiSourceConfigRead({
         selector, key, rawOptions: { ...rawOptions, context: work.context }, context,
       }));
-      if (rawOptions.json) writeJsonReceipt(io.stdout, {
-        ok: true, configSchemaVersion: 5, command: `config:${command}`,
-        plugin: resolved.pluginName, pluginName: resolved.pluginName, pluginId: resolved.pluginId,
-        sourceId: resolved.sourceId, sourceIdentity: resolved.sourceIdentity,
-        context: work, platform: configPlatform(rawOptions) ?? 'common',
-        ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
-        fields: command === 'schema' ? resolved.result.fieldDefinitions ?? {} : resolved.result.fields,
-        ...(key === undefined ? {} : { key }),
-      });
+      if (rawOptions.json) {
+        const result = projectReceipt(`plugin.config.${command}`, {
+          ok: true, configSchemaVersion: 5, command: `config:${command}`,
+          plugin: resolved.pluginName, pluginName: resolved.pluginName, pluginId: resolved.pluginId,
+          sourceId: resolved.sourceId, sourceIdentity: resolved.sourceIdentity,
+          context: work, platform: configPlatform(rawOptions) ?? 'common',
+          ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
+          fields: command === 'schema' ? resolved.result.fieldDefinitions ?? {} : resolved.result.fields,
+          ...(key === undefined ? {} : { key }),
+        });
+        if (command === 'get') for (const field of resolved.result.fields) {
+          const definition = resolved.result.fieldDefinitions?.[field.key];
+          if (field.kind !== 'manifest' || field.valueState !== 'invalid' || !definition?.sensitive) continue;
+          result.nextActions.push({ kind: 'command',
+            argv: ['aw', 'plugin', 'config', 'set', resolved.pluginId, field.key,
+              '--context', work.context, ...(resolved.result.platform ? ['--platform', resolved.result.platform] : []), '--value-stdin'],
+            reason: 'Replace the invalid sensitive configuration value through stdin.', requiresConfirmation: false });
+        }
+        writeJsonReceipt(io.stdout, result);
+      }
       else if (command === 'schema') writeJsonReceipt(io.stdout, resolved.result.fieldDefinitions ?? {});
       else writeConfigReadHuman(io.stdout, resolved.result, resolved.pluginId);
     });
   }
 
   for (const command of ['set', 'edit', 'unset'] as const) {
-    const entry = configMutation(config.command(command).argument('<plugin>'));
+    const entry = configMutation((command === 'edit' ? new Command(command) : config.command(command)).argument('<plugin>'));
     if (command !== 'edit') entry.argument('<field>');
     if (command === 'set') entry
       .option('--value-json <json>', 'set an exact JSON value')
@@ -2738,7 +2486,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             if (command !== 'unset') {
               const sensitive = field!.sensitive === true;
               if (sensitive && (rawOptions.valueJson !== undefined || rawOptions.preset !== undefined)) {
-                throw new Error('sensitiveConfigInputUnsupported: Sensitive config requires --value-stdin.');
+                throw Object.assign(new WriteCommandRequestError('Sensitive config requires --value-stdin.'), { code: 'sensitiveConfigInputUnsupported' });
               }
               if (rawOptions.valueStdin) inputValue = await readUtf8Stdin(context.stdin);
               else if (sensitive) {
@@ -2764,6 +2512,26 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 inputValue = structuredClone(preset.value);
               }
             }
+            if (command !== 'unset') {
+              try { inputValue = (await coercePluginConfigUpdates({ schema: fields, updates: { [key!]: inputValue }, cwd: context.cwd }))[key!]; }
+              catch { throw new WriteCommandRequestError(`Invalid value for configuration field "${key}".`); }
+            }
+            try {
+              await assertPluginConfigMutationCandidate({ sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
+                logicalIdentity: source.logicalIdentity, pluginName: plugin.manifest.name, manifest: plugin.manifest,
+                scope: work.context, platform, cwd: context.cwd, env: context.env,
+                updates: command === 'unset' ? {} : { [key!]: inputValue as import('./utils/plugin-config.js').PluginConfigValue }, removeKeys: command === 'unset' ? [key!] : [] });
+            } catch (error) {
+              if ((error as { code?: string })?.code === 'configReferenceInvalid') throw new WriteCommandRequestError(`Invalid value or reference for configuration field "${key}".`);
+              throw error;
+            }
+            const mutation = command === 'unset' ? { kind: 'patch' as const, removeKeys: [key!] } : { kind: 'patch' as const, updates: { [key!]: inputValue } };
+            const confirmation = rawOptions.apply ? await preparePublicConfigConfirmation({ plugin, scope: work.context,
+              context: work.context, platform, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
+              nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, mutation,
+              rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
+                expectedGenerationSetDigest: catalogOperationContext.generationSetDigest } })
+              : { required: false, provided: rawOptions.yes === true, effects: [] };
             const writeReceipt = await applyPluginConfigWrite({ plugin, pluginName: plugin.manifest.name,
               scope: work.context, context: work.context, platform, cliVersion: resolveCliVersion(),
               cwd: context.cwd, env: context.env, nativeCliRunner: context.nativeCliRunner,
@@ -2774,7 +2542,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               apply: rawOptions.apply === true, sharedNativeApplyConfirmed: rawOptions.yes === true,
               preApplyConfirmed: rawOptions.yes === true });
             return buildConfigMutationReceipt(`config:${command}`, {
-              ...writeReceipt, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
+              ...writeReceipt, confirmation, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
               pluginName: plugin.manifest.name, pluginId, sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
               context: work, platform: platform ?? 'common',
               ...(command === 'unset' ? { removedKey: key, existed: true } : {}),
@@ -2809,11 +2577,18 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         const located = await resolveStoredConfigResetIdentity({ selector, context, scope: 'user' });
         const resetStore = async (plugin: ResolvedCatalogPlugin['plugin'] | null, pluginError: Error | null) =>
-          resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
-            context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env,
-            nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
-            rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
-            sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
+          withAwHomeMutationLock({ env: context.env, action: async (awHomeMutationToken) => {
+            const confirmation = plugin && rawOptions.apply ? await preparePublicConfigConfirmation({ plugin,
+              scope: work.context, context: work.context, platform, cwd: context.cwd, env: context.env,
+              cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner, awHomeMutationToken,
+              yes: rawOptions.yes, mutation: { kind: 'reset' }, rebuildRuntime: context }) : null;
+            const receipt = await resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
+              context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
+              nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
+              rebuildRuntime: { ...context, awHomeMutationToken, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+              sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
+            return { ...receipt, confirmation };
+          } });
         let started = false;
         const resetReceipt = await runActionWithContext(context, async () => {
           try { return await withResolvedCatalogPlugin({ selector: located.pluginId, cliVersion: resolveCliVersion(), env: context.env,
@@ -2844,14 +2619,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const work = await configContext(context, rawOptions, true);
       const targets = rawOptions.target?.map((target) => normalizeWriteRequest(() => parsePlatformTargetValue(target)));
       const receipt = await runActionWithContext(context, () => withResolvedConfigMutationPlugin(context, selector,
-        async ({ plugin, pluginId, source }, awHomeMutationToken) => ({
-          ...await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
+        async ({ plugin, pluginId, source }, awHomeMutationToken) => {
+          const confirmation = await preparePublicConfigConfirmation({ plugin, scope: work.context, context: work.context, targets, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(), nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, rebuildRuntime: context });
+          return { confirmation, ...await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
             cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
             nativeCliRunner: context.nativeCliRunner, sharedNativeApplyConfirmed: rawOptions.yes === true,
             preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
           command: 'config:apply', plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId,
           context: work,
-        }), true));
+        }; }, true));
       const result = buildConfigMutationReceipt('config:apply', { ...receipt,
         ok: receipt.overallState === 'succeeded' });
       if (rawOptions.json) writeJsonReceipt(io.stdout, result);
@@ -2862,87 +2638,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = result.ok ? 0 : 1;
     });
 
-  contextualCommand(plugin.command('status'))
-    .description('Observe user and current project demand and output state')
-    .action(async (rawOptions: RawRecoveryOptions) => {
-      const context = createActionContext('status', rawOptions);
-      await showWorkContext(context, rawOptions);
-      const result = await runActionWithContext(context, () => readRecoveryStatus({
-        context: recoveryContext(rawOptions), cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
-        nativeCliRunner: context.nativeCliRunner,
-      }));
-      if (rawOptions.json) writeJsonReceipt(io.stdout, result);
-      else renderRecoveryStatus(io.stdout, result);
-      commandExitState.exitCode = result.errors.length ? 1 : 0;
-    });
-
+  configurePublicCommands(program, options, io, commandExitState);
   Object.assign(program, { __awCommandExitState: commandExitState });
   return program;
 }
 
-function handleCliError(
-  error: unknown,
-  writeError: (text: string) => void,
-): number {
-  if (error instanceof CommanderError) {
-    return error.exitCode;
-  }
-
-  if (isCommandWarningError(error)) {
-    writeWarnings(writeError, error.warnings);
-    writeLine(writeError, error.message);
-    return error.exitCode;
-  }
-
-  writeLine(writeError, error instanceof Error ? error.message : String(error));
-  return 1;
-}
-
-export async function runCli(
-  argv: string[],
-  options: CliRuntimeOptions = {},
-): Promise<number> {
-  const io = {
-    ...createDefaultIo(),
-    ...options.io,
-  };
-  if (argv[0] === 'command') {
-    return runManagedCommandCli(argv.slice(1), createCliExecutionContext({ ...options, io }), {
-      cliEntry: fileURLToPath(import.meta.url),
-      cliVersion: resolveCliVersion(),
-    });
-  }
-  const reviewCommand = argv[0] === 'review' && ['inspect', 'prepare'].includes(argv[1] ?? '')
-    ? argv[1] as 'inspect' | 'prepare'
-    : null;
-  const jsonReviewCommand = reviewCommand !== null && argv.includes('--json');
-  const jsonMaterialize = argv[0] === 'skill' && argv[1] === 'materialize'
-    && (argv.includes('--json') || argv.includes('-j'));
-  const jsonConfigCommand = jsonConfigReadRequested(argv);
+/** Invoke the packaged author tool. Its JSON remains an internal child-process protocol. */
+async function runAuthoringCliAdapter(argv: string[], options: CliRuntimeOptions): Promise<number> {
+  const io = { ...createDefaultIo(), ...options.io };
+  const authoringPluginCommand = argv[0] === 'plugin';
   const explicitWorkspace = argv.some((token) => token === '--workspace-root' || token.startsWith('--workspace-root='));
-  const authoringPluginCommand = argv[0] === 'plugin'
-    && (['build', 'test', 'validate', 'init', 'add-skill'].includes(argv[1] ?? '')
-      || ['remove', 'status'].includes(argv[1] ?? '') && explicitWorkspace);
-  const jsonAuthoringCommand = argv.includes('--json')
-    && (
-      (argv[0] === 'catalog' && ['init', 'context', 'version', 'build', 'validate', 'status', 'publish'].includes(argv[1] ?? ''))
-      || authoringPluginCommand
-      || reviewCommand !== null
-    )
-    ? `${argv[0]}:${argv[1]}`
-    : null;
-  const jsonCatalogDevCommand = argv.includes('--json')
-    && argv[0] === 'catalog'
-    && argv[1] === 'dev'
-    && ['activate', 'status', 'deactivate'].includes(argv[2] ?? '')
-    ? argv[2] as 'activate' | 'status' | 'deactivate'
-    : null;
-  const recovery = recoveryRequest(argv);
-  const jsonRecoveryRequest = recovery?.json ? recovery : null;
-  const jsonConfigMutation = jsonConfigMutationRequest(argv);
-
-  try {
-    const authoringScriptByCommand: Record<string, string> = {
+  const authoringScriptByCommand: Record<string, string> = {
       init: 'init-plugin.mjs',
       'add-skill': 'add-skill.mjs',
       remove: 'remove-plugin.mjs',
@@ -3003,278 +2709,326 @@ export async function runCli(
         cwd: options.cwd ?? process.cwd(),
         env: authoringEnv,
         io,
+        interruption: options.interruption,
       });
     }
-    if (!jsonConfigMutation
-      && argv.some((token) => token === '--subdir' || token.startsWith('--subdir='))
-      && argv.includes('--no-subdir')) {
-      const message = 'option --subdir cannot be used with option --no-subdir';
-      if (argv.includes('--json') && argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update') {
-        writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 6,
-          command: 'catalog:source:update',
-          ok: false,
-          changed: false,
-          sourceId: argv[3] ?? '',
-          primaryChange: null,
-          references: [],
-          errors: [{ code: 'catalogSourceOptionConflict', message }],
-        });
-      }
-      writeLine(io.stderr, `error: ${message}`);
-      return 1;
-    }
-    if (argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update'
-      && argv.includes('--auto-check') && argv.includes('--no-auto-check')) {
-      const message = 'option --auto-check cannot be used with option --no-auto-check';
-      if (argv.includes('--json') || argv.includes('-j')) {
-        writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 6,
-          command: 'catalog:source:update',
-          ok: false,
-          changed: false,
-          sourceId: argv[3] ?? '',
-          primaryChange: null,
-          references: [],
-          errors: [{ code: 'catalogSourceOptionConflict', message }],
-        });
-      }
-      writeLine(io.stderr, `error: ${message}`);
-      return 1;
-    }
-    const bareConsoleOptions = parseBareConsoleOptions(argv);
-    if (bareConsoleOptions) {
-      const context = createCliExecutionContext({
-        ...options,
-        io,
-        env: options.env ?? process.env,
-        diagnostics: {
-          ...toCliDiagnosticsOptions('console', bareConsoleOptions, options.diagnostics),
-          metadata: {
-            ...options.diagnostics?.metadata,
-            argCount: argv.length,
-          },
-        },
-      });
-      if (!context.interactive) {
-        writeLine(io.stderr, formatInteractiveConsoleUnavailableMessage(context));
-        return 1;
-      }
-      return await runActionWithContext(context, () => runConsoleController(context));
-    }
-    let catalogPublicationActionStarted = false;
-    let configMutationActionStarted = false;
-    const programIo = jsonCatalogDevCommand || jsonRecoveryRequest || jsonReviewCommand || jsonMaterialize || jsonConfigCommand
-      ? { ...io, stderr: () => undefined }
-      : jsonConfigMutation
-        ? {
-            ...io,
-            stderr: (text: string) => {
-              if (configMutationActionStarted) io.stderr(text);
-            },
-          }
-      : jsonAuthoringCommand === 'catalog:publish'
-        ? {
-            ...io,
-            stderr: (text: string) => {
-              if (catalogPublicationActionStarted) io.stderr(text);
-            },
-          }
-        : io;
-    const program = buildProgram({
-      ...options,
-      io: programIo,
-      diagnostics: {
-        ...options.diagnostics,
-        metadata: {
-          ...options.diagnostics?.metadata,
-          argCount: argv.length,
-        },
-      },
+  throw new Error('No authoring script is registered for this operation.');
+}
+
+function sourceConfirmation(sourceId: string, yes: boolean | undefined, preview?: Awaited<ReturnType<typeof preflightCatalogSourceMutation>>): Confirmation {
+  const required = preview !== undefined && (preview.identityChanged || !preview.references.inventoryComplete || preview.references.references.length > 0);
+  return { required, provided: yes === true, effects: required ? [{ code: 'changeSource', message: 'Change the source used by the affected or unobserved plugin references.', subject: { sourceId }, impact: preview?.references.inventoryComplete ? 'shared' : 'unknown' }] : [] };
+}
+
+function commandId(command: Command): string {
+  const names: string[] = [];
+  for (let current: Command | null = command; current?.parent; current = current.parent) names.unshift(current.name());
+  return names.join('.');
+}
+
+function configurePublicCommands(program: Command, options: CliRuntimeOptions, io: CliIo, exit: { exitCode: number }): void {
+  const find = (parent: Command, name: string): Command => {
+    const result = parent.commands.find((entry) => entry.name() === name);
+    if (!result) throw new Error(`Missing registered command: ${name}`);
+    return result;
+  };
+  const plugin = find(program, 'plugin');
+  const dev = find(program, 'dev');
+  const devPlugin = find(dev, 'plugin');
+  const catalog = find(dev, 'catalog');
+  const source = find(program, 'source');
+  const sourceUpdate = find(source, 'update');
+  sourceUpdate.option('--primary', 'Make this source primary');
+  const sourceStatus = find(source, 'status');
+  sourceStatus.option('--remote', 'Check remote candidates without changing stored state');
+  sourceStatus.action(async (id: string | undefined, raw: { remote?: boolean }) => {
+    const env = options.env ?? process.env;
+    const [observed, configured] = await Promise.all([catalogSourceStatusCommand({ sourceId: id, env }), listCatalogSources({ env })]);
+    const result = { ...observed, primarySourceId: configured.primarySourceId, sources: observed.sources.map((source) => ({ ...source, configuration: configured.sources.find((entry) => entry.id === source.sourceId) ?? null })) };
+    if (!raw.remote) { io.result?.(result); return; }
+    const remote = await Promise.all(result.sources.map(async (source) => {
+      try { const probe = await syncCatalogSourceCommand({ sourceId: source.sourceId, cliVersion: resolveCliVersion(), cwd: options.cwd, check: true, env }); return { sourceId: source.sourceId, checked: true, candidate: probe.resolution, outcome: probe.outcome }; }
+      catch (error) { const safe = sanitizeCatalogSourceError(error, env); return { sourceId: source.sourceId, checked: false, error: { code: catalogGenerationErrorCode(error), message: safe.message } }; }
+    }));
+    const failures = remote.filter((entry) => !entry.checked);
+    const projected = projectReceipt('source.status', { ...result, remote, complete: failures.length === 0 });
+    projected.diagnostics.push(...failures.map((entry) => ({ code: entry.error!.code, severity: 'error' as const, message: safePublicMessage(entry.error!.message), subject: { sourceId: entry.sourceId } })));
+    io.result?.(projected);
+  });
+
+  const context = (name: string, raw: RawDiagnosticsOptions = {}) => createCliExecutionContext({ ...options, io, interactive: false, reporter: options.reporter ?? createNoopReporter(), diagnostics: toCliDiagnosticsOptions(name, raw, options.diagnostics) });
+  for (const name of ['install', 'remove', 'sync'] as const) {
+    const cmd = plugin.command(name).argument(name === 'sync' ? '[plugins...]' : '<plugins...>');
+    if (name !== 'sync') cmd.addOption(strictValueOption('--scope <scope>', 'Requirement or physical scope', ['user', 'project']).makeOptionMandatory());
+    cmd.addOption(strictValueOption('--context <context>', 'User or current project context', ['user', 'project']))
+      .option('--target <target>', 'Select an execution target', collectUniqueOption)
+      .option('-y, --yes', 'Confirm the listed effects');
+    if (name !== 'sync') cmd.addOption(strictValueOption('--only <mode>', 'Limit the effects', name === 'install' ? ['requirements'] : ['requirements', 'outputs']));
+    if (name === 'remove') cmd.option('--delete-config', 'Delete all local plugin configuration').option('--force', 'Recover provably owned damaged output');
+    if (name !== 'remove') cmd.option('--script-timeout <ms>', 'Plugin script timeout');
+    if (name === 'sync') cmd.option('--rebuild', 'Rebuild selected owned output').option('--refresh', 'Refresh required Catalog sources');
+    cmd.action(async (plugins: string[], raw: Record<string, unknown>) => {
+      io.result?.(await runPublicLifecycle(name, plugins, { ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context(`plugin.${name}`, raw)));
     });
-    if (jsonAuthoringCommand === 'catalog:publish') {
-      program.hook('preAction', () => {
-        catalogPublicationActionStarted = true;
-      });
-    }
-    if (jsonConfigMutation) {
-      program.hook('preAction', () => {
-        configMutationActionStarted = true;
-      });
-    }
-    await program.parseAsync(['node', 'aw', ...argv]);
-    return (program as Command & {
-      __awCommandExitState?: { exitCode: number };
-    }).__awCommandExitState?.exitCode ?? 0;
-  } catch (error) {
-    if (jsonMaterialize && error instanceof CommanderError) {
-      if (error.exitCode === 0) return 0;
-      writeJsonReceipt(io.stdout, {
-        receiptSchemaVersion: 5, command: 'skill:materialize', ok: false,
-        selectedSkills: [], dependencies: [], configDigest: null, materializationDigest: null,
-        outputDigest: null, errors: [{ code: 'invalidArguments', message: error.message }],
-      });
-      return 2;
-    }
-    if (reviewCommand && error instanceof CommanderError) {
-      if (error.exitCode === 0) return 0;
-      if (jsonReviewCommand) {
-        const receipt = reviewCommand === 'inspect'
-          ? createReviewInspectionFailure(
-              new Error(error.message),
-              'invalidArguments',
-            )
-          : createReviewPreparationFailure(error.message);
-        writeJsonReceipt(io.stdout, receipt);
-      }
-      return 2;
-    }
-    if (jsonCatalogDevCommand) {
-      const workspaceRootIndex = argv.findIndex((token) => token === '--workspace-root');
-      const workspaceRootOption = argv.find((token) => token.startsWith('--workspace-root='));
-      const workspaceRoot = workspaceRootOption?.slice('--workspace-root='.length)
-        ?? (workspaceRootIndex >= 0 ? argv[workspaceRootIndex + 1] : undefined);
-      const sourceIdIndex = argv.findIndex((token) => token === '--source-id');
-      const sourceIdOption = argv.find((token) => token.startsWith('--source-id='));
-      const sourceId = sourceIdOption?.slice('--source-id='.length)
-        ?? (sourceIdIndex >= 0 ? argv[sourceIdIndex + 1] : undefined);
-      const failure = error instanceof CommanderError
-        ? { code: 'invalidArguments', message: error.message }
-        : catalogDevSourceError(error);
-      writeJsonReceipt(io.stdout, createCatalogDevFailureReceipt({
-        command: jsonCatalogDevCommand,
-        cwd: options.cwd ?? process.cwd(),
-        workspaceRoot,
-        sourceId,
-        ...failure,
-      }));
-      return 1;
-    }
-    if (jsonConfigCommand && !jsonConfigMutation) {
-      if (error instanceof CommanderError && error.exitCode === 0) return 0;
-      const failure = configMutationFailure(error, options.env ?? process.env, options.cwd ?? process.cwd());
-      writeJsonReceipt(io.stdout, { ok: false, command: `config:${argv[2] ?? ''}`, errors: [failure] });
-      return failure.code === 'invalidArguments' ? 2 : 1;
-    }
-    if (recovery) {
-      if (error instanceof CommanderError && error.exitCode === 0) return 0;
-      const failure = writeCommandFailure(error);
-      if (argv[0] === 'project' || argv.some((value) => value === '-p' || value === '--platform' || value.startsWith('--platform='))) {
-        failure.message += '\n使用 aw plugin intent、aw plugin targets 或 aw plugin install/remove/sync/cleanup/status。安装归属使用 --scope；工作上下文使用 --context。';
-      }
-      if (jsonRecoveryRequest) {
-        if (recovery.command === 'status') writeJsonReceipt(io.stdout, {
-          schemaVersion: 1, kind: 'aw-recovery-status', scope: recovery.scope, ok: false,
-          intent: { state: 'unreadable', roots: null },
-          selection: { agents: [], origin: 'none', preferences: 'unreadable' },
-          inventory: null, extraObserved: [], coverage: null, counts: null, allSatisfied: null,
-          errors: [failure],
-        });
-        else writeJsonReceipt(io.stdout, { ...recoveryFailureReceipt(recovery.command, recovery.scope, error),
-          blockers: [failure], errors: [failure] });
-      } else writeLine(io.stderr, failure.message);
-      return failure.code === 'invalidArguments' ? 2 : 1;
-    }
-    if (jsonConfigMutation) {
-      if (error instanceof CommanderError && error.exitCode === 0) return 0;
-      const failure = configMutationFailure(
-        error,
-        options.env ?? process.env,
-        options.cwd ?? process.cwd(),
-      );
-      writeConfigMutationFailureReceipt(
-        io.stdout,
-        error instanceof CommanderError
-          ? { command: jsonConfigMutation.command }
-          : jsonConfigMutation,
-        failure,
-      );
-      writeLine(io.stderr, failure.message);
-      return failure.code === 'invalidArguments' ? 2 : 1;
-    }
-    if ((argv[0] === 'plugin' && argv[1] === 'config'
-      || argv[0] === 'skill' && argv[1] === 'materialize')
-      && (error instanceof CommanderError || error instanceof WriteCommandRequestError)) {
-      if (error instanceof CommanderError) return error.exitCode === 0 ? 0 : 2;
-      writeLine(io.stderr, error.message);
-      return 2;
-    }
-    if (jsonAuthoringCommand === 'catalog:publish' && error instanceof CommanderError) {
-      const failure = catalogPublicationFailure({
-        error: new CatalogPublicationInspectionError('invalidArguments', error.message),
-        env: options.env,
-        sensitiveRoots: [options.cwd ?? process.cwd()],
-      });
-      writeJsonReceipt(io.stdout, failure);
-      writeLine(io.stderr, failure.message);
-      return 1;
-    }
-    if (jsonAuthoringCommand && !(error instanceof CommanderError)) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (jsonAuthoringCommand === 'plugin:validate') {
-        writeJsonReceipt(io.stdout, {
-          ok: false,
-          profile: 'unknown',
-          warnings: [],
-          errors: [message],
-        });
-      } else if (jsonAuthoringCommand === 'plugin:status') {
-        writeJsonReceipt(io.stdout, {
-          schemaVersion: 3,
-          policy: 'development',
-          ok: false,
-          base: null,
-          requestedBase: null,
-          baseCommit: null,
-          checkedPlugins: 0,
-          checks: [],
-          workspaceRoot: null,
-          workspaceRootResolvedFrom: null,
-          errors: [{ code: 'workspaceResolutionFailed', message }],
-        });
-      } else if (jsonAuthoringCommand === 'plugin:remove') {
-        writeJsonReceipt(io.stdout, {
-          schemaVersion: 1,
-          command: 'plugin:remove',
-          ok: false,
-          workspaceRoot: null,
-          workspaceRootResolvedFrom: null,
-          baseCommit: null,
-          plugin: null,
-          removed: false,
-          errors: [{ code: 'workspaceResolutionFailed', message }],
-        });
-      } else if (jsonAuthoringCommand === 'review:inspect') {
-        writeJsonReceipt(io.stdout, createReviewInspectionFailure(
-          error,
-        ));
-      } else if (jsonAuthoringCommand === 'review:prepare') {
-        writeJsonReceipt(io.stdout, createReviewPreparationFailure(message, 'reviewPreparationFailed'));
-      } else {
-        writeJsonReceipt(io.stdout, {
-          command: jsonAuthoringCommand,
-          ok: false,
-          errors: [{ code: 'workspaceResolutionFailed', message }],
-        });
-      }
-      return 1;
-    }
-    if (jsonAuthoringCommand && error instanceof CommanderError) {
-      writeJsonReceipt(io.stdout, jsonAuthoringCommand === 'review:inspect'
-        ? createReviewInspectionFailure(
-            new Error(error.message),
-            'invalidArguments',
-          )
-        : jsonAuthoringCommand === 'review:prepare'
-          ? createReviewPreparationFailure(error.message)
-        : {
-            command: jsonAuthoringCommand,
-            ok: false,
-            errors: [{ code: 'invalidArguments', message: error.message }],
-          });
-    }
-    return handleCliError(error, io.stderr);
   }
+  plugin.command('list').description('List available plugins or direct requirements')
+    .option('--requested', 'List direct requirement roots')
+    .addOption(strictValueOption('--scope <scope>', 'Requirement scope', ['user', 'project']))
+    .action(async (raw: Record<string, unknown>) => { io.result?.(await runPublicPluginList({ ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.list', raw))); });
+  plugin.command('show').description('Show one plugin').argument('<plugin>')
+    .action(async (selector: string) => { io.result?.(await runPublicPluginShow(selector, { cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.show'))); });
+  plugin.command('status').description('Inspect requirements, outputs, and coverage').argument('[plugins...]')
+    .addOption(strictValueOption('--context <context>', 'Observation context', ['user', 'project']))
+    .action(async (plugins: string[], raw: Record<string, unknown>) => { io.result?.(await runPublicPluginStatus(plugins, { ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.status', raw))); });
+
+  devPlugin.command('remove').description('Delete one owned plugin source tree').argument('<plugin>')
+    .option('--workspace-root <path>', 'Catalog Workspace root').option('-y, --yes', 'Confirm source deletion');
+  devPlugin.command('status').description('Check source plugin version policy').argument('[plugin]')
+    .option('--all', 'Check all source plugins').option('--base <ref>', 'Git comparison base').option('--workspace-root <path>', 'Catalog Workspace root');
+  find(devPlugin, 'build').option('-y, --yes', 'Confirm replacement of generated output');
+  find(catalog, 'build').option('-y, --yes', 'Confirm replacement of generated output');
+  const scriptRoutes: Record<string, string[]> = {
+    'dev.plugin.create': ['plugin', 'init'], 'dev.plugin.validate': ['plugin', 'validate'],
+    'dev.plugin.remove': ['plugin', 'remove'], 'dev.plugin.status': ['plugin', 'status'],
+    'dev.skill.create': ['plugin', 'add-skill'], 'dev.skill.validate': ['skill', 'validate'],
+  };
+  const attach = (parent: Command): void => {
+    for (const cmd of parent.commands) {
+      const id = commandId(cmd);
+      if (scriptRoutes[id]) cmd.action(async (...args: unknown[]) => {
+        const selected = args.at(-1) as Command;
+        const raw = selected.opts();
+        const tokens = [...scriptRoutes[id]!, ...(id === 'dev.skill.create' ? [String(raw.plugin)] : selected.args)];
+        for (const option of selected.options) {
+          const value = selected.getOptionValue(option.attributeName());
+          if (['json', 'plugin', 'verbose', 'debug', 'logFile'].includes(option.attributeName()) || value === undefined || value === false && !option.negate || value === true && option.negate) continue;
+          tokens.push(option.long!);
+          if (value !== true && !option.negate) tokens.push(String(value));
+        }
+        const hasProtocol = !['dev.plugin.create', 'dev.skill.create'].includes(id);
+        if (hasProtocol) tokens.push('--json');
+        if (['dev.plugin.remove', 'dev.plugin.status'].includes(id) && !raw.workspaceRoot) {
+          const workspace = await resolveCatalogWorkspaceRoot({ cwd: options.cwd ?? process.cwd(), mode: 'existing', env: options.env });
+          tokens.push('--workspace-root', workspace.workspaceRoot);
+        }
+        let protocol = '';
+        let scriptDiagnostics = '';
+        exit.exitCode = await runAuthoringCliAdapter(tokens, { ...options, interactive: false, io: { stdout: (text) => { if (hasProtocol) protocol += text; else io.stderr(text); }, stderr: (text) => { scriptDiagnostics += text; io.stderr(text); } } });
+        if (hasProtocol && protocol.trim()) {
+          let value: unknown;
+          try { value = JSON.parse(protocol); } catch { throw new Error('The authoring tool returned invalid structured output.'); }
+          io.result?.(value);
+        } else io.result?.({ ok: exit.exitCode === 0, pluginName: raw.plugin ?? selected.args[0], workspaceRoot: raw.workspaceRoot ?? options.cwd, ...(exit.exitCode ? { errors: [{ code: 'authoringFailed', message: scriptDiagnostics.trim() || 'The authoring tool did not complete.' }] } : {}) });
+      });
+      if (!cmd.options.some((option) => option.long === '--json')) cmd.option('-j, --json', 'Output one JSON result');
+      const json = cmd.options.find((option) => option.long === '--json')!;
+      json.makeOptionMandatory(false);
+      if (!json.short) json.short = '-j';
+      if (!cmd.options.some((option) => option.long === '--verbose')) cmd.option('-v, --verbose', 'Show additional details');
+      if (!cmd.options.some((option) => option.long === '--debug')) cmd.option('-D, --debug', 'Write diagnostic logs');
+      if (!cmd.options.some((option) => option.long === '--log-file')) cmd.option('--log-file <path>', 'Diagnostic log path');
+      attach(cmd);
+    }
+  };
+  program.option('-j, --json', 'Output one JSON result').option('-v, --verbose', 'Show additional details').option('-D, --debug', 'Write diagnostic logs').option('--log-file <path>', 'Diagnostic log path');
+  program.command('tui').description('Open the interactive console').action(() => undefined);
+  attach(program);
+  program.hook('preAction', (_root, action) => { action.setOptionValue('json', true); });
+}
+
+function resolveRegisteredCommand(program: Command, argv: readonly string[]): { command: Command | null; index: number } {
+  let current = program;
+  let commandIndex = -1;
+  for (let index = 0; index < argv.length; index++) {
+    const token = argv[index]!;
+    if (token === '--') break;
+    if (token.startsWith('-')) {
+      const option = [...current.options, ...program.options].find((candidate) => candidate.long === token.split('=')[0] || candidate.short === token);
+      if (option?.required && !token.includes('=')) index++;
+      continue;
+    }
+    const child = current.commands.find((entry) => entry.name() === token);
+    if (child) { current = child; commandIndex = index; }
+    else if (current.commands.length === 0 || current.registeredArguments.length > 0) break;
+    else return { command: null, index: commandIndex };
+  }
+  return { command: current, index: commandIndex };
+}
+
+function helpResult(program: Command, selected: Command): CommandResult {
+  return commandResult('help', {
+    command: commandId(selected) || 'aw', description: selected.description(),
+    arguments: selected.registeredArguments.map((argument) => ({ name: argument.name(), required: argument.required, variadic: argument.variadic, description: argument.description })),
+    options: [...selected.options, ...(selected === program ? [] : program.options)].map((option) => ({ flags: option.flags, description: option.description, required: option.mandatory, choices: option.argChoices ?? null, conflicts: [] })),
+    commands: selected.commands.map((command) => ({ command: commandId(command), description: command.description() })),
+    resultSchema: { schemaVersion: 1, statuses: ['success', 'partial', 'blocked', 'failed'] },
+    rules: commandId(selected) === 'plugin.install' ? ['--scope is required.', '--only requirements cannot use --target or --script-timeout.'] : commandId(selected) === 'plugin.remove' ? ['--scope is required.', '--only outputs requires --target.', '--force requires --only outputs.', '--delete-config cannot use --only.'] : [],
+    effects: selected.options.some((option) => option.long === '--yes') ? ['Important effects require --yes.'] : [],
+    examples: [selected === program ? ['aw', 'plugin', 'list'] : ['aw', ...commandId(selected).split('.'), '--help']],
+  });
+}
+
+function scanPresentation(program: Command, argv: readonly string[]): { json: boolean; help: boolean; version: boolean } {
+  const result = { json: false, help: false, version: false };
+  let command = program;
+  for (let index = 0; index < argv.length; index++) {
+    const token = argv[index]!;
+    if (token === '--') break;
+    if (!token.startsWith('-')) { command = command.commands.find((entry) => entry.name() === token) ?? command; continue; }
+    const available = [...command.options, ...program.options];
+    if (token.startsWith('--')) {
+      const flag = token.split('=')[0]!;
+      const option = available.find((entry) => entry.long === flag);
+      if (flag === '--json') result.json = true;
+      if (flag === '--help') result.help = true;
+      if (flag === '--version' && !option?.required) result.version = true;
+      if (option?.required && !token.includes('=')) index++;
+    } else {
+      for (let offset = 1; offset < token.length; offset++) {
+        const flag = `-${token[offset]}`;
+        const option = available.find((entry) => entry.short === flag);
+        if (flag === '-j') result.json = true;
+        if (flag === '-h') result.help = true;
+        if (flag === '-V') result.version = true;
+        if (option?.required) { if (offset === token.length - 1) index++; break; }
+      }
+    }
+  }
+  return result;
+}
+
+export async function runCli(argv: string[], options: CliRuntimeOptions = {}): Promise<number> {
+  const interruption = createPublicCommandInterruption();
+  const io = { ...createDefaultIo(), ...options.io };
+  const delimiter = argv.indexOf('--');
+  const awArgs = delimiter < 0 ? argv : argv.slice(0, delimiter);
+  const context = createCliExecutionContext({ ...options, io });
+  let receipt: unknown;
+  const stderr: string[] = [];
+  const commandOptions: CliRuntimeOptions = { ...options, interactive: false, io: {
+    stdout: (text) => { stderr.push(text); }, stderr: (text) => { stderr.push(text); }, result: (value) => { receipt = value; },
+  } };
+  const program = buildProgram(commandOptions);
+  const presentation = scanPresentation(program, awArgs);
+  const json = presentation.json;
+  const resolvedCommand = resolveRegisteredCommand(program, awArgs);
+  const selected = resolvedCommand.command;
+  const id = selected && selected !== program ? commandId(selected) : null;
+  const controlledInterrupt = ['plugin.install', 'plugin.remove', 'plugin.sync',
+    'dev.plugin.create', 'dev.plugin.validate', 'dev.plugin.remove', 'dev.plugin.status',
+    'dev.skill.create', 'dev.skill.validate'].includes(id ?? '');
+  if (controlledInterrupt) { commandOptions.interruption = interruption; commandOptions.signal = interruption.signal; }
+  if (id === 'command.run' && !presentation.help) return runManagedCommandCli(['run', ...argv.slice(resolvedCommand.index + 1)], { ...context, interactive: false }, { cliEntry: fileURLToPath(import.meta.url), cliVersion: resolveCliVersion() });
+  let confirmation: Confirmation | null = null;
+  const emit = (result: CommandResult<object>, invalid = false): number => {
+    if (result.diagnostics.some((diagnostic) => diagnostic.code === 'catalogWorkspaceMissing')) {
+      const workspaceRoot = selected?.getOptionValue('workspaceRoot');
+      result.nextActions = result.nextActions.filter((action) => action.kind !== 'command'
+        || action.argv.slice(0, 4).join(' ') !== 'aw dev catalog create');
+      result.nextActions.push({ kind: 'command',
+        argv: ['aw', 'dev', 'catalog', 'create', ...(typeof workspaceRoot === 'string' ? ['--workspace-root', workspaceRoot] : [])],
+        reason: 'Create a Catalog Workspace explicitly before running authoring commands.', requiresConfirmation: false });
+    }
+    io.stdout(json ? `${JSON.stringify(result)}\n` : renderPublicResult(result, awArgs.includes('--verbose') || awArgs.includes('-v')));
+    for (const diagnostic of result.diagnostics) io.stderr(`${diagnostic.code}: ${diagnostic.message}\n`);
+    if (options.diagnostics?.verbose || awArgs.includes('--verbose')) for (const line of stderr) io.stderr(`${safePublicMessage(line.trim())}\n`);
+    return interruption.exitCode ? interruption.cleanupFailed ? 1 : interruption.exitCode : publicExitCode(result, invalid);
+  };
+  if (presentation.version) return emit(commandResult('version', { version: resolveCliVersion(), resultSchemaVersion: 1 }));
+  if (selected && presentation.help || argv.length === 0 && !context.interactive || selected === program && json) {
+    const target = selected ?? program;
+    if (!json) { target.configureOutput({ writeOut: io.stdout }); target.outputHelp(); return 0; }
+    return emit(helpResult(program, target));
+  }
+  let bareOptions: RawDiagnosticsOptions | null;
+  try { bareOptions = parseBareConsoleOptions(argv); }
+  catch { return emit(commandResult(null, {}, { status: 'failed', diagnostics: [{ code: 'invalidArguments', severity: 'error', message: 'A diagnostic option requires a value.' }] }), true); }
+  if (bareOptions !== null || id === 'tui') {
+    if (id === 'tui') {
+      try { await program.parseAsync(['node', 'aw', ...argv]); }
+      catch { return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'invalidArguments', severity: 'error', message: 'Invalid TUI arguments.' }] }), true); }
+    }
+    if (json) return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'invalidOptionCombination', severity: 'error', message: 'tui cannot use --json.' }] }), true);
+    if (!context.interactive) return emit(commandResult('tui', {}, { status: 'blocked', diagnostics: [{ code: 'interactiveTerminalRequired', severity: 'error', message: 'The TUI requires an interactive terminal.' }] }));
+    const tuiContext = createCliExecutionContext({ ...options, io, diagnostics: toCliDiagnosticsOptions('console', bareOptions ?? {}, options.diagnostics) });
+    try { return await runActionWithContext(tuiContext, () => runConsoleController(tuiContext)); }
+    catch (error) { return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'tuiFailed', severity: 'error', message: safePublicMessage(error instanceof Error ? error.message : String(error)) }] })); }
+  }
+  // Only these adapters carry cancellation through every long-running child.
+  // Other routes retain Node's normal signal termination until their domain
+  // runner provides the same cleanup contract. Managed run and TUI exited above.
+  const stopListening = controlledInterrupt ? interruption.listen() : () => undefined;
+  try {
+    program.hook('preAction', (_root, command) => {
+      interruption.signal.throwIfAborted();
+      const raw = command.opts();
+      const current = commandId(command);
+      if (current === 'dev.eval.prepare') for (const field of ['runs', 'timeoutMs']) if (raw[field] !== undefined && (!/^[1-9][0-9]*$/u.test(raw[field]) || !Number.isSafeInteger(Number(raw[field])))) throw new WriteCommandRequestError(`${field} must be a positive safe integer.`);
+      if (current === 'dev.plugin.capabilities' && raw.surface !== undefined) normalizeWriteRequest(() => parsePluginCapabilitySurface(raw.surface));
+      if (current === 'dev.catalog.version') {
+        const version = command.args[0];
+        if (version && raw.bump) throw new WriteCommandRequestError('Choose an exact version or --bump, not both.');
+        if (raw.bump && !['patch', 'minor', 'major'].includes(raw.bump)) throw new WriteCommandRequestError('--bump must be patch, minor, or major.');
+        if (version && !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-beta\.(0|[1-9][0-9]*))?$/u.test(version)) throw new WriteCommandRequestError('Use a stable version or x.y.z-beta.N.');
+      }
+      if (current === 'source.add' && ((raw.git === undefined) === (raw.path === undefined))) throw new WriteCommandRequestError('Choose exactly one of --git or --path.');
+      if (current === 'source.update' && awArgs.includes('--auto-check') && awArgs.includes('--no-auto-check')) throw new WriteCommandRequestError('--auto-check cannot use --no-auto-check.');
+      if (current === 'source.update' && raw.subdir !== undefined && awArgs.includes('--no-subdir') && awArgs.some((arg) => arg === '--subdir' || arg.startsWith('--subdir='))) throw new WriteCommandRequestError('--subdir cannot use --no-subdir.');
+      if (current === 'plugin.config.set' && [raw.valueJson !== undefined, raw.valueStdin === true, raw.preset !== undefined].filter(Boolean).length !== 1) throw new WriteCommandRequestError('Choose exactly one of --value-json, --value-stdin, or --preset.');
+      let effect: Confirmation['effects'][number] | undefined;
+      if (current === 'plugin.config.reset') effect = { code: 'deletePluginConfig', message: 'Delete the selected local plugin configuration.', subject: { pluginId: command.args[0], scope: 'user' }, impact: 'user-wide' };
+      if (current === 'dev.plugin.remove') effect = { code: 'deletePluginSource', message: 'Delete the selected plugin source tree.', subject: { pluginId: command.args[0] }, impact: 'selected-scope' };
+      if (current === 'dev.catalog.publish.apply' && !/^sha256:[0-9a-f]{64}$/u.test(raw.expectedPlanDigest ?? '')) throw new WriteCommandRequestError('Use the exact --expected-plan-digest returned by dev catalog publish plan.');
+      if (current === 'dev.catalog.publish.apply') effect = { code: 'publishRemote', message: 'Publish the prepared Catalog to the remote.', impact: 'shared' };
+      if ((current === 'dev.catalog.build' || current === 'dev.plugin.build') && raw.force) effect = { code: 'removeOwnedOutput', message: 'Replace existing generated output.', impact: 'selected-scope' };
+      if (effect) {
+        confirmation = { required: true, provided: raw.yes === true, effects: [effect] };
+        if (!raw.yes) throw Object.assign(new Error('Repeat the command with --yes to confirm the listed effects.'), { code: 'confirmationRequired' });
+      }
+    });
+    await program.parseAsync(['node', 'aw', ...argv]);
+    const exitCode = (program as Command & { __awCommandExitState: { exitCode: number } }).__awCommandExitState.exitCode;
+    if (receipt === undefined) {
+      if (selected?.commands.length) return emit(helpResult(program, selected));
+      throw new Error('The command did not return a result.');
+    }
+    if (id === 'dev.plugin.test' && receipt && typeof receipt === 'object') {
+      const logs = receipt as { stdout?: unknown; stderr?: unknown };
+      if (typeof logs.stdout === 'string') io.stderr(redactString(logs.stdout));
+      if (typeof logs.stderr === 'string') io.stderr(redactString(logs.stderr));
+    }
+    const result = projectReceipt(id!, receipt, { yes: awArgs.includes('--yes') || awArgs.includes('-y'), exitCode, confirmation });
+    if (interruption.exitCode) result.diagnostics.push({ code: interruption.cleanupFailed ? 'processCleanupUnconfirmed' : 'operationInterrupted', severity: 'error', message: interruption.cleanupFailed ? 'Process cleanup could not be confirmed after interruption.' : 'The command was interrupted. Completed changes are retained in the result.' });
+    if (result.status === 'success' && ['dev.plugin.create', 'dev.skill.create'].includes(id!)) {
+      const data = result.data as Record<string, unknown>;
+      const name = typeof data.pluginName === 'string' ? data.pluginName : selected?.args[0];
+      if (name) for (const action of ['validate', 'test', 'build']) result.nextActions.push({ kind: 'command', argv: ['aw', 'dev', 'plugin', action, `plugins/${name}`], reason: 'Check and build the new source.', requiresConfirmation: false });
+      result.nextActions.push({ kind: 'command', argv: ['aw', 'dev', 'catalog', 'build'], reason: 'Build the Catalog after checking the source.', requiresConfirmation: false });
+    }
+    const invalid = result.diagnostics.some((diagnostic) => /invalidArguments|invalidOption|missingArgument|sensitiveConfigInputUnsupported/u.test(diagnostic.code));
+    if (invalid && result.status !== 'partial') { result.status = 'failed'; result.data = {}; }
+    return emit(result, invalid);
+  } catch (error) {
+    if (error instanceof CommanderError && error.exitCode === 0) return emit(helpResult(program, selected ?? program));
+    const argumentError = error instanceof CommanderError || error instanceof WriteCommandRequestError;
+    const raw = id?.startsWith('plugin.config.') && !(error instanceof CommanderError) && !(error instanceof WriteCommandRequestError)
+      ? configMutationFailure(error, options.env ?? process.env, options.cwd ?? process.cwd())
+      : error as { code?: string; message?: string };
+    const code = argumentError ? error instanceof InvalidArgumentError || error instanceof CommanderError && error.code === 'commander.invalidArgument' ? 'invalidOptionValue' : 'invalidArguments' : raw.code ?? catalogGenerationErrorCode(error);
+    const blocked = code === 'confirmationRequired' || /unavailable|missing|stale|conflict|unsupported|identityMismatch/iu.test(code);
+    let message = raw.message ?? 'The operation failed.';
+    if (error instanceof CommanderError) {
+      const field = raw.message?.match(/--([a-z][a-z-]*)/u)?.[1];
+      if (error.code === 'commander.unknownOption') message = field ? `Unknown option --${field}.` : 'Unknown option.';
+      else if (error.code === 'commander.unknownCommand') message = 'Unknown command.';
+      else if (error.code === 'commander.invalidArgument') message = field ? `Invalid value for --${field}.` : 'Invalid argument value.';
+      else if (error.code === 'commander.excessArguments') message = 'Too many positional arguments.';
+    }
+    const preparedConfirmation = (error as { confirmation?: Confirmation })?.confirmation ?? confirmation;
+    const unknownAuthoringChanges = (error as { authoringChanges?: unknown })?.authoringChanges === 'unknown';
+    const data = { ...(preparedConfirmation ? { confirmation: preparedConfirmation } : {}), ...(unknownAuthoringChanges ? { changes: 'unknown' } : {}) };
+    return emit(commandResult(id, data, { status: unknownAuthoringChanges ? 'partial' : blocked ? 'blocked' : 'failed', diagnostics: [{ code, severity: 'error', message: safePublicMessage(message, code), ...(code === 'invalidOptionValue' ? { subject: { field: raw.message?.match(/--([a-z][a-z-]*)/u)?.[1] ?? 'option' } } : {}) }], nextActions: code === 'confirmationRequired' ? [{ kind: 'manual', message: 'Review the effects and repeat the command with --yes.' }] : [] }), argumentError);
+  } finally { stopListening(); }
 }
 
 export async function main(

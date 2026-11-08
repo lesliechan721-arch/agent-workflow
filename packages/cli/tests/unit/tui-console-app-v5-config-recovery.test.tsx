@@ -162,7 +162,7 @@ describe('ConsoleAppV4', () => {
     expect(unavailableScreens).toContain('C21');
     expect(unavailableInstance.lastFrame()).toContain('插件定义或来源不可用');
     expect(unavailableInstance.lastFrame()).toContain('修复插件来源');
-    expect(unavailableInstance.lastFrame()).not.toContain('aw catalog source sync team-tools');
+    expect(unavailableInstance.lastFrame()).not.toContain('aw source sync team-tools');
     expect(unavailableInstance.lastFrame()).not.toContain('/Users/private');
     expect(unavailableInstance.lastFrame()).not.toContain('重置此设置层');
     await input(unavailableInstance, '\r');

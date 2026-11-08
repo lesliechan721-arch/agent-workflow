@@ -58,7 +58,7 @@
         "boundary",
         "workspace_valid"
       ],
-      "prompt": "将 catalog/plugins/provider/shared/read-note.mjs 作为 provider 的公开共享脚本提供给 consumer 的 notes Skill，支持 consumer 已声明的 Native 和 Portable 分发。该脚本的运行要求是 aw.self-check.v1。允许修改两个插件源码及在 out/ 准备隔离包；不要安装、运行模型或发布。给出 owner、分发和能力传播依据。",
+      "prompt": "将 catalog/plugins/provider/shared/read-note.mjs 作为 provider 的公开共享脚本提供给 consumer 的 notes Skill，支持 consumer 已声明的 Native 和 Portable 分发。该脚本的运行要求是 aw.self-check.v2。允许修改两个插件源码及在 out/ 准备隔离包；不要安装、运行模型或发布。给出 owner、分发和能力传播依据。",
       "assertions": [
         "provider 用 runtimeExports 显式声明来源和运行 capability；consumer 用 Skill runtime file import 投影到实际 Native/Portable surface。",
         "区分安装依赖、buildImports 与运行期文件复用，不猜 sibling 路径，不以 buildImports 传播运行 capability。",
@@ -68,7 +68,7 @@
         "workspaceFiles": {
           "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
           "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
-          "catalog/plugins/provider/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"provider\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.self-check.v1\"\n      ]\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\",\n    \"antigravity\",\n    \"cursor\",\n    \"opencode\",\n    \"pi\",\n    \"generic\"\n  ]\n}\n",
+          "catalog/plugins/provider/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"provider\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.self-check.v2\"\n      ]\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\",\n    \"antigravity\",\n    \"cursor\",\n    \"opencode\",\n    \"pi\",\n    \"generic\"\n  ]\n}\n",
           "catalog/plugins/provider/README.md": "# provider\n\nExplain the supplied task.\n",
           "catalog/plugins/provider/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/provider/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
@@ -78,7 +78,7 @@
           "catalog/plugins/consumer/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/consumer/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
           "catalog/plugins/consumer/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n",
-          "catalog/plugins/provider/shared/read-note.mjs": "export const requiredCapability = 'aw.self-check.v1';\n"
+          "catalog/plugins/provider/shared/read-note.mjs": "export const requiredCapability = 'aw.self-check.v2';\n"
         }
       },
       "expected": {

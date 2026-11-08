@@ -974,11 +974,11 @@ describe('authoring tools', () => {
     expect(dualManifest.interface.capabilities).toContain('Skills');
     expect(dualAdded.stdout).toContain('Keep the current stable target during development');
     for (const command of [
-      'aw plugin validate',
-      'aw plugin test',
-      'aw plugin build',
-      'aw catalog build',
-      'aw catalog publish',
+      'aw dev plugin validate',
+      'aw dev plugin test',
+      'aw dev plugin build',
+      'aw dev catalog build',
+      'aw dev catalog publish',
     ]) expect(dualAdded.stdout).toContain(command);
     expect(dualAdded.stdout).not.toContain('pnpm release');
     await expect(fs.pathExists(path.join(tempRepo, '.changes'))).resolves.toBe(false);
@@ -1188,8 +1188,9 @@ describe('authoring tools', () => {
     await fs.ensureDir(workspaceRoot);
     await execFileAsync('node', [
       cliEntry,
+      'dev',
       'catalog',
-      'init',
+      'create',
       '--owner-name',
       'Fixture',
       '--owner-url',
@@ -1253,6 +1254,7 @@ describe('authoring tools', () => {
 
     const validation = await execFileAsync('node', [
       path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js'),
+      'dev',
       'plugin',
       'validate',
       pluginRoot,
@@ -1262,22 +1264,31 @@ describe('authoring tools', () => {
     ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     // A successful validator result must not hide an unavailable version checker.
     expect(JSON.parse(validation.stdout)).toMatchObject({
-      ok: true,
-      profile: 'aw-source',
-      versionCheck: {
-        ok: true,
-        checks: [{ plugin: 'demo', status: 'unchanged', productionChanged: false }],
+      schemaVersion: 1,
+      command: 'dev.plugin.validate',
+      status: 'success',
+      data: {
+        profile: 'aw-source',
+        versionCheck: {
+          ok: true,
+          checks: [{ plugin: 'demo', status: 'unchanged', productionChanged: false }],
+        },
       },
+      diagnostics: expect.any(Array),
+      nextActions: expect.any(Array),
     });
     for (const args of [
-      ['plugin', 'test', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
-      ['plugin', 'build', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
-      ['catalog', 'build', '--workspace-root', workspaceRoot, '--json'],
+      ['dev', 'plugin', 'test', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
+      ['dev', 'plugin', 'build', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
+      ['dev', 'catalog', 'build', '--workspace-root', workspaceRoot, '--json'],
     ]) {
       const completed = await execFileAsync('node', [cliEntry, ...args], {
         cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024,
       });
-      expect(JSON.parse(completed.stdout)).toMatchObject({ ok: true });
+      expect(JSON.parse(completed.stdout)).toMatchObject({
+        schemaVersion: 1, command: args.slice(0, 3).join('.'), status: 'success',
+        data: expect.any(Object), diagnostics: expect.any(Array), nextActions: expect.any(Array),
+      });
     }
 
     await fs.appendFile(
@@ -1292,6 +1303,7 @@ describe('authoring tools', () => {
 
     const versionCheck = await execFileAsync('node', [
       cliEntry,
+      'dev',
       'plugin',
       'status',
       '--base',
@@ -1301,7 +1313,9 @@ describe('authoring tools', () => {
       '--workspace-root',
       workspaceRoot,
     ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    expect(JSON.parse(versionCheck.stdout).checks[0]).toMatchObject({
+    const versionResult = JSON.parse(versionCheck.stdout);
+    expect(versionResult).toMatchObject({ schemaVersion: 1, command: 'dev.plugin.status', status: 'success' });
+    expect(versionResult.data.checks[0]).toMatchObject({
       plugin: 'demo',
       status: 'versionBumped',
       baseVersion: '0.1.0',
@@ -1410,9 +1424,9 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const workspaceRoot = path.join(tempRoot, 'workspace');
     await fs.ensureDir(workspaceRoot);
-    await expect(execFileAsync('node', [
+    const failure = await execFileAsync('node', [
       path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js'),
-      'plugin', 'init',
+      'dev', 'plugin', 'create',
       'demo',
       '--description',
       'Reject an escaped plugin root.',
@@ -1422,9 +1436,12 @@ describe('authoring tools', () => {
       '--plugin-root',
       '../demo',
       '--json',
-    ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining('Unknown option: --plugin-root'),
+    ], { cwd: workspaceRoot, env: process.env }).then(() => null, (error: unknown) => error as { code: number; stdout: string });
+    expect(failure?.code).toBe(2);
+    expect(JSON.parse(failure!.stdout)).toMatchObject({
+      schemaVersion: 1, command: 'dev.plugin.create', status: 'failed', data: {},
+      diagnostics: [expect.objectContaining({ code: 'invalidArguments', message: expect.stringContaining('--plugin-root') })],
+      nextActions: expect.any(Array),
     });
     await expect(fs.pathExists(path.join(tempRoot, 'demo'))).resolves.toBe(false);
   });
@@ -2648,7 +2665,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       },
     )).rejects.toMatchObject({
-      stderr: expect.stringContaining('use aw config for user or project scope'),
+      stderr: expect.stringMatching(/only supports effective config reads; use aw plugin config.*explicit context/u),
     });
   });
 
@@ -3538,7 +3555,7 @@ describe('authoring tools', () => {
     )).resolves.toBe(providerBytes);
   });
 
-  it('aw plugin validate accepts mixed portable static and dynamic synthetic authoring contracts', async () => {
+  it('aw dev plugin validate accepts mixed portable static and dynamic synthetic authoring contracts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-authoring-'));
     tempDirs.push(tempRoot);
     await execFileAsync('git', ['init'], { cwd: tempRoot });

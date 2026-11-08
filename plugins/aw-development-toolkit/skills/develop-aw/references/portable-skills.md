@@ -16,10 +16,10 @@ Portable 不注册本机命令；含托管命令占位符的输出会被拒绝�
 
 ## 导出与核对
 
-完成主入口的能力检查后，读取 `aw skill materialize --help`，使用公开入口：
+完成主入口的能力检查后，读取 `aw dev skill export --help`，使用公开入口：
 
 ```bash
-aw skill materialize <plugin-or-source-selector> --platform <portable-target> --scope <scope> \
+aw dev skill export <plugin-or-source-selector> --platform <portable-target> --scope <scope> \
   --skill <skill-name> --out <new-directory> --json
 ```
 

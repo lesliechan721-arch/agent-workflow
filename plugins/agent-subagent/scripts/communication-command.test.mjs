@@ -30,8 +30,8 @@ await fs.appendFile(${JSON.stringify(capture)},JSON.stringify({args,home:process
 const list=args[1]==='list';
 const commands=list?state.commands:state.commands.filter(c=>c.id===args[2]);
 const partial=commands.some(c=>c.availability!=='ready');
-process.stdout.write(JSON.stringify({schemaVersion:1,command:list?'command.list':'command.show',ok:!partial,overallState:partial?'partial':'completed',commands,packages:[],changes:[],errors:[],recoveryActions:[]}));
-process.exitCode=partial?1:0;`);
+process.stdout.write(JSON.stringify({schemaVersion:1,command:list?'command.list':'command.show',status:partial?'partial':'success',data:{commands,packages:[],changes:[]},diagnostics:[],nextActions:[]}));
+process.exitCode=partial?4:0;`);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: directory };
   const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), SOURCE_HOME: '/foreign' };
   const snapshot = { installedIdentity, resourceRoot, effectiveValues: { subagentCommands: [{ key: 'agy', adapter: 'antigravity',

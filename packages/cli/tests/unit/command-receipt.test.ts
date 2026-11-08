@@ -473,7 +473,7 @@ describe('command receipt v6', () => {
     expect(human).toContain('- team/root / claude / project: failed');
     expect(human).toContain('恢复：run aw plugin sync team/root --target claude --context project');
     expect(human).toContain('恢复：run aw plugin sync team/root --target claude --context project --rebuild');
-    expect(human).toContain('恢复：run aw plugin cleanup team/root --target claude --scope project');
+    expect(human).toContain('恢复：run aw plugin remove --only outputs team/root --target claude --scope project');
     expect(human).not.toContain('Project intent');
     expect(human).not.toContain('AW extensions');
   });

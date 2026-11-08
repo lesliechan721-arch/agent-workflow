@@ -16,7 +16,7 @@
 准备入口：
 
 ```bash
-aw skill eval prepare dev-workflow dev-workflow \
+aw dev eval prepare dev-workflow dev-workflow \
   --suite method-lifecycle-workflow --profile project-lifecycle \
   --workspace-root . --output .aw/evals/method-lifecycle --json
 aw-skill-eval spec validate .aw/evals/method-lifecycle/spec.json

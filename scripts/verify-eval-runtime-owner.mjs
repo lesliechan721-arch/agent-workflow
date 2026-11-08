@@ -29,9 +29,9 @@ const allowedRunnerResourceReferences = new Set([
   'scripts/validate-eval-cases.mjs',
 ])
 const allowedAwCommands = [
-  /^aw skill eval prepare --help$/u,
-  /^aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json$/u,
-  /^aw skill eval doctor --json$/u,
+  /^aw dev eval prepare --help$/u,
+  /^aw dev eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json$/u,
+  /^aw dev eval check --json$/u,
 ]
 const allowedEvalCommands = [
   /^aw-skill-eval spec validate <spec\.json>$/u,

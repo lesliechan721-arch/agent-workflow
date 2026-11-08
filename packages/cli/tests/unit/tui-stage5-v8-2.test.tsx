@@ -77,7 +77,7 @@ function loadResult(): TuiStatusLoadResult {
         catalogVersion: '1.0.0', channel: 'latest', requestedRef: 'path',
         resolvedCommit: 'path', storeKey: 'official-active', digestShort: 'official',
       },
-      syncInstruction: 'aw catalog source sync official',
+      syncInstruction: 'aw source sync official',
     }],
     sourceDetails: payload.catalog.sources.map((source) => ({
       id: source.id,
@@ -127,7 +127,7 @@ function longSourceLoadResult(): TuiStatusLoadResult {
       storeKey: `${source.id}-active`,
       digestShort: source.id,
     },
-    syncInstruction: `aw catalog source sync ${source.id}`,
+    syncInstruction: `aw source sync ${source.id}`,
   }));
   data.sourceDetails = sources.map((source) => ({
     id: source.id,

@@ -9,7 +9,9 @@ import { nativeToolFixture } from '../helpers/native-tools.js';
 import { runCli } from '../../src/index.js';
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
 import type { CommandManagementResult } from '../../src/commands/managed-commands.js';
-import { syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
+import type { CommandResult } from '../../src/output/public-result.js';
+type ManagedResult = CommandResult<Pick<CommandManagementResult, 'commands' | 'packages' | 'changes' | 'nativeToolChanges'>>;
+import { resolveManagedCommand, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 import { normalizeCommandDefinition, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 
 describe('managed command CLI', () => {
@@ -23,7 +25,7 @@ describe('managed command CLI', () => {
   });
   afterEach(async () => { await isolated.cleanup(); });
 
-  async function invoke(args: string[], extraEnvironment: NodeJS.ProcessEnv = {}): Promise<{ exitCode: number; stdout: string; stderr: string; receipt: CommandManagementResult }> {
+  async function invoke(args: string[], extraEnvironment: NodeJS.ProcessEnv = {}): Promise<{ exitCode: number; stdout: string; stderr: string; receipt: ManagedResult }> {
     let stdout = '';
     let stderr = '';
     const exitCode = await runCli(['command', ...args], { cwd: isolated.layout.fixtureCwd, env: { ...isolated.env, ...extraEnvironment }, interactive: false, io: { stdout: (value) => { stdout += value; }, stderr: (value) => { stderr += value; } } });
@@ -31,36 +33,45 @@ describe('managed command CLI', () => {
   }
 
   // Protects one-object JSON receipts, pre-write argument rejection, and the full public management path.
-  it('requires confirmation before writes and returns schema 1 receipts for install/list/show/remove', async () => {
-    const refused = await invoke(['install', source, '--name', 'tool', '--runner', 'node', '--entry', 'entry.mjs', '--json']);
-    expect(refused.exitCode).toBe(2);
-    expect(refused.receipt).toMatchObject({ schemaVersion: 1, command: 'command.install', ok: false, overallState: 'failed', commands: [], packages: [], changes: [], recoveryActions: [] });
-    await expect(fs.lstat(path.join(isolated.layout.awHomeDir, 'commands'))).rejects.toMatchObject({ code: 'ENOENT' });
+  it('validates before writes and requires confirmation for removal', async () => {
     const invalid = await invoke(['install', source, '--name', 'tool', '--runner', 'shell', '--entry', 'entry.mjs', '--yes', '--json']);
     expect(invalid.exitCode).toBe(2);
-    const installed = await invoke(['install', source, '--name', '工具', '--runner', 'node', '--entry', 'entry.mjs', '--yes', '--json']);
+    expect(invalid.receipt).toMatchObject({ schemaVersion: 1, command: 'command.install', status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
+    await expect(fs.lstat(path.join(isolated.layout.awHomeDir, 'commands'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const installed = await invoke(['install', source, '--name', '工具', '--runner', 'node', '--entry', 'entry.mjs', '--json']);
     expect(installed.exitCode).toBe(0);
     expect(installed.stderr).toBe('');
     expect(installed.stdout.endsWith('\n')).toBe(true);
-    const id = installed.receipt.commands[0]!.id;
-    expect(installed.receipt.changes).toEqual([{ kind: 'command', id, action: 'created' }]);
-    expect((await invoke(['list', '--json'])).receipt.commands.map((command) => command.id)).toEqual([id]);
-    expect((await invoke(['show', id, '--json'])).receipt.commands[0]).toMatchObject({ id, name: '工具', availability: 'ready', owner: { kind: 'user' } });
+    const id = installed.receipt.data.commands[0]!.id;
+    expect(installed.receipt.data.changes).toEqual([{ kind: 'command', id, action: 'created' }]);
+    expect((await invoke(['list', '--json'])).receipt.data.commands.map((command) => command.id)).toEqual([id]);
+    expect((await invoke(['show', id, '--json'])).receipt.data.commands[0]).toMatchObject({ id, name: '工具', availability: 'ready', owner: { kind: 'user' } });
+    const refused = await invoke(['remove', id, '--json']);
+    expect(refused.exitCode).toBe(3);
+    expect(refused.receipt).toMatchObject({ status: 'blocked', data: { changes: [], confirmation: { required: true, provided: false } }, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]) });
+    expect((await invoke(['show', id, '--json'])).receipt.data.commands[0]).toMatchObject({ id, availability: 'ready' });
     const removed = await invoke(['remove', id, '--yes', '--json']);
     expect(removed.exitCode).toBe(0);
-    expect(removed.receipt.commands).toEqual([]);
-    expect(removed.receipt.changes).toEqual([{ kind: 'command', id, action: 'removed' }]);
-    expect((await invoke(['list', '--json'])).receipt).toMatchObject({ ok: true, commands: [], packages: [] });
+    expect(removed.receipt.data.commands).toEqual([]);
+    expect(removed.receipt.data.changes).toEqual([{ kind: 'command', id, action: 'removed' }]);
+    expect((await invoke(['list', '--json'])).receipt).toMatchObject({
+      schemaVersion: 1,
+      status: 'success',
+      data: {
+        commands: [],
+        packages: []
+      }
+    });
     const missing = await invoke(['show', id, '--json']);
-    expect(missing.exitCode).toBe(1);
-    expect(missing.receipt.errors[0]!.code).toBe('commandNotFound');
+    expect(missing.exitCode).toBe(3);
+    expect(missing.receipt.diagnostics[0]!.code).toBe('commandNotFound');
   });
 
   // Protects child argv/exit/environment through the real CLI bridge, without invoking any model or native host.
   it('requires the literal separator and forwards every following argument to a real short Node child', async () => {
     const report = path.join(isolated.layout.fixtureCwd, 'report.json');
     const installed = await invoke(['install', source, '--name', 'tool', '--runner', 'node', '--entry', 'entry.mjs', '--args-json', '[""]', '--env-json', JSON.stringify({ REPORT: report }), '--env-from-json', '{"COPY":"INPUT"}', '--cwd', 'resource', '--yes', '--json']);
-    const id = installed.receipt.commands[0]!.id;
+    const id = installed.receipt.data.commands[0]!.id;
     const invalid = await invoke(['run', id]);
     expect(invalid.exitCode).toBe(2);
     expect(invalid.stdout).toBe('');
@@ -71,22 +82,26 @@ describe('managed command CLI', () => {
     expect(ran.stdout).toBe('');
     expect(ran.stderr).toBe('');
     const observed = JSON.parse(await fs.readFile(report, 'utf8'));
-    expect(observed).toMatchObject({ args: ['', '--json', '-h', '', '换行\n参数'], cwd: installed.receipt.commands[0]!.resourceRoot, source: '', worker: 'preserved', host: { schemaVersion: 1, nodeExecutable: process.execPath, awHome: await fs.realpath(isolated.layout.awHomeDir) } });
+    expect(observed).toMatchObject({ args: ['', '--json', '-h', '', '换行\n参数'], cwd: (await resolveManagedCommand(id, isolated.env)).resourceRoot, source: '', worker: 'preserved', host: { schemaVersion: 1, nodeExecutable: process.execPath, awHome: await fs.realpath(isolated.layout.awHomeDir) } });
     expect(observed.author).toBeUndefined();
   });
 
   // Protects producer lifecycle ownership and visible unavailability instead of silently accepting damaged definitions.
   it('reports damaged user definitions as partial and keeps plugin IDs outside manual mutation', async () => {
     const installed = await invoke(['install', source, '--name', 'tool', '--runner', 'node', '--entry', 'entry.mjs', '--yes', '--json']);
-    const id = installed.receipt.commands[0]!.id;
+    const id = installed.receipt.data.commands[0]!.id;
     await fs.writeFile(path.join(isolated.layout.awHomeDir, 'commands', 'users', id, 'definition.json'), '{broken');
     const listed = await invoke(['list', '--json']);
-    expect(listed.exitCode).toBe(1);
-    expect(listed.receipt).toMatchObject({ ok: false, overallState: 'partial', commands: [{ id, availability: 'unavailable' }] });
+    expect(listed.exitCode).toBe(4);
+    expect(listed.receipt).toMatchObject({
+      schemaVersion: 1,
+      status: 'partial',
+      data: { commands: [{ id, availability: 'unavailable' }] }
+    });
     const pluginId = `cmdp_${'0'.repeat(16)}`;
     const refused = await invoke(['remove', pluginId, '--yes', '--json']);
-    expect(refused.exitCode).toBe(1);
-    expect(refused.receipt.errors[0]!.code).toBe('commandOwnerMismatch');
+    expect(refused.exitCode).toBe(3);
+    expect(refused.receipt.diagnostics[0]!.code).toBe('commandOwnerMismatch');
     expect((await invoke(['remove', id, '--force', '--yes', '--json'])).exitCode).toBe(0);
   });
 
@@ -103,12 +118,12 @@ describe('managed command CLI', () => {
     expect(invalid.exitCode).toBe(2);
     await fs.writeFile(ownerPath, owner.replace('agent-workflows', 'foreign'));
     const blocked = await invoke(['package', 'remove', installed.id, '--force', '--yes', '--json']);
-    expect(blocked.exitCode).toBe(1);
-    expect(blocked.receipt.errors[0]!.code).toBe('commandOwnerMismatch');
+    expect(blocked.exitCode).toBe(3);
+    expect(blocked.receipt.diagnostics[0]!.code).toBe('commandOwnerMismatch');
     await fs.writeFile(ownerPath, owner);
     const removed = await invoke(['package', 'remove', installed.id, '--force', '--yes', '--json']);
     expect(removed.exitCode).toBe(0);
-    expect(removed.receipt.changes).toEqual([{ kind: 'package', id: installed.id, action: 'removed' }, { kind: 'command', id: installed.commandIds[0], action: 'removed' }]);
+    expect(removed.receipt.data.changes).toEqual([{ kind: 'package', id: installed.id, action: 'removed' }, { kind: 'command', id: installed.commandIds[0], action: 'removed' }]);
     await expect(fs.lstat(packageRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -116,7 +131,7 @@ describe('managed command CLI', () => {
   it('passes binary stdio through the built CLI without a receipt or progress envelope', async () => {
     await fs.writeFile(path.join(source, 'stdio.mjs'), 'const chunks=[]; for await (const chunk of process.stdin) chunks.push(chunk); process.stdout.write(Buffer.concat(chunks)); process.stderr.write(Buffer.from([101,114,114,0,255])); process.exitCode=19;\n');
     const installed = await invoke(['install', source, '--name', 'stdio', '--runner', 'node', '--entry', 'stdio.mjs', '--yes', '--json']);
-    const child = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url)), 'command', 'run', installed.receipt.commands[0]!.id, '--'], { cwd: isolated.layout.fixtureCwd, env: isolated.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url)), 'command', 'run', installed.receipt.data.commands[0]!.id, '--'], { cwd: isolated.layout.fixtureCwd, env: isolated.env, stdio: ['pipe', 'pipe', 'pipe'] });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
@@ -134,7 +149,7 @@ describe('managed command CLI', () => {
     const marker = path.join(isolated.layout.fixtureCwd, 'forwarded');
     await fs.writeFile(path.join(source, 'signal.mjs'), 'import fs from "node:fs"; process.once("SIGTERM",()=>{fs.writeFileSync(process.env.SIGNAL_MARKER,"forwarded"); process.kill(process.pid,"SIGTERM");}); const expiry=setTimeout(()=>process.exit(98),5000); process.stdout.write("ready\\n");\n');
     const installed = await invoke(['install', source, '--name', 'signal', '--runner', 'node', '--entry', 'signal.mjs', '--env-json', JSON.stringify({ SIGNAL_MARKER: marker }), '--yes', '--json']);
-    const child = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url)), 'command', 'run', installed.receipt.commands[0]!.id, '--'], { cwd: isolated.layout.fixtureCwd, env: isolated.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url)), 'command', 'run', installed.receipt.data.commands[0]!.id, '--'], { cwd: isolated.layout.fixtureCwd, env: isolated.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     let errors = '';
     const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal })); });
@@ -156,7 +171,7 @@ describe('managed command CLI', () => {
     const installed = await syncManagedCommandPackage({ producer, sourceDirectory: source, sets: [{ set: 'tools', state: 'present', entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'entry.mjs' })] }], nativeTools: fixture.closure, env: isolated.env });
     const removed = await invoke(['package', 'remove', installed.id, '--yes', '--json']);
     expect(removed.exitCode).toBe(0);
-    expect(removed.receipt.nativeToolChanges).toEqual([{ producer, before: fixture.closure, after: null }]);
+    expect(removed.receipt.data.nativeToolChanges).toEqual([{ producer, before: fixture.closure, after: null }]);
     await expect(fs.lstat(installed.resourceRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 

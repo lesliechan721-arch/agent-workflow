@@ -2954,7 +2954,7 @@ function warnCodexProjectScopeLimitations(manifest) {
 
   if (manifest.apps) {
     warn(
-      'Codex project scope does not support apps; users must install this app surface with `aw install <plugin> -p codex -s user` or split the plugin.',
+      'Codex project scope does not support apps; users must install this app surface with `aw plugin install <plugin> --target codex --scope user` or split the plugin.',
     );
   }
 
@@ -3390,7 +3390,7 @@ function validateSlashCommands(pluginDir, manifest) {
 
 function printUsage() {
   console.log(`Usage:
-  aw plugin validate <plugin-directory> [options]
+  aw dev plugin validate <plugin-directory> [options]
 
 Options:
   --strict-agent-skills        Allow only Agent Skills portable core frontmatter.

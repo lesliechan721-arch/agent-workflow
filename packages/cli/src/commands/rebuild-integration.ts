@@ -438,6 +438,7 @@ export class CodexActivationPostcheckError extends Error {
 }
 
 export interface RebuildExecutionContext {
+  interruption?: import('./public-interruption.js').PublicCommandInterruption;
   /** Validated renderer process output shared only by preparations of this operation. */
   preparedArtifactRenderResults?: Map<string, PluginProcessResult>;
   signal?: AbortSignal;

@@ -103,8 +103,8 @@ describe('public package exports', () => {
   });
   it('exposes the manifest runtime and published v3 schema subpaths', async () => {
     expect(DEFAULT_CATALOG_WORKSPACE_VERSION).toBe('0.1.0')
-    expect(getAwCapabilityRegistry()).toContain('aw.self-check.v1')
-    expect(computeAwCapabilitySetDigest(['aw.self-check.v1'])).toMatch(/^sha256:/u)
+    expect(getAwCapabilityRegistry()).toContain('aw.self-check.v2')
+    expect(computeAwCapabilitySetDigest(['aw.self-check.v2'])).toMatch(/^sha256:/u)
     expect(PLUGIN_MANIFEST_SCHEMA_VERSION).toBe(3)
     expect(getPluginAuthoringCapabilities().schemaVersion).toBe(1)
     expect(getPluginAuthoringCapabilitySurface('manifest').surface).toBe('manifest')

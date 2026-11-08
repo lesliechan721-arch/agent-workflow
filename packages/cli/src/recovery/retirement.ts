@@ -25,6 +25,8 @@ export interface RetireOptions {
   selector: string;
   targets?: readonly string[];
   deleteConfig?: boolean;
+  /** Public remove retains the local target policy. */
+  preservePreferences?: boolean;
   yes?: boolean;
   interactive?: boolean;
   prompt?: CliPrompt;
@@ -81,15 +83,16 @@ function finish(receipt: RecoveryReceipt, options: RetireOptions, portable: Port
       pluginId: `${result.producer.sourceId}/${result.producer.pluginName}` }))
       : [diagnostic('managedCommandRecoveryFailed')])];
   receipt.ok = !receipt.blockers.length && !receipt.remainingTargets.length && !commandFailures.length;
-  const agents = [...new Set(receipt.requestedTargets.map((target) => target.agent))];
-  const retry = `aw plugin intent retire ${options.selector} --scope ${options.scope}`
-    + agents.map((agent) => ` --target ${agent}`).join('')
-    + (options.deleteConfig && !configDeletionCompleted ? ' --delete-config' : '');
+  const agents = [...new Set(receipt.remainingTargets.map((target) => target.agent))];
+  const retry = agents.length ? `aw plugin remove ${options.selector} --only outputs --scope ${options.scope}`
+    + agents.map((agent) => ` --target ${agent}`).join('') : undefined;
   receipt.recoveryActions = [...new Set([
     ...(receipt.commandResults ?? []).flatMap((result) => result.recoveryActions),
     ...(!receipt.ok ? [...portable.targets.map((entry) =>
       `请检查并备份 Portable 目录 ${entry.physicalPath}；核验共享读取和归属后自行移开，AW 不自动删除。`),
-    retry] : []),
+    ...(retry ? [retry] : []),
+    ...(options.deleteConfig && !configDeletionCompleted
+      ? ['Review the remaining user-wide plugin configuration before requesting a new removal with --delete-config.'] : [])] : []),
   ])];
   return receipt;
 }
@@ -167,7 +170,7 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
       declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false };
     const plannedImpact = {
       declaration: roots?.includes(options.selector) === true,
-      preferences: preferences.state === 'valid' && preferences.value.exclusions.some((entry) =>
+      preferences: !options.preservePreferences && preferences.state === 'valid' && preferences.value.exclusions.some((entry) =>
         entry.plugin === options.selector),
       config: options.deleteConfig === true && removed?.configTargets.some((entry) =>
         entry.scope === options.scope && entry.kind !== 'absent') === true,
@@ -294,7 +297,7 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
             const result = await removeRoot(location, plan.options.selector);
             receipt.declarationChanged = result.changed;
           }
-          if (preferences.state === 'valid') {
+          if (!plan.options.preservePreferences && preferences.state === 'valid') {
             const next = preferences.value.exclusions.filter((entry) => entry.plugin !== plan.options.selector);
             if (next.length !== preferences.value.exclusions.length) {
               const result = await writePreferences(location, { ...preferences.value, exclusions: next });
@@ -304,7 +307,7 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
           if (plan.options.deleteConfig && plan.evidence) {
             const result = await deletePluginConfigStore({ sourceId: plan.evidence.sourceId,
               sourceIdentity: plan.evidence.sourceIdentity, pluginName: plan.evidence.pluginName,
-              scope: plan.options.scope, cwd: plan.context.executionCwd, env: plan.context.env });
+              scope: 'user', cwd: plan.context.executionCwd, env: plan.context.env });
             receipt.configChanged = result.deleted;
             configDeletionCompleted = true;
           }

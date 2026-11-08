@@ -5,8 +5,12 @@ import crypto from 'node:crypto';
 let root=process.cwd();
 while(!fs.existsSync(path.join(root,'fixture-control.json'))){const up=path.dirname(root);if(up===root)throw Error('Fixture control missing');root=up;}
 const c=JSON.parse(fs.readFileSync(path.join(root,'fixture-control.json'),'utf8'));
-const args=process.argv.slice(2), log=path.join(root,'_review-log');fs.mkdirSync(log,{recursive:true});
-fs.appendFileSync(path.join(log,'commands.jsonl'),JSON.stringify({args,cwd:process.cwd(),testDouble:true})+'\n');
+const publicArgs=process.argv.slice(2);
+const supportedRoute=publicArgs[0]==='self'||publicArgs[0]==='dev'&&['review','skill'].includes(publicArgs[1]);
+const args=publicArgs[0]==='dev'?publicArgs.slice(1):publicArgs;
+const route=publicArgs.slice(0,publicArgs[0]==='dev'?3:2).join('.');
+const log=path.join(root,'_review-log');fs.mkdirSync(log,{recursive:true});
+fs.appendFileSync(path.join(log,'commands.jsonl'),JSON.stringify({args:publicArgs,cwd:process.cwd(),testDouble:true})+'\n');
 const resolve=p=>path.resolve(root,p);
 const sh=b=>'sha256:'+crypto.createHash('sha256').update(b).digest('hex');
 let options=null;
@@ -16,7 +20,15 @@ const profile={platform:'codex',scope:'project',inputDigest:sh('{}')};
 const digestDir=(dir)=>{let rows=[];function walk(d){for(const n of fs.readdirSync(d).sort()){const p=path.join(d,n);if(fs.statSync(p).isDirectory())walk(p);else rows.push(path.relative(dir,p)+'\0'+fs.readFileSync(p,'utf8'));}}walk(dir);return sh(rows.join('\0'));};
 const current=()=>sh(fs.readFileSync(path.join(source,'SKILL.md'),'utf8')+fs.readFileSync(resolve(c.provider),'utf8'));
 function result(state){let e=fs.existsSync(final);return {skill:'demo-skill',sourcePath:source,profile,finalPath:e?final:null,digest:e?digestDir(final):null,state,evidencePath:e?resolve(c.binding):null};}
-function send(x,code=0){console.log(JSON.stringify(x));process.exitCode=code;}
+function send(x,code=0){
+ if(typeof x==='string')console.log(x);
+ else{
+  const {ok,command,schemaVersion,issues,...data}=x;
+  console.log(JSON.stringify({schemaVersion:1,command:route,status:ok===false?'failed':'success',data,
+   diagnostics:(issues??[]).map(issue=>({code:issue.code,severity:ok===false?'error':'warning',message:issue.message??issue.code})),nextActions:[]}));
+ }
+ process.exitCode=code;
+}
 const common={schemaVersion:2,command:'review:inspect',view:'review',ok:true,target:{kind:'skill',path:source},sources:[resolve(c.manifest),resolve(c.provider)],skills:[],issues:[]};
 // Fixture-only selector validation: one Skill, Codex/project and default config.
 // Reject unsupported choices rather than emulate unimplemented production profiles.
@@ -60,7 +72,8 @@ function selectionProblem(){
  return null;
 }
 const selectorProblem=selectionProblem();
-if(args.includes('--help'))send('TEST DOUBLE: review inspect <target> --view review --json; review prepare <target> --platform codex --scope project --out <dir> --json; self check');
+if(!supportedRoute)send({ok:false,fixture:true,error:'Unlisted command'},64);
+else if(args.includes('--help'))send('TEST DOUBLE: aw dev review inspect <target> --view review --json; aw dev review prepare <target> --platform codex --scope project --out <dir> --json; self check');
 else if(args[0]==='self'&&args[1]==='check')send({ok:true,missingCapabilities:[],fixture:true});
 else if(args[0]==='review'&&['inspect','prepare'].includes(args[1]) && (!args[2] || ![source,path.join(source,'SKILL.md'),path.dirname(path.dirname(source)),resolve(c.manifest)].includes(path.resolve(process.cwd(),args[2])))){
  send({...(args[1]==='inspect'?common:{}),schemaVersion:args[1]==='inspect'?2:1,command:'review:'+args[1],ok:false,target:null,sources:[],skills:[],issues:[{code:'fixtureTargetMismatch',path:args[2]??null,message:'TEST DOUBLE: target is outside the selected fixture'}]},2);

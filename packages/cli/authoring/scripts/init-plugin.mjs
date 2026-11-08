@@ -266,7 +266,7 @@ ${configTest}${preApplyTest}`;
 
 function printUsage() {
   console.log(`Usage:
-  aw plugin init <plugin-name> --description "..."
+  aw dev plugin create <plugin-name> --description "..."
 
 Options:
   --description <text>          Plugin description. Required.
@@ -288,8 +288,8 @@ Options:
 
 Note:
   During development, keep the current stable target when production content changes.
-  Next, run aw plugin validate, aw plugin test, aw plugin build, and aw catalog build.
-  Publish only as an explicit later step; inspect aw catalog publish plan --help first.
+  Next, run aw dev plugin validate, aw dev plugin test, aw dev plugin build, and aw dev catalog build.
+  Publish only as an explicit later step; inspect aw dev catalog publish plan --help first.
   New skill scaffolds default to model invocation and generate an eval starter.
 `);
 }
@@ -576,11 +576,11 @@ function main() {
   const printablePluginRoot = JSON.stringify(pluginRoot);
   const printableRepoRoot = JSON.stringify(repoRoot);
   console.log('[OK] Keep the current stable target during development.');
-  console.log(`[NEXT] aw plugin validate ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
-  console.log(`[NEXT] aw plugin test ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
-  console.log(`[NEXT] aw plugin build ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
-  console.log(`[NEXT] aw catalog build --workspace-root ${printableRepoRoot}`);
-  console.log(`[LATER] Publish only when explicitly requested: aw catalog publish plan --workspace-root ${printableRepoRoot}`);
+  console.log(`[NEXT] aw dev plugin validate ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+  console.log(`[NEXT] aw dev plugin test ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+  console.log(`[NEXT] aw dev plugin build ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+  console.log(`[NEXT] aw dev catalog build --workspace-root ${printableRepoRoot}`);
+  console.log(`[LATER] Publish only when explicitly requested: aw dev catalog publish plan --workspace-root ${printableRepoRoot}`);
 }
 
 main();

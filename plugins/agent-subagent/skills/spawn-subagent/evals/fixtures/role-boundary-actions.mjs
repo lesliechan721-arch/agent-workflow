@@ -16,7 +16,7 @@ function rel(value) {
   if (typeof value !== 'string' || !value || value.includes('\\') || value.includes('\0')
     || path.posix.isAbsolute(value) || path.win32.isAbsolute(value)
     || value.split('/').some((part) => !part || part === '.' || part === '..')) throw new Error('fixturePathUnsafe');
-  return value;
+  return value.data;
 }
 async function file(root, relative, missing = false) {
   let cursor = root;
@@ -53,7 +53,7 @@ async function jsonCommand(command, args, options) {
   const result = await processResult(command, args, options);
   let value;
   try { value = JSON.parse(result.stdout); } catch { throw new Error(`fixtureCommandFailed: ${command} ${args.slice(0, 2).join(' ')}: exit=${result.code}, diagnostic=${result.stderr.slice(0, 2048)}`); }
-  if (result.code !== 0 || value.ok === false || value.status === 'failed') throw new Error(`fixtureCommandFailed: ${command} ${args.slice(0, 2).join(' ')}: exit=${result.code}, code=${value.code ?? value.status ?? 'failed'}, diagnostic=${JSON.stringify(value.error ?? (value.errors?.length ? value.errors : value.message ?? value)).slice(0, 2048)}`);
+  if (result.code !== 0 || value.status !== 'success') throw new Error(`fixtureCommandFailed: ${command} ${args.slice(0, 2).join(' ')}: exit=${result.code}, code=${value.code ?? value.status ?? 'failed'}, diagnostic=${JSON.stringify(value.error ?? (value.errors?.length ? value.errors : value.message ?? value)).slice(0, 2048)}`);
   return value;
 }
 async function successfulCommand(command, args, options) {
@@ -68,7 +68,7 @@ function labEnvironment(workspace) {
 }
 async function awAvailable(env, cwd) {
   const describe = await jsonCommand('aw', ['self', 'describe', '--json'], { env, cwd });
-  const required = ['aw.installed-runtime-config.v2', 'aw.dynamic-artifacts.v2', 'aw.plugin-config.v4', 'aw.plugin-config-unique-by.v1', 'aw.plugin-config-value-ref.v1'];
+  const required = ['aw.cli-output.v1', 'aw.self-check.v2', 'aw.plugin-authoring.v2', 'aw.catalog-authoring.v2', 'aw.catalog-source.v3', 'aw.plugin-recovery.v2', 'aw.installed-runtime-config.v2', 'aw.dynamic-artifacts.v2', 'aw.plugin-config.v4', 'aw.plugin-config-unique-by.v1', 'aw.plugin-config-value-ref.v1'];
   const missing = required.filter((item) => !describe.capabilities?.includes(item));
   if (missing.length) throw new Error(`fixtureEnvironmentUnsupported: PATH aw lacks ${missing.join(', ')}`);
   return describe;
@@ -263,8 +263,8 @@ async function installLab(workspace, fixtures, operation) {
     'agents/openai.yaml': 'interface:\n  display_name: "Unrelated fixture"\n  short_description: "Observe one independent local fixture source change."\n  default_prompt: "Use $fixture-unrelated to observe this local source only."\npolicy:\n  allow_implicit_invocation: false\n',
   } : null;
   const data = { keys: KEYS, files, values, unrelatedFiles };
-  await jsonCommand('aw', ['catalog', 'init', '--workspace-root', catalog, '--owner-name', 'Foreground Eval', '--owner-url', 'https://example.invalid/foreground-eval', '--display-name', 'Isolated Foreground Eval', '--json'], { env, cwd: project });
-  await successfulCommand('aw', ['plugin', 'init', 'role-boundary-lab', '--workspace-root', catalog, '--description', 'Explicit isolated Eval fixture', '--no-skills'], { env, cwd: project });
+  await jsonCommand('aw', ['dev', 'catalog', 'create', '--workspace-root', catalog, '--owner-name', 'Foreground Eval', '--owner-url', 'https://example.invalid/foreground-eval', '--display-name', 'Isolated Foreground Eval', '--json'], { env, cwd: project });
+  await successfulCommand('aw', ['dev', 'plugin', 'create', 'role-boundary-lab', '--workspace-root', catalog, '--description', 'Explicit isolated Eval fixture', '--no-skills'], { env, cwd: project });
   const plugin = path.join(catalog, 'plugins', 'role-boundary-lab');
   const scaffold = JSON.parse(await readFile(await file(plugin, '.agents-plugin/plugin.json'), 'utf8'));
   await put(plugin, 'fixture-data.json', JSON.stringify(data)); await put(plugin, 'scripts/render.mjs', fixtureRendererSource);
@@ -282,12 +282,12 @@ async function installLab(workspace, fixtures, operation) {
     manifest.artifacts.targets.push({ id: 'fixture-unrelated-skill', platform: 'codex', scopes: ['project'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, projectManagedKind: 'skill', states: ['present'], refreshKeys: [], skillKey: 'fixture-unrelated', sourceDirs: ['./skills/fixture-unrelated'] });
   }
   await put(plugin, '.agents-plugin/plugin.json', JSON.stringify(manifest, null, 2));
-  await jsonCommand('aw', ['plugin', 'validate', plugin, '--json'], { env, cwd: project });
+  await jsonCommand('aw', ['dev', 'plugin', 'validate', plugin, '--json'], { env, cwd: project });
   const snapshot = path.join(catalog, 'snapshot');
-  await jsonCommand('aw', ['catalog', 'build', '--workspace-root', catalog, '--out', snapshot, '--force', '--json'], { env, cwd: project });
-  await jsonCommand('aw', ['catalog', 'source', 'add', 'role-boundary-eval', '--path', snapshot, '--primary', '--no-auto-check', '--yes', '--json'], { env, cwd: project });
-  await jsonCommand('aw', ['catalog', 'source', 'sync', 'role-boundary-eval', '--yes', '--json'], { env, cwd: project });
-  await jsonCommand('aw', ['install', 'role-boundary-eval/role-boundary-lab', '--scope', 'project', '--target', 'codex', '--yes', '--json'], { env, cwd: project });
+  await jsonCommand('aw', ['dev', 'catalog', 'build', '--workspace-root', catalog, '--out', snapshot, '--force', '--json'], { env, cwd: project });
+  await jsonCommand('aw', ['source', 'add', 'role-boundary-eval', '--path', snapshot, '--primary', '--no-auto-check', '--yes', '--json'], { env, cwd: project });
+  await jsonCommand('aw', ['source', 'sync', 'role-boundary-eval', '--yes', '--json'], { env, cwd: project });
+  await jsonCommand('aw', ['plugin', 'install', 'role-boundary-eval/role-boundary-lab', '--scope', 'project', '--target', 'codex', '--yes', '--json'], { env, cwd: project });
   const guideRoot = path.join(project, '.agents', 'skills', 'spawn-subagent');
   const active = await readInstalled(project, guideRoot);
   const instructionsFile = path.join(lab, 'instructions.md'), promptFile = path.join(lab, 'task.md');
@@ -309,12 +309,12 @@ async function applyChange(workspace, instructions = false) {
   const state = await stateOf(workspace), env = labEnvironment(workspace);
   const before = await readInstalled(state.project, state.guideRoot);
   const commands = structuredClone(before.effectiveValues.subagentCommands).map((item) => ({ ...item, env: { ...(item.env ?? {}), FIXTURE_REVISION: 'updated' } }));
-  await jsonCommand('aw', ['config', 'set', state.pluginId, 'subagentCommands', '--scope', 'project', '--value-json', JSON.stringify(commands), '--yes', '--json'], { env, cwd: state.project });
+  await jsonCommand('aw', ['plugin', 'config', 'set', state.pluginId, 'subagentCommands', '--context', 'project', '--value-json', JSON.stringify(commands), '--yes', '--json'], { env, cwd: state.project });
   const saved = await readInstalled(state.project, state.guideRoot);
   if (!isDeepStrictEqual(saved.effectiveValues, before.effectiveValues)) throw new Error('fixtureSaveUnexpectedlyApplied');
   // Repeating the same config set --apply has no store change and does not
   // refresh outputs. Public sync applies this already saved configuration.
-  await jsonCommand('aw', ['sync', state.pluginId, '--scope', 'project', '--target', 'codex', '--yes', '--json'], { env, cwd: state.project });
+  await jsonCommand('aw', ['plugin', 'sync', state.pluginId, '--context', 'project', '--target', 'codex', '--yes', '--json'], { env, cwd: state.project });
   const after = await readInstalled(state.project, state.guideRoot);
   if (!isDeepStrictEqual(after.effectiveValues.subagentCommands, commands)) throw new Error('fixtureApplyDidNotUpdateValues');
   if (instructions) {

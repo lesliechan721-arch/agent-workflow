@@ -163,7 +163,7 @@ describe('AW source binding', () => {
     await fs.writeJson(written.bindingPath, receipt)
 
     await expect(readAwSourceBinding(written.bindingPath)).rejects.toThrow(
-      'schema version 1 is unsupported. Run "aw skill eval prepare" or "aw skill materialize" again.',
+      'schema version 1 is unsupported. Run "aw dev eval prepare" or "aw dev skill export" again.',
     )
     await expect(validateAwSourceBindingForWorkspace({
       bindingPath: written.bindingPath,
@@ -175,7 +175,7 @@ describe('AW source binding', () => {
       issues: [{
         code: 'sourceBindingInvalid',
         message: 'AW source binding schema version 1 is unsupported. '
-          + 'Run "aw skill eval prepare" or "aw skill materialize" again.',
+          + 'Run "aw dev eval prepare" or "aw dev skill export" again.',
       }],
     })
   })

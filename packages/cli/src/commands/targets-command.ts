@@ -11,7 +11,9 @@ import {
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { resolveWorkContext } from '../intent/work-context.js';
-import { runRecovery } from '../recovery/coordinator.js';
+import { executeRecovery, prepareRecovery, runRecovery } from '../recovery/coordinator.js';
+import { effectsForPlan } from './public-lifecycle.js';
+import type { Confirmation } from '../output/public-result.js';
 import { validateExclusions } from '../recovery/joint-demand.js';
 import { intentReceipt } from './intent-command.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
@@ -28,6 +30,7 @@ interface TargetsCommandOptions {
 interface TargetsCommandReceipt extends RecoveryReceipt {
   policy?: DeploymentPreferences;
   apply?: RecoveryReceipt;
+  confirmation?: Confirmation;
 }
 
 function failure(error: unknown) {
@@ -61,12 +64,59 @@ async function applySavedPolicy(options: TargetsCommandOptions, saved: TargetsCo
   }
 }
 
+async function applyCandidatePolicy(
+  options: TargetsCommandOptions,
+  command: string,
+  update: (current: DeploymentPreferences) => DeploymentPreferences,
+  validate?: (candidate: DeploymentPreferences) => Promise<void>,
+): Promise<TargetsCommandReceipt> {
+  const observed = await observePreferences({ ...options, scope: 'user' });
+  if (observed.state !== 'valid' && observed.state !== 'absent') throw new Error('deploymentPreferencesInvalid');
+  const candidate = update(observed.state === 'valid' ? observed.value : createEmptyPreferences());
+  await validate?.(candidate);
+  const recoveryOptions = {
+    cwd: options.cwd, env: options.env, context: options.context,
+    cliVersion: options.cliVersion!, all: true, yes: options.yes,
+    retireUnselectedTargets: true, preferences: candidate,
+  };
+  const plan = await prepareRecovery('sync', [], recoveryOptions, options.runtime);
+  let executing = false;
+  try {
+    const originalEvidence = 'rawDigest' in observed ? `${observed.state}:${observed.rawDigest}` : observed.state;
+    if (plan.preferencesEvidence !== originalEvidence) {
+      const issue = { code: 'operationReviewStale', message: 'Deployment preferences changed while preparing this operation. Check the current policy and retry.' };
+      return { ...plan.receipt, command, ok: false, blockers: [...plan.receipt.blockers, issue],
+        errors: [...plan.receipt.errors, issue] };
+    }
+    const effects = effectsForPlan(plan);
+    const confirmation: Confirmation = { required: effects.length > 0, provided: options.yes === true, effects };
+    if (effects.length > 0 && options.yes !== true) {
+      const issue = { code: 'confirmationRequired', message: 'Repeat the command with --yes to confirm the listed effects.' };
+      return { ...plan.receipt, command, ok: false, preferencesChanged: false, outputsMayHaveChanged: false,
+        blockers: [...plan.receipt.blockers, issue], errors: [...plan.receipt.errors, issue], confirmation,
+        ...(observed.state === 'valid' ? { policy: observed.value } : {}) };
+    }
+    if (plan.blockExecution) return { ...plan.receipt, command, confirmation,
+      ...(observed.state === 'valid' ? { policy: observed.value } : {}) };
+    executing = true;
+    const applied = await executeRecovery(plan);
+    const saved = await observePreferences({ ...options, scope: 'user' });
+    return { ...applied, command, apply: applied, confirmation,
+      ...(saved.state === 'valid' ? { policy: saved.value } : {}) };
+  } finally {
+    if (!executing) await plan.context.dispose();
+  }
+}
+
 export async function targetsSet(options: TargetsCommandOptions & {
   targets: readonly string[];
 }): Promise<TargetsCommandReceipt> {
   try {
     const targets = normalizeAgents(options.targets);
     await resolveWorkContext(options);
+    if (options.apply && options.runtime?.directCli) {
+      return await applyCandidatePolicy(options, 'targets:set', (current) => ({ ...current, targets }));
+    }
     const saved = await setTargets({ ...options, scope: 'user' }, targets);
     return applySavedPolicy(options, await receipt(options, 'targets:set', saved.changed, []));
   } catch (error) {
@@ -83,6 +133,13 @@ export async function targetsChangeExclusion(options: TargetsCommandOptions & {
     if (!parsed.sourceId || `${parsed.sourceId}/${parsed.pluginName}` !== options.selector) throw new Error('invalidArguments');
     const target = normalizeAgents([options.target])[0]!;
     await resolveWorkContext(options);
+    if (options.apply && options.runtime?.directCli) {
+      return await applyCandidatePolicy(options, command, (current) => {
+        const exclusions = current.exclusions.filter((entry) => entry.plugin !== options.selector || entry.target !== target);
+        if (options.excluded) exclusions.push({ plugin: options.selector, target });
+        return { ...current, exclusions };
+      }, (candidate) => validateExclusions(options, candidate));
+    }
     const saved = await withAwHomeMutationLock({ env: options.env, action: async (token) => {
       const location = { ...options, scope: 'user' as const, token };
       const current = await observePreferences(location);

@@ -34,6 +34,49 @@ afterEach(() => {
 });
 
 describe('catalog source mutation v6', () => {
+  it('commits source identity and primary selection together only after confirmation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('combined-update-first');
+    const second = fixturePath('combined-update-second');
+    await createCatalogSnapshotFixture(first);
+    await createCatalogSnapshotFixture(second);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: first, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const update = {
+      sourceId: 'team', update: { type: 'path' as const, path: second }, primary: true,
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireIdentityChangeConfirmation: true, requireImpactConfirmation: true,
+    };
+    await expect(updateCatalogSourceCommand(update)).rejects.toMatchObject({
+      code: 'catalogSourceIdentityChangeConfirmationRequired',
+    });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(before.digest);
+    const preview = await preflightCatalogSourceMutation({
+      request: { action: 'update', sourceId: 'team', update: update.update, primary: true },
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect(preview.references.primaryChange).toEqual({ fromSourceId: 'official', toSourceId: 'team' });
+    const receipt = await updateCatalogSourceCommand({
+      ...update, confirmIdentityChange: true, confirmImpact: true,
+      expectedConfigDigest: preview.configDigest,
+      expectedProposedConfigDigest: preview.proposedConfigDigest,
+      expectedImpactDigest: preview.impactDigest,
+    });
+    expect(receipt).toMatchObject({
+      ok: true, changed: true, primarySourceId: 'team',
+      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+    });
+    const after = await readCatalogSourcesConfigSnapshot(isolation.env);
+    expect(after.digest).toBe(preview.proposedConfigDigest);
+    expect(after.config.sources.find((source) => source.id === 'team')).toMatchObject({
+      path: await fs.realpath(second), primary: true,
+    });
+    expect(after.config.sources.filter((source) => source.primary)).toHaveLength(1);
+  });
+
   it('requires confirmation to remove a source with lifecycle intent references', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('referenced-source');

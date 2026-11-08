@@ -23,7 +23,7 @@ export function formatInteractiveConsoleUnavailableMessage(
     '',
     '可用命令：',
     '- `aw plugin status --context user`',
-    '- `aw plugin targets set codex`',
+    '- `aw target set codex`',
     '- `aw plugin install <source/plugin> --scope user`',
     '- `aw plugin status --context user --json`',
   ].join('\n');

@@ -74,7 +74,7 @@ describe('TUI Active Catalog session', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(instance.lastFrame()).toContain('恢复来源');
     expect(instance.lastFrame()).toContain('来源尚未启用');
-    expect(instance.lastFrame()).not.toContain('aw catalog source sync official');
+    expect(instance.lastFrame()).not.toContain('aw source sync official');
   });
 
   it('reloads the TUI explicitly without any refresh dependency', async () => {

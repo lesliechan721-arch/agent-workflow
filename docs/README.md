@@ -33,6 +33,7 @@
 
 | 合同文档 | 核心主题 |
 | --- | --- |
+| [CLI 命令与输出](reference/cli.md) | 非交互命令、JSON 外壳、退出码、确认与生命周期 payload |
 | [Manifest 与配置声明合同](reference/manifest-and-config.md) | Plugin Manifest v3 规范、Config Definition v5、本地 `$ref` 展开、Store v6 Envelope 存储与原子写入解耦。 |
 | [插件运行时合同](reference/plugin-runtime.md) | 静态/动态 Skill 声明、readRuntimeConfig 合同、动态 Renderer 规范、ArtifactPlan v2、preApply 脚本与 Native/Portable 投影。 |
 | [托管命令参考合同](reference/managed-commands.md) | 托管命令稳定 ID 算法（`cmdp_` 前缀）、参数权限（`argsPrefix`）、Claude Code 沙箱排除与执行生命周期。 |
