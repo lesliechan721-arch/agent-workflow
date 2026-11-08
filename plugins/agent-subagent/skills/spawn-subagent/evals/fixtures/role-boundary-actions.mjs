@@ -16,7 +16,7 @@ function rel(value) {
   if (typeof value !== 'string' || !value || value.includes('\\') || value.includes('\0')
     || path.posix.isAbsolute(value) || path.win32.isAbsolute(value)
     || value.split('/').some((part) => !part || part === '.' || part === '..')) throw new Error('fixturePathUnsafe');
-  return value.data;
+  return value;
 }
 async function file(root, relative, missing = false) {
   let cursor = root;

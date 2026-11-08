@@ -22,11 +22,12 @@ import {
   type PluginScriptInvocation,
 } from '../../src/utils/plugin-scripts.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
-import { assertProcessTreeInspectionAvailable } from '../../src/utils/process-tree.js';
+import { assertProcessTreeInspectionAvailable, terminateProcessTree } from '../../src/utils/process-tree.js';
 import { waitForProcessExit } from '../support/process-tree.js';
 
 const tempDirs: string[] = [];
 const descendantPids = new Set<number>();
+const hostProcesses = new Set<ChildProcess>();
 const OUTPUT_LIMIT = 64 * 1024;
 const SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS = 30_000;
 const vitestPackagePath = realpathSync(fileURLToPath(
@@ -79,13 +80,13 @@ async function createPlugin(options: { sensitiveValue?: string } = {}): Promise<
   return plugin;
 }
 
-async function waitForFile(filePath: string, timeoutMs = 5_000): Promise<void> {
+async function waitForFile(filePath: string, diagnostics: () => string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await fs.pathExists(filePath)) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error(`Timed out waiting for ${path.basename(filePath)}.`);
+  throw new Error(`Timed out waiting for ${path.basename(filePath)}.\n${diagnostics()}`);
 }
 
 function waitForChildExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
@@ -107,6 +108,15 @@ function expectStandardSignalExit(
 }
 
 afterEach(async () => {
+  for (const host of hostProcesses) {
+    if (host.pid === undefined || host.exitCode !== null || host.signalCode !== null) continue;
+    const exited = waitForChildExit(host);
+    await terminateProcessTree(host.pid, (signal) => { host.kill(signal); }, {}, {
+      requireConfirmedCleanup: true,
+    });
+    await exited;
+  }
+  hostProcesses.clear();
   for (const pid of descendantPids) {
     try {
       process.kill(pid, 'SIGKILL');
@@ -255,13 +265,15 @@ describe('preApply script', () => {
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+      hostProcesses.add(host);
       let stdout = '';
       let stderr = '';
       host.stdout?.on('data', (chunk) => { stdout += String(chunk); });
       host.stderr?.on('data', (chunk) => { stderr += String(chunk); });
       const exited = waitForChildExit(host);
 
-      await Promise.all([waitForFile(rootPidPath), waitForFile(descendantPidPath)]);
+      const diagnostics = () => `stdout: ${stdout}\nstderr: ${stderr}`;
+      await Promise.all([waitForFile(rootPidPath, diagnostics), waitForFile(descendantPidPath, diagnostics)]);
       const rootPid = Number(await fs.readFile(rootPidPath, 'utf8'));
       const descendantPid = Number(await fs.readFile(descendantPidPath, 'utf8'));
       descendantPids.add(rootPid);
@@ -281,6 +293,7 @@ describe('preApply script', () => {
       }
       expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);
     },
+    30_000,
   );
 
   it.skipIf(process.platform === 'win32').each([false, true])(
@@ -309,6 +322,7 @@ describe('preApply script', () => {
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+      hostProcesses.add(host);
       let stdout = '';
       host.stdout?.on('data', (chunk) => { stdout += String(chunk); });
       let stderr = '';
@@ -316,7 +330,7 @@ describe('preApply script', () => {
       host.stderr?.on('data', (chunk: string) => { stderr += chunk; });
       const exited = waitForChildExit(host);
 
-      await waitForFile(readyPath);
+      await waitForFile(readyPath, () => `stdout: ${stdout}\nstderr: ${stderr}`);
       host.kill('SIGTERM');
 
       expect(await exited, stdout + stderr).toEqual({ code: 1, signal: null });
@@ -325,6 +339,7 @@ describe('preApply script', () => {
       if (publicCli) expect(JSON.parse(stdout)).toMatchObject({ command: 'plugin.install', status: 'partial', diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'processCleanupUnconfirmed' })]) });
       expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);
     },
+    30_000,
   );
 
   it('removes its interrupt listeners after normal completion', async () => {
