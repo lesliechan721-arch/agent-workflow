@@ -7,7 +7,7 @@
 在包含本插件的 Catalog 来源中安装到 Codex 和 Claude Code：
 
 ```bash
-aw plugin targets set codex claude
+aw target set codex claude
 aw plugin install frontend-design --scope user
 ```
 

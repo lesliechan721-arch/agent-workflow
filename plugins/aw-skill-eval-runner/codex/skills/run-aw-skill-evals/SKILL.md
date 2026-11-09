@@ -23,7 +23,7 @@ metadata:
 
 ## 准备或验证输入
 
-已有 Spec 使用 `aw-skill-eval spec validate <spec.json>`。只有 plugin/Skill/suite/profile/case/split/runs/baseline 选择时，先查询 `aw skill eval prepare --help`，再向新目录准备 Spec。验证须零退出且 `valid=true`；仅准备或验证的请求在交付相应结果后结束。
+已有 Spec 使用 `aw-skill-eval spec validate <spec.json>`。只有 plugin/Skill/suite/profile/case/split/runs/baseline 选择时，先查询 `aw dev eval prepare --help`，再向新目录准备 Spec。AW 命令要求 `status=success`，从 `data` 读取准备结果；`aw-skill-eval` 保留其独立验证格式。验证须零退出且 `valid=true`；仅准备或验证的请求在交付相应结果后结束。
 
 验证 Audit 使用 `aw-skill-eval audit validate <audit.json> --spec <spec.json>`；验证 Result 使用下方完整命令及其对应输入。格式通过只证明机器合同，不证明 Oracle 或 Skill 质量。
 

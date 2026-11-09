@@ -3,7 +3,7 @@
 为 Agent 指令提供共同的写作与评价方法，帮助减少重复规则、弱指针和不必要的上下文负担。
 
 ```bash
-aw plugin targets set codex
+aw target set codex
 aw plugin install agent-content-toolkit --scope user
 ```
 

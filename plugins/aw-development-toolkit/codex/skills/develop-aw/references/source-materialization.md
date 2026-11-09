@@ -9,29 +9,29 @@
 已有源码足以支持本次分析时直接读取。需要 CLI 来源证据时，在主入口的能力检查后运行：
 
 ```bash
-aw review inspect <target> --view review --json
+aw dev review inspect <target> --view review --json
 ```
 
 按需使用当前帮助支持的 `--skill`、`--platform`、`--scope`、`--config`；已有绑定通过 `--materialization` 提供。用户已给完整标准包且不要求 AW 来源核验时，可直接采用该包。
 
-Inspection 是静态取证，不运行插件代码、build、test、模型或网络。`ok` 表示取证完成；只有 `ready` final 代表本次当前选择。文件存在、与当前输入不匹配的绑定或其他 profile 的成功不能替代当前性。
+Inspection 是静态取证，不运行插件代码、build、test、模型或网络。`status=success` 表示取证完成，业务证据位于 `data`；只有 `ready` final 代表本次当前选择。文件存在、与当前输入不匹配的绑定或其他 profile 的成功不能替代当前性。
 
 Catalog snapshot 的 `current` 表示有效且匹配当前 source；`stale` 表示产物与当前 source 不匹配；`absent` 表示缺少证据；`invalid` 保留实际诊断。Catalog 取证不默认展开所有 leaf 的运行包。
 
 ## 准备缺少的 final
 
-先读取 `aw review prepare --help`，固定 target、platform、scope 和影响内容的配置。沿用已明确配置，由 CLI 校验默认值；只补齐会改变本次结果的缺失输入。
+先读取 `aw dev review prepare --help`，固定 target、platform、scope 和影响内容的配置。沿用已明确配置，由 CLI 校验默认值；只补齐会改变本次结果的缺失输入。
 
-完整产物任务所需的本地准备，在已有授权内继续。先说明会执行必要依赖闭包的 build/runtime imports 和所选 renderer，并向新隔离目录生成副本。仅允许静态读取时保留源码结论。`plugin validate` 可能运行 renderer fixture，`plugin status` 可能准备 bundle，不能用它们绕过执行限制。
+完整产物任务所需的本地准备，在已有授权内继续。先说明会执行必要依赖闭包的 build/runtime imports 和所选 renderer，并向新隔离目录生成副本。仅允许静态读取时保留源码结论。`aw dev plugin validate` 可能运行 renderer fixture，`aw dev plugin status` 可能准备 bundle，不能用它们绕过执行限制。
 
 ```bash
-aw review prepare <plugin-or-source-skill> --platform <platform> \
+aw dev review prepare <plugin-or-source-skill> --platform <platform> \
   --scope <scope> --out <new-directory> --json
 ```
 
 按需提供 `--config <file>` 或 `--skill`。采用用户指定的新目录，或规范化可写临时根下的新目录。准备不依赖 Eval suite，也不授权修改源、真实安装或模型运行。platform 必须是七个 canonical target 之一；Portable 导出也必须选择具体目标，旧 agent-skills profile 拒绝。
 
-从成功回执取得 `skills[].finalPath`、profile、digest 与 `sourceBindingPath`，使用真实返回路径。本次检查可直接使用该回执；跨请求复用，或 source/profile/依赖/产物变化后重新 inspect。失败时保留实际错误和可支持的源码结论，不匹配的绑定通过公开入口重新生成。
+从成功结果的 `data` 取得 `skills[].finalPath`、profile、digest 与 `sourceBindingPath`，使用真实返回路径。本次检查可直接使用该回执；跨请求复用，或 source/profile/依赖/产物变化后重新 inspect。失败时保留实际错误和可支持的源码结论，不匹配的绑定通过公开入口重新生成。
 
 跨插件 valueRef 使用所选 Workspace/snapshot 的同次依赖定义；consumer/provider 使用同一个平台 profile，配置只取 defaults 与本次非敏感覆盖。`--config` 的 `{plugin: {field: value}}` 可以同时提供消费方和 provider；需要外部 key 时先提供对应注册项，不从真实 AW_HOME 或已安装插件补取。必要校验依赖会进入 profile 和 source-binding 证据，但不扩大所选 Skill 产物或 renderer 获准字段。
 

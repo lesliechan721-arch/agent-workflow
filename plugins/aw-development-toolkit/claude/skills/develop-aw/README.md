@@ -15,6 +15,6 @@ Skill 内容采用通用作者方法。用户显式启动的 Reviewer 和 Simpli
 
 按本次任务交付源码改动、实际产物、来源与验证结果。开发和物化可能执行目标 build/renderer；静态读取要求保持。修改在授权源码内进行，生成内容由 AW 重建。
 
-删除插件会检查依赖和源码状态。本地开发源激活按用户明确请求执行。导出 Portable 包使用 `aw skill materialize`，不会自动安装到 Agent；为通用方法准备运行包可使用 `aw review prepare`。
+删除插件会检查依赖和源码状态。本地开发源激活按用户明确请求执行。导出 Portable 包使用 `aw dev skill export`，不会自动安装到 Agent；为通用方法准备运行包可使用 `aw dev review prepare`。
 
 实际 Catalog 发布由用户显式启动 `publish-aw-catalog`，并针对具体发布计划授权。

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "agent-subagent",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
   "marketplace": {
     "category": "workflow",
@@ -19,6 +19,7 @@
   "requires": {
     "aw": {
       "capabilities": [
+        "aw.cli-output.v1",
         "aw.dynamic-artifacts.v2",
         "aw.installed-runtime-config.v2",
         "aw.managed-commands.v1",

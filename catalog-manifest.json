@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.67",
+  "catalogVersion": "0.1.0-beta.70",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "3ce51085bd9716184bcdc16dc55e099bbab56522"
+    "sourceHead": "e7cc4ea7e2a53bc953b2522fbc278d3e46a173cb"
   },
   "entries": [
     {
@@ -44,7 +44,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.8",
+      "version": "0.1.0-beta.9",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -55,9 +55,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:665e9433e2355ceb96f0d50ae860ea929c31e76a5906469f87d1787d7e9b6ede",
-      "manifestDigest": "sha256:0057d8962db1f33fccc4c707f88077c9e697b3b57cc64532d49db9122a4c686f",
-      "contentDigest": "sha256:f072942024f9266eba136c791f88e50213678f6882518caa860c7092d1c82a9c"
+      "artifactDigest": "sha256:06e7d1d16520eaf6a3c4d24b5f37f97e3b9e2e005a1a2902175e5b4f484dd3d7",
+      "manifestDigest": "sha256:a55eb24f877ffc3f30420fb4f96640f282993204415a1acb47f82894016534d6",
+      "contentDigest": "sha256:d2d51a3ea9a2223b110c03e5daa952851345bd691a9da21afe5757b78fd31803"
     },
     {
       "name": "agent-skill-toolkit",
@@ -80,7 +80,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.14",
+      "version": "0.1.0-beta.15",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -93,9 +93,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:1cf5d5b6db26ca92153025468d7bdf50e6f1939cfbf78f5f8a15042656507a4d",
-      "manifestDigest": "sha256:a308e39267ad390b6655643cdbe8f3287e15404fe6f4d7a3e833b8e0b7e05f5a",
-      "contentDigest": "sha256:a03f1c15efedc2449950e4d808f865d58aafc8add3351188f18d8f85fb8a91cf"
+      "artifactDigest": "sha256:b3894b573772bfe4bbb404a47ac5fb49a5a56f3874f3e2aa2a310cbf873b32e1",
+      "manifestDigest": "sha256:efc1a28986d071fb545292740d204039185271f807d0be81febf0cfa846013e1",
+      "contentDigest": "sha256:d9c4f9561083a5e361f20eefb683b38e8c49d53c5b21d3cfdcf1032c6ad94272"
     },
     {
       "name": "agent-subagent",
@@ -124,11 +124,12 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
+            "aw.cli-output.v1",
             "aw.dynamic-artifacts.v2",
             "aw.installed-runtime-config.v2",
             "aw.managed-commands.v1",
@@ -146,9 +147,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:04328174e1e68357b785c53f56f95530651829a74fac43cbc61ee93a6625f370",
-      "manifestDigest": "sha256:3b5457f506c1c8be5cd0412ee6fa189a8f02506e81ed4b36be3fdc1cbee73b67",
-      "contentDigest": "sha256:6ea0a2649978adb46b5ee9cb1252d6098f4dfa03021eba7174b62d81a6c20187"
+      "artifactDigest": "sha256:2bae74dc41758acda6feb4f91152701c5b48092d0fff871da7004294812fec15",
+      "manifestDigest": "sha256:f0561d343a9aeef99f45c05efcdaefbf06afb7ea8b4a4e7d60bc382a4d2a649a",
+      "contentDigest": "sha256:e70580cf12b90374e91ea80e25b309ce3aac752699bc61c866fbcadcaed379f3"
     },
     {
       "name": "aw-development-toolkit",
@@ -171,7 +172,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.13",
+      "version": "0.1.0-beta.14",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -179,25 +180,26 @@
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.catalog-authoring.v1",
-            "aw.catalog-dev-source.v1",
-            "aw.catalog-publication.v1",
+            "aw.catalog-authoring.v2",
+            "aw.catalog-dev-source.v2",
+            "aw.catalog-publication.v2",
             "aw.claude.sandbox-exclusions.v1",
+            "aw.cli-output.v1",
             "aw.managed-commands.v1",
-            "aw.plugin-authoring.v1",
+            "aw.plugin-authoring.v2",
             "aw.plugin-manifest.v3",
             "aw.plugin-skills.v1",
             "aw.portable-skills.v1",
-            "aw.review-inspection.v2",
-            "aw.review-preparation.v1",
-            "aw.self-check.v1",
-            "aw.skill-validation.v1"
+            "aw.review-inspection.v3",
+            "aw.review-preparation.v2",
+            "aw.self-check.v2",
+            "aw.skill-validation.v2"
           ]
         }
       },
-      "artifactDigest": "sha256:6d48ed4fae3e96cc5e723b0a5bf64510e5d39fee2586912982ff1186949668e4",
-      "manifestDigest": "sha256:b0efa00f09315381de528ac6d3e1b8164771b65669f7ab7c8a06749dbfd4313f",
-      "contentDigest": "sha256:7176090c47047e5f81a2954760bc7943097a238f24927e29ced30349200ee787"
+      "artifactDigest": "sha256:c45a983fea9e5208464afd1ebe845c640a1e9af40c61591772d3b092a497288e",
+      "manifestDigest": "sha256:90a9fa19cb97f576bbee887d00eaa3a4ad5de1b28a76feb0ecf8904bcd38db02",
+      "contentDigest": "sha256:b624bd0a0e6f1b062a5173f052d5dd95d8f246bcca0fe587a3438404db76f461"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -220,22 +222,23 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.8",
+      "version": "0.1.0-beta.9",
       "dependencies": [
         "agent-skill-toolkit"
       ],
       "requires": {
         "aw": {
           "capabilities": [
+            "aw.cli-output.v1",
             "aw.plugin-manifest.v3",
             "aw.plugin-skills.v1",
-            "aw.skill-eval.v2"
+            "aw.skill-eval.v3"
           ]
         }
       },
-      "artifactDigest": "sha256:b9f46516fe1a37b2ac3f7e418f9420a3995f1308032310af0bf5fe6325dc6315",
-      "manifestDigest": "sha256:54934ac3eac96b328ab77d6c53b6abf51dc392fbd23c8dc3feb8ecf100a1ba56",
-      "contentDigest": "sha256:b68bbf51f0aab723a9c01d720a046144ab59ca7038f4d834a94d67550fed1919"
+      "artifactDigest": "sha256:7d534c8efbc3d7f1a9c5244c49218bce847ef281510ac72515fc5e2c974e9c55",
+      "manifestDigest": "sha256:8fb7fd9ba529b1f070802c0bb00510af75fce7d22a93e7fb4119456846eec01e",
+      "contentDigest": "sha256:2f5d961764539ef70799576291ca868471bdf05cee62ff693e99f9ab15378617"
     },
     {
       "name": "browser-use",
@@ -258,7 +261,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -270,9 +273,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:3b3a168d5a61e3d2471b10a447340856cc1b078bd93eedc9bbf5e5f94ea83536",
-      "manifestDigest": "sha256:335c8843ab599f4f7c9b282c74c16b50056e1b93932ef5a92da1e02651e149f4",
-      "contentDigest": "sha256:a6ebaf08010ad78b2f4c433b69c18b6411af3421ff888cfc6938905021821985"
+      "artifactDigest": "sha256:a90a78354943d71f58cbf330456f5e85028601758438c7203bc8e64cb99688ba",
+      "manifestDigest": "sha256:f19d0adfe22a0f83ad73e0c8089ed5610c91c5f55d950d8966527cc78a4e846e",
+      "contentDigest": "sha256:bc517a5cb20fc16337a623110e1609d4ff251b32b2d636db19e7fb1fd001aafb"
     },
     {
       "name": "codex-enhance",
@@ -304,7 +307,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.26",
+      "version": "0.2.0-beta.27",
       "dependencies": [
         "agent-subagent"
       ],
@@ -324,9 +327,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:27c140df63f873ac3fb5fa34d99a376663c2ce00cdc9fdd9dae5478a6599fe48",
-      "manifestDigest": "sha256:d01053ebc6d8e2f1e9d2fde0dfb3255d1ad4367437aa9a8496bd3ac9b9599cbe",
-      "contentDigest": "sha256:c1bd27dc1928ca67ea8c8409c3944dbff1542d20462ab520ad5baa4e2428287f"
+      "artifactDigest": "sha256:20346e280469c5a38ccec42b38c913c9ca4aeced47b6bcc0f4dad8ad55c0701a",
+      "manifestDigest": "sha256:cd2be0119a227fbff8e60b4b16fe49604d62dd9f1e53fbca0ae26528a92816a8",
+      "contentDigest": "sha256:4927003fde6b66956ca308fd68373f0e4cb6eef1c4bc394c1c68490ac93ade0d"
     },
     {
       "name": "decision-kit",
@@ -349,7 +352,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.8",
+      "version": "0.1.0-beta.9",
       "dependencies": [
         "human-content"
       ],
@@ -362,9 +365,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:8542c329f80bc2a5f2f2dbb674d27f42989a348b31db87cc95aebdcde5f2b6a1",
-      "manifestDigest": "sha256:3cab306dc9bf156a34db07f2f25b2628ab10e3ff0e4aa028d7631124b17785b5",
-      "contentDigest": "sha256:5cb04ccf5fbc2128ef978bf8ab361640808eb24168b1166fc99f08f821ee5084"
+      "artifactDigest": "sha256:40b9e1b623f54f9024a386e6106b944499fdbda97630ea56311971abf44b601d",
+      "manifestDigest": "sha256:70c4878f5b756aab9588240b6c70a8b2db580dafc8438641d2ad0c0307c1e84f",
+      "contentDigest": "sha256:4002c03afa60d3b788dc3ab774138ba655abdff31326f04364f9e5c8380a853e"
     },
     {
       "name": "dev-workflow",
@@ -393,7 +396,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.19",
+      "version": "0.1.0-beta.20",
       "dependencies": [
         "decision-kit",
         "human-content"
@@ -407,9 +410,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:a3e279b936ba4625989e96ff22f1355e0f60e7ec89f2a7c999c7ae49d9820701",
-      "manifestDigest": "sha256:1fdf0e2c95029fbf59096a8a5d02cdfea37107d87f76f37d1360bb7f1c113e3d",
-      "contentDigest": "sha256:01eeb7c49c57eec8d6f8b8b103813a9ba254e7918d28694f3a4466de3e93f4b4"
+      "artifactDigest": "sha256:54f560e650cd27ed9efd3206ca574a9bc0915efc48bf162fbdbda6c69b492312",
+      "manifestDigest": "sha256:febea64c91636059993317df5872ae2db523bf29a79c4ed629ef10279881869a",
+      "contentDigest": "sha256:8706bc16a87d9476f7d700c5109359d30fb24e976b25f343fc8e15ed8dc93546"
     },
     {
       "name": "frontend-design",
@@ -432,7 +435,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -443,9 +446,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:a89e842569548f4d00452d400483ae65110a1477fcf4742a7669eed308598ba5",
-      "manifestDigest": "sha256:19600356ad7dc4e98ed9719dc15a6e9196359cb3eb70eb39d4dbc0dab20e0236",
-      "contentDigest": "sha256:0db39760eb6b3536487dc1da0d076ccbe502cdb886516a35c87a5f994be366a0"
+      "artifactDigest": "sha256:64559369ada20be958fc3459d542e62a1e9693269e8a6f3df413513581fbb088",
+      "manifestDigest": "sha256:854448395b43c4a56fb1aa80798bd424b255bcbbd4d734c7e8b69bc674db9a7e",
+      "contentDigest": "sha256:546928a68d073b2024446a717cb185466497a9f204192fe4598fbd5037898d68"
     },
     {
       "name": "git-toolkit",
@@ -475,7 +478,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -485,9 +488,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:4ac27b6ac788a0791d63783e85447aa614e132c831511a46f832e17f7282b509",
-      "manifestDigest": "sha256:73d9be71f64842ddb3c55001b78d0b32b78697ec9c98be9330fded88cb4548ba",
-      "contentDigest": "sha256:9a0f13d963732c197930d0cd008c1fcb277c6dfb1447cebb15e445876bd6fb22"
+      "artifactDigest": "sha256:a18526bae2deef9e5888176e60c17e63e5f9f7309983f7bf9913dee491a5164b",
+      "manifestDigest": "sha256:b0b2137d8d02e26e24aa27b10b1a6bbe99b9d317e63c25672e53455ab9c0aa91",
+      "contentDigest": "sha256:5d97ec553b091eda8ccf598a9bb5ce4a15822e6f8e45b3c12c78e0a1d14cebca"
     },
     {
       "name": "human-content",
@@ -515,7 +518,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -526,9 +529,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:3f776dabfd6088a914ff687b6cb3bdb56ffb84604c7d9539f28c6a70d79d9d1e",
-      "manifestDigest": "sha256:fb002c0dec0922a7e19207838fd8d43551a5a86e9ef0aa48c0fd66dcaa69b6b1",
-      "contentDigest": "sha256:1305cba4b51950342eea954c5291679a1614e20b731ab8bf2b882008f6d2efbe"
+      "artifactDigest": "sha256:6d840b6704f0db21d08a6cc070b318b0f83218ca14d3e748b4c77f5b0f1d635c",
+      "manifestDigest": "sha256:56d9a88a0b15cbb10078f6a80e67869ccbb5d6abf61d0124d7bf491e75d60284",
+      "contentDigest": "sha256:f81cc6d6d37f9e6c52eb1d0fc0143c8052b150cefed7b513781c446dd9932e26"
     }
   ]
 }

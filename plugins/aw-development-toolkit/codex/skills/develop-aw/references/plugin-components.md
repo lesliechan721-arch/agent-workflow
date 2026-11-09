@@ -1,6 +1,6 @@
 # Plugin 组件与配置
 
-根据用户需要的结果选择组件，再查询 `aw plugin capabilities --json`、对应 `--surface` 和公开帮助。本文件提供选择与验证方法，字段及 accepted values 由当前 CLI/Core 合同负责。
+根据用户需要的结果选择组件，再查询 `aw dev plugin capabilities --json`、对应 `--surface` 和公开帮助。本文件提供选择与验证方法，字段及 accepted values 由当前 CLI/Core 合同负责。
 
 ## 选择组件
 

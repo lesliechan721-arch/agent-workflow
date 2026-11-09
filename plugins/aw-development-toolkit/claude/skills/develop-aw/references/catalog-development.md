@@ -4,15 +4,15 @@
 
 ## Workspace 与组成
 
-只在用户请求初始化时运行公开 `aw catalog init`，随后用静态 status 确认 marker、identity 和 inventory。现有 Workspace 直接读取当前 status 与 source metadata。
+只在用户请求初始化时运行公开 `aw dev catalog create`，随后用静态 status 确认 marker、identity 和 inventory。现有 Workspace 直接读取当前 status 与 source metadata。
 
 插件 source 使用 canonical `<root>/plugins/<name>`。维护 metadata、inventory 与 manifest dependency composition；依赖按实际可安装组合声明。Plugin 内部内容采用 Plugin 开发（`references/plugin-development.md`），共享文件与构建边采用 构建与共享（`references/build-and-sharing.md`），两类关系分别核对。
 
-Plugin source version 与 Catalog version 分开。Catalog version 只通过公开 `aw catalog version` 管理，不手改生成 snapshot、digest 或内部状态。
+Plugin source version 与 Catalog version 分开。Catalog version 只通过公开 `aw dev catalog version` 管理，不手改生成 snapshot、digest 或内部状态。
 
 ## 删除 Plugin
 
-删除改变 Catalog 组成。用户指定删除目标后，先从 status inventory 唯一定位 canonical plugin，读取 `aw plugin remove --help`，核对反向依赖和当前 Git 状态。
+删除改变 Catalog 组成。用户指定删除目标后，先从 status inventory 唯一定位 canonical plugin，读取 `aw dev plugin remove --help`，核对反向依赖和当前 Git 状态。
 
 公开 remove 要求目标已经存在于 Git HEAD，且当前目标树的文件内容、可执行位和形状与 HEAD 相符。目标内已暂存、未暂存、未跟踪、ignored 内容、符号链接或额外节点等会影响该前提；以命令真实诊断为准。存在反向依赖时先解决有效依赖关系，不能强制绕过。
 

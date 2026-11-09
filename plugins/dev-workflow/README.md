@@ -5,7 +5,7 @@
 ## 安装与开始
 
 ```bash
-aw plugin targets set codex claude
+aw target set codex claude
 aw plugin install dev-workflow --scope user
 ```
 

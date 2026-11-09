@@ -7,7 +7,7 @@
 ## 安装
 
 ```bash
-aw plugin targets set codex claude
+aw target set codex claude
 aw plugin install git-toolkit --scope user
 ```
 
