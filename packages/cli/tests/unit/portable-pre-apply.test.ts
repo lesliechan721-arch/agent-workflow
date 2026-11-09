@@ -100,12 +100,15 @@ describe('Portable preApply execution', () => {
     await writePluginConfigStore({ ...f.store, values: { value: 7 } });
     await writePluginConfigStore({ ...f.store, platform, values: { value: `stored-${platform}` } });
     const rejected = await f.run(['install', 'team/demo', '--scope', 'project']);
-    expect(rejected.exitCode).toBe(1);
-    expect(JSON.stringify(rejected.value)).toContain('preApplyAuthorizationRequired');
+    expect(rejected.exitCode).toBe(3);
+    expect(rejected.value).toMatchObject({ command: 'plugin.install', status: 'blocked', data: {
+      confirmation: { required: true, provided: false, effects: [expect.objectContaining({ code: 'runPreApply' })] },
+      changes: { requirements: 'none', outputs: 'none' },
+    }, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]) });
     expect(await fs.pathExists(f.output(platform))).toBe(false);
     expect(await f.events()).toEqual([]);
-    const plan = await prepareRecovery('sync', ['team/demo'], {
-      cwd: f.cwd, env: f.env, context: 'project', cliVersion: '1.0.0', targets: [platform],
+    const plan = await prepareRecovery('install', ['team/demo'], {
+      scope: 'project', cwd: f.cwd, env: f.env, context: 'project', cliVersion: '1.0.0', targets: [platform],
     });
     expect(plan.changes).toContain(`运行插件 preApply 脚本：team/demo / ${platform} / project。`);
     expect(plan.joint?.children.flatMap((child) => child.preApplyAuthorization ?? []))
@@ -135,15 +138,15 @@ describe('Portable preApply execution', () => {
     const f = await fixture(['cursor', 'opencode'], true);
     await fs.outputFile(f.fail, 'fail cursor');
     const result = await f.run(['install', 'team/consumer', 'team/independent', '--scope', 'project', '--yes']);
-    expect(result.exitCode).toBe(1);
-    expect(result.value.allSatisfied).toBe(false);
-    expect(result.value.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/provider', agent: 'cursor', execution: 'failed',
-        blockers: expect.arrayContaining([expect.objectContaining({ code: 'preApplyExited' })]) }),
-      expect.objectContaining({ pluginId: 'team/consumer', agent: 'cursor', execution: 'not-run',
-        blockers: expect.arrayContaining([expect.objectContaining({ code: 'dependencyApplyFailed' })]) }),
-      expect.objectContaining({ pluginId: 'team/independent', agent: 'cursor', execution: 'applied' }),
-      expect.objectContaining({ pluginId: 'team/consumer', agent: 'opencode', execution: 'applied' }),
+    expect(result.exitCode).toBe(4);
+    expect(result.value.data.allSatisfied).toBe(false);
+    expect(result.value.data.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/provider', target: 'cursor', execution: 'failed',
+        blockerCodes: expect.arrayContaining(['preApplyExited']) }),
+      expect.objectContaining({ pluginId: 'team/consumer', target: 'cursor', execution: 'not-run',
+        blockerCodes: expect.arrayContaining(['dependencyApplyFailed']) }),
+      expect.objectContaining({ pluginId: 'team/independent', target: 'cursor', execution: 'applied' }),
+      expect.objectContaining({ pluginId: 'team/consumer', target: 'opencode', execution: 'applied' }),
     ]));
     expect(await fs.pathExists(f.output('cursor', 'provider'))).toBe(false);
     expect(await fs.pathExists(f.output('cursor', 'consumer'))).toBe(false);

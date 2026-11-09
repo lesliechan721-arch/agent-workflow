@@ -84,7 +84,7 @@ async function createNativeReferenceFixture(preApply = false) {
     return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
   };
 
-  expect(await run(['plugin', 'targets', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
+  expect(await run(['target', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
   const installedResult = await run(['plugin', 'install', 'team/consumer', '--scope', 'project', '--yes']);
   expect(installedResult, JSON.stringify(installedResult)).toMatchObject({exitCode:0});
   const source = (await resolveCatalogOperationContext({ sourceIds: ['team'], env })).catalog.sources[0]!.resolution!;
@@ -162,7 +162,7 @@ async function createCommandPackageReferenceFixture(options: {
     const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner });
     return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
   };
-  expect(await run(['plugin', 'targets', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
+  expect(await run(['target', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
   const source = (await resolveCatalogOperationContext({ sourceIds: ['team'], env })).catalog.sources[0]!.resolution!;
   const setSelected = async (selected: string) => {
     await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
@@ -208,8 +208,17 @@ describe('cross-plugin public config apply', () => {
     expect(review.config?.preApplyAuthorization ?? []).toEqual([]);
     expect(await fs.pathExists(scripts)).toBe(false);
     const repaired = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"remote"}]', '--apply', '--yes']);
-    expect(repaired, JSON.stringify(repaired)).toMatchObject({ exitCode: 0, payload: { apply: { state: 'succeeded', targetResults: [],
-      commandResults: [{ producer: { pluginName: 'consumer', key: 'personal' }, state: 'completed' }] } } });
+    expect(repaired, JSON.stringify(repaired)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        data: {
+          apply: {
+            state: 'succeeded', targetResults: [],
+            commandResults: [{ producer: { pluginName: 'consumer', key: 'personal' }, state: 'completed' }]
+          }
+        }
+      }
+    });
     expect(await fs.readJson(config)).toEqual({ selected: 'remote' });
     expect((await packages()).packages.map((entry) => `${entry.producer.sourceId}/${entry.producer.key}`).sort()).toEqual(['other/personal', 'team/personal']);
     expect(await fs.readFile(path.join(foreignRoot, '.aw-command-producer.json'))).toEqual(foreignBefore);
@@ -218,7 +227,12 @@ describe('cross-plugin public config apply', () => {
     const before = await fs.readFile(path.join(resource, '.aw-command-producer.json'));
     const rendered = await fs.readFile(renders);
     const unchanged = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"remote"},{"key":"other"}]', '--apply', '--yes']);
-    expect(unchanged, JSON.stringify(unchanged)).toMatchObject({ exitCode: 0, payload: { apply: { reason: 'noEffectiveConfigChange' } } });
+    expect(unchanged, JSON.stringify(unchanged)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        data: { apply: { reason: 'noEffectiveConfigChange' } }
+      }
+    });
     expect(await fs.readFile(path.join(resource, '.aw-command-producer.json'))).toEqual(before);
     expect(await fs.readFile(renders)).toEqual(rendered);
   }, 30_000);
@@ -234,12 +248,28 @@ describe('cross-plugin public config apply', () => {
     await fs.outputFile(fail, 'fail');
     await fs.outputFile(renders, '');
     const failed = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"next"}]', '--apply', '--yes']);
-    expect(failed, JSON.stringify(failed)).toMatchObject({ exitCode: 1, payload: { configWrite: 'succeeded', overallState: 'partial', apply: { state: 'partial' } } });
-    expect(failed.payload.apply.commandResults).toEqual(expect.arrayContaining([expect.objectContaining({
+    expect(failed, JSON.stringify(failed)).toMatchObject({
+      exitCode: 4, payload: {
+        schemaVersion: 1,
+        status: 'partial',
+        data: {
+          configWrite: 'succeeded',
+          apply: { state: 'partial' }
+        }
+      }
+    });
+    expect(failed.payload.data.apply.commandResults).toEqual(expect.arrayContaining([expect.objectContaining({
       producer: expect.objectContaining({ pluginName: 'consumer', key: 'personal' }), state: 'failed',
       errors: [expect.objectContaining({ code: 'dependencyApplyFailed' })],
-      recoveryActions: ['aw command package sync team/consumer personal --scope user --yes'],
     })]));
+    expect(failed.payload.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dependencyApplyFailed',
+      subject: expect.objectContaining({ pluginId: 'team/consumer', scope: 'user' })
+    }));
+    expect(failed.payload.nextActions).toContainEqual(expect.objectContaining({
+      kind: 'command',
+      argv: ['aw', 'command', 'package', 'sync', 'team/consumer', 'personal', '--scope', 'user'], requiresConfirmation: true
+    }));
     expect((await fs.readJson(resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'provider', scope: 'user', cwd, env }))).common.registry)
       .toContainEqual({ key: 'next' });
     expect(await fs.readJson(config)).toEqual({ selected: 'native' });
@@ -380,16 +410,21 @@ describe('cross-plugin public config apply', () => {
     let failProvider = false;
     const codex = await createCodexNativeTestRuntime(isolation, { rejectAdd: (id) => failProvider && id.startsWith('provider@') });
     const runner = vi.fn(async (invocation: NativeCliInvocation) => invocation.command === 'claude'
-      ? native.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation));
+    ? native.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation));
     const run = async (args: string[]) => {
-      const output = createCapturedCliIo();
-      const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner });
-      return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
-    };
-    expect(await run(['plugin', 'targets', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
+    const output = createCapturedCliIo();
+    const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner });
+    return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
+  };
+    expect(await run(['target', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
     const initial = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
-    expect(initial, JSON.stringify(initial)).toMatchObject({ exitCode: 0, payload: { ok: true } });
-    expect(await run(['plugin', 'targets', 'set', 'codex', 'claude'])).toMatchObject({ exitCode: 0 });
+    expect(initial, JSON.stringify(initial)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        status: 'success'
+      }
+    });
+    expect(await run(['target', 'set', 'codex', 'claude'])).toMatchObject({ exitCode: 0 });
     const claude = await run(['plugin', 'install', 'team/provider', '--scope', 'user', '--yes']);
     expect(claude, JSON.stringify(claude)).toMatchObject({ exitCode: 0 });
     const source = (await resolveCatalogOperationContext({ sourceIds: ['team'], env })).catalog.sources[0]!.resolution!;
@@ -399,43 +434,89 @@ describe('cross-plugin public config apply', () => {
     const consumerBinding = path.join(env.AW_HOME!, 'marketplaces/team/plugins/consumer/codex/skills/consumer/.aw-runtime-config.json');
     const before = await fs.readFile(consumerBinding);
     const savedOnly = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"unrelated"}]']);
-    expect(savedOnly, JSON.stringify(savedOnly)).toMatchObject({ exitCode: 0, payload: { configWrite: 'succeeded', apply: { reason: 'notRequested' } } });
+    expect(savedOnly, JSON.stringify(savedOnly)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        data: {
+          configWrite: 'succeeded',
+          apply: { reason: 'notRequested' }
+        }
+      }
+    });
     expect(await fs.readFile(consumerBinding)).toEqual(before);
     const providerBinding = path.join(env.AW_HOME!, 'marketplaces/team/plugins/provider/codex/skills/provider/.aw-runtime-config.json');
     expect((await fs.readJson(providerBinding)).effectiveValues.registry).toEqual([]);
     await fs.writeFile(trace, '');
     failProvider = true;
     const saved = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"remote"}]', '--apply', '--yes']);
-    expect(saved, JSON.stringify(saved)).toMatchObject({ exitCode: 1, payload: { configWrite: 'succeeded', overallState: 'partial', apply: { state: 'partial' } } });
-    expect(saved.payload.apply.targetResults.map((entry: { target: { pluginName: string; platform: string } }) =>
+    expect(saved, JSON.stringify(saved)).toMatchObject({
+      exitCode: 4, payload: {
+        schemaVersion: 1,
+        status: 'partial',
+        data: {
+          configWrite: 'succeeded',
+          apply: { state: 'partial' }
+        }
+      }
+    });
+    expect(saved.payload.data.apply.targetResults.map((entry: { target: { pluginName: string; platform: string } }) =>
       `${entry.target.pluginName}/${entry.target.platform}`).sort()).toEqual(['consumer/codex', 'provider/claude', 'provider/codex']);
-    expect(saved.payload.apply.targetResults).toEqual(expect.arrayContaining([
+    expect(saved.payload.data.apply.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({ target: expect.objectContaining({ pluginName: 'provider', platform: 'codex' }), state: 'failed' }),
       expect.objectContaining({ target: expect.objectContaining({ pluginName: 'provider', platform: 'claude' }), state: 'completed' }),
-      expect.objectContaining({ target: expect.objectContaining({ pluginName: 'consumer', platform: 'codex' }), state: 'skipped', errorCode: 'dependencyApplyFailed',
-        message: expect.stringContaining('aw plugin sync team/consumer --context user --target codex --yes') }),
+      expect.objectContaining({ target: expect.objectContaining({ pluginName: 'consumer', platform: 'codex' }), state: 'skipped', errorCode: 'dependencyApplyFailed' }),
     ]));
+    expect(saved.payload.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'dependencyApplyFailed',
+      subject: { pluginId: 'team/consumer', target: 'codex', scope: 'user' }
+    }));
+    expect(saved.payload.nextActions).toContainEqual(expect.objectContaining({
+      kind: 'command',
+      argv: ['aw', 'plugin', 'sync', 'team/consumer', '--context', 'user', '--target', 'codex'], requiresConfirmation: true
+    }));
     expect((await fs.readJson(resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'provider', scope: 'user', cwd, env }))).common.registry).toEqual([{ key: 'remote' }]);
     expect(await fs.readFile(consumerBinding)).toEqual(before);
     expect((await fs.readFile(trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line).platform).sort()).toEqual(['claude', 'codex']);
     failProvider = false;
     const recovered = await run(['plugin', 'sync', 'team/consumer', '--target', 'codex', '--context', 'user', '--yes']);
-    expect(recovered, JSON.stringify(recovered)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    expect(recovered, JSON.stringify(recovered)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        status: 'success'
+      }
+    });
     expect((await fs.readJson(consumerBinding)).effectiveValues).toEqual({ selected: 'remote' });
     expect((await fs.readJson(providerBinding)).effectiveValues.registry).toEqual([{ key: 'remote' }]);
   }, 30_000);
-  // Test Value Gate: denied shared output updates retain the saved config and the prior package bytes.
-  it('confirms shared native output updates after saving config and uses the platform profile for project activation', async () => {
+  // Test Value Gate: missing CLI confirmation preserves config and shared output; TUI retry uses independently saved values.
+  it('requires CLI confirmation before saving shared native changes and retains TUI project apply', async () => {
     const { cwd, env, runner, run, store, binding } = await createNativeReferenceFixture();
     await writePluginConfigStore({ ...store('provider'), values: { registry: [] } });
     await writePluginConfigStore({ ...store('consumer'), values: { selected: 'remote' } });
     const configFile = resolvePluginConfigStorePath(store('provider'));
+    const configBefore = await fs.readFile(configFile);
     const artifactBefore = await fs.readFile(binding);
     const rejected = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'project', '--value-json', '[{"key":"remote"}]', '--apply']);
-    expect(rejected, JSON.stringify(rejected)).toMatchObject({ exitCode: 1, payload: { configWrite: 'succeeded', overallState: 'partial' } });
-    expect(JSON.stringify(rejected)).toContain('sharedNativeConfigApplyConfirmationRequired');
-    expect((await fs.readJson(configFile)).common.registry).toEqual([{ key: 'remote' }]);
+    expect(rejected, JSON.stringify(rejected)).toMatchObject({
+      exitCode: 3, payload: {
+        command: 'plugin.config.set', status: 'blocked',
+        data: {
+          confirmation: {
+            required: true, provided: false, effects: expect.arrayContaining([
+              expect.objectContaining({
+                code: 'replaceSharedOutput', impact: 'shared',
+                subject: expect.objectContaining({ pluginId: 'team/provider', target: 'codex', scope: 'project' })
+              }),
+            ])
+          }
+        },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
+      }
+    });
+    expect(await fs.readFile(configFile)).toEqual(configBefore);
     expect(await fs.readFile(binding)).toEqual(artifactBefore);
+    expect(await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'project', '--value-json', '[{"key":"remote"}]']))
+      .toMatchObject({ exitCode: 0, payload: { data: { configWrite: 'succeeded', apply: { reason: 'notRequested' } } } });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({ cwd, env, nativeCliRunner: runner, interactive: false }));
     await dependencies.loadStatus(new AbortController().signal);
     const intent: OperationIntent = { kind: 'configSave', pluginId: 'team/provider', scope: 'user', context: 'project', apply: true,
@@ -468,6 +549,7 @@ describe('cross-plugin public config apply', () => {
     await writePluginConfigStore({ ...store('provider'), values: { registry: [] } });
     await writePluginConfigStore({ ...store('consumer', 'codex'), values: { hookSelection: 'remote', extra: 1 } });
     const providerFile = resolvePluginConfigStorePath(store('provider'));
+    const configBefore = await fs.readFile(providerFile);
     const artifactBefore = await fs.readFile(binding);
     await fs.outputFile(trace, '');
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({ cwd, env, nativeCliRunner: runner, interactive: false }));
@@ -479,11 +561,27 @@ describe('cross-plugin public config apply', () => {
     expect(review.config?.sharedNativeRenderTargets ?? []).toEqual([]);
     expect(review.config?.preApplyAuthorization).toContainEqual(expect.objectContaining({ pluginId: 'team/consumer', scope: 'project' }));
     const rejected = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'project', '--value-json', '[{"key":"remote"}]', '--apply']);
-    expect(rejected, JSON.stringify(rejected)).toMatchObject({ exitCode: 1, payload: { configWrite: 'succeeded', overallState: 'partial' } });
-    expect(JSON.stringify(rejected)).toContain('preApplyAuthorizationRequired');
-    expect((await fs.readJson(providerFile)).common.registry).toEqual([{ key: 'remote' }]);
+    expect(rejected, JSON.stringify(rejected)).toMatchObject({
+      exitCode: 3, payload: {
+        command: 'plugin.config.set', status: 'blocked',
+        data: {
+          confirmation: {
+            required: true, provided: false, effects: expect.arrayContaining([
+              expect.objectContaining({
+                code: 'runPreApply', impact: 'unknown',
+                subject: expect.objectContaining({ pluginId: 'team/consumer', target: 'codex', scope: 'project' })
+              }),
+            ])
+          }
+        },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
+      }
+    });
+    expect(await fs.readFile(providerFile)).toEqual(configBefore);
     expect(await fs.readFile(binding)).toEqual(artifactBefore);
     expect(await fs.readFile(trace, 'utf8')).toBe('');
+    expect(await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'project', '--value-json', '[{"key":"remote"}]']))
+      .toMatchObject({ exitCode: 0, payload: { data: { configWrite: 'succeeded', apply: { reason: 'notRequested' } } } });
     const retryIntent: OperationIntent = { ...configIntent, updates: undefined, retryApply: true };
     const authorized = await dependencies.prepareReviewEvidence!(retryIntent, new AbortController().signal, () => undefined);
     expect(authorized.config?.preApplyAuthorization, JSON.stringify({

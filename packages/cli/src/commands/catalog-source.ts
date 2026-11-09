@@ -66,7 +66,7 @@ export interface CatalogSourceMutationProgress {
 
 export type CatalogSourceMutationRequest =
   | { action: 'add'; source: CatalogSource }
-  | { action: 'update'; sourceId: string; update: CatalogSourceUpdate }
+  | { action: 'update'; sourceId: string; update: CatalogSourceUpdate; primary?: boolean }
   | { action: 'setPrimary'; sourceId: string }
   | { action: 'remove'; sourceId: string; replacementPrimarySourceId?: string };
 
@@ -126,7 +126,7 @@ export class CatalogManagedSourceProtectedError extends Error {
   readonly code = 'managedSourceProtected';
 
   constructor(sourceId: string) {
-    super(`Catalog source "${sourceId}" is managed by a Catalog Workspace. Use catalog dev commands.`);
+    super(`Catalog source "${sourceId}" is managed by a Catalog Workspace. Use aw dev source commands.`);
     this.name = 'CatalogManagedSourceProtectedError';
   }
 }
@@ -244,18 +244,23 @@ export async function preflightCatalogSourceMutation(options: {
   const request = options.request;
   const sourceId = request.action === 'add' ? request.source.id : request.sourceId;
   const before = snapshot.config.sources.find((source) => source.id === sourceId);
+  const primaryOnly = request.action === 'update' && request.primary === true
+    && Object.values(request.update).every((value) => value === undefined);
   assertManagedSourceAccess({
     source: request.action === 'add' ? request.source
-      : request.action === 'update' || request.action === 'remove' ? before : undefined,
+      : (request.action === 'update' && !primaryOnly) || request.action === 'remove' ? before : undefined,
     managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
   });
-  const proposedConfig = request.action === 'add'
+  let proposedConfig = request.action === 'add'
     ? await addCatalogSource(snapshot.config, request.source, options.cwd)
     : request.action === 'update'
       ? await updateCatalogSource(snapshot.config, sourceId, request.update, options.cwd)
       : request.action === 'setPrimary'
         ? setPrimaryCatalogSource(snapshot.config, sourceId)
         : removeCatalogSource(snapshot.config, sourceId, request.replacementPrimarySourceId);
+  if (request.action === 'update' && request.primary) {
+    proposedConfig = setPrimaryCatalogSource(proposedConfig, sourceId);
+  }
   const primaryChange = catalogPrimaryChange(snapshot.config, proposedConfig);
   const after = proposedConfig.sources.find((source) => source.id === sourceId);
   const changedIdentity = Boolean(before && after && await identityChanged(before, after));
@@ -452,6 +457,7 @@ export async function addCatalogSourceCommand(options: {
 export async function updateCatalogSourceCommand(options: {
   sourceId: string;
   update: CatalogSourceUpdate;
+  primary?: boolean;
   cliVersion: string;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -461,10 +467,12 @@ export async function updateCatalogSourceCommand(options: {
   managedByWorkspaceIdentity?: string;
   requireIdentityChangeConfirmation?: boolean;
   confirmIdentityChange?: boolean;
+  requireImpactConfirmation?: boolean;
+  confirmImpact?: boolean;
   expectedImpactDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   const preview = await preflightCatalogSourceMutation({
-    request: { action: 'update', sourceId: options.sourceId, update: options.update },
+    request: { action: 'update', sourceId: options.sourceId, update: options.update, primary: options.primary },
     cwd: options.cwd,
     env: options.env,
     managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
@@ -475,8 +483,10 @@ export async function updateCatalogSourceCommand(options: {
     runtime: options.runtime,
     action: async ({ env, runtime }) => {
       const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      const primaryOnly = options.primary === true
+        && Object.values(options.update).every((value) => value === undefined);
       assertManagedSourceAccess({
-        source: snapshot.config.sources.find((source) => source.id === options.sourceId),
+        source: primaryOnly ? undefined : snapshot.config.sources.find((source) => source.id === options.sourceId),
         managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
       });
       if (snapshot.digest !== preview.configDigest) {
@@ -485,7 +495,8 @@ export async function updateCatalogSourceCommand(options: {
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
-      const config = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
+      let config = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
+      if (options.primary) config = setPrimaryCatalogSource(config, options.sourceId);
       const expectedProposedConfigDigest = options.expectedProposedConfigDigest
         ?? preview.proposedConfigDigest;
       if (calculateCatalogSourcesConfigDigest(config) !== expectedProposedConfigDigest) {
@@ -494,19 +505,26 @@ export async function updateCatalogSourceCommand(options: {
       const before = snapshot.config.sources.find((source) => source.id === options.sourceId)!;
       const after = config.sources.find((source) => source.id === options.sourceId)!;
       const changedIdentity = await identityChanged(before, after);
+      const primaryChange = catalogPrimaryChange(snapshot.config, config);
       let references = preview.references;
-      if (changedIdentity) {
+      if (changedIdentity || primaryChange) {
         const impact = await inspectCatalogSourceImpact({
           sourceId: options.sourceId,
           cwd: options.cwd,
           env,
           sourcePrimary: before.primary,
-          mode: 'identityChange',
+          ...(primaryChange ? { primaryChange } : {}),
+          mode: changedIdentity ? 'identityChange' : 'none',
         });
         references = preflightInventory(impact);
         if (options.expectedImpactDigest
           && calculateCatalogSourceImpactDigest(impact) !== options.expectedImpactDigest) {
           throw new CatalogSourceReviewStaleError(references);
+        }
+        if (primaryChange && options.requireImpactConfirmation === true
+          && catalogSourceImpactRequiresConfirmation(impact)
+          && options.confirmImpact !== true) {
+          throw new CatalogSourceImpactConfirmationRequiredError(references);
         }
       }
       if (options.requireIdentityChangeConfirmation

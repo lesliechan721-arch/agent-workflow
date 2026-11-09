@@ -7,7 +7,7 @@ Decision Kit 先调查可查事实，保留原始要求和开放问题，再按�
 ## 安装
 
 ```bash
-aw plugin targets set codex claude
+aw target set codex claude
 aw plugin install decision-kit --scope user
 ```
 
@@ -63,7 +63,7 @@ aw plugin install decision-kit --scope user
 
 ## Portable Agent Skills
 
-四个 Skill 也可通过 portable-agent-skills 分发；完整依赖闭包同时提供 Human Content 的 `explain-for-review`。使用 `aw skill install decision-kit --scope <project|user>` 安装，或使用 `aw skill materialize decision-kit --scope <project|user> --out <dir>` 导出。
+四个 Skill 也可通过 portable-agent-skills 分发；完整依赖闭包同时提供 Human Content 的 `explain-for-review`。使用 `aw plugin install decision-kit --scope <project|user>` 安装，或使用 `aw dev skill export decision-kit --scope <project|user> --out <dir>` 导出。
 
 ## Review 默认期限
 

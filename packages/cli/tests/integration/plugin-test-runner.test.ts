@@ -1208,11 +1208,17 @@ describe('plugin test native preparation', () => {
       runNativeTests(args, { ...options, nativePlatform: 'win32' }));
     let result: Awaited<ReturnType<typeof runCliEntry>>;
     try {
-      result = await runCliEntry(['plugin', 'test', pluginRoot(repoRoot), '--workspace-root', repoRoot,
+      result = await runCliEntry(['dev', 'plugin', 'test', pluginRoot(repoRoot), '--workspace-root', repoRoot,
         '--native-mode', mode, '--native-context', contextFile, '--json'], { cwd: repoRoot });
     } finally { runner.mockRestore(); }
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
-    expect(result.parseJsonStdout()).toMatchObject({ command: 'plugin:test', ok: true, stdout: expect.stringContaining('native-backend=ready') });
+    expect(result.parseJsonStdout()).toMatchObject({
+      schemaVersion: 1,
+      status: 'success',
+      command: 'dev.plugin.test',
+      data: { exitCode: 0 }
+    });
+    expect(result.stderr).toContain('native-backend=ready');
     expect(await fs.readFile(startedFile, 'utf8')).toBe('started');
   });
 
@@ -1225,11 +1231,17 @@ describe('plugin test native preparation', () => {
       runNativeTests(args, { ...options, nativePlatform: 'win32' }));
     let result: Awaited<ReturnType<typeof runCliEntry>>;
     try {
-      result = await runCliEntry(['plugin', 'test', pluginRoot(repoRoot), '--workspace-root', repoRoot,
+      result = await runCliEntry(['dev', 'plugin', 'test', pluginRoot(repoRoot), '--workspace-root', repoRoot,
         '--native-mode', 'source-candidate', '--native-context', contextFile, '--json'], { cwd: repoRoot });
     } finally { runner.mockRestore(); }
     expect(result.exitCode).toBe(1);
-    expect(result.parseJsonStdout()).toMatchObject({ command: 'plugin:test', ok: false, stderr: expect.stringContaining(protocol) });
+    expect(result.parseJsonStdout()).toMatchObject({
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'dev.plugin.test',
+      data: { exitCode: 1 }
+    });
+    expect(result.stderr).toContain(protocol);
     expect(await fs.pathExists(startedFile)).toBe(false);
   });
 

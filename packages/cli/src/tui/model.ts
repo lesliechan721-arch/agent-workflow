@@ -763,7 +763,7 @@ function parsedScopedUninstallRecovery(
   expectedPlatform: PlatformName,
 ): { pluginId: string; scope: Scope; description: string } | undefined {
   if (recovery.command !== 'uninstall' || !recovery.scope) return undefined;
-  const match = /(?:^|\s)aw plugin cleanup ([^\s]+) --target (codex|claude) --scope (user|project)(?:，|,|\s|$)/u
+  const match = /(?:^|\s)aw plugin remove --only outputs ([^\s]+) --target (codex|claude) --scope (user|project)(?:，|,|\s|$)/u
     .exec(recovery.description);
   if (!match || match[2] !== expectedPlatform
     || match[3] !== recovery.scope) return undefined;

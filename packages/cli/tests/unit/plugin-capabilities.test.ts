@@ -18,12 +18,11 @@ function capture() {
 describe('plugin capabilities command', () => {
   it('emits one combined JSON object for a selected surface', async () => {
     const output = capture();
-    expect(await runCli(['plugin', 'capabilities', '--surface', 'manifest', '--json'], {
+    expect(await runCli(['dev', 'plugin', 'capabilities', '--surface', 'manifest', '--json'], {
       io: output.io,
     })).toBe(0);
-    const result = JSON.parse(output.stdout());
+    const result = JSON.parse(output.stdout()).data;
     expect(result).toMatchObject({
-      command: 'plugin:capabilities', schemaVersion: 1,
       awVersion: expect.any(String), coreVersion: expect.any(String), surface: 'manifest',
     });
     expect(Object.keys(result.capabilities)).toEqual(['manifest']);
@@ -61,8 +60,8 @@ describe('plugin capabilities command', () => {
 
   it('uses null for the full query and emits every fixed surface', async () => {
     const output = capture();
-    expect(await runCli(['plugin', 'capabilities', '--json'], { io: output.io })).toBe(0);
-    const result = JSON.parse(output.stdout());
+    expect(await runCli(['dev', 'plugin', 'capabilities', '--json'], { io: output.io })).toBe(0);
+    const result = JSON.parse(output.stdout()).data;
     expect(result.surface).toBeNull();
     expect(Object.keys(result.capabilities)).toEqual([
       'manifest', 'build-config', 'extensions', 'slash-commands',
@@ -71,21 +70,23 @@ describe('plugin capabilities command', () => {
     expect(output.stderr()).toBe('');
   });
 
-  it('fails closed for an unknown surface without JSON stdout', async () => {
+  it('returns a structured parameter error for an unknown surface', async () => {
     const output = capture();
-    expect(await runCli(['plugin', 'capabilities', '--surface', 'unknown', '--json'], {
+    expect(await runCli(['dev', 'plugin', 'capabilities', '--surface', 'unknown', '--json'], {
       io: output.io,
-    })).toBe(1);
-    expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain('Unknown plugin capability surface');
+    })).toBe(2);
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      schemaVersion: 1, command: 'dev.plugin.capabilities', status: 'failed', data: {},
+      diagnostics: [{ code: 'invalidArguments' }],
+    });
   });
 
   it('publishes the exact renderer request context contract', async () => {
     const output = capture();
-    expect(await runCli(['plugin', 'capabilities', '--surface', 'artifacts', '--json'], {
+    expect(await runCli(['dev', 'plugin', 'capabilities', '--surface', 'artifacts', '--json'], {
       io: output.io,
     })).toBe(0);
-    const result = JSON.parse(output.stdout());
+    const result = JSON.parse(output.stdout()).data;
     expect(result.capabilities.artifacts).toContainEqual(expect.objectContaining({
       field: 'rendererContext.requestedArtifactIds',
       required: true,
@@ -104,7 +105,7 @@ describe('plugin capabilities command', () => {
 
   it('renders a compact human view', async () => {
     const output = capture();
-    expect(await runCli(['plugin', 'capabilities', '--surface', 'pre-apply'], {
+    expect(await runCli(['dev', 'plugin', 'capabilities', '--surface', 'pre-apply'], {
       io: output.io,
     })).toBe(0);
     expect(output.stdout()).toContain('Plugin authoring capabilities');

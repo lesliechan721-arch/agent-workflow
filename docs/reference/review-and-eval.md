@@ -5,7 +5,7 @@
 ---
 
 <a id="1-只读-review-取证与人读报告"></a>
-## 1. 只读 Review 取证合同（`aw review inspect`）
+## 1. 只读 Review 取证合同（`aw dev review inspect`）
 
 Review 机制为插件质量与安全审计提供一致、纯只读的静态取证入口。
 
@@ -13,7 +13,7 @@ Review 机制为插件质量与安全审计提供一致、纯只读的静态取�
 ### 1.1 命令与输入对象
 
 ```bash
-aw review inspect <target> [--materialization <receipt>]... [--skill <name>]... [--platform <platform>] [--scope <scope>] [--config <file>] [--workspace-root <root>] [--view review] [--json]
+aw dev review inspect <target> [--materialization <receipt>]... [--skill <name>]... [--platform <platform>] [--scope <scope>] [--config <file>] [--workspace-root <root>] [--view review] [--json]
 ```
 
 - **受支持目标**：`target` 可以是源 Skill 路径（`<workspace>/plugins/<plugin>/skills/<skill>`）、插件路径（`<workspace>/plugins/<plugin>`）或 Catalog 快照。
@@ -30,54 +30,60 @@ aw review inspect <target> [--materialization <receipt>]... [--skill <name>]... 
   - **规范路径去重**：同选择、同 digest 时稳定选择证据路径；
   - 相同内容的不同 profile 仍保持为独立覆盖项。
 
-### 1.2 取证回执（`ReviewInspectionNavigationReceipt` schema 2）
+### 1.2 取证结果
 
 ```json
 {
-  "schemaVersion": 2,
-  "command": "review:inspect",
-  "view": "review",
-  "ok": true,
-  "target": {
-    "kind": "plugin",
-    "path": "plugins/example-plugin"
+  "schemaVersion": 1,
+  "command": "dev.review.inspect",
+  "status": "success",
+  "data": {
+    "view": "review",
+    "target": {
+      "kind": "plugin",
+      "path": "plugins/example-plugin"
+    },
+    "sources": [
+      "plugins/example-plugin"
+    ],
+    "skills": [
+      {
+        "skill": "example-skill",
+        "sourcePath": "plugins/example-plugin/skills/example-skill",
+        "profile": {
+          "platform": "codex",
+          "scope": "user",
+          "inputDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        },
+        "finalPath": "out/skills/example-skill",
+        "digest": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        "state": "ready",
+        "evidencePath": "out/aw-source-binding.json"
+      }
+    ],
+    "issues": []
   },
-  "sources": ["plugins/example-plugin"],
-  "skills": [
-    {
-      "skill": "example-skill",
-      "sourcePath": "plugins/example-plugin/skills/example-skill",
-      "profile": {
-        "platform": "codex",
-        "scope": "user",
-        "inputDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-      },
-      "finalPath": "out/skills/example-skill",
-      "digest": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
-      "state": "ready",
-      "evidencePath": "out/aw-source-binding.json"
-    }
-  ],
-  "issues": []
+  "diagnostics": [],
+  "nextActions": []
 }
 ```
 
-- **`ok: boolean` 语义**：`ok: true` **仅表示本次静态取证流程正常执行完毕，绝不代表语义质量通过或发布合格**。质量结论完全由审阅者自行判断。
+- **`status` 语义**：`success` 仅表示静态取证请求完成，不代表语义质量通过或发布合格。质量结论由审阅者判断。统一外壳和退出码见 [CLI 合同](cli.md)，source-binding 文件继续使用自身 schema 2。
 - **退出状态码语义**：
   - `0`：取证成功（即使存在 missing、stale 或 invalid final，也正常退出 0，并在回执中如实记录缺口事实）；
-  - `2`：非法选择、非法来源、路径错误或不支持的能力；
+  - `2`：非法选择或参数；合法请求因缺少来源、路径或能力而无法开始时返回 blocked/3；
   - `3`：缺少必要配置或准备期间检测到来源变化（sourceChanged）。
 
 ---
 
-## 2. Review 准备合同（`aw review prepare`）
+## 2. Review 准备合同（`aw dev review prepare`）
 
 当审阅者需要检查实际物化产物（final）而本地尚未生成时，使用准备命令生成隔离的审核副本。
 
 ### 2.1 命令与执行隔离
 
 ```bash
-aw review prepare <plugin-or-source-skill> --platform <platform> --scope <scope> --out <new-dir> [--skill <name>]... [--config <file>] [--workspace-root <root>] [--json]
+aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <scope> --out <new-dir> [--skill <name>]... [--config <file>] [--workspace-root <root>] [--json]
 ```
 
 - **目标与平台**：准备单插件、单平台（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`）的所选 Skill；`--platform`、`--scope` 与 `--out` 为必填项。
@@ -112,7 +118,7 @@ aw review prepare <plugin-or-source-skill> --platform <platform> --scope <scope>
 
 ## 3. 来源绑定凭据合同（`aw-source-binding.json` schema 2）
 
-由 `aw review prepare`、`aw skill eval prepare` 和 `aw skill materialize` 统一生成，位于被测/被审 Skill 内容之外，其路径由命令回执返回。
+由 `aw dev review prepare`、`aw dev eval prepare` 和 `aw dev skill export` 统一生成，位于被测/被审 Skill 内容之外，其路径由命令回执返回。
 
 ### 3.1 凭据结构与版本门禁
 
@@ -187,9 +193,9 @@ aw review prepare <plugin-or-source-skill> --platform <platform> --scope <scope>
 
 ### 3.2 典型审核走查场景（Walkthrough Scenarios）
 
-1. **已有匹配 final**：直接传入 `--materialization <path>`，`aw review inspect` 核验 binding 与当前源码及配置完全匹配，输出 `state: 'ready'`，退出 0。
-2. **缺 final 本地 prepare**：运行 `aw review prepare <source-target> --platform codex --scope user --out <new-dir> --skill <name> --config <file> --json` 在指定新目录生成 final 与 binding v2；随后对**原源目标**运行 inspect 并传入生成的回执路径：
-   `aw review inspect <source-target> --platform codex --scope user --skill <name> --config <file> --materialization <new-dir>/aw-source-binding.json --json` 完成闭环核验。
+1. **已有匹配 final**：直接传入 `--materialization <path>`，`aw dev review inspect` 核验 binding 与当前源码及配置完全匹配，输出 `state: 'ready'`，退出 0。
+2. **缺 final 本地 prepare**：运行 `aw dev review prepare <source-target> --platform codex --scope user --out <new-dir> --skill <name> --config <file> --json` 在指定新目录生成 final 与 binding v2；随后对**原源目标**运行 inspect 并传入生成的回执路径：
+   `aw dev review inspect <source-target> --platform codex --scope user --skill <name> --config <file> --materialization <new-dir>/aw-source-binding.json --json` 完成闭环核验。
 3. **配置/provider 漂移**：配置值未变但配置来源从 common 改为平台覆盖，或 provider 定义发生变化，旧 binding 判定为 `sourceBindingProfileDrift` 或 `sourceBindingSourceDrift`，必须重新 prepare。
 4. **v1 旧凭据**：inspect 检测到 schemaVersion 为 1 时明确报错拒绝（`unsupportedV1Message`），提示必须在新目录重新 prepare，不就地升级。
 5. **Portable 依赖归属**：检查器核验 Portable 产物时，沿依赖闭包校验各 Skill 的真实来源插件归属，发现依赖被篡改为根插件时拒绝通过。
@@ -219,7 +225,7 @@ Eval 评测系统的机器合同权威所有者为 npm 包 `@lesliechan721/agent
 
 ```mermaid
 flowchart LR
-    Manifest["Skill Manifest v1"] --> Prepare["aw skill eval prepare"]
+    Manifest["Skill Manifest v1"] --> Prepare["aw dev eval prepare"]
     Prepare --> Spec["EvalSpec v1"]
     Spec --> Audit["独立 Auditor 审核"]
     Audit --> AuditDoc["EvalAudit v1 (pass)"]
@@ -247,7 +253,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
 <a id="1-evalspec-v1评测规格"></a>
 ### 5.2 `EvalSpec v1`（评测规格）
 
-由 `aw skill eval prepare` 生成，定义评测输入闭包：
+由 `aw dev eval prepare` 生成，定义评测输入闭包：
 - **平台与执行器分离及内置 Backend 资格**：
   - Manifest 的每个 profile 必须显式声明七平台之一（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`）的 `platform`，与 backend/executor 分离；
   - **内置 Eval suite backend 仅支持 `codex` 平台**（`profile.platform === 'codex'`）；非 Codex 平台只有在使用显式 `custom-process` provider 时才被支持，否则 prepare 阶段直接拒绝（抛出不支持 backend 错误）。
@@ -440,7 +446,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
 
 ### 7.5 辅助命令、异常 Triage 与收尾
 
-- **`aw skill eval doctor --json`**：仅用于安装或升级、用户明确请求诊断，或模型已启动后的 run 失败；报告 permission profile、macOS keychain 状态和 managed/unmanaged 可用性，但不替代执行授权。
+- **`aw dev eval check --json`**：仅用于安装或升级、用户明确请求诊断，或模型已启动后的 run 失败；报告 permission profile、macOS keychain 状态和 managed/unmanaged 可用性，但不替代执行授权。
 - **`aw-skill-eval inspect-result`**：仅用于异常结果按 case、attempt、variant 的分组排查。
 - **独立结果归因分工（Result Triage）**：
   - 普通 clean success 在交付后直接结束，不要求额外的 result-triage；

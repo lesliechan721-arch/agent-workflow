@@ -10,8 +10,9 @@
 
 固定发现目录冲突按实际 target×scope 放置判断，保留方向性。例如 user Antigravity 与 project Codex 可共存，user Codex 与 project Antigravity 冲突；user Antigravity 与 user Generic 可共存，user Generic 与 project Antigravity 冲突。冲突不依赖插件名字是否重叠；没有实际项目放置时不凭勾选集合虚构项目冲突。结构合法的偏好可保存，部署 Review 跳过冲突项，不能先删除旧可用输出。
 
-日常命令位于 `aw plugin`：`intent`、`targets`、`install`、`remove`、`sync`（可加 `--rebuild`）、`cleanup`、`status`、`config`。install/remove 的 scope 是声明归属，默认当前项目，否则用户；`--scope project --context user` 写前拒绝。targets 没有 scope；sync/status 使用 context；cleanup 的 scope 表示物理清理范围。`--target` 只过滤当前执行，不修改偏好。安装不选择 Agent 或物理位置，空 targets 时提示先配置；失败不回滚已保存声明。
+日常命令位于 `aw plugin`：`list`、`show`、`install`、`remove`、`sync`（可加 `--rebuild`）、`status`、`config`。平台偏好由 `aw target` 管理。install/remove 必须显式提供非空插件列表和 `--scope`；`--scope project --context user` 写前拒绝。sync/status 使用 context；remove 的 outputs-only 模式使用物理清理 scope 和显式 target。`--target` 只过滤当前执行，不修改偏好。普通 install 在保存需求前检查平台，空 targets 返回 `noTargetsEnabled`；仅保存需求使用 `--only requirements`。
 
+公开命令、模式组合、确认和输出字段的完整合同见 [CLI 参考](../../reference/cli.md)。CLI 始终非交互；TUI 保留 Review。公共结果通过 `status/data/diagnostics/nextActions` 输出，生命周期将内部 intent/agent 投影为 requirements/target，保留执行、观察、内容三轴与实际变化。内部回执和业务存储格式保持独立。
 所有强配置在现有 AW_HOME mutation lock 下原子提交。Review 冻结两份声明、偏好、来源、配置与输出证据，执行锁内重读；stale 不写。依赖提供者失败阻止相关消费者，独立目标继续。共享 Native 包体及 activation 分别观察和报告，不扫描历史项目，不把共享刷新说成更新了其它项目的 Portable 副本。
 
 恢复回执继续逐目标报告 execution、observation、content，以及声明、偏好、配置、输出四类变化。部分完成、unknown、blocked 和 failed 不报全部成功。status 严格只读，不运行 renderer、preApply 或来源刷新；coverage 明确用户与当前项目范围，未选 targets 时有需求不等于已满足。cleanup、reinstall、source sync 或新版本始终保留至少一个可用恢复路径。
@@ -40,7 +41,7 @@ Codex project cleanup 和 uninstall 对当前仓库的 `.agents/skills` 做单�
   → 必要时清理 AW-owned 旧组件
   → 写入原生和 AW-managed 组件
   → 完成后检查
-  → 输出统一 `aw-recovery` schema 1 回执
+  → 输出统一 CLI schema 1 结果及 lifecycle data
 ```
 
 这些命令在 `AW_HOME` mutation lock 内只采集一次当前 target 和当前 project 的现场 inventory。Active snapshot、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为计划再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 snapshot evidence。普通 inventory 不扫描历史项目、不建立全局 refcount，也不执行自动 dependency GC。
@@ -57,11 +58,11 @@ Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和
 
 dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。User 需要的共同项由 User 提供，项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
 
-依赖执行顺序只在本次命令内存在。内部后端结果保留 relation、requiredBy、安全后端状态和恢复建议；统一 `aw-recovery` 回执保留请求的所有目标、阻断与未完成项，不公开持久计划、锁或来源内部证据。精确匹配的现有 shared native 可复用，不建立 ownership ledger。
+依赖执行顺序只在本次命令内存在。内部后端结果保留 relation、requiredBy、安全后端状态和恢复建议；统一 CLI 生命周期 data 保留请求的所有目标、阻断与未完成项，不公开持久计划、锁或来源内部证据。精确匹配的现有 shared native 可复用，不建立 ownership ledger。
 
 ## 安装、重建、卸载与清理
 
-公开重建命令是 `aw plugin sync --rebuild`，移除命令是 `aw plugin remove`；内部 action 仍称 `reinstall` 和 `uninstall`。公开 remove 处理需求归属，底层 uninstall 只描述输出删除。移除需求不自动等于可以清理共享或外部输出。
+公开重建命令是 `aw plugin sync --rebuild`，移除命令是 `aw plugin remove`；内部 action 分别为 `reinstall` 和 `uninstall`。公开 remove 取消所选需求并安全清理，底层 uninstall 只描述输出删除。普通 remove 在任何需求或输出写入前完整校验 Active；Active 不可验证时返回 blocked，两个独立 `--only` 模式提供恢复。移除需求不自动等于可以清理共享或外部输出。
 
 - `install`：按当前 Catalog 安装请求插件和缺失依赖；已存在且完整的依赖使用 `keep`，不重复安装。
 - `reinstall`：先只清理 AW-owned 组件，再按当前 Catalog 完整重建。expected exclusive path 的 owner marker/header 缺失或损坏时，它不自动 force，也不覆盖该路径；返回 `exclusiveOwnerEvidenceInvalid`，恢复顺序固定为先运行同 target 的 `cleanup --force`，再运行 reinstall。
@@ -69,9 +70,9 @@ dependency placement 由 User/Project 完整需求闭包自动决定，不提供
 - `cleanup`：不运行 preApply，也不读取依赖图、安装门槛或 Active。两种 scope 均只清理可由 live owner marker/token 或已绑定 offline evidence 证明属于 AW 的所选输出；保留 Intent、偏好、plugin config、foreign 内容和 shared/native payload。
 - `cleanup --force`：用于恢复专属且已损坏的 AW-owned 输出，仍保留两份 Intent、偏好和配置。只接受 shallow plan 中精确的 `skill-directory` 与 exclusive `owned-text-file`；候选必须位于合法 Agent/scope root，路径链和目标不能是 symlink，节点类型、basename 和 artifactKey 必须一致，不能是 shared config、native plugin store 或 marketplace root。合法 foreign owner 在 normal 和 force 中都保留。
 
-`cleanup` 和 `cleanup --force` 使用专用 cleanup 流程，不进入恢复写入 pipeline。两种 scope 都只清理所选 Agent 中可证明归属的现场，不改 Intent、部署偏好或插件配置。无 Active 时仍可凭 live 或已绑定离线证据恢复，未知路径、foreign 与 shared 内容保持不动。`--force` 仅处理现有合同允许的专属损坏输出。两者都不运行 renderer 或 preApply。
+内部 `cleanup` 对应公开 `remove --only outputs`，内部 `cleanup --force` 对应公开 `remove --only outputs --force`。两者使用专用 cleanup 流程，不进入恢复写入 pipeline。两种 scope 都只清理所选 Agent 中可证明归属的现场，不改 Intent、部署偏好或插件配置。无 Active 时仍可凭 live 或已绑定离线证据恢复，未知路径、foreign 与 shared 内容保持不动。`--force` 仅处理现有合同允许的专属损坏输出。两者都不运行 renderer 或 preApply。
 
-selected source/plugin 的 namespaced config inventory 损坏不阻止该目标的 cleanup 或 uninstall；命令保留坏 config，并提示之后使用 `config reset`。ownership、foreign/shared/global 或安全输出 inventory 错误仍 fail closed；强配置损坏由独立 `intent remove` 或 `intent retire` 报告，不被普通 cleanup 覆盖。
+selected source/plugin 的 namespaced config inventory 损坏不阻止该目标的 cleanup 或 uninstall；命令保留坏 config，并提示之后使用 `config reset`。ownership、foreign/shared/global 或安全输出 inventory 错误仍 fail closed；强配置损坏由 `remove --only requirements` 或普通 remove 的停用分支报告，不被普通 cleanup 覆盖。
 
 普通 cleanup 使用离线清理，不因 Active 缺少 entry 扩大到停用。`catalogSourceUnavailable`、`bundleUnavailable` 和 `codexIntentSourceUnavailable` 只说明当前恢复路由不可用。Review 绑定目标位置与 live ownership evidence；Execute 在同一 `AW_HOME` mutation lock 内重验，漂移时在删除前返回 stale。实际删除竞态保留输出并返回 partial。
 
@@ -83,7 +84,7 @@ force cleanup 是专属损坏输出的恢复动作，不是删除权限升级。
 
 ### 停用已从 Catalog 移除的插件
 
-已确认从健康 Active Catalog 移除的插件通过独立 `aw plugin intent retire` 停用。普通 `cleanup` 不自动分类或删除强配置；停用只修改显式 scope 的需求和输出；配置删除默认关闭，明确选择时删除该插件全部本机 common／平台设置，并在 Review 说明全局影响。Portable 与共享残留必须可见。
+已确认从健康 Active Catalog 移除的插件通过普通 `aw plugin remove` 的停用分支处理。普通 `cleanup` 不自动分类或删除强配置；停用只修改显式 scope 的需求和输出；配置删除默认关闭，明确选择时删除该插件全部本机 common／平台设置，并在 Review 说明全局影响。Portable 与共享残留必须可见。
 
 停用失败的恢复命令保留 scope 和 Review 中已确定的输出 Agent 集合；未完成的配置删除保留 `--delete-config`，已完成时不再请求。Portable 残留提供精确人工检查指引，重试重新 Review，不自动携带 `--yes`。
 

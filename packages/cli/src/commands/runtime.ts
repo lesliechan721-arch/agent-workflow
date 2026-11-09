@@ -15,7 +15,8 @@ import {
   createNoopReporter,
 } from '../output/reporter.js';
 import type { NativeCliInvocation, NativeCliRunner } from '../utils/native-cli.js';
-import { NativeCliError, getDefaultNativeCliRunner, retainNativeCliRunnerBackend } from '../utils/native-cli.js';
+import { NativeCliError, bindNativeCliRunnerSignal, getDefaultNativeCliRunner, retainNativeCliRunnerBackend } from '../utils/native-cli.js';
+import type { PublicCommandInterruption } from './public-interruption.js';
 import { resolveAwHome } from '../utils/paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import type { Scope } from '../types.js';
@@ -32,6 +33,7 @@ export type {
 } from '../output/model.js';
 
 export interface CliIo {
+  result?(value: unknown): void;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -164,6 +166,8 @@ export interface CliPrompt {
 }
 
 export interface CommandExecutionContext {
+  signal?: AbortSignal;
+  interruption?: PublicCommandInterruption;
   env: NodeJS.ProcessEnv;
   nativeCliRunner: NativeCliRunner;
   interactive: boolean;
@@ -1013,7 +1017,16 @@ export function createCommandExecutionContext(
   const diagnostics = createCommandDiagnostics(input.diagnostics, env);
   const reporter = input.reporter ?? createNoopReporter();
   const debugLogger = input.debugLogger ?? createFileDebugLogger(diagnostics);
-  const baseRunner = input.nativeCliRunner ?? getDefaultNativeCliRunner();
+  const originalRunner = input.nativeCliRunner ?? getDefaultNativeCliRunner();
+  const signal = input.signal ?? input.interruption?.signal;
+  const boundRunner = bindNativeCliRunnerSignal(originalRunner, signal);
+  const baseRunner = input.interruption ? retainNativeCliRunnerBackend(async (invocation) => {
+    try { return await boundRunner(invocation); }
+    catch (error) {
+      if (error instanceof NativeCliError && error.cleanupError) input.interruption!.cleanupFailed = true;
+      throw error;
+    }
+  }, originalRunner) : boundRunner;
   const contextShell: Pick<CommandExecutionContext, 'reporter' | 'debugLogger'> = {
     reporter,
     debugLogger,
@@ -1021,6 +1034,8 @@ export function createCommandExecutionContext(
 
   return {
     env,
+    signal,
+    interruption: input.interruption,
     nativeCliRunner: createInstrumentedNativeCliRunner({
       baseRunner,
       diagnostics,

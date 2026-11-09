@@ -108,44 +108,53 @@ export function deriveAwCapabilitiesFromManifest(
 }
 
 const COMMAND_CAPABILITIES: Readonly<Record<string, RegisteredAwCapabilityId>> = {
-  'self describe': 'aw.self-check.v1',
-  'self check': 'aw.self-check.v1',
-  'skill validate': 'aw.skill-validation.v1',
-  'skill eval': 'aw.skill-eval.v2',
-  'plugin capabilities': 'aw.plugin-authoring.v1',
-  'plugin init': 'aw.plugin-authoring.v1',
-  'plugin add-skill': 'aw.plugin-authoring.v1',
-  'plugin remove': 'aw.plugin-authoring.v1',
-  'plugin validate': 'aw.plugin-authoring.v1',
-  'plugin test': 'aw.plugin-authoring.v1',
-  'plugin build': 'aw.plugin-authoring.v1',
-  'plugin status': 'aw.plugin-authoring.v1',
-  'plugin requirements': 'aw.plugin-authoring.v1',
-  'catalog init': 'aw.catalog-authoring.v1',
-  'catalog status': 'aw.catalog-authoring.v1',
-  'catalog version': 'aw.catalog-authoring.v1',
-  'catalog build': 'aw.catalog-authoring.v1',
-  'catalog validate': 'aw.catalog-authoring.v1',
-  'catalog publish': 'aw.catalog-publication.v1',
-  'review inspect': 'aw.review-inspection.v2',
-  'review prepare': 'aw.review-preparation.v1',
+  'self describe': 'aw.self-check.v2',
+  'self check': 'aw.self-check.v2',
+  'dev skill validate': 'aw.skill-validation.v2',
+  'dev skill create': 'aw.plugin-authoring.v2',
+  'dev skill export': 'aw.plugin-authoring.v2',
+  'dev eval check': 'aw.skill-eval.v3',
+  'dev eval prepare': 'aw.skill-eval.v3',
+  'dev catalog publish': 'aw.catalog-publication.v2',
+  'dev review inspect': 'aw.review-inspection.v3',
+  'dev review prepare': 'aw.review-preparation.v2',
 }
-
-const CONFIG_CAPABILITY = 'aw.plugin-config.v2' satisfies RegisteredAwCapabilityId
-const CATALOG_SOURCE_CAPABILITY = 'aw.catalog-source.v2' satisfies RegisteredAwCapabilityId
-const CATALOG_DEV_SOURCE_CAPABILITY = 'aw.catalog-dev-source.v1' satisfies RegisteredAwCapabilityId
 
 function commandCapabilities(group: string, command: string | undefined, tail: string): AwCapabilityId[] {
   if (command === undefined) return []
-  if (group === 'command') return ['aw.managed-commands.v1']
-  if (group === 'config') return [CONFIG_CAPABILITY]
-  if (group === 'catalog' && command === 'source') return [CATALOG_SOURCE_CAPABILITY]
-  if (group === 'catalog' && command === 'dev') return [CATALOG_DEV_SOURCE_CAPABILITY]
-  if (group === 'catalog' && command === 'status' && /(?:^|\s)--preflight(?:\s|$)/u.test(tail)) {
-    return []
+  const subcommand = tail.trim().split(/\s/u)[0] ?? ''
+  let capability: RegisteredAwCapabilityId | undefined
+  if (group === 'dev') {
+    capability = COMMAND_CAPABILITIES[`dev ${command} ${subcommand}`]
+    if (!capability && command === 'plugin'
+      && ['capabilities', 'create', 'remove', 'validate', 'test', 'build', 'status', 'requirements'].includes(subcommand)) {
+      capability = 'aw.plugin-authoring.v2'
+    }
+    if (!capability && command === 'catalog'
+      && ['create', 'status', 'version', 'build', 'validate'].includes(subcommand)
+      && !/(?:^|\s)--preflight(?:\s|$)/u.test(tail)) {
+      capability = 'aw.catalog-authoring.v2'
+    }
+    if (command === 'source' && ['activate', 'status', 'deactivate'].includes(subcommand)) {
+      capability = 'aw.catalog-dev-source.v2'
+    }
+  } else if (group === 'source' && ['status', 'add', 'update', 'remove', 'sync'].includes(command)
+    || group === 'cache' && ['status', 'prune'].includes(command)) {
+    capability = 'aw.catalog-source.v3'
+  } else if (group === 'target' && ['list', 'set', 'exclude', 'include'].includes(command)
+    || group === 'plugin' && ['list', 'show', 'install', 'remove', 'status', 'sync'].includes(command)) {
+    capability = 'aw.plugin-recovery.v2'
+  } else if (group === 'plugin' && command === 'config'
+    && ['get', 'schema', 'set', 'unset', 'reset', 'apply'].includes(subcommand)) {
+    capability = 'aw.plugin-config.v2'
+  } else if (group === 'command'
+    && (['list', 'show', 'install', 'update', 'remove', 'run'].includes(command)
+      || command === 'package' && ['sync', 'remove'].includes(subcommand))) {
+    capability = 'aw.managed-commands.v1'
+  } else {
+    capability = COMMAND_CAPABILITIES[`${group} ${command}`]
   }
-  const capability = COMMAND_CAPABILITIES[`${group} ${command}`]
-  return capability ? [capability] : []
+  return capability ? [capability, 'aw.cli-output.v1'] : []
 }
 
 interface AwCommandLiteral {
@@ -278,7 +287,9 @@ export async function scanPluginAwCliRequirements(options: {
       })
       return
     }
-    const command = [scanned.literal.group, scanned.literal.command].filter(Boolean).join(' ')
+    const command = [scanned.literal.group, scanned.literal.command,
+      ...(scanned.literal.group === 'dev' ? [scanned.literal.tail.trim().split(/\s/u)[0]] : []),
+    ].filter(Boolean).join(' ')
     const capabilities = commandCapabilities(
       scanned.literal.group,
       scanned.literal.command,

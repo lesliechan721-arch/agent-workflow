@@ -8,6 +8,7 @@ import {
 } from '@lesliechan721/aw-plugin-core';
 
 import { runCatalogBuildCommand } from '../authoring/workspace-commands.js';
+import type { Confirmation } from '../output/public-result.js';
 import type {
   CatalogGenerationActiveV1,
   CatalogGenerationCandidateEvidence,
@@ -43,11 +44,12 @@ import {
   setPrimaryCatalogSourceCommand,
   updateCatalogSourceCommand,
   type CatalogSourceCommandRuntime,
+  type CatalogSourceMutationReceipt,
   type CatalogSourcePreflightInventory,
 } from './catalog-source.js';
 import { syncCatalogSourceCommand } from './catalog-generation.js';
 import { getCatalogStatus } from './catalog-status.js';
-import { resolveCatalogWorkspaceRoot } from './catalog-workspace-resolution.js';
+import { CatalogWorkspaceMissingError, resolveCatalogWorkspaceRoot } from './catalog-workspace-resolution.js';
 
 type Issue = { code: string; message: string; blocking: boolean };
 
@@ -60,6 +62,7 @@ export interface CatalogDevActivateReceipt {
   snapshot: { action: 'reused' | 'built'; digest: string | null };
   source: { id: string; action: 'added' | 'updated' | 'reused'; primary: boolean };
   active: { ready: boolean; snapshotDigest: string | null };
+  confirmation: Confirmation | null;
   recovery: string[];
   errors: Array<{ code: string; message: string }>;
 }
@@ -122,6 +125,7 @@ export interface CatalogDevDeactivateReceipt {
   source: { id: string | null; action: 'removed' | 'absent' | 'retained'; previousPrimary: boolean };
   replacementPrimarySourceId: string | null;
   impact: CatalogSourcePreflightInventory | null;
+  confirmation: Confirmation | null;
   recovery: string[];
   errors: Array<{ code: string; message: string }>;
 }
@@ -194,6 +198,7 @@ export function createCatalogDevFailureReceipt(options: {
       snapshot: { action: 'reused', digest: null },
       source: { id: options.sourceId ?? suggestedCatalogDevSourceId(workspaceRoot), action: 'reused', primary: false },
       active: { ready: false, snapshotDigest: null },
+      confirmation: null,
       recovery: ['Fix the reported problem, then rerun catalog dev activate.'],
       errors: [{ code: options.code, message: options.message }],
     };
@@ -217,6 +222,7 @@ export function createCatalogDevFailureReceipt(options: {
     source: { id: null, action: 'absent', previousPrimary: false },
     replacementPrimarySourceId: null,
     impact: null,
+    confirmation: null,
     recovery: ['Fix the reported problem, then rerun catalog dev deactivate.'],
     errors: [{ code: options.code, message: options.message }],
   };
@@ -227,12 +233,15 @@ function codedFailure(error: unknown, fallbackCode: string): { code: string; mes
     && typeof error.code === 'string' ? error.code : undefined;
   const typedCode = candidateCode === 'catalogImpactConfirmationRequired'
     || candidateCode === 'catalogSourceImpactConfirmationRequired'
+    || candidateCode === 'catalogSourceIdentityChangeConfirmationRequired'
+    || candidateCode === 'catalogWorkspaceMissing'
     || candidateCode === 'operationReviewStale'
     ? candidateCode
     : undefined;
   return {
     code: error instanceof CatalogDevSourceError ? error.code : typedCode ?? fallbackCode,
-    message: error instanceof CatalogDevSourceError ? error.message : 'The Catalog development operation failed.',
+    message: error instanceof CatalogDevSourceError || error instanceof CatalogWorkspaceMissingError
+      ? error.message : 'The Catalog development operation failed.',
   };
 }
 
@@ -248,6 +257,50 @@ function failureImpact(
     : fallback;
 }
 
+function sourceImpactConfirmation(
+  sourceId: string,
+  provided: boolean,
+  impact: Pick<CatalogSourcePreflightInventory, 'inventoryComplete' | 'references'>,
+  explicitConfirmation = false,
+): Confirmation {
+  const required = explicitConfirmation || !impact.inventoryComplete || impact.references.length > 0;
+  return { required, provided, effects: required ? [{
+    code: 'changeSource',
+    message: 'Change the development Catalog source and any affected plugin references.',
+    subject: { sourceId },
+    impact: !impact.inventoryComplete ? 'unknown' : impact.references.length > 0 ? 'shared' : 'user-wide',
+  }] : [] };
+}
+
+function mutationConfirmation(mutation: CatalogSourceMutationReceipt, provided: boolean, identityChanged = false): Confirmation {
+  // Mutation receipts retain exactly the affected references and inventory errors
+  // from the lock-protected source preflight, not an independent inventory guess.
+  return sourceImpactConfirmation(mutation.sourceId, provided, {
+    inventoryComplete: mutation.errors.length === 0, references: mutation.references,
+  }, identityChanged);
+}
+
+function combineConfirmations(provided: boolean, confirmations: readonly Confirmation[]): Confirmation {
+  const effects = [...new Map(confirmations.flatMap((entry) => entry.effects).map((entry) => [JSON.stringify(entry), entry])).values()];
+  return { required: confirmations.some((entry) => entry.required), provided, effects };
+}
+
+function confirmationFromFailure(error: unknown, sourceId: string, provided: boolean): Confirmation | null {
+  if (!error || typeof error !== 'object' || !('impact' in error) || !error.impact || typeof error.impact !== 'object') return null;
+  const impact = error.impact;
+  if ('inventorySchemaVersion' in impact && impact.inventorySchemaVersion === 2) {
+    return sourceImpactConfirmation(sourceId, provided, impact as CatalogSourcePreflightInventory,
+      'code' in error && error.code === 'catalogSourceIdentityChangeConfirmationRequired');
+  }
+  if ('impactSchemaVersion' in impact && impact.impactSchemaVersion === 3) {
+    const generationImpact = impact as CatalogSourceImpact;
+    return sourceImpactConfirmation(sourceId, provided, {
+      inventoryComplete: generationImpact.inventoryComplete, references: generationImpact.affectedReferences,
+    });
+  }
+  return null;
+}
+
 async function resolveWorkspace(cwd: string, workspaceRoot?: string) {
   try {
     const resolved = await resolveCatalogWorkspaceRoot({
@@ -257,7 +310,8 @@ async function resolveWorkspace(cwd: string, workspaceRoot?: string) {
     });
     const workspace = await readCatalogWorkspace(resolved.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS });
     return { resolved, workspace };
-  } catch {
+  } catch (error) {
+    if (error instanceof CatalogWorkspaceMissingError) throw error;
     throw new CatalogDevSourceError('workspaceInvalid', 'Catalog Workspace is missing or invalid.');
   }
 }
@@ -456,6 +510,7 @@ export async function activateCatalogDevSource(options: {
         snapshot: { action: 'built', digest: null },
         source: { id: options.sourceId ?? normalizeSuggestedSourceId(workspace.workspaceRoot), action: 'reused', primary: false },
         active: { ready: false, snapshotDigest: null },
+        confirmation: null,
         recovery: ['Fix the Catalog Workspace, then rerun catalog dev activate.'],
         errors: [codedFailure(error, 'snapshotBuildFailed')],
       };
@@ -465,6 +520,8 @@ export async function activateCatalogDevSource(options: {
   let selectedId = options.sourceId ?? normalizeSuggestedSourceId(workspace.workspaceRoot);
   let sourceAction: 'added' | 'updated' | 'reused' = 'reused';
   let sourceCommitted = false;
+  let confirmation: Confirmation | null = null;
+  const completedConfirmations: Confirmation[] = [];
   try {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
     if (options.expectedReview && configSnapshot.digest !== options.expectedReview.initialConfigDigest) {
@@ -516,6 +573,7 @@ export async function activateCatalogDevSource(options: {
         expectedImpactDigest: options.expectedReview?.sourceMutation?.impactDigest,
       });
       currentConfigDigest = mutation.configDigest ?? currentConfigDigest;
+      completedConfirmations.push(mutationConfirmation(mutation, options.yes === true));
       sourceCommitted = true;
     } else if (existing.path !== snapshotPath) {
       sourceAction = 'updated';
@@ -527,12 +585,11 @@ export async function activateCatalogDevSource(options: {
         expectedConfigDigest: options.expectedReview?.initialConfigDigest,
         expectedProposedConfigDigest: options.expectedReview?.sourceMutation?.proposedConfigDigest,
         expectedImpactDigest: options.expectedReview?.sourceMutation?.impactDigest,
-        ...(options.expectedReview ? {
-          requireIdentityChangeConfirmation: true,
-          confirmIdentityChange: options.yes === true,
-        } : {}),
+        requireIdentityChangeConfirmation: true,
+        confirmIdentityChange: options.yes === true,
       });
       currentConfigDigest = mutation.configDigest ?? currentConfigDigest;
+      completedConfirmations.push(mutationConfirmation(mutation, options.yes === true, true));
       sourceCommitted = true;
     }
     const current = (await readCatalogSourcesConfigSnapshot(options.env)).config.sources
@@ -547,6 +604,7 @@ export async function activateCatalogDevSource(options: {
         expectedImpactDigest: options.expectedReview?.primaryImpactDigest,
       });
       currentConfigDigest = mutation.configDigest ?? currentConfigDigest;
+      completedConfirmations.push(mutationConfirmation(mutation, options.yes === true));
       sourceCommitted = true;
     }
     if (options.expectedReview && currentConfigDigest !== options.expectedReview.finalConfigDigest) {
@@ -556,7 +614,7 @@ export async function activateCatalogDevSource(options: {
       );
     }
     await options.runtime?.beforeSync?.();
-    await syncCatalogSourceCommand({
+    const sync = await syncCatalogSourceCommand({
       sourceId: selectedId,
       cliVersion: options.cliVersion,
       cwd: workspace.workspaceRoot,
@@ -567,6 +625,12 @@ export async function activateCatalogDevSource(options: {
       expectedConfigDigest: options.expectedReview?.finalConfigDigest,
       expectedImpactDigest: options.expectedReview?.generationImpactDigest,
     });
+    // Exact repair can return no impact because it restores the same verified
+    // candidate. Other activation paths return their actual lock-protected impact.
+    if (sync.impact) completedConfirmations.push(sourceImpactConfirmation(selectedId, options.yes === true, {
+      inventoryComplete: sync.impact.inventoryComplete, references: sync.impact.affectedReferences,
+    }));
+    confirmation = combineConfirmations(options.yes === true, completedConfirmations);
     await options.runtime?.afterSync?.();
     const finalStatus = await getCatalogDevSourceStatus({
       cwd: options.cwd,
@@ -590,9 +654,17 @@ export async function activateCatalogDevSource(options: {
       snapshot: { action: snapshotAction, digest: snapshotDigest },
       source: { id: selectedId, action: sourceAction, primary: configured.primary },
       active: { ready: true, snapshotDigest: finalStatus.active.snapshotDigest },
+      confirmation,
       recovery: [], errors: [],
     };
   } catch (error) {
+    const blockedConfirmation = confirmationFromFailure(error, selectedId, options.yes === true);
+    if (blockedConfirmation) confirmation = combineConfirmations(options.yes === true, [...completedConfirmations, blockedConfirmation]);
+    else if (confirmation === null && completedConfirmations.some((entry) => entry.required)) {
+      // A later failure cannot erase an already confirmed source mutation.
+      // Without a known important effect, incomplete sync preparation remains unknown.
+      confirmation = combineConfirmations(options.yes === true, completedConfirmations);
+    }
     return {
       receiptSchemaVersion: 2, command: 'catalog:dev:activate', ok: false,
       state: snapshotAction === 'built' || sourceCommitted ? 'partial' : 'failed',
@@ -600,6 +672,7 @@ export async function activateCatalogDevSource(options: {
       snapshot: { action: snapshotAction, digest: snapshotDigest },
       source: { id: selectedId, action: sourceAction, primary: false },
       active: { ready: false, snapshotDigest: null },
+      confirmation,
       recovery: ['The source configuration and snapshot were kept. Fix the problem, then rerun catalog dev activate.'],
       errors: [codedFailure(error, sourceCommitted ? 'sourceSyncFailed' : 'sourceConfigFailed')],
     };
@@ -757,6 +830,7 @@ export async function deactivateCatalogDevSource(options: {
       receiptSchemaVersion: 4, command: 'catalog:dev:deactivate', ok: true, state: 'completed',
       workspaceIdentity, source: { id: null, action: 'absent', previousPrimary: false },
       replacementPrimarySourceId: null, impact: null, recovery: [], errors: [],
+      confirmation: { required: false, provided: options.yes === true, effects: [] },
     };
   }
   let replacementPrimarySourceId: string | null = null;
@@ -772,6 +846,7 @@ export async function deactivateCatalogDevSource(options: {
         workspaceIdentity, source: { id: source.id, action: 'retained', previousPrimary: true },
         replacementPrimarySourceId: null,
         impact: null,
+        confirmation: null,
         recovery: ['Select an existing replacement primary source.'],
         errors: [{ code: 'replacementPrimaryUnavailable', message: 'A replacement primary source is required.' }],
       };
@@ -791,6 +866,7 @@ export async function deactivateCatalogDevSource(options: {
     managedByWorkspaceIdentity: workspaceIdentity,
   });
   const impact = preview.references;
+  const confirmation = sourceImpactConfirmation(source.id, options.yes === true, impact, options.sourceId !== undefined);
   if (options.sourceId !== undefined && options.yes !== true) {
     return {
       receiptSchemaVersion: 4, command: 'catalog:dev:deactivate', ok: false, state: 'failed',
@@ -798,6 +874,7 @@ export async function deactivateCatalogDevSource(options: {
       source: { id: source.id, action: 'retained', previousPrimary: source.primary },
       replacementPrimarySourceId,
       impact,
+      confirmation,
       recovery: ['Rerun with --source-id and --yes.'],
       errors: [{ code: 'confirmationRequired', message: 'Recovery by source ID requires --yes.' }],
     };
@@ -809,6 +886,7 @@ export async function deactivateCatalogDevSource(options: {
       source: { id: source.id, action: 'retained', previousPrimary: source.primary },
       replacementPrimarySourceId,
       impact,
+      confirmation,
       recovery: ['Review the source impact, then rerun catalog dev deactivate with --yes.'],
       errors: [{
         code: 'catalogSourceImpactConfirmationRequired',
@@ -831,6 +909,7 @@ export async function deactivateCatalogDevSource(options: {
       receiptSchemaVersion: 4, command: 'catalog:dev:deactivate', ok: true, state: 'completed',
       workspaceIdentity, source: { id: source.id, action: 'removed', previousPrimary: source.primary },
       replacementPrimarySourceId, impact, recovery: [], errors: [],
+      confirmation,
     };
   } catch (error) {
     const after = await readCatalogSourcesConfigSnapshot(options.env).catch(() => null);
@@ -843,6 +922,7 @@ export async function deactivateCatalogDevSource(options: {
       source: { id: source.id, action: stillExists ? 'retained' : 'removed', previousPrimary: source.primary },
       replacementPrimarySourceId,
       impact: failureImpact(error, impact),
+      confirmation: sourceImpactConfirmation(source.id, options.yes === true, failureImpact(error, impact), options.sourceId !== undefined),
       recovery: ['Fix the source configuration, then rerun catalog dev deactivate.'],
       errors: [stale
         ? { code: 'operationReviewStale', message: 'Catalog source evidence changed. Review it again.' }

@@ -22,11 +22,12 @@ import {
   type PluginScriptInvocation,
 } from '../../src/utils/plugin-scripts.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
-import { assertProcessTreeInspectionAvailable } from '../../src/utils/process-tree.js';
+import { assertProcessTreeInspectionAvailable, terminateProcessTree } from '../../src/utils/process-tree.js';
 import { waitForProcessExit } from '../support/process-tree.js';
 
 const tempDirs: string[] = [];
 const descendantPids = new Set<number>();
+const hostProcesses = new Set<ChildProcess>();
 const OUTPUT_LIMIT = 64 * 1024;
 const SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS = 30_000;
 const vitestPackagePath = realpathSync(fileURLToPath(
@@ -34,6 +35,7 @@ const vitestPackagePath = realpathSync(fileURLToPath(
 ));
 const viteNodePath = path.resolve(path.dirname(vitestPackagePath), '..', 'vite-node', 'vite-node.mjs');
 const interruptHostPath = fileURLToPath(new URL('../fixtures/pre-apply-interrupt-host.ts', import.meta.url));
+const publicInterruptHostPath = fileURLToPath(new URL('../fixtures/public-cli-interrupt-host.ts', import.meta.url));
 let hostProcessInspectionAvailable = false;
 try {
   await assertProcessTreeInspectionAvailable();
@@ -78,13 +80,13 @@ async function createPlugin(options: { sensitiveValue?: string } = {}): Promise<
   return plugin;
 }
 
-async function waitForFile(filePath: string, timeoutMs = 5_000): Promise<void> {
+async function waitForFile(filePath: string, diagnostics: () => string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await fs.pathExists(filePath)) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error(`Timed out waiting for ${path.basename(filePath)}.`);
+  throw new Error(`Timed out waiting for ${path.basename(filePath)}.\n${diagnostics()}`);
 }
 
 function waitForChildExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
@@ -106,6 +108,15 @@ function expectStandardSignalExit(
 }
 
 afterEach(async () => {
+  for (const host of hostProcesses) {
+    if (host.pid === undefined || host.exitCode !== null || host.signalCode !== null) continue;
+    const exited = waitForChildExit(host);
+    await terminateProcessTree(host.pid, (signal) => { host.kill(signal); }, {}, {
+      requireConfirmedCleanup: true,
+    });
+    await exited;
+  }
+  hostProcesses.clear();
   for (const pid of descendantPids) {
     try {
       process.kill(pid, 'SIGKILL');
@@ -210,11 +221,13 @@ describe('preApply script', () => {
   });
 
   it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable).each([
-    'SIGINT',
-    'SIGTERM',
+    ['SIGINT', false],
+    ['SIGTERM', false],
+    ['SIGINT', true],
+    ['SIGTERM', true],
   ] as const)(
-    'cleans the production preApply process tree before the host exits on %s',
-    async (signal) => {
+    'cleans the production preApply process tree on %s (public CLI: %s)',
+    async (signal, publicCli) => {
       const plugin = await createPlugin();
       const awHome = path.join(plugin.rootDir, 'aw-home');
       const rootPidPath = path.join(plugin.rootDir, 'root.pid');
@@ -237,7 +250,7 @@ describe('preApply script', () => {
       const host = spawn(process.execPath, [
         viteNodePath,
         '--config', 'vitest.config.ts',
-        interruptHostPath,
+        publicCli ? publicInterruptHostPath : interruptHostPath,
         plugin.rootDir,
         awHome,
         continuedPath,
@@ -250,11 +263,17 @@ describe('preApply script', () => {
           CODEX_HOME: path.join(awHome, 'codex-home'),
           CLAUDE_CONFIG_DIR: path.join(awHome, 'claude-home'),
         },
-        stdio: ['ignore', 'ignore', 'ignore'],
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
+      hostProcesses.add(host);
+      let stdout = '';
+      let stderr = '';
+      host.stdout?.on('data', (chunk) => { stdout += String(chunk); });
+      host.stderr?.on('data', (chunk) => { stderr += String(chunk); });
       const exited = waitForChildExit(host);
 
-      await Promise.all([waitForFile(rootPidPath), waitForFile(descendantPidPath)]);
+      const diagnostics = () => `stdout: ${stdout}\nstderr: ${stderr}`;
+      await Promise.all([waitForFile(rootPidPath, diagnostics), waitForFile(descendantPidPath, diagnostics)]);
       const rootPid = Number(await fs.readFile(rootPidPath, 'utf8'));
       const descendantPid = Number(await fs.readFile(descendantPidPath, 'utf8'));
       descendantPids.add(rootPid);
@@ -262,17 +281,24 @@ describe('preApply script', () => {
       host.kill(signal);
 
       expectStandardSignalExit(await exited, signal);
+      if (publicCli) expect(stdout, stderr).not.toBe('');
       await Promise.all([waitForProcessExit(rootPid), waitForProcessExit(descendantPid)]);
       descendantPids.delete(rootPid);
       descendantPids.delete(descendantPid);
-      expect(await fs.pathExists(continuedPath)).toBe(false);
+      expect(await fs.pathExists(continuedPath), stderr).toBe(publicCli);
+      if (publicCli) {
+        const result = JSON.parse(stdout);
+        expect(result).toMatchObject({ schemaVersion: 1, command: 'plugin.install', status: 'partial', data: { changes: { outputs: 'unknown' } } });
+        expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'operationInterrupted' }));
+      }
       expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);
     },
+    30_000,
   );
 
-  it.skipIf(process.platform === 'win32')(
-    'exits with a clear failure when interrupted process cleanup fails',
-    async () => {
+  it.skipIf(process.platform === 'win32').each([false, true])(
+    'exits with a clear failure when interrupted process cleanup fails (public CLI: %s)',
+    async (publicCli) => {
       const plugin = await createPlugin();
       const awHome = path.join(plugin.rootDir, 'aw-home');
       const continuedPath = path.join(plugin.rootDir, 'continued');
@@ -280,7 +306,7 @@ describe('preApply script', () => {
       const host = spawn(process.execPath, [
         viteNodePath,
         '--config', 'vitest.config.ts',
-        interruptHostPath,
+        publicCli ? publicInterruptHostPath : interruptHostPath,
         plugin.rootDir,
         awHome,
         continuedPath,
@@ -294,21 +320,26 @@ describe('preApply script', () => {
           CODEX_HOME: path.join(awHome, 'codex-home'),
           CLAUDE_CONFIG_DIR: path.join(awHome, 'claude-home'),
         },
-        stdio: ['ignore', 'ignore', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
+      hostProcesses.add(host);
+      let stdout = '';
+      host.stdout?.on('data', (chunk) => { stdout += String(chunk); });
       let stderr = '';
       host.stderr?.setEncoding('utf8');
       host.stderr?.on('data', (chunk: string) => { stderr += chunk; });
       const exited = waitForChildExit(host);
 
-      await waitForFile(readyPath);
+      await waitForFile(readyPath, () => `stdout: ${stdout}\nstderr: ${stderr}`);
       host.kill('SIGTERM');
 
-      await expect(exited).resolves.toEqual({ code: 1, signal: null });
-      expect(stderr).toContain('preApply process cleanup failed after SIGTERM.');
-      expect(await fs.pathExists(continuedPath)).toBe(false);
+      expect(await exited, stdout + stderr).toEqual({ code: 1, signal: null });
+      expect(stderr).toContain(publicCli ? 'processCleanupUnconfirmed' : 'preApply process cleanup failed after SIGTERM.');
+      expect(await fs.pathExists(continuedPath)).toBe(publicCli);
+      if (publicCli) expect(JSON.parse(stdout)).toMatchObject({ command: 'plugin.install', status: 'partial', diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'processCleanupUnconfirmed' })]) });
       expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);
     },
+    30_000,
   );
 
   it('removes its interrupt listeners after normal completion', async () => {

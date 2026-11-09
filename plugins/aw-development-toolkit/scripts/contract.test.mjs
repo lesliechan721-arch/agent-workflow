@@ -18,9 +18,9 @@ function runtimeSkill(platform, name) {
 test('publishes one AW development entry and one manual-only Publisher', () => {
   const manifest = JSON.parse(readFileSync(path.join(root, '.agents-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'aw-development-toolkit');
-  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-preparation.v1'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-preparation.v2'));
   assert.ok(manifest.requires.aw.capabilities.includes('aw.portable-skills.v1'));
-  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-inspection.v2'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-inspection.v3'));
   assert.equal(manifest.requires.aw.capabilities.includes('aw.review-inspection.v1'), false);
   assert.equal(manifest.requires.aw.capabilities.includes('aw.review-publication.v1'), false);
   assert.equal(manifest.buildConfig?.runtimeExports?.some(entry => entry.name === 'review-publication-reference') ?? false, false);
@@ -37,7 +37,7 @@ test('publishes one AW development entry and one manual-only Publisher', () => {
     assert.deepEqual(policyLines, [`allow_implicit_invocation: ${expected}`], skill);
 
     const args = [
-      'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
+      'dev', 'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
       '--frontmatter-profile', 'claude-current',
       '--codex-metadata', 'required',
       '--json',
@@ -50,7 +50,7 @@ test('publishes one AW development entry and one manual-only Publisher', () => {
       })
       : spawnSync('aw', args, { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal(JSON.parse(result.stdout).ok, true);
+    assert.equal(JSON.parse(result.stdout).status, 'success');
   }
 });
 

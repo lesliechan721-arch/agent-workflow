@@ -9,8 +9,8 @@
 Review 与 Eval 子系统在架构设计上严格执行**外部公开合同**与**内部实现机制**的分层解耦：
 
 - **公开机器与协议合同**：统一归属于公开合同 [Review 取证与 Eval 评估合同](../../reference/review-and-eval.md)。包括：
-  - `aw review inspect` 的取证参数、回执结构与状态码；
-  - `aw review prepare` 的安全目录约束与退出状态码；
+  - `aw dev review inspect` 的取证参数、回执结构与状态码；
+  - `aw dev review prepare` 的安全目录约束与退出状态码；
   - `aw-source-binding.json` schema 2 的完整字段、版本门禁与弱证据定位；
   - `EvalSpec v1`、`EvalAudit v1` 与 `EvalResult v2` 的模式枚举与不承诺清理保证；
   - 外部 `custom-process` 与 `codex-workflow`（含 `instruction-v2`）的通信协议。
@@ -27,7 +27,7 @@ Review 取证管线负责在不产生副作用的前提下，为插件质量与�
 <a id="11-静态检查与隔离设计"></a>
 ### 2.1 取证器内部架构（`commands/review-inspection.ts`）
 
-`aw review inspect` 内部执行流程如下：
+`aw dev review inspect` 内部执行流程如下：
 
 ```mermaid
 flowchart TD
@@ -44,7 +44,7 @@ flowchart TD
 
 ### 2.2 准备器内部架构（`commands/review-preparation.ts`）
 
-当本地缺少物化产物时，`aw review prepare` 负责在完全隔离的环境中生成审核副本：
+当本地缺少物化产物时，`aw dev review prepare` 负责在完全隔离的环境中生成审核副本：
 
 1. **物理路径安全校验**：通过 `resolvePhysicalPath` 解析物理真实路径，检查路径链上的每个祖先节点；若发现任何符号链接（symlink），立即抛出 `unsafeOutput` 错误并退出码 2。
 2. **临时环境隔离**：通过 `createIsolatedSkillEnv` 为被测插件构建临时的、由 AW 托管的 `HOME` 与工作目录，确保配置仅由平台 manifest defaults 与传入的 `--config <file>`（注意 Review 使用 `--config`，而非 `--config-file`）决定，**绝不读取用户本地真实配置 Store**。
@@ -76,7 +76,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph 阶段 1: 准备 (Prepare - CLI 调度)
-        A["Skill evals/manifest.json"] --> B["aw skill eval prepare"]
+        A["Skill evals/manifest.json"] --> B["aw dev eval prepare"]
         B --> C["EvalSpec v1 (物化工作区与用例集)"]
     end
     subgraph 阶段 2: 审计 (Audit - 独立审核)
@@ -156,6 +156,6 @@ Eval 引擎通过内部 Provider 注册表调度不同的执行后端：
   - 若准备或执行中途发生网络断开、超时中断或异常崩溃，恢复策略非常明确：**直接删除不完整的临时输出，重新执行 `prepare`、`audit` 与 `run`**；
   - 评测引擎**绝不维护 batch checkpoint ledger，也不承诺自动重试**，以保持架构的精简与状态的确定性。
 - **辅助诊断命令的内部触发条件**：
-  - `aw skill eval doctor --json`：仅在首次安装升级、用户显式请求环境诊断、或模型启动后的 run 失败时调用；
+  - `aw dev eval check --json`：仅在首次安装升级、用户显式请求环境诊断、或模型启动后的 run 失败时调用；
   - `aw-skill-eval inspect-result`：仅在异常结果需要按 case、attempt 与 variant 分组深度排查时使用；
   - 正常的评测成功流程（clean success）在结果交付后直接结束，不触发任何额外的模型调用或诊断分析。

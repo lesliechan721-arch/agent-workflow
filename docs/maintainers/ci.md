@@ -111,7 +111,7 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 ### 5.1 严格要求门禁（Strict Requirements）
 
 - 官方 CI 的 `pnpm build` 必须启用 `--strict-requirements` 语义，若插件声明了当前宿主不支持的 capability，立即阻断构建。`release:verify:catalog:core` 通过此官方 build 覆盖 strict 门禁。
-- 第三方公开 `aw catalog build` 默认仅提供 advisory 建议，不作强阻断。
+- 第三方公开 `aw dev catalog build` 默认仅提供 advisory 建议，不作强阻断。
 
 ### 5.2 构建生成物与 Check-Only 源码合同测试
 

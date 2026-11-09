@@ -1606,12 +1606,12 @@ describe('ConsoleAppV4', () => {
       {
         command: 'uninstall' as const,
         scope: 'user' as const,
-        description: '运行 aw plugin intent remove official/agent-lab --scope user，再运行 aw plugin cleanup official/agent-lab --target codex --scope user，最后 aw plugin sync official/agent-lab --target codex --context project。',
+        description: '运行 aw plugin remove official/agent-lab --only requirements --scope user，再运行 aw plugin remove --only outputs official/agent-lab --target codex --scope user，最后 aw plugin sync official/agent-lab --target codex --context project。',
       },
       {
         command: 'uninstall' as const,
         scope: 'project' as const,
-        description: '运行 aw plugin intent remove official/agent-lab --scope project，再运行 aw plugin cleanup official/agent-lab --target codex --scope project，最后 aw plugin sync official/agent-lab --target codex --context user。',
+        description: '运行 aw plugin remove official/agent-lab --only requirements --scope project，再运行 aw plugin remove --only outputs official/agent-lab --target codex --scope project，最后 aw plugin sync official/agent-lab --target codex --context user。',
       },
     ];
     const loaded = loadResult();

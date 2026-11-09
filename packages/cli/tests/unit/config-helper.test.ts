@@ -95,7 +95,7 @@ describe('standard aw-config helper', () => {
           [helperPath, 'json', '--scope', scope],
           { cwd, env },
         )).rejects.toMatchObject({
-          stderr: expect.stringContaining('use aw config for user or project scope'),
+          stderr: expect.stringContaining('use aw plugin config with an explicit context'),
         });
       });
     },

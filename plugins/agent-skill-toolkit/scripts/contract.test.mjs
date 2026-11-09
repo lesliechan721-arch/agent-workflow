@@ -44,7 +44,7 @@ test('publishes four Skills with explicit review and simplification policies', (
     assert.deepEqual(policyLines, [`allow_implicit_invocation: ${!manualSkills.has(skill)}`], skill);
 
     const args = [
-      'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
+      'dev', 'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
       '--frontmatter-profile', manualSkills.has(skill) ? 'claude-current' : 'portable-agent-skills',
       '--codex-metadata', 'required',
       '--json',
@@ -57,7 +57,7 @@ test('publishes four Skills with explicit review and simplification policies', (
       })
       : spawnSync('aw', args, { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.equal(JSON.parse(result.stdout).ok, true);
+    assert.equal(JSON.parse(result.stdout).status, 'success');
   }
 });
 

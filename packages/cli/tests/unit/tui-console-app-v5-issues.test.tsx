@@ -79,12 +79,12 @@ function mixedScopeConflictTarget(
     {
       command: 'uninstall',
       scope: 'user',
-      description: `运行 aw plugin intent remove ${sourceId}/${pluginName} --scope user，再运行 aw plugin cleanup ${sourceId}/${pluginName} --target codex --scope user，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context project。`,
+      description: `运行 aw plugin remove ${sourceId}/${pluginName} --only requirements --scope user，再运行 aw plugin remove --only outputs ${sourceId}/${pluginName} --target codex --scope user，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context project。`,
     },
     {
       command: 'uninstall',
       scope: 'project',
-      description: `运行 aw plugin intent remove ${sourceId}/${pluginName} --scope project，再运行 aw plugin cleanup ${sourceId}/${pluginName} --target codex --scope project，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context user。`,
+      description: `运行 aw plugin remove ${sourceId}/${pluginName} --only requirements --scope project，再运行 aw plugin remove --only outputs ${sourceId}/${pluginName} --target codex --scope project，最后 aw plugin sync ${sourceId}/${pluginName} --target codex --context user。`,
     },
   ];
   return value;
@@ -520,7 +520,7 @@ describe('ConsoleAppV4', () => {
     expect(productFrame).toContain('当前无法取得可信的字段定义');
     expect(productFrame).toContain('已保存的设置保持不变');
     expect(productFrame).toContain('修复插件来源');
-    expect(productFrame).not.toContain('aw catalog source sync team-tools');
+    expect(productFrame).not.toContain('aw source sync team-tools');
     expect(productFrame).not.toContain('configReadFailed');
     expect(productFrame).not.toContain('config-secret');
     await input(instance, '\u001B[B');

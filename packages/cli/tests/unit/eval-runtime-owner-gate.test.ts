@@ -39,10 +39,10 @@ afterEach(async () => {
 
 describe('Eval runtime owner gate', () => {
   it.each([
-    ['prepare help', 'aw skill eval prepare --help'],
+    ['prepare help', 'aw dev eval prepare --help'],
     [
       'complete prepare selection',
-      'aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json',
+      'aw dev eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json',
     ],
   ])('accepts the documented AW %s command', async (_label, command) => {
     const root = await writeRunnerSkill(command)

@@ -507,7 +507,7 @@ export interface PreApplyContextV1 {
 
 export async function runPreApplyScript(options: {
   referencePlugins?: readonly PluginMeta[];
-  plugin: PluginMeta; platform: PlatformTarget; scope: Scope; cwd: string; context: Pick<CommandExecutionContext, 'env'>;
+  plugin: PluginMeta; platform: PlatformTarget; scope: Scope; cwd: string; context: Pick<CommandExecutionContext, 'env' | 'interruption'>;
   scriptTimeoutMs?: number; runner?: PluginProcessRunner;
 }): Promise<void> {
   const declaration = options.plugin.manifest.scripts?.preApply; if (!declaration) return;
@@ -553,17 +553,25 @@ export async function runPreApplyScript(options: {
     const handleInterrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
       if (interruptSignal) return;
       interruptSignal = signal;
-      interruptReason = new Error(`preApply interrupted by ${signal}.`);
+      interruptReason = options.context.interruption?.signal.reason ?? new Error(`preApply interrupted by ${signal}.`);
       interruptController.abort(interruptReason);
     };
     const handleSigint = (): void => handleInterrupt('SIGINT');
     const handleSigterm = (): void => handleInterrupt('SIGTERM');
-    process.on('SIGINT', handleSigint);
-    process.on('SIGTERM', handleSigterm);
-    removeInterruptListeners = () => {
-      process.removeListener('SIGINT', handleSigint);
-      process.removeListener('SIGTERM', handleSigterm);
-    };
+    if (options.context.interruption) {
+      const interruption = options.context.interruption;
+      const onAbort = (): void => handleInterrupt(interruption.exitCode === 130 ? 'SIGINT' : 'SIGTERM');
+      interruption.signal.addEventListener('abort', onAbort, { once: true });
+      removeInterruptListeners = () => interruption.signal.removeEventListener('abort', onAbort);
+      if (interruption.signal.aborted) onAbort();
+    } else {
+      process.on('SIGINT', handleSigint);
+      process.on('SIGTERM', handleSigterm);
+      removeInterruptListeners = () => {
+        process.removeListener('SIGINT', handleSigint);
+        process.removeListener('SIGTERM', handleSigterm);
+      };
+    }
     let result: PluginProcessResult | undefined;
     try {
       result = options.runner
@@ -651,6 +659,18 @@ export async function runPreApplyScript(options: {
     }
     removeInterruptListeners?.();
     if (interruptSignal) {
+      if (options.context.interruption) {
+        const cleanupFailed = Boolean(tempCleanupError || !runnerCleanupConfirmed);
+        options.context.interruption.cleanupFailed ||= cleanupFailed;
+        throw attachSafeOperationError(new Error(cleanupFailed
+          ? 'preApply cleanup could not be confirmed after interruption.'
+          : 'preApply was interrupted after process cleanup.'), {
+          code: cleanupFailed ? 'processCleanupUnconfirmed' : 'operationInterrupted',
+          stage: 'preApply',
+          safeMessage: cleanupFailed ? 'preApply cleanup could not be confirmed after interruption.' : 'preApply was interrupted after process cleanup.',
+          exitCode: cleanupFailed ? 1 : options.context.interruption.exitCode,
+        });
+      }
       if (tempCleanupError) {
         process.stderr.write(`preApply temporary directory cleanup failed after ${interruptSignal}.\n`);
         process.exit(1);

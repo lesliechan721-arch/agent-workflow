@@ -45,9 +45,9 @@ describe('AW capability contracts', () => {
     expect(registry.every((capability) => normalizeAwCapabilities([capability])[0] === capability))
       .toBe(true)
     expect(new Set(registry).size).toBe(registry.length)
-    expect(registry).toContain('aw.review-preparation.v1')
-    expect(registry).toContain('aw.review-inspection.v2')
-    expect(registry).toContain('aw.plugin-recovery.v1')
+    expect(registry).toContain('aw.review-preparation.v2')
+    expect(registry).toContain('aw.review-inspection.v3')
+    expect(registry).toContain('aw.plugin-recovery.v2')
     expect(registry).not.toContain('aw.project-recovery.v1')
     expect(registry).not.toContain('aw.review-publication.v1')
     expect(registry).not.toContain('aw.review-inspection.v1')
@@ -130,16 +130,16 @@ describe('AW capability contracts', () => {
     const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-core-'))
     tempDirs.push(pluginRoot)
     await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), [
-      'Run `aw catalog dev status` when needed.',
-      'aw plugin validate . --json',
+      'Run `aw dev source status` when needed.',
+      'aw dev plugin validate . --json',
       '```text',
-      'aw catalog build',
+      'aw dev catalog build',
       '```',
       '```bash',
-      'aw catalog publish plan --json',
-      'aw review inspect . --json',
-      'aw review prepare . --platform codex --scope user --out ./prepared --json',
-      ...['digest', 'publish', 'verify', 'list', 'show'].map((command) => `aw review ${command}`),
+      'aw dev catalog publish plan --json',
+      'aw dev review inspect . --json',
+      'aw dev review prepare . --platform codex --scope user --out ./prepared --json',
+      ...['digest', 'publish', 'verify', 'list', 'show'].map((command) => `aw dev review ${command}`),
       'aw self check --json && aw future command',
       'aw "$GROUP" status',
       '```',
@@ -147,19 +147,19 @@ describe('AW capability contracts', () => {
     ].join('\n'))
     await fs.outputFile(
       path.join(pluginRoot, 'skills', 'one', 'references', 'SKILL.md'),
-      '```bash\naw catalog source list\n```\n',
+      '```bash\naw source status\n```\n',
     )
     await fs.outputFile(
       path.join(pluginRoot, 'skills', 'one', 'references', 'commands.md'),
-      '```bash\naw catalog source list\n```\n',
+      '```bash\naw source status\n```\n',
     )
     await fs.outputFile(
       path.join(pluginRoot, 'skills', 'one', 'scripts', 'run.sh'),
-      'aw catalog source list\n',
+      'aw source status\n',
     )
     await fs.outputFile(
       path.join(pluginRoot, 'skills', 'one', 'README.md'),
-      '```bash\naw catalog source list\n```\n',
+      '```bash\naw source status\n```\n',
     )
     await fs.outputFile(
       path.join(pluginRoot, 'scripts', 'entry.mjs'),
@@ -171,7 +171,7 @@ describe('AW capability contracts', () => {
     )
     await fs.outputFile(
       path.join(pluginRoot, 'commands', 'publish.md'),
-      '```bash\naw catalog source list\n```\n',
+      '```bash\naw source status\n```\n',
     )
 
     const result = await scanPluginAwCliRequirements({
@@ -185,7 +185,7 @@ describe('AW capability contracts', () => {
         },
         extensions: {
           hooks: [
-            { event: 'before_tool', command: 'aw catalog source list' },
+            { event: 'before_tool', command: 'aw source status' },
             { event: 'after_tool', command: 'node ./scripts/entry.mjs' },
             { event: 'session_start', command: 'aw "$GROUP" status' },
           ],
@@ -194,16 +194,17 @@ describe('AW capability contracts', () => {
     })
 
     expect(result.detected).toEqual([
-      'aw.catalog-publication.v1',
-      'aw.catalog-source.v2',
-      'aw.review-inspection.v2',
-      'aw.review-preparation.v1',
-      'aw.self-check.v1',
+      'aw.catalog-publication.v2',
+      'aw.catalog-source.v3',
+      'aw.cli-output.v1',
+      'aw.review-inspection.v3',
+      'aw.review-preparation.v2',
+      'aw.self-check.v2',
     ])
     for (const command of ['digest', 'publish', 'verify', 'list', 'show']) {
       expect(result.observations).toContainEqual(expect.objectContaining({
         code: 'aw-command-unmapped',
-        command: `aw review ${command}`,
+        command: `aw dev review ${command}`,
         blocking: false,
       }))
     }
@@ -212,32 +213,32 @@ describe('AW capability contracts', () => {
         code: 'aw-command-detected',
         path: 'skills/one/SKILL.md',
         provenance: 'shell-fence',
-        command: 'aw review inspect',
-        capability: 'aw.review-inspection.v2',
+        command: 'aw dev review inspect',
+        capability: 'aw.review-inspection.v3',
         blocking: false,
       }),
       expect.objectContaining({
         code: 'aw-command-detected',
         path: 'skills/one/SKILL.md',
         provenance: 'shell-fence',
-        command: 'aw review prepare',
-        capability: 'aw.review-preparation.v1',
+        command: 'aw dev review prepare',
+        capability: 'aw.review-preparation.v2',
         blocking: false,
       }),
       expect.objectContaining({
         code: 'aw-command-detected',
         path: 'skills/one/SKILL.md',
         provenance: 'shell-fence',
-        command: 'aw catalog publish',
-        capability: 'aw.catalog-publication.v1',
+        command: 'aw dev catalog publish',
+        capability: 'aw.catalog-publication.v2',
         blocking: false,
       }),
       expect.objectContaining({
         code: 'aw-command-detected',
         path: '.agents-plugin/plugin.json',
         provenance: 'manifest-executable',
-        command: 'aw catalog source',
-        capability: 'aw.catalog-source.v2',
+        command: 'aw source status',
+        capability: 'aw.catalog-source.v3',
       }),
       expect.objectContaining({
         code: 'aw-command-unmapped',
@@ -263,9 +264,9 @@ describe('AW capability contracts', () => {
       'skills/one/SKILL.md',
     ])
     expect(result.observations).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ command: 'aw plugin validate' }),
-      expect.objectContaining({ capability: 'aw.catalog-authoring.v1' }),
-      expect.objectContaining({ capability: 'aw.catalog-dev-source.v1' }),
+      expect.objectContaining({ command: 'aw dev plugin validate' }),
+      expect.objectContaining({ capability: 'aw.catalog-authoring.v2' }),
+      expect.objectContaining({ capability: 'aw.catalog-dev-source.v2' }),
     ]))
   })
 
@@ -282,7 +283,7 @@ describe('AW capability contracts', () => {
       manifest: manifest({ skills: './skills' }),
     })
 
-    expect(result.detected).not.toContain('aw.catalog-authoring.v1')
+    expect(result.detected).not.toContain('aw.catalog-authoring.v2')
     expect(result.observations).toEqual([
       expect.objectContaining({
         code: 'aw-command-unmapped',
@@ -294,12 +295,62 @@ describe('AW capability contracts', () => {
     ])
   })
 
+  it('maps new command routes and leaves removed routes unmapped', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-routes-'))
+    tempDirs.push(pluginRoot)
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), [
+      '```bash',
+      'aw dev plugin create demo',
+      'aw dev skill export demo --platform cursor --scope project --out out',
+      'aw dev eval check',
+      'aw dev source status',
+      'aw plugin install official/demo --scope user',
+      'aw target list',
+      'aw source status',
+      'aw cache status',
+      'aw plugin config get official/demo',
+      'aw command run official/demo tool -- --json',
+      'aw plugin build demo',
+      'aw catalog source sync',
+      'aw review prepare demo',
+      'aw skill eval prepare demo one',
+      '```',
+    ].join('\n'))
+    const result = await scanPluginAwCliRequirements({ pluginRoot, manifest: manifest({ skills: './skills' }) })
+    expect(result.detected).toEqual([
+      'aw.catalog-dev-source.v2', 'aw.catalog-source.v3', 'aw.cli-output.v1',
+      'aw.managed-commands.v1', 'aw.plugin-authoring.v2', 'aw.plugin-config.v2',
+      'aw.plugin-recovery.v2', 'aw.skill-eval.v3',
+    ])
+    expect(result.observations.filter((entry) => entry.code === 'aw-command-unmapped')
+      .map((entry) => entry.command).sort()).toEqual([
+      'aw catalog source', 'aw plugin build', 'aw review prepare', 'aw skill eval',
+    ])
+  })
+
+  // Test Value Gate: supported command routes require both execution and output capabilities; unknown routes must remain unmapped.
+  it.each([
+    ['aw command update example --from ./tool --json --yes', true],
+    ['aw command package sync example tools --scope user --json --yes', true],
+    ['aw command package remove example tools --scope user --json --yes', true],
+    ['aw command sync example --json', false],
+    ['aw command package update example --json', false],
+  ] as const)('maps managed command capability support for %s', async (command, supported) => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-command-'))
+    tempDirs.push(pluginRoot)
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), `\`\`\`sh\n${command}\n\`\`\`\n`)
+    const result = await scanPluginAwCliRequirements({ pluginRoot, manifest: manifest({ skills: './skills' }) })
+    expect(result.detected).toEqual(supported ? ['aw.cli-output.v1', 'aw.managed-commands.v1'] : [])
+    expect(result.observations.map((entry) => entry.code)).toEqual(supported
+      ? ['aw-command-detected', 'aw-command-detected'] : ['aw-command-unmapped'])
+  })
+
   it('keeps detected observations out of effective compatibility truth and its digest', async () => {
     const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-truth-'))
     tempDirs.push(pluginRoot)
     await fs.outputFile(
       path.join(pluginRoot, 'skills', 'one', 'SKILL.md'),
-      '```bash\naw catalog publish apply --json\n```\n',
+      '```bash\naw dev catalog publish apply --json\n```\n',
     )
     const result = await resolvePluginRequirements({
       pluginRoot,
@@ -311,7 +362,7 @@ describe('AW capability contracts', () => {
       implementedCapabilities: ['aw.plugin-manifest.v3', 'aw.plugin-skills.v1'],
     })
 
-    expect(result.detected).toEqual(['aw.catalog-publication.v1'])
+    expect(result.detected).toEqual(['aw.catalog-publication.v2', 'aw.cli-output.v1'])
     expect(result.effective).toEqual([
       'aw.future-feature.v3',
       'aw.plugin-manifest.v3',

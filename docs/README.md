@@ -1,6 +1,6 @@
 # AW 文档导航总览
 
-欢迎查阅 Agent Workflows (AW) 文档。本项目包含 25 个职责分明的活动主文档，按读者角色与任务路径组织如下。
+欢迎查阅 Agent Workflows (AW) 文档。文档按读者角色与任务路径组织如下。
 
 ---
 
@@ -33,6 +33,7 @@
 
 | 合同文档 | 核心主题 |
 | --- | --- |
+| [CLI 命令与输出](reference/cli.md) | 非交互命令、JSON 外壳、退出码、确认与生命周期 payload |
 | [Manifest 与配置声明合同](reference/manifest-and-config.md) | Plugin Manifest v3 规范、Config Definition v5、本地 `$ref` 展开、Store v6 Envelope 存储与原子写入解耦。 |
 | [插件运行时合同](reference/plugin-runtime.md) | 静态/动态 Skill 声明、readRuntimeConfig 合同、动态 Renderer 规范、ArtifactPlan v2、preApply 脚本与 Native/Portable 投影。 |
 | [托管命令参考合同](reference/managed-commands.md) | 托管命令稳定 ID 算法（`cmdp_` 前缀）、参数权限（`argsPrefix`）、Claude Code 沙箱排除与执行生命周期。 |
@@ -62,20 +63,3 @@
 - [平台边界](maintainers/architecture/platforms.md)：Codex 与 Claude 生产环境解析、Native 与 Portable 投影、Windows Job Helper。
 - [TUI 交互与能力覆盖](maintainers/architecture/tui.md)：全屏交互终端架构、四主面板、Review 取证展示与完整能力覆盖。
 - [Review 与 Eval 架构](maintainers/architecture/review-eval.md)：审计引擎、评估数据流、进程收容与证据验证。
-
----
-
-## 5. 旧文档兼容说明
-
-在本次文档重构中，原根目录下的 11 份技术文档均已归位至上述规范目录，并在原位置保留了锚点兼容壳：
-- `docs/architecture.md` → 拆分至维护者架构目录与公开参考合同。
-- `docs/plugin-authoring.md` → 拆分至 `docs/authoring/first-plugin.md` 与参考合同。
-- `docs/catalog-authoring.md` → 拆分至 `docs/authoring/catalog.md` 与参考合同。
-- `docs/managed-commands.md` → 迁移至 `docs/reference/managed-commands.md`。
-- `docs/native-tools.md` → 迁移至 `docs/reference/native-tools.md`。
-- `docs/readme-standard.md` → 迁移至 `docs/authoring/readme-standard.md`。
-- `docs/testing.md` → 迁移至 `docs/maintainers/testing.md` 与 `ci.md`。
-- `docs/coding-conventions.md` → 迁移至 `docs/maintainers/coding-conventions.md`。
-- `docs/frontend-design-sources.md` → 归位至 `plugins/frontend-design/docs/design-sources.md`。
-- `docs/plugin-maintenance.md` → 归入 `docs/maintainers/`。
-- `docs/tui-capability-coverage.md` → 归入 `docs/maintainers/architecture/tui.md`。

@@ -97,7 +97,7 @@ function recoveryForTarget(state: ReceiptTargetResult['state'], errorCode: strin
   }
   const pluginId = target.pluginId ?? target.pluginName;
   const sync = `aw plugin sync ${pluginId} --target ${target.platform} --context ${target.scope}`;
-  const cleanup = `aw plugin cleanup ${pluginId} --target ${target.platform} --scope ${target.scope}`;
+  const cleanup = `aw plugin remove --only outputs ${pluginId} --target ${target.platform} --scope ${target.scope}`;
   if (errorCode === 'sourceMissing' || errorCode === 'catalogSourceUnavailable'
     || errorCode === 'codexIntentSourceUnavailable') {
     return ['refresh the Catalog source', `run ${sync}`, `run ${cleanup}`];

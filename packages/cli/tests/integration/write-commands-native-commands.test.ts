@@ -322,7 +322,7 @@ describe('five namespaced write commands', () => {
         targets: [...new Set([...Object.keys(expected), ...(platform === 'both' ? ['codex', 'claude'] : [platform])])] as Array<'codex' | 'claude'>,
       });
       const installed = await run(['plugin', 'install', 'team/dual-native', '--scope', 'user']);
-      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
       for (const current of platform === 'both' ? ['codex', 'claude'] : [platform]) expected[current] = `old-${current}`;
       await assertCommands(expected);
     }
@@ -336,7 +336,7 @@ describe('five namespaced write commands', () => {
       const receiptPath = path.join(isolation.env.AW_HOME!, 'marketplaces/team/plugins/dual-native', CODEX_NATIVE_RENDER_RECEIPT_PATH);
       const previousReceipt = codexMode === 'dynamic' && other === 'codex' ? await fs.readJson(receiptPath) : undefined;
       const synced = await run(['plugin', 'sync', 'team/dual-native', ...(platform === 'both' ? ['--target', 'codex', '--target', 'claude'] : ['--target', platform === 'claude' ? 'claude' : platform]), '--context', 'user', '--yes']);
-      expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
       const requests = (await fs.readFile(trace, 'utf8')).trim().split('\n').slice(oldTrace).map((line) => JSON.parse(line));
       expect(requests.length).toBeGreaterThan(0);
       expect(requests.every((request) => request.platform === platform)).toBe(true);
@@ -346,7 +346,7 @@ describe('five namespaced write commands', () => {
         expect({ ...afterReceipt, payloadDigest: previousReceipt.payloadDigest }).toEqual(previousReceipt);
         expect(afterReceipt.payloadDigest).toBe(await calculateCodexNativeRenderPayloadDigest(path.dirname(path.dirname(receiptPath))));
       }
-      expect(synced.payload.commandResults?.flatMap((result: { removedCommandIds: string[] }) => result.removedCommandIds) ?? []).not.toContain(ids.get(other));
+      expect(synced.payload.data.commandResults?.flatMap((result: { removedCommandIds: string[] }) => result.removedCommandIds) ?? []).not.toContain(ids.get(other));
       expected[platform] = `saved-${platform}`;
       await assertCommands(expected);
       if (platform === 'codex') {
@@ -363,10 +363,14 @@ describe('five namespaced write commands', () => {
       const other = (await listManagedCommands(isolation.env)).commands.find((command) => command.owner.kind === 'plugin' && command.owner.producer.platform === 'claude')!;
       const otherTree = await snapshotRegularTree(other.resourceRoot!);
       const blocked = await run(['plugin', 'sync', 'team/dual-native', '--target', 'claude', '--context', 'user', '--yes']);
-      expect(blocked.exitCode).toBe(1);
+      expect(blocked.exitCode, JSON.stringify(blocked.payload)).toBe(4);
+      expect(blocked.payload).toMatchObject({
+        status: 'partial', data: { changes: { outputs: 'unknown' } },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'marketplaceProjectionInvalid' })]),
+      });
       expect(await snapshotRegularTree(other.resourceRoot!)).toEqual(otherTree);
       const repaired = await run(['plugin', 'sync', '--rebuild', 'team/dual-native', '--target', 'codex', '--target', 'claude', '--context', 'user', '--yes']);
-      expect(repaired, JSON.stringify(repaired)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(repaired, JSON.stringify(repaired)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
       await assertCommands({ codex: 'saved-codex', claude: 'saved-claude' });
     }
   }, 90000);
@@ -425,7 +429,7 @@ describe('five namespaced write commands', () => {
     let commandId: string | undefined, resourceRoot: string | undefined;
     for (const [scope, cwd] of [['user', projects[0]!], ['project', projects[0]!], ['project', projects[1]!]] as const) {
       const installed = await runPublic(cwd, ['plugin', 'install', 'team/shared-claude', '--scope', scope]);
-      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
       const commands = (await listManagedCommands(isolation.env)).commands;
       expect(commands).toHaveLength(1);
       commandId ??= commands[0]!.id;
@@ -447,13 +451,13 @@ describe('five namespaced write commands', () => {
       expect(await fs.readJson(capture)).toEqual(['user-value', 'check']);
     };
     await checkRun();
-    const cleaned = await runPublic(projects[0]!, ['plugin', 'cleanup', 'team/shared-claude', '--target', 'claude', '--scope', 'project', '--yes']);
-    expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    const cleaned = await runPublic(projects[0]!, ['plugin', 'remove', '--only', 'outputs', 'team/shared-claude', '--target', 'claude', '--scope', 'project', '--yes']);
+    expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     expect((await fs.readJson(path.join(projects[0]!, '.claude', 'settings.json'))).permissions?.allow ?? []).not.toContain(`Bash(aw command run ${commandId} -- check *)`);
     expect((await fs.readJson(userSettings)).permissions.allow).toContain(`Bash(aw command run ${commandId} -- check *)`);
     await checkRun();
-    const uninstalled = await runPublic(projects[1]!, ['plugin', 'remove', 'team/shared-claude', '--scope', 'project']);
-    expect(uninstalled, JSON.stringify(uninstalled)).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    const uninstalled = await runPublic(projects[1]!, ['plugin', 'remove', 'team/shared-claude', '--scope', 'project', '--yes']);
+    expect(uninstalled, JSON.stringify(uninstalled)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     await checkRun();
     const restoredProject = await runPublic(projects[1]!, ['plugin', 'install', 'team/shared-claude', '--scope', 'project', '--yes']);
     expect(restoredProject, JSON.stringify(restoredProject)).toMatchObject({ exitCode: 0 });

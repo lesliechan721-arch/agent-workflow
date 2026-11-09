@@ -56,13 +56,13 @@ async function createWorkspace(options: {
     : options.nested ? path.join(repoRoot, 'catalog', 'workspace') : repoRoot;
   await fs.ensureDir(workspaceRoot);
   if (options.git !== false) await git(repoRoot, ['init']);
-  expect(await runCli(['catalog', 'init', '--workspace-root', workspaceRoot], {
+  expect(await runCli(['dev', 'catalog', 'create', '--workspace-root', workspaceRoot], {
     cwd: workspaceRoot,
     io: capture().io,
   })).toBe(0);
   const pluginName = options.pluginName ?? 'remove-me';
   expect(await runCli([
-    'plugin', 'init', pluginName,
+    'dev', 'plugin', 'create', pluginName,
     '--description', 'Plugin removal integration fixture.',
     '--no-skills', '--workspace-root', workspaceRoot,
   ], { cwd: workspaceRoot, io: capture().io })).toBe(0);
@@ -113,7 +113,7 @@ async function removeJson(
 ): Promise<{ exitCode: number; stdout: string; stderr: string; receipt: any }> {
   const output = capture();
   const exitCode = await runCli([
-    'plugin', 'remove', pluginName,
+    'dev', 'plugin', 'remove', pluginName,
     '--workspace-root', workspaceRoot,
     ...extraArgs,
     '--json',
@@ -140,16 +140,16 @@ async function expectFailureWithoutMutation(options: {
     options.pluginName,
     options.extraArgs,
   );
-  expect(result.exitCode).toBe(1);
+  expect(result.exitCode).toBe(options.code === 'confirmationRequired' ? 3 : 1);
   expect(result.receipt).toMatchObject({
     schemaVersion: 1,
-    command: 'plugin:remove',
-    ok: false,
-    removed: false,
-    errors: [{ code: options.code }],
+    status: options.code === 'confirmationRequired' ? 'blocked' : 'failed',
+    command: 'dev.plugin.remove',
+    diagnostics: [{ code: options.code }],
+    data: options.code === 'confirmationRequired' ? { confirmation: { required: true, provided: false } } : { removed: false }
   });
   expect(result.stdout.trim().split(/\r?\n/u)).toHaveLength(1);
-  expect(result.stderr).toContain('[ERROR]');
+  expect(result.stderr).toContain(options.code);
   expect(await treeSnapshot(options.pluginRoot)).toEqual(before);
 }
 
@@ -157,7 +157,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
 });
 
-describe('aw plugin remove', () => {
+describe('aw dev plugin remove', () => {
   it('removes only a clean committed plugin from a nested Workspace and preserves unrelated changes', async () => {
     const fixture = await createWorkspace({ nested: true });
     const baseCommit = await git(fixture.repoRoot, ['rev-parse', 'HEAD']);
@@ -173,20 +173,22 @@ describe('aw plugin remove', () => {
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.stdout.trim().split(/\r?\n/u)).toHaveLength(1);
-    expect(result.receipt).toEqual({
+    expect(result.receipt).toMatchObject({
       schemaVersion: 1,
-      command: 'plugin:remove',
-      ok: true,
-      workspaceRoot: canonicalWorkspaceRoot,
-      workspaceRootResolvedFrom: 'explicit',
-      baseCommit,
-      plugin: {
-        name: 'remove-me',
-        version: '0.1.0',
-        root: canonicalPluginRoot,
-      },
-      removed: true,
-      errors: [],
+      status: 'success',
+      command: 'dev.plugin.remove',
+      diagnostics: [],
+      data: {
+        workspaceRoot: canonicalWorkspaceRoot,
+        workspaceRootResolvedFrom: 'explicit',
+        baseCommit,
+        plugin: {
+          name: 'remove-me',
+          version: '0.1.0',
+          root: canonicalPluginRoot,
+        },
+        removed: true
+      }
     });
     await expect(fs.pathExists(fixture.pluginRoot)).resolves.toBe(false);
     expect((await git(fixture.repoRoot, ['status', '--short'])).split('\n')).toEqual(expect.arrayContaining([
@@ -198,7 +200,7 @@ describe('aw plugin remove', () => {
   it('removes a target when a surviving plugin omits optional dependencies', async () => {
     const fixture = await createWorkspace();
     expect(await runCli([
-      'plugin', 'init', 'survivor', '--description', 'Surviving plugin without dependencies.',
+      'dev', 'plugin', 'create', 'survivor', '--description', 'Surviving plugin without dependencies.',
       '--no-skills', '--workspace-root', fixture.workspaceRoot,
     ], { cwd: fixture.workspaceRoot, io: capture().io })).toBe(0);
     const survivorRoot = path.join(fixture.workspaceRoot, 'plugins', 'survivor');
@@ -209,10 +211,13 @@ describe('aw plugin remove', () => {
 
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.receipt).toMatchObject({
-      ok: true,
-      plugin: { name: 'remove-me' },
-      removed: true,
-      errors: [],
+      schemaVersion: 1,
+      status: 'success',
+      diagnostics: [],
+      data: {
+        plugin: { name: 'remove-me' },
+        removed: true
+      }
     });
     await expect(fs.pathExists(fixture.pluginRoot)).resolves.toBe(false);
     await expect(fs.pathExists(survivorRoot)).resolves.toBe(true);
@@ -226,11 +231,14 @@ describe('aw plugin remove', () => {
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.receipt).toMatchObject({
-      ok: true,
-      workspaceRoot: fixture.workspaceRoot,
-      plugin: { name: 'remove-me', root: fixture.pluginRoot },
-      removed: true,
-      errors: [],
+      schemaVersion: 1,
+      status: 'success',
+      diagnostics: [],
+      data: {
+        workspaceRoot: fixture.workspaceRoot,
+        plugin: { name: 'remove-me', root: fixture.pluginRoot },
+        removed: true
+      }
     });
     await expect(fs.pathExists(fixture.pluginRoot)).resolves.toBe(false);
   });
@@ -372,7 +380,7 @@ describe('aw plugin remove', () => {
   it('lists reverse dependents and keeps both plugins unchanged', async () => {
     const fixture = await createWorkspace();
     expect(await runCli([
-      'plugin', 'init', 'dependent', '--description', 'Reverse dependency fixture.',
+      'dev', 'plugin', 'create', 'dependent', '--description', 'Reverse dependency fixture.',
       '--no-skills', '--workspace-root', fixture.workspaceRoot,
     ], { cwd: fixture.workspaceRoot, io: capture().io })).toBe(0);
     const dependentRoot = path.join(fixture.workspaceRoot, 'plugins', 'dependent');
@@ -387,9 +395,10 @@ describe('aw plugin remove', () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.receipt).toMatchObject({
-      ok: false,
-      removed: false,
-      errors: [{ code: 'reverseDependencies', message: expect.stringContaining('dependent') }],
+      schemaVersion: 1,
+      status: 'failed',
+      diagnostics: [{ code: 'reverseDependencies', message: expect.stringContaining('dependent') }],
+      data: { removed: false }
     });
     expect(await treeSnapshot(dependentRoot)).toEqual(dependentBefore);
     await expect(fs.pathExists(fixture.pluginRoot)).resolves.toBe(true);

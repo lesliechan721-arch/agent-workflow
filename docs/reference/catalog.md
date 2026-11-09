@@ -14,7 +14,7 @@
   plugins/
     marketplace-source.json                 [Marketplace 根元数据]
     <plugin-name>/.agents-plugin/plugin.json [各插件源码 Manifest v3]
-            ↓ aw catalog build
+            ↓ aw dev catalog build
   .aw/catalog/                              [生成开发快照 Snapshot schema 7]
 ```
 
@@ -22,9 +22,9 @@
 
 - `schemaVersion: 1`
 - `kind: "aw-catalog-workspace"`
-- `workspaceIdentity`: 稳定的非空字符串，唯一标识该 Workspace 的逻辑身份。初始化命令（`aw catalog init`）默认写入 `sha256(crypto.randomUUID())` 十六进制字符串，校验仅要求非空字符串（不强制为 UUID 格式）。已有合法 identity 不因 metadata、插件或版本变化而替换。该 marker 本身不进入 snapshot digest，但快照中记录的 `workspaceIdentity` 必须与此严格相等。
+- `workspaceIdentity`: 稳定的非空字符串，唯一标识该 Workspace 的逻辑身份。初始化命令（`aw dev catalog create`）默认写入 `sha256(crypto.randomUUID())` 十六进制字符串，校验仅要求非空字符串（不强制为 UUID 格式）。已有合法 identity 不因 metadata、插件或版本变化而替换。该 marker 本身不进入 snapshot digest，但快照中记录的 `workspaceIdentity` 必须与此严格相等。
 
-使用 `aw catalog init --workspace-root <workspace>` 初始化 Workspace v1。每个 Catalog 命令自行从 `--workspace-root` 或当前工作目录（cwd）向上定位最近的合法 marker。
+使用 `aw dev catalog create --workspace-root <workspace>` 初始化 Workspace v1。每个 Catalog 命令自行从 `--workspace-root` 或当前工作目录（cwd）向上定位最近的合法 marker。
 
 ### 1.2 Marketplace 根元数据（`plugins/marketplace-source.json`）
 
@@ -39,13 +39,13 @@
 
 - **静态状态检查**：
   ```bash
-  aw catalog status --workspace-root "$workspace" --json
+  aw dev catalog status --workspace-root "$workspace" --json
   ```
   该命令是严格只读的静态命令：读取 Workspace marker、metadata、inventory、依赖图、Git 状态和 snapshot evidence，不构建、不拉取远端、不运行插件代码。
 - **公开版本变更（Version Mutation）**：
   ```bash
-  aw catalog version 0.2.0 --workspace-root "$workspace"
-  aw catalog version --bump patch --workspace-root "$workspace"
+  aw dev catalog version 0.2.0 --workspace-root "$workspace"
+  aw dev catalog version --bump patch --workspace-root "$workspace"
   ```
   单插件 `version` 是单个插件的 artifact identity；`catalog.version` 是整个 snapshot identity。Catalog version 只允许通过公开 mutation 命令设置或递增。
 
@@ -53,14 +53,14 @@
 
 ## 2. Catalog Snapshot schema 7 快照合同
 
-执行 `aw catalog build` 会在 `<workspace>/.aw/catalog/` 生成 Snapshot schema 7 快照：
+执行 `aw dev catalog build` 会在 `<workspace>/.aw/catalog/` 生成 Snapshot schema 7 快照：
 
 ```bash
-aw catalog build --workspace-root "$workspace" --json
-aw catalog validate "$workspace/.aw/catalog" --json
+aw dev catalog build --workspace-root "$workspace" --json
+aw dev catalog validate "$workspace/.aw/catalog" --json
 ```
 
-第三方公开 `aw catalog build` 默认仅提供 advisory 建议，不使用 `--strict-requirements`；官方仓库构建必须使用 `--strict-requirements` 语义。
+第三方公开 `aw dev catalog build` 默认仅提供 advisory 建议，不使用 `--strict-requirements`；官方仓库构建必须使用 `--strict-requirements` 语义。
 
 ### 2.1 Release Metadata 与快照完整性
 
@@ -125,11 +125,11 @@ Catalog 远端发布通过 `publish plan` 与 `publish apply` 两阶段完成，
 
 ```bash
 # 阶段 1：生成并核对发布计划
-aw catalog publish plan --workspace-root "$workspace" \
+aw dev catalog publish plan --workspace-root "$workspace" \
   --remote <remote> --branch <branch> --json
 
 # 阶段 2：授权并应用发布计划
-aw catalog publish apply --workspace-root "$workspace" \
+aw dev catalog publish apply --workspace-root "$workspace" \
   --remote <remote> --branch <branch> \
   --expected-plan-digest <planDigest> --yes --json
 ```
@@ -186,12 +186,10 @@ aw catalog publish apply --workspace-root "$workspace" \
    - 当 Journal 处于 `published` 状态，或远端 Git 已生成不可变的发布 tag 时，该版本已被永久占用。即使本地 Journal 丢失，也严禁再次使用该版本，必须提升版本。
 4. **清理失败不推翻成功事实**：
    - 发布成功时，必须先原子写入 `published` 状态的 journal，再尽力删除 `repository/` 暂存目录。暂存目录清理失败仅产生稳定警告（warning），不推翻远端已成功的客观事实。
-5. **JSON 失败格式规范**：
-   `plan --json` 与 `apply --json` 失败时统一输出：
-   ```json
-   { "ok": false, "code": "<稳定错误码>", "message": "<脱敏说明>" }
-   ```
-   退出码固定为 1。`CatalogPublicationInspectionError` 保留原 typed code；其他 journal、repository 或 remote 失败统一使用 `catalogPublicationFailed`。Git transport 失败在 message 中保留退出 code 和脱敏、压缩及长度截断的 stderr。脱敏输出绝对不包含 Workspace、AW_HOME、发布仓库或临时目录的绝对路径，也不包含 remote 凭据、query 参数或哈希。
+5. **JSON 失败与执行证据**：
+   `plan --json` 与 `apply --json` 使用[公共 CLI 结果合同](cli.md)。诊断写入 `diagnostics`；`CatalogPublicationInspectionError` 保留原 typed code，其他 journal、repository 或 remote 失败使用 `catalogPublicationFailed`。输入错误、执行前阻断、执行失败和部分完成分别使用合同规定的状态与退出码。
+   apply 已尝试远端写入但未确认最终结果时，返回 `partial`、退出码 `4`。`data` 保留已取得的 `state`、`journalState`、`planDigest`、`expectedCommit`、`remoteWriteAttempted` 与 `remoteVerified`，供调用方使用同一授权摘要恢复。无法确认的远端结果不得报告为成功，也不得报告为未发生写入。若远端已确认发布而本地收尾失败，保留已发布事实。
+   Git transport 诊断保留退出 code 和脱敏、压缩及长度截断的 stderr。诊断不包含 Workspace、AW_HOME、发布仓库或临时目录的绝对路径，也不包含 remote 凭据、query 参数或哈希。调用方显式请求的规范化作者路径按公共 CLI 合同输出。
 
 ---
 
@@ -204,7 +202,7 @@ aw catalog publish apply --workspace-root "$workspace" \
 
 - **逻辑身份（Logical Identity）**：
   Catalog snapshot 的 logical identity **唯一来自** `.aw-generated.json.workspaceIdentity`。source ID、Git URL、SSH/HTTPS 文本和本地 path 绝不是 logical identity。
-- **普通命令离线只读**：普通命令只读 `<AW_HOME>/catalog-state.json` 中已记录的 Active store 快照，完全离线运行；没有 Active 时要求先运行 sync。
+- **普通命令离线只读**：查询只读 `<AW_HOME>/catalog-state.json` 中已记录的 Active store 快照，不自动取源。首次 install 可按需获取所选来源尚无的 Active；已有 Active 不隐式升级，损坏或 identity 变化保留原恢复门禁。
 
 ### 5.2 三层状态对外部消费者的后果
 
@@ -215,18 +213,18 @@ aw catalog publish apply --workspace-root "$workspace" \
 
 ### 5.3 来源检查、同步与激活的公开行为
 
-- **配置变更（Config-only）**：`catalog source add/update` 仅修改 `catalog-sources.json` 强配置，不自动启用新来源的 Active 快照。
-- **`sync --check` 模式**：拉取并执行 Transport Validation，但不写 store 或 Active；仅记录 `lastSync`，并在 receipt 中返回脱敏的 source impact 分析。
+- **配置变更（Config-only）**：`source add/update` 仅修改 `catalog-sources.json` 强配置，不自动启用新来源的 Active 快照。
+- **`source status --remote` 模式**：临时拉取并执行 Transport Validation，返回脱敏候选与影响；清理临时材料，不写 store、Active、lastSync 或其它持久状态。
 - **普通 `sync` 操作入口与外部后果**：
-  日常执行 `aw catalog source sync <id>` 触发 `normal` 激活策略。成功同步更新本地 Active 指针并写入 store；若远端无变化则保持现有 Active 不变（正常 no-op）；若变更影响现场现有引用或清单不完整（unknown），需显式附加 `--yes`。Git 来源严格递增 SemVer 且拒绝逻辑身份变更等完整校验与拒绝分支参见 [Catalog 来源架构说明：四种激活策略定义](../maintainers/architecture/catalog-sources.md#52-四种激活策略定义)。
+  日常执行 `aw source sync <id>` 触发 `normal` 激活策略。成功同步更新本地 Active 指针并写入 store；若远端无变化则保持现有 Active 不变（正常 no-op）；若变更影响现场现有引用或清单不完整（unknown），需显式附加 `--yes`。Git 来源严格递增 SemVer 且拒绝逻辑身份变更等完整校验与拒绝分支参见 [Catalog 来源架构说明：四种激活策略定义](../maintainers/architecture/catalog-sources.md#52-四种激活策略定义)。
 - **来源兼容性（Compatibility）**：
-  `source status` schema 2 的 `compatibility` 枚举为 `null`、`supported` 或带 required/missing capability 的 `unsupported`。unsupported 状态使来源处于 not ready 状态，且系统不公开 available capability 全集。
+  `source status` 的 data 中各来源 `compatibility` 枚举为 `null`、`supported` 或带 required/missing capability 的 `unsupported`。unsupported 状态使来源处于 not ready 状态，且系统不公开 available capability 全集。
 
 ### 5.4 来源损坏恢复与 Store 清理接口
 
 - **来源损坏恢复操作入口**：
   当 Active store 物理条目缺失或损坏时，CLI/TUI 提供精确修复（`exactRepair`）；若旧 commit 不可得或 Path 内容变更导致无法原地修复，需通过 `--replace-damaged --yes`（或 TUI 独立替换 Review）显式授权替换。四项身份绑定校验、CLI/TUI 终止差异与授权重验状态机参见 [Catalog 来源架构说明：四种激活策略定义](../maintainers/architecture/catalog-sources.md#52-四种激活策略定义)。
 - **Store Prune 显式运维接口**：
-  `catalog store prune` 是显式的人工运维与恢复命令，非后台自动 GC。默认 dry-run 预览；`--dry-run` 与 `--yes` 互斥，只有 `--yes` 执行删除。非 Active 弱快照被删除后可随时通过 `aw catalog source sync` 重新拉取重建。
+  `cache prune` 是显式的人工运维与恢复命令，非后台自动 GC。默认 dry-run 预览；`--dry-run` 与 `--yes` 互斥，只有 `--yes` 执行删除。非 Active 弱快照被删除后可随时通过 `aw source sync` 重新拉取重建。
 - **本地开发源（Development Source）**：
-  通过 `aw catalog dev activate|status|deactivate` 管理。deactivate 安全停用受控来源，不删除 `.aw/catalog` 构建目录；检测到引用或 inventory 不完整时需要显式 `--yes` 确认。
+  通过 `aw dev source activate|status|deactivate` 管理。deactivate 安全停用受控来源，不删除 `.aw/catalog` 构建目录；检测到引用或 inventory 不完整时需要显式 `--yes` 确认。

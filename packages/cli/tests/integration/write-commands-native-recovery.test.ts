@@ -1227,8 +1227,8 @@ describe('five namespaced write commands', () => {
       nativeCliRunner: runtime.nativeCliRunner, codexManagerResolver: runtime.codexManagerResolver,
     }), captured.readStdout()).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      kind: 'aw-recovery', command: 'sync', scope: 'project', ok: true,
-      requestedRoots: ['team/root'], selection: { agents: ['codex'] },
+      schemaVersion: 1, command: 'plugin.sync', status: 'success',
+      data: { request: { plugins: ['team/root'], context: 'project', targets: ['codex'] } },
     });
   }, 30_000);
 
@@ -1314,9 +1314,7 @@ describe('five namespaced write commands', () => {
       interactive: false,
     })).resolves.toBe(0);
     expect(JSON.parse(publicOutput.readStdout())).toMatchObject({
-      command: 'sync',
-      ok: true,
-      kind: 'aw-recovery',
+      schemaVersion: 1, command: 'plugin.sync', status: 'success',
     });
     await expect(readFixtureRequirements(intentLocation)).resolves.toEqual(intentBefore);
     await expect(fs.readFile(configPath, 'utf8')).resolves.toContain('demo.');
@@ -2283,15 +2281,11 @@ describe('five namespaced write commands', () => {
       codexManagerResolver: runtime.codexManagerResolver,
     })).toBe(0);
     expect(JSON.parse(blockedOutput.readStdout())).toMatchObject({
-      schemaVersion: 1,
-      kind: 'aw-recovery',
-      scope: 'user',
-      command: 'sync',
-      ok: true,
-      targetResults: [expect.objectContaining({
-        pluginId: 'team/demo', agent: 'codex', scope: 'user',
-      })],
-      recoveryActions: [],
+      schemaVersion: 1, command: 'plugin.sync', status: 'success',
+      data: { request: { context: 'user' }, targetResults: [expect.objectContaining({
+        pluginId: 'team/demo', target: 'codex', scope: 'user',
+      })] },
+      nextActions: [],
     });
     expect(runtime.nativeCliRunner.mock.calls.slice(nativeCallsBeforeBlocked)
       .some(([invocation]) => invocation.args.includes('remove'))).toBe(false);
@@ -2311,15 +2305,11 @@ describe('five namespaced write commands', () => {
     });
     expect(repairedExit, repairedOutput.readStdout()).toBe(0);
     expect(JSON.parse(repairedOutput.readStdout())).toMatchObject({
-      schemaVersion: 1,
-      kind: 'aw-recovery',
-      scope: 'user',
-      command: 'sync',
-      ok: true,
-      targetResults: [expect.objectContaining({
-        pluginId: 'team/demo', agent: 'codex', scope: 'user',
-      })],
-      recoveryActions: [],
+      schemaVersion: 1, command: 'plugin.sync', status: 'success',
+      data: { request: { context: 'user' }, targetResults: [expect.objectContaining({
+        pluginId: 'team/demo', target: 'codex', scope: 'user',
+      })] },
+      nextActions: [],
     });
     const repairNativeActions = runtime.nativeCliRunner.mock.calls
       .slice(nativeCallsBeforeRepair)
@@ -2381,10 +2371,10 @@ describe('five namespaced write commands', () => {
       codexManagerResolver: runtime.codexManagerResolver,
     })).toBe(0);
     expect(JSON.parse(foreignOutput.readStdout())).toMatchObject({
-      schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command: 'sync', ok: true,
-      targetResults: [expect.objectContaining({
-        pluginId: 'team/demo', agent: 'codex', scope: 'user',
-      })],
+      schemaVersion: 1, command: 'plugin.sync', status: 'success',
+      data: { request: { context: 'user' }, targetResults: [expect.objectContaining({
+        pluginId: 'team/demo', target: 'codex', scope: 'user',
+      })] },
     });
     await expect(fs.readFile(externalPayload, 'utf8')).resolves.toBe('foreign\n');
     await expect(fs.lstat(payloadLink)).resolves.toMatchObject({});

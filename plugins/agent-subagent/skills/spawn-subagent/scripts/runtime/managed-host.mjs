@@ -59,10 +59,10 @@ async function inspectCommands(host, args, environment, workspace) {
       clearTimeout(timer);
       try {
         const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        if (value.schemaVersion !== 1 || value.command !== `command.${args[0]}` || !Array.isArray(value.commands) ||
-          !(code === 0 && value.ok === true && value.overallState === 'completed' ||
-            args[0] === 'list' && code === 1 && value.ok === false && value.overallState === 'partial')) throw new Error();
-        resolve(value);
+        if (value.schemaVersion !== 1 || value.command !== `command.${args[0]}` || !Array.isArray(value.data?.commands) ||
+          !(code === 0 && value.status === 'success' ||
+            args[0] === 'list' && code === 4 && value.status === 'partial')) throw new Error();
+        resolve(value.data);
       } catch { reject(new Error('Command inspection failed.')); }
     });
   }).catch(() => fail('managedCommandUnavailable', 'The managed command binding is unavailable. Sync or reinstall the original producer before sending input.'));

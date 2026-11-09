@@ -44,17 +44,17 @@ async function setupInactiveEntry(): Promise<{
     expectedDigest: current.digest,
     env: isolation.env,
   });
-  const first = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+  const first = await runCliEntry(['source', 'sync', 'local', '--json'], {
     cwd, env: isolation.env, interactive: false,
   });
-  const firstActive = first.parseJsonStdout().active;
+  const firstActive = first.parseJsonStdout().data.active;
   const location = resolveCatalogStoreLocation({
     logicalIdentity: firstActive.logicalIdentity,
     snapshotDigest: firstActive.snapshotDigest,
     env: isolation.env,
   });
   await writeSnapshot(root, 'second\n');
-  const second = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+  const second = await runCliEntry(['source', 'sync', 'local', '--json'], {
     cwd, env: isolation.env, interactive: false,
   });
   expect(second.exitCode, second.stderr).toBe(0);
@@ -62,69 +62,77 @@ async function setupInactiveEntry(): Promise<{
   return { env: isolation.env, cwd, entryDir: location.entryDir, storeKey: location.storeKey };
 }
 
-describe('Catalog store CLI', () => {
+describe('Catalog cache CLI', () => {
   it('publishes stable human/JSON status and defaults prune to a read-only dry run', async () => {
     const fixture = await setupInactiveEntry();
-    const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+    const status = await runCliEntry(['cache', 'status', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(status.exitCode, status.stderr).toBe(0);
     const statusPayload = status.parseJsonStdout();
     expect(statusPayload).toMatchObject({
-      catalogStoreSchemaVersion: 2,
-      command: 'catalog:store:status',
-      ok: true,
-      totals: { reclaimableEntries: 1 },
+      schemaVersion: 1,
+      status: 'success',
+      command: 'cache.status',
+      data: {
+        totals: { reclaimableEntries: 1 }
+      }
     });
-    expect(statusPayload.entries).toContainEqual(expect.objectContaining({
+    expect(statusPayload.data.entries).toContainEqual(expect.objectContaining({
       storeKey: fixture.storeKey, category: 'entry', status: 'reclaimable',
     }));
     expect(status.stdout).not.toContain(fixture.env.AW_HOME!);
 
-    const human = await runCliEntry(['catalog', 'store', 'status'], {
+    const human = await runCliEntry(['cache', 'status'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(human.exitCode).toBe(0);
-    expect(human.stdout).toContain(`${fixture.storeKey}: entry, reclaimable`);
+    expect(human.stdout).toContain(fixture.storeKey);
+    expect(human.stdout).toContain('reclaimable');
     expect(human.stdout).not.toContain(fixture.env.AW_HOME!);
 
-    const dryRun = await runCliEntry(['catalog', 'store', 'prune', '--json'], {
+    const dryRun = await runCliEntry(['cache', 'prune', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(dryRun.exitCode, dryRun.stderr).toBe(0);
     const dryRunPayload = dryRun.parseJsonStdout();
     expect(dryRunPayload).toMatchObject({
-      catalogStoreSchemaVersion: 2,
-      command: 'catalog:store:prune',
-      ok: true,
-      overallState: 'succeeded',
-      dryRun: true,
-      deleted: [],
+      schemaVersion: 1,
+      status: 'success',
+      command: 'cache.prune',
+      data: {
+        dryRun: true,
+        deleted: []
+      }
     });
-    expect(dryRunPayload.retained).toContainEqual({
+    expect(dryRunPayload.data.retained).toContainEqual({
       storeKey: fixture.storeKey, reason: 'inactiveOlderThan30Days',
     });
     await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(true);
 
-    const invalid = await runCliEntry(['catalog', 'store', 'prune', '--dry-run', '--yes', '--json'], {
+    const invalid = await runCliEntry(['cache', 'prune', '--dry-run', '--yes', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
-    expect(invalid.exitCode).toBe(1);
+    expect(invalid.exitCode).toBe(2);
     expect(invalid.parseJsonStdout()).toMatchObject({
-      command: 'catalog:store:prune',
-      ok: false,
-      overallState: 'failed',
-      errors: [{ code: 'invalidArguments' }],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'cache.prune',
+      diagnostics: [{ code: 'invalidArguments' }],
+      data: {}
     });
     await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(true);
 
-    const deleted = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
+    const deleted = await runCliEntry(['cache', 'prune', '--yes', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(deleted.exitCode, deleted.stderr).toBe(0);
     expect(deleted.parseJsonStdout()).toMatchObject({
-      dryRun: false,
-      deleted: [{ storeKey: fixture.storeKey }],
+      schemaVersion: 1,
+      data: {
+        dryRun: false,
+        deleted: [{ storeKey: fixture.storeKey }]
+      }
     });
     await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(false);
   });
@@ -135,28 +143,31 @@ describe('Catalog store CLI', () => {
   ])('returns typed failed receipts and deletes nothing when %s is damaged', async (fileName, code) => {
     const fixture = await setupInactiveEntry();
     await fs.writeFile(path.join(fixture.env.AW_HOME!, fileName), '{ invalid\n');
-    const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+    const status = await runCliEntry(['cache', 'status', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(status.exitCode).toBe(1);
     expect(status.parseJsonStdout()).toMatchObject({
-      catalogStoreSchemaVersion: 2,
-      command: 'catalog:store:status',
-      ok: false,
-      entries: [],
-      errors: [{ code }],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'cache.status',
+      diagnostics: [{ code }],
+      data: {
+        entries: []
+      }
     });
-    const failed = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
+    const failed = await runCliEntry(['cache', 'prune', '--yes', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(failed.exitCode).toBe(1);
     expect(failed.parseJsonStdout()).toMatchObject({
-      catalogStoreSchemaVersion: 2,
-      command: 'catalog:store:prune',
-      ok: false,
-      overallState: 'failed',
-      deleted: [],
-      errors: [{ code }],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'cache.prune',
+      diagnostics: [{ code }],
+      data: {
+        deleted: []
+      }
     });
     expect(failed.stdout).not.toContain(fixture.env.AW_HOME!);
     expect(failed.stderr).not.toContain(fixture.env.AW_HOME!);
@@ -176,25 +187,27 @@ describe('Catalog store CLI', () => {
       return realReaddir(location, options as never);
     }) as typeof fs.readdir);
     try {
-      const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+      const status = await runCliEntry(['cache', 'status', '--json'], {
         cwd: fixture.cwd, env: fixture.env, interactive: false,
       });
-      const prune = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
+      const prune = await runCliEntry(['cache', 'prune', '--yes', '--json'], {
         cwd: fixture.cwd, env: fixture.env, interactive: false,
       });
       expect(status.exitCode).toBe(1);
       expect(prune.exitCode).toBe(1);
       expect(status.parseJsonStdout()).toMatchObject({
-        catalogStoreSchemaVersion: 2,
-        command: 'catalog:store:status',
-        errors: [{ code: 'catalogStoreInspectionFailed' }],
+        schemaVersion: 1,
+        command: 'cache.status',
+        diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
+        data: {}
       });
       expect(prune.parseJsonStdout()).toMatchObject({
-        catalogStoreSchemaVersion: 2,
-        command: 'catalog:store:prune',
-        overallState: 'failed',
-        deleted: [],
-        errors: [{ code: 'catalogStoreInspectionFailed' }],
+        schemaVersion: 1,
+        command: 'cache.prune',
+        diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
+        data: {
+          deleted: []
+        }
       });
       expect(status.stdout).not.toContain(fixture.env.AW_HOME!);
       expect(prune.stdout).not.toContain(fixture.env.AW_HOME!);
@@ -204,61 +217,65 @@ describe('Catalog store CLI', () => {
     }
   });
 
-  it('returns exit 1 and partial receipts while retaining an unsafe item and pruning a safe item', async () => {
+  it('returns exit 4 and partial results while retaining an unsafe item and pruning a safe item', async () => {
     const fixture = await setupInactiveEntry();
     const unsafePath = path.join(path.dirname(fixture.entryDir), 'unsafe-link');
     await fs.symlink(fixture.cwd, unsafePath);
 
-    const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+    const status = await runCliEntry(['cache', 'status', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
-    expect(status.exitCode).toBe(1);
+    expect(status.exitCode).toBe(4);
     expect(status.parseJsonStdout()).toMatchObject({
-      catalogStoreSchemaVersion: 2,
-      command: 'catalog:store:status',
-      ok: false,
-      totals: { reclaimableEntries: 1, reclaimableBytes: null },
-      errors: [{ code: 'catalogStoreInspectionFailed' }],
+      schemaVersion: 1,
+      status: 'partial',
+      command: 'cache.status',
+      diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
+      data: {
+        totals: { reclaimableEntries: 1, reclaimableBytes: null }
+      }
     });
-    expect(status.parseJsonStdout().entries).toEqual(expect.arrayContaining([
+    expect(status.parseJsonStdout().data.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({ storeKey: fixture.storeKey, status: 'reclaimable', generationReference: 'none' }),
       expect.objectContaining({ status: 'error', generationReference: 'none', reason: 'unsafeSymlink' }),
     ]));
     expect(status.stdout).not.toContain(fixture.env.AW_HOME!);
 
-    const human = await runCliEntry(['catalog', 'store', 'status'], {
+    const human = await runCliEntry(['cache', 'status'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
-    expect(human.exitCode).toBe(1);
-    expect(human.stderr).toContain('could not be fully inspected');
+    expect(human.exitCode).toBe(4);
+    expect(human.stderr).toContain('catalogStoreInspectionFailed');
 
-    const dryRun = await runCliEntry(['catalog', 'store', 'prune', '--json'], {
+    const dryRun = await runCliEntry(['cache', 'prune', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
-    expect(dryRun.exitCode).toBe(1);
+    expect(dryRun.exitCode).toBe(4);
     expect(dryRun.parseJsonStdout()).toMatchObject({
-      catalogStoreSchemaVersion: 2,
-      ok: false,
-      overallState: 'partial',
-      dryRun: true,
-      deleted: [],
-      reclaimableBytes: null,
-      errors: [{ code: 'catalogStoreInspectionFailed' }],
+      schemaVersion: 1,
+      status: 'partial',
+      diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
+      data: {
+        dryRun: true,
+        deleted: [],
+        reclaimableBytes: null
+      }
     });
     await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(true);
 
-    const pruned = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
+    const pruned = await runCliEntry(['cache', 'prune', '--yes', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
-    expect(pruned.exitCode).toBe(1);
+    expect(pruned.exitCode).toBe(4);
     expect(pruned.parseJsonStdout()).toMatchObject({
-      catalogStoreSchemaVersion: 2,
-      ok: false,
-      overallState: 'partial',
-      dryRun: false,
-      deleted: [{ storeKey: fixture.storeKey }],
-      reclaimableBytes: null,
-      errors: [{ code: 'catalogStoreInspectionFailed' }],
+      schemaVersion: 1,
+      status: 'partial',
+      diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
+      data: {
+        dryRun: false,
+        deleted: [{ storeKey: fixture.storeKey }],
+        reclaimableBytes: null
+      }
     });
     expect(pruned.stdout).not.toContain(fixture.env.AW_HOME!);
     await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(false);
@@ -271,22 +288,22 @@ describe('Catalog store CLI', () => {
     const claimPath = path.join(path.dirname(fixture.entryDir), claimName);
     await fs.rename(fixture.entryDir, claimPath);
 
-    const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+    const status = await runCliEntry(['cache', 'status', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(status.exitCode, status.stderr).toBe(0);
-    expect(status.parseJsonStdout().entries).toContainEqual(expect.objectContaining({
+    expect(status.parseJsonStdout().data.entries).toContainEqual(expect.objectContaining({
       storeKey: `${fixture.storeKey.split('/')[0]}/${claimName}`,
       category: 'deleteClaim',
       status: 'reclaimable',
       reason: 'deleteClaimOlderThan24Hours',
     }));
 
-    const pruned = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
+    const pruned = await runCliEntry(['cache', 'prune', '--yes', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(pruned.exitCode, pruned.stderr).toBe(0);
-    expect(pruned.parseJsonStdout().deleted).toContainEqual(expect.objectContaining({
+    expect(pruned.parseJsonStdout().data.deleted).toContainEqual(expect.objectContaining({
       storeKey: `${fixture.storeKey.split('/')[0]}/${claimName}`,
     }));
     expect(pruned.stdout).not.toContain(fixture.env.AW_HOME!);

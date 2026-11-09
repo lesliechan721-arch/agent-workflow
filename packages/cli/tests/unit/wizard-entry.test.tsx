@@ -1,79 +1,58 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs-extra';
+import { describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
 import { toWizardCandidates } from '../../src/commands/wizard.js';
-import { runRecovery } from '../../src/recovery/coordinator.js';
+import { addRoot, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-vi.mock('../../src/recovery/coordinator.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/recovery/coordinator.js')>(),
-  runRecovery: vi.fn(),
-}));
-
-beforeEach(() => {
-  vi.mocked(runRecovery).mockReset();
-  vi.mocked(runRecovery).mockResolvedValue({
-    schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command: 'cleanup', ok: true,
-    intent: { state: 'absent', roots: [] }, requestedRoots: [], requestedTargets: [],
-    selection: { agents: ['codex'], origin: 'argument', preferences: 'absent' },
-    blockers: [], errors: [], targetResults: [], remainingTargets: [], recoveryActions: [],
-    declarationChanged: false, preferencesChanged: false, configChanged: false,
-    outputsMayHaveChanged: false,
-  });
-});
-
 describe('scoped write command entry', () => {
-  // Test Value Gate: CLI arguments must reach the coordinator; invalid input must fail before coordination or a wizard.
-  it('routes complete cleanup arguments without mounting a wizard', async () => {
+  // Test Value Gate: complete CLI requests use shared services without mounting the interactive TUI.
+  it('removes an exact requirement without mounting a wizard', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    const location = { cwd: isolation.layout.fixtureCwd, env: isolation.env, scope: 'user' as const };
+    await addRoot(location, 'team/demo', 'team-identity');
     const captured = createCapturedCliIo();
     const launch = vi.fn();
-    const exitCode = await runCli([
-      'plugin', 'cleanup', 'team/demo', '--scope', 'user', '--target', 'codex', '--force', '--json',
-    ], { cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      interactive: true, io: captured.io, tuiRunner: { launch } as never });
-    expect(exitCode).toBe(0);
+    expect(await runCli([
+      'plugin', 'remove', 'team/demo', '--scope', 'user', '--only', 'requirements', '--json',
+    ], { ...location, interactive: true, io: captured.io, tuiRunner: { launch } as never })).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command: 'cleanup', ok: true,
+      schemaVersion: 1, command: 'plugin.remove', status: 'success',
+      data: { request: { scope: 'user', mode: 'requirements-only' }, requirements: { roots: [] },
+        changes: { requirements: 'changed', outputs: 'none' }, targetResults: [] },
     });
+    expect(await observeIntent(location)).toMatchObject({ state: 'valid', value: { roots: [] } });
     expect(launch).not.toHaveBeenCalled();
-    expect(runRecovery).toHaveBeenCalledWith('cleanup', ['team/demo'], expect.objectContaining({
-      scope: 'user', targets: ['codex'], force: true,
-    }), expect.any(Object));
   });
 
-  it('routes installation with declaration scope and work context without target selection', async () => {
+  it('reports missing deployment targets without saving a requirement or mounting a wizard', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const captured = createCapturedCliIo();
     const launch = vi.fn();
-    const result = await runCli([
+    expect(await runCli([
       'plugin', 'install', 'team/demo', '--scope', 'user', '--context', 'user', '--json',
     ], { cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      interactive: true, io: captured.io, tuiRunner: { launch } as never });
-    expect(result).toBe(0);
+      interactive: true, io: captured.io, tuiRunner: { launch } as never })).toBe(3);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      kind: 'aw-recovery', command: 'install', ok: true,
+      command: 'plugin.install', status: 'blocked', data: { changes: { requirements: 'none' } },
+      diagnostics: [{ code: 'noTargetsEnabled' }],
     });
-    expect(runRecovery).toHaveBeenCalledWith('install', ['team/demo'], expect.objectContaining({
-      scope: 'user', context: 'user', targets: undefined,
-    }), expect.any(Object));
+    expect(await fs.pathExists(await resolveIntentPath({ scope: 'user', env: isolation.env }))).toBe(false);
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('rejects an omitted cleanup scope before calling the coordinator', async () => {
+  it('rejects an omitted output removal scope before any output changes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const captured = createCapturedCliIo();
-    const result = await runCli([
-      'plugin', 'cleanup', 'team/demo', '--target', 'codex', '--json',
+    expect(await runCli([
+      'plugin', 'remove', 'team/demo', '--only', 'outputs', '--target', 'codex', '--json',
     ], { cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      interactive: false, io: captured.io });
-    expect(result).toBe(2);
+      interactive: false, io: captured.io })).toBe(2);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      kind: 'aw-recovery', scope: null, command: 'cleanup', ok: false,
-      errors: [{ code: 'invalidArguments' }],
+      command: 'plugin.remove', status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }],
     });
-    expect(runRecovery).not.toHaveBeenCalled();
   });
 
   it('keeps namespaced config candidates for the config wizard', () => {
@@ -88,19 +67,16 @@ describe('scoped write command entry', () => {
     })]);
   });
 
-  it('rejects missing install selectors before mounting a non-TTY wizard', async () => {
+  it('rejects missing install selectors without mounting a wizard', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const captured = createCapturedCliIo();
     const launch = vi.fn();
-    const exitCode = await runCli(['plugin', 'install'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
+    expect(await runCli(['plugin', 'install', '--scope', 'user'], {
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
       interactive: true, io: captured.io, tuiRunner: { launch } as never,
-    });
-    expect(exitCode).toBe(2);
-    expect(captured.readStdout()).toBe('');
+    })).toBe(2);
+    expect(captured.readStdout()).toContain('FAILED');
     expect(captured.readStderr()).toContain("missing required argument 'plugins'");
     expect(launch).not.toHaveBeenCalled();
-    expect(runRecovery).not.toHaveBeenCalled();
   });
 });

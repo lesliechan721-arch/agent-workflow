@@ -45,7 +45,7 @@ export async function initCommand(
         activeReady: false,
         error: item.error.message,
         errorCode: catalogSourceErrorCode(item.error),
-        recovery: `Run aw catalog source sync ${item.sourceId}.`,
+        recovery: `Run aw source sync ${item.sourceId}.`,
       };
     }
     const resolution = item.resolution!;

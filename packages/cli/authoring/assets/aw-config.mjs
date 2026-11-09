@@ -45,7 +45,7 @@ function redactValues(schema, values) {
 
 function resolveConfig(scope) {
   if (scope !== 'effective') {
-    fail('AW_PLUGIN_CONTEXT only supports effective config reads; use aw config for user or project scope.');
+    fail('AW_PLUGIN_CONTEXT only supports effective config reads; use aw plugin config with an explicit context.');
   }
   const context = readContext();
   const schema = context.config.schema;

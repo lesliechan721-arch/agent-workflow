@@ -60,6 +60,10 @@ import { measureRecoveryPerformanceStage } from './performance.js';
 
 export type RecoveryCommand = 'sync' | 'install' | 'reinstall' | 'uninstall' | 'cleanup';
 export interface RecoveryOptions {
+  /** Candidate target policy, committed only after the joint locked recheck. */
+  preferences?: DeploymentPreferences;
+  /** Read-only candidate context used before first-source activation. */
+  catalogOperationContext?: import('../utils/catalog-operation-context.js').CatalogOperationContext;
   signal?: AbortSignal;
   scope?: Scope;
   context?: Scope;
@@ -153,7 +157,7 @@ function diagnostic(code: string): RecoveryDiagnostic {
     localTargetsRequired: '已有需求，请先设置本机 Agent。',
     deliveryUnsupported: '此插件没有适用于所选 Agent 的交付。',
     operationReviewStale: '确认依据已改变，请重新检查并确认。',
-    syncPluginNotDesired: '所选插件尚未声明，请先运行 aw plugin intent add。',
+    syncPluginNotDesired: '所选插件尚未声明，请先运行 aw plugin install --only requirements。',
     syncSelectionRequired: '请指定插件或使用 --all。',
     invalidExactTargets: '精确重试目标不属于当前请求，请重新检查并选择。',
     sourceRefreshFailed: '来源刷新失败，此来源的插件未恢复。',
@@ -200,7 +204,7 @@ function completeReceipt(receipt: RecoveryReceipt): RecoveryReceipt {
   receipt.recoveryActions = [...new Set([
     ...(receipt.commandResults ?? []).flatMap((result) => result.recoveryActions),
     ...receipt.blockers.map((entry) => entry.code === 'localTargetsRequired'
-      ? `aw plugin targets set <target...>` : `aw plugin status --context ${receipt.scope} --json`),
+      ? `aw target set <target...>` : `aw plugin status --context ${receipt.scope} --json`),
     ...receipt.remainingTargets.flatMap((target) => {
       const result = receipt.targetResults.find((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent);
       if (result?.recoveryActions?.length) return result.recoveryActions;
@@ -508,7 +512,7 @@ async function executePreApplyAuthorization(plan: RecoveryPlan, required: readon
       let execution = cache.get(key);
       if (!execution) {
         execution = runPreApplyScript({ plugin, platform: target.platform, scope: target.scope,
-          cwd: context.executionCwd, context: { env: context.env },
+          cwd: context.executionCwd, context: { env: context.env, interruption: runtime.interruption },
           referencePlugins: plan.demand.plugins, scriptTimeoutMs: plan.options.scriptTimeoutMs });
         cache.set(key, execution);
       }
@@ -612,7 +616,7 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
   try {
   options.signal?.throwIfAborted();
   options = { ...options, cwd: context.executionCwd, env: context.env };
-  let demand = options.demandOverride ?? await readDemand(options);
+  let demand = options.demandOverride ?? await readDemand({ ...options, preferences: undefined });
   const refreshFailures = new Map<string, string>();
   const sourceRefreshes: RecoverySourceRefresh[] = [];
   if (options.refresh && command === 'sync') {
@@ -660,7 +664,7 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
     ? await addRequirements({ ...options, selectors, dryRun: true, installSelectors: true }) : undefined;
   if (proposed?.state && proposed.errors.length === 0) {
     const rawBytes = Buffer.from(JSON.stringify(proposed.state));
-    demand = await readDemand({ ...options, intent: {
+    demand = await readDemand({ ...options, preferences: undefined, intent: {
       state: 'valid', value: proposed.state, rawBytes,
       digest: calculateIntentDigest(proposed.state), rawDigest: originalIntent,
     } });
@@ -794,7 +798,7 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
           block(target, 'deliverySwitchCleanupRequired');
           target.backend = { previousDelivery: { kind: 'native', platform }, cleanupEvidence: evidence };
           target.recoveryActions = [
-            `aw plugin cleanup ${target.pluginId} --scope ${options.scope} --target ${target.agent}`,
+            `aw plugin remove ${target.pluginId} --only outputs --scope ${options.scope} --target ${target.agent}`,
             `aw plugin sync ${target.pluginId} --context ${options.scope} --target ${target.agent}`,
           ];
           plan.changes.push(`先清理 ${target.pluginId}/${target.agent} 的旧 Native 输出，再恢复 Portable。`);
@@ -1025,7 +1029,7 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
   return await withAwHomeMutationLock({ env: plan.options.env, token: plan.runtime.awHomeMutationToken,
     action: async (token) => {
       const actualIntent = await observeIntent(plan.options);
-      const current = await readDemand({ ...plan.options, ...(plan.declaration || plan.options.demandOverride ? { intent: plan.demand.intent } : {}) });
+      const current = await readDemand({ ...plan.options, preferences: undefined, ...(plan.declaration || plan.options.demandOverride ? { intent: plan.demand.intent } : {}) });
       if (intentEvidence(actualIntent) !== plan.originalIntent || preferenceEvidence(current) !== plan.preferencesEvidence
         || current.catalogOperationContext?.generationSetDigest !== plan.demand.catalogOperationContext?.generationSetDigest) {
         receipt.blockers.push(diagnostic('operationReviewStale'));

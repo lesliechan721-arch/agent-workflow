@@ -12,7 +12,7 @@
 - **Plugin Source**：单插件源代码，位于 `plugins/<plugin-name>/`。
 - **Catalog Workspace**：聚合多个插件的根工作区，定义市场整体版本、提供依赖图校验并生成分发快照。
 - **Catalog Snapshot**：构建生成的确定性静态快照（Schema 7），包含 `catalog-manifest.json` 与已打包的插件 bundle。
-- **两阶段远端发布**：先通过 `publish plan` 在隔离环境中审查计划并生成授权摘要 `planDigest`，再通过 `publish apply` 显式授权推送至远端。
+- **两阶段远端发布**：先通过 `publish plan` 在隔离环境中审查计划并生成授权摘要 `data.planDigest`，再通过 `publish apply` 显式授权推送至远端。
 
 ---
 
@@ -20,12 +20,12 @@
 
 ### 初始化新工作区
 
-使用公开的 `aw catalog init` 命令初始化合法工作区：
+使用公开的 `aw dev catalog create` 命令初始化合法工作区：
 
 ```bash
 workspace=/path/to/my-catalog
 
-aw catalog init --workspace-root "$workspace" \
+aw dev catalog create --workspace-root "$workspace" \
   --owner-name "My Team" \
   --owner-url "https://github.com/my-org" \
   --display-name "My Team Agent Catalog"
@@ -55,18 +55,18 @@ aw catalog init --workspace-root "$workspace" \
 
 ```bash
 # 1. 查看工作区当前静态状态（不联网、不执行插件代码）
-aw catalog status --workspace-root "$workspace" --json
+aw dev catalog status --workspace-root "$workspace" --json
 
 # 2. 提升或设置 Catalog 快照版本号
-aw catalog version 1.1.0 --workspace-root "$workspace"
+aw dev catalog version 1.1.0 --workspace-root "$workspace"
 # 或者使用语义化递增
-aw catalog version --bump minor --workspace-root "$workspace"
+aw dev catalog version --bump minor --workspace-root "$workspace"
 
 # 3. 聚合构建开发快照
-aw catalog build --workspace-root "$workspace" --json
+aw dev catalog build --workspace-root "$workspace" --json
 
 # 4. 验证生成的快照是否符合 Schema 7 规范
-aw catalog validate "$workspace/.aw/catalog" --json
+aw dev catalog validate "$workspace/.aw/catalog" --json
 ```
 
 - **单插件版本 vs Catalog 版本**：单个插件 Manifest 中的 `version` 代表插件 bundle 的产物版本；`catalog.version` 代表整份快照的版本。
@@ -81,16 +81,16 @@ aw catalog validate "$workspace/.aw/catalog" --json
 
 ```bash
 # 1. 激活本地开发源（自动构建快照、校验并注册 managed Path source）
-aw catalog dev activate --workspace-root "$workspace" --yes --json
+aw dev source activate --workspace-root "$workspace" --yes --json
 
 # 2. 检查开发源状态与兼容性
-aw catalog dev status --workspace-root "$workspace" --json
+aw dev source status --workspace-root "$workspace" --json
 ```
 
 > [!IMPORTANT]
 > **开发源不等于裸名默认解析**：
-> `aw catalog dev activate` 注册的是一个受管理的 Path 来源（其 `primary` 默认保持为 `false`）。**激活开发源绝不会让裸插件名自动优先解析到该开发源**。
-> 若直接运行裸名 `aw plugin install my-plugin`，AW 会扫描所有已配置来源；若默认官方来源尚未取得 Active 快照，安装会因 `sourceActiveUnavailable` 被阻断；若其他来源也存在同名插件，则会报错 `pluginSelectorAmbiguous`。
+> `aw dev source activate` 注册的是一个受管理的 Path 来源（其 `primary` 默认保持为 `false`）。**激活开发源绝不会让裸插件名自动优先解析到该开发源**。
+> 多来源可能存在同名插件，应使用完整 `<sourceId>/<plugin>`。首次安装可按需获取尚无 Active 的所选来源，已有 Active 不自动升级；无法唯一解析的短名称返回选择错误，不遍历所有远端猜测。
 > **正确调试做法**：从 `dev activate` 或 `dev status` 的 JSON 回执中取得实际分配的来源标识（位于 `source.id`，例如 `dev-my-catalog`），并使用来源限定名安装：
 > ```bash
 > # 3. 使用精确来源限定名安装本地开发源中的插件进行测试
@@ -101,7 +101,7 @@ aw catalog dev status --workspace-root "$workspace" --json
 
 ```bash
 # 4. 停用本地开发源（安全移除该 managed Path source，不删除 .aw/catalog）
-aw catalog dev deactivate --workspace-root "$workspace" --yes --json
+aw dev source deactivate --workspace-root "$workspace" --yes --json
 ```
 
 ---
@@ -116,7 +116,7 @@ aw catalog dev deactivate --workspace-root "$workspace" --yes --json
 
 ### 发布前置条件（Git 准备）
 
-`aw catalog init` 仅初始化工作区脚手架与标记，**不会自动创建 Git 仓库或提交**。在生成发布计划之前，必须先将工作区纳入 Git 管理并满足发布门禁：
+`aw dev catalog create` 仅初始化工作区脚手架与标记，**不会自动创建 Git 仓库或提交**。在生成发布计划之前，必须先将工作区纳入 Git 管理并满足发布门禁：
 
 1. **进入工作区并确认 Git 仓库**：
    ```bash
@@ -138,19 +138,19 @@ aw catalog dev deactivate --workspace-root "$workspace" --yes --json
 ### 步骤 1：生成并审查发布计划 (Plan)
 
 ```bash
-aw catalog publish plan --workspace-root "$workspace" \
+aw dev catalog publish plan --workspace-root "$workspace" \
   --remote origin --branch catalog --json
 ```
 
-- **行为**：在已提交 source HEAD 的隔离 Git 仓库中构建快照，验证所有插件并计算唯一的 `planDigest`。
+- **行为**：在已提交 source HEAD 的隔离 Git 仓库中构建快照，验证所有插件并计算唯一的 `data.planDigest`。
 - **发布记录在首次远端写入前保存**：Plan 阶段会在本地隐藏临时目录完成核验，并原子生成 Publication Journal（schema v2，位于 `.aw/publish/<version>/journal.json`，初始状态为 `prepared`）以及隔离暂存仓库（`.aw/publish/<version>/repository/`）。**这些恢复材料在任何远端网络写入之前即已安全存盘**。
-- **输出**：返回包含 Workspace identity、source HEAD、remote identity、branch、parent commit、tag、snapshot digest 以及 `planDigest` 的结构化描述。
+- **输出**：返回包含 Workspace identity、source HEAD、remote identity、branch、parent commit、tag、snapshot digest 以及 `data.planDigest` 的结构化描述。
 - **职责**：作者必须仔细审查该计划内容是否符合发布预期。
 
 ### 步骤 2：授权并应用发布 (Apply)
 
 ```bash
-aw catalog publish apply --workspace-root "$workspace" \
+aw dev catalog publish apply --workspace-root "$workspace" \
   --remote origin --branch catalog \
   --expected-plan-digest <planDigest> --yes --json
 ```
@@ -165,9 +165,9 @@ aw catalog publish apply --workspace-root "$workspace" \
 发布过程中若遭遇网络中断或异常退出，所有恢复材料在远端写入前已在本地存盘。作者根据后续意图在两个路径中选择：
 
 1. **继续原发布计划（续跑）**：
-   - 若目标仍是完成该次已审查的发布，直接使用相同的 `planDigest` 重新运行 `publish apply`：
+   - 若目标仍是完成该次已审查的发布，直接使用相同的 `data.planDigest` 重新运行 `publish apply`：
      ```bash
-     aw catalog publish apply --workspace-root "$workspace" \
+     aw dev catalog publish apply --workspace-root "$workspace" \
        --remote origin --branch catalog \
        --expected-plan-digest <planDigest> --yes --json
      ```
@@ -175,7 +175,7 @@ aw catalog publish apply --workspace-root "$workspace" \
 2. **改发新计划（放弃原计划并发布新修改）**：
    - 若作者决定放弃未完成的原计划，改为发布包含新修改或修复后的源码，**严禁在同一版本号上盲目重跑**。必须先递增 Catalog 快照版本号：
      ```bash
-     aw catalog version --bump patch --workspace-root "$workspace"
+     aw dev catalog version --bump patch --workspace-root "$workspace"
      ```
    - **审阅并提交新源码与版本元数据至 HEAD，恢复工作树干净**：
      `catalog version` 仅在本地磁盘原子修改 `plugins/marketplace-source.json` 元数据文件，不会自动执行 Git 提交。而 `publish plan` 严格要求整个 Git 工作树干净（clean）且所有变更均已纳入 HEAD，否则会因检测到未提交变更报错 `sourceDirty` 阻断。
@@ -183,7 +183,7 @@ aw catalog publish apply --workspace-root "$workspace" \
    - **为新版本生成发布计划**：
      在工作树确认干净且变更已进入 HEAD 后，再为新版本生成发布计划：
      ```bash
-     aw catalog publish plan --workspace-root "$workspace" \
+     aw dev catalog publish plan --workspace-root "$workspace" \
        --remote origin --branch catalog --json
      ```
 
@@ -198,10 +198,10 @@ aw catalog publish apply --workspace-root "$workspace" \
 
 ```bash
 # 添加 Git 来源订阅（使用当前 CLI 支持的 --git 与 --ref 选项）
-aw catalog source add my-catalog --git "https://github.com/my-org/my-catalog.git" --ref catalog
+aw source add my-catalog --git "https://github.com/my-org/my-catalog.git" --ref catalog
 
 # 同步并激活最新快照
-aw catalog source sync my-catalog
+aw source sync my-catalog
 
 # 安装该 Catalog 中的插件
 aw plugin install my-catalog/hello-workflow --scope user

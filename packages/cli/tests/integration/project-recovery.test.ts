@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import * as nativeStatus from '../../src/commands/status-v6.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
-import { targetsSet } from '../../src/commands/targets-command.js';
+import { targetsSet, targetsChangeExclusion } from '../../src/commands/targets-command.js';
 import { createEmptyPreferences, resolvePreferencesPath, setTargets, type AgentId } from '../../src/intent/deployment-preferences.js';
 import { resolveIntentPath } from '../../src/intent/intent-store.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
@@ -571,6 +571,66 @@ describe('scoped recovery integration', () => {
     expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md'))).toBe(true);
     expect(await fs.readFile(cursorSkill)).toEqual(cursorBytes);
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
+  });
+
+  // Test Value Gate: CLI policy apply must obtain deletion authorization before any preference or output write.
+  it.each(['set', 'exclude'] as const)('does not save a candidate policy for CLI %s --apply without confirmation', async (action) => {
+    const setup = await fixture([{ name: 'alpha' }]);
+    expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
+    const preferencesPath = await resolvePreferencesPath(setup.options());
+    const before = await fs.readFile(preferencesPath);
+    const outputs = await portableOutputSnapshot(setup);
+    const options = { cwd: setup.cwd, env: setup.env, context: setup.scope,
+      cliVersion: '1.0.0', apply: true, runtime: { directCli: true } };
+    const result = action === 'set'
+      ? await targetsSet({ ...options, targets: ['pi'] })
+      : await targetsChangeExclusion({ ...options, selector: 'team/alpha', target: 'cursor', excluded: true });
+    expect(result.ok).toBe(false);
+    expect(result.preferencesChanged).toBe(false);
+    expect(result.outputsMayHaveChanged).toBe(false);
+    expect(result.confirmation).toMatchObject({ required: true, provided: false,
+      effects: expect.arrayContaining([expect.objectContaining({ code: 'removeOwnedOutput' })]) });
+    expect(result.blockers.map((entry) => entry.code)).toContain('confirmationRequired');
+    expect(await fs.readFile(preferencesPath)).toEqual(before);
+    expect(await portableOutputSnapshot(setup)).toEqual(outputs);
+  });
+
+  it('saves an authorized CLI candidate policy and applies its new target', async () => {
+    const setup = await fixture([{ name: 'alpha' }]);
+    expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
+    const intentBefore = await fs.readFile(setup.intentPath);
+    const result = await targetsSet({ cwd: setup.cwd, env: setup.env, context: setup.scope,
+      cliVersion: '1.0.0', apply: true, yes: true, targets: ['pi'], runtime: { directCli: true } });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.preferencesChanged).toBe(true);
+    expect(result.policy?.targets).toEqual(['pi']);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'alpha'))).toBe(false);
+    expect(await fs.readFile(setup.intentPath)).toEqual(intentBefore);
+  });
+
+  it('rejects a CLI candidate policy when preferences change after preparation', async () => {
+    const setup = await fixture([{ name: 'alpha' }]);
+    expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
+    const outputs = await portableOutputSnapshot(setup);
+    let changed = false;
+    const result = await targetsSet({ cwd: setup.cwd, env: setup.env, context: setup.scope,
+      cliVersion: '1.0.0', apply: true, yes: true, targets: ['pi'], runtime: { directCli: true,
+        debugLogger: { log: async (event) => {
+          if (!changed && event.type === 'performance:stage' && event.data?.name === 'recovery.plan'
+            && event.data.phase === 'success') {
+            changed = true;
+            await setTargets(setup.options(), ['opencode']);
+          }
+        } },
+      } });
+    expect(changed).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.preferencesChanged).toBe(false);
+    expect(result.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
+    expect((await fs.readJson(await resolvePreferencesPath(setup.options()))).targets).toEqual(['opencode']);
+    expect(await portableOutputSnapshot(setup)).toEqual(outputs);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha'))).toBe(false);
   });
 
   // Test Value Gate: missing machine targets reject install before declaration; a later output failure retains its verified root.

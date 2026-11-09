@@ -46,7 +46,7 @@
 | `pnpm test:smoke` | 运行完整 smoke suite |
 | `pnpm test:smoke:build` | 等价于 `pnpm test:dist`；校验正式 build 产物，并证明官方入口使用 `--strict-requirements` 语义 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
-| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → plugin targets set cursor → plugin install source/plugin --scope project`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
+| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `dev catalog create → dev plugin create/validate/test/build → dev catalog build/validate → source add --path → source sync → target set cursor → plugin install source/plugin --scope project`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `两个 Windows 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:release:automation` | 在已有正式 build 后验证精确 source tag、临时 bare remote、artifact 恢复与真实 smoke harness 边界；不访问官方发布目标 |
@@ -68,7 +68,7 @@
 
 `release:verify:cli` 包含真实 plugin-scripts staging smoke，以及使用临时本地 bare Git remote 的 `test:smoke:fetch` publish/fetch/provider smoke。该 plugin smoke 固定 packageRoot 的 pnpm 版本，通过隔离 store 视图复用 workspace install 记录的 pnpm 内容，并在移除 `npm_execpath`、PATH 中的 Corepack/pnpm 和 pnpm 在线解析后运行；fetch smoke 不访问真实网络。
 
-Catalog build 的 unit/integration 必须覆盖第三方公开 `aw catalog build` 的默认 advisory，以及官方 strict scanner 对不匹配 requirement 的阻断。`pnpm test:smoke:build` 必须证明官方 `pnpm build` 使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖此门禁。
+Catalog build 的 unit/integration 必须覆盖第三方公开 `aw dev catalog build` 的默认 advisory，以及官方 strict scanner 对不匹配 requirement 的阻断。`pnpm test:smoke:build` 必须证明官方 `pnpm build` 使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖此门禁。
 
 Codex project native qualification 是显式 suite。它不得由 `pnpm test`、unit、integration、build 或 release 默认链隐式调用。runner 必须覆盖真实用户 home 环境变量，使用自己的临时 Codex home、AW home、项目和本地 marketplace，只执行本地命令，并在成功或失败后清理。报告不得包含真实或临时绝对路径、credential 或 native stderr；退出码反映最低 qualification 合同。报告是一次性兼容性证据，不是 installed ledger。macOS 报告只证明该次 macOS 运行；Windows 必须在 Windows 上独立运行，未运行时保留明确的 evidence gap。
 
@@ -103,12 +103,12 @@ Windows Job 显式生产资格使用 `pnpm native:windows-job:prepare` 构建当
 - Integration 覆盖 CLI 与真实模块桥接，但不访问用户 home。
 - 写命令测试只构造 Active catalog snapshot、live owner 和平台组件 fixture。
 - Catalog source 测试只构造 source、state、store 和 snapshot fixture，不依赖安装状态 fixture。
-- Source mutation 测试验证 add/update 只提交 config；`aw catalog source sync <id>` 失败不撤销原 Active；该命令的 `--check` 不写 store 或 Active。
-- Offline cleanup 测试验证 source 缺失时仍能删除可证明属于 AW 的输出，且两种 scope 的普通清理都不改 Intent、偏好或配置。`cleanup --force` 测试还必须证明它只删除专属目标、保留 foreign/shared 内容，并报告 dependent 的 partial 风险。独立 `intent retire` 测试验证健康 Active 缺席门禁、单 scope 强配置提交、默认保留设置和残留可重试。
+- Source mutation 测试验证 add/update 只提交 config；`aw source status <id>` 失败不撤销原 Active；该命令的 `--remote` 不写 store、Active 或 lastSync。
+- Offline cleanup 测试验证 source 缺失时仍能删除可证明属于 AW 的输出，且两种 scope 的普通清理都不改 Intent、偏好或配置。`cleanup --force` 测试还必须证明它只删除专属目标、保留 foreign/shared 内容，并报告 dependent 的 partial 风险。普通 remove 的停用分支测试验证健康 Active 缺席门禁、单 scope 强配置提交、默认保留设置和残留可重试。
 - TUI unit 和入口测试使用真实 Ink mount；不要用静态组件快照代替交互行为。
 - Platform tests 断言 MCP、apps、hooks、permissions、roles、instructions、Skill 和 command 的最终平台输出，不建立独立安装健康数据库。
 - JSON 测试同时断言 schema、单一 stdout 对象、stderr 诊断边界和退出码。
-- Eval case 声明 `workspace_valid: true` 时，contract test 必须 materialize `workspace_files`，通过公开 `aw catalog status --json` 验证 marker、metadata、inventory、依赖图和 snapshot evidence，并对预期有效插件运行 `aw plugin validate --json`。Prose 标记不能代替该 fixture validation。
+- Eval case 声明 `workspace_valid: true` 时，contract test 必须 materialize `workspace_files`，通过公开 `aw dev catalog status --json` 验证 marker、metadata、inventory、依赖图和 snapshot evidence，并对预期有效插件运行 `aw dev plugin validate --json`。Prose 标记不能代替该 fixture validation。
 - Conversation Eval 的 `environment.pathPrepend` 只能引用相对 suite/case Eval 根的已存在 fixture。Runner 测试必须证明路径不能逃逸或包含符号链接、只有已声明 fixture 被复制和设为 executable，且 PATH 不引用仓库私有 CLI。确定性 contract test 不运行模型 Eval，也不审核 Oracle。
 
 ## Test Value Gate
@@ -193,7 +193,7 @@ AW_PERF_SUMMARY {"name":"..."}
 
 Performance gate 必须校验摘要名称集合。缺少、重复或未知名称都必须让门禁失败。
 
-性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖至少两个 Git source 与一个 Path source、large Catalog、Active store 读取、`aw catalog source sync <id> --check`、普通 source sync、remote deadline 失败和进程清理确认；不依赖公网。TUI/Review 与公开 install/write 预算使用隔离 home 和受控 fake native runner，并通过结构化阶段事件验证单份 state snapshot、Active validation、依赖 collision 传播和 dependency plan。普通 warm 路径 provider 调用必须为零，本地 Catalog 阶段 p95 上限为 500ms；命令总时长只使用宽松的测试 runner 门槛，不代表第三方 native CLI 保证。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
+性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖至少两个 Git source 与一个 Path source、large Catalog、Active store 读取、`aw source status <id> --remote`、普通 source sync、remote deadline 失败和进程清理确认；不依赖公网。TUI/Review 与公开 install/write 预算使用隔离 home 和受控 fake native runner，并通过结构化阶段事件验证单份 state snapshot、Active validation、依赖 collision 传播和 dependency plan。普通 warm 路径 provider 调用必须为零，本地 Catalog 阶段 p95 上限为 500ms；命令总时长只使用宽松的测试 runner 门槛，不代表第三方 native CLI 保证。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
 
 Codex 优化的主要门禁是确定性计数，不是 500ms fake runner 断言。最低层测试分别验证：成功 native CLI 的 process-table observation/scan 为 0；20 个同 marketplace target 的 project/all-scope list 不超过 2；user-only generation 不超过 1；所有 Codex list 都是 `plugin list --marketplace <name> --json`；锁内 no-op 不超过 2，真实 mutation 的 pre/post 合计不超过 4，含 Preview 的完整 TUI project mutation 不超过 6；root 和五个同源依赖只建立并提交一个 marketplace generation；plugin validate 使用一个 `cat-file --batch`，Git 总进程不超过 5。已有 timeout、abort 和进程树清理测试负责失败路径，不在 performance suite 重复。wall-clock 只保留线性时间回退、宽松 runner deadline 和显式真实 qualification 证据。
 

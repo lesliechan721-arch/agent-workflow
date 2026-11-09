@@ -13,6 +13,7 @@ import {
 } from '@lesliechan721/aw-plugin-core';
 
 import {
+  CatalogWorkspaceMissingError,
   resolveCatalogWorkspaceRoot,
   type CatalogWorkspaceResolvedFrom,
 } from './catalog-workspace-resolution.js';
@@ -266,7 +267,7 @@ export async function getCatalogStatus(options: {
     await inspectSnapshot(receipt, workspace);
   } catch (error) {
     receipt.issues.push({
-      code: 'workspaceInvalid',
+      code: error instanceof CatalogWorkspaceMissingError ? error.code : 'workspaceInvalid',
       message: safeIssueMessage(error instanceof Error ? error.message : String(error), workspaceRoot),
       blocking: true,
     });

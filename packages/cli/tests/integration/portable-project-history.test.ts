@@ -66,7 +66,7 @@ async function fixture(scope: 'user' | 'project' = 'project') {
 }
 async function apply(options: Awaited<ReturnType<typeof fixture>>['options'], authorizeUpdate = false) {
   const prepared = await preparePortableRecovery(options);
-  expect(prepared.blockers).toEqual([]);
+  expect(prepared.blockers, JSON.stringify(prepared)).toEqual([]);
   const result = await withAwHomeMutationLock({ env: options.env, action: (token) =>
     executePortableRecovery({ prepared, token, authorizeUpdate }) });
   expect(result.execution, JSON.stringify(result)).toBe('applied');
@@ -126,24 +126,24 @@ describe('Portable writer through real Catalog and renderer', () => {
     const status = () => invoke(['plugin', 'status', '--context', scope, '--json']);
     const baseline = await status();
     expect(baseline.exitCode).toBe(0);
-    expect(baseline.value.allSatisfied, JSON.stringify(baseline.value)).toBe(true);
+    expect(baseline.value.data.allSatisfied, JSON.stringify(baseline.value)).toBe(true);
     await fs.remove(value.options.context.generationRoot);
     const unavailable = await status();
-    expect(unavailable.value.inventory[0].targetResults[0].content).toBe('unknown');
-    expect(unavailable.value.allSatisfied).toBeNull();
+    expect(unavailable.value.data.inventory[0].targetResults[0].content).toBe('unknown');
+    expect(unavailable.value.data.allSatisfied).toBeNull();
     const saved = await invoke(['plugin', 'config', 'set', value.options.selector, 'tone',
       '--value-json', '"second"', '--json']);
     expect(saved.exitCode).toBe(0);
     const stale = await status();
-    expect(stale.value.inventory[0].targetResults[0].content).toBe('drifted');
-    expect(stale.value.allSatisfied).toBe(false);
-    expect(stale.value.errors).toEqual([]);
+    expect(stale.value.data.inventory[0].targetResults[0].content).toBe('drifted');
+    expect(stale.value.data.allSatisfied).toBe(false);
+    expect(stale.value).toMatchObject({ status: 'success', diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'needs-preparation', subject: expect.objectContaining({ pluginId: 'local/portable', target: 'cursor' }) })]) });
     expect(await fs.readFile(skill, 'utf8')).toBe(content);
     expect((await fs.stat(skill)).mtimeMs).toBe(before.mtimeMs);
     await fs.writeFile(path.join(output, '.agent-workflows-owner.json'), '{invalid owner');
     const unknown = await status();
-    expect(unknown.value.inventory[0].targetResults[0].content).toBe('unknown');
-    expect(unknown.value.allSatisfied).toBeNull();
+    expect(unknown.value.data.inventory[0].targetResults[0].content).toBe('unknown');
+    expect(unknown.value.data.allSatisfied).toBeNull();
     expect(await fs.readFile(value.renderLog, 'utf8')).toBe(rendered);
     expect(await fs.pathExists(value.options.context.generationRoot)).toBe(false);
   }, 30_000);
@@ -161,7 +161,7 @@ describe('Portable writer through real Catalog and renderer', () => {
     await value.refreshCatalog();
     await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env: value.options.env });
     const prepared = await preparePortableRecovery(value.options);
-    expect(prepared.blockers).toEqual([]);
+    expect(prepared.blockers, JSON.stringify(prepared)).toEqual([]);
     expect(prepared.targets).toMatchObject([{ skill: 'alpha', disposition: 'remove' }]);
     await apply(value.options, true);
     expect(await fs.pathExists(original.targets[0]!.physicalPath)).toBe(false);
@@ -178,7 +178,7 @@ describe('Portable writer through real Catalog and renderer', () => {
     await fs.remove(value.sourceRoot);
     await fs.remove(value.options.context.generationRoot);
     const prepared = await preparePortableCleanup(value.options);
-    expect(prepared.blockers).toEqual([]);
+    expect(prepared.blockers, JSON.stringify(prepared)).toEqual([]);
     const result = await withAwHomeMutationLock({ env: value.options.env, action: (token) =>
       executePortableRecovery({ prepared, token, action: 'cleanup' }) });
     expect(result.execution).toBe('applied');

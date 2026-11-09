@@ -140,11 +140,11 @@ async function createWorkspace(
   }
   await execFileAsync('git', ['init', '--quiet'], { cwd: root });
   await runCli([
-    'catalog', 'init', '--workspace-root', root, '--catalog-version', version,
+    'dev', 'catalog', 'create', '--workspace-root', root, '--catalog-version', version,
     '--owner-url', 'https://catalog.example.com/journal-test',
   ], { cwd: root, io: quietIo() });
   await runCli([
-    'plugin', 'init', 'journal-test', '--description', 'Journal test.', '--no-skills',
+    'dev', 'plugin', 'create', 'journal-test', '--description', 'Journal test.', '--no-skills',
     '--workspace-root', root,
   ], { cwd: root, io: quietIo() });
   await execFileAsync('git', ['add', '.'], { cwd: root });
@@ -188,7 +188,7 @@ async function commitAll(root: string, message: string): Promise<void> {
 
 async function setCatalogVersion(root: string, version: string): Promise<void> {
   await runCli([
-    'catalog', 'version', version, '--workspace-root', root,
+    'dev', 'catalog', 'version', version, '--workspace-root', root,
   ], { cwd: root, io: quietIo() });
 }
 
@@ -200,7 +200,7 @@ async function setPluginVersion(root: string, version: string): Promise<void> {
 
 async function addHistoryKeeperPlugin(root: string): Promise<void> {
   await runCli([
-    'plugin', 'init', 'history-keeper', '--description', 'History keeper.', '--no-skills',
+    'dev', 'plugin', 'create', 'history-keeper', '--description', 'History keeper.', '--no-skills',
     '--workspace-root', root,
   ], { cwd: root, io: quietIo() });
 }
@@ -479,7 +479,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const output = captureIo();
 
     const exitCode = await runCli([
-      'catalog', 'publish', 'plan', '--workspace-root', root,
+      'dev', 'catalog', 'publish', 'plan', '--workspace-root', root,
       '--remote', 'origin', '--branch', 'catalog/latest', '--json',
     ], {
       cwd: root,
@@ -488,33 +488,34 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     });
 
     expect(exitCode).toBe(1);
-    const failure = JSON.parse(output.stdout()) as { ok: boolean; code: string; message: string };
+    const failure = JSON.parse(output.stdout()) as { diagnostics: Array<{ code: string; message: string }> };
     expect(failure).toMatchObject({
-      ok: false,
-      code: 'remoteReadFailed',
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'dev.catalog.publish.plan', diagnostics: [expect.objectContaining({ code: 'remoteReadFailed' })], data: {}
     });
-    expect(failure.message).toMatch(
+    expect(failure.diagnostics[0]!.message).toMatch(
       /^Could not inspect the Catalog publication remote\. Git exited with code \d+: /u,
     );
-    expect(failure.message).toContain('[remote]');
+    expect(failure.diagnostics[0]!.message).toContain('[remote]');
     const combined = `${output.stdout()}\n${output.stderr()}`;
     for (const sensitive of [root, awHome, credential, querySecret, hashSecret, remoteUrl]) {
       expect(combined).not.toContain(sensitive);
     }
-    expect(output.stderr()).toBe(`${failure.message}\n`);
+    expect(output.stderr()).toBe(`remoteReadFailed: ${failure.diagnostics[0]!.message}\n`);
 
     const human = captureIo();
     expect(await runCli([
-      'catalog', 'publish', 'plan', '--workspace-root', root,
+      'dev', 'catalog', 'publish', 'plan', '--workspace-root', root,
       '--remote', 'origin', '--branch', 'catalog/latest',
     ], {
       cwd: root,
       env: { ...process.env, AW_HOME: awHome },
       io: human.io,
     })).toBe(1);
-    expect(human.stdout()).toBe('');
+    expect(human.stdout()).toContain('FAILED');
     expect(human.stderr()).toMatch(
-      /^Could not inspect the Catalog publication remote\. Git exited with code \d+: /u,
+      /^remoteReadFailed: Could not inspect the Catalog publication remote\. Git exited with code \d+: /u,
     );
     for (const sensitive of [root, awHome, credential, querySecret, hashSecret, remoteUrl]) {
       expect(human.stderr()).not.toContain(sensitive);
@@ -533,7 +534,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const output = captureIo();
 
     const exitCode = await runCli([
-      'catalog', 'publish', 'apply', '--workspace-root', root,
+      'dev', 'catalog', 'publish', 'apply', '--workspace-root', root,
       '--remote', 'origin', '--branch', publication.branch,
       '--expected-plan-digest', publication.planDigest, '--yes', '--json',
     ], {
@@ -544,11 +545,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     });
 
     expect(exitCode).toBe(1);
-    expect(JSON.parse(output.stdout())).toEqual({
-      ok: false,
-      code: 'catalogPublicationFailed',
-      message: 'Catalog publication identity changed. Increase the Catalog version and create a new plan.',
-    });
+    expect(JSON.parse(output.stdout())).toMatchObject({ schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'failed', data: {}, diagnostics: [{ code: 'catalogPublicationFailed', message: 'Catalog publication identity changed. Increase the Catalog version and create a new plan.' }] });
     const combined = `${output.stdout()}\n${output.stderr()}`;
     for (const sensitive of [
       root,
@@ -562,7 +559,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       expect(combined).not.toContain(sensitive);
     }
     expect(output.stderr()).toBe(
-      'Catalog publication identity changed. Increase the Catalog version and create a new plan.\n',
+      'catalogPublicationFailed: Catalog publication identity changed. Increase the Catalog version and create a new plan.\n',
     );
   });
 
@@ -771,7 +768,24 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     const hook = path.join(remote, 'hooks', 'pre-receive');
     await fs.writeFile(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
 
-    await expect(apply(root, publication)).rejects.toThrow('result is uncertain');
+    const output = captureIo();
+    expect(await runCli([
+      'dev', 'catalog', 'publish', 'apply', '--workspace-root', root,
+      '--remote', 'origin', '--branch', publication.branch,
+      '--expected-plan-digest', publication.planDigest, '--yes', '--json',
+    ], { cwd: root, env: process.env, io: output.io })).toBe(4);
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'partial',
+      data: {
+        state: 'uncertain', journalState: 'uncertain',
+        remoteWriteAttempted: true, remoteVerified: false,
+        planDigest: publication.planDigest, expectedCommit: publication.expectedCommit,
+        catalogVersion: publication.catalogVersion, branch: publication.branch, tag: publication.tag,
+        confirmation: { required: true, provided: true, effects: [expect.objectContaining({ code: 'publishRemote' })] },
+      },
+      diagnostics: [expect.objectContaining({ code: 'catalogPublicationFailed' })],
+    });
+    expect(output.stdout().endsWith('\n')).toBe(true);
     await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({
       state: 'uncertain',
       planDigest: publication.planDigest,

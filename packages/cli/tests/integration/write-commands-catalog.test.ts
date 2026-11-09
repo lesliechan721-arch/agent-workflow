@@ -357,10 +357,9 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     })).resolves.toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      receiptSchemaVersion: 7,
-      configWrite: 'succeeded',
-      overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+      schemaVersion: 1, command: 'plugin.config.set', status: 'success',
+      data: { configWrite: 'succeeded', apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
+      diagnostics: expect.any(Array), nextActions: expect.any(Array),
     });
     await expect(readPluginConfigStore({
       sourceId: 'official', sourceIdentity, logicalIdentity: 'workspace:official-transport',
@@ -474,11 +473,13 @@ describe('five namespaced write commands', () => {
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
     const rejected = await runPublic([
-      'plugin', 'config', 'list', 'team/demo', '--context', 'project',
+      'plugin', 'config', 'get', 'team/demo', '--context', 'project',
     ]);
-    expect(rejected.exitCode).toBe(1);
+    expect(rejected.exitCode, rejected.stdout).toBe(3);
     expect(JSON.parse(rejected.stdout)).toMatchObject({
-      errors: expect.arrayContaining([expect.objectContaining({ code: 'identityMismatch' })]),
+      schemaVersion: 1, command: 'plugin.config.get', status: 'blocked',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'identityMismatch' })]),
+      nextActions: expect.any(Array),
     });
   });
 

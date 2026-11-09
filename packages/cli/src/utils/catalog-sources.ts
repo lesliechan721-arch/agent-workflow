@@ -441,7 +441,7 @@ async function readConfigAt(filePath: string): Promise<CatalogSourcesConfigSnaps
     }
     throw new CatalogGenerationError({
       code: 'catalogSourcesConfigInvalid',
-      message: 'Catalog sources config is unreadable or invalid. Repair or remove catalog-sources.json, then run aw catalog source sync.',
+      message: 'Catalog sources config is unreadable or invalid. Repair or remove catalog-sources.json, then run aw source sync.',
       cause: error,
     });
   }
@@ -451,7 +451,7 @@ async function readConfigAt(filePath: string): Promise<CatalogSourcesConfigSnaps
   } catch (error) {
     throw new CatalogGenerationError({
       code: 'catalogSourcesConfigInvalid',
-      message: 'Catalog sources config is unreadable or invalid. Repair or remove catalog-sources.json, then run aw catalog source sync.',
+      message: 'Catalog sources config is unreadable or invalid. Repair or remove catalog-sources.json, then run aw source sync.',
       cause: error,
     });
   }

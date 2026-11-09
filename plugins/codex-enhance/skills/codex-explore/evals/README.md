@@ -4,10 +4,10 @@
 
 ## 准备与运行
 
-`aw skill eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
+`aw dev eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
 
 ```bash
-aw skill eval prepare codex-enhance \
+aw dev eval prepare codex-enhance \
   codex-explore --suite trigger --profile project-default \
   --output /tmp/aw-eval-specs/codex-explore-materialization --json
 ```
@@ -36,9 +36,9 @@ train 和 validation 包含大型陌生材料、显式调用但 Gate 应拒绝�
 trigger suite 要求 Codex 支持 app-server thread/turn 协议、V2 `subAgentActivity` 和 `spawn_agent.agent_type`：
 
 ```bash
-aw skill eval prepare codex-enhance codex-explore --suite trigger --profile project-default --split train --runs 3 --output /tmp/aw-eval-specs/codex-explore-trigger-train --json
-aw skill eval prepare codex-enhance codex-explore --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/codex-explore-trigger-validation --json
-aw skill eval prepare codex-enhance codex-explore --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/codex-explore-trigger-sanity --json
+aw dev eval prepare codex-enhance codex-explore --suite trigger --profile project-default --split train --runs 3 --output /tmp/aw-eval-specs/codex-explore-trigger-train --json
+aw dev eval prepare codex-enhance codex-explore --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/codex-explore-trigger-validation --json
+aw dev eval prepare codex-enhance codex-explore --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/codex-explore-trigger-sanity --json
 ```
 
 fixture module 只补齐合成材料。显式 `$codex-explore` 记为宿主注入；自动触发只接受成功读取 `.agents/skills/codex-explore/SKILL.md` 的 `commandExecution` 完成事件。实际委派只接受 `subAgentActivity(kind=started)`；正向用例在加载和启动事件都出现后立即结束。该事件证明子代理已经启动，但不包含完整 spawn 参数；具体 role 和参数由 model-selection suite 验证。
@@ -66,7 +66,7 @@ Engine 为每个 attempt 启动一个 app-server root，并从脱敏 rollout 生
 该 runner 使用 `workspace-write` 观察只读提示词是否被遵守；workspace diff 只证明本次 Eval 的最终文件没有变化，不证明权限隔离。
 
 ```bash
-aw skill eval prepare codex-enhance codex-explore --suite workflow --profile project-default --runs 1 --output /tmp/aw-eval-specs/codex-explore-workflow --json
+aw dev eval prepare codex-enhance codex-explore --suite workflow --profile project-default --runs 1 --output /tmp/aw-eval-specs/codex-explore-workflow --json
 ```
 
 ## 叶子输出合同
@@ -76,7 +76,7 @@ aw skill eval prepare codex-enhance codex-explore --suite workflow --profile pro
 六个用例分别覆盖：同源多个 direct finding、单个 finding 的多来源定位、inference 的直接依据、conflict 双方证据、blocked 和 insufficient。每个用例要求初次叶子结果足够，不允许 recovery。状态、来源和证据类型是正确性门禁；叶子字符数、父 turn usage 和端到端时间只作诊断。
 
 ```bash
-aw skill eval prepare codex-enhance codex-explore --suite output-contract --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-output-contract --json
+aw dev eval prepare codex-enhance codex-explore --suite output-contract --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-output-contract --json
 ```
 
 role 输出合同不在 Skill target digest 中。因此不得把 `--previous-version` 当作该合同的 A/B。需要对照时，分别从精确 plugin production digest 物化基线和候选工作区，并在诊断报告中同时记录 plugin digest、角色清单和 case digest。该对照不声称是 `previous-version` EvalResult。
@@ -91,7 +91,7 @@ role 输出合同不在 Skill target digest 中。因此不得把 `--previous-ve
 - 结果可为设计讨论提供诊断证据，但不得单独驱动生产 Skill 修改；重新改变等待协议前，仍需有效 case admission、同族回归和当前 runtime 证据。
 
 ```bash
-aw skill eval prepare codex-enhance codex-explore --suite liveness --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-liveness --json
+aw dev eval prepare codex-enhance codex-explore --suite liveness --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-liveness --json
 ```
 
 Engine evidence 按用例保留 probe、`progress` / `blocked`、duration、termination、token usage、thread lineage 和 cleanup 确认。叶子工具证据只接受 normalized child calls 与父 thread 的直接关联；child evidence 不可用时用例保持 `incomplete`，不按文件归属或最终文案推断。
@@ -110,13 +110,13 @@ Engine evidence 按用例保留 probe、`progress` / `blocked`、duration、term
 grade 对 Engine normalized evidence 中保留的原始 `spawn_agent` arguments、output 和 status 执行机械断言：
 
 ```bash
-aw skill eval prepare codex-enhance codex-explore --suite model-selection --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-model-selection --json
+aw dev eval prepare codex-enhance codex-explore --suite model-selection --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-model-selection --json
 ```
 
 调试单个用例：
 
 ```bash
-aw skill eval prepare codex-enhance codex-explore --suite model-selection --profile project-default --runs 1 --case auto_standard --output /tmp/aw-eval-specs/codex-explore-model-selection-auto-standard --json
+aw dev eval prepare codex-enhance codex-explore --suite model-selection --profile project-default --runs 1 --case auto_standard --output /tmp/aw-eval-specs/codex-explore-model-selection-auto-standard --json
 ```
 
 部分 backend 会要求保留服务端预注册的完整 `spawn_agent` schema，拒绝本地隐藏模型字段。只有执行失败、未发生 spawn 且错误事件明确包含 `must match the configured schema` 时，隐藏字段用例才记为 `environment_skipped`；其它失败仍正常阻断评估。

@@ -858,7 +858,7 @@ describe('phase 3B namespaced runtime stores', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: ambiguous.io, interactive: false,
     })).toBe(1);
     expect(JSON.parse(ambiguous.readStdout())).toMatchObject({
-      errors: [expect.objectContaining({ code: 'configTargetAmbiguous' })],
+      command: 'plugin.config.reset', status: 'failed', diagnostics: [expect.objectContaining({ code: 'configTargetAmbiguous' })],
     });
 
     await fs.outputFile(resolvePluginConfigStorePath({
@@ -873,8 +873,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(await runCli(['plugin', 'config', 'reset', 'team/demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: reset.io, interactive: false,
     })).toBe(0);
-    expect(JSON.parse(reset.readStdout())).toMatchObject({
-      ok: true,
+    expect(JSON.parse(reset.readStdout()).data).toMatchObject({
       pluginId: 'team/demo',
       deleted: true,
       removedKeys: [],
@@ -963,7 +962,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }));
   });
 
-  it('emits config receipt 7 and keeps a namespaced store after its source is removed', async () => {
+  it('emits a config result and keeps a namespaced store after its source is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const primaryRoot = path.join(isolation.layout.fixtureCwd, 'primary-source');
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'team-source');
@@ -1015,7 +1014,7 @@ describe('phase 3B namespaced runtime stores', () => {
         interactive: false,
       })).toBe(2);
       expect(JSON.parse(invalidOutput.readStdout())).toMatchObject({
-        command: 'config:set', ok: false, overallState: 'failed',
+        command: 'plugin.config.set', status: 'failed', data: {},
       });
     }
     const setOutput = createCapturedCliIo();
@@ -1027,10 +1026,10 @@ describe('phase 3B namespaced runtime stores', () => {
       io: setOutput.io,
       interactive: false,
     })).toBe(0);
-    const setReceipt = JSON.parse(setOutput.readStdout()) as { sourceIdentity: string };
+    const setResult = JSON.parse(setOutput.readStdout());
+    expect(setResult).toMatchObject({ schemaVersion: 1, command: 'plugin.config.set', status: 'success' });
+    const setReceipt = setResult.data as { sourceIdentity: string };
     expect(setReceipt).toMatchObject({
-      receiptSchemaVersion: 7,
-      command: 'config:set',
       pluginName: 'demo',
       pluginId: 'team/demo',
       sourceId: 'team',
@@ -1070,7 +1069,7 @@ describe('phase 3B namespaced runtime stores', () => {
       io: getOutput.io,
       interactive: false,
     })).toBe(0);
-    expect(JSON.parse(getOutput.readStdout())).toMatchObject({
+    expect(JSON.parse(getOutput.readStdout()).data).toMatchObject({
       fields: [{
         key: 'mode', effectiveValue: 'fast', sourceLayer: 'common', matchedPreset: 'fast', valid: true, issues: [],
       }],
@@ -1082,7 +1081,7 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       io: unconfirmedReset.io,
       interactive: false,
-    })).toBe(2);
+    })).toBe(3);
     await expect(fs.pathExists(stored.path)).resolves.toBe(true);
     const confirmedReset = createCapturedCliIo();
     expect(await runCli(['plugin', 'config', 'reset', 'team/demo', '--context', 'user', '--yes', '--json'], {
@@ -1092,10 +1091,8 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(0);
     expect(JSON.parse(confirmedReset.readStdout())).toMatchObject({
-      receiptSchemaVersion: 7,
-      command: 'config:reset',
-      configWrite: 'succeeded',
-      deleted: true,
+      schemaVersion: 1, command: 'plugin.config.reset', status: 'success',
+      data: { configWrite: 'succeeded', deleted: true },
     });
     await expect(fs.pathExists(stored.path)).resolves.toBe(false);
     const remainingNames = await fs.readdir(path.dirname(stored.path)).catch(() => []);
@@ -1168,8 +1165,7 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(0);
     expect(JSON.parse(offlineResetOutput.readStdout())).toMatchObject({
-      command: 'config:reset',
-      deleted: true,
+      command: 'plugin.config.reset', status: 'success', data: { deleted: true },
     });
     expect(await fs.pathExists(resolvePluginConfigStorePath({
       sourceId: 'team',

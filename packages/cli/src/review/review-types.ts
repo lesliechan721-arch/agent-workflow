@@ -82,6 +82,7 @@ export interface ReviewSelection {
 }
 
 export type ReviewSelectionErrorCode =
+  | 'catalogWorkspaceMissing'
   | 'invalidArguments'
   | 'invalidConfig'
   | 'requiredConfigMissing'

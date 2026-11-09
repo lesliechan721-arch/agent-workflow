@@ -4,7 +4,7 @@
 
 ---
 
-## 1. 安装与初始化
+## 1. 安装与首次使用
 
 ### 环境要求
 
@@ -17,26 +17,19 @@
 npm install -g @lesliechan721/aw
 ```
 
-### 首次同步并激活官方快照
+### 首次获取来源
 
-在首次安装任何插件之前，本地必须至少具备一个健康可用的 Active Catalog 快照。运行 `aw catalog source sync` 同步并激活官方来源：
+`plugin install` 会按需获取所选来源尚不存在的 Active 快照。已有 Active 保持当前版本；损坏快照需要显式恢复，不当作首次安装。推荐使用完整插件 ID，例如 `official/decision-kit`，避免多个来源的同名歧义。
 
-```bash
-aw catalog source sync official
-```
-
-该命令会通过网络拉取官方 Catalog 候选快照、执行校验并在本地激活。若未执行此同步而直接运行 `aw plugin install`，命令会因缺少可用 Active 快照而以 `sourceActiveUnavailable` 错误阻断，并提示先同步来源。
-
-### 离线环境就绪检查 (`aw init`)
-
-`aw init` 是**纯离线只读的环境就绪检查命令**，不会联网，也不会在磁盘上生成或写入配置文件（当配置文件缺失时仅在内存中使用内置默认配置，状态为未物化 `materialized: false`）：
+查询来源不会联网或写入：
 
 ```bash
-aw init
+aw source status
+# 显式检查远端候选，不写 store、Active 或 lastSync
+aw source status official --remote
+# 显式刷新并激活来源；不会自动升级已安装插件
+aw source sync official
 ```
-
-> [!NOTE]
-> 在尚未执行 `source sync` 激活快照的新环境中，`aw init` 检查会因缺少 Active 快照返回非零退出码并报告未就绪，这属于冷启动阶段的预期现象；完成上述 `aw catalog source sync official` 后再次运行即可通过检查。
 
 ### 启动交互式界面 (TUI)
 
@@ -52,7 +45,7 @@ TUI 包含四个主面板：
 - **来源管理**：管理 Catalog 订阅、手动同步来源（等效于执行 `source sync`）与检查候选版本。
 - **Agent 管理**：配置本机偏好的平台目标（如 Codex、Claude Code 等）。
 
-若在 CI 环境或自动化脚本中运行，请使用以下非交互命令行。
+裸 `aw` 在非终端中显示帮助；`aw --help` 和 `aw --json` 显示帮助，不启动 TUI。普通 CLI 始终非交互，缺参数立即返回错误。配置编辑与 Review 确认继续在 TUI 中提供。
 
 ---
 
@@ -64,10 +57,10 @@ AW 不对所有可能平台无差别写入。安装插件前，需先配置本�
 
 ```bash
 # 设置本机启用的平台目标（例如 Codex 与 Claude Code）
-aw plugin targets set codex claude
+aw target set codex claude
 
 # 查看当前已启用的平台列表
-aw plugin targets list
+aw target list
 ```
 
 ### 两种需求范围 (User vs Project)
@@ -91,15 +84,15 @@ AW 严格区分个人用户需求与项目级需求：
 
 ```bash
 # 为当前用户安装插件
-aw plugin install decision-kit --scope user
+aw plugin install official/decision-kit --scope user
 
 # 为当前项目声明并安装插件
-aw plugin install dev-workflow --scope project
+aw plugin install official/dev-workflow --scope project
 ```
 
 ### 安装过程与行为语义
 
-1. **原子写入需求声明**：AW 先将插件需求（Intent v3）原子写入对应的 `plugin-intents.json`。
+1. **先校验再写入**：明确提供 `--scope user|project`。参数、目标和重要副作用确认通过后，AW 将插件需求（Intent v3）原子写入对应的 `plugin-intents.json`。没有启用平台时，普通安装返回 `noTargetsEnabled`；只保存需求使用 `--only requirements`。
 2. **尽力恢复（Best-Effort Apply）**：根据已配置的本机平台目标，将插件投影并物化至宿主客户端目录。
 3. **部分成功允许**：若其中一个平台物化失败，已成功的平台保持可用，不会整体回滚。
 4. **验证现场状态**：
@@ -107,7 +100,7 @@ aw plugin install dev-workflow --scope project
    aw plugin status --context user
    aw plugin status --context project
    ```
-   公开恢复状态回执（`schemaVersion: 1`, `kind: 'aw-recovery-status'`）聚合为四大类：
+   统一结果的 `data.counts` 聚合为四大类：
    - `ready`：所有预期组件与依赖完全就绪；
    - `pending`：存在已保存但尚未同步物化的变动（需执行 `sync`）；
    - `blocked`：存在来源缺失、依赖阻断或不可读现场；
@@ -127,7 +120,7 @@ aw plugin install dev-workflow --scope project
 aw plugin config schema agent-subagent
 
 # 列出当前生效配置与来源层级
-aw plugin config list agent-subagent
+aw plugin config get agent-subagent
 
 # 查看指定配置键的值
 aw plugin config get agent-subagent generalTaskProfile
@@ -142,8 +135,8 @@ aw plugin config set agent-subagent generalTaskProfile --value-json '{"executor"
 # 修改特定平台的覆盖配置（例如仅针对 Codex 平台覆盖模型与推理级别）
 aw plugin config set codex-enhance standardProfile --platform codex --value-json '{"model":"gpt-6-luna","reasoningEffort":"high"}'
 
-# 启动终端交互式向导修改配置（通过终端选择与输入交互完成）
-aw plugin config edit agent-subagent
+# 在 TUI 中交互编辑插件配置
+aw
 ```
 
 ### 核心解耦：保存成功不等于应用生效
@@ -171,7 +164,7 @@ aw plugin config apply agent-subagent
 
 ```text
 [ 远端/本地候选 (Candidate) ]
-         ↓ aw catalog source sync <id>
+         ↓ aw source sync <id>
 [ 已激活快照 (Active) ] (本地 catalog-store)
          ↓ aw plugin sync / aw plugin install
 [ 物理安装产物 (Installed) ] (宿主客户端目录)
@@ -183,27 +176,27 @@ aw plugin config apply agent-subagent
 
 ### 检查来源状态
 
-`aw catalog source status` 是**离线状态检查命令**，读取本地来源配置、当前 Active 快照指纹与宿主兼容性，不发起网络连接：
+`aw source status` 是**离线状态检查命令**，读取本地来源配置、当前 Active 快照指纹与宿主兼容性，不发起网络连接：
 
 ```bash
 # 离线检查指定来源的本地配置与 Active 快照状态
-aw catalog source status official
+aw source status official
 ```
 
 ### 刷新来源快照
 
-要与远端同步或检查更新，使用 `aw catalog source sync`：
+要与远端同步或检查更新，使用 `aw source sync`：
 
 ```bash
-# 在线探测远端更新并执行校验，不写入 store 也不改变 Active（但可更新 lastSync）
-aw catalog source sync official --check
+# 在线探测远端更新并执行校验，不写入 store 也不改变 Active（不写 lastSync）
+aw source status official --remote
 
 # 拉取最新快照、校验并原子切换本地 Active 快照
-aw catalog source sync official
+aw source sync official
 ```
 
 > [!NOTE]
-> **刷新来源不会自动升级已安装插件**。`aw catalog source sync` 仅更新本地 Active 快照，绝不擅自变动当前正在运行的物理安装产物。
+> **刷新来源不会自动升级已安装插件**。`aw source sync` 仅更新本地 Active 快照，绝不擅自变动当前正在运行的物理安装产物。
 
 ### 升级已安装插件
 
@@ -235,29 +228,29 @@ aw plugin sync --context project
 
 ### 移除需求声明 (`remove`)
 
-当不再需要某个插件时，使用 `aw plugin remove` 从声明文件中注销：
+当不再需要某个插件时，使用 `aw plugin remove` 取消需求并安全清理。删除输出需要 `--yes`；可先不加该选项查看待确认影响：
 
 ```bash
 # 从用户全局需求中移除
-aw plugin remove decision-kit --scope user
+aw plugin remove official/decision-kit --scope user --yes
 
 # 从当前项目需求中移除
-aw plugin remove dev-workflow --scope project
+aw plugin remove official/dev-workflow --scope project --yes
 ```
 
 > [!NOTE]
 > `aw plugin remove` 仅修改选定 scope 的 Intent 声明文件，并尝试清理其专属输出。取消项目需求不会删除其他项目或用户共享的物理文件。
 
-### 清理可证明归属的输出 (`cleanup`)
+### 只修改需求或只清理输出
 
-若宿主目录中残留了未引用的插件产物，使用 `aw plugin cleanup` 针对物理目标进行安全清理（注意：`--scope` 与 `--target` 均为必填选项）：
+若宿主目录中残留了未引用的插件产物，使用 `aw plugin remove --only outputs` 针对物理目标进行安全清理（注意：`--scope` 与 `--target` 均为必填选项）：
 
 ```bash
-# 针对特定平台的目标清理用户层级下的残留输出
-aw plugin cleanup --scope user --target codex
+# 查看用户范围目标清理的待确认影响
+aw plugin remove official/decision-kit --only outputs --scope user --target codex
 
 # 确认清理特定平台上的项目残留输出
-aw plugin cleanup --scope project --target codex --yes
+aw plugin remove official/decision-kit --only outputs --scope project --target codex --yes
 ```
 
 ### 安全所有权保护边界
@@ -265,28 +258,26 @@ aw plugin cleanup --scope project --target codex --yes
 AW 在执行清理时受到严格的安全限制：
 - **仅清理可证明为 AW 拥有（AW-owned）的产物**：只有包含合法的 AW owner marker 且路径与声明完全一致的文件才允许被删除。
 - **严格保护外部（foreign）与共享（shared）内容**：宿主平台自身的配置文件、用户其他插件或跨插件共享包体绝不删除。
-- **弱状态损坏时的强行清理**：若本地状态损坏但确认需要清理专属残留，使用强制清理选项：`aw plugin cleanup <plugin> --scope <scope> --target <target> --force --yes`（针对精确的单个 target 目标执行）。
+- **弱状态损坏时的强行清理**：若本地状态损坏但确认需要清理专属残留，使用强制清理选项：`aw plugin remove <source/plugin> --only outputs --scope <scope> --target <target> --force --yes`（针对精确的单个 target 目标执行）。
 
 ---
 
-## 7. 常用命令速查
+## 7. 命令与自动化
 
-| 任务 | 推荐命令 | 说明 |
-| --- | --- | --- |
-| 启动交互终端 | `aw` | 打开全功能 TUI 控制台 |
-| 离线环境就绪检查 | `aw init` | 离线检查本地来源与 Active 快照就绪状态（只读检查，不写磁盘） |
-| 同步来源快照 | `aw catalog source sync <id>` | 拉取最新快照并激活 Active（首次安装前必须同步） |
-| 配置平台目标 | `aw plugin targets set <targets...>` | 设置本机偏好的宿主平台 |
-| 安装插件 | `aw plugin install <plugin> --scope <user\|project>` | 声明并安装插件 |
-| 查看现场状态 | `aw plugin status --context <user\|project>` | 检查公开恢复状态回执与聚合计数 |
-| 修改配置项 | `aw plugin config set <plugin> <key>` | 保存配置至 Store（不自动生效） |
-| 交互式配置向导 | `aw plugin config edit <plugin>` | 终端选择与交互修改配置项 |
-| 应用生效配置 | `aw plugin config apply <plugin>` | 重新渲染并应用配置至平台 |
-| 检查来源状态 | `aw catalog source status [id]` | 离线查看指定或全部来源的本地配置与 Active 状态 |
-| 探测远端更新 | `aw catalog source sync <id> --check` | 在线探测远端更新与校验，不写 store |
-| 升级/同步插件 | `aw plugin sync [plugins...] --context <scope>` | 升级或协调现场安装产物 |
-| 移除需求声明 | `aw plugin remove <plugin> --scope <scope>` | 取消插件需求声明 |
-| 清理残留输出 | `aw plugin cleanup --scope <scope> --target <target> --yes` | 清理指定平台的孤儿产物（保护 foreign/shared） |
+| 任务 | 命令 |
+| --- | --- |
+| 浏览可用插件 | `aw plugin list` |
+| 查看插件说明 | `aw plugin show official/decision-kit` |
+| 只保存需求 | `aw plugin install official/decision-kit --scope user --only requirements` |
+| 列出直接需求根 | `aw plugin list --requested --scope user` |
+| 离线取消需求 | `aw plugin remove official/decision-kit --scope user --only requirements` |
+| 清理所选输出并保留需求和配置 | `aw plugin remove official/decision-kit --scope user --only outputs --target codex --yes` |
+| 创建作者工作区 | `aw dev catalog create --workspace-root ./catalog-workspace` |
+| 查询完整命令帮助 | `aw --help` 或 `aw --json` |
+
+普通 remove 要求可验证的 Active；来源不可用时不会先取消需求。使用两个独立 `--only` 模式恢复：requirements 只取消合法声明中的完整 ID，outputs 只清理有归属证据的输出。保留需求时，后续 sync 可以重新部署。`--delete-config` 额外删除该插件全部本机配置，不能与 `--only` 组合；`--force` 只用于 outputs-only 的受限恢复。install/remove 必须提供非空插件列表，不支持 `--all` 或 `--offline`。
+
+默认文本与 JSON 使用同一事实。自动化显式增加 `--json`，根据 `status`、稳定诊断 code 和 `data` 判断结果，不解析英文句子。`success` 退出 0，参数错误 2，`blocked` 3，`partial` 4，其它执行失败 1。完整取得的 needsSync 查询可以成功；未知和覆盖缺口不能当作成功。完整字段和透传例外见 [CLI 合同](../reference/cli.md)。
 
 ---
 

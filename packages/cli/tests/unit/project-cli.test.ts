@@ -35,7 +35,7 @@ async function activeCatalog(location: Awaited<ReturnType<typeof fixture>>) {
 
 async function jsonCommand(args: string[], location: Awaited<ReturnType<typeof fixture>>) {
   const captured = createCapturedCliIo();
-  const exit = await runCli(['plugin', ...args, '--json'], {
+  const exit = await runCli([...(args[0] === 'target' ? [] : ['plugin']), ...args, '--json'], {
     cwd: location.cwd, env: location.env, interactive: false, io: captured.io,
   });
   const stdout = captured.readStdout();
@@ -49,11 +49,13 @@ describe('scoped CLI declaration and preference boundaries', () => {
       sources: { team: { logicalIdentity: 'logical-team' } },
       roots: [{ pluginId: 'team/demo' }, { pluginId: 'team/other' }],
     });
-    const output = await jsonCommand(['intent', 'remove', 'team/demo', '--scope', 'project'], location);
+    const output = await jsonCommand(['remove', '--only', 'requirements', 'team/demo', '--scope', 'project'], location);
     expect(output).toMatchObject({ exit: 0, stderr: '', stdout: {
-      schemaVersion: 1, kind: 'aw-recovery', scope: 'project', command: 'intent:remove',
-      ok: true, declarationChanged: true, preferencesChanged: false,
-      outputsMayHaveChanged: false, intent: { roots: ['team/other'] },
+      schemaVersion: 1, command: 'plugin.remove', status: 'success', data: {
+        request: { scope: 'project', mode: 'requirements-only' },
+        changes: { requirements: 'changed', preferences: 'none', outputs: 'none' },
+        requirements: { roots: ['team/other'] }, targetResults: [],
+      },
     } });
     expect((await observeIntent(location))).toMatchObject({ state: 'valid', value: {
       roots: [{ pluginId: 'team/other' }],
@@ -65,18 +67,18 @@ describe('scoped CLI declaration and preference boundaries', () => {
     await writePreferences(location, { ...createEmptyPreferences(),
       exclusions: [{ plugin: 'team/dependency', target: 'codex' }],
     });
-    const set = await jsonCommand(['targets', 'set', 'cursor', 'codex', '--context', 'project'], location);
+    const set = await jsonCommand(['target', 'set', 'cursor', 'codex', '--context', 'project'], location);
     expect(set).toMatchObject({ exit: 0, stdout: {
-      kind: 'aw-recovery', command: 'targets:set', preferencesChanged: true,
-      selection: { agents: ['codex', 'cursor'], origin: 'preference' },
+      command: 'target.set', status: 'success', data: { preferencesChanged: true,
+        selection: { targets: ['codex', 'cursor'], origin: 'preference' } },
     } });
     expect(await observePreferences(location)).toMatchObject({ state: 'valid', value: {
       schemaVersion: 2, targets: ['codex', 'cursor'], exclusions: [{ plugin: 'team/dependency', target: 'codex' }],
     } });
     expect(await observePreferences({ ...location, scope: 'user' })).toEqual(await observePreferences(location));
-    const reset = await jsonCommand(['targets', 'set', '--none', '--context', 'project'], location);
+    const reset = await jsonCommand(['target', 'set', '--none', '--context', 'project'], location);
     expect(reset).toMatchObject({ exit: 0, stdout: {
-      command: 'targets:set', preferencesChanged: true, selection: { agents: [] },
+      command: 'target.set', status: 'success', data: { preferencesChanged: true, selection: { targets: [] } },
     } });
     expect(await observePreferences(location)).toMatchObject({ state: 'valid', value: {
       targets: [], exclusions: [{ plugin: 'team/dependency', target: 'codex' }],
@@ -86,16 +88,17 @@ describe('scoped CLI declaration and preference boundaries', () => {
   it('adds a root only after verifying local Active and keeps its source binding', async () => {
     const location = await fixture('intent-add');
     await activeCatalog(location);
-    const rejected = await jsonCommand(['intent', 'add', 'team/demo', 'team/missing', '--scope', 'project'], location);
-    expect(rejected).toMatchObject({ exit: 1, stdout: {
-      kind: 'aw-recovery', declarationChanged: false,
-      blockers: [{ code: 'pluginUnavailable' }],
+    const rejected = await jsonCommand(['install', '--only', 'requirements', 'team/demo', 'team/missing', '--scope', 'project'], location);
+    expect(rejected).toMatchObject({ exit: 3, stdout: {
+      command: 'plugin.install', status: 'blocked', data: { changes: { requirements: 'none' } },
+      diagnostics: [{ code: 'pluginUnavailable' }],
     } });
     expect(await fs.pathExists(await resolveIntentPath(location))).toBe(false);
-    const output = await jsonCommand(['intent', 'add', 'team/demo', '--scope', 'project'], location);
+    const output = await jsonCommand(['install', '--only', 'requirements', 'team/demo', '--scope', 'project'], location);
     expect(output).toMatchObject({ exit: 0, stdout: {
-      command: 'intent:add', declarationChanged: true,
-      intent: { roots: ['team/demo'] },
+      command: 'plugin.install', status: 'success', data: {
+        changes: { requirements: 'changed' }, requirements: { roots: ['team/demo'] }, targetResults: [],
+      },
     } });
     const stored = await fs.readJson(await resolveIntentPath(location));
     expect(stored).toMatchObject({ schemaVersion: 3, kind: 'aw-plugin-intents',
@@ -110,8 +113,10 @@ describe('scoped CLI declaration and preference boundaries', () => {
     await writePreferences(location, { ...createEmptyPreferences(), targets: ['codex'] });
     const result = await jsonCommand(['install', 'demo', '--scope', 'project', '--yes'], location);
     expect(result.stdout).toMatchObject({
-      schemaVersion: 1, kind: 'aw-recovery', scope: 'project', command: 'install',
-      declarationChanged: true, intent: { roots: ['team/demo'] }, requestedRoots: ['team/demo'],
+      schemaVersion: 1, command: 'plugin.install', data: {
+        request: { scope: 'project', plugins: ['team/demo'] },
+        changes: { requirements: 'changed' }, requirements: { roots: ['team/demo'] },
+      },
     });
     expect((await observeIntent(location))).toMatchObject({ state: 'valid', value: {
       roots: [{ pluginId: 'team/demo' }],
@@ -125,14 +130,14 @@ describe('scoped CLI declaration and preference boundaries', () => {
       schemaVersion: 2, kind: 'aw-plugin-intents', roots: [], dependencyScopeOverrides: [],
     });
     const legacy = await jsonCommand(['status', '--context', 'project'], location);
-    expect(legacy).toMatchObject({ exit: 1, stdout: {
-      kind: 'aw-recovery-status', scope: 'project', ok: false,
-      intent: { state: 'unsupported-version' }, allSatisfied: null,
+    expect(legacy).toMatchObject({ exit: 3, stdout: {
+      command: 'plugin.status', status: 'blocked', data: { context: 'project',
+        requirements: { state: 'unsupported-version' }, allSatisfied: null },
     } });
     await fs.writeFile(intentPath, '{bad');
     const invalid = await jsonCommand(['status', '--context', 'project'], location);
-    expect(invalid).toMatchObject({ exit: 1, stdout: {
-      kind: 'aw-recovery-status', ok: false, intent: { state: 'invalid' }, allSatisfied: null,
+    expect(invalid).toMatchObject({ exit: 3, stdout: {
+      command: 'plugin.status', status: 'blocked', data: { requirements: { state: 'invalid' }, allSatisfied: null },
     } });
   });
 
@@ -142,27 +147,27 @@ describe('scoped CLI declaration and preference boundaries', () => {
       sources: { team: { logicalIdentity: 'logical-team' } }, roots: [{ pluginId: 'team/demo' }],
     });
     const status = await jsonCommand(['status', '--context', 'project'], location);
-    expect(status).toMatchObject({ exit: 1, stderr: '', stdout: {
-      schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: false,
-      intent: { state: 'valid' }, allSatisfied: false,
-      inventory: [{ pluginId: 'team/demo' }],
-      selection: { agents: [], origin: 'none' },
+    expect(status).toMatchObject({ exit: 3, stdout: {
+      schemaVersion: 1, command: 'plugin.status', status: 'blocked', data: { context: 'project',
+        requirements: { state: 'valid' }, allSatisfied: false,
+        inventory: [{ pluginId: 'team/demo' }],
+        selection: { targets: [], targetOrigin: 'none' },
+      },
     } });
-    expect(status.stdout.errors).toEqual(expect.arrayContaining([
+    expect(status.stdout.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'targetsNotConfigured' }),
     ]));
   });
 
-  it('requires qualified IDs for exact declaration edits in either scope', async () => {
+  it('requires qualified IDs for offline requirement removal in either scope', async () => {
     const location = await fixture('exact-ids');
     for (const scope of ['project', 'user']) {
-      for (const action of ['add', 'remove']) {
-        const result = await jsonCommand(['intent', action, 'demo', '--scope', scope], location);
-        expect(result.stdout).toMatchObject({
-          kind: 'aw-recovery', scope, command: `intent:${action}`, ok: false,
-          blockers: [{ code: 'invalidArguments' }], declarationChanged: false,
-        });
-      }
+      const result = await jsonCommand(['remove', 'demo', '--only', 'requirements', '--scope', scope], location);
+      expect(result.exit).toBe(2);
+      expect(result.stdout).toMatchObject({
+        command: 'plugin.remove', status: 'failed', data: {},
+        diagnostics: [{ code: 'invalidArguments' }],
+      });
     }
     expect(await fs.pathExists(await resolveIntentPath(location))).toBe(false);
   });

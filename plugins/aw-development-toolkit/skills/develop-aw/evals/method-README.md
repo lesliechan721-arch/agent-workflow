@@ -12,7 +12,7 @@
 | `catalog_remove_empty` | 从完整种子复制独立 Workspace，建立本地 fixture HEAD，再用公开 remove；最终 status 的 plugins 为空 |
 | `comparable_finals` | setup 脚本建立真实 Git HEAD 后增加 dirty/untracked 输入；完整复制两版本，以同一 profile 准备各自 final 和 binding |
 
-所有 `workspace_valid` 用例由 `scripts/method-fixtures.test.mjs` materialize 后通过公开 `aw catalog status --json` 与逐插件 `aw plugin validate --json` 检查；snapshot 的预期为 absent。测试还实际执行隔离 remove，验证空 Catalog，以及运行 comparison setup，证明 dirty/untracked 前提和缺少未跟踪输入时的物化拒绝。fixture 中的 Git 操作只在测试临时目录执行，不访问远端。
+所有 `workspace_valid` 用例由 `scripts/method-fixtures.test.mjs` materialize 后通过公开 `aw dev catalog status --json` 与逐插件 `aw dev plugin validate --json` 检查；snapshot 的预期为 absent。测试还实际执行隔离 remove，验证空 Catalog，以及运行 comparison setup，证明 dirty/untracked 前提和缺少未跟踪输入时的物化拒绝。fixture 中的 Git 操作只在测试临时目录执行，不访问远端。
 
 `comparable_finals` 使用 `simplify-fixtures/bin` 的明确测试替身。它检查真实复制输入、精确输出路径和 Codex/project 选择；缺少额外 untracked 输入时拒绝。该替身不证明生产 renderer、正式 source binding、Audit 或模型收益。其余场景使用实际公开作者命令；只读 case 的执行限制仍由 prompt 和轨迹检查约束。
 

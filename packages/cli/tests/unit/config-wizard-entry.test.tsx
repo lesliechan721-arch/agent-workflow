@@ -33,14 +33,10 @@ describe('config mutation runtime entry', () => {
       tuiRunner: { launch } as never,
     });
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(3);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      receiptSchemaVersion: 7,
-      command: `config:${command}`,
-      plugin: 'team/demo',
-      configWrite: 'notStarted',
-      ok: false,
-      overallState: 'failed',
+      schemaVersion: 1, command: `plugin.config.${command}`, status: 'blocked',
+      data: { plugin: 'team/demo', configWrite: 'notStarted' },
     });
     expect(launch).not.toHaveBeenCalled();
     expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
@@ -61,12 +57,12 @@ describe('config mutation runtime entry', () => {
       tuiRunner: { launch } as never,
     });
 
-    expect(exitCode).toBe(2);
+    expect(exitCode).toBe(3);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      command: 'config:reset',
-      configWrite: 'notStarted',
-      ok: false,
-      errors: [{ code: 'invalidArguments' }],
+      schemaVersion: 1, command: 'plugin.config.reset', status: 'blocked',
+      data: { confirmation: { required: true, provided: false,
+        effects: [expect.objectContaining({ code: 'deletePluginConfig' })] } },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
     });
     expect(launch).not.toHaveBeenCalled();
     expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
@@ -86,9 +82,9 @@ describe('config mutation runtime entry', () => {
       interactive: false,
       io: captured.io,
     });
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(3);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      command: 'config:set', configWrite: 'notStarted', ok: false,
+      command: 'plugin.config.set', status: 'blocked', data: { configWrite: 'notStarted' },
     });
     expect(captured.readStdout()).not.toContain(secret);
     expect(captured.readStderr()).not.toContain(secret);

@@ -5,7 +5,7 @@ import { addRequirements } from '../commands/intent-command.js';
 import { createEmptyIntent, calculateIntentDigest, removeIntentRoot, type PluginIntent } from '../intent/intent-codec.js';
 import { observeIntent, writeIntent, resolveIntentPath, type IntentObservation } from '../intent/intent-store.js';
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
-import { observePreferences, normalizeAgents } from '../intent/deployment-preferences.js';
+import { observePreferences, normalizeAgents, writePreferences } from '../intent/deployment-preferences.js';
 import { createScopeContext } from '../intent/scope-context.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -133,7 +133,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
           value.sources[sourceId] = { logicalIdentity: identity };
           value.roots.push({ pluginId: item.pluginId });
         }
-        snapshot = { ...snapshot, [currentScope]: await readDemand({ ...options, scope: currentScope, intent: asObservation(value) }) };
+        snapshot = { ...snapshot, [currentScope]: await readDemand({ ...options, preferences: undefined, scope: currentScope, intent: asObservation(value) }) };
       }
       if (snapshot.preferences) snapshot.preferences = { ...snapshot.preferences,
         targets: normalizeAgents([...snapshot.preferences.targets, ...installed.map((item) => item.agent!)]) };
@@ -145,7 +145,6 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   let declaration: JointRecoveryState['declaration'];
   let requested = [...selectors];
   if (command === 'install') {
-    if (options.targets !== undefined) errors.push(diagnostic('installTargetSelectionUnsupported', '安装使用已保存的本机 Agent。'));
     if (!snapshot.preferences?.targets.length) errors.push(diagnostic('targetsNotConfigured', '请先配置本机 Agent，再安装插件。'));
     else {
       const proposed = await addRequirements({ ...options, scope, selectors, token: runtime.awHomeMutationToken, dryRun: true, installSelectors: true });
@@ -153,7 +152,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       if (proposed.state && !proposed.errors.length) {
         requested = proposed.roots;
         if (proposed.changed) declaration = { scope, value: proposed.state };
-        const demand = await readDemand({ ...options, scope, intent: asObservation(proposed.state) });
+        const demand = await readDemand({ ...options, preferences: undefined, scope, intent: asObservation(proposed.state) });
         snapshot = { ...snapshot, [scope]: demand };
       }
     }
@@ -184,7 +183,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       }
       if (!errors.length) {
         declaration = { scope, value };
-        const demand = await readDemand({ ...options, scope, intent: asObservation(value) });
+        const demand = await readDemand({ ...options, preferences: undefined, scope, intent: asObservation(value) });
         snapshot = { ...snapshot, [scope]: demand };
       }
     }
@@ -489,6 +488,20 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         const stable = !checked.blockExecution && JSON.stringify(describeRecoveryPlan(plan)) === JSON.stringify(describeRecoveryPlan(checked));
         await checked.context.dispose();
         if (!stable) { plan.receipt.blockers.push(diagnostic('operationReviewStale')); return mergeReceipts(plan, []); }
+        if (joint.originalOptions.preferences) {
+          const saved = await writePreferences({ ...plan.options, scope: 'user', token }, joint.originalOptions.preferences);
+          plan.receipt.preferencesChanged = saved.changed;
+          const committed = await observePreferences({ ...plan.options, scope: 'user' });
+          if (committed.state !== 'valid') {
+            plan.receipt.blockers.push(diagnostic('deploymentPreferencesUnavailable'));
+            return mergeReceipts(plan, []);
+          }
+          for (const child of joint.children) {
+            child.demand.preferences = committed;
+            if (child.options.demandOverride) child.options.demandOverride.preferences = committed;
+            child.preferencesEvidence = observationEvidence(committed);
+          }
+        }
         if (joint.declaration) {
           const saved = await writeIntent({ ...plan.options, scope: joint.declaration.scope, token }, joint.declaration.value);
           plan.receipt.declarationChanged = saved.changed;

@@ -32,9 +32,9 @@ function capture() {
 
 async function createWorkspace(root: string, pluginName: string): Promise<void> {
   await execFileAsync('git', ['init'], { cwd: root });
-  await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+  await runCli(['dev', 'catalog', 'create', '--workspace-root', root], { cwd: root, io: capture().io });
   await runCli([
-    'plugin', 'init', pluginName, '--description', `${pluginName} status fixture.`,
+    'dev', 'plugin', 'create', pluginName, '--description', `${pluginName} status fixture.`,
     '--no-skills', '--workspace-root', root,
   ], { cwd: root, io: capture().io });
   await execFileAsync('git', ['add', '.'], { cwd: root });
@@ -54,28 +54,30 @@ describe('Catalog static status CLI', () => {
     await createWorkspace(root, 'static-demo');
     const output = capture();
 
-    expect(await runCli(['catalog', 'status', '--workspace-root', root, '--json'], {
+    expect(await runCli(['dev', 'catalog', 'status', '--workspace-root', root, '--json'], {
       cwd: root,
       io: output.io,
     })).toBe(0);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 2,
-      command: 'catalog:status',
-      ok: true,
-      workspace: { valid: true, identity: expect.any(String) },
-      catalog: { valid: true, version: '0.1.0', channel: 'latest' },
-      plugins: [{ name: 'static-demo', version: '0.1.0', dependencies: [], sourceValid: true }],
-      dependencyGraph: { valid: true, order: ['static-demo'] },
-      git: { checked: true, sourceHead: expect.any(String), clean: true },
-      snapshot: { state: 'absent', valid: false },
-      issues: [],
+      schemaVersion: 1,
+      status: 'success',
+      command: 'dev.catalog.status',
+      diagnostics: [],
+      data: {
+        workspace: { valid: true, identity: expect.any(String) },
+        catalog: { valid: true, version: '0.1.0', channel: 'latest' },
+        plugins: [{ name: 'static-demo', version: '0.1.0', dependencies: [], sourceValid: true }],
+        dependencyGraph: { valid: true, order: ['static-demo'] },
+        git: { checked: true, sourceHead: expect.any(String), clean: true },
+        snapshot: { state: 'absent', valid: false }
+      }
     });
-    expect(JSON.parse(output.stdout())).not.toHaveProperty('publication');
+    expect(JSON.parse(output.stdout()).data).not.toHaveProperty('publication');
     expect(output.stderr()).toBe('');
     await expect(fs.pathExists(path.join(root, '.aw'))).resolves.toBe(false);
 
     const human = capture();
-    expect(await runCli(['catalog', 'status', '--workspace-root', root], {
+    expect(await runCli(['dev', 'catalog', 'status', '--workspace-root', root], {
       cwd: root,
       io: human.io,
     })).toBe(0);
@@ -89,43 +91,49 @@ describe('Catalog static status CLI', () => {
     await fs.outputFile(path.join(root, 'working.txt'), 'uncommitted\n');
     const output = capture();
 
-    expect(await runCli(['catalog', 'status', '--workspace-root', root, '--json'], {
+    expect(await runCli(['dev', 'catalog', 'status', '--workspace-root', root, '--json'], {
       cwd: root,
       io: output.io,
     })).toBe(0);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      ok: true,
-      git: { checked: true, clean: false },
-      issues: [],
+      schemaVersion: 1,
+      status: 'success',
+      diagnostics: [],
+      data: { git: { checked: true, clean: false } }
     });
   });
 
   it('does not require Git for a valid static Workspace status', async () => {
     const root = await createRoot();
-    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli(['dev', 'catalog', 'create', '--workspace-root', root], { cwd: root, io: capture().io });
     const output = capture();
 
-    expect(await runCli(['catalog', 'status', '--workspace-root', root, '--json'], {
+    expect(await runCli(['dev', 'catalog', 'status', '--workspace-root', root, '--json'], {
       cwd: root,
       io: output.io,
     })).toBe(0);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      ok: true,
-      workspace: { valid: true },
-      git: { checked: false, sourceHead: null, clean: null },
-      issues: [],
+      schemaVersion: 1,
+      status: 'success',
+      diagnostics: [],
+      data: {
+        workspace: { valid: true },
+        git: { checked: false, sourceHead: null, clean: null }
+      }
     });
   });
 
   it('rejects removed publication options before status execution', async () => {
     const output = capture();
 
-    expect(await runCli(['catalog', 'status', '--preflight', '--json'], { io: output.io })).toBe(1);
-    expect(output.stderr()).toContain("unknown option '--preflight'");
+    expect(await runCli(['dev', 'catalog', 'status', '--preflight', '--json'], { io: output.io })).toBe(2);
+    expect(output.stderr()).toContain('--preflight');
     expect(JSON.parse(output.stdout())).toMatchObject({
-      command: 'catalog:status',
-      ok: false,
-      errors: [{ code: 'invalidArguments', message: expect.stringContaining('--preflight') }],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'dev.catalog.status',
+      diagnostics: [{ code: 'invalidArguments', message: expect.stringContaining('--preflight') }],
+      data: {}
     });
   });
 });

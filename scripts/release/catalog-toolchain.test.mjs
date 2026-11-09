@@ -67,7 +67,7 @@ async function fixture(t, version = '2.3.4-beta.8') {
       assert.equal(manifest.files.length, 5);
       assert.equal(manifest.toolchain.version, version);
     },
-    loadToolchainCapabilities: async () => ({ IMPLEMENTED_AW_CAPABILITIES: ['aw.catalog-publication.v1', 'aw.catalog-snapshot.v7', 'aw.catalog-authoring.v1'] }),
+    loadToolchainCapabilities: async () => ({ IMPLEMENTED_AW_CAPABILITIES: ['aw.catalog-publication.v2', 'aw.catalog-snapshot.v7', 'aw.catalog-authoring.v2'] }),
   };
   return { root, reads, options };
 }

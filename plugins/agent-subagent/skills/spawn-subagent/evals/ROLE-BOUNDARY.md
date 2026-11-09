@@ -7,7 +7,7 @@
 外部资格用例需要真实配置，可向公开准备入口提供插件字段 map：
 
 ```sh
-aw skill eval prepare agent-subagent spawn-subagent \
+aw dev eval prepare agent-subagent spawn-subagent \
   --suite joint-workflow --case J18 --profile project-default \
   --config-file /absolute/path/foreground-config.json \
   --output /absolute/new/output-directory --json
@@ -54,7 +54,7 @@ aw skill eval prepare agent-subagent spawn-subagent \
 
 API 文档 fixture 使用普通路径 `docs/api/`。确定性测试将 W06、W04 和 J07 的原始选择交给生产 `prepareRun`，核对 fileSelectors、安装资源内的 fileResolver 和合成 prompt，并确认准备阶段不启动 adapter。材料内容与引用由消费方的实际选择、读取和回答证据核对；runner 不扫描或内嵌正文。
 
-J11/J15/J16/J17 的 synthetic plugin 由公开 AW 的 validate/build/source sync/install/config save/apply 创建，仅 Guide 声明 keys-only v2 runtimeConfig。已保存值通过公开 `aw sync` 应用；重复相同的 `config set --apply` 因没有配置变更而跳过刷新。固定完整 public AW package 树可放在同源 `evals/fixtures/public-aw/`，包含普通可执行 `bin/aw`；复制时拒绝 symlink并保留执行位。未提供该树时使用真实 PATH `aw`，缺少新能力则报告环境不可用。J11/J17 的 fixture 只证明 save/apply 值与输入文件变更；是否在活跃窗口更新、是否继续同一运行句柄、实际消费的正文及生成数必须来自真实工具和 adapter trace。结果 JSON、配置声明和模型自述不能替代这些证据。
+J11/J15/J16/J17 的 synthetic plugin 由公开 AW 的 validate/build/source sync/install/config save/apply 创建，仅 Guide 声明 keys-only v2 runtimeConfig。已保存值通过公开 `aw plugin sync` 应用；重复相同的 `config set --apply` 因没有配置变更而跳过刷新。固定完整 public AW package 树可放在同源 `evals/fixtures/public-aw/`，包含普通可执行 `bin/aw`；复制时拒绝 symlink并保留执行位。未提供该树时使用真实 PATH `aw`，缺少新能力则报告环境不可用。J11/J17 的 fixture 只证明 save/apply 值与输入文件变更；是否在活跃窗口更新、是否继续同一运行句柄、实际消费的正文及生成数必须来自真实工具和 adapter trace。结果 JSON、配置声明和模型自述不能替代这些证据。
 
 J12 是明确标注的本地 fault control，使用产品 v5 start 帧，实际写一次标记并记录计数，退出时不提供服务回执。它只证明本地状态/副作用处理，不证明真实模型、费用、服务停止或生产写能力。J16 使用同一控制记录任何意外启动；只有 filesNotAllowedInWorkspace、退出2且没有 adapter 执行记录才能确认零启动。
 

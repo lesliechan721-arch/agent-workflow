@@ -20,7 +20,7 @@ pnpm plugin:test agent-subagent --native-mode installed --test-concurrency 1
 pnpm plugin:test agent-subagent --native-mode source-candidate --native-context <context.json> --test-concurrency 1
 ```
 
-公开作者命令接受同一组原生参数，例如 `aw plugin test plugins/agent-subagent --workspace-root . --native-mode source-candidate --native-context <context.json>`。`--native-context` 只用于 `fixture` 或 `source-candidate`。所有模式都检查宿主支持的协议，并只向测试注入已准备的原生上下文；插件脚本不搜索 PATH、平台 package 或源码 PE。平台专属用例在其他系统上明确跳过；跳过不算该平台已验证。测试使用本地 fake backend，不调用真实模型。
+公开作者命令接受同一组原生参数，例如 `aw dev plugin test plugins/agent-subagent --workspace-root . --native-mode source-candidate --native-context <context.json>`。`--native-context` 只用于 `fixture` 或 `source-candidate`。所有模式都检查宿主支持的协议，并只向测试注入已准备的原生上下文；插件脚本不搜索 PATH、平台 package 或源码 PE。平台专属用例在其他系统上明确跳过；跳过不算该平台已验证。测试使用本地 fake backend，不调用真实模型。
 
 | 范围 | 测试入口 | 平台 |
 | --- | --- | --- |

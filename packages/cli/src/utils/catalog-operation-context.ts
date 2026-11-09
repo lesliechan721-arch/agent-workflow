@@ -41,7 +41,7 @@ export function selectCatalogOperationContext(
   if (missing) throw new CatalogGenerationError({
     code: 'catalogGenerationUnavailable',
     sourceId: missing,
-    message: `Catalog source "${missing}" was unavailable when this operation context was bound. Run aw catalog source sync ${missing}, then retry.`,
+    message: `Catalog source "${missing}" was unavailable when this operation context was bound. Run aw source sync ${missing}, then retry.`,
   });
   const sources = context.generationSet.sources.filter((source) => requested.has(source.sourceId));
   const generationSetDigest = calculateCatalogGenerationSetDigest(

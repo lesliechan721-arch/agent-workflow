@@ -97,11 +97,12 @@ describe('five namespaced write commands', () => {
       const rejected = await runJson([
         'plugin', 'config', 'set', 'team/demo', 'token', '--context', 'user', ...args,
       ]);
-      expect(rejected.exitCode).toBe(1);
+      expect(rejected.exitCode).toBe(2);
       expect(rejected.stdout).not.toContain('argv-secret');
       expect(rejected.stderr).not.toContain('argv-secret');
       expect(JSON.parse(rejected.stdout)).toMatchObject({
-        errors: [{ code: 'sensitiveConfigInputUnsupported' }],
+        schemaVersion: 1, command: 'plugin.config.set', status: 'failed', data: {},
+        diagnostics: [{ code: 'sensitiveConfigInputUnsupported' }],
       });
     }
 
@@ -110,10 +111,8 @@ describe('five namespaced write commands', () => {
     ]);
     expect(missing.exitCode).toBe(2);
     expect(JSON.parse(missing.stdout)).toMatchObject({
-      errors: [{
-        code: 'invalidArguments',
-        message: 'Use exactly one of --value-json, --value-stdin, or --preset.',
-      }],
+      schemaVersion: 1, command: 'plugin.config.set', status: 'failed', data: {},
+      diagnostics: [{ code: 'invalidArguments' }],
     });
 
     const stdin = new PassThrough();
@@ -125,6 +124,11 @@ describe('five namespaced write commands', () => {
     await expect(readStore()).resolves.toMatchObject({
       values: { token: 'stdin-secret\nwith-newline\n' },
     });
+    const configFile = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'demo', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env
+    });
+    const bytesBeforeMissingInput = await fs.readFile(configFile);
 
     const password = vi.fn(async () => ({
       action: 'select' as const,
@@ -142,15 +146,18 @@ describe('five namespaced write commands', () => {
       prompt: { password },
       ...createTtyRuntimeStreams(),
     });
-    expect(exitCode).toBe(0);
-    expect(password).toHaveBeenCalledOnce();
+    expect(exitCode).toBe(2);
+    expect(password).not.toHaveBeenCalled();
     expect(captured.readStdout()).not.toContain('hidden-prompt-secret');
     expect(captured.readStderr()).not.toContain('hidden-prompt-secret');
-    await expect(readStore()).resolves.toMatchObject({ values: { token: 'hidden-prompt-secret' } });
+    await expect(readStore()).resolves.toMatchObject({ values: { token: 'stdin-secret\nwith-newline\n' } });
+    expect(await fs.readFile(configFile)).toEqual(bytesBeforeMissingInput);
   });
 
   it('prints an executable stdin-only repair command for invalid sensitive config', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    // Keep the invalid token distinct from hexadecimal source identity digests.
+    const invalidToken = 'x!?';
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'sensitive-config-repair-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
@@ -177,12 +184,12 @@ describe('five namespaced write commands', () => {
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      values: { token: 'abc' },
+      values: { token: invalidToken },
     });
     const output = createCapturedCliIo();
 
     const exitCode = await runCli([
-      'plugin', 'config', 'list', 'team/demo', '--context', 'user',
+      'plugin', 'config', 'get', 'team/demo', '--context', 'user', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -191,12 +198,32 @@ describe('five namespaced write commands', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(output.readStdout()).toContain(
-      'aw plugin config set team/demo token --context user --value-stdin',
-    );
-    expect(output.readStdout()).not.toContain('abc');
+    expect(JSON.parse(output.readStdout())).toMatchObject({
+      schemaVersion: 1, command: 'plugin.config.get', status: 'success',
+      nextActions: expect.arrayContaining([expect.objectContaining({
+        kind: 'command',
+        argv: ['aw', 'plugin', 'config', 'set', 'team/demo', 'token', '--context', 'user', '--value-stdin'],
+        requiresConfirmation: false
+      })])
+    });
+    expect(output.readStdout()).not.toContain(invalidToken);
     expect(output.readStdout()).not.toContain('--value-json');
     expect(output.readStdout()).not.toContain('--preset');
+    // Both formats must use the same safe action and preserve the selected profile.
+    for (const platform of [undefined, 'codex']) {
+      const profileArgs = platform ? ['--platform', platform] : [];
+      const expectedArgv = ['aw', 'plugin', 'config', 'set', 'team/demo', 'token', '--context', 'project', ...profileArgs, '--value-stdin'];
+      for (const json of [false, true]) {
+        const captured = createCapturedCliIo();
+        expect(await runCli(['plugin', 'config', 'get', 'team/demo', '--context', 'project', ...profileArgs, ...(json ? ['--json'] : [])], {
+          cwd: isolation.layout.fixtureCwd, env: isolation.env, io: captured.io, interactive: false,
+        })).toBe(0);
+        const stdout = captured.readStdout();
+        if (json) expect(JSON.parse(stdout).nextActions).toContainEqual(expect.objectContaining({ kind: 'command', argv: expectedArgv, requiresConfirmation: false }));
+        else expect(stdout).toContain(`Next: ${expectedArgv.join(' ')}`);
+        for (const forbidden of [invalidToken, '--value-json', '--preset', '--apply', '--yes']) expect(stdout).not.toContain(forbidden);
+      }
+    }
   });
 
   it('requires --yes and reports a preApply failure without platform writes', async () => {
@@ -312,19 +339,15 @@ describe('five namespaced write commands', () => {
       interactive: false,
       nativeCliRunner,
     });
-    expect(unauthorizedExitCode).toBe(1);
+    expect(unauthorizedExitCode).toBe(3);
     expect(JSON.parse(unauthorizedOutput.readStdout())).toMatchObject({
-      schemaVersion: 1,
-      kind: 'aw-recovery',
-      scope: 'user',
-      ok: false,
-      declarationChanged: true,
-      outputsMayHaveChanged: false,
-      targetResults: [expect.objectContaining({
-        pluginId: 'team/demo', agent: 'claude', scope: 'user',
-        execution: 'failed',
-        blockers: [expect.objectContaining({ code: 'preApplyAuthorizationRequired' })],
-      })],
+      schemaVersion: 1, command: 'plugin.install', status: 'blocked',
+      data: {
+        changes: { requirements: 'none', outputs: 'none' },
+        confirmation: { required: true, provided: false, effects: [expect.objectContaining({ code: 'runPreApply' })] },
+        targetResults: [expect.objectContaining({ pluginId: 'team/demo', target: 'claude', scope: 'user', execution: 'not-run' })]
+      },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
     });
     expect(marketplaceRoots.size).toBe(0);
 
@@ -350,20 +373,19 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     });
 
-    expect(exitCode, output.readStdout()).toBe(1);
+    expect(exitCode, output.readStdout()).toBe(4);
     const receipt = JSON.parse(output.readStdout());
     expect(receipt).toMatchObject({
-      schemaVersion: 1, kind: 'aw-recovery', scope: 'user', ok: false,
-      declarationChanged: false, outputsMayHaveChanged: false,
-      targetResults: [expect.objectContaining({
-        pluginId: 'team/demo', agent: 'claude', scope: 'user',
-        execution: 'failed',
-        blockers: [expect.objectContaining({ code: 'preApplyFailed' })],
-      })],
+      schemaVersion: 1, command: 'plugin.install', status: 'partial',
+      data: {
+        changes: { requirements: 'changed' }, targetResults: [expect.objectContaining({
+          pluginId: 'team/demo', target: 'claude', scope: 'user', execution: 'failed', blockerCodes: ['preApplyFailed'],
+        })]
+      },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'preApplyFailed' })]),
     });
     const serializedReceipt = JSON.stringify(receipt);
-    const serializedFailures = JSON.stringify(receipt.targetResults);
-    expect(serializedReceipt).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
+    const serializedFailures = JSON.stringify(receipt.data.targetResults);
     for (const privateValue of [secret, escapedSecret]) {
       expect(serializedReceipt).not.toContain(privateValue);
     }
@@ -387,7 +409,7 @@ describe('five namespaced write commands', () => {
       interactive: false,
       nativeCliRunner,
     });
-    expect(humanExitCode).toBe(1);
+    expect(humanExitCode).toBe(4);
     const humanText = `${humanOutput.readStdout()}\n${humanOutput.readStderr()}`;
     expect(humanText).toContain('preApplyFailed');
     expect(humanText).not.toContain(secret);
@@ -395,10 +417,12 @@ describe('five namespaced write commands', () => {
     expect(marketplaceRoots.size).toBe(0);
     await expect(snapshotRegularTree(isolation.env.CLAUDE_CONFIG_DIR!))
       .resolves.toEqual(platformBefore);
-    await expect(Promise.all(intentPaths.map((intentPath) =>
+    const intentsAfter = await Promise.all(intentPaths.map((intentPath) =>
       fs.readFile(intentPath).catch((error: NodeJS.ErrnoException) =>
-        error.code === 'ENOENT' ? null : Promise.reject(error)))))
-      .resolves.toEqual(intentsBefore);
+        error.code === 'ENOENT' ? null : Promise.reject(error))));
+    expect(intentsBefore).toEqual([null, null]);
+    expect(JSON.parse(intentsAfter[0]!.toString()).roots).toEqual([{ pluginId: 'team/demo' }]);
+    expect(intentsAfter[1]).toBeNull();
   }, 30_000);
 
   it('does not authorize preApply from an interactive install without --yes', async () => {
@@ -443,13 +467,14 @@ describe('five namespaced write commands', () => {
     };
 
     const unauthorized = await run(false);
-    expect(unauthorized.exitCode).toBe(1);
+    expect(unauthorized.exitCode).toBe(3);
     expect(unauthorized.receipt).toMatchObject({
-      kind: 'aw-recovery', ok: false,
-      targetResults: [expect.objectContaining({
-        pluginId: 'team/demo', execution: 'failed',
-        blockers: [expect.objectContaining({ code: 'preApplyAuthorizationRequired' })],
-      })],
+      schemaVersion: 1, command: 'plugin.install', status: 'blocked',
+      data: {
+        changes: { requirements: 'none', outputs: 'none' },
+        targetResults: [expect.objectContaining({ pluginId: 'team/demo', execution: 'not-run' })]
+      },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
     });
     expect(launch).not.toHaveBeenCalled();
     await expect(fs.pathExists(markerPath)).resolves.toBe(false);
@@ -457,8 +482,8 @@ describe('five namespaced write commands', () => {
     const authorized = await run(true);
     expect(authorized.exitCode).toBe(0);
     expect(authorized.receipt).toMatchObject({
-      kind: 'aw-recovery', ok: true,
-      targetResults: [expect.objectContaining({ pluginId: 'team/demo', execution: 'applied' })],
+      schemaVersion: 1, command: 'plugin.install', status: 'success',
+      data: { targetResults: [expect.objectContaining({ pluginId: 'team/demo', execution: 'applied' })] },
     });
     await expect(fs.readFile(markerPath, 'utf8')).resolves.toBe('ran');
   }, 30_000);
@@ -524,7 +549,7 @@ describe('five namespaced write commands', () => {
 
     expect(await runPublic([
       'install', 'team/demo', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
     const platformRoot = path.join(isolation.layout.fixtureCwd, '.codex');
     const platformBefore = await snapshotRegularTree(platformRoot);
     const failed = await runPublic([
@@ -533,19 +558,22 @@ describe('five namespaced write commands', () => {
     ]);
 
     expect(failed, JSON.stringify(failed)).toMatchObject({
-      exitCode: 1,
-      payload: { configWrite: 'succeeded', overallState: 'partial',
-        effective: { values: { token: '[redacted]' } },
-        apply: { state: 'partial', targetResults: [expect.objectContaining({
-          state: 'failed', errorCode: 'preApplyFailed',
-        })] },
+      exitCode: 4,
+      payload: {
+        schemaVersion: 1, status: 'partial', data: {
+          configWrite: 'succeeded', effective: { values: { token: '[redacted]' } }, apply: {
+            state: 'partial', targetResults: [expect.objectContaining({
+              state: 'failed', errorCode: 'preApplyFailed',
+            })]
+          }
+        },
       },
     });
     expect(await fs.readJson(inputObservedPath)).toEqual({ mode: 'fail', tokenMatches: true });
     expect(await snapshotRegularTree(platformRoot)).toEqual(platformBefore);
     const serializedReceipt = JSON.stringify(failed.payload);
     expect(serializedReceipt).not.toContain(privateToken);
-    const serializedApply = JSON.stringify(failed.payload.apply);
+    const serializedApply = JSON.stringify(failed.payload.data.apply);
     for (const privatePath of [
       isolation.layout.fixtureCwd,
       isolation.env.AW_HOME!,
@@ -555,10 +583,10 @@ describe('five namespaced write commands', () => {
     expect(await runPublic([
       'config', 'set', 'team/demo', 'mode', '--context', 'project', '--platform', 'codex',
       '--value-json', '"safe"', '--apply', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { configWrite: 'succeeded', apply: { state: 'succeeded' } } });
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded', apply: { state: 'succeeded' } }, } });
   }, 30_000);
 
-  it('saves config before authorizing root and dependency preApply for existing outputs', async (test) => {
+  it('requires confirmation before saving apply requests and authorizes dependency preApply after save-only writes', async (test) => {
     const timing = createCommandTestTiming(test);
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-config-source');
@@ -666,6 +694,22 @@ describe('five namespaced write commands', () => {
       path.join(isolation.env.AW_HOME!, 'marketplaces', 'team')];
     const readOutputs = () => Promise.all(outputRoots.map(async (root) => await fs.pathExists(root)
       ? snapshotRegularTree(root) : null));
+    const configFile = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'root', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env
+    });
+    const saveMode = async (mode: string) => {
+      const output = createCapturedCliIo();
+      expect(await runCli(['plugin', 'config', 'set', 'team/root', 'mode', '--value-json', JSON.stringify(mode),
+        '--context', 'project', '--platform', 'codex', '--json'], {
+        cwd: isolation.layout.fixtureCwd, env: isolation.env, io: output.io, interactive: false, nativeCliRunner,
+      })).toBe(0);
+      expect(JSON.parse(output.readStdout())).toMatchObject({
+        status: 'success',
+        data: { configWrite: 'succeeded', apply: { reason: 'notRequested' } }
+      });
+    };
+    const configBeforeUnauthorized = await fs.readFile(configFile);
     const outputsBeforeUnauthorized = await readOutputs();
     const unauthorized = createCapturedCliIo();
     const unauthorizedExitCode = await timing.measure('command', 'plugin config set', () => runCli([
@@ -677,14 +721,23 @@ describe('five namespaced write commands', () => {
       interactive: false,
       nativeCliRunner,
     }));
-    expect(unauthorizedExitCode).toBe(1);
-    expect(JSON.parse(unauthorized.readStdout()), unauthorized.readStdout()).toMatchObject({
-      receiptSchemaVersion: 7,
-      configWrite: 'succeeded',
-      overallState: 'partial',
-      apply: { state: 'unavailable', targetResults: [],
-        error: expect.objectContaining({ code: 'preApplyAuthorizationRequired' }) },
+    const configAfterUnauthorized = await fs.readFile(configFile);
+    expect(unauthorizedExitCode, JSON.stringify({
+      result: JSON.parse(unauthorized.readStdout()),
+      before: JSON.parse(configBeforeUnauthorized.toString()).platforms.codex,
+      after: JSON.parse(configAfterUnauthorized.toString()).platforms.codex
+    })).toBe(3);
+    expect(JSON.parse(unauthorized.readStdout())).toMatchObject({
+      schemaVersion: 1, status: 'blocked',
+      data: {
+        confirmation: {
+          required: true, provided: false, effects: expect.arrayContaining([
+            expect.objectContaining({ code: 'runPreApply', subject: { pluginId: 'team/leaf', target: 'codex', scope: 'project' } }),
+          ])
+        }
+      }, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })])
     });
+    expect(configAfterUnauthorized).toEqual(configBeforeUnauthorized);
     expect(await readOutputs()).toEqual(outputsBeforeUnauthorized);
     await expect(fs.pathExists(
       path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'),
@@ -698,7 +751,8 @@ describe('five namespaced write commands', () => {
       platform: 'codex',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toMatchObject({ values: { mode: 'fast' } });
+    })).resolves.toMatchObject({ values: { mode: 7 } });
+    await saveMode('fast');
 
     const captured = createCapturedCliIo();
     const exitCode = await timing.measure('command', 'plugin config apply', () => runCli([
@@ -714,28 +768,37 @@ describe('five namespaced write commands', () => {
 
     expect(exitCode, captured.readStdout()).toBe(0);
     expect(receipt, JSON.stringify(receipt)).toMatchObject({
-      configWrite: 'notStarted',
-      overallState: 'succeeded',
-      apply: {
-        state: 'succeeded',
-        targetResults: expect.arrayContaining([
-          expect.objectContaining({
-            target: expect.objectContaining({ pluginId: 'team/root' }),
-            action: 'refresh',
-            state: 'completed',
-          }),
-          expect.objectContaining({
-            target: expect.objectContaining({ pluginId: 'team/leaf' }),
-            action: 'refresh',
-            state: 'completed',
-          }),
-        ]),
-      },
+      schemaVersion: 1, status: 'success', data: {
+        configWrite: 'notStarted', apply: {
+          state: 'succeeded',
+          targetResults: expect.arrayContaining([
+            expect.objectContaining({
+              target: expect.objectContaining({ pluginId: 'team/root' }),
+              action: 'refresh',
+              state: 'completed',
+            }),
+            expect.objectContaining({
+              target: expect.objectContaining({ pluginId: 'team/leaf' }),
+              action: 'refresh',
+              state: 'completed',
+            }),
+          ]),
+        }
+      }
     });
     await expect(fs.readFile(
       path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'),
       'utf8',
     )).resolves.toBe('1');
+
+    // A script in the closure does not require confirmation for an unchanged candidate.
+    const unchanged = createCapturedCliIo();
+    expect(await runCli(['plugin', 'config', 'set', 'team/root', 'mode', '--value-json', '"fast"',
+      '--context', 'project', '--platform', 'codex', '--apply', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, io: unchanged.io, interactive: false, nativeCliRunner,
+    }), unchanged.readStdout()).toBe(0);
+    expect(JSON.parse(unchanged.readStdout())).toMatchObject({ status: 'success', data: { confirmation: { required: false, provided: false, effects: [] } } });
+    await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'), 'utf8')).resolves.toBe('1');
 
     definitions[1]!.configureManifest = (manifest: PluginMeta['manifest']) => {
       manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', default: 'safe' } } };
@@ -748,7 +811,9 @@ describe('five namespaced write commands', () => {
     );
     await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
     await timing.measure('catalog', 'source sync', () => syncCatalogSourceGeneration({
-      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
     }));
     await writePluginConfigStore({
       sourceId: 'team',
@@ -776,6 +841,7 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ pluginId: 'team/leaf', relation: 'direct' }),
     ]));
     const outputsBeforeRootUnauthorized = await readOutputs();
+    const configBeforeRootUnauthorized = await fs.readFile(configFile);
     const rootUnauthorized = createCapturedCliIo();
     expect(await timing.measure('command', 'plugin config set', () => runCli([
       'plugin', 'config', 'set', 'team/root', 'mode', '--value-json', '"strict"',
@@ -786,22 +852,31 @@ describe('five namespaced write commands', () => {
       io: rootUnauthorized.io,
       interactive: false,
       nativeCliRunner,
-    }))).toBe(1);
-    expect(JSON.parse(rootUnauthorized.readStdout()), rootUnauthorized.readStdout()).toMatchObject({
-      configWrite: 'succeeded',
-      overallState: 'partial',
-      apply: { state: 'unavailable', targetResults: [],
-        error: expect.objectContaining({ code: 'preApplyAuthorizationRequired' }) },
+    }))).toBe(3);
+    expect(JSON.parse(rootUnauthorized.readStdout())).toMatchObject({
+      schemaVersion: 1, status: 'blocked',
+      data: {
+        confirmation: {
+          required: true, provided: false, effects: expect.arrayContaining([
+            expect.objectContaining({ code: 'runPreApply', subject: expect.objectContaining({ pluginId: 'team/root' }) }),
+            expect.objectContaining({ code: 'runPreApply', subject: expect.objectContaining({ pluginId: 'team/leaf' }) }),
+          ])
+        }
+      }, diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })])
     });
+    expect(await fs.readFile(configFile)).toEqual(configBeforeRootUnauthorized);
     expect(await readOutputs()).toEqual(outputsBeforeRootUnauthorized);
     await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'), 'utf8'))
       .resolves.toBe('1');
-    await expect(readPluginConfigStore({ sourceId: 'team', sourceIdentity: await calculateCatalogSourceIdentity(source),
+    await expect(readPluginConfigStore({
+      sourceId: 'team', sourceIdentity: await calculateCatalogSourceIdentity(source),
       logicalIdentity, pluginName: 'root', scope: 'user', platform: 'codex',
-      cwd: isolation.layout.fixtureCwd, env: isolation.env })).resolves.toMatchObject({ values: { mode: 'strict' } });
+      cwd: isolation.layout.fixtureCwd, env: isolation.env
+    })).resolves.toMatchObject({ values: { mode: 7 } });
     await expect(fs.pathExists(
       path.join(isolation.env.AW_HOME!, 'root-config-pre-apply.txt'),
     )).resolves.toBe(false);
+    await saveMode('strict');
     const rootAuthorized = createCapturedCliIo();
     expect(await timing.measure('command', 'plugin config apply', () => runCli([
       'plugin', 'config', 'apply', 'team/root', '--context', 'project', '--target', 'codex', '--yes', '--json',
@@ -914,9 +989,8 @@ describe('five namespaced write commands', () => {
       return {
         exitCode,
         receipt: JSON.parse(output.readStdout()) as {
-          configWrite: string;
-          overallState: string;
-          apply: { targetResults: Array<{ target: { pluginId?: string }; errorCode?: string }> };
+          schemaVersion: 1; status: string;
+          data: { configWrite: string; apply: { targetResults: Array<{ target: { pluginId?: string }; errorCode?: string }> } };
         },
       };
     };
@@ -924,23 +998,23 @@ describe('five namespaced write commands', () => {
     const succeeded = await applyMode('fast');
     expect(succeeded.exitCode, JSON.stringify(succeeded.receipt)).toBe(0);
     expect(succeeded.receipt, JSON.stringify(succeeded.receipt)).toMatchObject({
-      configWrite: 'succeeded',
-      overallState: 'succeeded',
-      apply: {
-        state: 'succeeded',
-        targetResults: expect.arrayContaining([
-          expect.objectContaining({
-            target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
-            action: 'refresh', state: 'completed',
-          }),
-          expect.objectContaining({
-            target: expect.objectContaining({ pluginId: 'team/root', scope: 'user' }),
-            action: 'refresh', state: 'completed',
-          }),
-        ]),
-      },
+      schemaVersion: 1, status: 'success', data: {
+        configWrite: 'succeeded', apply: {
+          state: 'succeeded',
+          targetResults: expect.arrayContaining([
+            expect.objectContaining({
+              target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
+              action: 'refresh', state: 'completed',
+            }),
+            expect.objectContaining({
+              target: expect.objectContaining({ pluginId: 'team/root', scope: 'user' }),
+              action: 'refresh', state: 'completed',
+            }),
+          ]),
+        }
+      }
     });
-    expect(succeeded.receipt.apply.targetResults).not.toContainEqual(expect.objectContaining({
+    expect(succeeded.receipt.data.apply.targetResults).not.toContainEqual(expect.objectContaining({
       target: expect.objectContaining({ scope: 'project' }),
     }));
     await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('1');
@@ -952,12 +1026,9 @@ describe('five namespaced write commands', () => {
     const outputsBeforeFailure = await readOutputs();
     await fs.outputFile(controlPath, 'fail');
     const failed = await applyMode('strict');
-    expect(failed.exitCode).toBe(1);
-    expect(failed.receipt).toMatchObject({
-      configWrite: 'succeeded',
-      overallState: 'partial',
-    });
-    expect(failed.receipt.apply.targetResults, JSON.stringify(failed.receipt)).toEqual(expect.arrayContaining([
+    expect(failed.exitCode).toBe(4);
+    expect(failed.receipt).toMatchObject({ schemaVersion: 1, status: 'partial', data: { configWrite: 'succeeded' } });
+    expect(failed.receipt.data.apply.targetResults, JSON.stringify(failed.receipt)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
         action: 'refresh', state: 'failed', errorCode: 'preApplyFailed',
@@ -971,7 +1042,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('2');
 
     const nextCommand = await applyMode('again');
-    expect(nextCommand.exitCode).toBe(1);
+    expect(nextCommand.exitCode).toBe(4);
     expect(await readOutputs()).toEqual(outputsBeforeFailure);
     await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('3');
     for (const scope of ['user', 'project'] as const) {
@@ -1174,12 +1245,7 @@ describe('five namespaced write commands', () => {
       interactive: false,
       nativeCliRunner,
     })).toBe(0);
-    expect(JSON.parse(configWrite.readStdout())).toMatchObject({
-      receiptSchemaVersion: 7,
-      configWrite: 'succeeded',
-      overallState: 'succeeded',
-      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
-    });
+    expect(JSON.parse(configWrite.readStdout())).toMatchObject({ schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded', apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } } });
     const intentLocation = {
       scope: 'project' as const,
       cwd: isolation.layout.fixtureCwd,
@@ -1338,11 +1404,11 @@ describe('five namespaced write commands', () => {
     const otherRolePath = path.join(otherHome, 'agents', 'aw-sentinel-watcher.toml');
 
     expect(await runPublic([
-      'plugin', 'install', 'team/demo', '--scope', scope,
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      'plugin', 'install', 'team/demo', '--scope', scope, '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
     expect(await runPublic([
-      'plugin', 'install', 'other/sentinel', '--scope', otherScope,
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      'plugin', 'install', 'other/sentinel', '--scope', otherScope, '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
     const otherRoleBefore = await fs.readFile(otherRolePath);
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "medium"');
@@ -1351,22 +1417,22 @@ describe('five namespaced write commands', () => {
       'plugin', 'config', 'set', 'team/demo', 'effort', '--context', scope, '--value-json', '"high"',
     ])).toMatchObject({
       exitCode: 0,
-      payload: { apply: { state: 'skipped', reason: 'notRequested' } },
+      payload: { schemaVersion: 1, status: 'success', data: { apply: { state: 'skipped', reason: 'notRequested' } }, },
     });
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "medium"');
     expect(await runPublic([
-      'plugin', 'sync', 'team/demo', '--target', 'codex', '--context', scope,
-    ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+      'plugin', 'sync', 'team/demo', '--target', 'codex', '--context', scope, '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "high"');
 
     expect(await runPublic([
       'plugin', 'config', 'set', 'team/demo', 'effort', '--context', scope,
-      '--value-json', '"xhigh"', '--apply',
+      '--value-json', '"xhigh"', '--apply', '--yes',
     ])).toMatchObject({
       exitCode: 0,
-      payload: { apply: { state: 'succeeded' } },
+      payload: { schemaVersion: 1, status: 'success', data: { apply: { state: 'succeeded' } }, },
     });
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "xhigh"');
@@ -1376,9 +1442,11 @@ describe('five namespaced write commands', () => {
     const otherIntentPath = await resolveIntentPath({ ...intentLocation, scope: otherScope });
     const intentBeforeRemoval = await fs.readFile(intentPath);
     const otherIntentBefore = await fs.readFile(otherIntentPath);
-    expect(await runPublic(['plugin', 'intent', 'remove', 'team/demo', '--scope', scope])).toMatchObject({
-      exitCode: 0, payload: { kind: 'aw-recovery', command: 'intent:remove',
-        declarationChanged: true, outputsMayHaveChanged: false, intent: { roots: [] } },
+    expect(await runPublic(['plugin', 'remove', 'team/demo', '--scope', scope, '--only', 'requirements'])).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1, command: 'plugin.remove', status: 'success',
+        data: { changes: { requirements: 'changed', outputs: 'none' }, requirements: { roots: [] }, targetResults: [] }
+      },
     });
     const intentAfterRemoval = await fs.readFile(intentPath);
     expect(intentAfterRemoval).not.toEqual(intentBeforeRemoval);
@@ -1387,9 +1455,9 @@ describe('five namespaced write commands', () => {
 
     expect(await runPublic([
       'plugin', 'config', 'set', 'team/demo', 'effort', '--context', scope,
-      '--value-json', '"medium"', '--apply',
+      '--value-json', '"medium"', '--apply', '--yes',
     ])).toMatchObject({
-      exitCode: 0, payload: { apply: { state: 'succeeded' } },
+      exitCode: 0, payload: { schemaVersion: 1, status: 'success', data: { apply: { state: 'succeeded' } }, },
     });
     await expect(fs.readFile(rolePath, 'utf8'))
       .resolves.toContain('model_reasoning_effort = "medium"');
@@ -1443,8 +1511,8 @@ describe('five namespaced write commands', () => {
 
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'labels', '--context', 'user',
       '--value-json', '["user",""]'])).toMatchObject({
-      exitCode: 0, payload: { configWrite: 'succeeded' },
-    });
+        exitCode: 0, payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded' }, },
+      });
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'counts', '--context', 'user',
       '--value-json', '[0,2]'])).toMatchObject({ exitCode: 0 });
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'flags', '--context', 'user',
@@ -1455,25 +1523,25 @@ describe('five namespaced write commands', () => {
     });
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'labels', '--context', 'project', '--platform', 'cursor',
       '--value-json', '[]'])).toMatchObject({
-      exitCode: 0, payload: { configWrite: 'succeeded' },
-    });
+        exitCode: 0, payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded' }, },
+      });
     expect(await fs.readJson(userPath)).toMatchObject({ schemaVersion: 6,
       common: { labels: ['user', ''], counts: [0, 2], flags: [false, true] }, platforms: { cursor: { labels: [] } } });
     expect(await run(['plugin', 'config', 'get', 'team/demo', 'labels', '--platform', 'cursor'])).toMatchObject({
       exitCode: 0,
-      payload: { fields: [expect.objectContaining({ effectiveValue: [], sourceLayer: 'platform' })] },
+      payload: { schemaVersion: 1, status: 'success', data: { fields: [expect.objectContaining({ effectiveValue: [], sourceLayer: 'platform' })] }, },
     });
     expect(await run(['plugin', 'config', 'unset', 'team/demo', 'labels', '--context', 'project', '--platform', 'cursor'])).toMatchObject({
-      exitCode: 0, payload: { configWrite: 'succeeded' },
+      exitCode: 0, payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded' }, },
     });
     expect(await run(['plugin', 'config', 'get', 'team/demo', 'labels', '--platform', 'cursor'])).toMatchObject({
       exitCode: 0,
-      payload: { fields: [expect.objectContaining({ effectiveValue: ['user', ''], sourceLayer: 'common' })] },
+      payload: { schemaVersion: 1, status: 'success', data: { fields: [expect.objectContaining({ effectiveValue: ['user', ''], sourceLayer: 'common' })] }, },
     });
 
     const validBytes = await fs.readFile(userPath, 'utf8');
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'labels', '--context', 'user',
-      '--value-json', '["mixed",0]'])).toMatchObject({ exitCode: 1 });
+      '--value-json', '["mixed",0]'])).toMatchObject({ exitCode: 2 });
     expect(await fs.readFile(userPath, 'utf8')).toBe(validBytes);
 
     const stored = await fs.readJson(userPath) as Record<string, unknown>;
@@ -1481,9 +1549,9 @@ describe('five namespaced write commands', () => {
     await fs.writeFile(userPath, oldBytes);
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'labels', '--context', 'user',
       '--value-json', '["changed"]'])).toMatchObject({
-      exitCode: 1,
-      payload: { errors: [expect.objectContaining({ code: 'schemaVersionUnsupported' })] },
-    });
+        exitCode: 1,
+        payload: { schemaVersion: 1, status: 'failed', diagnostics: [expect.objectContaining({ code: 'schemaVersionUnsupported' })] },
+      });
     expect(await fs.readFile(userPath, 'utf8')).toBe(oldBytes);
     expect(await run(['plugin', 'config', 'reset', 'team/demo', '--context', 'user', '--yes']))
       .toMatchObject({ exitCode: 0 });
@@ -1614,29 +1682,23 @@ describe('five namespaced write commands', () => {
     it('replays presets, unset and reset while requiring sync for missing output', async (test) => {
       const { isolation, nativeCliRunner, runPublic, readStore, configPath, store } = await createFixture(test);
       expect(await runPublic([
-        'plugin', 'install', 'team/demo', '--scope', 'project',
-      ])).toMatchObject({ exitCode: 0, payload: { ok: true } });
+        'plugin', 'install', 'team/demo', '--scope', 'project', '--yes',
+      ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
       const sourceOnlyPreset = await runPublic([
-        'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--context', 'project', '--platform', 'codex', '--apply',
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
       expect(sourceOnlyPreset).toMatchObject({
         exitCode: 0,
-        payload: {
-          updatedKeys: ['mode'],
-          apply: { state: 'succeeded' },
-        },
+        payload: { schemaVersion: 1, status: 'success', data: { updatedKeys: ['mode'], apply: { state: 'succeeded' } }, },
       });
       const equivalentPreset = await runPublic([
-        'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--context', 'project', '--platform', 'codex', '--apply',
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
       expect(equivalentPreset).toMatchObject({
         exitCode: 0,
-        payload: {
-          updatedKeys: [],
-          apply: { state: 'skipped', reason: 'noConfigChange' },
-        },
+        payload: { schemaVersion: 1, status: 'success', data: { updatedKeys: [], apply: { state: 'skipped', reason: 'noConfigChange' } }, },
       });
 
       await fs.remove(configPath);
@@ -1653,58 +1715,53 @@ describe('five namespaced write commands', () => {
       });
 
       const set = await runPublic([
-        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply',
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
       expect(set, JSON.stringify(set)).toMatchObject({
-        exitCode: 1,
+        exitCode: 4,
         payload: {
-          receiptSchemaVersion: 7,
-          configWrite: 'succeeded',
-          overallState: 'partial',
-          apply: { state: 'partial', targetResults: [expect.objectContaining({
-            target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
-            state: 'skipped', errorCode: 'configApplyRequiresExistingOutput',
-          })] },
+          schemaVersion: 1, status: 'partial', data: {
+            configWrite: 'succeeded', apply: {
+              state: 'partial', targetResults: [expect.objectContaining({
+                target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
+                state: 'skipped', errorCode: 'configApplyRequiresExistingOutput',
+              })]
+            }
+          },
         },
       });
       expect(set.payload).not.toHaveProperty('targetResults');
       expect(JSON.parse(set.stdout)).toEqual(set.payload);
-      expect(set.stderr).toBe('');
       expect(JSON.stringify(set.payload)).not.toContain('projectConfigShareabilityUnverified');
       expect(await fs.readJson(resolvePluginConfigStorePath({
         sourceId: 'team', pluginName: 'demo', scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
       }))).toMatchObject({ schemaVersion: 6, common: {}, platforms: { codex: { mode: 'fast' } } });
       expect((await readStore()).values).toEqual({ mode: 'fast' });
       await expect(fs.pathExists(configPath)).resolves.toBe(false);
-      expect(await runPublic(['plugin', 'sync', 'team/demo', '--target', 'codex', '--context', 'project']))
-        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await runPublic(['plugin', 'sync', 'team/demo', '--target', 'codex', '--context', 'project', '--yes']))
+        .toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
 
       const unset = await runPublic([
-        'plugin', 'config', 'unset', 'team/demo', 'mode', '--context', 'project', '--platform', 'codex', '--apply',
+        'plugin', 'config', 'unset', 'team/demo', 'mode', '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
       expect(unset).toMatchObject({
         exitCode: 0,
-        payload: { receiptSchemaVersion: 7, configWrite: 'succeeded', overallState: 'succeeded' },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded' }, },
       });
       expect((await readStore()).values).toEqual({});
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
       await writePluginConfigStore({ ...store, values: { mode: 'fast' } });
-      expect(await runPublic(['plugin', 'sync', 'team/demo', '--target', 'codex', '--context', 'project']))
-        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await runPublic(['plugin', 'sync', 'team/demo', '--target', 'codex', '--context', 'project', '--yes']))
+        .toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
       const reset = await runPublic([
         'plugin', 'config', 'reset', 'team/demo', '--context', 'project', '--platform', 'codex', '--yes', '--apply',
       ]);
       expect(reset).toMatchObject({
         exitCode: 0,
-        payload: {
-          receiptSchemaVersion: 7,
-          configWrite: 'succeeded',
-          overallState: 'succeeded',
-          deleted: true,
-        },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded', deleted: true }, },
       });
       expect((await readStore()).exists).toBe(false);
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
@@ -1717,8 +1774,8 @@ describe('five namespaced write commands', () => {
         'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex',
       ]);
       expect(human.exitCode).toBe(0);
-      expect(human.stdout).toContain('已保存 demo.mode');
-      expect(human.stderr).toContain('未请求应用');
+      expect(human.stdout).toContain('configWrite: succeeded');
+      expect(human.stdout).toContain('Apply: skipped (notRequested)');
       expect(human.stderr).not.toContain('projectConfigShareabilityUnverified');
       expect((await readStore()).values).toEqual({ mode: 'fast' });
       await expect(fs.pathExists(configPath)).resolves.toBe(false);
@@ -1735,7 +1792,8 @@ describe('five namespaced write commands', () => {
       ]);
       for (const result of [userSet, userUnset, userReset]) {
         expect(result.exitCode).toBe(0);
-        expect(result.stderr.match(/其它项目不会由本次命令扫描或更新/g)).toHaveLength(1);
+        expect(result.stdout).toContain('scope: user');
+        expect(result.stdout + result.stderr).not.toMatch(/[\u3400-\u9fff]/u);
       }
 
       setAtomicConfigBeforeRenameHookForTests(async () => {
@@ -1751,11 +1809,7 @@ describe('five namespaced write commands', () => {
       }
       expect(atomicFailure).toMatchObject({
         exitCode: 1,
-        payload: {
-          receiptSchemaVersion: 7,
-          configWrite: 'failed',
-          overallState: 'failed',
-        },
+        payload: { schemaVersion: 1, status: 'failed', data: { configWrite: 'failed' }, },
       });
       expect((await readStore()).values).toEqual({ mode: 'fast' });
     }, 30_000);
@@ -1763,8 +1817,8 @@ describe('five namespaced write commands', () => {
     // Test Value Gate: invalid configuration remains repairable without overwriting valid output or unrelated fields.
     it('removes stale keys and repairs invalid fields without refreshing unrelated output', async (test) => {
       const { runPublic, runHumanConfig, readStore, configPath, store } = await createFixture(test);
-      expect(await runPublic(['plugin', 'install', 'team/demo', '--scope', 'project']))
-        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await runPublic(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes']))
+        .toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
       await writePluginConfigStore({
@@ -1772,17 +1826,11 @@ describe('five namespaced write commands', () => {
         values: { obsolete: 'old' },
       });
       const staleUnset = await runPublic([
-        'plugin', 'config', 'unset', 'team/demo', 'obsolete', '--context', 'project', '--platform', 'codex', '--apply',
+        'plugin', 'config', 'unset', 'team/demo', 'obsolete', '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
       expect(staleUnset).toMatchObject({
         exitCode: 0,
-        payload: {
-          receiptSchemaVersion: 7,
-          configWrite: 'succeeded',
-          staleRemovedKeys: ['obsolete'],
-          affectedFields: [expect.objectContaining({ key: 'obsolete', stale: true })],
-          apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] },
-        },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded', staleRemovedKeys: ['obsolete'], affectedFields: [expect.objectContaining({ key: 'obsolete', stale: true })], apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] } }, },
       });
       expect(staleUnset.payload).not.toHaveProperty('targetResults');
       expect((await readStore()).values).toEqual({});
@@ -1793,23 +1841,21 @@ describe('five namespaced write commands', () => {
         values: { labels: { 'bad key': 'preserved' } },
       });
       const partial = await runPublic([
-        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply',
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
       expect(partial, JSON.stringify(partial)).toMatchObject({
-        exitCode: 1,
+        exitCode: 4,
         payload: {
-          receiptSchemaVersion: 7,
-          configWrite: 'succeeded',
-          overallState: 'partial',
-          apply: {
-            state: 'partial',
-            targetResults: [expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' })],
-          },
-          effective: {
-            fieldStates: {
-              labels: { invalidOverride: { source: 'platform' } },
-              mode: { effective: { source: 'platform', value: 'fast' } },
-            },
+          schemaVersion: 1, status: 'partial', data: {
+            configWrite: 'succeeded', apply: {
+              state: 'partial',
+              targetResults: [expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' })],
+            }, effective: {
+              fieldStates: {
+                labels: { invalidOverride: { source: 'platform' } },
+                mode: { effective: { source: 'platform', value: 'fast' } },
+              },
+            }
           },
         },
       });
@@ -1820,27 +1866,24 @@ describe('five namespaced write commands', () => {
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
       const unavailableHuman = await runHumanConfig([
-        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"slow"', '--context', 'project', '--platform', 'codex', '--apply',
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"slow"', '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
-      expect(unavailableHuman).toMatchObject({ exitCode: 1 });
-      expect(unavailableHuman.stdout).toContain('已保存 demo.mode');
-      expect(unavailableHuman.stderr).toContain('codex/project：[invalidConfig]');
-      expect(unavailableHuman.stderr).toContain(
-        'aw plugin sync demo --rebuild --target codex --context project',
+      expect(unavailableHuman).toMatchObject({ exitCode: 4 });
+      expect(unavailableHuman.stdout).toContain('configWrite: succeeded');
+      expect(unavailableHuman.stdout).toContain('codex/project: skipped');
+      expect(unavailableHuman.stderr).toContain('invalidConfig');
+      expect(unavailableHuman.stdout).toContain(
+        'aw plugin sync team/demo --context project --target codex',
       );
-      expect(unavailableHuman.stderr).not.toContain('bad key');
+      expect(unavailableHuman.stderr).not.toContain('preserved');
 
       const repaired = await runPublic([
         'plugin', 'config', 'set', 'team/demo', 'labels', '--value-json', '{"good_key":"repaired"}',
-        '--context', 'project', '--platform', 'codex', '--apply',
+        '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
       expect(repaired).toMatchObject({
         exitCode: 0,
-        payload: {
-          configWrite: 'succeeded',
-          overallState: 'succeeded',
-          apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
-        },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded', apply: { state: 'skipped', reason: 'noEffectiveConfigChange' } }, },
       });
       expect((await readStore()).values).toEqual({
         labels: { good_key: 'repaired' },
@@ -1853,17 +1896,18 @@ describe('five namespaced write commands', () => {
     it('keeps saved config and previous output when rendering fails', async (test) => {
       const { runPublic, runHumanConfig, readStore, configPath, store } = await createFixture(test);
       await writePluginConfigStore({ ...store, values: { labels: { good_key: 'repaired' }, mode: 'fast' } });
-      expect(await runPublic(['plugin', 'install', 'team/demo', '--scope', 'project']))
-        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+      expect(await runPublic(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes']))
+        .toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
 
       const failed = await runHumanConfig([
-        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--context', 'project', '--platform', 'codex', '--apply',
+        'plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--context', 'project', '--platform', 'codex', '--apply', '--yes',
       ]);
-      expect(failed).toMatchObject({ exitCode: 1 });
-      expect(failed.stderr).toContain('codex/project：[writeFailed]');
-      expect(failed.stderr).toContain(
-        'aw plugin sync demo --rebuild --target codex --context project',
+      expect(failed).toMatchObject({ exitCode: 4 });
+      expect(failed.stdout).toContain('codex/project: failed');
+      expect(failed.stderr).toContain('writeFailed');
+      expect(failed.stdout).toContain(
+        'aw plugin sync team/demo --context project --target codex',
       );
       expect(failed.stderr).not.toContain('file:///');
       expect((await readStore()).values).toEqual({
@@ -2486,22 +2530,34 @@ describe('five namespaced write commands', () => {
         'plugin', 'config', 'set', 'team/native-config', 'mode', '--value-json', '"saved"', '--context', 'project',
       ])).toMatchObject({
         exitCode: 0,
-        payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
+        payload: { schemaVersion: 1, status: 'success', data: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } }, },
       });
 
       expect(await snapshotOutputs()).toEqual(outputsBeforeSave);
       expect(await observeIntent({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env })).toEqual(userIntentBeforeSave);
       expect(await fs.readFile(rendererMarker, 'utf8')).toBe('');
+      const configFile = resolvePluginConfigStorePath({
+        sourceId: 'team', pluginName: 'native-config', scope: 'user',
+        cwd: isolation.layout.fixtureCwd, env: isolation.env
+      });
+      const bytesBeforeBlockedSet = await fs.readFile(configFile);
       const blocked = await runPublic([
         'plugin', 'config', 'set', 'team/native-config', 'mode', '--value-json', '"blocked"', '--context', 'project', '--apply',
       ]);
       expect(blocked, JSON.stringify(blocked)).toMatchObject({
-        exitCode: 1,
-        payload: { configWrite: 'succeeded', overallState: 'partial',
-          apply: { state: 'unavailable', error: { code: 'sharedNativeConfigApplyConfirmationRequired' } },
+        exitCode: 3,
+        payload: {
+          schemaVersion: 1, status: 'blocked', data: {
+            confirmation: {
+              required: true, provided: false,
+              effects: expect.arrayContaining([expect.objectContaining({ code: 'replaceSharedOutput', impact: 'shared' })])
+            }
+          },
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })])
         },
       });
-      expect((await readStore()).values).toEqual({ mode: 'blocked' });
+      expect((await readStore()).values).toEqual({ mode: 'saved' });
+      expect(await fs.readFile(configFile)).toEqual(bytesBeforeBlockedSet);
       expect(await snapshotOutputs()).toEqual(outputsBeforeSave);
       expect(await observeIntent({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env })).toEqual(userIntentBeforeSave);
       expect(runtime.nativeCliRunner.mock.calls.slice(nativeCallsBeforeSave).filter(([invocation]) => {
@@ -2526,10 +2582,7 @@ describe('five namespaced write commands', () => {
       ]);
       expect(authorized, JSON.stringify(authorized, null, 2)).toMatchObject({
         exitCode: 0,
-        payload: {
-          configWrite: 'succeeded',
-          overallState: 'succeeded',
-        },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded' }, },
       });
       expect((await readStore()).values).toEqual({ mode: 'authorized' });
       const userConfigAfterAuthorized = await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'));
@@ -2538,11 +2591,15 @@ describe('five namespaced write commands', () => {
       expect(await observeIntent({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env })).toEqual(userIntentBeforeSave);
       expect(projectConfigAfterAuthorized.snapshot.plugins['native-config@aw']?.enabled).toBe(true);
       // The User result records the shared Native package producer.
-      expect((authorized.payload as { apply: { targetResults: unknown[] } }).apply.targetResults).toEqual([
-        expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/native-config', platform: 'codex', scope: 'user' }),
-          action: 'refresh', state: 'completed' }),
-        expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/native-config', platform: 'codex', scope: 'project' }),
-          action: 'refresh', state: 'completed' }),
+      expect((authorized.payload.data as { apply: { targetResults: unknown[] } }).apply.targetResults).toEqual([
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginId: 'team/native-config', platform: 'codex', scope: 'user' }),
+          action: 'refresh', state: 'completed'
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginId: 'team/native-config', platform: 'codex', scope: 'project' }),
+          action: 'refresh', state: 'completed'
+        }),
       ]);
 
       const directUserSkillRoot = legacyUserSkillRoot;
@@ -2575,7 +2632,7 @@ describe('five namespaced write commands', () => {
           cwd, scope: context.scope, targetScope: context.config.targetScope,
           requestedArtifactIds: context.requestedArtifactIds, mode: context.config.values.mode,
         })),
-        apply: (authorized.payload as { apply?: unknown }).apply,
+        apply: (authorized.payload.data as { apply?: unknown }).apply,
         nativeWrites: runtime.nativeCliRunner.mock.calls.slice(nativeCallsBeforeAuthorized)
           .map(([invocation]) => invocation.args.slice(invocation.args.indexOf('plugin')).join(' '))
           .filter((args) => args.includes(' add ') || args.includes(' remove ')),
@@ -2586,7 +2643,7 @@ describe('five namespaced write commands', () => {
         expect(event.realCwd).not.toBe(projectCwd);
         expect(event.context.scope).toBe('user');
         expect(event.context.config.targetScope).toBe('user');
-        expect(['blocked', 'authorized']).toContain(event.context.config.values.mode);
+        expect(['saved', 'authorized']).toContain(event.context.config.values.mode);
         expect(event.context.requestedArtifactIds).toEqual(['native-config']);
       }
       expect(firstRenderEvents.some(({ context }) => context.config.values.mode === 'authorized')).toBe(true);
@@ -2597,14 +2654,20 @@ describe('five namespaced write commands', () => {
       expect(firstRenderEvents[0]!.context.config.schema).not.toHaveProperty('projectMode');
       expect(firstRenderEvents[0]!.context.config.values).not.toHaveProperty('projectMode');
 
+      const bytesBeforeBlockedUnset = await fs.readFile(configFile);
       expect(await runPublic([
         'plugin', 'config', 'unset', 'team/native-config', 'mode', '--context', 'project', '--apply',
       ])).toMatchObject({
-        exitCode: 1,
-        payload: { configWrite: 'succeeded', overallState: 'partial',
-          apply: { state: 'unavailable', error: { code: 'sharedNativeConfigApplyConfirmationRequired' } },
+        exitCode: 3,
+        payload: {
+          schemaVersion: 1, status: 'blocked', data: { confirmation: { required: true, provided: false } },
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })])
         },
       });
+      expect((await readStore()).values).toEqual({ mode: 'authorized' });
+      expect(await fs.readFile(configFile)).toEqual(bytesBeforeBlockedUnset);
+      expect(await runPublic(['plugin', 'config', 'unset', 'team/native-config', 'mode', '--context', 'project']))
+        .toMatchObject({ exitCode: 0, payload: { status: 'success', data: { configWrite: 'succeeded', apply: { reason: 'notRequested' } } } });
       expect((await readStore()).values).toEqual({});
 
       const authorizedUnset = await runPublic([
@@ -2612,7 +2675,7 @@ describe('five namespaced write commands', () => {
       ]);
       expect(authorizedUnset, JSON.stringify(authorizedUnset, null, 2)).toMatchObject({
         exitCode: 0,
-        payload: { configWrite: 'notStarted', overallState: 'succeeded' },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'notStarted' }, },
       });
       expect((await readStore()).values).toEqual({});
       const finalReceipt = await fs.readJson(
@@ -2629,11 +2692,7 @@ describe('five namespaced write commands', () => {
       ]);
       expect(sourceOnlySet, JSON.stringify(sourceOnlySet, null, 2)).toMatchObject({
         exitCode: 0,
-        payload: {
-          configWrite: 'succeeded',
-          updatedKeys: ['mode'],
-          apply: { state: 'succeeded' },
-        },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded', updatedKeys: ['mode'], apply: { state: 'succeeded' } }, },
       });
       expect(runtime.nativeCliRunner.mock.calls.slice(nativeCallsBeforeSourceOnlySet).filter(([invocation]) => {
         const index = invocation.args.indexOf('plugin');
@@ -2693,7 +2752,7 @@ describe('five namespaced write commands', () => {
       ]);
       expect(refreshed, JSON.stringify(refreshed, null, 2)).toMatchObject({
         exitCode: 0,
-        payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded' }, },
       });
       const refreshedReceipt = await fs.readJson(
         path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
@@ -2863,7 +2922,7 @@ describe('five namespaced write commands', () => {
         'plugin', 'sync', 'team/native-config', '--target', 'codex', '--context', 'project', '--yes',
       ]);
       expect(recoveredProjection, JSON.stringify(recoveredProjection, null, 2))
-        .toMatchObject({ exitCode: 0, payload: { ok: true } });
+        .toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
       await expect(fs.pathExists(legacyUserSkillRoot)).resolves.toBe(false);
       await expect(fs.pathExists(legacyProjectSkillRoot)).resolves.toBe(false);
       expect(await observeIntent({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env })).toEqual(userIntentBeforeSave);
@@ -2889,11 +2948,12 @@ describe('five namespaced write commands', () => {
         'plugin', 'sync', 'team/native-config', '--target', 'codex', '--context', 'project', '--yes',
       ]);
       expect(repairedTamper, JSON.stringify(repairedTamper, null, 2))
-        .toMatchObject({ exitCode: 0, payload: { ok: true } });
-      expect(repairedTamper.payload.targetResults).toEqual([
-        expect.objectContaining({ backend: expect.objectContaining({ targetResults: [
-          expect.objectContaining({ sharedNative: { codexPluginId: canonicalPluginId!, action: 'reuse' } }),
-        ] }) }),
+        .toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success', } });
+      expect(repairedTamper.payload.data.targetResults).toEqual([
+        expect.objectContaining({
+          pluginId: 'team/native-config', target: 'codex', scope: 'project',
+          delivery: { kind: 'native', platform: 'codex' }, observation: 'verified', content: 'satisfied'
+        }),
       ]);
       const serializedTamperReceipt = JSON.stringify(repairedTamper.payload);
       expect(serializedTamperReceipt).not.toContain('"action":"replace"');
@@ -2930,7 +2990,7 @@ describe('five namespaced write commands', () => {
       ]);
       expect(disabled, JSON.stringify(disabled, null, 2)).toMatchObject({
         exitCode: 0,
-        payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded' }, },
       });
       await expect(fs.pathExists(cacheSkillRoot)).resolves.toBe(false);
       await expect(fs.pathExists(marketplaceSkillRoot)).resolves.toBe(false);
@@ -2960,8 +3020,8 @@ describe('five namespaced write commands', () => {
         '--context', 'project', '--apply', '--yes',
       ]);
       expect(failedRender).toMatchObject({
-        exitCode: 1,
-        payload: { configWrite: 'succeeded', overallState: 'partial' },
+        exitCode: 4,
+        payload: { schemaVersion: 1, status: 'partial', data: { configWrite: 'succeeded' }, },
       });
       expect((await readStore()).values).toEqual({ mode: 'fail' });
       await expect(fs.pathExists(marketplaceSkillRoot)).resolves.toBe(false);
@@ -2971,19 +3031,19 @@ describe('five namespaced write commands', () => {
       await writeMode('off');
       await fs.outputFile(path.join(legacyProjectSkillRoot, 'SKILL.md'), 'legacy project again\n');
       await writeSkillOwnerMarker({
-        skillRoot: legacyProjectSkillRoot,
-        allowedRoot: legacyProjectSkillsRoot,
-        identity: {
-          owner: 'agent-workflows',
-          sourceId: 'team',
-          sourceIdentity,
-          pluginId: 'team/native-config',
-          plugin: 'native-config',
-          artifactKey: 'native-config',
-          platform: 'codex',
-          scope: 'project',
-        },
-      });
+          skillRoot: legacyProjectSkillRoot,
+          allowedRoot: legacyProjectSkillsRoot,
+          identity: {
+            owner: 'agent-workflows',
+            sourceId: 'team',
+            sourceIdentity,
+            pluginId: 'team/native-config',
+            plugin: 'native-config',
+            artifactKey: 'native-config',
+            platform: 'codex',
+            scope: 'project',
+          },
+        });
       const projectSkillBeforeUserInstall = await fs.readFile(path.join(legacyProjectSkillRoot, 'SKILL.md'));
       const projectOwnerBeforeUserInstall = await fs.readFile(path.join(legacyProjectSkillRoot, SKILL_OWNER_MARKER));
       const userInstalled = await timing.measure('command', 'fixture install', () => installFixturePlugin(['team/native-config'], {
@@ -3003,7 +3063,7 @@ describe('five namespaced write commands', () => {
       ]);
       expect(reset, JSON.stringify(reset, null, 2)).toMatchObject({
         exitCode: 0,
-        payload: { configWrite: 'succeeded', overallState: 'succeeded', deleted: false },
+        payload: { schemaVersion: 1, status: 'success', data: { configWrite: 'succeeded', deleted: false }, },
       });
       expect(await readStore()).toMatchObject({ values: {}, platforms: { codex: { projectMode: 'platform-only' } } });
       await expect(fs.readFile(path.join(cacheSkillRoot, 'SKILL.md'), 'utf8'))
@@ -3011,20 +3071,13 @@ describe('five namespaced write commands', () => {
 
       const runInteractiveConfig = async (
         command: 'unset' | 'reset',
-        cancelled = false,
+        provided = true,
       ) => {
         const captured = createCapturedCliIo();
-        const confirm = vi.fn(async (request: { message: string; defaultValue?: boolean }) => {
-          expect(request).toMatchObject({
-            message: '删除 team/native-config 的用户 common 覆盖？', defaultValue: false,
-          });
-          return cancelled
-            ? { action: 'cancel' as const, cancelled: true }
-            : { action: 'select' as const, cancelled: false, value: true };
-        });
+        const confirm = vi.fn(async () => ({ action: 'select' as const, cancelled: false, value: true }));
         const args = command === 'unset'
           ? ['plugin', 'config', 'unset', 'team/native-config', 'mode', '--context', 'project', '--apply', '--yes']
-          : ['plugin', 'config', 'reset', 'team/native-config', '--context', 'project', '--apply'];
+          : ['plugin', 'config', 'reset', 'team/native-config', '--context', 'project', '--apply', ...(provided ? ['--yes'] : [])];
         const exitCode = await timing.measure('command', `plugin config ${command}`, () => runCli(args, {
           cwd: isolation.layout.fixtureCwd,
           env: isolation.env,
@@ -3034,7 +3087,7 @@ describe('five namespaced write commands', () => {
           nativeCliRunner: runtime.nativeCliRunner,
           ...createTtyRuntimeStreams(),
         }));
-        expect(confirm).toHaveBeenCalledTimes(command === 'reset' ? 1 : 0);
+        expect(confirm).not.toHaveBeenCalled();
         return { exitCode, confirm, stdout: captured.readStdout(), stderr: captured.readStderr() };
       };
 
@@ -3068,7 +3121,7 @@ describe('five namespaced write commands', () => {
       const outputsBeforeCancelledReset = await snapshotOutputs();
       const rendererBeforeCancelledReset = await fs.readFile(rendererMarker);
       const callsBeforeCancelledReset = runtime.nativeCliRunner.mock.calls.length;
-      await expect(runInteractiveConfig('reset', true)).resolves.toMatchObject({ exitCode: 0 });
+      await expect(runInteractiveConfig('reset', false)).resolves.toMatchObject({ exitCode: 3 });
       expect((await readStore()).values).toEqual({ mode: 'off' });
       await expect(fs.readFile(configStorePath)).resolves.toEqual(storeBeforeCancelledReset);
       expect(await snapshotOutputs()).toEqual(outputsBeforeCancelledReset);

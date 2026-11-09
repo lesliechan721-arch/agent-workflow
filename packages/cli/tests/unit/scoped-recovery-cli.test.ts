@@ -36,17 +36,17 @@ async function fileTree(root: string): Promise<Record<string, string>> {
 // Test Value Gate: argv errors must fail before strong configuration or output writes.
 describe('plugin work context CLI', () => {
   it.each([
-    ['plugin', 'intent', 'list'], ['plugin', 'intent', 'remove', 'team/demo'],
-    ['plugin', 'cleanup', 'team/demo', '--target', 'codex'],
-    ['plugin', 'cleanup', 'team/demo', '--scope', 'user'],
+    ['plugin', 'list', '--requested'], ['plugin', 'remove', 'team/demo', '--only', 'requirements'],
+    ['plugin', 'remove', '--only', 'outputs', 'team/demo', '--target', 'codex'],
+    ['plugin', 'remove', '--only', 'outputs', 'team/demo', '--scope', 'user'],
     ['plugin', 'sync', '--scope', 'user'], ['plugin', 'status', '--scope', 'user'],
-    ['plugin', 'targets', 'set', 'codex', '--scope', 'user'],
+    ['target', 'set', 'codex', '--scope', 'user'],
     ['plugin', 'install', 'team/demo', '--target', 'codex'],
     ['plugin', 'install', 'team/demo', '--scope', 'project', '--context', 'user'],
     ['plugin', 'remove', 'team/demo', '--scope', 'project', '--context', 'user'],
-    ['plugin', 'targets', 'set'], ['plugin', 'targets', 'set', 'codex', '--none'],
-    ['plugin', 'targets', 'set', 'claude-code'], ['plugin', 'targets', 'set', 'gemini'],
-    ['plugin', 'targets', 'exclude', 'team/demo', '--target', 'agent-skills'],
+    ['target', 'set'], ['target', 'set', 'codex', '--none'],
+    ['target', 'set', 'claude-code'], ['target', 'set', 'gemini'],
+    ['target', 'exclude', 'team/demo', '--target', 'agent-skills'],
     ['plugin', 'sync', '--check', '--rebuild'], ['plugin', 'sync', '--check', '--refresh'],
     ['install', 'team/demo'], ['reinstall', 'team/demo'], ['uninstall', 'team/demo'],
   ])('rejects invalid or retired arguments without writes: %s', async (...args) => {
@@ -54,7 +54,7 @@ describe('plugin work context CLI', () => {
     const before = await fileTree(options.env.AW_HOME!);
     const result = await jsonCommand(args, options);
     expect(result.exitCode).toBe(2);
-    expect(result.value).toMatchObject({ ok: false, errors: [{ code: 'invalidArguments' }] });
+    expect(result.value).toMatchObject({ schemaVersion: 1, status: 'failed', data: {}, diagnostics: [expect.objectContaining({ severity: 'error' })] });
     expect(await fileTree(options.env.AW_HOME!)).toEqual(before);
     expect(await fs.readdir(options.cwd)).toEqual([]);
   });
@@ -68,11 +68,13 @@ describe('plugin work context CLI', () => {
     const before = await Promise.all(paths.map((file) => fs.readFile(file)));
     const output = path.join(options.cwd, 'keep.txt');
     await fs.writeFile(output, 'existing output');
-    const set = await jsonCommand(['plugin', 'targets', 'set', 'cursor', 'codex', 'cursor'], options);
+    const set = await jsonCommand(['target', 'set', 'cursor', 'codex', 'cursor'], options);
     expect(set.exitCode).toBe(0);
-    expect(set.value).toMatchObject({ preferencesChanged: true, declarationChanged: false, outputsMayHaveChanged: false,
-      policy: { schemaVersion: 2, targets: ['codex', 'cursor'], exclusions: [] } });
-    expect((await jsonCommand(['plugin', 'targets', 'set', '--none'], options)).exitCode).toBe(0);
+    expect(set.value).toMatchObject({ command: 'target.set', status: 'success', data: {
+      preferencesChanged: true, outputsMayHaveChanged: false,
+      policy: { schemaVersion: 2, targets: ['codex', 'cursor'], exclusions: [] },
+    } });
+    expect((await jsonCommand(['target', 'set', '--none'], options)).exitCode).toBe(0);
     expect(await observePreferences({ ...options, scope: 'user' })).toMatchObject({ state: 'valid', value: { targets: [], exclusions: [] } });
     expect(await Promise.all(paths.map((file) => fs.readFile(file)))).toEqual(before);
     expect(await fs.readFile(output, 'utf8')).toBe('existing output');
@@ -80,9 +82,9 @@ describe('plugin work context CLI', () => {
 
   it('rejects install with no targets before saving a root', async () => {
     const options = await location('targets-required');
-    const result = await jsonCommand(['plugin', 'install', 'team/demo'], options);
-    expect(result.exitCode).toBe(1);
-    expect(result.value.errors).toContainEqual(expect.objectContaining({ code: 'targetsNotConfigured' }));
+    const result = await jsonCommand(['plugin', 'install', 'team/demo', '--scope', 'user'], options);
+    expect(result.exitCode).toBe(3);
+    expect(result.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'noTargetsEnabled' }));
     expect(await fs.pathExists(await resolveIntentPath({ ...options, scope: 'user' }))).toBe(false);
   });
 
@@ -95,12 +97,12 @@ describe('plugin work context CLI', () => {
     const projectPath = await resolveIntentPath({ ...options, scope: 'project' });
     const user = await fs.readFile(userPath);
     const project = await fs.readFile(projectPath);
-    const invalid = await jsonCommand(['plugin', 'intent', 'remove', 'team/demo', 'invalid', '--scope', 'project'], options);
+    const invalid = await jsonCommand(['plugin', 'remove', '--only', 'requirements', 'team/demo', 'invalid', '--scope', 'project'], options);
     expect(invalid.exitCode).toBe(2);
     expect(await fs.readFile(projectPath)).toEqual(project);
-    const removed = await jsonCommand(['plugin', 'intent', 'remove', 'team/demo', '--scope', 'project'], options);
+    const removed = await jsonCommand(['plugin', 'remove', '--only', 'requirements', 'team/demo', '--scope', 'project'], options);
     expect(removed.exitCode).toBe(0);
-    expect(removed.value).toMatchObject({ scope: 'project', declarationChanged: true, intent: { roots: [] } });
+    expect(removed.value).toMatchObject({ command: 'plugin.remove', status: 'success', data: { request: { scope: 'project' }, changes: { requirements: 'changed' }, requirements: { roots: [] } } });
     expect(await fs.readFile(userPath)).toEqual(user);
   });
 
@@ -109,7 +111,7 @@ describe('plugin work context CLI', () => {
     const filename = await resolvePreferencesPath({ ...options, scope: 'user' });
     const original = '{ "schemaVersion": 1, "kind": "aw-project-preferences", "agents": [] }\n';
     await fs.outputFile(filename, original);
-    expect((await jsonCommand(['plugin', 'targets', 'set', 'codex'], options)).exitCode).toBe(1);
+    expect((await jsonCommand(['target', 'set', 'codex'], options)).exitCode).toBe(3);
     expect(await fs.readFile(filename, 'utf8')).toBe(original);
   });
 
@@ -119,15 +121,13 @@ describe('plugin work context CLI', () => {
     const before = await fileTree(options.env.AW_HOME!);
     const project = await jsonCommand(['plugin', 'status'], options);
     expect(project.exitCode).toBe(0);
-    expect(project.value.coverage).toMatchObject({ scopes: ['user', 'project'], projectRoot: options.cwd });
+    expect(project.value.data.coverage).toMatchObject({ scopes: ['user', 'project'], currentProject: true });
     const user = await jsonCommand(['plugin', 'status', '--context', 'user'], options);
     expect(user.exitCode).toBe(0);
-    expect(user.value.coverage.scopes).toEqual(['user']);
-    expect(user.value.coverage.projectRoot).toBeUndefined();
-    const check = await jsonCommand(['plugin', 'sync', '--check', '--context', 'user'], options);
-    expect(check.exitCode).toBe(0);
-    expect(check.value).toMatchObject({ declarationChanged: false, preferencesChanged: false,
-      configChanged: false, outputsMayHaveChanged: false });
+    expect(user.value.data.coverage.scopes).toEqual(['user']);
+    expect(user.value.data.coverage.projectRoot).toBeUndefined();
+    expect(project.value.command).toBe('plugin.status');
+    expect(user.value.command).toBe('plugin.status');
     expect(await fileTree(options.env.AW_HOME!)).toEqual(before);
   });
 
@@ -135,8 +135,8 @@ describe('plugin work context CLI', () => {
     const options = await location('no-project');
     const before = await fileTree(options.env.AW_HOME!);
     const result = await jsonCommand(['plugin', 'status', '--context', 'project'], options);
-    expect(result.exitCode).toBe(1);
-    expect(result.value.errors).toContainEqual(expect.objectContaining({ code: 'projectRootUnavailable' }));
+    expect(result.exitCode).toBe(3);
+    expect(result.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'projectRootUnavailable' }));
     expect(await fileTree(options.env.AW_HOME!)).toEqual(before);
   });
 });

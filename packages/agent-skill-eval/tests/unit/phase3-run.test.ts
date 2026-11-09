@@ -1507,16 +1507,16 @@ describe('EvalSpec v1 execution', () => {
     ))
 
     const inspect = await runSimplificationFixtureCli(data, [
-      'review', 'inspect', productionSkill, '--view', 'review', '--json',
+      'dev', 'review', 'inspect', productionSkill, '--view', 'review', '--json',
     ])
     expect(inspect.code, JSON.stringify(inspect.value)).toBe(0)
-    expect(inspect.value).toMatchObject({ ok: true, fixture: true, sources: expect.any(Array) })
+    expect(inspect.value).toMatchObject({ schemaVersion: 1, command: 'dev.review.inspect', status: 'success', data: { fixture: true, sources: expect.any(Array) } })
 
     const prepared: Array<Record<string, unknown>> = []
     for (const kind of ['baseline', 'candidate']) {
       const workspace = path.join(data.root, `_simplify/${kind}/project`)
       const result = await runSimplificationFixtureCli(data, [
-        'review', 'prepare', path.join(workspace, 'plugins/demo-plugin/skills/demo-skill'),
+        'dev', 'review', 'prepare', path.join(workspace, 'plugins/demo-plugin/skills/demo-skill'),
         '--workspace-root', workspace,
         '--platform', 'codex',
         '--scope', 'project',
@@ -1526,13 +1526,15 @@ describe('EvalSpec v1 execution', () => {
       expect(result).toMatchObject({
         code: 0,
         value: {
-          ok: true,
-          fixture: true,
-          sourceBindingPath: expect.any(String),
-          skills: [{ profile: { platform: 'codex', scope: 'project' }, state: 'ready' }],
+          status: 'success',
+          data: {
+            fixture: true,
+            sourceBindingPath: expect.any(String),
+            skills: [{ profile: { platform: 'codex', scope: 'project' }, state: 'ready' }],
+          },
         },
       })
-      prepared.push(result.value)
+      prepared.push(result.value.data as Record<string, unknown>)
     }
 
     expect(await readFile(productionSkillFile, 'utf8')).toBe(original)
@@ -1551,8 +1553,8 @@ describe('EvalSpec v1 execution', () => {
     expect(bindings.every((binding) => binding.testDouble)).toBe(true)
     expect(bindings[0]!.sourceDigest).not.toBe(bindings[1]!.sourceDigest)
     expect(prepared).toHaveLength(2)
-    await expect(runSimplificationFixtureCli(data, ['review', 'publish', '--json']))
-      .resolves.toMatchObject({ code: 64, value: { ok: false, fixture: true } })
+    await expect(runSimplificationFixtureCli(data, ['dev', 'review', 'publish', '--json']))
+      .resolves.toMatchObject({ code: 64, value: { status: 'failed', data: { fixture: true } } })
   })
 
   it('rejects review fixture choices outside its declared test-double profile', async () => {
@@ -1564,26 +1566,26 @@ describe('EvalSpec v1 execution', () => {
     await writeFile(config, '{"unknown-plugin":{}}\n')
 
     const rejected = [
-      ['review', 'inspect', path.join(data.root, 'outside'), '--json'],
-      ['review', 'inspect', source, '--skill', 'unknown-skill', '--json'],
-      ['review', 'inspect', source, '--platform', 'claude', '--json'],
-      ['review', 'inspect', source, '--scope', 'user', '--json'],
-      ['review', 'inspect', source, '--workspace-root', data.root, '--json'],
-      ['review', 'inspect', source, '--config', config, '--json'],
-      ['review', 'inspect', source, '--materialization', path.join(data.root, 'missing-binding.json'), '--json'],
-      ['review', 'prepare', source, '--platform', 'codex', '--scope', 'project', '--json'],
-      ['review', 'inspect', source, '--unknown', 'value', '--json'],
-      ['review', 'inspect', source, '--platform', '--json'],
-      ['review', 'inspect', source, '--skill', 'demo-skill', '--skill', 'unknown-skill', '--json'],
+      ['dev', 'review', 'inspect', path.join(data.root, 'outside'), '--json'],
+      ['dev', 'review', 'inspect', source, '--skill', 'unknown-skill', '--json'],
+      ['dev', 'review', 'inspect', source, '--platform', 'claude', '--json'],
+      ['dev', 'review', 'inspect', source, '--scope', 'user', '--json'],
+      ['dev', 'review', 'inspect', source, '--workspace-root', data.root, '--json'],
+      ['dev', 'review', 'inspect', source, '--config', config, '--json'],
+      ['dev', 'review', 'inspect', source, '--materialization', path.join(data.root, 'missing-binding.json'), '--json'],
+      ['dev', 'review', 'prepare', source, '--platform', 'codex', '--scope', 'project', '--json'],
+      ['dev', 'review', 'inspect', source, '--unknown', 'value', '--json'],
+      ['dev', 'review', 'inspect', source, '--platform', '--json'],
+      ['dev', 'review', 'inspect', source, '--skill', 'demo-skill', '--skill', 'unknown-skill', '--json'],
     ]
     for (const args of rejected) {
       const result = await runReviewFixtureCli(data, args)
       expect(result.code, args.join(' ')).not.toBe(0)
-      expect(result.value.ok, args.join(' ')).toBe(false)
+      expect(result.value.status, args.join(' ')).toBe('failed')
     }
 
     const acceptedArgs = [
-      'review', 'inspect', source,
+      'dev', 'review', 'inspect', source,
       '--workspace-root', workspace,
       '--skill', 'demo-skill',
       '--platform', 'codex',
@@ -1593,22 +1595,20 @@ describe('EvalSpec v1 execution', () => {
     ]
     const accepted = await runReviewFixtureCli(data, acceptedArgs)
     expect(accepted.code).toBe(0)
-    expect(accepted.value).toMatchObject({ schemaVersion: 2, view: 'review', skills: [{ state: 'ready' }] })
+    expect(accepted.value).toMatchObject({ schemaVersion: 1, status: 'success', data: { view: 'review', skills: [{ state: 'ready' }] } })
     const explicitReview = await runReviewFixtureCli(data, [...acceptedArgs, '--view', 'review'])
     expect(explicitReview.code).toBe(0)
     expect(explicitReview.value).toEqual(accepted.value)
 
     for (const viewArgs of [['--view', 'release'], ['--view=release']]) {
-      const result = await runReviewFixtureCli(data, ['review', 'inspect', source, ...viewArgs, '--json'])
+      const result = await runReviewFixtureCli(data, ['dev', 'review', 'inspect', source, ...viewArgs, '--json'])
       expect(result.code).toBe(2)
       expect(result.value).toMatchObject({
-        schemaVersion: 2,
-        command: 'review:inspect',
-        view: 'review',
-        ok: false,
-        sources: expect.any(Array),
-        skills: [],
-        issues: [{ code: 'invalidArguments' }],
+        schemaVersion: 1,
+        command: 'dev.review.inspect',
+        status: 'failed',
+        data: { view: 'review', sources: expect.any(Array), skills: [] },
+        diagnostics: [{ code: 'invalidArguments' }],
       })
     }
   })
@@ -1624,9 +1624,9 @@ describe('EvalSpec v1 execution', () => {
     ] as const)))
     const source = path.join(data.root, 'project/plugins/demo-plugin/skills/demo-skill')
 
-    expect((await runReviewFixtureCli(data, ['review', 'inspect', source, '--json'])).code).toBe(0)
+    expect((await runReviewFixtureCli(data, ['dev', 'review', 'inspect', source, '--json'])).code).toBe(0)
     expect((await runReviewFixtureCli(data, [
-      'review', 'prepare', source,
+      'dev', 'review', 'prepare', source,
       '--platform', 'codex',
       '--scope', 'project',
       '--out', path.join(data.root, '_review-output/new'),

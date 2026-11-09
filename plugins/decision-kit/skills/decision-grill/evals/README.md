@@ -4,10 +4,10 @@
 
 ## 准备与运行
 
-`aw skill eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
+`aw dev eval prepare` 每次按 manifest 注册的一个 suite/profile 和可选 case/split 选择生成 `EvalSpec v1`。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
 
 ```bash
-aw skill eval prepare decision-kit \
+aw dev eval prepare decision-kit \
   decision-grill --suite trigger --profile project-default \
   --output /tmp/aw-eval-specs/decision-grill-trigger-project-default --json
 ```
@@ -23,14 +23,14 @@ aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-s
 每个所选 suite/profile 应分别准备，不要合并为一个 Spec：
 
 ```bash
-aw skill eval prepare decision-kit decision-grill --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/decision-grill-trigger-validation --json
-aw skill eval prepare decision-kit decision-grill --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/decision-grill-trigger-sanity --json
-aw skill eval prepare decision-kit decision-grill --suite router --profile project-default --split validation --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-validation --json
-aw skill eval prepare decision-kit decision-grill --suite router --profile project-default --split sanity --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-sanity --json
-aw skill eval prepare decision-kit decision-grill --suite behavior --profile project-default --output /tmp/aw-eval-specs/decision-grill-behavior --json
-aw skill eval prepare decision-kit decision-grill --suite decision-frame --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-frame --json
-aw skill eval prepare decision-kit decision-grill --suite sustained-interview --profile project-default --output /tmp/aw-eval-specs/decision-grill-sustained-interview --json
-aw skill eval prepare decision-kit decision-grill --suite decision-comprehension --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-comprehension --json
+aw dev eval prepare decision-kit decision-grill --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/decision-grill-trigger-validation --json
+aw dev eval prepare decision-kit decision-grill --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/decision-grill-trigger-sanity --json
+aw dev eval prepare decision-kit decision-grill --suite router --profile project-default --split validation --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-validation --json
+aw dev eval prepare decision-kit decision-grill --suite router --profile project-default --split sanity --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-sanity --json
+aw dev eval prepare decision-kit decision-grill --suite behavior --profile project-default --output /tmp/aw-eval-specs/decision-grill-behavior --json
+aw dev eval prepare decision-kit decision-grill --suite decision-frame --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-frame --json
+aw dev eval prepare decision-kit decision-grill --suite sustained-interview --profile project-default --output /tmp/aw-eval-specs/decision-grill-sustained-interview --json
+aw dev eval prepare decision-kit decision-grill --suite decision-comprehension --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-comprehension --json
 ```
 
 单 Skill trigger

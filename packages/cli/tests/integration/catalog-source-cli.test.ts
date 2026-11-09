@@ -38,7 +38,7 @@ async function runJson(args: string[]) {
   };
 }
 
-describe('catalog source auto-check CLI', () => {
+describe('source auto-check CLI', () => {
   it('adds a disabled path source and lists an explicit effective boolean for every source', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'auto-check-path');
@@ -47,30 +47,32 @@ describe('catalog source auto-check CLI', () => {
     await fs.ensureDir(enabledSourceRoot);
 
     const added = await runJson([
-      'catalog', 'source', 'add', 'local', '--path', sourceRoot, '--no-auto-check', '--json',
+      'source', 'add', 'local', '--path', sourceRoot, '--no-auto-check', '--json',
     ]);
     expect(added.exitCode, added.stderr).toBe(0);
     expect(added.json).toMatchObject({
-      receiptSchemaVersion: 6,
-      command: 'catalog:source:add',
-      ok: true,
-      changed: true,
-      sourceId: 'local',
+      schemaVersion: 1,
+      status: 'success',
+      command: 'source.add',
+      data: {
+        changed: true,
+        sourceId: 'local'
+      }
     });
     expect((await runJson([
-      'catalog', 'source', 'add', 'enabled-local', '--path', enabledSourceRoot, '--json',
+      'source', 'add', 'enabled-local', '--path', enabledSourceRoot, '--json',
     ])).exitCode).toBe(0);
 
-    const listed = await runJson(['catalog', 'source', 'list', '--json']);
+    const listed = await runJson(['source', 'status', '--json']);
     expect(listed.exitCode, listed.stderr).toBe(0);
-    expect(listed.json.sources).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'official', autoCheck: true }),
-      expect.objectContaining({ id: 'local', autoCheck: false }),
-      expect.objectContaining({ id: 'enabled-local', autoCheck: true }),
+    expect(listed.json.data.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceId: 'official', configuration: expect.objectContaining({ id: 'official', autoCheck: true }) }),
+      expect.objectContaining({ sourceId: 'local', configuration: expect.objectContaining({ id: 'local', autoCheck: false }) }),
+      expect.objectContaining({ sourceId: 'enabled-local', configuration: expect.objectContaining({ id: 'enabled-local', autoCheck: true }) }),
     ]));
 
     const enabled = await runJson([
-      'catalog', 'source', 'update', 'local', '--auto-check', '--json',
+      'source', 'update', 'local', '--auto-check', '--json',
     ]);
     expect(enabled.exitCode, enabled.stderr).toBe(0);
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources
@@ -81,10 +83,17 @@ describe('catalog source auto-check CLI', () => {
     const isolation = getCurrentSourceTestIsolation();
 
     const disabled = await runJson([
-      'catalog', 'source', 'update', 'official', '--no-auto-check', '--json',
+      'source', 'update', 'official', '--no-auto-check', '--json',
     ]);
     expect(disabled.exitCode, disabled.stderr).toBe(0);
-    expect(disabled.json).toMatchObject({ ok: true, changed: true, sourceId: 'official' });
+    expect(disabled.json).toMatchObject({
+      schemaVersion: 1,
+      status: 'success',
+      data: {
+        changed: true,
+        sourceId: 'official'
+      }
+    });
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources[0])
       .toHaveProperty('autoCheck', false);
     await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-state.json')))
@@ -93,47 +102,52 @@ describe('catalog source auto-check CLI', () => {
       .resolves.toBe(false);
 
     const enabled = await runJson([
-      'catalog', 'source', 'update', 'official', '--auto-check', '--json',
+      'source', 'update', 'official', '--auto-check', '--json',
     ]);
     expect(enabled.exitCode, enabled.stderr).toBe(0);
-    expect(enabled.json).toMatchObject({ ok: true, changed: true, sourceId: 'official' });
+    expect(enabled.json).toMatchObject({
+      schemaVersion: 1,
+      status: 'success',
+      data: {
+        changed: true,
+        sourceId: 'official'
+      }
+    });
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources[0])
       .not.toHaveProperty('autoCheck');
   });
 
   it('rejects conflicting update switches with one JSON failure receipt', async () => {
     const result = await runJson([
-      'catalog', 'source', 'update', 'official', '--auto-check', '--no-auto-check', '--json',
+      'source', 'update', 'official', '--auto-check', '--no-auto-check', '--json',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.json).toMatchObject({
-      receiptSchemaVersion: 6,
-      command: 'catalog:source:update',
-      ok: false,
-      changed: false,
-      sourceId: 'official',
-      errors: [{ code: 'catalogSourceOptionConflict' }],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'source.update',
+      diagnostics: [{ code: 'invalidArguments' }],
+      data: {}
     });
     expect(JSON.parse(result.stdout)).toEqual(result.json);
   });
 
   it('returns one JSON failure receipt for conflicting switches with -j', async () => {
     const result = await runJson([
-      'catalog', 'source', 'update', 'official', '--auto-check', '--no-auto-check', '-j',
+      'source', 'update', 'official', '--auto-check', '--no-auto-check', '-j',
     ]);
 
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(2);
     expect(result.json).toMatchObject({
-      receiptSchemaVersion: 6,
-      command: 'catalog:source:update',
-      ok: false,
-      changed: false,
-      sourceId: 'official',
-      errors: [{ code: 'catalogSourceOptionConflict' }],
+      schemaVersion: 1,
+      status: 'failed',
+      command: 'source.update',
+      diagnostics: [{ code: 'invalidArguments' }],
+      data: {}
     });
     expect(JSON.parse(result.stdout)).toEqual(result.json);
-    expect(result.stderr).toBe('error: option --auto-check cannot be used with option --no-auto-check\n');
+    expect(result.stderr).toContain('invalidArguments');
   });
 
   it('requires --yes to remove a source with lifecycle references and returns public impact evidence', async () => {
@@ -141,30 +155,36 @@ describe('catalog source auto-check CLI', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'remove-referenced-source');
     await fs.ensureDir(sourceRoot);
     expect((await runJson([
-      'catalog', 'source', 'add', 'team', '--path', sourceRoot, '--json',
+      'source', 'add', 'team', '--path', sourceRoot, '--json',
     ])).exitCode).toBe(0);
     await writeIntentFixture({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, { roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
 
-    const blocked = await runJson(['catalog', 'source', 'remove', 'team', '--json']);
-    expect(blocked.exitCode).toBe(1);
+    const blocked = await runJson(['source', 'remove', 'team', '--json']);
+    expect(blocked.exitCode).toBe(3);
     expect(blocked.json).toMatchObject({
-      ok: false,
-      changed: false,
-      references: [{ category: 'lifecycle', sourceId: 'team', pluginId: 'team/demo' }],
-      errors: [{ code: 'catalogSourceImpactConfirmationRequired' }],
+      schemaVersion: 1,
+      status: 'blocked',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
+      data: {
+        changed: false,
+        references: [{ category: 'lifecycle', sourceId: 'team', pluginId: 'team/demo' }]
+      }
     });
     expect(JSON.stringify(blocked.json)).not.toContain(isolation.layout.fixtureCwd);
 
     const removed = await runJson([
-      'catalog', 'source', 'remove', 'team', '--yes', '--json',
+      'source', 'remove', 'team', '--yes', '--json',
     ]);
     expect(removed.exitCode, removed.stderr).toBe(0);
     expect(removed.json).toMatchObject({
-      ok: true,
-      changed: true,
-      references: [{ category: 'lifecycle', sourceId: 'team', pluginId: 'team/demo' }],
+      schemaVersion: 1,
+      status: 'success',
+      data: {
+        changed: true,
+        references: [{ category: 'lifecycle', sourceId: 'team', pluginId: 'team/demo' }]
+      }
     });
   });
 
@@ -174,18 +194,20 @@ describe('catalog source auto-check CLI', () => {
     const secondRoot = path.join(isolation.layout.fixtureCwd, 'primary-affected');
     await Promise.all([fs.ensureDir(firstRoot), fs.ensureDir(secondRoot)]);
     expect((await runJson([
-      'catalog', 'source', 'add', 'clean', '--path', firstRoot, '--json',
+      'source', 'add', 'clean', '--path', firstRoot, '--json',
     ])).exitCode).toBe(0);
     expect((await runJson([
-      'catalog', 'source', 'add', 'affected', '--path', secondRoot, '--json',
+      'source', 'add', 'affected', '--path', secondRoot, '--json',
     ])).exitCode).toBe(0);
 
-    const clean = await runJson(['catalog', 'source', 'set-primary', 'clean', '--json']);
+    const clean = await runJson(['source', 'update', 'clean', '--primary', '--json']);
     expect(clean.exitCode, clean.stderr).toBe(0);
     expect(clean.json).toMatchObject({
-      receiptSchemaVersion: 6,
-      primaryChange: { fromSourceId: 'official', toSourceId: 'clean' },
-      primarySourceId: 'clean',
+      schemaVersion: 1,
+      data: {
+        primaryChange: { fromSourceId: 'official', toSourceId: 'clean' },
+        primarySourceId: 'clean'
+      }
     });
 
     await fs.outputJson(path.join(
@@ -201,26 +223,31 @@ describe('catalog source auto-check CLI', () => {
       platform: 'codex',
       scope: 'user',
     });
-    const blocked = await runJson(['catalog', 'source', 'set-primary', 'affected', '--json']);
-    expect(blocked.exitCode).toBe(1);
+    const blocked = await runJson(['source', 'update', 'affected', '--primary', '--json']);
+    expect(blocked.exitCode).toBe(3);
     expect(blocked.json).toMatchObject({
-      receiptSchemaVersion: 6,
-      primaryChange: { fromSourceId: 'clean', toSourceId: 'affected' },
-      references: expect.arrayContaining([
-        expect.objectContaining({ category: 'config', pluginId: 'clean/legacy-demo' }),
-      ]),
-      errors: [{ code: 'catalogSourceImpactConfirmationRequired' }],
+      schemaVersion: 1,
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
+      data: {
+        primaryChange: { fromSourceId: 'clean', toSourceId: 'affected' },
+        references: expect.arrayContaining([
+          expect.objectContaining({ category: 'config', pluginId: 'clean/legacy-demo' }),
+        ])
+      }
     });
-    expect(blocked.json.references).toEqual(expect.arrayContaining([
+    expect(blocked.json.data.references).toEqual(expect.arrayContaining([
       expect.objectContaining({ category: 'installation', pluginId: 'clean/legacy-owned' }),
     ]));
     const confirmed = await runJson([
-      'catalog', 'source', 'set-primary', 'affected', '--yes', '--json',
+      'source', 'update', 'affected', '--primary', '--yes', '--json',
     ]);
     expect(confirmed.exitCode, confirmed.stderr).toBe(0);
     expect(confirmed.json).toMatchObject({
-      primaryChange: { fromSourceId: 'clean', toSourceId: 'affected' },
-      primarySourceId: 'affected',
+      schemaVersion: 1,
+      data: {
+        primaryChange: { fromSourceId: 'clean', toSourceId: 'affected' },
+        primarySourceId: 'affected'
+      }
     });
   });
 
@@ -233,34 +260,38 @@ describe('catalog source auto-check CLI', () => {
     ), { enabled: true });
 
     const blocked = await runJson([
-      'catalog', 'source', 'add', 'team', '--path', sourceRoot, '--primary', '--json',
+      'source', 'add', 'team', '--path', sourceRoot, '--primary', '--json',
     ]);
-    expect(blocked.exitCode).toBe(1);
+    expect(blocked.exitCode).toBe(3);
     expect(blocked.json).toMatchObject({
-      receiptSchemaVersion: 6,
-      command: 'catalog:source:add',
-      ok: false,
-      changed: false,
-      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
-      references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })],
-      errors: [{ code: 'catalogSourceImpactConfirmationRequired' }],
+      schemaVersion: 1,
+      status: 'blocked',
+      command: 'source.add',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
+      data: {
+        changed: false,
+        primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+        references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })]
+      }
     });
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
       .not.toContainEqual(expect.objectContaining({ id: 'team' }));
 
     const confirmed = await runJson([
-      'catalog', 'source', 'add', 'team', '--path', sourceRoot, '--primary', '--yes', '--json',
+      'source', 'add', 'team', '--path', sourceRoot, '--primary', '--yes', '--json',
     ]);
     expect(confirmed.exitCode, confirmed.stderr).toBe(0);
     expect(confirmed.json).toMatchObject({
-      receiptSchemaVersion: 6,
-      command: 'catalog:source:add',
-      ok: true,
-      changed: true,
-      primarySourceId: 'team',
-      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
-      references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })],
-      errors: [],
+      schemaVersion: 1,
+      status: 'success',
+      command: 'source.add',
+      diagnostics: [],
+      data: {
+        changed: true,
+        primarySourceId: 'team',
+        primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+        references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })]
+      }
     });
   });
 });

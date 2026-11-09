@@ -5,9 +5,9 @@
 ## 安装
 
 ```bash
-aw plugin targets set codex
+aw target set codex
 aw plugin install agent-subagent --scope user
-aw plugin targets set claude
+aw target set claude
 aw plugin install agent-subagent --scope user
 ```
 

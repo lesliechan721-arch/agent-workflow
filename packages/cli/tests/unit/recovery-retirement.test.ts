@@ -135,7 +135,7 @@ describe('retire strong state and residue', () => {
   });
 
   // Test Value Gate: inferred output targets stay frozen in retries; completed config deletion is not requested again.
-  it.each([true, false])('keeps inferred targets after config deletion completes (deleted=%s)', async (deleted) => {
+  it.each([true, false])('retries only remaining targets after config deletion completes (deleted=%s)', async (deleted) => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
     const physicalPath = path.join(options.env.HOME!, '.agents', 'skills', 'demo');
@@ -151,7 +151,7 @@ describe('retire strong state and residue', () => {
         ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
     });
     expect(result).toMatchObject({ ok: false, declarationChanged: true, configChanged: deleted });
-    expect(result.recoveryActions).toContain('aw plugin intent retire local/demo --scope user --target codex --target cursor');
+    expect(result.recoveryActions).toContain('aw plugin remove local/demo --only outputs --scope user --target cursor');
     expect(result.recoveryActions.some((action) => action.includes(physicalPath) && action.includes('AW 不自动删除')))
       .toBe(true);
     expect(result.recoveryActions.join('\n')).not.toContain('--delete-config');
@@ -431,7 +431,7 @@ describe('retire managed command results', () => {
       remainingTargets: [expect.objectContaining({ pluginId: 'local/demo', agent: 'codex' })] });
     expect(result.errors).toContainEqual(expect.objectContaining({ code: 'commandBindingInvalid', pluginId: 'local/demo' }));
     expect(result.recoveryActions).toContain(recoveryAction);
-    expect(result.recoveryActions).toContain('aw plugin intent retire local/demo --scope user --target codex');
+    expect(result.recoveryActions).toContain('aw plugin remove local/demo --only outputs --scope user --target codex');
   });
 
   it.each([

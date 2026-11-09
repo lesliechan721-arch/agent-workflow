@@ -32,7 +32,7 @@ metadata:
 aw self check --from <skill-root> --json
 ```
 
-命令缺失或 `ok=false` 时说明缺少的能力，继续可完成的静态工作，停止依赖缺失能力的操作。字段和参数从当前 `aw plugin capabilities --json`、所需 `--surface` 与命令 `--help` 取得。
+命令缺失或 `status` 不是 `success` 时说明缺少的能力，继续可完成的静态工作，停止依赖缺失能力的操作。所有 AW JSON 结果先检查 `status`，从 `data` 读取业务字段，并保留 `diagnostics` 与 `nextActions`。字段和参数从当前 `aw dev plugin capabilities --json`、所需 `--surface` 与命令 `--help` 取得。
 
 Workspace 使用用户明确位置、canonical `<root>/plugins/<name>` 的归属或公开 CLI 的解析结果。普通修改不隐式初始化另一个 Workspace。修改落在权威 source/provider；生成物和来源绑定由工具维护。
 

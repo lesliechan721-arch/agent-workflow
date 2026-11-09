@@ -1,6 +1,6 @@
 # 托管命令
 
-为插件脚本提供稳定入口、声明命令包及权限时读取。完成主 Skill 的能力检查后，查询 `aw plugin capabilities --surface managed-commands --json`；权限查询 extensions surface，管理操作查询 `aw command --help`。字段、默认值和校验由当前 CLI/Core 提供。
+为插件脚本提供稳定入口、声明命令包及权限时读取。完成主 Skill 的能力检查后，查询 `aw dev plugin capabilities --surface managed-commands --json`；权限查询 extensions surface，管理操作查询 `aw command --help`。字段、默认值和校验由当前 CLI/Core 提供。
 
 ## 选择资源与配置
 

@@ -43,14 +43,14 @@ async function runCase(
     execFileAsync('git', ['init', '--bare', '--quiet', remoteUrl]),
   ]);
   await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
-  await runCli([
-    'catalog', 'init', '--workspace-root', workspaceRoot, '--catalog-version', '2.0.0',
+  expect(await runCli([
+    'dev', 'catalog', 'create', '--workspace-root', workspaceRoot, '--catalog-version', '2.0.0',
     '--owner-url', 'https://catalog.example.com/release-smoke',
-  ], { cwd: workspaceRoot, io: quietIo() });
-  await runCli([
-    'plugin', 'init', 'release-smoke', '--description', 'Release smoke.', '--no-skills',
+  ], { cwd: workspaceRoot, io: quietIo() })).toBe(0);
+  expect(await runCli([
+    'dev', 'plugin', 'create', 'release-smoke', '--description', 'Release smoke.', '--no-skills',
     '--workspace-root', workspaceRoot,
-  ], { cwd: workspaceRoot, io: quietIo() });
+  ], { cwd: workspaceRoot, io: quietIo() })).toBe(0);
   await execFileAsync('git', ['add', '.'], { cwd: workspaceRoot });
   await execFileAsync('git', [
     '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',

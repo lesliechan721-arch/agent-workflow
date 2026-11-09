@@ -44,23 +44,23 @@ describe('Catalog source sync CLI', () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-inactive-repair-cli');
     const env = await configurePathSource(root);
-    const first = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const first = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(first.exitCode, first.stderr).toBe(0);
     await writeCliSourceSnapshot(root, 'inactive candidate\n');
-    const candidate = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const candidate = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(candidate.exitCode, candidate.stderr).toBe(0);
     await writeCliSourceSnapshot(root);
-    const active = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const active = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(active.exitCode, active.stderr).toBe(0);
-    expect(active.parseJsonStdout().active.snapshotDigest)
-      .toBe(first.parseJsonStdout().active.snapshotDigest);
-    const candidateActive = candidate.parseJsonStdout().active;
+    expect(active.parseJsonStdout().data.active.snapshotDigest)
+      .toBe(first.parseJsonStdout().data.active.snapshotDigest);
+    const candidateActive = candidate.parseJsonStdout().data.active;
     const candidateLocation = resolveCatalogStoreLocation({
       logicalIdentity: candidateActive.logicalIdentity,
       snapshotDigest: candidateActive.snapshotDigest,
@@ -69,17 +69,20 @@ describe('Catalog source sync CLI', () => {
     await fs.writeFile(candidateLocation.metadataPath, 'damaged inactive entry\n');
     await writeCliSourceSnapshot(root, 'inactive candidate\n');
 
-    const repaired = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const repaired = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
 
     expect(repaired.exitCode, repaired.stderr).toBe(0);
     expect(repaired.parseJsonStdout()).toMatchObject({
-      command: 'catalog:source:sync',
-      ok: true,
-      outcome: 'activated',
-      activeChanged: true,
-      active: { snapshotDigest: candidateActive.snapshotDigest },
+      schemaVersion: 1,
+      status: 'success',
+      command: 'source.sync',
+      data: {
+        outcome: 'activated',
+        activeChanged: true,
+        active: { snapshotDigest: candidateActive.snapshotDigest }
+      }
     });
     await expect(fs.readJson(candidateLocation.metadataPath)).resolves.toMatchObject({
       snapshotDigest: candidateActive.snapshotDigest,
@@ -91,46 +94,60 @@ describe('Catalog source sync CLI', () => {
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-sync-cli');
     const env = await configurePathSource(root);
 
-    const checked = await runCliEntry(['catalog', 'source', 'sync', 'local', '--check', '--json'], {
+    const checked = await runCliEntry(['source', 'status', 'local', '--remote', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(checked.exitCode, checked.stderr).toBe(0);
     expect(checked.parseJsonStdout()).toMatchObject({
-      command: 'catalog:source:sync', ok: true, sourceId: 'local', mode: 'check', outcome: 'checked',
-      activeChanged: false,
-      impact: { inventoryComplete: true, affectedReferences: [] },
+      schemaVersion: 1, command: 'source.status', status: 'success',
+      data: {
+        sources: [{ sourceId: 'local', activeReady: false }],
+        remote: [{ sourceId: 'local', checked: true, outcome: 'checked' }],
+        complete: true,
+      },
     });
     await expect(fs.pathExists(path.join(env.AW_HOME!, 'catalog-store'))).resolves.toBe(false);
 
-    const beforeStatus = await runCliEntry(['catalog', 'source', 'status', 'local', '--json'], {
+    const beforeStatus = await runCliEntry(['source', 'status', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(beforeStatus.exitCode).toBe(0);
     expect(beforeStatus.parseJsonStdout()).toMatchObject({
-      sources: [{ sourceId: 'local', activeReady: false }],
+      schemaVersion: 1,
+      data: { sources: [{ sourceId: 'local', activeReady: false }] }
     });
 
-    const synced = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const synced = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(synced.exitCode, synced.stderr).toBe(0);
     const syncReceipt = synced.parseJsonStdout();
     expect(syncReceipt).toMatchObject({
-      command: 'catalog:source:sync', ok: true, sourceId: 'local', mode: 'sync', outcome: 'activated',
-      activeChanged: true,
-      active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
+      schemaVersion: 1,
+      status: 'success',
+      command: 'source.sync',
+      data: {
+        sourceId: 'local',
+        mode: 'sync',
+        outcome: 'activated',
+        activeChanged: true,
+        active: { snapshotDigest: expect.stringMatching(/^sha256:/u) }
+      }
     });
 
-    const status = await runCliEntry(['catalog', 'source', 'status', 'local', '--json'], {
+    const status = await runCliEntry(['source', 'status', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(status.exitCode, status.stderr).toBe(0);
     expect(status.parseJsonStdout()).toMatchObject({
-      sources: [{
-        sourceId: 'local', activeReady: true,
-        active: { snapshotDigest: syncReceipt.active.snapshotDigest },
-        lastSync: { mode: 'sync' },
-      }],
+      schemaVersion: 1,
+      data: {
+        sources: [{
+          sourceId: 'local', activeReady: true,
+          active: { snapshotDigest: syncReceipt.data.active.snapshotDigest },
+          lastSync: { mode: 'sync' },
+        }]
+      }
     });
   });
 
@@ -138,7 +155,7 @@ describe('Catalog source sync CLI', () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-incompatible-cli');
     const env = await configurePathSource(root);
-    const synced = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const synced = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(synced.exitCode, synced.stderr).toBe(0);
@@ -148,30 +165,32 @@ describe('Catalog source sync CLI', () => {
       env,
     });
 
-    const jsonStatus = await runCliEntry(['catalog', 'source', 'status', 'local', '--json'], {
+    const jsonStatus = await runCliEntry(['source', 'status', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(jsonStatus.exitCode, jsonStatus.stderr).toBe(0);
     const receipt = jsonStatus.parseJsonStdout();
     expect(receipt).toMatchObject({
-      catalogGenerationStatusSchemaVersion: 2,
-      sources: [{
-        sourceId: 'local',
-        activeReady: false,
-        compatibility: {
-          state: 'unsupported',
-          requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
-          missingCapabilities: ['aw.future-feature.v99'],
-        },
-      }],
+      schemaVersion: 1,
+      data: {
+        sources: [{
+          sourceId: 'local',
+          activeReady: false,
+          compatibility: {
+            state: 'unsupported',
+            requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+            missingCapabilities: ['aw.future-feature.v99'],
+          },
+        }]
+      }
     });
-    expect(receipt.sources[0].compatibility).not.toHaveProperty('availableCapabilities');
+    expect(receipt.data.sources[0].compatibility).not.toHaveProperty('availableCapabilities');
 
-    const humanStatus = await runCliEntry(['catalog', 'source', 'status', 'local'], {
+    const humanStatus = await runCliEntry(['source', 'status', 'local'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(humanStatus.exitCode, humanStatus.stderr).toBe(0);
-    expect(humanStatus.stdout).toContain('incompatible');
+    expect(humanStatus.stdout.toLowerCase()).toContain('incompatible');
     expect(humanStatus.stdout).toContain('required: aw.catalog-snapshot.v7, aw.future-feature.v99');
     expect(humanStatus.stdout).toContain('missing: aw.future-feature.v99');
   });
@@ -180,10 +199,10 @@ describe('Catalog source sync CLI', () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-damaged-cli');
     const env = await configurePathSource(root);
-    const first = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const first = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
-    const firstActive = first.parseJsonStdout().active;
+    const firstActive = first.parseJsonStdout().data.active;
     const location = resolveCatalogStoreLocation({
       logicalIdentity: firstActive.logicalIdentity,
       snapshotDigest: firstActive.snapshotDigest,
@@ -191,13 +210,17 @@ describe('Catalog source sync CLI', () => {
     });
     await fs.writeFile(location.metadataPath, 'damaged\n');
 
-    const repaired = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const repaired = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(repaired.exitCode, repaired.stderr).toBe(0);
     expect(repaired.parseJsonStdout()).toMatchObject({
-      outcome: 'unchanged', activeChanged: false,
-      active: { snapshotDigest: firstActive.snapshotDigest },
+      schemaVersion: 1,
+      data: {
+        outcome: 'unchanged',
+        activeChanged: false,
+        active: { snapshotDigest: firstActive.snapshotDigest }
+      }
     });
 
     await writeIntentFixture({
@@ -214,32 +237,40 @@ describe('Catalog source sync CLI', () => {
     await fs.writeFile(location.metadataPath, 'damaged again\n');
 
     const replacementRequired = await runCliEntry([
-      'catalog', 'source', 'sync', 'local', '--json',
+      'source', 'sync', 'local', '--json',
     ], { cwd: isolation.layout.fixtureCwd, env, interactive: false });
-    expect(replacementRequired.exitCode).toBe(1);
+    expect(replacementRequired.exitCode).toBe(3);
     expect(replacementRequired.parseJsonStdout()).toMatchObject({
-      errors: [{ code: 'catalogReplaceDamagedRequired' }],
+      schemaVersion: 1,
+      diagnostics: [{ code: 'catalogReplaceDamagedRequired' }],
+      data: {}
     });
 
     const confirmationRequired = await runCliEntry([
-      'catalog', 'source', 'sync', 'local', '--replace-damaged', '--json',
+      'source', 'sync', 'local', '--replace-damaged', '--json',
     ], { cwd: isolation.layout.fixtureCwd, env, interactive: false });
-    expect(confirmationRequired.exitCode).toBe(1);
+    expect(confirmationRequired.exitCode).toBe(3);
     expect(confirmationRequired.parseJsonStdout()).toMatchObject({
-      errors: [{ code: 'catalogImpactConfirmationRequired' }],
+      schemaVersion: 1,
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
+      data: {}
     });
 
     const replaced = await runCliEntry([
-      'catalog', 'source', 'sync', 'local', '--replace-damaged', '--yes', '--json',
+      'source', 'sync', 'local', '--replace-damaged', '--yes', '--json',
     ], { cwd: isolation.layout.fixtureCwd, env, interactive: false });
     expect(replaced.exitCode, replaced.stderr).toBe(0);
     expect(replaced.parseJsonStdout()).toMatchObject({
-      outcome: 'activated', activeChanged: true,
-      impact: {
-        inventoryComplete: false,
-        references: [{ category: 'lifecycle', pluginId: 'local/demo' }],
-        affectedReferences: [],
-      },
+      schemaVersion: 1,
+      data: {
+        outcome: 'activated',
+        activeChanged: true,
+        impact: {
+          inventoryComplete: false,
+          references: [{ category: 'lifecycle', pluginId: 'local/demo' }],
+          affectedReferences: [],
+        }
+      }
     });
   });
 
@@ -247,29 +278,30 @@ describe('Catalog source sync CLI', () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-sync-failure');
     const env = await configurePathSource(root);
-    const first = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const first = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(first.exitCode).toBe(0);
-    const activeDigest = first.parseJsonStdout().active.snapshotDigest;
+    const activeDigest = first.parseJsonStdout().data.active.snapshotDigest;
     await fs.remove(root);
 
-    const failed = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+    const failed = await runCliEntry(['source', 'sync', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
-    expect(failed.exitCode).toBe(1);
-    const status = await runCliEntry(['catalog', 'source', 'status', 'local', '--json'], {
+    expect(failed.exitCode).toBe(3);
+    const status = await runCliEntry(['source', 'status', 'local', '--json'], {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(status.parseJsonStdout()).toMatchObject({
-      sources: [{ activeReady: true, active: { snapshotDigest: activeDigest } }],
+      schemaVersion: 1,
+      data: { sources: [{ activeReady: true, active: { snapshotDigest: activeDigest } }] }
     });
 
     for (const command of ['refresh', 'activate-candidate', 'generation-status', 'refresh-policy']) {
-      const removed = await runCliEntry(['catalog', 'source', command, 'local'], {
+      const removed = await runCliEntry(['source', command, 'local'], {
         cwd: isolation.layout.fixtureCwd, env, interactive: false,
       });
-      expect(removed.exitCode).toBe(1);
+      expect(removed.exitCode).toBe(2);
     }
   });
 });

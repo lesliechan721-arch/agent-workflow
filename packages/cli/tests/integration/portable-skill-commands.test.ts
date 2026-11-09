@@ -109,7 +109,7 @@ async function configurePortableCatalog(options: {
 }
 
 // Test Value Gate: public materialization must preserve safe output ownership and immutable source boundaries.
-describe('portable Skill materialize CLI', () => {
+describe('portable Skill export CLI', () => {
   afterEach(() => { setPortableCommandTestHooksForTests(undefined); vi.restoreAllMocks(); });
 
   it.each([undefined, 'agent-skills', 'claude-code', 'gemini', 'codex', 'claude'])(
@@ -117,12 +117,16 @@ describe('portable Skill materialize CLI', () => {
       const isolation = getCurrentSourceTestIsolation();
       const captured = createCapturedCliIo();
       const out = path.join(isolation.layout.fixtureCwd, 'must-stay-absent');
-      const code = await runCli(['skill', 'materialize', 'missing/plugin', '--scope', 'user', '--out', out,
+      const code = await runCli(['dev', 'skill', 'export', 'missing/plugin', '--scope', 'user', '--out', out,
         ...(platform === undefined ? [] : ['--platform', platform]), '--json'],
-      { cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false, io: captured.io });
+        { cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false, io: captured.io });
       expect(code).toBe(2);
-      expect(JSON.parse(captured.readStdout())).toMatchObject({ ok: false, errors: [{ code: 'invalidArguments' }] });
-      expect(captured.readStderr()).toBe('');
+      expect(JSON.parse(captured.readStdout())).toMatchObject({
+        schemaVersion: 1,
+        status: 'failed',
+        diagnostics: [{ code: platform === undefined ? 'invalidArguments' : 'invalidOptionValue' }],
+        data: {}
+      });
       expect(await fs.pathExists(out)).toBe(false);
     });
 
@@ -134,18 +138,18 @@ describe('portable Skill materialize CLI', () => {
     const firstIo = createCapturedCliIo();
     expect(await runCli(
       [
-        'skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', out,
+        'dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', out,
         '--skill', 'alpha', 'dependency-skill', '--json',
       ],
       { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
     ), firstIo.readStdout()).toBe(0);
     const receipt = JSON.parse(firstIo.readStdout());
-    expect(receipt.out).toBe(out);
-    expect(receipt.selectedSkills).toMatchObject([
+    expect(receipt.data.out).toBe(out);
+    expect(receipt.data.selectedSkills).toMatchObject([
       { name: 'alpha', providerPluginId: 'local/portable' },
       { name: 'dependency-skill', providerPluginId: 'local/future' },
     ]);
-    expect(receipt.sourceBindingPath).toBe(path.join(receipt.out, 'aw-source-binding.json'));
+    expect(receipt.data.sourceBindingPath).toBe(path.join(receipt.data.out, 'aw-source-binding.json'));
     await expect(fs.pathExists(path.join(out, 'skills', 'alpha', 'SKILL.md'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(out, 'skills', 'dependency-skill', 'SKILL.md'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(out, 'skills', 'beta'))).resolves.toBe(false);
@@ -154,7 +158,7 @@ describe('portable Skill materialize CLI', () => {
       plugin: { id: 'local/portable', version: '1.0.0' },
       scope: 'project',
     });
-    await expect(fs.readJson(receipt.sourceBindingPath)).resolves.toMatchObject({
+    await expect(fs.readJson(receipt.data.sourceBindingPath)).resolves.toMatchObject({
       schemaVersion: 2,
       kind: 'aw-source-binding',
       source: {
@@ -181,16 +185,18 @@ describe('portable Skill materialize CLI', () => {
 
     const unknownIo = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'unknown-output'), '--skill', 'unknown', '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'unknown-output'), '--skill', 'unknown', '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: unknownIo.io },
     )).toBe(1);
     expect(JSON.parse(unknownIo.readStdout())).toMatchObject({
-      errors: [{ code: 'portableNoSkillsSelected' }],
+      schemaVersion: 1,
+      diagnostics: [{ code: 'portableNoSkillsSelected' }],
+      data: {}
     });
 
     const secondIo = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', out, '--skill', 'beta', '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', out, '--skill', 'beta', '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
     )).toBe(0);
     await expect(fs.pathExists(path.join(out, 'skills', 'alpha'))).resolves.toBe(false);
@@ -203,16 +209,16 @@ describe('portable Skill materialize CLI', () => {
     });
     const io = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-output'), '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-output'), '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
-    )).toBe(1);
+    )).toBe(3);
     expect(JSON.parse(io.readStdout())).toMatchObject({
-      errors: [{
+      schemaVersion: 1,
+      diagnostics: [{
         code: 'awCapabilityUnsupported',
-        plugin: 'local/portable',
-        missingCapabilities: ['aw.future-portable.v1'],
-        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v7']),
+        subject: { pluginId: 'local/portable' },
       }],
+      data: { compatibility: { missingCapabilities: ['aw.future-portable.v1'], availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v7']) } }
     });
   });
 
@@ -222,16 +228,16 @@ describe('portable Skill materialize CLI', () => {
     });
     const io = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-dependency-output'), '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-dependency-output'), '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
-    )).toBe(1);
+    )).toBe(3);
     expect(JSON.parse(io.readStdout())).toMatchObject({
-      errors: [{
+      schemaVersion: 1,
+      diagnostics: [{
         code: 'awCapabilityUnsupported',
-        plugin: 'local/future',
-        missingCapabilities: ['aw.future-dependency.v1'],
-        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v7']),
+        subject: { pluginId: 'local/future' },
       }],
+      data: { compatibility: { missingCapabilities: ['aw.future-dependency.v1'], availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v7']) } }
     });
   });
 
@@ -252,11 +258,13 @@ describe('portable Skill materialize CLI', () => {
       await prepare(target);
       const io = createCapturedCliIo();
       expect(await runCli(
-        ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+        ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
         { cwd: fixture.cwd, env: fixture.env, io: io.io },
-      )).toBe(1);
+      )).toBe(3);
       expect(JSON.parse(io.readStdout())).toMatchObject({
-        errors: [{ code: 'portableOutputConflict' }],
+        schemaVersion: 1,
+        diagnostics: [{ code: 'portableOutputConflict' }],
+        data: {}
       });
     }
     await expect(fs.readFile(path.join(fixture.cwd, 'foreign', 'keep.txt'), 'utf8')).resolves.toBe('keep');
@@ -279,11 +287,13 @@ describe('portable Skill materialize CLI', () => {
     for (const target of [codexHome, claudeHome]) {
       const io = createCapturedCliIo();
       expect(await runCli(
-        ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+        ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
         { cwd: fixture.cwd, env, io: io.io },
-      )).toBe(1);
+      )).toBe(3);
       expect(JSON.parse(io.readStdout())).toMatchObject({
-        errors: [{ code: 'portableOutputConflict' }],
+        schemaVersion: 1,
+        diagnostics: [{ code: 'portableOutputConflict' }],
+        data: {}
       });
     }
 
@@ -296,7 +306,7 @@ describe('portable Skill materialize CLI', () => {
     const target = path.join(fixture.cwd, 'identity-output');
     const firstIo = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
     )).toBe(0);
     const markerPath = path.join(target, '.aw-materialization.json');
@@ -307,11 +317,13 @@ describe('portable Skill materialize CLI', () => {
 
     const secondIo = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'local/portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'local/portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
-    )).toBe(1);
+    )).toBe(3);
     expect(JSON.parse(secondIo.readStdout())).toMatchObject({
-      errors: [{ code: 'portableOutputConflict' }],
+      schemaVersion: 1,
+      diagnostics: [{ code: 'portableOutputConflict' }],
+      data: {}
     });
     await expect(fs.readFile(path.join(target, 'old-sentinel.txt'), 'utf8')).resolves.toBe('old-output\n');
     expect((await fs.readJson(markerPath)).plugin.sourceIdentity).toBe('stale-source-identity');
@@ -322,7 +334,7 @@ describe('portable Skill materialize CLI', () => {
     const target = path.join(fixture.cwd, 'raced-output');
     const firstIo = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
     )).toBe(0);
     const displaced = path.join(fixture.cwd, 'displaced-output');
@@ -338,11 +350,13 @@ describe('portable Skill materialize CLI', () => {
     });
     const secondIo = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
-    )).toBe(1);
+    )).toBe(3);
     expect(JSON.parse(secondIo.readStdout())).toMatchObject({
-      errors: [{ code: 'portableOutputConflict' }],
+      schemaVersion: 1,
+      diagnostics: [{ code: 'portableOutputConflict' }],
+      data: {}
     });
     await expect(fs.readFile(path.join(target, 'foreign.txt'), 'utf8')).resolves.toBe('preserve me');
     await expect(fs.readJson(path.join(target, '.aw-materialization.json')))
@@ -367,7 +381,7 @@ describe('portable Skill materialize CLI', () => {
     });
     const io = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
     )).toBe(1);
     await expect(fs.pathExists(target)).resolves.toBe(false);

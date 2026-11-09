@@ -124,7 +124,7 @@ test('managed resume retains its original command host and rejects execution cha
     launch: { runner: 'node', entry: 'fake-adapter.mjs', args: ['fixed'], env: { FIXED: 'yes' }, envFrom: {}, cwd: 'caller' }, errors: [], recoveryActions: [] };
   await fs.writeFile(launchFile, JSON.stringify(command));
   await fs.writeFile(cliEntry, `import fs from 'node:fs/promises';
-if(process.argv[3]==='show') console.log(JSON.stringify({schemaVersion:1,command:'command.show',ok:true,overallState:'completed',commands:[JSON.parse(await fs.readFile(${JSON.stringify(launchFile)},'utf8'))],packages:[],changes:[],errors:[],recoveryActions:[]}));
+if(process.argv[3]==='show') console.log(JSON.stringify({schemaVersion:1,command:'command.show',status:'success',data:{commands:[JSON.parse(await fs.readFile(${JSON.stringify(launchFile)},'utf8'))],packages:[],changes:[]},diagnostics:[],nextActions:[]}));
 else {await fs.appendFile(${JSON.stringify(invoked)},JSON.stringify({argv:process.argv.slice(2),awHome:process.env.AW_HOME})+'\\n');await import(${JSON.stringify(pathToFileURL(path.join(f.directory, 'fake-adapter.mjs')).href)});}
 `);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: f.directory };

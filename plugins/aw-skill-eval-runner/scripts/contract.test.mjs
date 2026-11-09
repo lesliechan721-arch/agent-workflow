@@ -47,7 +47,7 @@ test('case checker distinguishes writable tools from authorized file changes', (
 test('publishes one model-callable Skill with the Eval capability', () => {
   const manifest = JSON.parse(readFileSync(path.join(root, '.agents-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'aw-skill-eval-runner');
-  assert.ok(manifest.requires.aw.capabilities.includes('aw.skill-eval.v2'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.skill-eval.v3'));
   assert.deepEqual(readdirSync(path.join(root, 'codex', 'skills')).sort(), ['run-aw-skill-evals']);
 
   const skillRoot = path.join(root, 'codex', 'skills', 'run-aw-skill-evals');
@@ -58,7 +58,7 @@ test('publishes one model-callable Skill with the Eval capability', () => {
   assert.deepEqual(policyLines, ['allow_implicit_invocation: true']);
 
   const args = [
-    'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
+    'dev', 'skill', 'validate', windows ? '"%AW_TEST_SKILL_ROOT%"' : skillRoot,
     '--frontmatter-profile', 'portable-agent-skills',
     '--codex-metadata', 'required',
     '--json',
@@ -71,5 +71,5 @@ test('publishes one model-callable Skill with the Eval capability', () => {
     })
     : spawnSync('aw', args, { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.equal(JSON.parse(result.stdout).ok, true);
+  assert.equal(JSON.parse(result.stdout).status, 'success');
 });

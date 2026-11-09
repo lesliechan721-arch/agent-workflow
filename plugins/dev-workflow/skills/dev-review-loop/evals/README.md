@@ -11,7 +11,7 @@ adaptive-coverage-workflow 使用 Engine 的 prepare、setupPrompt、measurement
 准备当前工作流用例：
 
 ```bash
-aw skill eval prepare dev-workflow dev-review-loop \
+aw dev eval prepare dev-workflow dev-review-loop \
   --suite adaptive-coverage-workflow --profile project-default \
   --runs 1 --output .aw/evals/review-loop-coverage --json
 ```

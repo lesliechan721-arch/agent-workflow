@@ -28,7 +28,7 @@ node scripts/check-evals.mjs
 # node scripts/check-evals.mjs --module ../../packages/agent-skill-eval/dist/index.js
 ```
 
-这些自检直接在源码中运行，不挂入 `aw plugin test`：该入口测试隔离运行包，而 `evals/**` 按分发规则不进入运行包。不要为让运行包测试通过而复制作者夹具。包结构与平台资源闭包由公开 validate/build/materialization 检查。
+这些自检直接在源码中运行，不挂入 `aw dev plugin test`：该入口测试隔离运行包，而 `evals/**` 按分发规则不进入运行包。不要为让运行包测试通过而复制作者夹具。包结构与平台资源闭包由公开 validate/build/materialization 检查。
 
 以上检查只证明夹具可执行和案例格式有效，不代替独立 Oracle Audit、正式模型 Eval 或真实浏览器验收。保留 manifest 原有 trigger/behavior 发布证据要求，未运行的必需组仍是证据缺口。
 

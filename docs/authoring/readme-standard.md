@@ -50,7 +50,7 @@ README 说明用户能获得什么、何时使用以及会产生什么影响。�
 ## 安装
 
 ```bash
-aw plugin targets set <canonical-target>
+aw target set <canonical-target>
 aw plugin install <plugin> --scope user
 ```
 

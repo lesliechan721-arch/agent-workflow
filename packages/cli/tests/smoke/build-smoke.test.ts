@@ -199,6 +199,7 @@ describe('build smoke', () => {
     );
     const development = await execFileAsync('node', [
         checkerPath,
+        'dev',
         'plugin',
         'status',
         '--base',
@@ -209,19 +210,24 @@ describe('build smoke', () => {
         tempRepo,
       ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(development.stdout)).toMatchObject({
-      schemaVersion: 3,
-      policy: 'development',
-      checks: [expect.objectContaining({
-        status: 'unreleasedChanges',
-        productionChanged: true,
-        currentTarget: '0.1.0',
-      })],
+      schemaVersion: 1,
+      command: 'dev.plugin.status',
+      status: 'success',
+      data: {
+        policy: 'development',
+        checks: [expect.objectContaining({
+          status: 'unreleasedChanges',
+          productionChanged: true,
+          currentTarget: '0.1.0',
+        })],
+      },
     });
 
     manifest.version = '0.2.0';
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const bumped = await execFileAsync('node', [
       checkerPath,
+      'dev',
       'plugin',
       'status',
       '--base',
@@ -232,12 +238,16 @@ describe('build smoke', () => {
       tempRepo,
     ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(bumped.stdout)).toMatchObject({
-      schemaVersion: 3,
-      checks: [expect.objectContaining({
-        status: 'versionBumped',
-        currentVersion: '0.2.0',
-        productionChanged: true,
-      })],
+      schemaVersion: 1,
+      command: 'dev.plugin.status',
+      status: 'success',
+      data: {
+        checks: [expect.objectContaining({
+          status: 'versionBumped',
+          currentVersion: '0.2.0',
+          productionChanged: true,
+        })],
+      },
     });
   }, 120_000);
 
@@ -648,7 +658,9 @@ describe('build smoke', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const skillPath = path.join(pluginRoot, 'skills', 'commit', 'SKILL.md');
-    await fs.appendFile(skillPath, '\n```bash\naw config list\n```\n', 'utf8');
+    manifest.requires = { aw: { capabilities: ['aw.cli-output.v1'] } };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.appendFile(skillPath, '\n```bash\naw plugin config get official/git-commit\n```\n', 'utf8');
 
     const { bundlePlugins } = await importSmokeSnapshotModule<{
       bundlePlugins: (options: {
@@ -665,7 +677,7 @@ describe('build smoke', () => {
 
     await fs.appendFile(
       skillPath,
-      '\n```bash\naw catalog publish plan --json\n```\n',
+      '\n```bash\naw dev catalog publish plan --json\n```\n',
       'utf8',
     );
     await expect(bundlePlugins({
@@ -673,10 +685,10 @@ describe('build smoke', () => {
       outputRoot,
       strictRequirements: true,
     })).rejects.toThrow(
-      /plugin="git-commit" path="skills\/commit\/SKILL\.md" command="aw catalog publish" capability="aw\.catalog-publication\.v1"/u,
+      /plugin="git-commit" path="skills\/commit\/SKILL\.md" command="aw dev catalog publish" capability="aw\.catalog-publication\.v2"/u,
     );
 
-    manifest.requires = { aw: { capabilities: ['aw.catalog-publication.v1'] } };
+    manifest.requires = { aw: { capabilities: ['aw.catalog-publication.v2', 'aw.cli-output.v1'] } };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await fs.appendFile(
       skillPath,
@@ -745,15 +757,14 @@ describe('build smoke', () => {
       stdout: expect.stringContaining('Usage: aw'),
     });
 
-    for (const command of ['init', 'add-skill']) {
-      const help = await execFileAsync('node', [cliEntry, 'plugin', command, '--help'], {
+    for (const kind of ['plugin', 'skill']) {
+      const help = await execFileAsync('node', [cliEntry, 'dev', kind, 'create', '--help'], {
         cwd: root,
         env: process.env,
         maxBuffer: 10 * 1024 * 1024,
       });
-      expect(help.stdout).toContain('aw plugin validate');
-      expect(help.stdout).toContain('aw catalog build');
-      expect(help.stdout).toContain('aw catalog publish plan --help');
+      expect(help.stdout).toContain(`Usage: aw dev ${kind} create`);
+      expect(help.stdout).toContain('--workspace-root');
       expect(help.stdout).not.toContain('pnpm release');
     }
   });

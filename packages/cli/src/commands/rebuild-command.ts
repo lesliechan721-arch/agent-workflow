@@ -718,6 +718,7 @@ async function runSingleSourceRebuildCommand(options: {
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
     preparedArtifactRenderResults: options.runtime?.preparedArtifactRenderResults,
+    interruption: options.runtime?.interruption,
     signal: options.runtime?.signal,
     scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
     env: options.runtime?.env ?? process.env,
@@ -3572,6 +3573,7 @@ async function runRebuildCommandInSession(
       }
       const executionContext: RebuildExecutionContext = {
         preparedArtifactRenderResults: options.runtime?.preparedArtifactRenderResults,
+        interruption: options.runtime?.interruption,
         signal: options.runtime?.signal,
         referencePlugins: options.runtime?.referencePlugins,
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
@@ -5450,7 +5452,7 @@ async function runRebuildCommandInSession(
             : failedDependency
             ? `${entry.pluginId} requires failed dependency ${failedDependency}.`
             : code === 'exclusiveOwnerEvidenceInvalid'
-              ? `${entry.pluginId} has damaged or missing exclusive owner evidence. Run aw plugin cleanup ${entry.pluginId} --target ${platform} --scope ${planned.resolvedScope} --force, then run aw plugin sync ${entry.pluginId} --target ${platform} --context ${planned.resolvedScope} --rebuild.`
+              ? `${entry.pluginId} has damaged or missing exclusive owner evidence. Run aw plugin remove --only outputs ${entry.pluginId} --target ${platform} --scope ${planned.resolvedScope} --force, then run aw plugin sync ${entry.pluginId} --target ${platform} --context ${planned.resolvedScope} --rebuild.`
             : code === 'artifactCollision'
               ? `${entry.pluginId} has foreign-owned output. Remove or relocate it, then run cleanup and reinstall.`
             : code === 'dependencyNotReady'
@@ -5469,7 +5471,7 @@ async function runRebuildCommandInSession(
               message,
               ...(code === 'exclusiveOwnerEvidenceInvalid' ? {
                 recoveryActions: [
-                  `run aw plugin cleanup ${entry.pluginId} --target ${platform} --scope ${planned.resolvedScope} --force`,
+                  `run aw plugin remove --only outputs ${entry.pluginId} --target ${platform} --scope ${planned.resolvedScope} --force`,
                   `then run aw plugin sync ${entry.pluginId} --target ${platform} --context ${planned.resolvedScope} --rebuild`,
                 ],
               } : {}),

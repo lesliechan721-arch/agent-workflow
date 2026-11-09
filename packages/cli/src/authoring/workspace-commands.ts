@@ -22,6 +22,7 @@ import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 import type { CatalogWorkspaceResolvedFrom } from '../commands/catalog-workspace-resolution.js';
 
 export interface AuthoringCommandIo {
+  result?(value: unknown): void;
   stdout(text: string): void;
   stderr(text: string): void;
 }
@@ -45,7 +46,8 @@ const pluginBuildAdapter: CatalogWorkspacePluginBuildAdapter = {
 };
 
 function writeJson(io: AuthoringCommandIo, value: unknown): void {
-  io.stdout(`${JSON.stringify(value)}\n`);
+  if (io.result) io.result(value);
+  else io.stdout(`${JSON.stringify(value)}\n`);
 }
 
 export async function runCatalogInitCommand(options: {

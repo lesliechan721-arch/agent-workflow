@@ -13,9 +13,9 @@
 | 可观察症状 | 主要原因 | 恢复入口 |
 | --- | --- | --- |
 | `configWrite: succeeded` 但功能未变，或 `apply: partial` | 配置已存盘，但客户端物化渲染未完成 | [1. 配置保存成功但应用失败](#1-配置保存成功但应用生效失败) |
-| `aw catalog source sync` 网络超时或报错 `replace-required` | 远端不可达或本地快照存储损坏 | [2. 来源同步失败或快照损坏](#2-来源刷新失败或-active-快照损坏) |
+| `aw source sync` 网络超时或报错 `replace-required` | 远端不可达或本地快照存储损坏 | [2. 来源同步失败或快照损坏](#2-来源刷新失败或-active-快照损坏) |
 | `aw plugin status` 显示 `needsSync`、`orphaned` 或 `blocked` | 意图与现场产物不一致、依赖缺失或权限受阻 | [3. 现场状态异常](#3-现场状态异常blocked-pending-unconfirmed-或底层-needssync-orphaned) |
-| `aw plugin cleanup` 跳过部分文件未删除 | 严格保护外部 (foreign) 或共享 (shared) 文件 | [4. 清理输出被跳过或失败](#4-清理输出跳过部分文件或清理失败) |
+| `aw plugin remove --only outputs` 跳过部分文件未删除 | 严格保护外部 (foreign) 或共享 (shared) 文件 | [4. 清理输出被跳过或失败](#4-清理输出跳过部分文件或清理失败) |
 | 报错 `codexSystemCliUnsupported` 或 `claudeCliNotFound` | 本机 Codex CLI 版本低于 0.151.0 或 PATH 缺失 | [5. 平台 CLI 缺失或版本不支持](#5-平台-cli-缺失或版本不满足要求) |
 | `aw command run` 权限被拒或 Claude 沙箱拦截 | 命令未声明沙箱排除或权限前缀不匹配 | [6. 托管命令执行失败或沙箱拦截](#6-托管命令执行失败或沙箱拦截) |
 
@@ -25,7 +25,7 @@
 
 ### 可观察症状
 
-- 执行 `aw plugin config set <plugin> <key>` 显示成功，JSON 回执包含 `configWrite: succeeded`。
+- 执行 `aw plugin config set <plugin> <key>` 显示成功，JSON 的 data 包含 `configWrite: succeeded`。
 - 但随后执行 `aw plugin config apply` 或 `aw plugin sync` 时报错：
   - 提示前置脚本超时（`preApplyTimedOut`）；
   - 提示宿主目录写权限受阻（`eacces`）或客户端进程锁占用；
@@ -79,7 +79,7 @@
 
 ### 可观察症状
 
-- 执行 `aw catalog source sync <id>` 报告网络超时（默认 Git 探测上限 30 秒，拉取上限 180 秒）。
+- 执行 `aw source sync <id>` 报告网络超时（默认 Git 探测上限 30 秒，拉取上限 180 秒）。
 - 或报告本地快照内容损坏，提示 `replace-required`。
 
 ### 保留状态
@@ -98,26 +98,26 @@
    - 检查网络连通性，或调整网络超时环境变量（支持 `100..300000` 毫秒，`0` 表示无限制）：
      ```bash
      export AW_CATALOG_REMOTE_TIMEOUT_MS=120000
-     aw catalog source sync official
+     aw source sync official
      ```
-   - 探测远端更新并执行校验（不写 store、不切换 Active，但会记录 lastSync 检查时间）：
+   - 探测远端更新并执行校验（不写 store、不切换 Active，不写 lastSync 或其它持久状态）：
      ```bash
-     aw catalog source sync official --check
+     aw source status official --remote
      ```
 2. **若本地 Active 快照损坏且历史 Commit 可达**：
    - Git 来源会自动按 Active 的精确 Commit 修复旧 store key：
      ```bash
-     aw catalog source sync official
+     aw source sync official
      ```
 3. **若历史 Commit 无法取得或 Path 来源内容已漂移**：
    - 显式授权使用当前候选覆盖替换损坏的 Active 快照：
      ```bash
-     aw catalog source sync official --replace-damaged --yes
+     aw source sync official --replace-damaged --yes
      ```
 4. **检查并清理存储残留**：
    ```bash
-   aw catalog store status
-   aw catalog store prune --yes
+   aw cache status
+   aw cache prune --yes
    ```
 
 > [!NOTE]
@@ -132,7 +132,7 @@
 运行 `aw plugin status` 时，回执中的聚合状态未完全呈现 `ready`：
 
 ```text
-status [user]: failed
+PARTIAL  Plugin status checked
   - counts: { ready: 1, pending: 1, blocked: 1, unconfirmed: 0 }
   - decision-kit: needsSync (意图已保存但产物待物化刷新)
   - old-tool: orphaned (需求声明已移除但物理目录仍有残留)
@@ -144,9 +144,11 @@ status [user]: failed
 
 AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型，不把未知或部分就绪粗暴等同于“未安装”：
 
-#### 1. 公开恢复状态回执（Public Recovery Status Contract, schema 1）
+#### 1. 统一结果的状态数据（data）
 
-面向命令聚合与 TUI 展示的四大作用域计数（counts）：
+联合状态按可见目标统计 counts；同一插件可在不同平台进入不同计数，有 blocker 的 unknown 目标可同时计入 blocked 与 unconfirmed。不要用计数之和推算插件数。各字段含义见[状态与配置](../maintainers/architecture/config-and-status.md#21-公开恢复状态合同public-recovery-status-contract)。
+
+状态排查关注以下事实：
 - **`ready`**：所有预期组件与依赖完全就绪，无需修复动作。
 - **`pending`**：存在已保存但尚未同步物化的变动（即底层 `needsSync`），声明完好，需执行 `sync`。
 - **`blocked`**：存在来源缺失、依赖不满足或物理冲突等阻断项，声明与配置完好，等待修复前置条件。
@@ -177,7 +179,7 @@ AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型
    ```
 2. **针对 `orphaned`**：
    ```bash
-   aw plugin cleanup --scope user --target codex --yes
+   aw plugin remove official/decision-kit --only outputs --scope user --target codex --yes
    ```
 3. **针对 `blocked`**：
    - 查看详细阻塞原因与 diagnostics：
@@ -202,7 +204,7 @@ AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型
 
 ### 可观察症状
 
-执行 `aw plugin cleanup` 后，终端提示某些文件或目录被跳过，磁盘上依然残留部分文件。
+执行 `aw plugin remove --only outputs` 后，终端提示某些文件或目录被跳过，磁盘上依然残留部分文件。
 
 ### 保留状态
 
@@ -224,7 +226,7 @@ AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型
    若确认某专属目录确系 AW 产物，但因元数据损坏导致普通清理无法确认，使用强行清理（注意：`--scope` 与 `--target` 为必填项，强制清理限定于单一明确的 target 目标）：
    ```bash
    # 仅清理明确由 AW 拥有的专属残留，限定单一 target，仍受合法 root 与非符号链接门禁限制
-   aw plugin cleanup <plugin-name> --scope user --target codex --force --yes
+   aw plugin remove <source/plugin> --only outputs --scope user --target codex --force --yes
    ```
 
 > [!NOTE]

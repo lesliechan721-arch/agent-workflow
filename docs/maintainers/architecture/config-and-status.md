@@ -10,7 +10,7 @@
 
 - **用户级意图（User Intent）**：保存在用户个人配置目录（`<AW_HOME>/plugin-intents.json`），记录用户全局期望启用的插件集合。
 - **项目级意图（Project Intent）**：保存在当前项目根目录的声明文件中（`<projectRoot>/.agent-workflows/plugin-intents.json`），记录当前仓库共享的插件需求。
-- **本机部署偏好（DeploymentPreferences schema 2）**：记录用户在本机上选择的目标客户端平台（`codex`、`claude` 等），由 `aw plugin targets set` 维护。
+- **本机部署偏好（DeploymentPreferences schema 2）**：记录用户在本机上选择的目标客户端平台（`codex`、`claude` 等），由 `aw target set` 维护。
 - **意图与清理边界**：
   取消项目需求（Intent）仅代表逻辑诉求的移除，**绝对不授予删除共享产物或未证实归属输出的权限**。具体清理门禁参见[插件生命周期](lifecycle.md#ownership-与删除权限)。
 
@@ -30,8 +30,8 @@ flowchart TD
         F3["原因、冲突证据与建议恢复动作 (StatusV8Reason / StatusV8RecoveryAction)"]
     end
 
-    subgraph S2["顶层公开恢复状态回执 (aw-recovery-status schema 1)"]
-        R1["四态作用域计数 counts: blocked, unconfirmed, pending, ready"]
+    subgraph S2["CLI data 与 TUI 共享状态事实"]
+        R1["联合目标计数 counts: blocked, unconfirmed, pending, ready"]
         R2["插件级清单聚合 inventory: pluginId, source, blockers, targetResults"]
         R3["现场覆盖与观测 coverage / observation / content"]
     end
@@ -41,21 +41,22 @@ flowchart TD
 
 ### 2.1 公开恢复状态合同（Public Recovery Status Contract）
 
-面向外部消费、CLI JSON 输出及 TUI 投影复用的公开合同由 `packages/cli/src/recovery/status.ts` 定义：
-- `schemaVersion: 1`, `kind: 'aw-recovery-status'`。
-- **作用域与判定**：`scope`（`user | project`）、`ok: boolean`、`inSync: boolean | null`、`allSatisfied: boolean | null`。
-- **意图与偏好**：`intent: { state, digest }`，`selection: { agents, origin, preferences }`。
-- **四类聚合计数（counts）**：在 `inventory` 的根插件（`demand.roots`）上执行互斥优先级归纳：
-  - `blocked`：插件根存在阻断（`root.blockers`），或任意 target 存在 blockers、`content === 'conflict'` 或交付无法解析（`delivery === null`）。
-  - `unconfirmed`：无 blocker，但存在尚未确认所需内容的目标（`target.content === 'unknown'` 或未解析出目标）。此状态表示**所需内容的现场观测不足**，绝不是已知现场残留。
-  - `pending`：无 blocker 且无 unknown，但存在已知 `absent` 或 `drifted` 的目标（即有保存的 desired 诉求但尚未同步物化）。
-  - `ready`：所有预期组件与目标完全就绪且经校验满足要求。
+领域事实由 `packages/cli/src/recovery/status.ts` 产生，TUI 直接使用共享服务。CLI 按[统一输出合同](../../reference/cli.md)显式投影，不直接输出内部回执或 backend。
+
+- 顶层 `schemaVersion: 1`、`command: "plugin.status"`、`status` 与诊断描述本次查询是否完成。完整取得但仍需同步可以 success/0；来源读取失败、blocker 或覆盖缺口按实际返回 blocked/failed/partial。
+- `data` 保留 scope/context、requirements、target selection、inventory、extraObserved、coverage、counts、inSync 与 allSatisfied 等业务事实。内部 intent/agent 对应公共 requirements/target；未知保持 null/unknown。
+- **联合目标计数（counts）**：在本次可见 inventory 的 targetResults 上分别统计。它们不是需求根的互斥分类，不能相加推算插件数量：
+  - `blocked`：有 blocker 的目标数。
+  - `unconfirmed`：内容为 unknown 的目标数；可能与 blocked 重叠。
+  - `pending`：satisfaction 为 pending 的目标数。
+  - `ready`：内容为 satisfied 的目标数。
+  - 同一个需求根可在一个平台 ready、另一个平台 pending。额外残留独立保存在 extraObserved，不混入 unconfirmed。
 - **插件级清单（inventory）**：数组形式，汇总各插件在当前 scope 的来源信息、来源状态、阻断诊断（`blockers`）以及各平台 target 的执行结果（`targetResults: RecoveryTarget[]`）。
 - **观测与内容事实状态（RecoveryTarget）**：
   - `observation`：为现场观测事实枚举（`'verified' | 'missing' | 'unknown'`）；
   - `content`：为现场内容匹配事实枚举（`'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown'`）。两者均为**机器状态事实，绝非内容签名或哈希摘要**。
-- **独立额外残留（extraObserved）**：磁盘上观测到的额外未管理残留记录在顶层独立的 `extraObserved` 列表中，**绝不混入 `counts.unconfirmed`**。
-- **错误与覆盖**：`errors: RecoveryDiagnostic[]`，`coverage: { native, portable, scopes, projectRoot }`。
+- **独立额外残留（extraObserved）**：磁盘上观测到的额外未管理残留记录在 `data.extraObserved` 列表中，**绝不混入 `counts.unconfirmed`**。
+- **错误与覆盖**：完整诊断进入顶层 `diagnostics`；data 保留实际 coverage，明确其它项目未观察。
 
 ### 2.2 内部状态事实模型（Internal Target & Placement Facts）
 
@@ -70,7 +71,7 @@ flowchart TD
 |---|---|---|
 | `ready` | 所需能力和依赖可用；允许不改变有效使用结果的 Codex 项目重复开启 | 无 |
 | `needsSync` | desired 已保存，但组件或依赖缺失、不完整、可替换或待同步 | `aw plugin sync` 或 `aw plugin sync --rebuild` |
-| `orphaned` | 没有该范围的 desired，但实际激活或 AW-owned 扩展仍存在；用户级已启用时，无害的 Codex 原生项目重复开启除外 | `aw plugin cleanup` |
+| `orphaned` | 没有该范围的 desired，但实际激活或 AW-owned 扩展仍存在；用户级已启用时，无害的 Codex 原生项目重复开启除外 | `aw plugin remove --only outputs` |
 | `blocked` | 来源不可用，或 foreign、unreadable、collision 或其它安全问题阻止收敛 | 按 `recoveryActions` 刷新来源、清理 AW-owned 输出或手动修复 |
 | `absent` | 没有 desired intent、实际激活或需清理的范围输出；允许保留有效共享内容 | 无 |
 
@@ -216,13 +217,13 @@ sequenceDiagram
     User->>Pipeline: 触发产物刷新 (Apply)
     Pipeline->>Platform: 重新物化受影响的 Native/Portable 产物
     alt 物化成功
-        Platform-->>User: overallState: completed
+        Platform-->>User: status: success
     else 物化失败 (如依赖缺失/现场冲突)
-        Platform-->>User: overallState: partial (保留已保存配置，提供恢复指引)
+        Platform-->>User: status: partial (保留已保存配置，提供恢复指引)
     end
 ```
 
-- **Config Mutation Receipt v7**：
+- **配置写入结果**：领域内部 Config Mutation Receipt v7 经 CLI 显式投影到统一结果的 data，存储版本不变。
   - 普通保存先通过 schema 和引用预检，再提交用户文档；按请求另行准备既有输出刷新。
   - `configWrite` 精确报告 `notStarted`、`failed`、`succeeded`，独立 apply 不重复保存。
   - **已保存配置绝不回滚**：一旦原子提交完成，无论后续的平台发现、依赖解析、renderer 或 preApply 抛出何种异常，**已提交的配置文档绝不被撤销**。回执以 `partial` 或 `unavailable` 报告，并附带安全恢复指引（如 `aw plugin sync`）。

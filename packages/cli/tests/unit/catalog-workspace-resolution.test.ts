@@ -87,7 +87,7 @@ describe('CLI Catalog Workspace resolution', () => {
       cwd: root,
       mode: 'existing',
       gitRootRunner,
-    })).rejects.toThrow(`Catalog Workspace marker not found from: ${root}`)
+    })).rejects.toMatchObject({ code: 'catalogWorkspaceMissing', message: expect.stringContaining('aw dev catalog create') })
     expect(gitRootRunner).not.toHaveBeenCalled()
   })
 })

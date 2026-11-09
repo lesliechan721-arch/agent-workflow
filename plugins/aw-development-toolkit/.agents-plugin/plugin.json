@@ -30,17 +30,18 @@
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.self-check.v1",
-        "aw.plugin-authoring.v1",
+        "aw.self-check.v2",
+        "aw.plugin-authoring.v2",
         "aw.portable-skills.v1",
-        "aw.catalog-authoring.v1",
-        "aw.catalog-dev-source.v1",
-        "aw.catalog-publication.v1",
-        "aw.review-preparation.v1",
-        "aw.review-inspection.v2",
-        "aw.skill-validation.v1",
+        "aw.catalog-authoring.v2",
+        "aw.catalog-dev-source.v2",
+        "aw.catalog-publication.v2",
+        "aw.review-preparation.v2",
+        "aw.review-inspection.v3",
+        "aw.skill-validation.v2",
         "aw.managed-commands.v1",
-        "aw.claude.sandbox-exclusions.v1"
+        "aw.claude.sandbox-exclusions.v1",
+        "aw.cli-output.v1"
       ]
     }
   },

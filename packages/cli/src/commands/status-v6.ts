@@ -977,7 +977,7 @@ export function statusRecovery(options: {
         return (options.conflictRoots?.[scope] ?? []).map((rootPluginId) => ({
           command: 'uninstall' as const,
           scope,
-          description: `运行 aw plugin intent remove ${rootPluginId} --scope ${scope}，再运行 aw plugin cleanup ${rootPluginId} --target ${options.platform} --scope ${scope}，最后运行 aw plugin sync ${retainedRoot} --target ${options.platform} --context ${retainedScope}。`,
+          description: `运行 aw plugin remove ${rootPluginId} --only requirements --scope ${scope}，再运行 aw plugin remove --only outputs ${rootPluginId} --target ${options.platform} --scope ${scope}，最后运行 aw plugin sync ${retainedRoot} --target ${options.platform} --context ${retainedScope}。`,
         }));
       });
     }
@@ -994,7 +994,7 @@ export function statusRecovery(options: {
   if (options.dependencyMoves?.length) {
     const rootScope = options.desired.scopes[0] ?? 'project';
     const removeDependencies = options.dependencyMoves.map((move) =>
-      `aw plugin cleanup ${move.pluginId} --target ${options.platform} --scope ${move.fromScope}`);
+      `aw plugin remove --only outputs ${move.pluginId} --target ${options.platform} --scope ${move.fromScope}`);
     return [{
       command: 'manual',
       description: `先按依赖保护提示依次移除 ${options.dependencyMoves.map((move) => move.pluginId).join('、')} 的所有直接和间接依赖者；若命令报告 dependencyStillRequired，继续处理提示的其他依赖者。再运行 ${removeDependencies.join('，再运行 ')} 移除依赖旧位置。最后确认本机 Agent 选择，逐个按原 scope 重新添加全部已移除 root，由联合需求重新确定提供位置；当前 root 的示例命令是 aw plugin install ${options.pluginId} --scope ${rootScope}。`,

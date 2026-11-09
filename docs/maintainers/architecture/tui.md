@@ -4,6 +4,8 @@
 
 ## 当前边界与主题入口
 
+CLI 的非交互规则不改变 TUI 配置编辑、草稿和 Review。TUI 直接调用共享领域服务，不解析 CLI 文本；复制命令使用当前对象分组与 dev 入口，JSON 协议见 [CLI 合同](../../reference/cli.md)。
+
 首页有插件、插件清单、插件来源、Agent 管理四个领域入口。状态附在入口卡内，不设重复全局统计，不弹出项目恢复提醒。页面复用首页、集合列表、实体详情、编辑器、操作流程和完整阅读六类模板；依赖图是集合模板的专用渲染器，业务路由和许可阶段保留。
 
 页面投影、Reader、键盘和内部关系证据不新增 CLI 入口、Status JSON、额外 I/O、持久记录、锁或恢复状态机。主题中的来源获取、状态读取和写入仍调用已有服务。会话数据与草稿不构成部署授权。
@@ -163,11 +165,11 @@ SessionHost 持有最多 20 条安全内存记录并跨会话重载复用，记�
 | 用户任务 | CLI 能力 | TUI 入口与当前定义 |
 | --- | --- | --- |
 | 添加一个或多个插件 | `plugin install` | 插件详情或插件库多选 → 需求范围 → 操作汇总 → 结果；见[安装与批量目标](#安装与批量目标)。 |
-| 同步、重建、移除、普通清理 | `plugin sync`、`sync --rebuild`、`remove`、`cleanup` | 详情常用动作或精确平台维护；见[安装与批量目标](#安装与批量目标)。 |
+| 同步、重建、移除、普通清理 | `plugin sync`、`sync --rebuild`、`remove`、`remove --only outputs` | 详情常用动作或精确平台维护；见[安装与批量目标](#安装与批量目标)。 |
 | 按完整清单同步或同步勾选根 | `plugin sync --context user\|project` | 首页 → 插件清单 → 同步全部或所选；见[清单与位置状态](#清单与位置状态)及[确认与结果](#确认与结果)。 |
-| 查看个人或项目完整清单 | `plugin intent list`、`plugin status --context` | 首页 → 插件清单；targets 为空仍显示需求，见[清单与位置状态](#清单与位置状态)。 |
-| 设置本机 Agent 或插件排除 | `plugin targets set` | 首页 → Agent 管理；详情中的入口只对直接需求开放。见[安装与批量目标](#安装与批量目标)。 |
-| 停用已删除插件 | `plugin intent retire --scope` | 健康 Active 已删除 root 的独立退出管理入口；见[清单与位置状态](#清单与位置状态)，精确删除合同见[生命周期](lifecycle.md#停用已从-catalog-移除的插件)。 |
+| 查看个人或项目完整清单 | `plugin list --requested --scope`、`plugin status --context` | 首页 → 插件清单；targets 为空仍显示需求，见[清单与位置状态](#清单与位置状态)。 |
+| 设置本机 Agent 或插件排除 | `target set` | 首页 → Agent 管理；详情中的入口只对直接需求开放。见[安装与批量目标](#安装与批量目标)。 |
+| 停用已删除插件 | `plugin remove --scope` | 健康 Active 已删除 root 的独立退出管理入口；见[清单与位置状态](#清单与位置状态)，精确删除合同见[生命周期](lifecycle.md#停用已从-catalog-移除的插件)。 |
 | 处理受阻、未确认或修复当前 scope | 精确 selector 的 `plugin sync` 或 `sync --rebuild` | 清单或问题 → 安全处理动作；见[清单与位置状态](#清单与位置状态)及[确认与结果](#确认与结果)。 |
 | 更新一个或多个插件 | `plugin sync` | 可更新筛选、详情“更新到 X”或恢复任务；来源切换与插件升级分开确认，见[来源与插件更新](#来源与插件更新)。 |
 | 手动批量维护与范围调整 | 多 selector | 插件库 `m` → 选择工具 → 查看全部已选 → 操作汇总；见[安装与批量目标](#安装与批量目标)。 |
@@ -176,11 +178,11 @@ SessionHost 持有最多 20 条安全内存记录并跨会话重载复用，记�
 | 查看关系与移除影响 | dependency overview | 插件详情 → 依赖关系 → 统一详情或 Reader；见[依赖关系](#依赖关系)。 |
 | 查看、编辑设置和有序列表 | `plugin config`、`config set --platform` | Tab 选择 profile，左右选择分组；见[设置保存与应用](#设置保存与应用)。 |
 | 选择引用值、unset、reset、保存后应用 | `plugin config … --apply`、`unset`、`reset` | 字段编辑、设置选项或保存提示；见[设置保存与应用](#设置保存与应用)。 |
-| 来源检查、编辑与修复 | `catalog source …` | 插件来源 → 详情、编辑或完整草稿；见[来源与插件更新](#来源与插件更新)。 |
-| Catalog Store | `catalog store status/prune` | Store 页面 → 精确预览 → 显式确认；见[来源与插件更新](#来源与插件更新)。 |
+| 来源检查、编辑与修复 | `source …` | 插件来源 → 详情、编辑或完整草稿；见[来源与插件更新](#来源与插件更新)。 |
+| Catalog Store | `cache status/prune` | Store 页面 → 精确预览 → 显式确认；见[来源与插件更新](#来源与插件更新)。 |
 | 状态、诊断、操作记录和报告 | `plugin status`、安全诊断 | 问题详情、更多操作或帮助 → 操作记录 → 详情、报告预览与显式保存；见[诊断与脱敏](#诊断与脱敏)。 |
 | 安装前脚本超时 | `--script-timeout` | 会运行脚本的单插件、批量或 apply 操作汇总 → 高级选项；改值重新准备，执行只用确认值，见 [preApply](lifecycle.md#preapply)。 |
-| 受限 ownership 修复 | `plugin cleanup --force` | 单目标受限清理检查 → 新确认；见[受限 force cleanup](lifecycle.md#受限-force-cleanup)。 |
+| 受限 ownership 修复 | `plugin remove --only outputs --force` | 单目标受限清理检查 → 新确认；见[受限 force cleanup](lifecycle.md#受限-force-cleanup)。 |
 | 插件托管命令及包变化 | 插件写入、`config … --apply` | 设置编辑保留 custom-managed 分支；见[确认与结果](#确认与结果)。 |
 
 ### 明确保留的 CLI 范围
@@ -188,9 +190,9 @@ SessionHost 持有最多 20 条安全内存记录并跨会话重载复用，记�
 | 范围 | 原因 |
 | --- | --- |
 | JSON、stdin 精确值、debug、日志路径、非交互授权和自动化参数 | 机器接口；TUI 不模拟输出模式。 |
-| 任意目录 Skill materialize、validate 和 Eval | 作者工具；不属于向 Agent 安装插件的消费流程。 |
-| `review inspect` 和 `review prepare` | 作者审核工具，由 CLI 和 Review Skill 编排；不复用 TUI 安装的准备、确认或进度流程。 |
-| 插件 init、add-skill、validate、test、build、requirements | 单插件作者工作区由开发技能调用 CLI。 |
+| 任意目录 `dev skill export/validate` 和 `dev eval` | 作者工具；不属于向 Agent 安装插件的消费流程。 |
+| `dev review inspect` 和 `dev review prepare` | 作者审核工具，由 CLI 和 Review Skill 编排；不复用 TUI 安装的准备、确认或进度流程。 |
+| `dev plugin create/validate/test/build/requirements` 和 `dev skill create` | 单插件作者工作区由开发技能调用 CLI。 |
 | Catalog Workspace、开发来源、Catalog 发布、单插件作者流程和 CLI npm 发布 | 作者及发布流程继续由开发技能和 CLI 承担。 |
 | `command install/update/remove/list/show/run` 与 `command package sync/remove` | 工具目录托管、透明进程调用和独立包维护通过 CLI 提供；插件安装及 apply 中的命令变化仍在现有 Review、Progress、Result 展示。 |
 | 自描述和任意文件维护 | TUI 不复制机器输出或任意文件操作接口。 |

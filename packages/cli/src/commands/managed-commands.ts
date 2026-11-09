@@ -1,3 +1,4 @@
+import type { Confirmation } from '../output/public-result.js';
 import path from 'node:path';
 import * as fs from 'node:fs/promises';
 
@@ -44,6 +45,7 @@ export interface CommandManagementResult {
   errors: ManagedCommandDiagnostic[];
   recoveryActions: string[];
   nativeToolChanges?: NativeToolChange[];
+  confirmation?: Confirmation | null;
 }
 
 const HELP = `Usage:
@@ -126,12 +128,12 @@ function render(receipt: CommandManagementResult): string {
 }
 async function confirm(context: CliExecutionContext, options: Record<string, string | true>, message: string): Promise<void> {
   if (options['--yes']) return;
-  if (!context.interactive || !context.prompt.confirm) invalid('This write requires --yes in non-interactive mode.');
+  if (!context.interactive || !context.prompt.confirm) throw new ManagedCommandError('confirmationRequired', 'This operation requires --yes.');
   const response = await context.prompt.confirm({ message, defaultValue: false });
   if (response.cancelled || response.value !== true) invalid('The managed command write was not confirmed.');
 }
 
-export async function runManagedCommandCli(args: string[], context: CliExecutionContext, host: { cliEntry: string; cliVersion: string }): Promise<number> {
+export async function runManagedCommandCli(args: string[], context: CliExecutionContext, host: { cliEntry: string; cliVersion: string; onResult?: (receipt: CommandManagementResult) => void }): Promise<number> {
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
     // Target arguments belong to the child, including --help.
     const delimiter = args[0] === 'run' ? args.indexOf('--') : -1;
@@ -262,7 +264,12 @@ export async function runManagedCommandCli(args: string[], context: CliExecution
         message += ` Producer: ${JSON.stringify(owner.producer)}. All commands in this package will become unavailable.`;
       }
       if (nativeReview) for (const phase of ['before', 'after'] as const) if (nativeReview[phase]) message += ` Native ${nativeReview.producer.sourceId}/${nativeReview.producer.pluginName} ${phase}: ${describeNativeToolClosure(nativeReview[phase]!).join('; ')}.`;
-      await confirm(context, options, message);
+      const requiresConfirmation = action !== 'install';
+      receipt.confirmation = { required: requiresConfirmation, provided: options['--yes'] === true,
+        effects: requiresConfirmation ? [{ code: action.includes('remove') ? 'removeOwnedOutput' : 'replaceSharedOutput',
+          message: `Apply ${command} to ${positionals[0]}.`, impact: action.startsWith('package.') ? 'shared' : 'user-wide',
+          ...(action.startsWith('package.') && !exactPackage ? { subject: { pluginId: positionals[0]!, scope: textOption(options, '--scope') as 'user' | 'project' } } : {}) }] : [] };
+      if (requiresConfirmation) await confirm(context, options, message);
       if (process.platform === 'win32' && action === 'package.sync') await prepareWindowsJobHelper();
       await withAwHomeMutationLock({ env: context.env, action: execute });
     }
@@ -276,14 +283,45 @@ export async function runManagedCommandCli(args: string[], context: CliExecution
     exitCode = error instanceof ManagedCommandError && error.argumentError ? 2 : 1;
   }
   finish(receipt);
-  context.io.stdout(args.includes('--json') ? `${JSON.stringify(receipt)}\n` : render(receipt));
+  if (host.onResult) host.onResult(receipt);
+  else context.io.stdout(args.includes('--json') ? `${JSON.stringify(receipt)}\n` : render(receipt));
   return exitCode || (receipt.ok ? 0 : 1);
 }
 
-export function registerManagedCommandCli(program: Command, context: () => CliExecutionContext, host: { cliEntry: string; cliVersion: string }, setExitCode: (code: number) => void): void {
-  program.enablePositionalOptions();
-  program.command('command [arguments...]').description('Install, inspect, and run managed commands')
-    .allowUnknownOption(true).allowExcessArguments(true).passThroughOptions()
-    .addHelpText('after', HELP)
-    .action(async (args: string[]) => { setExitCode(await runManagedCommandCli(args, context(), host)); });
+export function registerManagedCommandCli(program: Command, context: (options?: { verbose?: boolean; debug?: boolean; logFile?: string }) => CliExecutionContext, host: { cliEntry: string; cliVersion: string }, setExitCode: (code: number) => void): void {
+  const group = program.command('command').description('Install, inspect, and run managed commands');
+  const packages = group.command('package').description('Manage plugin command packages');
+  const launch = ['--runner <runner>', '--entry <file>', '--args-json <json>', '--env-json <json>', '--env-from-json <json>', '--cwd <mode>'];
+  const entries: Array<{ parent: Command; name: string; args: string; flags: string[] }> = [
+    { parent: group, name: 'install', args: '<directory>', flags: ['--name <name>', ...launch, '--yes'] },
+    { parent: group, name: 'update', args: '<id>', flags: ['--from <directory>', '--name <name>', ...launch, '--yes'] },
+    { parent: group, name: 'remove', args: '<id>', flags: ['--force', '--yes'] },
+    { parent: group, name: 'list', args: '', flags: [] },
+    { parent: group, name: 'show', args: '<id>', flags: [] },
+    { parent: packages, name: 'sync', args: '<plugin> <key>', flags: ['--scope <scope>', '--yes'] },
+    { parent: packages, name: 'remove', args: '<id> [key]', flags: ['--scope <scope>', '--force', '--yes'] },
+  ];
+  for (const entry of entries) {
+    const cmd = entry.parent.command(entry.name);
+    if (entry.args) cmd.arguments(entry.args);
+    for (const flag of entry.flags) cmd.option(flag, `Set ${flag.split(' ')[0]!.slice(2)}`);
+    cmd.option('-j, --json', 'Output JSON').action(async (...args: unknown[]) => {
+      const current = args.at(-1) as Command;
+      const tokens = [...(entry.parent === packages ? ['package'] : []), entry.name, ...current.args];
+      for (const option of current.options) {
+        if (['verbose', 'debug', 'logFile'].includes(option.attributeName())) continue;
+        const value = current.getOptionValue(option.attributeName());
+        if (value === undefined || value === false) continue;
+        tokens.push(option.long!);
+        if (value !== true) tokens.push(String(value));
+      }
+      const execution = context(current.opts());
+      setExitCode(await runManagedCommandCli(tokens, execution, { ...host, onResult: execution.io.result }));
+    });
+  }
+  group.command('run').description('Run a managed command with byte and exit-code passthrough')
+    .argument('<id>').argument('[args...]').allowUnknownOption(true)
+    .action(async (_id: string, _args: string[], cmd: Command) => {
+      setExitCode(await runManagedCommandCli(['run', ...cmd.args], context(), host));
+    });
 }

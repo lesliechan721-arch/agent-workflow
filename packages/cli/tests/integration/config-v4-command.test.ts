@@ -65,20 +65,43 @@ describe('public config command', () => {
         '--value-json', JSON.stringify(mode), ...(apply ? ['--apply', '--yes'] : [])]);
       expect(await set('common', 'personal')).toMatchObject({ exitCode: 0 });
       expect(await set('claude', 'platform')).toMatchObject({ exitCode: 0 });
-      expect(await run(['plugin', 'targets', 'set', 'claude'])).toMatchObject({ exitCode: 0 });
+      expect(await run(['target', 'set', 'claude'])).toMatchObject({ exitCode: 0 });
       const installed = await run(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes']);
-      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, kind: 'aw-recovery', ok: true } });
+      expect(installed, JSON.stringify(installed)).toMatchObject({
+        exitCode: 0, payload: {
+          schemaVersion: 1,
+          status: 'success'
+        }
+      });
       const command = (await listManagedCommands(env)).commands[0]!;
       expect(command.owner).toMatchObject({ kind: 'plugin', producer: { platform: 'claude', scope: 'user', projectRoot: null } });
       expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['platform']);
       const producerBefore = await readInstalledCommandProducer(command.resourceRoot!);
-      expect(await set('common', 'shadowed-next', true)).toMatchObject({ exitCode: 0, payload: { configWrite: 'succeeded', apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] } } });
+      expect(await set('common', 'shadowed-next', true)).toMatchObject({
+        exitCode: 0, payload: {
+          schemaVersion: 1,
+          data: {
+            configWrite: 'succeeded',
+            apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] }
+          }
+        }
+      });
       expect(await readInstalledCommandProducer(command.resourceRoot!)).toEqual(producerBefore);
       expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['platform']);
-      expect(await set('claude', 'saved')).toMatchObject({ exitCode: 0, payload: { apply: { reason: 'notRequested' } } });
+      expect(await set('claude', 'saved')).toMatchObject({
+        exitCode: 0, payload: {
+          schemaVersion: 1,
+          data: { apply: { reason: 'notRequested' } }
+        }
+      });
       expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['platform']);
       const applied = await set('claude', 'applied', true);
-      expect(applied, JSON.stringify(applied)).toMatchObject({ exitCode: 0, stderr: '', payload: { apply: { state: 'succeeded', targetResults: [{ target: { platform: 'claude', scope: 'project' }, state: 'completed' }] } } });
+      expect(applied, JSON.stringify(applied)).toMatchObject({
+        exitCode: 0, payload: {
+          schemaVersion: 1,
+          data: { apply: { state: 'succeeded', targetResults: [{ target: { platform: 'claude', scope: 'project' }, state: 'completed' }] } }
+        }
+      });
       expect((await listManagedCommands(env)).commands.map((entry) => entry.id)).toEqual([command.id]);
       expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['applied']);
       expect(await fs.readFile(path.join(command.resourceRoot!, 'SKILL.md'), 'utf8')).toContain(`aw command run ${command.id} -- check`);
@@ -130,9 +153,16 @@ describe('public config command', () => {
       const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner });
       return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
     };
-    expect(await run(['plugin', 'targets', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
+    expect(await run(['target', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
     const installed = await run(['plugin', 'install', 'team/demo', '--scope', 'user', '--yes']);
-    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, kind: 'aw-recovery', ok: true } });
+    expect(installed, JSON.stringify(installed)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        command: 'plugin.install',
+        status: 'success',
+        data: { targetResults: [{ pluginId: 'team/demo', target: 'codex', scope: 'user', execution: 'applied' }] }
+      }
+    });
     const command = (await listManagedCommands(env)).commands[0]!;
     expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['old']);
     const skillPath = path.join(env.AW_HOME!, 'marketplaces/team/plugins/demo/codex/skills/provider/SKILL.md');
@@ -142,14 +172,32 @@ describe('public config command', () => {
     expect(await fs.readFile(skillPath, 'utf8')).toContain(`aw command run ${command.id} -- check`);
     const rendersBefore = await fs.readFile(renders);
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"saved"']))
-      .toMatchObject({ exitCode: 0, payload: { apply: { state: 'skipped', reason: 'notRequested' } } });
+      .toMatchObject({
+        exitCode: 0, payload: {
+          schemaVersion: 1,
+          data: { apply: { state: 'skipped', reason: 'notRequested' } }
+        }
+      });
     expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['old']);
     expect(await fs.readFile(renders)).toEqual(rendersBefore);
-    expect((await run(['plugin', 'status', '--context', 'user'])).payload).toMatchObject({ kind: 'aw-recovery-status' });
+    expect((await run(['plugin', 'status', '--context', 'user'])).payload).toMatchObject({
+      schemaVersion: 1,
+      command: 'plugin.status',
+      status: 'success',
+      data: { allSatisfied: false, coverage: { scopes: ['user'], otherProjects: 'unobserved' } }
+    });
     expect(await fs.readFile(renders)).toEqual(rendersBefore);
     const applied = await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"applied"', '--apply', '--yes']);
     expect(applied, JSON.stringify(applied))
-      .toMatchObject({ exitCode: 0, stderr: '', payload: { configWrite: 'succeeded', apply: { state: 'succeeded', targetResults: [{ state: 'completed' }] } } });
+      .toMatchObject({
+        exitCode: 0, payload: {
+          schemaVersion: 1,
+          data: {
+            configWrite: 'succeeded',
+            apply: { state: 'succeeded', targetResults: [{ state: 'completed' }] }
+          }
+        }
+      });
     expect((await listManagedCommands(env)).commands.map((entry) => entry.id)).toEqual([command.id]);
     expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['applied']);
     expect(await fs.readFile(skillPath, 'utf8')).toContain(`aw command run ${command.id} -- check`);
@@ -196,13 +244,12 @@ describe('public config command', () => {
     };
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => ({ exitCode: 0,
       stdout: invocation.args.includes('--version') ? 'codex-cli 0.200.0' : '{"installed":[],"available":[]}', stderr: '' }));
-    const run = async (args: string[], confirmation?: { accepted: boolean; messages: string[] }) => {
+    const confirm = vi.fn(async () => ({ action: 'select' as const, cancelled: false, value: true }));
+    const run = async (args: string[], interactive = false) => {
       const output = createCapturedCliIo();
-      const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: Boolean(confirmation), nativeCliRunner,
-        ...(confirmation ? { prompt: { confirm: async ({ message }: { message: string }) => {
-          confirmation.messages.push(message);
-          return { action: 'select' as const, cancelled: false, value: confirmation.accepted };
-        } } } : {}),
+      const exitCode = await runSafeCli([...args, '--json'], {
+        cwd, env, io: output.io, interactive,
+        nativeCliRunner, prompt: { confirm }
       });
       return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
     };
@@ -212,10 +259,15 @@ describe('public config command', () => {
     await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
     const packageSync = ['command', 'package', 'sync', 'team/demo', 'tools', '--scope', 'user'];
     const installed = await run([...packageSync, '--yes']);
-    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { overallState: 'completed' } });
-    const resourceRoot = installed.payload.packages[0].resourceRoot;
+    expect(installed, JSON.stringify(installed)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        status: 'success'
+      }
+    });
+    const resourceRoot = (await listManagedCommandPackages(env)).packages[0]!.resourceRoot;
     const before = await readInstalledCommandProducer(resourceRoot);
-    const commandId = installed.payload.commands[0].id;
+    const commandId = installed.payload.data.commands[0].id;
     const binding = await resolveManagedCommand(commandId, env);
     await fs.remove(marker);
 
@@ -223,29 +275,80 @@ describe('public config command', () => {
     await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
     const set = (value: string) => run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', JSON.stringify(value), '--apply', '--yes']);
     const blocked = await set('fast');
-    expect(blocked, JSON.stringify(blocked)).toMatchObject({ exitCode: 1, stderr: '', payload: {
-      configWrite: 'succeeded', overallState: 'partial', apply: { state: 'partial', commandResults: [
-        { state: 'failed', errors: [{ code: 'nativeToolSyncRequired' }], recoveryActions: [expect.stringContaining('command package sync')] },
-      ] },
-    } });
+    expect(blocked, JSON.stringify(blocked)).toMatchObject({
+      exitCode: 4, payload: {
+        schemaVersion: 1,
+        status: 'partial',
+        data: {
+          configWrite: 'succeeded',
+          apply: {
+            state: 'partial', commandResults: [
+              { state: 'failed', errors: [{ code: 'nativeToolSyncRequired' }] },
+            ]
+          }
+        },
+        diagnostics: expect.arrayContaining([expect.objectContaining({
+          code: 'nativeToolSyncRequired',
+          subject: { pluginId: 'team/demo', scope: 'user' }
+        })]),
+        nextActions: expect.arrayContaining([expect.objectContaining({
+          kind: 'command',
+          argv: ['aw', 'command', 'package', 'sync', 'team/demo', 'tools', '--scope', 'user'], requiresConfirmation: true
+        })]),
+      }
+    });
     const store = resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'demo', scope: 'user', cwd, env });
     expect((await fs.readJson(store)).common.mode).toBe('fast');
     expect(await fs.pathExists(marker)).toBe(false);
     expect(await readInstalledCommandProducer(resourceRoot)).toEqual(before);
     expect(await resolveManagedCommand(commandId, env)).toEqual(binding);
 
-    const confirmation = { accepted: true, messages: [] as string[] };
-    const synced = await run(packageSync, confirmation);
-    expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { overallState: 'completed' } });
-    expect(confirmation.messages).toHaveLength(1);
-    for (const value of ['required', 'preferred', 'fallback=portable', 'aw.windows-job.v1']) expect(confirmation.messages[0]).toContain(value);
+    const denied = await run(packageSync, true);
+    expect(denied).toMatchObject({
+      exitCode: 3, payload: {
+        command: 'command.package.sync', status: 'blocked',
+        data: {
+          confirmation: {
+            required: true, provided: false, effects: expect.arrayContaining([
+              expect.objectContaining({ code: 'replaceSharedOutput' }),
+            ])
+          }
+        },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
+      }
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(await readInstalledCommandProducer(resourceRoot)).toEqual(before);
+    expect(await resolveManagedCommand(commandId, env)).toEqual(binding);
+    const synced = await run([...packageSync, '--yes'], true);
+    expect(synced, JSON.stringify(synced)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        status: 'success',
+        data: { confirmation: { required: true, provided: true, effects: expect.arrayContaining([
+          expect.objectContaining({ code: 'replaceSharedOutput' }),
+        ]) } },
+      }
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(synced.payload.data.nativeToolChanges).toEqual([expect.objectContaining({
+      before: required.closure, after: preferred.closure,
+    })]);
     expect((await readInstalledCommandProducer(resourceRoot)).nativeTools).toEqual(preferred.closure);
-    expect(await set('next')).toMatchObject({ exitCode: 0, payload: { configWrite: 'succeeded', apply: { state: 'succeeded' } } });
+    expect(await set('next')).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        data: {
+          configWrite: 'succeeded',
+          apply: { state: 'succeeded' }
+        }
+      }
+    });
     expect(await fs.readJson(path.join(resourceRoot, 'config.json'))).toEqual({ mode: 'next' });
     expect((await readInstalledCommandProducer(resourceRoot)).nativeTools).toEqual(preferred.closure);
   });
 
-  it('returns Config Mutation v7 command results for retained packages and preserves a committed config on discovery failure', async () => {
+  it('reports retained command package apply and preserves committed config on discovery failure', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const env = isolation.env;
@@ -265,8 +368,7 @@ describe('public config command', () => {
         platforms: ['codex', 'claude'], render: true, refreshKeys: ['mode'] }], sets: [] };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(env);
-    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
-      expectedDigest: snapshot.digest, env });
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
     await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => ({ exitCode: 0,
       stdout: invocation.args.includes('--version') ? 'codex-cli 0.200.0' : '{"installed":[],"available":[]}', stderr: '' }));
@@ -278,20 +380,37 @@ describe('public config command', () => {
       return { exitCode, payload: JSON.parse(stdout), stderr: output.readStderr() };
     };
     expect(await run(['command', 'package', 'sync', 'team/demo', 'tools', '--scope', 'user', '--yes']))
-      .toMatchObject({ exitCode: 0, stderr: '', payload: { overallState: 'completed' } });
+      .toMatchObject({
+        exitCode: 0, payload: {
+          schemaVersion: 1,
+          status: 'success'
+        }
+      });
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"fast"', '--apply', '--yes']))
-      .toMatchObject({ exitCode: 0, stderr: '', payload: {
-        receiptSchemaVersion: 7, ok: true, configWrite: 'succeeded', overallState: 'succeeded',
-        apply: { state: 'succeeded', targetResults: [], commandResults: [{ state: 'completed', producer: { kind: 'package', key: 'tools', platform: null } }] },
-      } });
+      .toMatchObject({
+        exitCode: 0, payload: {
+          schemaVersion: 1,
+          status: 'success',
+          data: {
+            configWrite: 'succeeded',
+            apply: { state: 'succeeded', targetResults: [], commandResults: [{ state: 'completed', producer: { kind: 'package', key: 'tools', platform: null } }] }
+          }
+        }
+      });
     const installed = (await listManagedCommandPackages(env)).packages[0]!;
     expect(await fs.readJson(path.join(installed.resourceRoot, 'config.json'))).toEqual({ mode: 'fast' });
     await fs.writeFile(path.join(path.dirname(installed.resourceRoot), 'owner.json'), '{broken');
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"next"', '--apply', '--yes']))
-      .toMatchObject({ exitCode: 1, stderr: '', payload: {
-        receiptSchemaVersion: 7, ok: false, configWrite: 'succeeded', overallState: 'partial',
-        apply: { state: 'partial', targetResults: [], errors: [{ stage: 'targetDiscovery' }] },
-      } });
+      .toMatchObject({
+        exitCode: 4, payload: {
+          schemaVersion: 1,
+          status: 'partial',
+          data: {
+            configWrite: 'succeeded',
+            apply: { state: 'partial', targetResults: [], errors: [{ stage: 'targetDiscovery' }] }
+          }
+        }
+      });
     const store = resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'demo', scope: 'user', cwd, env });
     expect((await fs.readJson(store)).common.mode).toBe('next');
   });
@@ -323,8 +442,7 @@ describe('public config command', () => {
         skillKey: 'executor-tool', runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }] };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(env);
-    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
-      expectedDigest: snapshot.digest, env });
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
     await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
     const { nativeCliRunner } = await createCodexNativeTestRuntime({ env, layout: isolation.layout });
     const run = async (args: string[]) => {
@@ -333,16 +451,45 @@ describe('public config command', () => {
       return { exitCode, payload: JSON.parse(output.readStdout()) as Record<string, unknown>, stderr: output.readStderr() };
     };
     const describe = await run(['self', 'describe']);
-    expect(describe).toMatchObject({ exitCode: 0, stderr: '', payload: { capabilities: expect.arrayContaining(['aw.plugin-config.v4']) } });
-    expect(await run(['self', 'check', '--from', pluginRoot])).toMatchObject({ exitCode: 0, stderr: '',
-      payload: { ok: true, requiredCapabilities: expect.arrayContaining(['aw.plugin-config.v4']), missingCapabilities: [] } });
+    expect(describe).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        data: { capabilities: expect.arrayContaining(['aw.plugin-config.v4']) }
+      }
+    });
+    expect(await run(['self', 'check', '--from', pluginRoot])).toMatchObject({
+      exitCode: 0,
+      payload: {
+        schemaVersion: 1,
+        status: 'success',
+        data: {
+          requiredCapabilities: expect.arrayContaining(['aw.plugin-config.v4']),
+          missingCapabilities: []
+        }
+      }
+    });
     const oldCommands = [{ key: 'remote', title: 'Original', adapter: 'codex', args: ['', '--old'], envFrom: { TOKEN: 'HOST_TOKEN' } }];
     const set = (field: string, value: unknown) => run(['plugin', 'config', 'set', 'team/demo', field, '--context', 'user', '--value-json', JSON.stringify(value)]);
-    expect(await set('subagentCommands', oldCommands)).toMatchObject({ exitCode: 0, stderr: '', payload: { configWrite: 'succeeded' } });
-    expect(await set('advisorProfile', { executor: 'remote' })).toMatchObject({ exitCode: 0, payload: { configWrite: 'succeeded' } });
-    expect(await run(['plugin', 'targets', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
+    expect(await set('subagentCommands', oldCommands)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        data: { configWrite: 'succeeded' }
+      }
+    });
+    expect(await set('advisorProfile', { executor: 'remote' })).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        data: { configWrite: 'succeeded' }
+      }
+    });
+    expect(await run(['target', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
     const installed = await run(['plugin', 'install', 'team/demo', '--scope', 'user', '--yes']);
-    expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { kind: 'aw-recovery', ok: true } });
+    expect(installed, JSON.stringify(installed)).toMatchObject({
+      exitCode: 0, payload: {
+        schemaVersion: 1,
+        status: 'success'
+      }
+    });
     const skillRoot = path.join(env.AW_HOME!, 'marketplaces/team/plugins/demo/codex/skills/executor-tool');
     const bindingFile = path.join(skillRoot, '.aw-runtime-config.json');
     const originalBinding = await fs.readFile(bindingFile);
@@ -350,8 +497,16 @@ describe('public config command', () => {
     expect(readRuntime().effectiveValues).toEqual({ advisorProfile: { executor: 'remote' }, subagentCommands: oldCommands });
 
     const commands = [{ key: 'remote', title: 'Updated', adapter: 'oracle', args: [], env: { EMPTY: '' }, envFrom: { TOKEN: 'HOST_TOKEN' } }];
-    expect(await set('subagentCommands', commands)).toMatchObject({ exitCode: 0, stderr: '',
-      payload: { configWrite: 'succeeded', apply: { state: 'skipped', reason: 'notRequested' } } });
+    expect(await set('subagentCommands', commands)).toMatchObject({
+      exitCode: 0,
+      payload: {
+        schemaVersion: 1,
+        data: {
+          configWrite: 'succeeded',
+          apply: { state: 'skipped', reason: 'notRequested' }
+        }
+      }
+    });
     const storeFile = resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'demo', scope: 'user', cwd, env });
     const saved = await fs.readFile(storeFile);
     expect(JSON.parse(saved.toString()).common).toEqual({ advisorProfile: { executor: 'remote' }, subagentCommands: commands });
@@ -360,13 +515,28 @@ describe('public config command', () => {
     expect(await fs.readFile(bindingFile)).toEqual(originalBinding);
     expect(readRuntime().effectiveValues.subagentCommands).toEqual(oldCommands);
 
-    expect(await set('subagentCommands', [{ ...commands[0], command: process.execPath }])).toMatchObject({ exitCode: 1,
-      payload: { configWrite: 'notStarted', errors: [expect.objectContaining({ message: expect.stringContaining('command') })] } });
+    const invalid = await set('subagentCommands', [{ ...commands[0], command: process.execPath }]);
+    expect(invalid).toMatchObject({
+      exitCode: 2,
+      payload: {
+        schemaVersion: 1,
+        command: 'plugin.config.set',
+        status: 'failed',
+        diagnostics: [expect.objectContaining({ code: 'invalidArguments' })],
+        data: {}
+      }
+    });
+    expect(invalid.payload.data).toEqual({});
     expect(await fs.readFile(storeFile)).toEqual(saved);
     expect(await fs.readFile(bindingFile)).toEqual(originalBinding);
     const synced = await run(['plugin', 'sync', 'team/demo', '--target', 'codex', '--context', 'user', '--yes']);
-    expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0,
-      payload: { kind: 'aw-recovery', ok: true } });
+    expect(synced, JSON.stringify(synced)).toMatchObject({
+      exitCode: 0,
+      payload: {
+        schemaVersion: 1,
+        status: 'success'
+      }
+    });
     expect(readRuntime().effectiveValues).toEqual({ advisorProfile: { executor: 'remote' }, subagentCommands: commands });
   });
 });

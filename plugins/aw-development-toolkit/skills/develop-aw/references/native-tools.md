@@ -1,6 +1,6 @@
 # 原生工具
 
-为托管命令或 Node 插件测试声明宿主工具协议，或处理工具依赖缺失时读取。完成主 Skill 的兼容性检查后，查询 `aw plugin capabilities --surface native-tools --json`；字段、限制和错误由当前 CLI/Core 提供。
+为托管命令或 Node 插件测试声明宿主工具协议，或处理工具依赖缺失时读取。完成主 Skill 的兼容性检查后，查询 `aw dev plugin capabilities --surface native-tools --json`；字段、限制和错误由当前 CLI/Core 提供。
 
 ## 声明与构建
 

@@ -153,7 +153,7 @@ describe('catalog runtime projection', () => {
       platforms: ['codex', 'claude', 'generic'],
       buildConfig: { runtimeExports: [{
         name: 'registry', source: './registry.json',
-        requires: { aw: { capabilities: ['aw.review-inspection.v2'] } },
+        requires: { aw: { capabilities: ['aw.review-inspection.v3'] } },
       }] },
       files: { 'registry.json': '{"portable":true}\n' },
     });
@@ -200,17 +200,17 @@ describe('catalog runtime projection', () => {
       platform: 'generic',
       distribution: 'agent-skills',
       provider: 'portable-provider',
-      requiredCapabilities: ['aw.review-inspection.v2'],
+      requiredCapabilities: ['aw.review-inspection.v3'],
       capabilitySetDigest: expect.stringMatching(/^sha256:/u),
     }]);
     const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
-    expect(consumer.manifest.requires?.aw.capabilities ?? []).not.toContain('aw.review-inspection.v2');
-    expect(bundleManifest.requires.aw.capabilities).toContain('aw.review-inspection.v2');
+    expect(consumer.manifest.requires?.aw.capabilities ?? []).not.toContain('aw.review-inspection.v3');
+    expect(bundleManifest.requires.aw.capabilities).toContain('aw.review-inspection.v3');
     const resolvedImport = bundleManifest.artifacts.targets[0].runtimeImports[0].resolved;
     expect(resolvedImport).toMatchObject({
       providerPluginId: 'portable-provider',
       source: './registry.json',
-      requiredCapabilities: ['aw.review-inspection.v2'],
+      requiredCapabilities: ['aw.review-inspection.v3'],
       capabilitySetDigest: expect.stringMatching(/^sha256:/u),
     });
     await expect(fs.readFile(path.join(outputRoot, resolvedImport.path), 'utf8'))
@@ -218,7 +218,7 @@ describe('catalog runtime projection', () => {
     const bundledPlugin = await readPluginManifest(outputRoot, { mode: 'bundle' });
     await expect(createCatalogManifestV7Entry(bundledPlugin, outputRoot))
       .resolves.toMatchObject({
-        requires: { aw: { capabilities: expect.arrayContaining(['aw.review-inspection.v2']) } },
+        requires: { aw: { capabilities: expect.arrayContaining(['aw.review-inspection.v3']) } },
       });
     for (const receiptPath of [
       'claude/skills/demo/aw-plugin-requirements.json',
@@ -226,7 +226,7 @@ describe('catalog runtime projection', () => {
       'generic/skills/demo/aw-plugin-requirements.json',
     ]) {
       await expect(fs.readJson(path.join(outputRoot, receiptPath))).resolves.toMatchObject({
-        requiredCapabilities: expect.arrayContaining(['aw.review-inspection.v2']),
+        requiredCapabilities: expect.arrayContaining(['aw.review-inspection.v3']),
       });
     }
   });
@@ -240,7 +240,7 @@ describe('catalog runtime projection', () => {
       platforms: ['generic'],
       buildConfig: { runtimeExports: [{
         name: 'registry', source: './registry.json',
-        requires: { aw: { capabilities: ['aw.review-inspection.v2'] } },
+        requires: { aw: { capabilities: ['aw.review-inspection.v3'] } },
       }] },
       files: { 'registry.json': '{}\n' },
     });
@@ -269,9 +269,9 @@ describe('catalog runtime projection', () => {
     });
 
     const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
-    expect(bundleManifest.requires.aw.capabilities).toContain('aw.review-inspection.v2');
+    expect(bundleManifest.requires.aw.capabilities).toContain('aw.review-inspection.v3');
     expect(bundleManifest.artifacts.targets[0].runtimeImports[0].resolved)
-      .toMatchObject({ requiredCapabilities: ['aw.review-inspection.v2'] });
+      .toMatchObject({ requiredCapabilities: ['aw.review-inspection.v3'] });
   });
 
   it('rejects removed CLI virtual capability providers', async () => {
@@ -433,7 +433,7 @@ describe('catalog runtime projection', () => {
     const providerManifestPath = path.join(provider.rootDir, '.agents-plugin', 'plugin.json');
     const providerManifest = await fs.readJson(providerManifestPath);
     providerManifest.buildConfig.runtimeExports[0].requires.aw.capabilities = [
-      'aw.review-inspection.v2',
+      'aw.review-inspection.v3',
     ];
     await fs.writeJson(providerManifestPath, providerManifest, { spaces: 2 });
     const changedProvider = await readPluginManifest(provider.rootDir);
@@ -449,9 +449,9 @@ describe('catalog runtime projection', () => {
     expect(second.runtimeProjection.skillRuntimeFiles[0]?.capabilitySetDigest)
       .not.toBe(first.runtimeProjection.skillRuntimeFiles[0]?.capabilitySetDigest);
     expect(firstBundlePlugin.manifest.requires?.aw.capabilities ?? [])
-      .not.toContain('aw.review-inspection.v2');
+      .not.toContain('aw.review-inspection.v3');
     expect(secondBundlePlugin.manifest.requires?.aw.capabilities ?? [])
-      .toContain('aw.review-inspection.v2');
+      .toContain('aw.review-inspection.v3');
     expect(secondEntry.manifestDigest).not.toBe(firstEntry.manifestDigest);
     expect(secondEntry.contentDigest).not.toBe(firstEntry.contentDigest);
   });

@@ -4,6 +4,7 @@ import { promisify } from 'node:util'
 
 import fs from 'fs-extra'
 import {
+  CATALOG_WORKSPACE_MARKER_FILENAME,
   findNearestCatalogWorkspaceRoot,
   readCatalogWorkspaceMarker,
 } from '@lesliechan721/aw-plugin-core'
@@ -11,6 +12,15 @@ import {
 import { sanitizedGitEnvironment } from './catalog-publication-inspection.js'
 
 const execFileAsync = promisify(execFile)
+
+export class CatalogWorkspaceMissingError extends Error {
+  readonly code = 'catalogWorkspaceMissing'
+
+  constructor() {
+    super('A Catalog Workspace is required. Run aw dev catalog create to create one explicitly.')
+    this.name = 'CatalogWorkspaceMissingError'
+  }
+}
 
 export type CatalogWorkspaceResolvedFrom = 'explicit' | 'workspace-marker' | 'git-worktree' | 'cwd'
 
@@ -47,7 +57,15 @@ export async function resolveCatalogWorkspaceRoot(options: {
 }): Promise<CatalogWorkspaceResolution> {
   if (options.explicitRoot !== undefined) {
     const workspaceRoot = path.resolve(options.cwd, options.explicitRoot)
-    if (options.mode === 'existing') await readCatalogWorkspaceMarker(workspaceRoot)
+    if (options.mode === 'existing') {
+      await fs.lstat(path.join(workspaceRoot, CATALOG_WORKSPACE_MARKER_FILENAME))
+        .catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') throw new CatalogWorkspaceMissingError()
+          throw error
+        })
+      // Existing malformed or symbolic markers retain the original validation error.
+      await readCatalogWorkspaceMarker(workspaceRoot)
+    }
     return { workspaceRoot, workspaceRootResolvedFrom: 'explicit' }
   }
 
@@ -56,7 +74,7 @@ export async function resolveCatalogWorkspaceRoot(options: {
     return { workspaceRoot: ancestor, workspaceRootResolvedFrom: 'workspace-marker' }
   }
   if (options.mode === 'existing') {
-    throw new Error(`Catalog Workspace marker not found from: ${path.resolve(options.cwd)}`)
+    throw new CatalogWorkspaceMissingError()
   }
   const gitRoot = await (options.gitRootRunner ?? findGitWorktreeRoot)(
     path.resolve(options.cwd),

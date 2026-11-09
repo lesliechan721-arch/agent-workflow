@@ -41,7 +41,7 @@
     "qualification:project-consumers": "node scripts/qualification/project-consumers.mjs",
     "test:qualification:project-consumers:harness": "node --test scripts/qualification/project-consumers.test.mjs",
     "plugin:test": "pnpm --filter @lesliechan721/aw plugin:test --",
-    "plugin:status": "node packages/cli/dist/index.js plugin status --all",
+    "plugin:status": "node packages/cli/dist/index.js dev plugin status",
     "test:smoke:plugin-scripts": "pnpm --filter @lesliechan721/aw test:smoke:plugin-scripts",
     "pack:cli": "node scripts/release/pack-cli.mjs",
     "eval:runtime-owner:verify": "node scripts/verify-eval-runtime-owner.mjs",

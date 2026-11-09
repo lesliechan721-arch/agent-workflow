@@ -43,11 +43,11 @@ it('uses the built common publisher to bootstrap independent official beta and l
   ]);
   await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
   await runAw(cliEntry, workspaceRoot, [
-    'catalog', 'init', '--workspace-root', workspaceRoot,
+    'dev', 'catalog', 'create', '--workspace-root', workspaceRoot,
     '--owner-url', 'https://catalog.example.com/bootstrap-demo',
   ]);
   await runAw(cliEntry, workspaceRoot, [
-    'plugin', 'init', 'bootstrap-demo', '--description', 'Bootstrap demo.', '--no-skills',
+    'dev', 'plugin', 'create', 'bootstrap-demo', '--description', 'Bootstrap demo.', '--no-skills',
     '--workspace-root', workspaceRoot,
   ]);
   await execFileAsync('git', ['add', '.'], { cwd: workspaceRoot });
@@ -62,7 +62,7 @@ it('uses the built common publisher to bootstrap independent official beta and l
     ['latest', '92.0.0'],
   ] as const) {
     await runAw(cliEntry, workspaceRoot, [
-      'catalog', 'version', version, '--workspace-root', workspaceRoot,
+      'dev', 'catalog', 'version', version, '--workspace-root', workspaceRoot,
     ]);
     await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], {
       cwd: workspaceRoot,

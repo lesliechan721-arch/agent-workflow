@@ -23,6 +23,7 @@
 | 任务 | 必读路径 |
 | --- | --- |
 | 安装、同步、重建、移除、cleanup、共享归属 | `docs/maintainers/architecture/lifecycle.md` |
+| CLI 命令、JSON 输出、退出码或非交互边界 | `docs/reference/cli.md` |
 | 配置行为、状态证据或判定 | `docs/maintainers/architecture/config-and-status.md` |
 | TUI 页面、键盘、导航、Review、结果或诊断投影 | `docs/maintainers/architecture/tui.md` |
 | Catalog 来源、Active、缓存或 Store | `docs/maintainers/architecture/catalog-sources.md` |

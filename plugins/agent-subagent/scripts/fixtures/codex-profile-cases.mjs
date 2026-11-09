@@ -339,13 +339,13 @@ test('structured feature credential providers replace conflicting env sources on
 
 test('profile and raw paths keep their source bases while native cwd-based expressions stay unchanged', async (t) => {
   const f = await profile(t, `model_instructions_file="./instructions with space.md"\nexperimental_compact_prompt_file="missing/../compact.md"\nmodel_catalog_json="catalog.json"\nsqlite_home="state"\nlog_dir="logs"\n[sandbox_workspace_write]\nwritable_roots=["data"]\n[agents.research]\nconfig_file="agents/research.toml"\nfuture_path="untouched"\n[skills]\nconfig=[{path="skills/local",enabled=true}]\n[mcp_servers.local]\ncommand="./bin/server"\ncwd="relative-server"\nargs=["relative-argument"]\n[permissions.dev]\nworkspace_roots={"relative-root"=true}\nfilesystem={"relative-path"="read"}\n[otel.exporter.otlp-http.tls]\nca-certificate="certificates/ca.pem"`);
-  f.request.args = ['-c', 'model_catalog_json="raw catalog.json"', '-c', 'agents.writer.config_file="agents/writer.toml"'];
+  f.request.args = ['-c', 'model_catalog_json="raw dev catalog.json"', '-c', 'agents.writer.config_file="agents/writer.toml"'];
   const c = await codexConfiguration(f.request, f.environment);
   const launch = Object.assign({}, ...c.argv.filter((_, index) => c.argv[index - 1] === '-c').map(parseConfigArgument));
   const home = path.dirname(f.file);
   assert.equal(c.thread.config.model_instructions_file, path.join(home, 'instructions with space.md'));
   assert.equal(c.thread.config.experimental_compact_prompt_file, path.join(home, 'compact.md'));
-  assert.equal(launch.model_catalog_json, path.join(root, 'raw catalog.json'));
+  assert.equal(launch.model_catalog_json, path.join(root, 'raw dev catalog.json'));
   assert.equal(launch.sqlite_home, path.join(home, 'state'));
   assert.equal(launch.log_dir, path.join(home, 'logs'));
   assert.deepEqual(c.thread.config.sandbox_workspace_write.writable_roots, [path.join(home, 'data')]);
