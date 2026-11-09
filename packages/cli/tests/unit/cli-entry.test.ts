@@ -59,8 +59,35 @@ describe('CLI entry', () => {
     expect(install.stdout()).not.toContain('--dependency-scope');
     const cleanup = capture();
     expect(await runCli(['plugin', 'remove', '--help'], { io: cleanup.io })).toBe(0);
-    for (const flag of ['--scope', '--target', '--yes', '--force']) expect(cleanup.stdout()).toContain(flag);
+    for (const flag of ['--scope', '--target', '--yes', '--force', '--keep-dependencies']) expect(cleanup.stdout()).toContain(flag);
   });
+
+  it.each([
+    ['remove', ['--only', 'requirements', '--force'], 'force'],
+    ['remove', ['--only', 'requirements', '--keep-dependencies'], 'keepDependencies'],
+    ['remove', ['--only', 'outputs', '--target', 'cursor', '--keep-dependencies'], 'keepDependencies'],
+  ] as const)('rejects unsupported dependency options on %s %j before business work', async (command, flags, field) => {
+    const output = capture();
+    expect(await runCli([
+      'plugin', command, 'team/demo', '--scope', 'user', ...flags, '--json',
+    ], { io: output.io })).toBe(2);
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      command: `plugin.${command}`, status: 'failed', data: {},
+      diagnostics: [{ code: 'invalidOptionValue', subject: { field } }],
+    });
+  });
+
+  it.each(['install', 'sync', 'status'])(
+    'rejects --keep-dependencies on %s', async (command) => {
+      const output = capture();
+      expect(await runCli([
+        'plugin', command, 'team/demo', ...(command === 'install' ? ['--scope', 'user'] : []),
+        '--keep-dependencies', '--json',
+      ], { io: output.io })).toBe(2);
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        command: `plugin.${command}`, status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }],
+      });
+    });
 
   it('publishes preApply timeout only on commands that can run preApply', async () => {
     for (const command of [['install'], ['sync'], ['config', 'set'], ['config', 'unset'], ['config', 'reset'], ['config', 'apply']]) {

@@ -249,7 +249,8 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
     await write(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(requests).toEqual([expect.objectContaining({ kind: 'recovery', command: 'reinstall',
-      scope: 'user', selectors: [pluginId], exactTargets: [{ pluginId, agent: 'codex' }] })]);
+      scope: 'user', selectors: [pluginId], allowDependencySelectors: true,
+      exactTargets: [{ pluginId, agent: 'codex' }] })]);
     expect(instance.lastFrame()).toContain('所有项目');
     await write(instance, 'd');
     expect(instance.lastFrame()).toContain('范围：个人（所有项目）');
@@ -261,6 +262,95 @@ async function focusAction(instance: ReturnType<typeof render>, label: string): 
     expect(executeScopedTask).toHaveBeenCalledOnce();
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
     value.dispose();
+  });
+
+  // Test Value Gate: removing orphan dependencies requires explicit authorization after the full Review.
+  it.each([[80, 24], [60, 18]] as const)(
+    'lists dependency cleanup and requires a second confirmation at %ix%i', async (columns, rows) => {
+      const dispose = vi.fn(async () => {});
+      const prepareScopedTask = vi.fn(async (request: ScopedRequest): Promise<ScopedTuiPlan> => {
+        if (request.kind !== 'recovery') throw new Error('Expected a recovery request.');
+        return { kind: 'recovery', scope: request.scope, plan: {
+          command: 'uninstall', options: { scope: request.scope },
+          changes: [], warnings: [], nativeGroups: [], portableGroups: [],
+          context: { dispose }, receipt: receipt(request),
+          dependencyCleanupTargets: [
+            { pluginId: 'official/agent-subagent', agent: 'codex', scope: 'user' },
+            { pluginId: 'official/decision-kit', agent: 'claude', scope: 'user' },
+          ],
+          plannedImpact: { declaration: true, preferences: false, config: false, outputs: true },
+        } } as ScopedTuiPlan;
+      });
+      const { value, executeScopedTask } = fixture(false, { prepareScopedTask });
+      try {
+        await value.load();
+        value.push({ name: 'pluginDetail', pluginId });
+        const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+        await focusAction(instance, '卸载');
+        await write(instance, '\r');
+        await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+        expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
+          command: 'uninstall', scope: 'user', selectors: [pluginId],
+        }), expect.any(AbortSignal));
+        const reviewPages: string[] = [];
+        for (let page = 0; page < 12; page += 1) {
+          const frame = instance.lastFrame() ?? '';
+          expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
+          expect(frame.split('\n').every((line) => stringWidth(line) <= columns)).toBe(true);
+          if (reviewPages.at(-1) === frame) break;
+          reviewPages.push(frame);
+          await write(instance, '\u001b[C');
+        }
+        expect(reviewPages.join('\n')).toContain('agent-subagent');
+        expect(reviewPages.join('\n')).toContain('decision-kit');
+        expect(reviewPages.join('\n')).toContain('Codex');
+        expect(reviewPages.join('\n')).toContain('Claude');
+        expect(reviewPages.join('\n')).toContain('所有项目');
+        await write(instance, '\r');
+        expect(instance.lastFrame()).toContain('请确认本次风险');
+        expect(instance.lastFrame()).toContain('› 返回检查');
+        expect(executeScopedTask).not.toHaveBeenCalled();
+        await write(instance, '\r');
+        expect(instance.lastFrame()).not.toContain('请确认本次风险');
+        expect(executeScopedTask).not.toHaveBeenCalled();
+        await write(instance, '\r');
+        await write(instance, '\u001b[B');
+        await write(instance, '\r');
+        await vi.waitFor(() => expect(executeScopedTask).toHaveBeenCalledOnce());
+        instance.unmount();
+      } finally { value.dispose(); }
+    },
+  );
+
+  it('discards dependency cleanup after cancelling its risk confirmation without executing writes', async () => {
+    const { value, prepareScopedTask, executeScopedTask, disposals } = fixture();
+    prepareScopedTask.mockImplementation(async (request) => {
+      if (request.kind !== 'recovery') throw new Error('Expected a recovery request.');
+      const dispose = vi.fn(async () => {});
+      disposals.push(dispose);
+      return { kind: 'recovery', scope: request.scope, plan: { command: 'uninstall',
+        options: { scope: request.scope }, changes: [], warnings: [], nativeGroups: [], portableGroups: [],
+        context: { dispose }, receipt: receipt(request),
+        dependencyCleanupTargets: [{ pluginId: 'official/dependency', agent: 'codex', scope: 'user' }],
+        plannedImpact: { declaration: true, preferences: false, config: false, outputs: true },
+      } } as ScopedTuiPlan;
+    });
+    try {
+      await value.load();
+      value.push({ name: 'pluginDetail', pluginId });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await focusAction(instance, '卸载');
+      await write(instance, '\r');
+      await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+      await write(instance, '\r');
+      expect(instance.lastFrame()).toContain('请确认本次风险');
+      await escape(instance);
+      expect(instance.lastFrame()).not.toContain('请确认本次风险');
+      await escape(instance);
+      await vi.waitFor(() => expect(disposals[0]).toHaveBeenCalledOnce());
+      expect(executeScopedTask).not.toHaveBeenCalled();
+      instance.unmount();
+    } finally { value.dispose(); }
   });
 
   it('cancels the scoped restore Review and releases its prepared context', async () => {

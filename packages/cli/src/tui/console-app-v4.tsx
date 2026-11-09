@@ -160,7 +160,7 @@ import {
 } from './model.js';
 import type { ScopedTuiPlan } from './scoped-flow.js';
 import { managedCommandPlanChanges } from './operation-review-planner.js';
-import type { RecoveryReceipt } from '../recovery/receipt.js';
+import type { RecoveryReceipt, RecoveryTarget } from '../recovery/receipt.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
 import type { ConfigRouteLayer, PluginInstallFilter, TuiPageContext, TuiRoute } from './router.js';
@@ -217,6 +217,27 @@ type ScopedUiFlow =
   | { stage: 'result'; scope: Scope; plan?: ScopedTuiPlan; receipt?: RecoveryReceipt;
       request?: ScopedTaskRequest; changed?: boolean; errorCode?: string; focus: number };
 
+function scopedDependencyCleanupTargets(plan: ScopedTuiPlan): Array<Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope'>> {
+  if (plan.kind !== 'recovery') return [];
+  const targets = new Map<string, Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope'>>();
+  const visit = (entry: typeof plan.plan): void => {
+    for (const target of entry.dependencyCleanupTargets ?? []) {
+      const key = `${target.pluginId}\0${target.agent}\0${target.scope}`;
+      targets.set(key, target);
+    }
+    for (const child of entry.joint?.children ?? []) visit(child);
+  };
+  visit(plan.plan);
+  return [...targets.values()];
+}
+
+function scopedDependencyCleanupLines(plan: ScopedTuiPlan, technical = false): string[] {
+  return scopedDependencyCleanupTargets(plan).flatMap((target) => [
+    `− 清理不再需要的依赖：${technical ? target.pluginId : recoveryPluginLabel(target.pluginId)}`,
+    `  → ${agentLabel(target.agent)} · ${scopeLabel(target.scope)}`,
+  ]);
+}
+
 function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
   if (plan.kind === 'targets' || plan.kind === 'intent') return [];
   if (plan.kind === 'retire') return [
@@ -225,6 +246,10 @@ function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
       ? ['本次会清理个人原生输出，可能影响其他项目。'] : []),
   ];
   const reasons: string[] = [];
+  const dependencyCleanup = scopedDependencyCleanupTargets(plan);
+  if (dependencyCleanup.length > 0) {
+    reasons.push(`本次还会清理 ${dependencyCleanup.length} 个不再需要的依赖位置；请确认所列依赖。`);
+  }
   const visit = (entry: typeof plan.plan): void => {
     reasons.push(...entry.nativeGroups.flatMap((group) =>
       (group.preview.codexReconcilePlans ?? []).filter((item) => item.review.requiresConfirmation)
@@ -295,7 +320,7 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
   ].join('\n');
   const receipt = plan.plan.receipt;
   const lines = [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(plan.scope),
-    ...recoveryTargetLines(receipt, false)];
+    ...recoveryTargetLines(receipt, false), ...scopedDependencyCleanupLines(plan)];
   if (plan.kind === 'recovery' && plan.plan.sourceRefreshes?.length) {
     lines.unshift(...plan.plan.sourceRefreshes.map((refresh) => `↻ 启用来源 ${refresh.sourceId} 的候选版本`),
       '来源启用后，将重新准备插件操作汇总；本次不会直接更新插件。');
@@ -368,6 +393,7 @@ function scopedPlanText(plan: ScopedTuiPlan, technical = false): string {
       ? plan.kind === 'retire' ? '删除当前范围本机依赖覆盖' : '保存当前范围明确选择的依赖偏好' : '无'}`,
     `配置变更（计划）：${impact.config ? '删除所选插件的全部本机配置（common 与所有平台）' : '无'}`,
     `输出变更（计划）：${impact.outputs ? '执行所列精确目标' : '无可执行输出变更'}`,
+    ...scopedDependencyCleanupLines(plan, true),
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '不支持'} · ${target.blockers.length
       ? `受阻：${target.blockers.map((blocker) => blocker.code).join('、')}` : target.observation}`),
     ...diagnostics,
@@ -3250,6 +3276,7 @@ export function ConsoleAppV4(props: {
         agent: agentForPlatform(target.platform) }));
       beginScopedTask({ kind: 'recovery', scope: intent.targets[0]!.scope,
         command: intent.goal === 'update' ? 'reinstall' : 'sync',
+        ...(intent.goal === 'update' ? { allowDependencySelectors: true } : {}),
         selectors: [...new Set(exactTargets.map((target) => target.pluginId))],
         targets: [...new Set(exactTargets.map((target) => target.agent))], exactTargets,
         ...(intent.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: intent.scriptTimeoutMs } : {}) });
