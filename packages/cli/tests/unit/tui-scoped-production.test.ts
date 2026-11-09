@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
-import { addRoot, observeIntent } from '../../src/intent/intent-store.js';
+import { addRoot, observeIntent, removeRoot } from '../../src/intent/intent-store.js';
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
@@ -14,12 +14,13 @@ import { syncCatalogSourceGeneration, type CatalogGenerationServiceRuntime } fro
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
+import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-async function fixture(portable = false) {
+async function fixture(portable = false, dependency = false) {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = path.join(isolation.layout.fixtureCwd, 'project');
   const source = path.join(isolation.layout.fixtureCwd, 'catalog');
@@ -35,6 +36,7 @@ async function fixture(portable = false) {
     await fs.outputJson(path.join(source, 'plugins/demo/.app.json'), { apps: {} });
     const configure: NonNullable<Parameters<typeof createCatalogSnapshotFixture>[4]> = (manifest) => {
       manifest.version = version;
+      if (dependency) manifest.dependencies = ['dependency'];
       manifest.apps = './.app.json';
       if (portable) {
         manifest.skills = './skills';
@@ -61,10 +63,34 @@ async function fixture(portable = false) {
       await fs.writeJson(file, { ...await fs.readJson(file), skills: `./${platform}/skills`,
         ...(platform === 'codex' ? { apps: './codex/.app.json' } : {}) });
     }
+    if (dependency) {
+      const marketplacePath = path.join(source, '.agents/plugins/marketplace.json');
+      const claudeMarketplacePath = path.join(source, '.claude-plugin/marketplace.json');
+      const marketplace = await fs.readJson(marketplacePath);
+      const claudeMarketplace = await fs.readJson(claudeMarketplacePath);
+      await fs.outputJson(path.join(source, 'plugins/dependency/.app.json'), { apps: {} });
+      await createCatalogSnapshotFixture(source, 'dependency', [], 'Dependency', (manifest) => {
+        manifest.version = version;
+        manifest.platforms = ['codex', 'claude'];
+        manifest.apps = './.app.json';
+      });
+      await fs.outputJson(path.join(source, 'plugins/dependency/codex/.app.json'), { apps: {} });
+      const platformManifestPath = path.join(source, 'plugins/dependency/.codex-plugin/plugin.json');
+      await fs.writeJson(platformManifestPath, { ...await fs.readJson(platformManifestPath),
+        apps: './codex/.app.json' });
+      const dependencyMarketplace = await fs.readJson(marketplacePath);
+      const dependencyClaudeMarketplace = await fs.readJson(claudeMarketplacePath);
+      await fs.writeJson(marketplacePath, { ...marketplace,
+        plugins: [...marketplace.plugins, ...dependencyMarketplace.plugins] });
+      await fs.writeJson(claudeMarketplacePath, { ...claudeMarketplace,
+        plugins: [...claudeMarketplace.plugins, ...dependencyClaudeMarketplace.plugins] });
+    }
     const catalogPath = path.join(source, 'catalog-manifest.json');
     await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries: [
       await createCatalogManifestV7Entry(await readPluginManifest(path.join(source, 'plugins/demo'), { mode: 'bundle' }),
         path.join(source, 'plugins/demo')),
+      ...(dependency ? [await createCatalogManifestV7Entry(await readPluginManifest(
+        path.join(source, 'plugins/dependency'), { mode: 'bundle' }), path.join(source, 'plugins/dependency'))] : []),
     ] });
     await syncCatalogSourceGeneration({ sourceId: 'local', env, cliVersion: '1.0.0' });
   };
@@ -87,6 +113,84 @@ async function fixture(portable = false) {
 }
 
 describe('scoped TUI production reads', () => {
+  // Test Value Gate: an exact root removal must retain the reviewed dependency cleanup after the last declaration is removed.
+  it('removes an exact last Native root and disables its orphan dependency through the scoped runtime', async () => {
+    const value = await fixture(false, true);
+    await removeRoot({ ...value, scope: 'project' }, 'local/demo');
+    const otherIntent = await observeIntent({ ...value, scope: 'project' });
+    const runtime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
+    value.context.nativeCliRunner = runtime.nativeCliRunner;
+    const dependencies = createTuiControllerDependencies(value.context);
+    const initial = await dependencies.prepareScopedTask!({ kind: 'recovery', command: 'sync',
+      scope: 'user', selectors: ['local/demo'], targets: ['codex'] }, new AbortController().signal);
+    try {
+      expect(await dependencies.executeScopedTask!(initial)).toMatchObject({ kind: 'recovery', receipt: { ok: true } });
+      expect(runtime.installed.size).toBe(2);
+    } finally { if (initial.kind === 'recovery') await initial.plan.context.dispose(); }
+    const installedIds = [...runtime.installed.keys()];
+    const configPath = path.join(value.env.CODEX_HOME!, 'config.toml');
+    const beforeConfig = await readCodexConfigFile(configPath);
+    expect(installedIds.map((id) => beforeConfig.snapshot.plugins[id]?.enabled)).toEqual([true, true]);
+    const plan = await dependencies.prepareScopedTask!({ kind: 'recovery', command: 'uninstall',
+      scope: 'user', selectors: ['local/demo'], targets: ['codex'],
+      exactTargets: [{ pluginId: 'local/demo', agent: 'codex' }] }, new AbortController().signal);
+    try {
+      if (plan.kind !== 'recovery') throw new Error('Expected a recovery Review.');
+      expect(plan.plan.blockExecution).toBe(false);
+      expect(plan.plan.receipt.blockers).toEqual([]);
+      expect(plan.plan.receipt.errors).toEqual([]);
+      expect(plan.plan.dependencyCleanupTargets).toEqual([
+        { pluginId: 'local/dependency', agent: 'codex', scope: 'user' },
+      ]);
+      const removed = await dependencies.executeScopedTask!(plan);
+      expect(removed, JSON.stringify(removed)).toMatchObject({ kind: 'recovery', receipt: {
+        ok: true, declarationChanged: true,
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({ pluginId: 'local/demo', agent: 'codex', execution: 'applied' }),
+          expect.objectContaining({ pluginId: 'local/dependency', agent: 'codex', execution: 'applied' }),
+        ]),
+      } });
+      const afterConfig = await readCodexConfigFile(configPath);
+      expect(installedIds.map((id) => afterConfig.snapshot.plugins[id]?.enabled)).toEqual([false, false]);
+      expect([...runtime.installed.keys()]).toEqual(installedIds);
+      expect(await observeIntent({ ...value, scope: 'user' })).toMatchObject({ state: 'valid', value: { roots: [] } });
+      expect(await observeIntent({ ...value, scope: 'project' })).toEqual(otherIntent);
+    } finally { if (plan.kind === 'recovery') await plan.plan.context.dispose(); }
+  });
+
+  // Test Value Gate: updating an installed dependency must not add it as an Intent root.
+  it('updates an exact dependency target without changing either scope declaration', async () => {
+    const value = await fixture(false, true);
+    const runtime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
+    value.context.nativeCliRunner = runtime.nativeCliRunner;
+    const dependencies = createTuiControllerDependencies(value.context);
+    const initial = await dependencies.prepareScopedTask!({ kind: 'recovery', command: 'sync',
+      scope: 'user', selectors: ['local/demo'], targets: ['codex'] }, new AbortController().signal);
+    const installed = await dependencies.executeScopedTask!(initial);
+    expect(installed, JSON.stringify(installed)).toMatchObject({ kind: 'recovery', receipt: { ok: true } });
+    if (initial.kind === 'recovery') await initial.plan.context.dispose();
+    await value.generation('2.0.0');
+    const beforeUser = await observeIntent({ ...value, scope: 'user' });
+    const beforeProject = await observeIntent({ ...value, scope: 'project' });
+    const plan = await dependencies.prepareScopedTask!({ kind: 'recovery', command: 'reinstall',
+      scope: 'user', selectors: ['local/dependency'], targets: ['codex'],
+      exactTargets: [{ pluginId: 'local/dependency', agent: 'codex' }],
+      allowDependencySelectors: true }, new AbortController().signal);
+    try {
+      if (plan.kind !== 'recovery') throw new Error('Expected a recovery Review.');
+      expect(plan.plan.blockExecution).toBe(false);
+      expect(plan.plan.receipt.blockers).toEqual([]);
+      expect(plan.plan.plannedImpact.declaration).toBe(false);
+      expect(plan.plan.receipt.requestedTargets).toContainEqual(expect.objectContaining({
+        pluginId: 'local/dependency', agent: 'codex', scope: 'user' }));
+      expect(await dependencies.executeScopedTask!(plan)).toMatchObject({ kind: 'recovery',
+        receipt: { ok: true, declarationChanged: false } });
+      expect([...runtime.installed.values()]).toContain('2.0.0');
+      expect(await observeIntent({ ...value, scope: 'user' })).toEqual(beforeUser);
+      expect(await observeIntent({ ...value, scope: 'project' })).toEqual(beforeProject);
+    } finally { if (plan.kind === 'recovery') await plan.plan.context.dispose(); }
+  });
+
   it.each([['user', true], ['user', false], ['project', true], ['project', false]] as const)(
     'requires reload after Active changes for %s (cached content: %s)', async (scope, cached) => {
     const value = await fixture();

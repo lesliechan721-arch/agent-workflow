@@ -283,6 +283,7 @@ describe('TUI scoped recovery runtime', () => {
 
     const plan = await dependencies.prepareScopedTask!({
       kind: 'recovery', scope: 'project', command: 'sync', selectors: ['team/demo'],
+      allowDependencySelectors: true,
       targets: ['codex'], exactTargets: [{ pluginId: 'team/demo', agent: 'codex' }],
       scriptTimeoutMs: 12_000,
       dependencyScopeOverrides: [{ pluginId: 'team/dependency', platform: 'codex', scope: 'user' }],
@@ -290,6 +291,7 @@ describe('TUI scoped recovery runtime', () => {
     expect(runtimeMocks.prepareRecovery).toHaveBeenCalledWith('sync', ['team/demo'],
       expect.objectContaining({ scope: 'project', cwd: context.cwd, env: context.env,
         all: false, targets: ['codex'], exactTargets: [{ pluginId: 'team/demo', agent: 'codex' }],
+        allowDependencySelectors: true,
         scriptTimeoutMs: 12_000,
         dependencyScopeOverrides: [{ pluginId: 'team/dependency', platform: 'codex', scope: 'user' }],
       }), context);

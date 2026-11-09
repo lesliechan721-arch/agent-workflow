@@ -68,6 +68,9 @@ export interface RecoveryOptions {
   scope?: Scope;
   context?: Scope;
   existingOnly?: boolean;
+  /** Internal precise updates may select members of the complete desired closure. */
+  allowDependencySelectors?: boolean;
+  keepDependencies?: boolean;
   retireUnselectedTargets?: boolean;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -123,6 +126,7 @@ export interface RecoveryPlan {
   options: RecoveryOptions & { scope: Scope };
   joint?: JointRecoveryState;
   receipt: RecoveryReceipt;
+  dependencyCleanupTargets?: Array<Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope'>>;
   plannedImpact: { declaration: boolean; preferences: boolean; config: boolean; outputs: boolean };
   changes: string[];
   warnings: string[];
@@ -1288,6 +1292,7 @@ export function describeRecoveryPlan(plan: RecoveryPlan): unknown {
     environment: { homes: child.context.targetHomes, projectRoot: child.context.projectRoot, awHome: child.context.awHome },
   });
   return { inputs: plan.joint?.evidence ?? [plan.originalIntent, plan.preferencesEvidence],
-    command: plan.command, declaration: plan.joint?.declaration, packages: plan.runtime.configApplyPackages ? { targets: plan.runtime.configApplyPackages.targets, evidence: plan.runtime.configApplyPackages.evidence } : undefined, blockers: plan.receipt.blockers,
+    command: plan.command, dependencyCleanupTargets: plan.dependencyCleanupTargets,
+    declaration: plan.joint?.declaration, packages: plan.runtime.configApplyPackages ? { targets: plan.runtime.configApplyPackages.targets, evidence: plan.runtime.configApplyPackages.evidence } : undefined, blockers: plan.receipt.blockers,
     children: (plan.joint?.children ?? [plan]).map(describe) };
 }

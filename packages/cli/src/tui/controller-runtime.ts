@@ -2103,6 +2103,7 @@ export function createTuiControllerDependencies(
         scope: request.scope, cwd: context.cwd, env: context.env,
         cliVersion: packageInfo.version,
         all: request.selectors.length === 0,
+        ...(request.allowDependencySelectors ? { allowDependencySelectors: true } : {}),
         ...(request.targets ? { targets: request.targets } : {}),
         ...(request.force ? { force: true } : {}),
         ...(request.refresh ? { refresh: true } : {}),

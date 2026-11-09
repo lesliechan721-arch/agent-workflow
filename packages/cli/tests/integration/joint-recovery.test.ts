@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
@@ -14,8 +14,10 @@ import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recover
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
+import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 
-async function fixture(collide = false, platforms: Array<'cursor' | 'pi' | 'generic' | 'antigravity'> = ['cursor'], switchHook = false) {
+async function fixture(collide = false, platforms: Array<'cursor' | 'pi' | 'generic' | 'antigravity'> = ['cursor'], switchHook = false, graph: Record<string, string[]> = { a: ['d'], b: ['d'], d: [] }) {
+  const names = Object.keys(graph).sort();
   const skill = (name: string) => collide && name === 'b' ? 'a' : name;
   const isolation = getCurrentSourceTestIsolation();
   const cwd = path.join(isolation.layout.fixtureCwd, 'joint-project');
@@ -23,22 +25,22 @@ async function fixture(collide = false, platforms: Array<'cursor' | 'pi' | 'gene
   const hookTrace = path.join(cwd, 'hook-trace.jsonl');
   const hookFailure = path.join(cwd, 'fail-user-cursor');
   await fs.ensureDir(cwd); await git(cwd, ['init', '--quiet']);
-  for (const name of ['a', 'b', 'd']) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'SKILL.md'),
+  for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'SKILL.md'),
     `---\nname: ${skill(name)}\ndescription: Test ${name}\n---\nUse ${name}.\n`);
-  for (const name of ['a', 'b', 'd']) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'README.md'), `Use ${name}.\n`);
-  for (const name of ['a', 'b', 'd']) for (const platform of platforms) await fs.copy(path.join(source, 'plugins', name, 'skills'), path.join(source, 'plugins', name, platform, 'skills'));
-  if (switchHook) for (const name of ['a', 'b', 'd']) await fs.outputFile(path.join(source, 'plugins', name, 'pre-apply.mjs'), [
+  for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'README.md'), `Use ${name}.\n`);
+  for (const name of names) for (const platform of platforms) await fs.copy(path.join(source, 'plugins', name, 'skills'), path.join(source, 'plugins', name, platform, 'skills'));
+  if (switchHook) for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'pre-apply.mjs'), [
     "import fs from 'node:fs'; const c = JSON.parse(fs.readFileSync(0, 'utf8'));",
     `fs.appendFileSync(${JSON.stringify(hookTrace)}, JSON.stringify({ plugin: c.plugin.name, platform: c.target.platform, scope: c.target.scope }) + '\\n');`,
     `if (fs.existsSync(${JSON.stringify(hookFailure)}) && c.plugin.name === 'd' && c.target.platform === 'cursor' && c.target.scope === 'user') process.exit(23);`,
   ].join('\n'));
-  await createDependencyCatalogSnapshotFixture(source, ['a', 'b', 'd'].map((name) => ({ name,
-    ...(name !== 'd' ? { dependencies: ['d'] } : {}), configureManifest: (manifest) => {
+  await createDependencyCatalogSnapshotFixture(source, names.map((name) => ({ name,
+    ...(graph[name]!.length ? { dependencies: graph[name] } : {}), configureManifest: (manifest) => {
       manifest.platforms = platforms; manifest.skills = './skills'; delete manifest.extensions;
       if (switchHook) manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
     } })));
   const entries = [];
-  for (const name of ['a', 'b', 'd']) {
+  for (const name of names) {
     const root = path.join(source, 'plugins', name);
     const plugin = await readPluginManifest(root, { mode: 'bundle' });
     const receipt = createAwPluginRequirementsReceipt({ name, version: '1.0.0' }, plugin.manifest.requires?.aw.capabilities ?? []);
@@ -58,7 +60,7 @@ async function fixture(collide = false, platforms: Array<'cursor' | 'pi' | 'gene
   await writeIntent({ ...options, scope: 'user' }, intent('a'));
   await writeIntent({ ...options, scope: 'project' }, intent('b'));
   await setTargets({ ...options, scope: 'user' }, ['cursor']);
-  return { options, cwd, hookTrace, hookFailure, userRoot: path.join(isolation.env.HOME!, '.cursor', 'skills'), projectRoot: path.join(cwd, '.cursor', 'skills') };
+  return { options, cwd, source, hookTrace, hookFailure, userRoot: path.join(isolation.env.HOME!, '.cursor', 'skills'), projectRoot: path.join(cwd, '.cursor', 'skills') };
 }
 
 async function expectSavedIntent(receipt: RecoveryReceipt, location: Parameters<typeof observeIntent>[0]) {
@@ -91,7 +93,7 @@ describe('joint recovery through real Catalog and owned Portable outputs', () =>
     expect(unchanged.ok).toBe(true);
     expect(unchanged.declarationChanged).toBe(false);
     expect(unchanged.intent).toEqual(added.intent);
-    const removed = await runRecovery('uninstall', ['team/d'], location);
+    const removed = await runRecovery('uninstall', ['team/d'], { ...location, force: true });
     expect(removed.ok).toBe(true);
     expect(removed.declarationChanged).toBe(true);
     await expectSavedIntent(removed, location);
@@ -250,10 +252,11 @@ describe('joint recovery through real Catalog and owned Portable outputs', () =>
     expect(await fs.pathExists(path.join(value.projectRoot, 'd'))).toBe(false);
     expect(await fs.pathExists(path.join(value.projectRoot, 'b'))).toBe(false);
   }, 30000);
-  it('moves a shared dependency to project when its last user root is removed without garbage collecting it', async () => {
+  it('moves a shared dependency to project and cleans it after the last project root is removed', async () => {
     const value = await fixture();
     expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
-    const removed = await runRecovery('uninstall', ['team/a'], { ...value.options, scope: 'user' });
+    const removed = await runRecovery('uninstall', ['team/a'], { ...value.options, scope: 'user',
+      exactTargets: [{ pluginId: 'team/a', agent: 'cursor', scope: 'user' }] });
     expect(removed.ok, JSON.stringify(removed, null, 2)).toBe(true);
     await expectSavedIntent(removed, { ...value.options, scope: 'user' });
     expect(removed.intent.roots).toEqual([]);
@@ -261,13 +264,246 @@ describe('joint recovery through real Catalog and owned Portable outputs', () =>
     expect(await fs.pathExists(path.join(value.userRoot, 'd'))).toBe(false);
     expect(await fs.pathExists(path.join(value.projectRoot, 'd', 'SKILL.md'))).toBe(true);
     expect(await observeIntent({ ...value.options, scope: 'project' })).toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
-    const last = await runRecovery('uninstall', ['team/b'], { ...value.options, scope: 'project' });
+    const last = await runRecovery('uninstall', ['team/b'], { ...value.options, scope: 'project',
+      exactTargets: [{ pluginId: 'team/b', agent: 'cursor', scope: 'project' }] });
     expect(last.ok).toBe(true);
     await expectSavedIntent(last, { ...value.options, scope: 'project' });
     expect(last.intent.roots).toEqual([]);
     expect(await fs.pathExists(path.join(value.projectRoot, 'b'))).toBe(false);
-    expect(await fs.pathExists(path.join(value.projectRoot, 'd', 'SKILL.md'))).toBe(true);
-    expect(last.inSync).toBe(false);
+    expect(await fs.pathExists(path.join(value.projectRoot, 'd'))).toBe(false);
+    expect(last.inSync).toBe(true);
+  }, 30000);
+  // Removing a root must preserve independent declarations and live consumers,
+  // while a dependency-only update must not create an Intent root.
+  it('updates a precise indirect dependency without changing either Intent', async () => {
+    const value = await fixture();
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const before = await Promise.all(['user', 'project'].map((scope) => observeIntent({ ...value.options, scope: scope as 'user' | 'project' })));
+    const updated = await runRecovery('reinstall', ['team/d'], { ...value.options, scope: 'user', allowDependencySelectors: true,
+      exactTargets: [{ pluginId: 'team/d', agent: 'cursor' }] });
+    expect(updated.ok, JSON.stringify(updated)).toBe(true);
+    expect(updated.targetResults.map((target) => target.pluginId)).toEqual(['team/d']);
+    expect(updated.declarationChanged).toBe(false);
+    expect(await Promise.all(['user', 'project'].map((scope) => observeIntent({ ...value.options, scope: scope as 'user' | 'project' })))).toEqual(before);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).toBe(true);
+  }, 30000);
+
+  it('blocks indirect dependency removal and allows force without removing its consumers', async () => {
+    const value = await fixture();
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const location = { ...value.options, scope: 'user' as const };
+    const before = await observeIntent(location);
+    const blocked = await runRecovery('uninstall', ['team/d'], location);
+    expect(blocked.ok).toBe(false);
+    expect(blocked.blockers).toContainEqual(expect.objectContaining({ code: 'dependencyStillRequired' }));
+    expect(await observeIntent(location)).toEqual(before);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd'))).toBe(true);
+    const forced = await runRecovery('uninstall', ['team/d'], { ...location, force: true });
+    expect(forced.ok, JSON.stringify(forced)).toBe(true);
+    expect(forced.declarationChanged).toBe(false);
+    expect(await observeIntent(location)).toEqual(before);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd'))).toBe(false);
+    expect(await fs.pathExists(path.join(value.userRoot, 'a', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(value.projectRoot, 'b', 'SKILL.md'))).toBe(true);
+    expect(forced.allSatisfied).toBe(false);
+  }, 30000);
+
+  it('cleans a transitive orphan closure but preserves a directly declared dependency', async () => {
+    const value = await fixture(false, ['cursor'], false, { a: ['b'], b: ['d'], d: [] });
+    const project = { ...value.options, scope: 'project' as const };
+    await writeIntent(project, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
+    const user = { ...value.options, scope: 'user' as const };
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const planned = await prepareRecovery('uninstall', ['team/a'], user);
+    try {
+      expect(planned.dependencyCleanupTargets?.map((target) => target.pluginId).sort()).toEqual(['team/b', 'team/d']);
+      const result = await executeRecovery(planned, { yes: true });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(await Promise.all(['a', 'b', 'd'].map((name) => fs.pathExists(path.join(value.userRoot, name))))).toEqual([false, false, false]);
+    } finally { await planned.context.dispose(); }
+    expect((await runRecovery('install', ['team/a', 'team/d'], user)).ok).toBe(true);
+    expect((await runRecovery('uninstall', ['team/a'], user)).ok).toBe(true);
+    expect(await fs.pathExists(path.join(value.userRoot, 'b'))).toBe(false);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).toBe(true);
+  }, 30000);
+
+  it('preserves an orphan dependency needed by an installed consumer whose Intent was removed', async () => {
+    const value = await fixture();
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    await writeIntent({ ...value.options, scope: 'project' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
+    const result = await runRecovery('uninstall', ['team/a'], { ...value.options, scope: 'user' });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(await fs.pathExists(path.join(value.userRoot, 'a'))).toBe(false);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(value.projectRoot, 'b', 'SKILL.md'))).toBe(true);
+  }, 30000);
+
+  it('retains the transitive dependencies when deleting their consumer fails', async () => {
+    const value = await fixture(false, ['cursor'], false, { a: ['b'], b: ['d'], d: [] });
+    await writeIntent({ ...value.options, scope: 'project' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const rename = fs.rename.bind(fs);
+    const failure = vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
+      if (source === path.join(value.userRoot, 'a')) throw new Error('EACCES');
+      return rename(source, destination);
+    });
+    try {
+      const result = await runRecovery('uninstall', ['team/a'], { ...value.options, scope: 'user' });
+      expect(result.ok).toBe(false);
+      expect(result.errors).toContainEqual(expect.objectContaining({ code: 'dependencyStillRequired' }));
+      expect(await Promise.all(['a', 'b', 'd'].map((name) => fs.pathExists(path.join(value.userRoot, name, 'SKILL.md'))))).toEqual([true, true, true]);
+    } finally { failure.mockRestore(); }
+  }, 30000);
+
+  it('retains a shared leaf when a consumer on the second dependency path fails to delete', async () => {
+    const value = await fixture(false, ['cursor'], false, { a: ['b', 'c'], b: ['d'], c: ['d'], d: [] });
+    await writeIntent({ ...value.options, scope: 'project' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const rename = fs.rename.bind(fs);
+    const failure = vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
+      if (source === path.join(value.userRoot, 'c')) throw new Error('EACCES');
+      return rename(source, destination);
+    });
+    try {
+      const result = await runRecovery('uninstall', ['team/a'], { ...value.options, scope: 'user' });
+      expect(result.ok).toBe(false);
+      expect(result.targetResults.find((target) => target.pluginId === 'team/d')?.blockers)
+        .toContainEqual(expect.objectContaining({ code: 'dependencyStillRequired' }));
+      expect(await Promise.all(['a', 'b', 'c', 'd'].map((name) => fs.pathExists(path.join(value.userRoot, name, 'SKILL.md')))))
+        .toEqual([false, false, true, true]);
+    } finally { failure.mockRestore(); }
+  }, 30000);
+
+  it('retains dependencies when a possible current-project consumer cannot be identified', async () => {
+    const value = await fixture();
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    await writeIntent({ ...value.options, scope: 'project' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
+    await fs.writeFile(path.join(value.projectRoot, 'b', SKILL_OWNER_MARKER), '{broken');
+    expect((await readRecoveryStatus(value.options)).coverage.portable).toBe(false);
+    const result = await runRecovery('uninstall', ['team/a'], { ...value.options, scope: 'user' });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(await fs.pathExists(path.join(value.userRoot, 'a'))).toBe(false);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(value.projectRoot, 'b', 'SKILL.md'))).toBe(true);
+  }, 30000);
+
+  it.each([false, true])('keeps exact removal pairs and protects unselected consumers (shared=%s)', async (shared) => {
+    const graph = shared ? { a: ['d'], b: ['d'], d: [] } : { a: ['d'], b: ['e'], d: [], e: [] };
+    const value = await fixture(false, ['cursor', 'pi'], false, graph);
+    await setTargets({ ...value.options, scope: 'user' }, ['cursor', 'pi']);
+    await writeIntent({ ...value.options, scope: 'user' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
+    const project = { ...value.options, scope: 'project' as const };
+    const intent = await observeIntent(project);
+    if (intent.state !== 'valid') throw new Error('fixtureIntentMissing');
+    await writeIntent(project, { ...intent.value, roots: [{ pluginId: 'team/a' }, { pluginId: 'team/b' }] });
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const plan = await prepareRecovery('uninstall', ['team/a', 'team/b'], { ...project, targets: ['cursor', 'pi'],
+      exactTargets: [{ pluginId: 'team/a', agent: 'cursor' }, { pluginId: 'team/b', agent: 'pi' }] });
+    try {
+      expect(plan.dependencyCleanupTargets?.map((target) => `${target.pluginId}@${target.agent}`).sort())
+        .toEqual(shared ? [] : ['team/d@cursor', 'team/e@pi']);
+      expect(plan.receipt.requestedTargets.map((target) => `${target.pluginId}@${target.agent}`).sort())
+        .toEqual(shared ? ['team/a@cursor', 'team/b@pi'] : ['team/a@cursor', 'team/b@pi', 'team/d@cursor', 'team/e@pi']);
+      const result = await executeRecovery(plan, { yes: true });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      const exists = (name: string, agent: 'cursor' | 'pi') => fs.pathExists(path.join(value.cwd, `.${agent}`, 'skills', name, 'SKILL.md'));
+      expect(await Promise.all([exists('a', 'cursor'), exists('a', 'pi'), exists('b', 'cursor'), exists('b', 'pi')]))
+        .toEqual([false, true, true, false]);
+      expect(await Promise.all([exists('d', 'cursor'), exists('d', 'pi')])).toEqual([shared, true]);
+      if (!shared) expect(await Promise.all([exists('e', 'cursor'), exists('e', 'pi')])).toEqual([true, false]);
+    } finally { await plan.context.dispose(); }
+  }, 30000);
+
+  it.each([false, true])('removes a root and selected leaf while respecting intermediate retention (keep=%s)', async (keep) => {
+    const value = await fixture(false, ['cursor'], false, { a: ['b'], b: ['d'], d: [] });
+    await writeIntent({ ...value.options, scope: 'project' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const result = await runRecovery('uninstall', ['team/a', 'team/d'], { ...value.options, scope: 'user', keepDependencies: keep });
+    expect(result.ok, JSON.stringify(result)).toBe(!keep);
+    if (keep) expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'dependencyStillRequired' }));
+    expect(await Promise.all(['a', 'b', 'd'].map((name) => fs.pathExists(path.join(value.userRoot, name, 'SKILL.md')))))
+      .toEqual([keep, keep, keep]);
+  }, 30000);
+
+  it('removes a project declaration while preserving the user provider used by a user consumer', async () => {
+    const value = await fixture();
+    const project = { ...value.options, scope: 'project' as const };
+    const intent = await observeIntent(project);
+    if (intent.state !== 'valid') throw new Error('fixtureIntentMissing');
+    await writeIntent(project, { ...intent.value, roots: [{ pluginId: 'team/d' }] });
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const userIntent = await observeIntent({ ...value.options, scope: 'user' });
+    const result = await runRecovery('uninstall', ['team/d'], project);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.intent.roots).toEqual([]);
+    expect(result.targetResults).toEqual([]);
+    expect(await observeIntent({ ...value.options, scope: 'user' })).toEqual(userIntent);
+    expect(await fs.pathExists(path.join(value.userRoot, 'a', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).toBe(true);
+  }, 30000);
+
+  it('does not replace a live user consumer dependency with a project-only provider', async () => {
+    const value = await fixture();
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const user = { ...value.options, scope: 'user' as const };
+    const intent = await observeIntent(user);
+    if (intent.state !== 'valid') throw new Error('fixtureIntentMissing');
+    await writeIntent(user, { ...intent.value, roots: [{ pluginId: 'team/d' }] });
+    const before = await observeIntent(user);
+    const result = await runRecovery('uninstall', ['team/d'], user);
+    expect(result.ok).toBe(false);
+    expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'dependencyStillRequired' }));
+    expect(await observeIntent(user)).toEqual(before);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(value.userRoot, 'a', 'SKILL.md'))).toBe(true);
+  }, 30000);
+
+  it('blocks an indirect provider switch that would strand an existing user consumer', async () => {
+    const value = await fixture(false, ['cursor'], false, { a: ['d'], b: ['d'], d: [], x: ['d'] });
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const user = { ...value.options, scope: 'user' as const };
+    expect((await runRecovery('install', ['team/x'], user)).ok).toBe(true);
+    const intent = await observeIntent(user);
+    if (intent.state !== 'valid') throw new Error('fixtureIntentMissing');
+    await writeIntent(user, { ...intent.value, roots: [{ pluginId: 'team/a' }] });
+    const before = await observeIntent(user);
+    for (const force of [false, true]) {
+      const result = await runRecovery('uninstall', ['team/a'], { ...user, force });
+      expect(result.ok).toBe(false);
+      expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'dependencyStillRequired' }));
+      expect(await observeIntent(user)).toEqual(before);
+      expect(await Promise.all(['a', 'd', 'x'].map((name) => fs.pathExists(path.join(value.userRoot, name, 'SKILL.md')))))
+        .toEqual([true, true, true]);
+    }
+  }, 30000);
+
+  it('requires force when a live consumer dependency graph is no longer available in Active', async () => {
+    const value = await fixture();
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+    const user = { ...value.options, scope: 'user' as const };
+    const intent = await observeIntent(user);
+    if (intent.state !== 'valid') throw new Error('fixtureIntentMissing');
+    await writeIntent(user, { ...intent.value, roots: [{ pluginId: 'team/d' }] });
+    await fs.remove(path.join(value.source, 'plugins', 'a'));
+    await createDependencyCatalogSnapshotFixture(value.source, [
+      { name: 'b', dependencies: ['d'] }, { name: 'd' },
+    ].map((entry) => ({ ...entry, configureManifest: (manifest) => {
+      manifest.platforms = ['cursor']; manifest.skills = './skills'; delete manifest.extensions;
+    } })));
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: value.options.env });
+    const status = await readRecoveryStatus(value.options);
+    expect(status.coverage.portable).toBe(true);
+    expect(status.existingTargets).toContainEqual({ pluginId: 'team/a', agent: 'cursor', scope: 'user' });
+    const before = await observeIntent(user);
+    const blocked = await runRecovery('uninstall', ['team/d'], user);
+    expect(blocked.ok).toBe(false);
+    expect(blocked.blockers).toContainEqual(expect.objectContaining({ code: 'dependencyStillRequired' }));
+    expect(await observeIntent(user)).toEqual(before);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).toBe(true);
+    const forced = await runRecovery('uninstall', ['team/d'], { ...user, force: true });
+    expect(forced.ok, JSON.stringify(forced)).toBe(true);
+    expect(await fs.pathExists(path.join(value.userRoot, 'd'))).toBe(false);
+    expect(await fs.pathExists(path.join(value.userRoot, 'a', 'SKILL.md'))).toBe(true);
   }, 30000);
   it('does not install missing outputs during configuration apply', async () => {
     const value = await fixture();

@@ -19,7 +19,7 @@
 | remove --only outputs | 保留 | 清理所选物理 scope/target | 保留 |
 | remove --delete-config | 取消直接根 | 安全移除 | 删除全部本机 common/平台覆盖 |
 
-`--only` 只接受一个值。install 不支持 outputs-only。requirements-only 不接受 `--target` 或 `--script-timeout`。普通 remove 不接受 `--target`；outputs-only 必须提供至少一个 target，可清理已从本机策略关闭的平台。`--delete-config` 不能与 `--only` 组合，`--force` 仅用于 outputs-only 的受限损坏输出恢复。保留需求时，后续 sync 可重新部署。普通 install 在保存需求前检查有效平台集合，空集合返回 `noTargetsEnabled`。
+`--only` 只接受一个值。install 不支持 outputs-only。requirements-only 不接受 `--target` 或 `--script-timeout`。普通 remove 不接受 `--target`；outputs-only 必须提供至少一个 target，可清理已从本机策略关闭的平台。`--delete-config` 不能与 `--only` 组合。普通 remove 默认清理本次请求释放、没有独立声明或其他消费者且归属可确认的依赖；`--keep-dependencies` 保留它们，不能与 `--only` 组合。普通 remove 的 `--force` 绕过仍被其他插件依赖的阻断，但保留消费者并继续执行所有删除安全检查；outputs-only 的 `--force` 仅用于受限损坏输出恢复，requirements-only 不接受它。保留需求时，后续 sync 可重新部署。普通 install 在保存需求前检查有效平台集合，空集合返回 `noTargetsEnabled`。
 
 普通 remove 完整校验 Active 和联合依赖；插件已下架时，须由健康 Active 证明缺席。Active 不可验证时保留需求和输出。两个 only 模式分别支持离线取消合法声明中的完整 ID，以及依据现场 ownership 清理输出。foreign、shared 和未知归属内容保持不动，force 不扩大删除权限。完整领域门禁见[生命周期](../maintainers/architecture/lifecycle.md)。
 

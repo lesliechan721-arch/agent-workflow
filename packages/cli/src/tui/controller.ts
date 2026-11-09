@@ -898,6 +898,7 @@ export interface TuiControllerDependencies {
   prepareScopedTask?: (request: {
     scope: Scope;
     kind: 'recovery'; command?: RecoveryCommand; selectors: string[];
+    allowDependencySelectors?: boolean;
     exactTargets?: Array<{ pluginId: string; agent: AgentId }>;
     targets?: AgentId[]; force?: boolean; refresh?: boolean; retireUnselectedTargets?: boolean;
     dependencyScopeOverrides?: DependencyScopeOverride[];

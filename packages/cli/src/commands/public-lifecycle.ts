@@ -27,7 +27,7 @@ export type { LifecycleData } from './public-lifecycle-result.js';
 export interface PublicLifecycleOptions {
   cwd: string; env?: NodeJS.ProcessEnv; cliVersion: string;
   scope?: string; context?: string; target?: string[]; targets?: string[];
-  only?: string; yes?: boolean; force?: boolean; deleteConfig?: boolean;
+  only?: string; yes?: boolean; force?: boolean; keepDependencies?: boolean; deleteConfig?: boolean;
   refresh?: boolean; rebuild?: boolean; all?: boolean; scriptTimeout?: number | string; scriptTimeoutMs?: number;
 }
 
@@ -138,7 +138,8 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
   if (options.only && !['requirements', 'outputs'].includes(options.only)) return invalid('Expected requirements or outputs.', 'only');
   if (options.only === 'outputs' && command !== 'remove' || command === 'sync' && options.only) return invalid('This effect mode is not supported by this command.', 'only');
   if (options.deleteConfig && (command !== 'remove' || options.only)) return invalid('--delete-config requires normal remove.', 'deleteConfig');
-  if (options.force && (command !== 'remove' || options.only !== 'outputs')) return invalid('--force requires remove --only outputs.', 'force');
+  if (options.force && (command !== 'remove' || options.only === 'requirements')) return invalid('--force requires normal remove or remove --only outputs.', 'force');
+  if (options.keepDependencies && (command !== 'remove' || options.only)) return invalid('--keep-dependencies requires normal remove.', 'keepDependencies');
   const argumentsTargets = options.targets ?? options.target;
   if (options.only === 'requirements' && (argumentsTargets !== undefined || options.scriptTimeout !== undefined || options.scriptTimeoutMs !== undefined)) return invalid('Requirements-only does not accept target or script timeout options.');
   if (command === 'remove' && options.only !== 'outputs' && argumentsTargets !== undefined) return invalid('Use --only outputs to select removal targets.', 'target');
@@ -171,7 +172,7 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
     return !effects.length || options.yes === true;
   };
   const runtime: RebuildCommandRuntime = { ...context, directCli: true };
-  const recovery: RecoveryOptions = { ...location, scope, context: work.context, signal: context.signal, cliVersion: options.cliVersion, targets: selected ? targets : undefined, yes: options.yes, force: options.force, scriptTimeoutMs: timeout, interactive: false };
+  const recovery: RecoveryOptions = { ...location, scope, context: work.context, signal: context.signal, cliVersion: options.cliVersion, targets: selected ? targets : undefined, yes: options.yes, force: options.force, keepDependencies: options.keepDependencies, scriptTimeoutMs: timeout, interactive: false };
   try {
     if (command === 'remove' && options.only === 'requirements') {
       if (plugins.some((plugin) => !parsePluginId(plugin).sourceId)) return lifecycleArgumentError(id, 'invalidArguments', 'Requirements-only removal requires source-qualified plugin IDs.');
@@ -201,10 +202,18 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
     if (options.only === 'outputs') return await applyPlan(await prepareRecovery('cleanup', plugins, { ...recovery, targets }, runtime));
     if (command === 'remove') {
       const catalog = await resolvePartialCatalogOperationContext({ env });
+      let selectable = data.requirements.roots ?? [];
+      if (plugins.some((selector) => !parsePluginId(selector).sourceId)) {
+        const snapshot = await readJointDemand({ ...recovery, catalogOperationContext: catalog });
+        const original = location.scope === 'project' ? snapshot.project! : snapshot.user;
+        const demand = deriveJointDemand(snapshot);
+        selectable = [...new Set([...(original.roots ?? []).map((root) => root.pluginId),
+          ...demand.placements.filter((placement) => placement.scope === location.scope).map((placement) => placement.pluginId)])];
+      }
       const exact: string[] = [];
       for (const selector of plugins) {
         const parsed = parsePluginId(selector);
-        const matches = parsed.sourceId ? [selector] : data.requirements.roots?.filter((root) => parsePluginId(root).pluginName === parsed.pluginName) ?? [];
+        const matches = parsed.sourceId ? [selector] : selectable.filter((pluginId) => parsePluginId(pluginId).pluginName === parsed.pluginName);
         if (matches.length !== 1) return blocked('pluginSelectorAmbiguous');
         exact.push(matches[0]!);
       }

@@ -2764,7 +2764,10 @@ function configurePublicCommands(program: Command, options: CliRuntimeOptions, i
       .option('--target <target>', 'Select an execution target', collectUniqueOption)
       .option('-y, --yes', 'Confirm the listed effects');
     if (name !== 'sync') cmd.addOption(strictValueOption('--only <mode>', 'Limit the effects', name === 'install' ? ['requirements'] : ['requirements', 'outputs']));
-    if (name === 'remove') cmd.option('--delete-config', 'Delete all local plugin configuration').option('--force', 'Recover provably owned damaged output');
+    if (name === 'remove') cmd.description('Remove requirements and owned output, including orphan dependencies')
+      .option('--delete-config', 'Delete all local plugin configuration')
+      .option('--keep-dependencies', 'Keep orphan dependency output during normal removal')
+      .option('--force', 'Bypass the dependency guard; with --only outputs, recover provably owned damaged output');
     if (name !== 'remove') cmd.option('--script-timeout <ms>', 'Plugin script timeout');
     if (name === 'sync') cmd.option('--rebuild', 'Rebuild selected owned output').option('--refresh', 'Refresh required Catalog sources');
     cmd.action(async (plugins: string[], raw: Record<string, unknown>) => {
@@ -2862,7 +2865,7 @@ function helpResult(program: Command, selected: Command): CommandResult {
     options: [...selected.options, ...(selected === program ? [] : program.options)].map((option) => ({ flags: option.flags, description: option.description, required: option.mandatory, choices: option.argChoices ?? null, conflicts: [] })),
     commands: selected.commands.map((command) => ({ command: commandId(command), description: command.description() })),
     resultSchema: { schemaVersion: 1, statuses: ['success', 'partial', 'blocked', 'failed'] },
-    rules: commandId(selected) === 'plugin.install' ? ['--scope is required.', '--only requirements cannot use --target or --script-timeout.'] : commandId(selected) === 'plugin.remove' ? ['--scope is required.', '--only outputs requires --target.', '--force requires --only outputs.', '--delete-config cannot use --only.'] : [],
+    rules: commandId(selected) === 'plugin.install' ? ['--scope is required.', '--only requirements cannot use --target or --script-timeout.'] : commandId(selected) === 'plugin.remove' ? ['--scope is required.', '--only outputs requires --target.', '--force cannot use --only requirements.', '--keep-dependencies cannot use --only.', '--delete-config cannot use --only.'] : [],
     effects: selected.options.some((option) => option.long === '--yes') ? ['Important effects require --yes.'] : [],
     examples: [selected === program ? ['aw', 'plugin', 'list'] : ['aw', ...commandId(selected).split('.'), '--help']],
   });

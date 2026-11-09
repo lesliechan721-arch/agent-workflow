@@ -44,7 +44,7 @@ Codex project cleanup 和 uninstall 对当前仓库的 `.agents/skills` 做单�
   → 输出统一 CLI schema 1 结果及 lifecycle data
 ```
 
-这些命令在 `AW_HOME` mutation lock 内只采集一次当前 target 和当前 project 的现场 inventory。Active snapshot、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为计划再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 snapshot evidence。普通 inventory 不扫描历史项目、不建立全局 refcount，也不执行自动 dependency GC。
+这些命令在 `AW_HOME` mutation lock 内只采集一次当前 target 和当前 project 的现场 inventory。Active snapshot、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为计划再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 snapshot evidence。普通 inventory 不扫描历史项目、不建立全局 refcount；移除只检查本次请求释放的依赖，不回收无关历史残留。
 
 `OperationPlan` 只用于 Review、stale fingerprint 比较和 Receipt。真实执行继续由 rebuild executor 使用已准备的 target 和 live evidence 完成；不存在通用 `OperationAction` executor。
 
@@ -59,6 +59,12 @@ Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和
 dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。User 需要的共同项由 User 提供，项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
 
 依赖执行顺序只在本次命令内存在。内部后端结果保留 relation、requiredBy、安全后端状态和恢复建议；统一 CLI 生命周期 data 保留请求的所有目标、阻断与未完成项，不公开持久计划、锁或来源内部证据。精确匹配的现有 shared native 可复用，不建立 ownership ledger。
+
+精确插件升级可以选择完整需求闭包中的依赖项，不要求把依赖提升为 Intent root；选择仍绑定原有 root、target 与 provider scope。闭包之外的插件不能借此成为同步目标。
+
+普通 remove 默认清理本次取消需求后失去全部引用的依赖输出，包括传递依赖。候选限于本次请求原依赖闭包、所选物理 scope 和本机执行 targets，且必须没有独立 Intent、没有剩余需求或已观察到的现存消费者，并有充分 live ownership 证据。精确请求按 root×Agent 保留对应关系，不能展开为插件和 Agent 的全部组合；依赖候选只来自同一 Agent 上被选根的贡献，未选位置的现存消费者仍保护其依赖。未知需求、来源或消费者依赖关系不能当作无引用。`--keep-dependencies` 保留这些依赖；它不改变所选根的移除或提供位置切换。清理按依赖者优先执行；依赖者移除失败时，保留它需要的依赖，报告未完成项。Review 冻结依赖清理的精确位置，锁内按同一证据重验。
+
+所选 scope/target 的移除会破坏其他声明或现存插件输出的依赖时，普通 remove 在需求和输出写入前以 `dependencyStillRequired` 阻断。检查按实际 provider 判断；取消另一 scope 的重复声明不影响仍有效的 provider，提供位置切换继续先验证替代目标。普通 remove 的 `--force` 允许取消所选需求并清理该 scope 的所选输出，保留其他依赖者的声明和输出；结果可能不再满足完整需求，后续 sync 可以重新安装缺失依赖。此 flag 只绕过依赖保护，不扩大 ownership、共享内容或路径删除权限，也不启用受限损坏输出恢复。
 
 ## 安装、重建、卸载与清理
 

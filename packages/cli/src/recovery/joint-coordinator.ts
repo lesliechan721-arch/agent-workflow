@@ -21,10 +21,12 @@ import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, 
 import { readScopedRecoveryStatus, readRecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
 import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
+import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 
 export interface JointRecoveryState {
   snapshot: JointDemandSnapshot;
   demand: JointDemandPlan;
+  removalDependencies: Map<string, string[] | null>;
   children: RecoveryPlan[];
   originalOptions: RecoveryOptions;
   selectors: string[];
@@ -140,6 +142,19 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     }
   }
   const previousDemand = deriveJointDemand(snapshot);
+  const previousPlugins = [...new Map([...(snapshot.user.plugins), ...(snapshot.project?.plugins ?? [])]
+    .map((plugin) => [plugin.pluginId!, plugin])).values()];
+  const dependencyClosures = new Map<string, string[] | null>();
+  const dependencies = (pluginId: string): string[] | null => {
+    if (!dependencyClosures.has(pluginId)) {
+      try {
+        const parsed = parsePluginId(pluginId);
+        const closure = resolvePluginMetaDependencyClosure(previousPlugins.filter((plugin) => plugin.sourceId === parsed.sourceId), [parsed.pluginName]);
+        dependencyClosures.set(pluginId, closure.filter((plugin) => plugin.pluginId !== pluginId).map((plugin) => plugin.pluginId!));
+      } catch { dependencyClosures.set(pluginId, null); }
+    }
+    return dependencyClosures.get(pluginId)!;
+  };
   const original = scope === 'project' ? snapshot.project! : snapshot.user;
   const errors: RecoveryDiagnostic[] = [];
   let declaration: JointRecoveryState['declaration'];
@@ -157,9 +172,16 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       }
     }
   } else if (command === 'uninstall') {
+    const selectable = [...new Set([...(original.roots ?? []).map((root) => root.pluginId),
+      ...previousDemand.placements.filter((placement) => placement.scope === scope).map((placement) => placement.pluginId)])];
+    requested = selectors.flatMap((selector) => {
+      const parsed = parsePluginId(selector);
+      const matches = selectable.filter((id) => parsed.sourceId ? id === selector : parsePluginId(id).pluginName === parsed.pluginName);
+      if (matches.length !== 1) errors.push(diagnostic('pluginIntentRootMissing'));
+      return matches.length === 1 ? matches : [selector];
+    });
     try {
-      const sourceIds = new Set((original.roots ?? []).filter((root) => selectors.some((selector) => selector === root.pluginId
-        || !selector.includes('/') && parsePluginId(root.pluginId).pluginName === selector)).map((root) => root.sourceId));
+      const sourceIds = new Set(requested.map((id) => parsePluginId(id).sourceId!));
       for (const sourceId of sourceIds) {
         const source = original.catalogOperationContext?.catalog.sources.find((entry) => entry.sourceId === sourceId)?.resolution;
         if (!source) throw new Error('sourceActiveUnavailable');
@@ -173,16 +195,11 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     if (original.intent.state !== 'valid' && original.intent.state !== 'absent') errors.push(diagnostic('pluginIntentStateInvalid'));
     else {
       let value = original.intent.state === 'valid' ? original.intent.value : createEmptyIntent();
-      for (const selector of selectors) {
-        const parsed = parsePluginId(selector);
-        const matches = value.roots.filter((root) => parsed.sourceId ? root.pluginId === selector
-          : parsePluginId(root.pluginId).pluginName === parsed.pluginName);
-        if (matches.length !== 1) { errors.push(diagnostic('pluginIntentRootMissing')); continue; }
-        requested[requested.indexOf(selector)] = matches[0]!.pluginId;
-        value = removeIntentRoot(value, matches[0]!.pluginId);
+      for (const pluginId of requested) {
+        if (value.roots.some((root) => root.pluginId === pluginId)) value = removeIntentRoot(value, pluginId);
       }
       if (!errors.length) {
-        declaration = { scope, value };
+        if (original.intent.state === 'valid' && calculateIntentDigest(value) !== original.intent.digest) declaration = { scope, value };
         const demand = await readDemand({ ...options, preferences: undefined, scope, intent: asObservation(value) });
         snapshot = { ...snapshot, [scope]: demand };
       }
@@ -195,16 +212,31 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   if (command !== 'install' && command !== 'uninstall') {
     requested = selectors.length ? selectors.flatMap((selector) => {
       const parsed = parsePluginId(selector);
-      const matches = (options.existingOnly ? [...new Set([...rootIds, ...demand.placements.map((item) => item.pluginId)])] : rootIds).filter((id) => parsed.sourceId ? id === selector : parsePluginId(id).pluginName === parsed.pluginName);
+      const matches = (options.existingOnly || options.allowDependencySelectors ? [...new Set([...rootIds, ...demand.placements.map((item) => item.pluginId)])] : rootIds).filter((id) => parsed.sourceId ? id === selector : parsePluginId(id).pluginName === parsed.pluginName);
       if (matches.length !== 1 && !options.existingOnly) errors.push(diagnostic('syncPluginNotDesired', `${selector} 未声明或名称不唯一。`));
       return matches.length === 1 ? matches : [];
     }) : rootIds;
   }
   const targets = options.targets ? normalizeAgents(options.targets) : snapshot.preferences?.targets ?? [];
+  const explicitlyRemoves = (item: { pluginId: string; agent: string | null; scope: Scope }): boolean =>
+    item.scope === scope && requested.includes(item.pluginId) && (!options.exactTargets
+      || options.exactTargets.some((exact) => exact.pluginId === item.pluginId && exact.agent === item.agent
+        && (!exact.scope || exact.scope === item.scope)));
+  if (command === 'uninstall' && !options.force) {
+    for (const pluginId of requested) {
+      const consumers = demand.placements.filter((placement) => placement.pluginId === pluginId
+        && explicitlyRemoves({ pluginId, agent: placement.target, scope }))
+        .flatMap((placement) => placement.contributions.filter((item) => item.path.length > 1
+          && (placement.scope === scope || item.scope === scope)).map((item) => item.root));
+      if (consumers.length) errors.push(diagnostic('dependencyStillRequired',
+        `${pluginId} 仍被 ${[...new Set(consumers)].join('、')} 依赖。使用 --force 可强制移除所选输出。`));
+    }
+  }
+  const selectionDemand = command === 'uninstall' ? previousDemand : demand;
   if (options.exactTargets && (!options.exactTargets.length && !options.existingOnly || options.exactTargets.some((exact) =>
-    !targets.includes(exact.agent) || !demand.roots.some((root) => root.pluginId === exact.pluginId
+    !targets.includes(exact.agent) || !selectionDemand.roots.some((root) => root.pluginId === exact.pluginId
       && requested.includes(root.pluginId) && root.target === exact.agent && (!exact.scope || root.scope === exact.scope))
-    && !demand.placements.some((placement) => placement.pluginId === exact.pluginId && placement.target === exact.agent
+    && !selectionDemand.placements.some((placement) => placement.pluginId === exact.pluginId && placement.target === exact.agent
       && (!exact.scope || placement.scope === exact.scope || placement.contributions.some((item) => item.scope === exact.scope))
       && (requested.includes(placement.pluginId) || placement.contributions.some((item) => requested.includes(item.root))))))) {
     errors.push(diagnostic('invalidExactTargets', '精确重试目标不属于当前请求，请重新检查并选择。'));
@@ -212,11 +244,16 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   const selected = demand.placements.filter((placement) => targets.includes(placement.target)
     && !demand.conflicts.some((conflict) => [conflict.left, conflict.right].some((position) => position.target === placement.target && position.scope === placement.scope))
     && (!options.exactTargets || options.exactTargets.some((exact) => exact.agent === placement.target
-      && (!exact.scope || placement.contributions.some((item) => item.scope === exact.scope))
-      && (exact.pluginId === placement.pluginId || placement.contributions.some((item) => item.path.includes(exact.pluginId)))))
-    && (command === 'uninstall' ? requested.includes(placement.pluginId)
-      || previousDemand.placements.some((previous) => previous.pluginId === placement.pluginId && previous.target === placement.target && previous.scope !== placement.scope)
-      : placement.contributions.some((item) => requested.includes(item.root)) || options.existingOnly && requested.includes(placement.pluginId)));
+      && (command === 'uninstall' ? previousDemand.placements.some((previous) => previous.pluginId === placement.pluginId
+        && previous.target === placement.target && previous.contributions.some((item) => item.path.includes(exact.pluginId)
+          && (!exact.scope || item.scope === exact.scope)))
+        : (!exact.scope || placement.contributions.some((item) => item.scope === exact.scope))
+          && (exact.pluginId === placement.pluginId || placement.contributions.some((item) => item.path.includes(exact.pluginId))))))
+    && (command === 'uninstall' ? !(options.force && requested.includes(placement.pluginId))
+      && previousDemand.placements.some((previous) => previous.pluginId === placement.pluginId && previous.target === placement.target
+        && previous.scope !== placement.scope && previous.contributions.some((item) => item.scope === scope && requested.includes(item.root)))
+      : placement.contributions.some((item) => requested.includes(item.root)
+        || options.allowDependencySelectors && item.path.some((id) => requested.includes(id))) || options.existingOnly && requested.includes(placement.pluginId)));
   const activationOnlyTargets: NonNullable<RecoveryOptions['nativeActivationOnlyTargets']> = [];
   if (snapshot.project && !errors.length) {
     const sharedNative = selected.filter((item) => item.scope === 'user' && (item.target === 'codex' || item.target === 'claude')
@@ -267,14 +304,14 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   };
   const children: RecoveryPlan[] = [];
   const { signal: _signal, ...executionOptions } = options;
-  const joint: JointRecoveryState = { snapshot, demand, children, originalOptions: executionOptions,
+  const joint: JointRecoveryState = { snapshot, demand, removalDependencies: dependencyClosures, children, originalOptions: executionOptions,
     selectors: [...selectors], declaration, evidence };
   const plan: RecoveryPlan = { command, options: { ...executionOptions, scope }, receipt, context, demand: baseDemand,
     originalIntent: observationEvidence(original.intent), preferencesEvidence: observationEvidence(snapshot.user.preferences),
     plannedImpact: { declaration: Boolean(declaration), preferences: false, config: false, outputs: false },
     changes: declaration ? [`保存 ${scope} 插件需求。`] : [], warnings: [], nativeGroups: [],
     historicalNativeTargets: new Set(), deliverySwitchChecks: [], portableGroups: [], portableProtectionGroups: [],
-    portableResidues: [], sourceRefreshes: [], sourceRefreshFailures: [], runtime, blockExecution: errors.some((error) => ['syncPluginNotDesired', 'pluginIntentRootMissing', 'pluginIntentStateInvalid', 'catalogSnapshotInvalid', 'installTargetSelectionUnsupported', 'invalidExactTargets'].includes(error.code)
+    portableResidues: [], sourceRefreshes: [], sourceRefreshFailures: [], runtime, blockExecution: errors.some((error) => ['syncPluginNotDesired', 'pluginIntentRootMissing', 'pluginIntentStateInvalid', 'catalogSnapshotInvalid', 'installTargetSelectionUnsupported', 'invalidExactTargets', 'dependencyStillRequired'].includes(error.code)
       || error.code === 'targetsNotConfigured' && !options.retireUnselectedTargets)
       || !snapshot.preferences || snapshot.user.roots === null || snapshot.project?.roots === null, joint };
   const dispose = context.dispose;
@@ -283,6 +320,56 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   try {
     const currentStatus = await readRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner,
       codexObservationSession: runtime.codexObservationSession, targets: undefined });
+    const ownsOutput = (item: { pluginId: string; agent: string | null; scope: Scope }): boolean =>
+      currentStatus.ownedTargets?.some((owned) => owned.pluginId === item.pluginId
+        && owned.agent === item.agent && owned.scope === item.scope) === true;
+    const liveConsumers = currentStatus.existingTargets ?? [];
+    const sameProvider = (consumer: { agent: string; scope: Scope }, provider: { agent: string | null; scope: Scope }): boolean =>
+      consumer.agent === provider.agent && (provider.scope === 'user' || consumer.scope === provider.scope);
+    const automaticRetirements = command === 'uninstall' && !options.keepDependencies && demand.complete
+      ? previousDemand.placements.filter((placement) => placement.scope === scope && targets.includes(placement.target)
+        && (placement.target === 'codex' || placement.target === 'claude' ? currentStatus.coverage.native : currentStatus.coverage.portable)
+        && !requested.includes(placement.pluginId) && !rootIds.includes(placement.pluginId)
+        && placement.contributions.some((item) => explicitlyRemoves({ pluginId: item.root, agent: placement.target, scope: item.scope }))
+        && !demand.placements.some((item) => item.pluginId === placement.pluginId && item.target === placement.target)
+        && ownsOutput({ pluginId: placement.pluginId, agent: placement.target, scope: placement.scope })) : [];
+    // A live consumer can outlast its Intent or its Active catalog entry.
+    const retainedConsumerFor = (provider: { pluginId: string; agent: string | null; scope: Scope }) => liveConsumers.find((consumer) => {
+      if (explicitlyRemoves(consumer) && ownsOutput(consumer) || automaticRetirements.some((item) =>
+        item.pluginId === consumer.pluginId && item.target === consumer.agent && item.scope === consumer.scope)) return false;
+      if (!sameProvider(consumer, provider)) return false;
+      const closure = dependencies(consumer.pluginId);
+      if (!closure?.includes(provider.pluginId) && !(closure === null
+        && parsePluginId(consumer.pluginId).sourceId === parsePluginId(provider.pluginId).sourceId)) return false;
+      return !demand.placements.some((item) => item.pluginId === provider.pluginId && item.target === provider.agent
+        && item.scope !== provider.scope && sameProvider(consumer, { agent: item.target, scope: item.scope }));
+    });
+    for (let index = automaticRetirements.length - 1; index >= 0; index--) {
+      const candidate = automaticRetirements[index]!;
+      if (retainedConsumerFor({ pluginId: candidate.pluginId, agent: candidate.target, scope: candidate.scope })) {
+        automaticRetirements.splice(index, 1);
+      }
+    }
+    if (command === 'uninstall' && !options.force) {
+      for (const pluginId of requested) for (const agent of new Set(liveConsumers.map((consumer) => consumer.agent))) {
+        const provider = { pluginId, agent, scope };
+        const consumer = explicitlyRemoves(provider) ? retainedConsumerFor(provider) : undefined;
+        if (consumer) errors.push(diagnostic('dependencyStillRequired', `${pluginId} 的移除无法保留 ${consumer.pluginId} 的现有依赖。`));
+      }
+      if (errors.some((error) => error.code === 'dependencyStillRequired')) {
+        plan.blockExecution = true;
+        return plan;
+      }
+    }
+    if (command === 'uninstall') for (const replacement of selected) {
+      const old = currentStatus.ownedTargets?.find((item) => item.pluginId === replacement.pluginId
+        && item.agent === replacement.target && item.scope !== replacement.scope && retainedConsumerFor(item));
+      if (!old) continue;
+      errors.push(diagnostic('dependencyStillRequired', `${old.pluginId} 的提供位置切换会破坏现存消费者的依赖。`));
+      plan.blockExecution = true;
+      return plan;
+    }
+    plan.dependencyCleanupTargets = automaticRetirements.map((item) => ({ pluginId: item.pluginId, agent: item.target, scope: item.scope }));
     // Native platforms share one complete marketplace candidate per scope.
     const nativeTargets = targets.filter((target) => target === 'codex' || target === 'claude');
     const targetGroups: Array<typeof targets> = [...(nativeTargets.length ? [nativeTargets] : []),
@@ -349,11 +436,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       }
       plan.receipt.blockers.push(conflict);
     }
-    // Only explicit target exits, selected removals and provider switches retire outputs.
-    // Unrelated indirect dependencies remain visible residue.
-    const ownsOutput = (item: { pluginId: string; agent: string | null; scope: Scope }): boolean =>
-      currentStatus.ownedTargets?.some((owned) => owned.pluginId === item.pluginId
-        && owned.agent === item.agent && owned.scope === item.scope) === true;
+    // Retire this removal's orphaned dependencies, explicit exits and provider switches.
     const requiredNativeActivation = (item: { pluginId: string; agent: string | null; scope: Scope; backend?: unknown }): boolean => {
       const backend = item.backend as { live?: { components?: Array<{ kind: string; key: string; state: string }> };
         components?: Array<{ kind: string; key: string; state: string }> } | undefined;
@@ -384,7 +467,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     const retire = currentStatus.extraObserved.filter((item) => item.agent !== null && !requiredNativeActivation(item) && (
       options.retireUnselectedTargets && (!snapshot.preferences!.targets.includes(item.agent)
         || snapshot.preferences!.exclusions.some((entry) => entry.plugin === item.pluginId && entry.target === item.agent))
-      || command === 'uninstall' && requested.includes(item.pluginId)
+      || command === 'uninstall' && explicitlyRemoves(item)
       || selected.some((placement) => placement.pluginId === item.pluginId && placement.target === item.agent && placement.scope !== item.scope
         && (item.delivery?.kind !== 'agent-skills' || (item.backend as { logicalIdentity?: string } | undefined)?.logicalIdentity === placement.plugin.catalogLogicalIdentity))
     ));
@@ -395,9 +478,16 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
           && placement.target === item.agent && placement.scope === item.scope)) retire.push(item);
     }
     // A removed declaration is still present in the observed snapshot, so include its exact old outputs.
-    if (command === 'uninstall') for (const item of currentStatus.inventory?.flatMap((entry) => entry.targetResults) ?? []) {
-      if (!requested.includes(item.pluginId) || item.scope !== scope || !ownsOutput(item)
-        || demand.placements.some((placement) => placement.pluginId === item.pluginId && placement.target === item.agent && placement.scope === item.scope)) continue;
+    if (command === 'uninstall') for (const item of [
+      ...(currentStatus.observedTargets ?? []), ...currentStatus.extraObserved,
+    ]) {
+      const automatic = automaticRetirements.some((candidate) => candidate.pluginId === item.pluginId
+        && candidate.target === item.agent && candidate.scope === item.scope);
+      if (!automatic && !explicitlyRemoves(item)
+        || !ownsOutput(item) || !targets.includes(item.agent!)
+        || !options.force && requiredNativeActivation(item)
+        || !options.force && demand.placements.some((placement) => placement.pluginId === item.pluginId
+          && placement.target === item.agent && placement.scope === item.scope)) continue;
       retire.push(item);
     }
     // Conflicting replacements are filtered before child preparation. Keep the
@@ -421,8 +511,18 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       || child.receipt.targetResults.some((item) => item.blockers.length));
     if (!plan.blockExecution && !deploymentBlocked) {
       const cleanups: RecoveryPlan[] = [];
-      for (const item of [...new Map(safeRetirements.map((entry) => [`${entry.pluginId}\0${entry.agent}\0${entry.scope}`, entry])).values()]) {
+      const pendingRetirements = [...new Map(safeRetirements.map((entry) => [`${entry.pluginId}\0${entry.agent}\0${entry.scope}`, entry])).values()];
+      const orderedRetirements: typeof pendingRetirements = [];
+      while (pendingRetirements.length) {
+        const ready = pendingRetirements.findIndex((candidate) => !pendingRetirements.some((consumer) =>
+          consumer !== candidate && consumer.agent === candidate.agent
+          && dependencies(consumer.pluginId)?.includes(candidate.pluginId)));
+        if (ready < 0) throw new Error('dependencyGraphInvalid');
+        orderedRetirements.push(...pendingRetirements.splice(ready, 1));
+      }
+      for (const item of orderedRetirements) {
         if (!item.agent) continue;
+        dependencies(item.pluginId);
         const cleanupDemand = item.scope === 'project' ? { ...snapshot.project!,
           userProviders: Object.fromEntries((snapshot.preferences?.targets ?? []).map((target) => [target,
             demand.placements.filter((placement) => placement.scope === 'user' && placement.target === target)
@@ -430,7 +530,16 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         } : snapshot.user;
         const cleanup = await prepareScopedRecovery('cleanup', [item.pluginId], { ...options,
           scope: item.scope, cwd: snapshot.context.projectRoot ?? options.cwd, targets: [item.agent], all: false,
-          exactTargets: undefined, demandOverride: cleanupDemand }, runtime);
+          // Ordinary remove's force bypasses dependencies, never ownership checks.
+          force: false, exactTargets: undefined, demandOverride: cleanupDemand }, runtime);
+        if (automaticRetirements.some((candidate) => candidate.pluginId === item.pluginId
+          && candidate.target === item.agent && candidate.scope === item.scope)) {
+          for (const target of cleanup.receipt.targetResults) {
+            target.relation = 'dependency';
+            target.requiredBy = previousDemand.placements.find((candidate) => candidate.pluginId === item.pluginId
+              && candidate.target === item.agent && candidate.scope === item.scope)?.contributions.map((entry) => entry.root) ?? [];
+          }
+        }
         cleanups.push(cleanup);
       }
       children.unshift(...cleanups);
@@ -537,11 +646,14 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           fresh.originalIntent = observationEvidence(currentIntent);
           for (const target of fresh.receipt.targetResults) {
             const reviewed = child.receipt.targetResults.find((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent);
+            if (reviewed?.relation === 'dependency') {
+              target.relation = 'dependency'; target.requiredBy = [...reviewed.requiredBy];
+            }
             // Native/provider observations are refreshed after preceding nodes.
             // Keep only joint constraints and an already failed script gate.
             target.blockers.push(...(reviewed?.blockers ?? []).filter((error) => reviewed?.execution === 'failed'
               || ['configApplyRequiresExistingOutput', 'crossScopeSkillCollision', 'targetPlacementConflict',
-                'preApplyAuthorizationRequired', 'nativeToolAuthorizationRequired', 'providerSwitchPreApplyFailed'].includes(error.code)));
+                'preApplyAuthorizationRequired', 'nativeToolAuthorizationRequired', 'providerSwitchPreApplyFailed', 'dependencyStillRequired'].includes(error.code)));
             if (reviewed?.execution === 'failed') target.execution = 'failed';
             if (child.command !== 'cleanup' && failedCleanups.some((failed) =>
               targetsConflict({ target: failed.agent, scope: failed.scope }, { target: target.agent, scope: target.scope })
@@ -598,6 +710,15 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         // old output when its corresponding replacement cannot run.
         for (const child of joint.children.filter((child) => child.command === 'cleanup')) {
           for (const target of child.receipt.requestedTargets) {
+            if (plan.command === 'uninstall' && failedCleanups.some((failed) => {
+              if (failed.agent !== target.agent) return false;
+              const required = joint.removalDependencies.get(failed.pluginId);
+              return required?.includes(target.pluginId) || required === null
+                && parsePluginId(failed.pluginId).sourceId === parsePluginId(target.pluginId).sourceId;
+            })) {
+              child.receipt.targetResults.find((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent)!
+                .blockers.push(diagnostic('dependencyStillRequired', '依赖者未完成删除，保留其依赖输出。'));
+            }
             if ([...replacementFailures].some((failed) => failed.startsWith(`${target.pluginId}\0`)
               && (failed === `${target.pluginId}\0${target.agent}`
                 || !joint.children.some((replacement) => replacement.command !== 'cleanup'

@@ -303,6 +303,7 @@ describe('ConsoleAppV4', () => {
     expect(value.dependencies.executeScopedTask).not.toHaveBeenCalled();
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'recovery', command: 'reinstall', scope: 'user',
+      allowDependencySelectors: true,
       exactTargets: [
         { pluginId: 'official/review-gate', agent: 'codex' },
         { pluginId: 'team-tools/review-gate', agent: 'codex' },
