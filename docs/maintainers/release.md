@@ -183,7 +183,7 @@ pnpm release -- beta --all --cli-bump patch --catalog-bump patch --plugin <plugi
   - 当 Catalog metadata 为 beta 版本时，在 stable/release 渠道发布自动提升为同 base 的 stable 候选（如 `1.2.3-beta.2` 转换为 `1.2.3`）。
 - **删除后重新加入**：插件被删除后重新加入时，继续使用删除前的最近历史基线。
 - **冻结与 Apply 约束**：prepare 阶段把完整插件版本固定写入 snapshot 与 plan，apply 阶段绝不重新计算；发布 parent 属于目标 channel。第三方 Catalog 未提供官方双渠道历史时，回退使用原第三方 channel 规则（参见 [外部 Catalog 参考合同](../reference/catalog.md)）。
-- **候选号占号原则**：CLI beta 占号同时检查 npm registry 中五个包已出现的最高 beta 与本地已尝试的 attempted beta；Catalog exact version 仅在同 journal plan 时可复用续跑，已用 beta 在同 base 下自动选择下一个未用序号。
+- **候选号占号原则**：自动 Beta 按产品合并远端 `release-source/<product>/<version>` 候选分支、源码 tag、完成 tag 与本地 attempt/journal 的已用版本；CLI 还检查 npm registry 中五个包已出现的版本。候选分支即使尚无源码 tag 也占号，只用于保留版本，不作为成功交付基线。同批 Catalog 先推送候选分支，等待 CLI 完成后再推送源码 tag；准备时即检查远端分支和 tag 的占用。Catalog exact version 仅在同 journal plan 时可复用续跑，已用 beta 在同 base 下自动选择下一个未用序号。
 - **Catalog-only 范围**：Catalog-only 发布不发布 npm 包、不创建 CLI tag、不建立 `.release/attempted.json`，且不编译 Go。
 
 ### 4.4 提交、打包与 Attempt 门禁

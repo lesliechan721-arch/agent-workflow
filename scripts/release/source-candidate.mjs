@@ -278,9 +278,9 @@ export async function prepareSourceCandidate({
   const source = await resolveMainSource({ repoRoot, candidateHead: sourceHead, product, mainRef });
   if (source.sourceHead !== source.candidateHead) throw new Error('Candidate preparation requires a commit on main.');
   const branch = `release-source/${product}/${version}`;
-  const pushRemote = push ? remote ?? 'origin' : undefined;
+  const candidateRemote = push || requireMainTip ? remote ?? 'origin' : undefined;
   if (requireMainTip) await assertMainTip(repoRoot, remote ?? 'origin', source.sourceHead);
-  await assertRefsAvailable(repoRoot, branch, tag, pushRemote);
+  await assertRefsAvailable(repoRoot, branch, tag, candidateRemote);
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-source-candidate-'));
   const checkout = path.join(temporaryRoot, 'repository');
   try {
@@ -313,14 +313,14 @@ export async function prepareSourceCandidate({
       ...(ciRun === undefined && catalogCandidateTag === undefined ? [] : ['--annotate', '--message', `${ciRun === undefined ? 'Release batch' : `Automatic beta\n\nAW-CI: ${ciRun}`}\n${catalogCandidateTag === undefined ? '' : `AW-Catalog: ${catalogCandidateTag}`}`.trim()]),
       tag, candidateHead,
     ]);
-    await assertRefsAvailable(repoRoot, branch, tag, pushRemote);
+    await assertRefsAvailable(repoRoot, branch, tag, candidateRemote);
     await git(repoRoot, [
       'fetch', '--atomic', '--no-tags', checkout,
       `refs/heads/${branch}:refs/heads/${branch}`, `refs/tags/${tag}:refs/tags/${tag}`,
     ]);
     if (push) {
-      if (requireMainTip) await assertMainTip(repoRoot, pushRemote, source.sourceHead);
-      await git(repoRoot, ['push', '--atomic', '--no-follow-tags', pushRemote, `refs/heads/${branch}`, `refs/tags/${tag}`]);
+      if (requireMainTip) await assertMainTip(repoRoot, candidateRemote, source.sourceHead);
+      await git(repoRoot, ['push', '--atomic', '--no-follow-tags', candidateRemote, `refs/heads/${branch}`, `refs/tags/${tag}`]);
     }
     return { ...parsed, sourceHead: source.sourceHead, candidateHead, branch, tag };
   } finally {

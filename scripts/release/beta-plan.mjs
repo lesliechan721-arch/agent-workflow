@@ -402,6 +402,9 @@ export async function planAutomaticBeta({ repoRoot = defaultRepoRoot, sourceHead
     if (fetchedMain !== sourceHead) return skipped(sourceHead, fetchedMain);
     const tags = (await git(cache, ['for-each-ref', '--format=%(refname:strip=2)', 'refs/tags'], env))
       .stdout.trim().split('\n').filter(Boolean);
+    const candidateBranches = (await git(cache, [
+      'for-each-ref', '--format=%(refname:strip=2)', 'refs/heads/release-source',
+    ], env)).stdout.trim().split('\n').filter(Boolean);
     const options = { ...injected, repoRoot, env };
     const states = {};
     const products = {};
@@ -421,11 +424,15 @@ export async function planAutomaticBeta({ repoRoot = defaultRepoRoot, sourceHead
         const baseline = await latestSource(cache, history, env);
         const declaration = await declarationAt(cache, sourceHead, product, env);
         const previousDeclaration = baseline === null ? null : await declarationAt(cache, baseline.sourceHead, product, env);
-        const occupied = tags.flatMap((tag) => {
+        // Deferred Catalog candidates reserve their version with a branch
+        // before CLI completion permits pushing their source tag.
+        const occupied = [...tags, ...candidateBranches].flatMap((ref) => {
           const prefix = `release/${product}/v`;
           const completionPrefix = `${product}-v`;
-          const version = tag.startsWith(prefix) ? tag.slice(prefix.length)
-            : tag.startsWith(completionPrefix) ? tag.slice(completionPrefix.length) : null;
+          const branchPrefix = `release-source/${product}/`;
+          const version = ref.startsWith(prefix) ? ref.slice(prefix.length)
+            : ref.startsWith(completionPrefix) ? ref.slice(completionPrefix.length)
+              : ref.startsWith(branchPrefix) ? ref.slice(branchPrefix.length) : null;
           return version !== null && VERSION.test(version) ? [version] : [];
         });
         occupied.push(...(product === 'cli' ? [...versionSets.flat(), ...await readCliAttempt(repoRoot)]

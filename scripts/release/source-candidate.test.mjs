@@ -257,6 +257,23 @@ test('automatic candidates reject stale main sources and recheck the tip before 
   assert.equal(await git(repoRoot, 'rev-parse', 'HEAD'), current);
 });
 
+// Test Value Gate: deferred Catalog preparation must reject an occupied remote
+// branch even though its source tag will only be pushed after CLI completion.
+test('automatic deferred Catalog candidates reject remote branch occupancy before local preparation', async (t) => {
+  const { repoRoot, remote, sourceHead } = await fixture(t);
+  const branch = 'refs/heads/release-source/catalog/2.0.0-beta.2';
+  await git(remote, 'update-ref', branch, sourceHead);
+  const refs = await git(remote, 'show-ref');
+  await assert.rejects(prepareSourceCandidate({
+    repoRoot, remote, product: 'catalog', version: '2.0.0-beta.2', sourceHead,
+    push: false, requireMainTip: true,
+    mutateCatalogVersion: async () => { throw new Error('Occupied candidate must not be prepared.'); },
+  }), /Remote source candidate.*occupied/);
+  assert.equal(await git(remote, 'show-ref'), refs);
+  assert.equal(await git(repoRoot, 'for-each-ref', '--format=%(refname)',
+    'refs/heads/release-source', 'refs/tags/release'), '');
+});
+
 test('Catalog preparation uses the public mutation and modifies only requested plugin stable bases', async (t) => {
   const { repoRoot, sourceHead } = await fixture(t);
   // The real public mutation validates the Workspace; an empty inventory is valid.

@@ -398,6 +398,28 @@ describe('automatic beta product planning', () => {
     expect(result.products.catalog.changed).toBe(false);
   });
 
+  // Test Value Gate: a deferred Catalog candidate has a remote branch before
+  // its tag exists. A fresh planner must preserve it and allocate a new version.
+  it('reserves remote candidate branches without tags independently for each product', async () => {
+    const f = await fixture();
+    const catalogBranch = 'refs/heads/release-source/catalog/1.0.1-beta.7';
+    const cliBranch = 'refs/heads/release-source/cli/1.0.1-beta.4';
+    await git(f.remote, 'update-ref', catalogBranch, f.baselineSource);
+    await git(f.remote, 'update-ref', cliBranch, f.baselineSource);
+    await f.change({ cli: true, catalog: true });
+    const refs = await git(f.remote, 'show-ref');
+
+    const result = await planAutomaticBeta(f.options);
+
+    expect(result.products.catalog).toMatchObject({ changed: true, version: '1.0.1-beta.8',
+      baselineSource: f.baselineSource, baselineVersion: '1.0.0' });
+    expect(result.products.cli).toMatchObject({ changed: true, version: '1.0.1-beta.5',
+      baselineSource: f.baselineSource, baselineVersion: '1.0.0' });
+    expect(await git(f.remote, 'show-ref')).toBe(refs);
+    expect(await git(f.repoRoot, 'for-each-ref', '--format=%(refname)',
+      'refs/heads/release-source', 'refs/tags/release')).toBe('');
+  });
+
   it('applies an explicit higher target without production changes and rejects explicit downgrade', async () => {
     const f = await fixture();
     await f.change({ target: '2.0.0' });
