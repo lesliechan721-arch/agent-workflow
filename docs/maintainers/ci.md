@@ -142,6 +142,8 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 ### 5.3 CI 诊断目录与脱敏收集
 
+- Windows Job 的 x64/arm64 资格报告在资格步骤成功或失败后均上传，且上传先于 arm64 临时卷卸载。跨卷结果读取与导出使用独立错误码，日志只记录退出码、受限状态与错误码、正文匹配和消费结果，不保存原始 stdout/stderr、正文或路径。
+
 - CI 为 Publisher 与外部 npm 安装诊断提供 `AW_TEST_DIAGNOSTICS_DIR`。
 - 测试在删除临时现场前向该目录保存脱敏 JSON；失败 job 只上传 `publisher/` 和 `npm/` 下的 JSON，保留 7 天。诊断不包含完整环境变量或原始 npm debug 日志。
 
