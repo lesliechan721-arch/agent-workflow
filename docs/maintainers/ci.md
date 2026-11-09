@@ -154,3 +154,4 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 - **时序诊断（`AW_TEST_TIMING`）**：
   CI 通过 `AW_TEST_TIMING` 记录 `commandSequence` 时序诊断。注意：嵌套 stage 的耗时不可直接简单相加（因为包含等待与并发阶段，累计值不等于实际 wall-clock 耗时）。
 - 双平台 TUI 并发用例在断言前输出 `AW_TEST_RESULT`，包含重新安装与配置保存双方的结果、错误码和脱敏诊断摘要，不输出原始 receipt 或完整异常。
+- 精确依赖移除与配置运行时同步用例使用 `AW_TEST_TIMING` 分别记录 fixture、命令、renderer 及恢复阶段；测试结束时报告尚未完成的已跟踪阶段。精确移除及 provider 切换用例在 Windows 使用 60 秒预算，配置运行时同步用例使用 30 秒预算，其它平台分别保留 30 秒与 15 秒。预算覆盖用例中的完整准备与执行，不替代阶段计时或性能门禁。

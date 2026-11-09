@@ -240,7 +240,7 @@ describe('joint recovery through real Catalog and owned Portable outputs', () =>
       { plugin: 'd', platform: 'pi', scope: 'user' },
       { plugin: 'b', platform: 'pi', scope: 'user' },
     ]));
-  }, 30000);
+  }, process.platform === 'win32' ? 60_000 : 30_000);
   it('keeps a failed user provider at user scope and blocks its project consumer', async () => {
     const value = await fixture();
     const foreign = path.join(value.userRoot, 'd', 'SKILL.md');
@@ -387,24 +387,30 @@ describe('joint recovery through real Catalog and owned Portable outputs', () =>
     expect(await fs.pathExists(path.join(value.projectRoot, 'b', 'SKILL.md'))).toBe(true);
   }, 30000);
 
-  it.each([false, true])('keeps exact removal pairs and protects unselected consumers (shared=%s)', async (shared) => {
+  it.for([false, true])('keeps exact removal pairs and protects unselected consumers (shared=%s)', async (shared, test) => {
+    const timing = createCommandTestTiming(test);
+    const runtime = (sequence: number): RebuildCommandRuntime => ({
+      debugLogger: { log: (event) => timing.commandEvent(sequence, event) },
+    });
     const graph = shared ? { a: ['d'], b: ['d'], d: [] } : { a: ['d'], b: ['e'], d: [], e: [] };
-    const value = await fixture(false, ['cursor', 'pi'], false, graph);
+    const value = await timing.measure('fixture', 'exact removal catalog', () => fixture(false, ['cursor', 'pi'], false, graph));
     await setTargets({ ...value.options, scope: 'user' }, ['cursor', 'pi']);
     await writeIntent({ ...value.options, scope: 'user' }, { schemaVersion: 3, kind: 'aw-plugin-intents', sources: {}, roots: [] });
     const project = { ...value.options, scope: 'project' as const };
     const intent = await observeIntent(project);
     if (intent.state !== 'valid') throw new Error('fixtureIntentMissing');
     await writeIntent(project, { ...intent.value, roots: [{ pluginId: 'team/a' }, { pluginId: 'team/b' }] });
-    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
-    const plan = await prepareRecovery('uninstall', ['team/a', 'team/b'], { ...project, targets: ['cursor', 'pi'],
-      exactTargets: [{ pluginId: 'team/a', agent: 'cursor' }, { pluginId: 'team/b', agent: 'pi' }] });
+    expect((await timing.measure('command', 'initial sync', (sequence) => runRecovery('sync', [], value.options, runtime(sequence)))).ok).toBe(true);
+    const plan = await timing.measure('command', 'prepare exact removal', (sequence) =>
+      prepareRecovery('uninstall', ['team/a', 'team/b'], { ...project, targets: ['cursor', 'pi'],
+        exactTargets: [{ pluginId: 'team/a', agent: 'cursor' }, { pluginId: 'team/b', agent: 'pi' }] }, runtime(sequence)));
     try {
       expect(plan.dependencyCleanupTargets?.map((target) => `${target.pluginId}@${target.agent}`).sort())
         .toEqual(shared ? [] : ['team/d@cursor', 'team/e@pi']);
       expect(plan.receipt.requestedTargets.map((target) => `${target.pluginId}@${target.agent}`).sort())
         .toEqual(shared ? ['team/a@cursor', 'team/b@pi'] : ['team/a@cursor', 'team/b@pi', 'team/d@cursor', 'team/e@pi']);
-      const result = await executeRecovery(plan, { yes: true });
+      const result = await timing.measure('command', 'execute exact removal', (sequence) =>
+        executeRecovery(plan, { yes: true, runtime: runtime(sequence) }));
       expect(result.ok, JSON.stringify(result)).toBe(true);
       const exists = (name: string, agent: 'cursor' | 'pi') => fs.pathExists(path.join(value.cwd, `.${agent}`, 'skills', name, 'SKILL.md'));
       expect(await Promise.all([exists('a', 'cursor'), exists('a', 'pi'), exists('b', 'cursor'), exists('b', 'pi')]))
@@ -412,7 +418,7 @@ describe('joint recovery through real Catalog and owned Portable outputs', () =>
       expect(await Promise.all([exists('d', 'cursor'), exists('d', 'pi')])).toEqual([shared, true]);
       if (!shared) expect(await Promise.all([exists('e', 'cursor'), exists('e', 'pi')])).toEqual([true, false]);
     } finally { await plan.context.dispose(); }
-  }, 30000);
+  }, process.platform === 'win32' ? 60_000 : 30_000);
 
   it.each([false, true])('removes a root and selected leaf while respecting intermediate retention (keep=%s)', async (keep) => {
     const value = await fixture(false, ['cursor'], false, { a: ['b'], b: ['d'], d: [] });

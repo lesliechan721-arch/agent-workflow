@@ -18,7 +18,7 @@ import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, type DemandSnapshot } from './demand.js';
 import { readJointDemand, deriveJointDemand, findPlacementConflicts, targetsConflict, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
 import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, describeRecoveryPlan, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan } from './coordinator.js';
-import { readScopedRecoveryStatus, readRecoveryStatus } from './status.js';
+import { readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
 import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
@@ -112,13 +112,18 @@ export async function prepareJointRecovery(command: RecoveryCommand, selectors: 
 
 async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors: readonly string[],
   options: RecoveryOptions, runtime: RebuildCommandRuntime, snapshot: JointDemandSnapshot): Promise<RecoveryPlan> {
+  // Status observes saved requirements, before projecting proposed declarations.
+  // Reuse them only within this preparation; execution reads them again under the lock.
+  const savedDemand = snapshot;
+  let observedStatus: RecoveryStatus | undefined;
   const evidence = snapshotEvidence(snapshot);
   const scope = options.scope ?? snapshot.context.context;
   const observedIntent = (scope === 'project' ? snapshot.project! : snapshot.user).intent;
   if (options.existingOnly) {
     // Existing owned deployments can be refreshed without converting them into declarations.
-    const observed = await readRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession });
-    const installed = (observed.existingTargets ?? []).filter((item) => selectors.some((selector) => selector === item.pluginId
+    observedStatus = await readRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner,
+      codexObservationSession: runtime.codexObservationSession }, savedDemand);
+    const installed = (observedStatus.existingTargets ?? []).filter((item) => selectors.some((selector) => selector === item.pluginId
         || !selector.includes('/') && parsePluginId(item.pluginId).pluginName === selector)
       && (!options.targets || options.targets.includes(item.agent)));
     if (installed.length) {
@@ -318,8 +323,8 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   context.dispose = async () => { await Promise.all(children.map((child) => child.context.dispose())); await dispose(); };
   if (plan.blockExecution) return plan;
   try {
-    const currentStatus = await readRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner,
-      codexObservationSession: runtime.codexObservationSession, targets: undefined });
+    const currentStatus = observedStatus ?? await readRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner,
+      codexObservationSession: runtime.codexObservationSession, targets: undefined }, savedDemand);
     const ownsOutput = (item: { pluginId: string; agent: string | null; scope: Scope }): boolean =>
       currentStatus.ownedTargets?.some((owned) => owned.pluginId === item.pluginId
         && owned.agent === item.agent && owned.scope === item.scope) === true;

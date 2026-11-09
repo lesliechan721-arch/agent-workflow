@@ -61,15 +61,15 @@ export async function assertNeutralAncestorChain(candidate: string): Promise<str
       throw new Error(`userNeutralCwdUnsafe: non-directory ancestor ${current}`);
     }
     // These markers can change backend configuration through upward discovery.
-    for (const marker of ['.git', '.agent-workflows', '.aw-workspace.json', 'pnpm-workspace.yaml',
-      '.codex', '.claude', '.cursor', 'AGENTS.md', 'CLAUDE.md']) {
-      const markerPath = path.join(current, marker);
-      const markerStat = await fs.lstat(markerPath).catch((error: NodeJS.ErrnoException) => {
+    const markers = ['.git', '.agent-workflows', '.aw-workspace.json', 'pnpm-workspace.yaml',
+      '.codex', '.claude', '.cursor', 'AGENTS.md', 'CLAUDE.md'];
+    const markerStats = await Promise.all(markers.map((marker) =>
+      fs.lstat(path.join(current, marker)).catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return null;
         throw error;
-      });
-      if (markerStat) throw new Error(`userNeutralCwdUnsafe: ancestor marker ${markerPath}`);
-    }
+      })));
+    const markerIndex = markerStats.findIndex((markerStat) => markerStat !== null);
+    if (markerIndex !== -1) throw new Error(`userNeutralCwdUnsafe: ancestor marker ${path.join(current, markers[markerIndex]!)}`);
     const parent = path.dirname(current);
     if (parent === current) return canonical;
     current = parent;
@@ -121,14 +121,20 @@ export async function createSafeNeutralCwd(env: NodeJS.ProcessEnv): Promise<{
 
 export async function createScopeContext(options: ScopeContextOptions): Promise<ScopeContext> {
   const env = Object.freeze({ ...(options.env ?? process.env) });
-  const callerCwd = await canonicalPath(options.cwd, 'caller cwd');
-  const awHome = await canonicalPath(resolveAbsoluteAwHome(env), 'AW_HOME');
-  const home = await canonicalPath(resolveUserHome(env), 'user home');
-  const codex = await canonicalPath(getCodexHome(env), 'Codex home');
-  const claude = await canonicalPath(getClaudeHome(env), 'Claude home');
-  const cursor = await canonicalPath(path.join(home, '.cursor'), 'Cursor home');
-  const xdgState = await canonicalPath(readEnvironmentValue(env, 'XDG_STATE_HOME')
-    || path.join(home, '.local', 'state'), 'XDG_STATE_HOME');
+  const paths = [
+    [options.cwd, 'caller cwd'],
+    [resolveAbsoluteAwHome(env), 'AW_HOME'],
+    [resolveUserHome(env), 'user home'],
+    [getCodexHome(env), 'Codex home'],
+    [getClaudeHome(env), 'Claude home'],
+  ] as const;
+  const [callerCwd, awHome, home, codex, claude] = await Promise.all(
+    paths.map(([value, label]) => canonicalPath(value, label)));
+  const [cursor, xdgState] = await Promise.all([
+    canonicalPath(path.join(home, '.cursor'), 'Cursor home'),
+    canonicalPath(readEnvironmentValue(env, 'XDG_STATE_HOME')
+      || path.join(home, '.local', 'state'), 'XDG_STATE_HOME'),
+  ]);
   const targetHomes = Object.freeze({ home, codex, claude, cursor, xdgState });
   const distinctTargets = [awHome, codex, claude, cursor, xdgState];
   if (new Set(distinctTargets).size !== distinctTargets.length || awHome === home) {

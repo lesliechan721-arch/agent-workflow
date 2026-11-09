@@ -48,7 +48,7 @@ Codex project cleanup 和 uninstall 对当前仓库的 `.agents/skills` 做单�
 
 `OperationPlan` 只用于 Review、stale fingerprint 比较和 Receipt。真实执行继续由 rebuild executor 使用已准备的 target 和 live evidence 完成；不存在通用 `OperationAction` executor。
 
-Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和输出证据。直接 CLI `--yes` 与 TUI 使用同一个 `requiresConfirmation` 和 `sharedImpact` descriptor；共享替换或重建必须说明可能影响其它项目。Execute 在同一 `AW_HOME` mutation lock 内重读 Active metadata 与 Review digest；source config 或 Active digest 改变时，在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或要求新 Review。这项检查不访问远端 branch。
+Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和输出证据。联合准备阶段复用本轮已读取的需求；仅刷新现有输出时，安装现场观察也在本轮复用。这些内存数据不跨执行检查边界复用。直接 CLI `--yes` 与 TUI 使用同一个 `requiresConfirmation` 和 `sharedImpact` descriptor；共享替换或重建必须说明可能影响其它项目。Execute 在同一 `AW_HOME` mutation lock 内重读 Active metadata 与 Review digest；source config 或 Active digest 改变时，在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或要求新 Review。这项检查不访问远端 branch。
 
 用户确认后才开始写执行。配置保存和 apply 是两个结果；配置已经提交时，后续准备、执行或 status 失败仍保留已保存值，精确回执见[配置提交与应用](config-and-status.md)。配置写入、生命周期和平台写入各自保留最小本地恢复，不组成跨第三方系统的事务。
 

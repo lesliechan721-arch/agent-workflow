@@ -4,7 +4,7 @@ import { createScopeContext, type ScopeContext } from '../intent/scope-context.j
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { statusCommandV8, flattenStatusTargets, statusTargetHasLiveConfigConsumer, type StatusScopedTarget } from '../commands/status-v6.js';
 import { inspectPortableExtraInstalled, inspectPortableRecovery, portablePreparationDiagnostic } from '../portable/recovery.js';
-import { readJointDemand, deriveJointDemand, findPlacementConflicts } from './joint-demand.js';
+import { readJointDemand, deriveJointDemand, findPlacementConflicts, type JointDemandSnapshot } from './joint-demand.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './receipt.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
@@ -352,8 +352,8 @@ export function aggregateConvergence(allSatisfied: boolean | null, residue: 'pre
 export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
   onDemand?: (demand: DemandSnapshot) => string[] | undefined;
   onNativeStatus?: (native: Awaited<ReturnType<typeof statusCommandV8>>, demand: DemandSnapshot) => void | Promise<void>;
-}): Promise<RecoveryStatus> {
-  const snapshot = await readJointDemand(options);
+}, preparedDemand?: JointDemandSnapshot): Promise<RecoveryStatus> {
+  const snapshot = preparedDemand ?? await readJointDemand(options);
   const plan = deriveJointDemand(snapshot);
   const scopes = [snapshot.user, ...(snapshot.project ? [snapshot.project] : [])];
   const observed: RecoveryStatus[] = [];

@@ -11,6 +11,7 @@ import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { runSafeCli } from '../helpers/cli-runtime.js';
 import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -415,7 +416,8 @@ describe('public config command', () => {
     expect((await fs.readJson(store)).common.mode).toBe('next');
   });
   // Test Value Gate: public capability negotiation and config set must survive Catalog and installed-runtime boundaries.
-  it('advertises v4, preserves raw values, rejects invalid candidates, and leaves installed runtime resources unchanged until sync', async () => {
+  it('advertises v4, preserves raw values, rejects invalid candidates, and leaves installed runtime resources unchanged until sync', async (test) => {
+    const timing = createCommandTestTiming(test);
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const sourceRoot = path.join(cwd, 'v4-command-source');
@@ -423,33 +425,37 @@ describe('public config command', () => {
     const hostSecret = 'host-reference-only-secret';
     const env = { ...isolation.env, HOST_TOKEN: hostSecret };
     const caller = "import {readRuntimeConfig} from './aw-runtime-config.mjs';\nconsole.log(JSON.stringify(await readRuntimeConfig({from:import.meta.url,keys:['advisorProfile','subagentCommands']})));\n";
-    await fs.outputFile(path.join(pluginRoot, 'scripts/render.mjs'), [
-      "import fs from 'node:fs';",
-      "const context=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
-      `const files=${JSON.stringify({
-        'SKILL.md': '---\nname: executor-tool\ndescription: Use an executor for a bounded task.\n---\n# Executor\n',
-        'README.md': '# Executor runtime\n',
-        'agents/openai.yaml': 'interface:\n  display_name: Executor\n  short_description: Use an executor for a bounded task.\n  default_prompt: Use the executor for this task.\npolicy:\n  allow_implicit_invocation: true\n',
-        'scripts/caller.mjs': caller,
-      })};`,
-      "console.log(JSON.stringify({version:2,artifacts:context.requestedArtifactIds.map(id=>({id,kind:'skill',platform:'codex',target:'codex.skill',state:'present',refreshKeys:['advisorProfile','subagentCommands'],skillKey:'executor-tool',content:{files}}))}));",
-    ].join('\n'));
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'Executor fixture\n', (manifest) => {
-      manifest.platforms = ['codex'];
-      manifest.config = createConfigV4Definition();
-      manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
-      manifest.artifacts = { targets: [{ id: 'executor-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill', states: ['present'], refreshKeys: ['advisorProfile', 'subagentCommands'],
-        skillKey: 'executor-tool', runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }] };
+    const { nativeCliRunner } = await timing.measure('fixture', 'config runtime', async () => {
+      await fs.outputFile(path.join(pluginRoot, 'scripts/render.mjs'), [
+        "import fs from 'node:fs';",
+        "const context=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
+        `const files=${JSON.stringify({
+          'SKILL.md': '---\nname: executor-tool\ndescription: Use an executor for a bounded task.\n---\n# Executor\n',
+          'README.md': '# Executor runtime\n',
+          'agents/openai.yaml': 'interface:\n  display_name: Executor\n  short_description: Use an executor for a bounded task.\n  default_prompt: Use the executor for this task.\npolicy:\n  allow_implicit_invocation: true\n',
+          'scripts/caller.mjs': caller,
+        })};`,
+        "console.log(JSON.stringify({version:2,artifacts:context.requestedArtifactIds.map(id=>({id,kind:'skill',platform:'codex',target:'codex.skill',state:'present',refreshKeys:['advisorProfile','subagentCommands'],skillKey:'executor-tool',content:{files}}))}));",
+      ].join('\n'));
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'Executor fixture\n', (manifest) => {
+        manifest.platforms = ['codex'];
+        manifest.config = createConfigV4Definition();
+        manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
+        manifest.artifacts = { targets: [{ id: 'executor-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill', states: ['present'], refreshKeys: ['advisorProfile', 'subagentCommands'],
+          skillKey: 'executor-tool', runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }] };
+      });
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
+      await timing.measure('fixture', 'activate catalog', () =>
+        syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env }));
+      return createCodexNativeTestRuntime({ env, layout: isolation.layout });
     });
-    const snapshot = await readCatalogSourcesConfigSnapshot(env);
-    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
-    const { nativeCliRunner } = await createCodexNativeTestRuntime({ env, layout: isolation.layout });
-    const run = async (args: string[]) => {
+    const run = (args: string[]) => timing.measure('command', args.slice(0, args[1] === 'config' ? 3 : 2).join(' '), async (sequence) => {
       const output = createCapturedCliIo();
-      const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner });
+      const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner,
+        debugLogger: { log: (event) => timing.commandEvent(sequence, event) } });
       return { exitCode, payload: JSON.parse(output.readStdout()) as Record<string, unknown>, stderr: output.readStderr() };
-    };
+    });
     const describe = await run(['self', 'describe']);
     expect(describe).toMatchObject({
       exitCode: 0, payload: {
@@ -538,5 +544,5 @@ describe('public config command', () => {
       }
     });
     expect(readRuntime().effectiveValues).toEqual({ advisorProfile: { executor: 'remote' }, subagentCommands: commands });
-  });
+  }, process.platform === 'win32' ? 30_000 : 15_000);
 });
