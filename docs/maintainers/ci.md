@@ -102,6 +102,7 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 - **单次正式构建**：`delivery` 负责一次正式 strict Catalog build、dist contract 和 build smoke，job 不再单独前置 build。CLI 的 fetch smoke 已包含 Catalog publish smoke。
 - **跨平台 Smoke 消费同一候选**：六种 OS/CPU（Linux x64、Linux arm64、macOS x64、macOS arm64、Windows x64、Windows arm64）的 Node 24 smoke 和精确 Node 22.0.0 最低版本 smoke 消费同一恢复包，绝不重新编译源码。
+- **安装入口版本校验**：通过已安装的 `aw` shim 执行 `--version --json`，核验输出协议版本、`command: version`、`status: success` 和 `data.version` 与候选包版本一致；不解析默认英文文本。
 - **Fake 边界**：fake native runner 的 Catalog smoke 仅用于确定性参数接线测试，**绝不能冒充真实 Codex/Claude 已通过 qualification**。任一门禁未通过就不准许发布。
 
 ---

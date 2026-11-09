@@ -12,6 +12,7 @@ import {
   assertCandidateHost,
   assertRequiredChecks,
   candidateSmokeEnvironment,
+  checkInstalledEntrypoints,
   installCandidatePackages,
   parseCandidateSmokeArgs,
   probeInstalledCatalogCandidate,
@@ -120,6 +121,49 @@ test('installation links candidate bins and applies executable permissions witho
       assert.equal((await execFileAsync(shim, [], { env })).stdout.trim(), bin);
     }
   }
+});
+
+// Test Value Gate: exercise the installed shims with the public JSON version
+// contract so text presentation changes cannot break the release gate.
+test('installed entrypoints require a successful JSON version result matching the candidate', async (t) => {
+  const { root, bundle, manifest } = await fixture(t, true);
+  await fs.mkdir(path.join(root, 'installed'));
+  const installed = await fs.realpath(path.join(root, 'installed'));
+  const env = candidateSmokeEnvironment(installed);
+  await installCandidatePackages(bundle, manifest, installed, env);
+  const cliRoot = path.join(installed, 'node_modules', ...names[0].split('/'));
+  const evalRoot = path.join(installed, 'node_modules', ...names[1].split('/'));
+  await fs.writeFile(path.join(evalRoot, 'bin.js'), '#!/usr/bin/env node\nconsole.log("Usage: aw-skill-eval");\n');
+  for (const name of names.slice(1, 3)) {
+    const packageRoot = path.join(installed, 'node_modules', ...name.split('/'));
+    const metadataPath = path.join(packageRoot, 'package.json');
+    const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+    await fs.writeFile(metadataPath, JSON.stringify({ ...metadata, main: './index.js' }));
+    await fs.writeFile(path.join(packageRoot, 'index.js'), 'export {};\n');
+  }
+  const result = {
+    schemaVersion: 1, command: 'version', status: 'success',
+    data: { version: manifest.version, resultSchemaVersion: 1 }, diagnostics: [], nextActions: [],
+  };
+  const writeVersion = (stdout) => fs.writeFile(path.join(cliRoot, 'bin.js'), [
+    '#!/usr/bin/env node',
+    'import assert from "node:assert/strict";',
+    'assert.deepEqual(process.argv.slice(2), ["--version", "--json"]);',
+    `process.stdout.write(${JSON.stringify(stdout)});`,
+  ].join('\n'));
+  await writeVersion(`${JSON.stringify(result)}\n`);
+  await checkInstalledEntrypoints(installed, env);
+  for (const invalid of [
+    { ...result, schemaVersion: 2 },
+    { ...result, command: 'help' },
+    { ...result, status: 'failed' },
+    { ...result, data: { version: '9.2.0-beta.4' } },
+  ]) {
+    await writeVersion(JSON.stringify(invalid));
+    await assert.rejects(checkInstalledEntrypoints(installed, env), { code: 'ERR_ASSERTION' });
+  }
+  await writeVersion(`SUCCESS  version\nVersion: ${manifest.version}\n`);
+  await assert.rejects(checkInstalledEntrypoints(installed, env), SyntaxError);
 });
 
 test('Catalog tools retain their own five-package version independently of the Catalog release', async (t) => {
