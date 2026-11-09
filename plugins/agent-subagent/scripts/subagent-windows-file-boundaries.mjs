@@ -7,13 +7,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { guideRuntimeScripts } from './fixtures/guide-runtime-resources.mjs';
-import { qualificationAdapter, waitForCommunication, field } from './fixtures/windows-qualification.mjs';
+import { qualificationAdapter, waitForCommunication, field, checkQualificationResult, checkQualificationExport } from './fixtures/windows-qualification.mjs';
 
 // Explicit fake-only qualification. Product source is copied unchanged.
 const emit = (phase, pass, code, details = {}) => process.stdout.write(`AW_SUBAGENT_WINDOWS_QUALIFICATION ${JSON.stringify({ phase, pass, code, ...details })}\n`);
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const source = guideRuntimeScripts(import.meta.url);
-const safeCodes = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOENT', 'ETIMEDOUT', 'platformOperationFailed', 'qualificationFailed', 'differentVolumeUnavailable', 'commandFailed', 'commandTimeout', 'protocolMismatch', 'treeStopUnconfirmed', 'lockUnavailable', 'atomicWriteDidNotFail', 'readinessFailed']);
+const safeCodes = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOENT', 'ETIMEDOUT', 'platformOperationFailed', 'qualificationFailed', 'differentVolumeUnavailable', 'commandFailed', 'commandTimeout', 'protocolMismatch', 'treeStopUnconfirmed', 'lockUnavailable', 'atomicWriteDidNotFail', 'readinessFailed',
+  'resultReadFailed', 'resultStateMismatch', 'resultTextMismatch', 'resultExportFailed', 'resultExportNotConsumed', 'resultExportReadFailed', 'resultExportTextMismatch']);
 const safeCode = (error) => safeCodes.has(error?.code) ? error.code : 'qualificationFailed';
 function fail(code) { throw Object.assign(new Error(code), { code }); }
 function requireTrue(value, code = 'protocolMismatch') { if (!value) fail(code); }
@@ -215,11 +216,10 @@ async function main() {
     let result;
     const resultDeadline = Date.now() + 60000;
     do { result = await command(['result', '--run', handle]); if (field(result.stdout + result.stderr, 'code') !== 'resultNotReady') break; if (Date.now() >= resultDeadline) fail('commandTimeout'); } while (true);
-    requireTrue(result.exit === 0 && field(result.stdout, 'state') === 'completed' && blocks(result.stdout, 'FINAL').includes(final));
+    emit('cross-volume.result-read', true, 'ok', checkQualificationResult(result, final));
     const outputFile = path.join(workspace, 'complete-result.txt');
     const exported = await command(['result', '--run', handle, '--output-file', outputFile]);
-    requireTrue(exported.exit === 0 && / consumed=true\n$/.test(exported.stdout) && blocks(await fs.readFile(outputFile, 'utf8'), 'FINAL').includes(final));
-    emit('cross-volume.result-export', true, 'ok');
+    emit('cross-volume.result-export', true, 'ok', await checkQualificationExport(exported, outputFile, final));
     requireTrue((await command(['stop', '--run', handle])).exit === 0);
     await fs.unlink(finish);
     const active = await command(['start', '--executor', 'fixture', '--workspace', workspace, '--prompt-file', promptFile]);

@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+
 // Shared by the native qualification and its protocol regression tests.
 export function field(text, key) {
   const expression = /^<((?:message|input|result|diagnostic)(?:_[0-9]+)?)([^>\n]*)>\n([\s\S]*?)\n<\/\1>\n/gm;
@@ -12,6 +14,48 @@ export function field(text, key) {
     if (/^starting /m.test(controls)) return 'starting';
     if (/^(?:started|ready) /m.test(controls)) return 'running';
   }
+}
+
+function resultDetails(response, report = response.stdout) {
+  const state = field(report, 'state');
+  const code = field(response.stderr ?? '', 'code') ?? field(report, 'code');
+  return {
+    exitCode: Number.isSafeInteger(response.exit) ? response.exit : null,
+    state: ['starting', 'running', 'closing', 'completed', 'failed', 'cancelled', 'unknown'].includes(state) ? state : 'unavailable',
+    runtimeCode: /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code ?? '') ? code : 'unavailable',
+  };
+}
+
+function finalMatches(report, expectedText) {
+  const blocks = /^<((?:message|input|result|diagnostic)(?:_[0-9]+)?)([^>\n]*)>\n([\s\S]*?)\n<\/\1>\n/gm;
+  return [...report.matchAll(blocks)].some((match) => /^result(?:_[0-9]+)?$/.test(match[1]) && match[3] === expectedText);
+}
+
+function resultFailure(code, details) {
+  throw Object.assign(new Error(code), { code, details });
+}
+
+export function checkQualificationResult(response, expectedText) {
+  const details = { ...resultDetails(response), textMatches: finalMatches(response.stdout, expectedText) };
+  if (response.exit !== 0) resultFailure('resultReadFailed', details);
+  if (details.state !== 'completed') resultFailure('resultStateMismatch', details);
+  if (!details.textMatches) resultFailure('resultTextMismatch', details);
+  return details;
+}
+
+export async function checkQualificationExport(response, outputFile, expectedText) {
+  let details = { ...resultDetails(response), consumed: / consumed=true\n$/.test(response.stdout) };
+  if (response.exit !== 0) resultFailure('resultExportFailed', details);
+  if (!details.consumed) resultFailure('resultExportNotConsumed', details);
+  let report;
+  try { report = await fs.readFile(outputFile, 'utf8'); }
+  catch (error) {
+    resultFailure('resultExportReadFailed', { ...details,
+      fileCode: ['ENOENT', 'EPERM', 'EACCES', 'EBUSY', 'EISDIR'].includes(error.code) ? error.code : 'unavailable' });
+  }
+  details = { ...details, ...resultDetails(response, report), textMatches: finalMatches(report, expectedText) };
+  if (!details.textMatches) resultFailure('resultExportTextMismatch', details);
+  return details;
 }
 
 export const qualificationAdapter = String.raw`

@@ -127,9 +127,11 @@ jobs:
         working-directory: ${{ steps.workspace.outputs.root }}
       - run: pnpm build
         working-directory: ${{ steps.workspace.outputs.root }}
-      - run: node native-tools/windows-job/qualify.mjs --candidate ".native/windows-job/${{ needs.candidate.outputs.version }}"
+      - id: qualify
+        run: node native-tools/windows-job/qualify.mjs --candidate ".native/windows-job/${{ needs.candidate.outputs.version }}"
         working-directory: ${{ steps.workspace.outputs.root }}
       - uses: actions/upload-artifact@v7
+        if: always() && (steps.qualify.outcome == 'success' || steps.qualify.outcome == 'failure')
         with:
           name: windows-job-qualification-${{ matrix.arch }}
           path: ${{ steps.workspace.outputs.root }}/.native/windows-job/${{ needs.candidate.outputs.version }}/qualification-${{ matrix.arch }}.json

@@ -7,7 +7,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import { qualificationAdapter, waitForCommunication } from './fixtures/windows-qualification.mjs';
+import { qualificationAdapter, waitForCommunication, checkQualificationResult, checkQualificationExport } from './fixtures/windows-qualification.mjs';
+import { textBlock } from '../skills/spawn-subagent/scripts/runtime/output.mjs';
 import { createFrameDecoder, createFrameWriter, createProtocolState, validateFrame } from '../skills/spawn-subagent/scripts/runtime/protocol.mjs';
 import { LIMITS, validateRequest } from '../skills/spawn-subagent/scripts/runtime/contracts.mjs';
 
@@ -68,6 +69,54 @@ test('qualification readiness follows pending runs and reports terminal failure 
     code: 'readinessFailed', details: { state: 'failed', runtimeCode: 'workerLost' },
   });
   await assert.rejects(waitForCommunication(pending, () => assert.fail('An expired wait must not poll.'), { timeoutMs: 0 }), { code: 'commandTimeout' });
+});
+
+// Test Value Gate: failed qualification must identify the failed result check
+// without disclosing task text, paths, or raw command diagnostics.
+test('qualification result checks retain safe failure evidence and exact final text', () => {
+  const final = '跨卷最终答案。\r\n第二行。\n';
+  const response = { exit: 0, stdout: textBlock('result', final, { state: 'completed' }), stderr: '' };
+  assert.deepEqual(checkQualificationResult(response, final), { exitCode: 0, state: 'completed', runtimeCode: 'unavailable', textMatches: true });
+  const failed = { exit: 1, stdout: '', stderr: textBlock('diagnostic', 'private-path-and-message', { code: 'runStateUnavailable' }) };
+  assert.throws(() => checkQualificationResult(failed, final), { code: 'resultReadFailed', details: {
+    exitCode: 1, state: 'unavailable', runtimeCode: 'runStateUnavailable', textMatches: false,
+  } });
+  assert.throws(() => checkQualificationResult({ ...response, stdout: textBlock('result', final, { state: 'unknown', code: 'workerLost' }) }, final), {
+    code: 'resultStateMismatch', details: { exitCode: 0, state: 'unknown', runtimeCode: 'workerLost', textMatches: true },
+  });
+  assert.throws(() => checkQualificationResult(response, final.replaceAll('\r\n', '\n')), { code: 'resultTextMismatch' });
+  const injected = textBlock('message', response.stdout);
+  assert.throws(() => checkQualificationResult({ ...response, stdout: injected }, final), { code: 'resultStateMismatch' });
+  const unsafe = { ...failed, stderr: textBlock('diagnostic', final, { code: 'C:/private/path' }) };
+  assert.throws(() => checkQualificationResult(unsafe, final), { code: 'resultReadFailed', details: {
+    exitCode: 1, state: 'unavailable', runtimeCode: 'unavailable', textMatches: false,
+  } });
+});
+
+// Test Value Gate: an export command failure, an unconsumed report, a missing
+// file, and changed text need distinct evidence before the test tree is removed.
+test('qualification export checks distinguish command, consumption, file, and text failures', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-export-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const outputFile = path.join(directory, 'private-report.txt');
+  const final = '跨卷最终答案。\r\n第二行。\n';
+  const response = { exit: 0, stdout: `exported fixture path=${JSON.stringify(outputFile)} bytes=123 consumed=true\n`, stderr: '' };
+  await assert.rejects(checkQualificationExport({ ...response, exit: 1,
+    stderr: textBlock('diagnostic', outputFile, { code: 'resultOutputFailed' }) }, outputFile, final), {
+    code: 'resultExportFailed', details: { exitCode: 1, state: 'unavailable', runtimeCode: 'resultOutputFailed', consumed: true },
+  });
+  await assert.rejects(checkQualificationExport({ ...response, stdout: response.stdout.replace('consumed=true', 'consumed=false') }, outputFile, final), {
+    code: 'resultExportNotConsumed', details: { exitCode: 0, state: 'unavailable', runtimeCode: 'unavailable', consumed: false },
+  });
+  await assert.rejects(checkQualificationExport(response, outputFile, final), { code: 'resultExportReadFailed', details: {
+    exitCode: 0, state: 'unavailable', runtimeCode: 'unavailable', consumed: true, fileCode: 'ENOENT',
+  } });
+  await fs.writeFile(outputFile, textBlock('result', final.replaceAll('\r\n', '\n'), { state: 'completed' }));
+  await assert.rejects(checkQualificationExport(response, outputFile, final), { code: 'resultExportTextMismatch' });
+  await fs.writeFile(outputFile, textBlock('result', final, { state: 'completed' }));
+  assert.deepEqual(await checkQualificationExport(response, outputFile, final), {
+    exitCode: 0, state: 'completed', runtimeCode: 'unavailable', consumed: true, textMatches: true,
+  });
 });
 
 // Test Value Gate: public wire helpers protect exact Unicode bytes, strict v5
