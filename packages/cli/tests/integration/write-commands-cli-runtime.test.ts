@@ -1,4 +1,4 @@
-import { installNativeTestQualification, getNativeTestLayout, createNativeTestExecution } from '../helpers/native-execution-fixture.js';
+import { installNativeTestQualification, getNativeTestLayout, createNativeTestExecution, isolateCodexAppDiscoveryQueries } from '../helpers/native-execution-fixture.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { describe, beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
@@ -482,7 +482,7 @@ describe('five namespaced write commands', () => {
     });
     const codexNativeRuntime = await createCodexNativeTestRuntime(isolation);
     const claudeNativeRuntime = await createClaudeNativeTestRuntime(isolation);
-    const nativeCliRunner = vi.fn((invocation: NativeCliInvocation) => invocation.command === 'claude'
+    const nativeCliRunner = vi.fn((invocation: NativeCliInvocation) => claudeNativeRuntime.isClaudeInvocation(invocation)
       ? claudeNativeRuntime.nativeCliRunner(invocation) : codexNativeRuntime.nativeCliRunner(invocation));
     const runtime = { env: isolation.env, nativeCliRunner, codexManagerResolver: codexNativeRuntime.codexManagerResolver };
     const dualInstalled = await timing.measure('command', 'fixture install', () => installFixturePlugin(['dual/config-dual'], {
@@ -1026,6 +1026,7 @@ describe('five namespaced write commands', () => {
         'throw new Error("Old runtime must not run");\n');
     }
     const oldRuntimeBefore = oldRuntimePresent ? await snapshotRegularTree(oldRuntimeRoot) : undefined;
+    isolateCodexAppDiscoveryQueries();
     const nativeCliRunner = vi.fn(async (_invocation: NativeCliInvocation) => {
       throw Object.assign(new Error('No local Codex CLI is available'), { code: 'ENOENT' });
     });

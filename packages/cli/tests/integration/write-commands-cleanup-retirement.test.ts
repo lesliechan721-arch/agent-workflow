@@ -1656,7 +1656,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const cwd = isolation.layout.fixtureCwd;
-    const { runtime, nativeCliRunner, installedPath, claudeHome, projectRoot }
+    const { runtime, nativeCliRunner, installedPath, claudeHome, projectRoot, isClaudeInvocation }
       = await createClaudeNativeTestRuntime(isolation);
     for (const [pluginId, scope] of [
       ['official/demo', 'user'], ['official/demo', 'project'], ['official/other', 'user'],
@@ -1686,9 +1686,11 @@ describe('five namespaced write commands', () => {
     expect((await readFixtureRequirements({ scope: 'user', cwd, env: isolation.env })).roots)
       .toEqual([expect.objectContaining({ pluginId: 'official/other' })]);
     const selectedNativeId = await nativeRegistrationId('demo', 'official', 'claude');
-    const uninstallScopes = nativeCliRunner.mock.calls.filter(([invocation]) =>
-      invocation.command === 'claude' && invocation.args[0] === 'plugin'
-      && invocation.args[1] === 'uninstall' && invocation.args[2] === selectedNativeId)
+    const uninstallScopes = nativeCliRunner.mock.calls.filter(([invocation]) => {
+      const args = invocation.args.slice(invocation.args.indexOf('plugin'));
+      return isClaudeInvocation(invocation) && args[0] === 'plugin'
+        && args[1] === 'uninstall' && args[2] === selectedNativeId;
+    })
       .map(([invocation]) => invocation.args[invocation.args.indexOf('--scope') + 1]);
     expect(uninstallScopes).toEqual([]);
     const after = await fs.readJson(installedPath) as { plugins: Record<string, unknown[]> };
@@ -1723,7 +1725,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const cwd = isolation.layout.fixtureCwd;
-    const { runtime, nativeCliRunner, installedPath, claudeHome } = await createClaudeNativeTestRuntime(isolation);
+    const { runtime, nativeCliRunner, installedPath, claudeHome, isClaudeInvocation } = await createClaudeNativeTestRuntime(isolation);
     for (const pluginId of ['official/demo', 'official/other']) {
       const installed = await installFixturePlugin([pluginId], {
         cwd, platform: 'claude', scope: 'user',
@@ -1764,9 +1766,11 @@ describe('five namespaced write commands', () => {
       selector: 'official/demo', targets: ['claude'], yes: true }, runtime);
     expect(retired.configChanged).toBe(false);
     const selectedNativeId = await nativeRegistrationId('demo', 'official', 'claude');
-    const uninstalls = nativeCliRunner.mock.calls.filter(([invocation]) =>
-      invocation.command === 'claude' && invocation.args[0] === 'plugin'
-      && invocation.args[1] === 'uninstall' && invocation.args[2] === selectedNativeId);
+    const uninstalls = nativeCliRunner.mock.calls.filter(([invocation]) => {
+      const args = invocation.args.slice(invocation.args.indexOf('plugin'));
+      return isClaudeInvocation(invocation) && args[0] === 'plugin'
+        && args[1] === 'uninstall' && args[2] === selectedNativeId;
+    });
     expect(uninstalls).toHaveLength(0);
     const records = (await fs.readJson(installedPath)).plugins as Record<string, unknown[]>;
     if (mode !== 'unknown') {

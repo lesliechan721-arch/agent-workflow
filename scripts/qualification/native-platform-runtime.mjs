@@ -63,10 +63,22 @@ export async function prepareEnvironment(root) {
 
 export async function execute(launcher, args, options) {
   const { runProviderProcess } = await import('../../packages/agent-skill-eval/dist/process.js');
+  const windowsJobHelperPath = process.platform === 'win32'
+    ? await (await import('../../packages/agent-skill-eval/dist/windows-job.js')).prepareWindowsJobHelper()
+    : undefined;
   return runProviderProcess({ executable: launcher.executable, args: [...launcher.prefix, ...args],
     cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs ?? 30_000,
     maxBufferBytes: 2 * 1024 * 1024, ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
-  }, {}, { containment: 'verified-observed' });
+  }, {}, { containment: 'verified-observed',
+    ...(windowsJobHelperPath ? { processTree: { windowsJobHelperPath } } : {}),
+  });
+}
+
+export async function processManagementInfo() {
+  if (process.platform !== 'win32') return { mode: 'verified-observed', osContainment: false };
+  const { prepareWindowsJobHelper } = await import('../../packages/agent-skill-eval/dist/windows-job.js');
+  const executable = await prepareWindowsJobHelper();
+  return { mode: 'windows-job', osContainment: true, helperSha256: sha256(await fs.readFile(executable)) };
 }
 
 export function assertCommand(result) {

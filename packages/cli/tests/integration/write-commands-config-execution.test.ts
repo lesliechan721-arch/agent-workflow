@@ -1,4 +1,5 @@
 import { readIntentFixture } from '../helpers/plugin-intent-fixture.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { beforeEach, describe, expect, it, vi, type TestContext } from 'vitest';
 import { realpath } from 'node:fs/promises';
 import { writePreferences, createEmptyPreferences } from '../../src/intent/deployment-preferences.js';
@@ -278,51 +279,7 @@ describe('five namespaced write commands', () => {
     await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
       ...createEmptyPreferences(), targets: ['claude'],
     });
-    const marketplaceRoots = new Map<string, string>();
-    const nativeCliRunner = async (invocation: NativeCliInvocation) => {
-      if (invocation.command === 'claude' && invocation.args[0] === 'plugin') {
-        const settingsPath = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'settings.json');
-        const pluginsRoot = path.join(isolation.env.CLAUDE_CONFIG_DIR!, 'plugins');
-        const knownPath = path.join(pluginsRoot, 'known_marketplaces.json');
-        const installedPath = path.join(pluginsRoot, 'installed_plugins.json');
-        if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
-          const marketplaceRoot = invocation.args[3]!;
-          const config = await fs.readJson(path.join(marketplaceRoot, 'config.json')) as {
-            marketplaceName: string;
-          };
-          marketplaceRoots.set(config.marketplaceName, marketplaceRoot);
-          await fs.outputJson(settingsPath, {
-            extraKnownMarketplaces: {
-              [config.marketplaceName]: {
-                source: { source: 'directory', path: marketplaceRoot },
-              },
-            },
-          });
-          await fs.outputJson(knownPath, {
-            [config.marketplaceName]: {
-              source: { source: 'directory', path: marketplaceRoot },
-              installLocation: marketplaceRoot,
-            },
-          });
-        }
-        if (invocation.args[1] === 'install') {
-          const pluginId = invocation.args[2]!;
-          const separator = pluginId.lastIndexOf('@');
-          const pluginName = pluginId.slice(0, separator);
-          const marketplaceName = pluginId.slice(separator + 1);
-          const settings = await fs.readJson(settingsPath).catch(() => ({})) as Record<string, unknown>;
-          await fs.outputJson(settingsPath, {
-            ...settings,
-            enabledPlugins: { [pluginId]: true },
-          });
-          await fs.outputJson(installedPath, {
-            plugins: { [pluginId]: [{ name: pluginName, scope: 'user', version: '1.0.0' }] },
-          });
-          await fs.ensureDir(path.join(marketplaceRoots.get(marketplaceName)!, 'plugins', pluginName));
-        }
-      }
-      return { exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' };
-    };
+    const { marketplaceRoots, nativeCliRunner } = await createClaudeNativeTestRuntime(isolation);
 
     const unauthorizedOutput = createCapturedCliIo();
     const unauthorizedExitCode = await runCli([
@@ -2336,10 +2293,12 @@ describe('five namespaced write commands', () => {
       const events = (await fs.readFile(f.rendererMarker, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
       expect(events.length).toBeGreaterThan(0);
       for (const event of events) {
-        expect(event.realCwd).toBe(await realpath(f.cwd));
-        expect(event.entryPath).toBe(path.join(event.bundleRoot, 'scripts/render.mjs'));
-        expect(event.bundleRoot).not.toBe(await realpath(f.cwd));
-        expect(path.relative(await realpath(f.env.AW_HOME!), event.bundleRoot)).toMatch(/^catalog-store[/\\]/u);
+        const projectRoot = path.toNamespacedPath(await realpath(f.cwd));
+        const bundleRoot = path.toNamespacedPath(event.bundleRoot);
+        expect(path.toNamespacedPath(event.realCwd)).toBe(projectRoot);
+        expect(path.toNamespacedPath(event.entryPath)).toBe(path.join(bundleRoot, 'scripts/render.mjs'));
+        expect(bundleRoot).not.toBe(projectRoot);
+        expect(path.relative(path.toNamespacedPath(await realpath(f.env.AW_HOME!)), bundleRoot)).toMatch(/^catalog-store[/\\]/u);
         const isolatedRoot = path.dirname(event.contextPath);
         expect(event.home).toBe(path.join(isolatedRoot, 'home'));
         expect(event.awHome).toBe(path.join(isolatedRoot, 'aw-home'));

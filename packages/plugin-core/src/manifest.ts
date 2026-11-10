@@ -11,6 +11,8 @@ export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 20
 const ajv = new Ajv2020({
   allErrors: true,
   strict: true,
+  // Reuse referenced validators to avoid expanding shared schemas during CLI startup.
+  inlineRefs: false,
 })
 const validateV4 = ajv.compile<PluginManifestSourceV4>(schema)
 

@@ -2,23 +2,45 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 
 import fs from 'fs-extra';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
+import * as platformDiscovery from '../../src/platforms/discovery.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
+const discoverPlatforms = platformDiscovery.discoverPlatforms;
+
 async function fixture(withSkill = false) {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
   await git(cwd, ['init', '--quiet']);
+  let nativeCliRunner: NativeCliRunner | undefined;
+  if (withSkill) {
+    const discovery = vi.spyOn(platformDiscovery, 'discoverPlatforms').mockImplementation((ctx) => discoverPlatforms({
+      ...ctx, macApplicationsDirectories: [], windowsApplicationsDirectories: [], linuxDesktopDirectories: [],
+    }));
+    onTestFinished(() => discovery.mockRestore());
+    const binRoot = path.join(cwd, 'cursor-bin');
+    const executable = path.join(binRoot, 'cursor-agent');
+    await fs.outputFile(executable, '', { mode: 0o755 });
+    for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
+    env.PATH = binRoot;
+    nativeCliRunner = async (invocation) => {
+      if (invocation.command === executable && invocation.args.length === 1 && invocation.args[0] === '--version') {
+        return { exitCode: 0, stdout: 'Cursor Agent 2026.11.05-86047df', stderr: '' };
+      }
+      throw new Error('The Cursor configuration fixture only permits a version probe.');
+    };
+  }
   const sourceRoot = path.join(cwd, 'config-source');
   if (withSkill) await fs.outputFile(path.join(sourceRoot, 'plugins/demo/render.mjs'), [
     'import fs from "node:fs"; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,"utf8"));',
@@ -51,7 +73,7 @@ async function fixture(withSkill = false) {
   const run = async (args: string[], input?: string | Buffer[]) => {
     const captured = createCapturedCliIo();
     const exitCode = await runCli([...args, '--json'], {
-      cwd, env, interactive: false, io: captured.io,
+      cwd, env, interactive: false, io: captured.io, nativeCliRunner,
       ...(input === undefined ? {} : { stdin: Readable.from(typeof input === 'string' ? [input] : input) })
     });
     return { exitCode, value: JSON.parse(captured.readStdout()), stdout: captured.readStdout(), stderr: captured.readStderr() };

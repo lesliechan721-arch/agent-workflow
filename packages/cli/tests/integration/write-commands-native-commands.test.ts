@@ -65,7 +65,7 @@ describe('five namespaced write commands', () => {
       targets: ['codex', 'claude'], yes: true,
       exactTargets: [{ pluginId: 'team/first', agent: 'codex' },
         { pluginId: 'team/second', agent: 'claude' }],
-    }, { nativeCliRunner: (invocation) => invocation.command === 'claude'
+    }, { nativeCliRunner: (invocation) => claude.isClaudeInvocation(invocation)
       ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation) });
     expect(receipt, JSON.stringify(receipt)).toMatchObject({ ok: true });
     expect(receipt.targetResults.map(({ pluginId, agent }) => [pluginId, agent])).toEqual([
@@ -320,7 +320,7 @@ describe('five namespaced write commands', () => {
     await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: before.digest, env: isolation.env });
     const codex = await createCodexNativeTestRuntime(isolation, '0.167.0');
     const claude = await createClaudeNativeTestRuntime(isolation);
-    const nativeCliRunner = async (invocation: NativeCliInvocation) => invocation.command === 'claude' ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
+    const nativeCliRunner = async (invocation: NativeCliInvocation) => claude.isClaudeInvocation(invocation) ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
     const run = async (args: string[]) => {
       const captured = createCapturedCliIo();
       const exitCode = await runCli([...args, '--json'], { cwd, env: isolation.env, io: captured.io, interactive: false, nativeCliRunner });

@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import { vi } from 'vitest';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { getClaudeHome } from '../../src/utils/state-paths.js';
+import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
 
 /** Controlled current Claude CLI; filesystem registration and activation stay observable. */
 export async function createClaudeNativeTestRuntime(
@@ -16,21 +17,26 @@ export async function createClaudeNativeTestRuntime(
   const marketplaceRoots = new Map<string, string>();
   const packageRoots = new Map<string, string>();
   const binRoot = path.join(cwd, 'claude-native-bin');
+  let launcherPath: string | undefined;
   if (process.platform === 'win32') {
     const packageRoot = path.join(binRoot, 'node_modules', '@anthropic-ai', 'claude-code');
     await fs.outputJson(path.join(packageRoot, 'package.json'), { name: '@anthropic-ai/claude-code',
       version: '2.1.292', bin: { claude: 'cli.js' } });
     await fs.outputFile(path.join(packageRoot, 'cli.js'), '// External calls use the controlled runner.\n');
-    await fs.outputFile(path.join(binRoot, 'claude.cmd'), '@echo off\r\n');
+    launcherPath = await fs.realpath(path.join(packageRoot, 'cli.js'));
+    await fs.outputFile(path.join(binRoot, 'claude.cmd'),
+      renderNpmCmdShim('node_modules\\@anthropic-ai\\claude-code\\cli.js'));
   } else await fs.outputFile(path.join(binRoot, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const executablePath = await fs.realpath(path.join(binRoot, process.platform === 'win32' ? 'claude.cmd' : 'claude'));
+  const isClaudeInvocation = (invocation: NativeCliInvocation): boolean => invocation.command === 'claude'
+    || invocation.command === executablePath
+    || launcherPath !== undefined && invocation.command === process.execPath && invocation.args[0] === launcherPath;
   const inheritedPath = Object.entries(isolation.env).find(([key]) => key.toLowerCase() === 'path')?.[1];
   for (const key of Object.keys(isolation.env)) if (key.toLowerCase() === 'path') delete isolation.env[key];
   isolation.env.PATH = [binRoot, inheritedPath].filter(Boolean).join(path.delimiter);
 
   const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
-    const isClaude = path.basename(invocation.command).replace(/\.(?:cmd|exe)$/iu, '') === 'claude'
-      || invocation.args.some((arg) => arg.includes('@anthropic-ai') && arg.includes('claude-code'));
-    if (!isClaude) return { exitCode: 0, stdout: invocation.args.includes('--version')
+    if (!isClaudeInvocation(invocation)) return { exitCode: 0, stdout: invocation.args.includes('--version')
       ? 'codex-cli 0.200.0' : '{"installed":[],"available":[]}', stderr: '' };
     if (invocation.args.includes('--version')) return { exitCode: 0, stdout: '2.1.292 (Claude Code)', stderr: '' };
     const pluginIndex = invocation.args.indexOf('plugin');
@@ -82,5 +88,5 @@ export async function createClaudeNativeTestRuntime(
     return { exitCode: 0, stdout: '', stderr: '' };
   });
   return { runtime: { env: isolation.env, nativeCliRunner }, nativeCliRunner, installedPath,
-    claudeHome, projectRoot, marketplaceRoots, packageRoots, binRoot };
+    claudeHome, projectRoot, marketplaceRoots, packageRoots, binRoot, isClaudeInvocation };
 }

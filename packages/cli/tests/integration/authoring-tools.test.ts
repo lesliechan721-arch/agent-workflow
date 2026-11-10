@@ -3454,7 +3454,12 @@ describe('authoring tools', () => {
     await fs.writeFile(path.join(pluginDir, 'scripts/render.mjs'), renderer.replace('key:"run",runner:', 'key:"other",runner:'));
     const unavailable=JSON.parse((await runValidatePlugin(pluginDir,['--json'])).stdout);
     expect(unavailable).toMatchObject({ok:true,errors:[]});
-    expect(unavailable.warnings).toContain('component unmet (codex/user): skill:helper [dependency-unmet] []');
+    // The public validator uses the production profile. On unqualified hosts,
+    // the capability gate precedes managed command dependency resolution.
+    const expectedGap = process.platform === 'darwin' && process.arch === 'arm64'
+      ? '[dependency-unmet] []'
+      : '[capability-unverified] [{"feature":"component.kind.skill"}]';
+    expect(unavailable.warnings).toContain(`component unmet (codex/user): skill:helper ${expectedGap}`);
     expect(await fs.pathExists(commandRoot)).toBe(before);
     await fs.writeFile(path.join(pluginDir, 'scripts/render.mjs'), renderer);
     await writeAuthoringPluginManifest(pluginDir, {

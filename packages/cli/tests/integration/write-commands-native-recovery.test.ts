@@ -25,7 +25,7 @@ import type { PluginMeta } from '../../src/types.js';
 import { parseOwnedTextHeader, readSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
-import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { getNativeTestLayout, installNativeTestQualification, isolateCodexAppDiscoveryQueries } from '../helpers/native-execution-fixture.js';
 
 import {
   installWriteCommand,
@@ -2217,6 +2217,7 @@ describe('five namespaced write commands', () => {
     })).toBe(false);
     await expect(fs.readFile(payloadReadme, 'utf8')).resolves.toBe('tampered payload\n');
 
+    isolateCodexAppDiscoveryQueries();
     const callsBeforeStatus = runtime.nativeCliRunner.mock.calls.length;
     const status = await readRecoveryStatus({ cwd: isolation.layout.fixtureCwd,
       env: { ...isolation.env, PATH: '' }, nativeCliRunner: runtime.nativeCliRunner,
@@ -2831,6 +2832,7 @@ describe('five namespaced write commands', () => {
       { upsertPluginActivations: { [nativeId('demo')]: true } },
     );
 
+    isolateCodexAppDiscoveryQueries();
     const callsBeforeStatus = runtime.nativeCliRunner.mock.calls.length;
     const status = await readRecoveryStatus({ cwd: isolation.layout.fixtureCwd, env: { ...isolation.env, PATH: '' },
       nativeCliRunner: runtime.nativeCliRunner, cliVersion: '1.0.0', targets: ['codex'], context: 'project' });
@@ -2871,6 +2873,7 @@ describe('five namespaced write commands', () => {
       removePluginActivations: [nativeId('demo')],
     });
     const originalRunner = installedRuntime.nativeCliRunner.getMockImplementation()!;
+    isolateCodexAppDiscoveryQueries();
     const observationRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       if (!invocation.args.includes('list')) {
         throw new Error('An unavailable CLI must not perform native mutations');
@@ -3186,6 +3189,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const codexRuntime = await createCodexNativeTestRuntime(isolation);
+    const claudeRuntime = await createClaudeNativeTestRuntime(isolation);
     const preApplyPath = path.join(isolation.env.AW_HOME!, 'pre-apply-codex.txt');
     const preApplyEvents: Array<{ phase: string; outputExists: boolean }> = [];
     const reporter: NonNullable<RebuildCommandRuntime['reporter']> = {
@@ -3201,8 +3205,8 @@ describe('five namespaced write commands', () => {
       notice: () => {},
     };
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) =>
-      invocation.command === 'claude' && invocation.args.includes('--version')
-        ? { exitCode: 0, stdout: 'claude-cli 99.0.0', stderr: '' }
+      claudeRuntime.isClaudeInvocation(invocation)
+        ? claudeRuntime.nativeCliRunner(invocation)
         : codexRuntime.nativeCliRunner(invocation));
     setRebuildCommandTestHooksForTests({
       afterTargetBuilt: async ({ identity }) => {
@@ -3272,6 +3276,7 @@ describe('five namespaced write commands', () => {
       platform: 'codex',
       scope: 'project',
     }, { ...installedRuntime, env: fixedEnv })).resolves.toMatchObject({ overallState: 'succeeded' });
+    isolateCodexAppDiscoveryQueries();
     const statusRunner = vi.fn(installedRuntime.nativeCliRunner);
     const status = await readRecoveryStatus({ cwd: isolation.layout.fixtureCwd,
       env: fixedEnv, nativeCliRunner: statusRunner,
@@ -3305,9 +3310,11 @@ describe('five namespaced write commands', () => {
     expect(versionCalls.every(([invocation]) => invocation.command === versionInvocation.command
       && invocation.args.join(' ') === versionInvocation.args.join(' '))).toBe(true);
     const listCalls = statusRunner.mock.calls.filter(([invocation]) =>
-      invocation.args.at(-1) !== '--version');
+      invocation.args.slice(selectedPrefix.length).join(' ')
+        === `plugin list --marketplace ${codexLayout.marketplaceName} --json`);
     const listSummary = listCalls.map(([{ command, args, cwd }]) => ({ command, args, cwd }));
     expect(listCalls, JSON.stringify(listSummary)).toHaveLength(2);
+    expect(statusRunner).toHaveBeenCalledTimes(versionCalls.length + listCalls.length);
     expect(listCalls.filter(([invocation]) => invocation.cwd === projectCwd)).toHaveLength(1);
     const neutralListCalls = listCalls.filter(([invocation]) => invocation.cwd !== projectCwd);
     expect(neutralListCalls, JSON.stringify(listSummary)).toHaveLength(1);

@@ -19,6 +19,7 @@ import {
   readAwSourceBinding,
   validateAwSourceBindingForWorkspace,
 } from '../../src/review/source-binding.js'
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js'
 
 const roots: string[] = []
 
@@ -235,6 +236,7 @@ afterEach(async () => {
 
 describe('Review preparation', () => {
   it('prepares only the selected consumer using isolated dependency overrides and rechecks its source binding', async () => {
+    installNativeTestQualification({ platforms: ['codex'] })
     const fixture = await createWorkspace('aw-review-cross-config-')
     const pluginRoot = await createDynamicPlugin(fixture.root)
     const consumerPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json')
@@ -600,6 +602,7 @@ describe('Review preparation', () => {
   ] as const)(
     'keeps shared native and ordinary project config aligned for %s/%s',
     async (platform, skill) => {
+      if (platform === 'codex') installNativeTestQualification({ platforms: ['codex'] })
       const fixture = await createWorkspace('aw-review-shared-config-')
       const pluginRoot = await createSharedConfigPlugin(fixture.root)
       const configFile = path.join(fixture.root, 'review-config.json')

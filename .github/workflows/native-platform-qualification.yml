@@ -13,8 +13,15 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  native-windows-job:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification'
+    uses: ./.github/workflows/windows-job.yml
+    with:
+      source-ref: ${{ github.sha }}
+
   candidate:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification'
     runs-on: ubuntu-24.04
@@ -48,7 +55,9 @@ jobs:
           retention-days: 14
 
   qualify:
-    needs: candidate
+    needs: [candidate, native-windows-job]
+    # A missing Windows helper must not suppress the Linux/macOS observations.
+    if: ${{ !cancelled() && needs.candidate.result == 'success' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -77,6 +86,26 @@ jobs:
       - name: Restore the same candidate without rebuilding
         shell: bash
         run: tar -xzf - < "$RUNNER_TEMP/native-candidate/native-candidate.tgz"
+      - uses: actions/download-artifact@v8
+        if: runner.os == 'Windows'
+        with:
+          name: windows-job-qualified
+          path: .native/windows-job-candidate
+      - name: Prepare the qualified Windows helper in its normal optional package
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          node --input-type=module - <<'JS'
+          import { readCandidate } from './native-tools/windows-job/candidate.mjs';
+          import { assertWindowsJobCandidateEvidence } from './native-tools/windows-job/evidence.mjs';
+          import { prepareWindowsJobSourceTestEnvironment } from './native-tools/windows-job/test-environment.mjs';
+          const root = '.native/windows-job-candidate';
+          await assertWindowsJobCandidateEvidence(await readCandidate(root));
+          await prepareWindowsJobSourceTestEnvironment({ root });
+          JS
+      - name: Verify Windows process setup and timeout handling
+        if: runner.os == 'Windows'
+        run: pnpm test:qualification:native-platforms:harness
       - name: Verify real clients in credential-free temporary environments
         shell: bash
         run: |

@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
-  acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo } from './native-platform-runtime.mjs';
+  acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
 
 const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok> --report <file> (--install | --executable <absolute-path>)';
@@ -116,7 +116,9 @@ export async function run(options) {
     boundary: { credentials: 'not-provided', modelRequests: 'none', clients: 'real',
       input: 'current-aw-projection-candidate', productionQualificationChanged: false,
       runtimeNetwork: 'blocked-proxy-not-os-firewall', installNetwork: options.install ? 'public-npm' : 'none',
-      processManagement: 'client-verified-observed-download-bounded-child-not-os-containment' },
+      processManagement: process.platform === 'win32'
+        ? 'client-windows-job-download-bounded-child'
+        : 'client-verified-observed-download-bounded-child-not-os-containment' },
     uncovered: ['public-aw-install-end-to-end', 'model-invocation', 'skill-invocation-controls', 'mcp-execution',
       'hook-execution', 'agents-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
       'antigravity', 'cursor', 'opencode'], clients: [],
@@ -126,6 +128,7 @@ export async function run(options) {
   };
   try {
     report.candidate = await verifyCandidate(options.candidate);
+    report.processManagement = await processManagementInfo();
     report.harnessSha256 = sha256(await fs.readFile(fileURLToPath(import.meta.url)));
     for (const platform of options.client === 'all' ? Object.keys(clients) : [options.client]) {
       const result = { platform, requiredVersion: clients[platform].version, status: 'failed', scopes: [] };

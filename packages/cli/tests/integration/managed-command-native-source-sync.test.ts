@@ -17,6 +17,7 @@ import { withResolvedCatalogPlugin } from '../../src/utils/multi-source-catalog.
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createSafeCommandExecutionContext, runSafeCli } from '../helpers/cli-runtime.js';
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { nativeToolFixture } from '../helpers/native-tools.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -32,6 +33,7 @@ describe('installed native declaration across Catalog and producer sync', () => 
   // Exercise both public sync boundaries, installed evidence, Review, and a real
   // Node consumer. No registry, model, native executable, or Go build is involved.
   it('uses current host paths and retains installed bindings until reviewed package sync', async () => {
+    installNativeTestQualification({ platforms: ['claude'], discovery: true });
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const env = isolation.env;

@@ -122,7 +122,8 @@ export const PLATFORM_FEATURE_REGISTRY: Readonly<Record<string, PlatformFeatureD
 ));
 export function getPlatformFeatureRegistry(): Readonly<Record<string, PlatformFeatureDefinition>> { return PLATFORM_FEATURE_REGISTRY; }
 
-const ajv = new Ajv2020({ allErrors: true, strict: true });
+// Reuse referenced validators to avoid expanding shared schemas during CLI startup.
+const ajv = new Ajv2020({ allErrors: true, strict: true, inlineRefs: false });
 ajv.addSchema(manifestSchema);
 ajv.addSchema(componentSchema);
 const validateComponent = ajv.compile<PluginComponent>({ $ref: `${componentSchema.$id}#/$defs/pluginComponent` });

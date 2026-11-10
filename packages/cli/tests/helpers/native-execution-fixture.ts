@@ -10,8 +10,22 @@ import { onTestFinished, vi } from 'vitest';
 import { getPlatformHookHandlerRegistry, getPlatformFeatureRegistry, NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 import * as capabilities from '../../src/platforms/capabilities.js';
 import * as registry from '../../src/platforms/registry.js';
+import * as codexExecutableDiscovery from '../../src/utils/codex-executable-discovery.js';
+import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
+
+/** Keep real executable discovery while observing App queries outside the native mutation runner. */
+export function isolateCodexAppDiscoveryQueries() {
+  const discover = codexExecutableDiscovery.discoverCodexExecutables;
+  const queryRunner = vi.fn(async (_invocation: NativeCliInvocation) => ({
+    exitCode: 0, stdout: '[]', stderr: '',
+  }));
+  const discovery = vi.spyOn(codexExecutableDiscovery, 'discoverCodexExecutables').mockImplementation((options) =>
+    discover({ ...options, queryRunner }));
+  onTestFinished(() => discovery.mockRestore());
+  return queryRunner;
+}
 
 /** Uses production namespace and activation rules; pass real source evidence for ownership assertions. */
 export async function getNativeTestLayout(options: {

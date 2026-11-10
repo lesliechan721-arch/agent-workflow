@@ -23,7 +23,7 @@ async function runPublicLifecycle(...args: Parameters<typeof executePublicLifecy
   const [command, plugins, options, input] = args;
   return executePublicLifecycle(command, plugins, options, { ...input,
     nativeCliRunner: input?.nativeCliRunner ?? (async (invocation) => {
-      if (!['pi', 'pi.exe'].includes(path.basename(invocation.command))
+      if (!['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase())
         || !['install', 'remove'].includes(invocation.args[0]!) || !invocation.args.includes('--local')) {
         throw new Error('Unexpected Native test command.');
       }

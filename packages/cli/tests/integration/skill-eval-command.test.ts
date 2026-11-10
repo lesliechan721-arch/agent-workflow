@@ -8,17 +8,35 @@ import {
   computeSkillDigest,
   validateEvalSpecFile,
 } from '@lesliechan721/agent-skill-eval'
+import { getPlatformFeatureRegistry } from '@lesliechan721/aw-plugin-core/manifest'
 import fs from 'fs-extra'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import { runCli } from '../../src/index.js'
 import { setSkillEvalCommandTestHooksForTests } from '../../src/commands/skill-eval.js'
+import * as authorProfile from '../../src/review/platform-profile.js'
 import {
   createAwSourceBindingWorkspaceValidationContext,
   validateAwSourceBindingForWorkspace,
 } from '../../src/review/source-binding.js'
 
 const roots: string[] = []
+
+// Qualify only the Skills under test; Agent gaps remain observable in preparation evidence.
+function installCodexSkillTestQualification(): void {
+  const getCapabilities = authorProfile.getAuthoringPlatformCapabilities
+  const profile = vi.spyOn(authorProfile, 'getAuthoringPlatformCapabilities').mockImplementation((platform, scope) => {
+    const capabilities = getCapabilities(platform, scope)
+    if (platform !== 'codex') return capabilities
+    capabilities.profileId = `test-qualified:${capabilities.profileId}`
+    capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] }
+    for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) {
+      capabilities.features[id] = { status: 'supported', reasonCodes: [], ...(feature.values ? { values: [...feature.values] } : {}) }
+    }
+    return capabilities
+  })
+  onTestFinished(() => profile.mockRestore())
+}
 
 async function treeDigests(root: string): Promise<Record<string, string>> {
   const result: Record<string, string> = {}
@@ -183,6 +201,7 @@ afterEach(async () => {
 })
 describe('aw dev eval commands', () => {
   it('binds explicit non-sensitive config overrides and rejects changes before commit', async () => {
+    installCodexSkillTestQualification()
     // Protect the public prepare boundary: actual paths can be supplied without editing
     // a profile or signing a runtime receipt, and the same values can be revalidated.
     const fixture = await createWorkspace()
@@ -257,6 +276,7 @@ describe('aw dev eval commands', () => {
   }, 30_000)
 
   it('prepares static and dynamic Codex Skills with shared config and preserves unavailable agent evidence', async () => {
+    installCodexSkillTestQualification()
     const fixture = await createWorkspace()
     const providerInit = capture()
     expect(await runCli([
@@ -554,6 +574,7 @@ describe('aw dev eval commands', () => {
   }, 30_000)
 
   it('prepares the new manifest v1 as a fixed EvalSpec workspace and runs doctor read-only', async () => {
+    installCodexSkillTestQualification()
     const fixture = await createWorkspace()
     await fs.outputFile(
       path.join(fixture.skillRoot, 'references', 'generated-reference.md'),
