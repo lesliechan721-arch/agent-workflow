@@ -76,7 +76,7 @@ jobs:
           path: ${{ runner.temp }}/native-candidate
       - name: Restore the same candidate without rebuilding
         shell: bash
-        run: tar -xzf "$RUNNER_TEMP/native-candidate/native-candidate.tgz"
+        run: tar -xzf - < "$RUNNER_TEMP/native-candidate/native-candidate.tgz"
       - name: Verify real clients in credential-free temporary environments
         shell: bash
         run: |
