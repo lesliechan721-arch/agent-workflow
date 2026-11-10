@@ -106,5 +106,7 @@ export async function prepareProjectionRoot(stagingRoot: string): Promise<string
   }
   const canonicalRoot = await canonicalizePathThroughExistingAncestor(stagingRoot);
   await fs.ensureDir(canonicalRoot);
-  return fs.mkdtemp(path.join(canonicalRoot, 'projection-'));
+  // Node's mkdtemp does not add the Windows extended-length prefix itself.
+  const createdRoot = await fs.mkdtemp(path.toNamespacedPath(path.join(canonicalRoot, 'projection-')));
+  return path.join(canonicalRoot, path.basename(createdRoot));
 }

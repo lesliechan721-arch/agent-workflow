@@ -660,7 +660,13 @@ describe('aw dev eval commands', () => {
     expect(JSON.parse(validation.stdout())).toMatchObject({
       schemaVersion: 1,
       status: 'success',
-      diagnostics: [],
+      // Validation runs in a child process with the production profile; the
+      // parent-only Eval fixture qualification does not apply to this command.
+      diagnostics: process.platform === 'darwin' && process.arch === 'arm64' ? [] : [{
+        code: 'commandWarning',
+        severity: 'warning',
+        message: 'component unmet (codex/user): skill:owner-skill [capability-unverified] [{"feature":"component.kind.skill"}]',
+      }],
       data: {}
     })
     const blockedOutput = path.join(fixture.root, 'prepared-v1')

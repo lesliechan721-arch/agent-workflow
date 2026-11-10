@@ -1236,7 +1236,9 @@ describe('five namespaced write commands', () => {
     await expect(readFixtureRequirements({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toEqual(projectBeforeOverlap);
-  }, 60_000);
+    // A related Windows hosted child CLI scenario passes in nearly 60s.
+    // Keep a bounded orchestration deadline; product timeouts and perf budgets stay separate.
+  }, process.platform === 'win32' ? 120_000 : 60_000);
 
   it('derives user dependency placement through independent CLI processes without saved overrides', async () => {
     const { isolation, childEnv } = await createIntentRoundTripFixture();
@@ -1299,7 +1301,9 @@ describe('five namespaced write commands', () => {
       roots: [{ pluginId: 'team/a', platforms: ['codex'] }], dependencyScopeOverrides: [],
     });
 
-  }, 60_000);
+    // A related Windows hosted child CLI scenario passes in nearly 60s.
+    // Keep a bounded orchestration deadline; product timeouts and perf budgets stay separate.
+  }, process.platform === 'win32' ? 120_000 : 60_000);
 
   // Test Value Gate: an independent remove process must retain the User providers' real owned outputs.
   it('preserves User providers when an independent CLI process removes its Project consumer', async () => {

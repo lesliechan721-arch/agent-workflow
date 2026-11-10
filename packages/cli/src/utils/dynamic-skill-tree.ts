@@ -538,7 +538,11 @@ export async function writeDynamicSkillTree(
       throw new Error(`Skill 目标存在 foreign collision：${rootDir}`);
     }
   }
-  const stagingRoot = await fs.mkdtemp(path.join(path.dirname(rootDir), `.${path.basename(rootDir)}-staging-`));
+  const stagingParent = path.dirname(rootDir);
+  const stagingPrefix = path.join(stagingParent, `.${path.basename(rootDir)}-staging-`);
+  // Node's mkdtemp does not add the Windows extended-length prefix itself.
+  const createdStagingRoot = await fs.mkdtemp(path.toNamespacedPath(stagingPrefix));
+  const stagingRoot = path.join(stagingParent, path.basename(createdStagingRoot));
   const backupRoot = `${stagingRoot}-backup`;
   const targetExists = await fs.pathExists(rootDir);
   let preserveBackup = false;

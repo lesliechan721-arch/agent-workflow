@@ -9,6 +9,7 @@ import { getComponentFeatureRequirements, getPlatformFeatureRegistry, type Platf
 import type { ProjectionInput, StageContext } from '../../src/platforms/contracts.js';
 import { projectPlatform } from '../../src/platforms/projection.js';
 import { projectPlatformMarketplace } from '../../src/platforms/projection-marketplace.js';
+import { prepareProjectionRoot, ProjectionFiles } from '../../src/platforms/projection-files.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { commandResourceReferences } from '../../src/utils/component-resources.js';
 
@@ -268,6 +269,24 @@ describe('platform projection', () => {
     const empty = await projectPlatform(ctx, input);
     expect(empty.bundle).toBeNull();
     expect(empty.supplements).toEqual([]);
+  });
+
+  // Test Value Gate: Windows Eval projection staging can exceed MAX_PATH;
+  // returned paths must remain usable for writing and scoped cleanup.
+  it('writes projected files beyond 260 characters and returns an ordinary canonical staging path', async () => {
+    const { root } = await fixture('claude', [skill]);
+    const stagingRoot = path.join(root, 'a'.repeat(80), 'b'.repeat(80), 'c'.repeat(80));
+    expect(stagingRoot.length).toBeGreaterThan(260);
+    const projectionRoot = await prepareProjectionRoot(stagingRoot);
+    expect(path.dirname(projectionRoot)).toBe(await fs.realpath(stagingRoot));
+    expect(projectionRoot.startsWith('\\\\?\\')).toBe(false);
+    const files = new ProjectionFiles();
+    files.add('skills/check/SKILL.md', 'Check the input.\n');
+    await files.write(projectionRoot);
+    expect(await fs.readFile(path.join(projectionRoot, 'skills/check/SKILL.md'), 'utf8')).toBe('Check the input.\n');
+
+    await fs.remove(projectionRoot);
+    expect(await fs.readdir(stagingRoot)).toEqual([]);
   });
 
   it('rejects unknown capability fields and unsafe staging links without changing an existing package', async () => {

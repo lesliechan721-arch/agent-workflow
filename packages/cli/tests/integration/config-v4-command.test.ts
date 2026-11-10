@@ -110,7 +110,9 @@ describe('public config command', () => {
       expect(await fs.readFile(path.join(command.resourceRoot!, 'SKILL.md'), 'utf8')).toContain(`aw command run ${command.id} -- check`);
       const settings = await fs.readJson(path.join(cwd, '.claude/settings.local.json'));
       expect(settings.permissions.allow).toContain(`Bash(aw command run ${command.id} -- check *)`);
-      const installs = native.nativeCliRunner.mock.calls.map(([invocation]) => invocation.args).filter((args) => args[0] === 'plugin' && args[1] === 'install');
+      const installs = native.nativeCliRunner.mock.calls.filter(([invocation]) => native.isClaudeInvocation(invocation))
+        .map(([invocation]) => invocation.args.slice(invocation.args.indexOf('plugin')))
+        .filter((args) => args[0] === 'plugin' && args[1] === 'install');
       expect(installs.length).toBeGreaterThan(0);
       expect(installs.every((args) => args[args.indexOf('--scope') + 1] === 'local')).toBe(true);
       const output = createCapturedCliIo();

@@ -808,7 +808,9 @@ describe('five namespaced write commands', () => {
     if (synced.kind !== 'recovery') throw new Error('Expected recovery receipt.');
     expect(synced.receipt.targetResults.map((target) => [target.pluginId, target.observation]))
       .toEqual(expect.arrayContaining(selectors.map((pluginId) => [pluginId, 'verified'])));
-  });
+    // This combines two source groups and both install/sync. Windows hosted
+    // execution exceeded the generic 15s runner limit; performance has its own gate.
+  }, process.platform === 'win32' ? 30_000 : 15_000);
 
   it('keeps sync --all without intent roots as an empty recovery', async () => {
     const isolation = await configureCatalog();
