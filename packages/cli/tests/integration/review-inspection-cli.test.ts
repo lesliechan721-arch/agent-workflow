@@ -13,6 +13,7 @@ import {
   writeAwSourceBinding,
 } from '../../src/review/source-binding.js'
 import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js'
+import { materializePortableSkills } from '../../src/portable/materializer.js'
 
 const roots: string[] = []
 
@@ -50,10 +51,11 @@ describe('review inspect CLI entry', () => {
     await initializeCatalogWorkspace({ workspaceRoot: root })
     await fs.outputFile(historicalReport, historicalBytes)
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 'fixture',
       version: '0.1.0',
       description: 'Review inspection CLI fixture.',
+      platforms: ['generic', 'codex'],
       skills: './skills',
       scripts: { node: { build: { runner: 'node', path: './scripts/build.mjs' } } },
       marketplace: {
@@ -206,10 +208,11 @@ describe('review inspect CLI entry', () => {
     const skillRoot = path.join(pluginRoot, 'skills', 'invalid-binding')
     await initializeCatalogWorkspace({ workspaceRoot: root })
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 'invalid-binding',
       version: '0.1.0',
       description: 'Invalid binding target fixture.',
+      platforms: ['generic', 'codex'],
       skills: './skills',
       marketplace: {
         category: 'test',
@@ -258,30 +261,19 @@ describe('review inspect CLI entry', () => {
 
   it('does not use a binding custom config as the default request config', async () => {
     const root = await tempRoot()
-    const materializedRoot = await tempRoot()
+    const materializedRoot = path.join(await tempRoot(), 'materialized')
     const injectedHome = path.join(await tempRoot(), 'injected-home')
     const pluginRoot = path.join(root, 'plugins', 'portable-env')
     await initializeCatalogWorkspace({ workspaceRoot: root })
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 'portable-env',
       version: '0.1.0',
       description: 'Portable environment fixture.',
-      platforms: ['cursor'],
+      platforms: ['generic'],
       skills: './skills',
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
-      artifacts: { targets: [{
-        id: 'portable',
-        distribution: 'agent-skills',
-        platform: 'cursor',
-        target: 'agent-skills.skill',
-        kind: 'skill',
-        scopes: ['user'],
-        states: ['present'],
-        refreshKeys: ['flavor'],
-        skillKey: 'portable',
-        sourceDirs: ['./skills/portable'],
-      }] },
+      artifacts: { configKeys: ['flavor'], scopes: ['user'] },
       config: {
         schemaVersion: 5,
         fields: {
@@ -300,22 +292,30 @@ describe('review inspect CLI entry', () => {
       '---\nname: portable\ndescription: Portable fixture.\n---\n\n# Portable\n',
     )
     await fs.outputFile(path.join(sourceSkill, 'README.md'), '# Portable\n')
+    const rendererTrace = path.join(root, 'renderer-trace.jsonl')
     await fs.outputFile(
       path.join(pluginRoot, 'scripts', 'render.mjs'),
-      'throw new Error("Review inspection must not run the renderer.")\n',
+      `import fs from 'node:fs';
+fs.appendFileSync(${JSON.stringify(rendererTrace)}, 'prepared\\n');
+console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));\n`,
     )
     const injectedEnv = { ...process.env, AW_HOME: injectedHome }
     await fs.outputJson(path.join(injectedHome, 'plugin-config', 'portable-env', 'config.json'), {
-      schemaVersion: 6, common: { flavor: 'ambient-home-value' }, platforms: {},
+      schemaVersion: 6, common: { flavor: 'injected' }, platforms: {},
     })
     const workspace = await readCatalogWorkspace(root, { reservedImports: CLI_RESERVED_IMPORTS })
-    await fs.copy(sourceSkill, path.join(materializedRoot, 'portable'))
+    const materialized = await materializePortableSkills({ plugins: workspace.plugins, pluginId: 'portable-env',
+      platform: 'generic', scope: 'user', cwd: root, env: injectedEnv, outputRoot: materializedRoot })
+    const rendererTraceBefore = await fs.readFile(rendererTrace, 'utf8')
+    await fs.outputJson(path.join(injectedHome, 'plugin-config', 'portable-env', 'config.json'), {
+      schemaVersion: 6, common: { flavor: 'ambient-home-value' }, platforms: {},
+    })
     const written = await writeAwSourceBinding({
       rootDir: materializedRoot,
       source: await resolveWorkspaceBindingSource(workspace),
       subject: { plugin: 'portable-env' },
       profile: await resolvePortableProfileBindingInput({
-        platform: 'cursor',
+        platform: 'generic',
         offlineConfig: { 'portable-env': { flavor: 'injected' } },
         plugins: workspace.plugins,
         pluginName: 'portable-env',
@@ -323,16 +323,17 @@ describe('review inspect CLI entry', () => {
         cwd: root,
         env: injectedEnv,
       }),
+      preparation: materialized.preparation,
       artifacts: [{
         kind: 'portable-skill',
         plugin: 'portable-env',
         skill: 'portable',
-        path: 'portable',
+        path: 'skills/portable',
       }],
     })
     const args = [
       'dev', 'review', 'inspect', pluginRoot,
-      '--platform', 'cursor', '--scope', 'user',
+      '--platform', 'generic', '--scope', 'user',
       '--materialization', written.bindingPath,
       '--json',
     ]
@@ -375,6 +376,8 @@ describe('review inspect CLI entry', () => {
         skills: [{ state: 'ready', evidencePath: written.bindingPath }]
       }
     })
+    expect(await fs.readFile(rendererTrace, 'utf8')).toBe(rendererTraceBefore)
+    await materialized.cleanup()
 
   })
 })

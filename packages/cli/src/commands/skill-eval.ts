@@ -444,6 +444,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
         suite: selection.suite.id,
       },
       profile: profileBinding.profile,
+      preparation: materialized.preparation,
       evalInput: evalSourceInput.input,
       artifacts: [
         { kind: 'eval-target', skill: options.skillName, path: 'targets/current' },

@@ -86,7 +86,7 @@ aw dev review inspect <target> [--materialization <receipt>]... [--skill <name>]
 aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <scope> --out <new-dir> [--skill <name>]... [--config <file>] [--workspace-root <root>] [--json]
 ```
 
-- **目标与平台**：准备单插件、单平台（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`）的所选 Skill；`--platform`、`--scope` 与 `--out` 为必填项。
+- **目标与平台**：准备单插件、单平台（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`）的所选 Skill；`--platform`、`--scope` 与 `--out` 为必填项。
 - **Skill 与配置选项**：支持可重复的 `--skill <name>` 筛选具体 Skill；配置覆盖使用 `--config <file>`（传入普通 JSON 文件的非敏感覆盖，**严禁使用 `--config-file`**）；支持 `--workspace-root <root>` 显式指定工作区根。
 - **配置来源隔离**：配置仅来自对应平台 manifest 默认值与 `--config <file>` 显式非敏感覆盖，**绝不读取真实用户的持久配置 Store**。
 - **安全新目录门禁（`--out`）**：
@@ -108,7 +108,7 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
 
 ### 2.2 跨插件 `valueRef` 依赖闭包扩展
 
-- **依赖扩展**：从所选 Skill 的 `refreshKeys` 扩展实际校验依赖闭包。
+- **依赖扩展**：从 renderer 的 artifacts.configKeys 和所需真实命令声明的 refreshKeys 扩展实际校验依赖闭包，不从已移除的动态 target 清单推断。
 - **配置来源**：依赖定义来自同次 Workspace 或 Catalog snapshot；依赖配置只取 defaults 和同一 config 文件的非敏感覆盖。
 - **凭据绑定**：实际消费的依赖覆盖进入规范化 profile，`source-binding v2` 的 `inputDigest` 与 source evidence 覆盖其有效值、来源及相关 provider 定义；inspect 用同一选择算法重算。
 - **失效与漂移**：provider 变化使旧绑定失效，准备期间变化仍返回 `sourceChanged`。
@@ -141,8 +141,25 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
     "platform": "codex",
     "scope": "user",
     "inputDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "config": {}
+    "config": {},
+    "requestedSkills": ["example-skill"]
   },
+  "preparation": [
+    {
+      "plugin": "example-plugin",
+      "platform": "codex",
+      "renderScope": "user",
+      "profileId": "codex:0.155.0:darwin-arm64-cli-0.167.0-skills",
+      "capabilitiesDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expectedDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "resourceDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "renderInputDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "outputs": [],
+      "components": [{"id": "skill.example-skill", "kind": "skill", "name": "example-skill", "source": "static"}],
+      "omitted": [],
+      "unmet": []
+    }
+  ],
   "artifacts": [
     {
       "kind": "review-skill",
@@ -162,7 +179,9 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
   - `subject`：绑定被审插件名称、可选 Skill 与可选 suite；
   - `profile`：保存 platform、scope、`inputDigest` 和已验证的非敏感配置覆盖。Review profile 的 `id` 必须严格等于 `${platform}-${scope}`（如 `codex-user`）；
   - `artifacts`：数组形式，记录生成物的 kind（`eval-target` | `eval-workspace` | `eval-cases` | `portable-skill` | `review-skill`）、相对路径与 sha256 摘要；
-  - `finalDigest`：**对整个去掉 `finalDigest` 的 binding envelope 对象执行规范化 JSON 摘要（`bindingDigest(bindingOmitFinalDigest)`）**，覆盖 source、subject、profile、可选 evalInput 和 artifacts 的完整内容，绝非各个产物摘要的简单字符串拼接。
+  - `preparation`：必填非空数组；每个实际准备的平台/插件记录 `plugin`、`platform`、`renderScope`、`profileId`、`capabilitiesDigest`、`expectedDigest`、`resourceDigest`、`renderInputDigest`、`outputs: [{path,digest}]`、`components: [{id,kind,name,source}]`、`omitted` 与 `unmet`。`source` 为 static/dynamic，输出路径是相对路径。只记录摘要和规范身份，不记录配置原值或私有绝对路径。Review 保留并核验原生投影摘要；Eval/export 的 outputs 为空，最终 Skill/工作区由 artifacts 绑定。缺少 preparation 的绑定须重新 prepare。
+  - Review profile 的 `requestedSkills` 记录显式选择；其 inputDigest 包含固定 capabilities。动态集合通过真实准备及绑定取得，inspect 不运行 renderer。
+  - `finalDigest`：**对整个去掉 `finalDigest` 的 binding envelope 对象执行规范化 JSON 摘要（`bindingDigest(bindingOmitFinalDigest)`）**，覆盖 source、subject、profile、可选 evalInput、preparation 和 artifacts 的完整内容，绝非各个产物摘要的简单字符串拼接。
 - **Eval 输入绑定（`evalInput`）**：
   当 `profile.kind === 'eval'` 时，必须包含 `evalInput` 结构：
 ```json
@@ -255,7 +274,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
 
 由 `aw dev eval prepare` 生成，定义评测输入闭包：
 - **平台与执行器分离及内置 Backend 资格**：
-  - Manifest 的每个 profile 必须显式声明七平台之一（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`）的 `platform`，与 backend/executor 分离；
+  - Manifest 的每个 profile 必须显式声明十平台之一（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`）的 `platform`，与 backend/executor 分离；
   - **内置 Eval suite backend 仅支持 `codex` 平台**（`profile.platform === 'codex'`）；非 Codex 平台只有在使用显式 `custom-process` provider 时才被支持，否则 prepare 阶段直接拒绝（抛出不支持 backend 错误）。
 - **工作区与内容**：包含 runtime target、可选 previous target、筛选后的 cases、Eval-owned fixture，以及**移除被测 Skill 后的完整 subject workspace**。
 - **配置覆盖规则与继承**：

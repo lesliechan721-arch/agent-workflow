@@ -3,7 +3,6 @@ import path from 'node:path'
 import { calculateCatalogWorkspaceSourceIdentity, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core'
 import fs from 'fs-extra'
 
-import { materializeReviewNativeSkills } from './rebuild-integration.js'
 import { resolveReviewSelection } from '../review/review-selection.js'
 import {
   ReviewSelectionError,
@@ -14,14 +13,15 @@ import {
 import {
   createIsolatedSkillEnv,
   prepareSkillPluginBundle,
+  materializeProfilePluginComponents,
+  type ComponentPreparationBinding,
   type PreparedSkillPluginBundle,
 } from '../review/skill-materialization.js'
 import {
   AW_SOURCE_BINDING_FILENAME,
   writeAwSourceBinding,
 } from '../review/source-binding.js'
-import type { PluginConfigValue, PluginMeta, Scope } from '../types.js'
-import { materializePortableSkills } from '../portable/materializer.js'
+import type { PluginMeta, Scope } from '../types.js'
 import { writePluginConfigStore } from '../utils/plugin-config.js'
 import {
   canonicalizePathThroughExistingAncestor,
@@ -59,6 +59,7 @@ export interface ReviewPreparationV1 {
   target: { kind: 'skill' | 'plugin'; path: string } | null
   sourceBindingPath: string | null
   skills: ReviewPreparationSkill[]
+  preparation?: ComponentPreparationBinding[]
   issues: ReviewPreparationIssue[]
 }
 
@@ -303,25 +304,14 @@ async function writeIsolatedConfig(options: {
   cwd: string
   env: NodeJS.ProcessEnv
 }): Promise<void> {
-  const configs = new Map<string, Record<string, PluginConfigValue>>()
   for (const config of options.profile.pluginConfigs) {
-    configs.set(config.pluginName, { ...configs.get(config.pluginName), ...config.overrides })
-  }
-  for (const [pluginName, values] of configs) {
-    const plugin = options.plugins.get(pluginName)
-    if (!plugin) {
-      throw new Error(`Review config references unresolved plugin "${pluginName}".`)
-    }
+    const plugin = options.plugins.get(config.pluginName)
+    if (!plugin) throw new Error(`Review config references unresolved plugin "${config.pluginName}".`)
     await writePluginConfigStore({
-      sourceId: plugin.sourceId,
-      sourceIdentity: plugin.sourceIdentity,
-      logicalIdentity: plugin.catalogLogicalIdentity,
-      pluginName,
-      scope: 'user',
-      platform: options.profile.platform,
-      cwd: options.cwd,
-      values,
-      env: options.env,
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity,
+      logicalIdentity: plugin.catalogLogicalIdentity, pluginName: config.pluginName,
+      scope: config.scope, platform: options.profile.platform,
+      cwd: options.cwd, values: config.overrides, env: options.env,
     })
   }
 }
@@ -334,8 +324,8 @@ async function prepareSelectedSkills(options: {
   env: NodeJS.ProcessEnv
   cwd: string
   scriptTimeoutMs?: number
-}): Promise<void> {
-  const pluginNames = new Set(options.profile.skills.map((skill) => skill.pluginName))
+}): Promise<{ skills: Array<{ id: string; name: string; path: string; dynamic: boolean }>; preparation: ComponentPreparationBinding[] }> {
+  const pluginNames = new Set(options.selection.target.plugins.map((plugin) => plugin.manifest.name))
   if (pluginNames.size !== 1) {
     throw new Error('One review preparation output must contain Skills from exactly one plugin.')
   }
@@ -345,7 +335,6 @@ async function prepareSelectedSkills(options: {
   if (!sourcePlugin) throw new Error(`Selected plugin "${pluginName}" is unresolved.`)
 
   let prepared: PreparedSkillPluginBundle | undefined
-  let portable: Awaited<ReturnType<typeof materializePortableSkills>> | undefined
   try {
     prepared = await prepareSkillPluginBundle({
       plugin: sourcePlugin,
@@ -374,28 +363,7 @@ async function prepareSelectedSkills(options: {
       env: options.env,
     })
 
-    if (options.profile.platform !== 'codex' && options.profile.platform !== 'claude') {
-      const portableRoot = path.join(options.workRoot, 'portable')
-      portable = await materializePortableSkills({
-        plugins: [...plugins.values()],
-        pluginId: bundlePlugin.pluginId!,
-        platform: options.profile.platform,
-        scope: options.profile.scope,
-        cwd: options.cwd,
-        env: options.env,
-        outputRoot: portableRoot,
-        inputMode: 'bundle',
-        selectedSkills: options.profile.skills.map((skill) => skill.name),
-      })
-      await fs.copy(path.join(portable.rootDir, 'skills'), path.join(options.outputRoot, 'skills'), {
-        overwrite: false,
-        errorOnExist: true,
-        dereference: false,
-      })
-      return
-    }
-
-    await materializeReviewNativeSkills({
+    return await materializeProfilePluginComponents({
       plugin: bundlePlugin,
       plugins: [...plugins.values()],
       platform: options.profile.platform,
@@ -403,14 +371,10 @@ async function prepareSelectedSkills(options: {
       cwd: options.cwd,
       env: options.env,
       outputRoot: options.outputRoot,
-      skills: options.profile.skills.map((skill) => ({
-        skill: skill.name,
-        targetId: skill.targetId,
-      })),
+      selectedSkills: options.profile.requestedSkills,
       scriptTimeoutMs: options.scriptTimeoutMs,
     })
   } finally {
-    await portable?.cleanup()
     await prepared?.cleanup()
   }
 }
@@ -446,14 +410,6 @@ export async function prepareReviewTarget(
       )
     }
     profile = selectedProfile(selection)
-    if (profile.skills.length === 0) {
-      throw new ReviewPreparationError(
-        'unsupportedProfile',
-        'The selected profile does not contain a Skill to prepare.',
-        2,
-        selection.target.path,
-      )
-    }
 
     const baseEnv = options.env ?? process.env
     finalOutput = await assertSafeOutput({
@@ -473,7 +429,7 @@ export async function prepareReviewTarget(
     await fs.ensureDir(path.join(materializationCwd, '.git'))
     await fs.ensureDir(stagedOutput)
 
-    await prepareSelectedSkills({
+    const materialized = await prepareSelectedSkills({
       selection,
       profile,
       outputRoot: stagedOutput,
@@ -483,9 +439,10 @@ export async function prepareReviewTarget(
       scriptTimeoutMs: options.scriptTimeoutMs,
     })
 
-    const artifacts = profile.skills.map((skill) => ({
+    const selectedPlugin = selection.target.plugins[0]!
+    const artifacts = materialized.skills.map((skill) => ({
       kind: 'review-skill' as const,
-      plugin: skill.pluginName,
+      plugin: selectedPlugin.manifest.name,
       skill: skill.name,
       path: `skills/${skill.name}`,
     }))
@@ -497,12 +454,13 @@ export async function prepareReviewTarget(
         sourceIdentity: selection.sourceIdentity,
       },
       subject: {
-        plugin: profile.skills[0]!.pluginName,
-        ...(selection.target.kind === 'skill'
-          ? { skill: selection.target.skill ?? profile.skills[0]!.name }
+        plugin: selectedPlugin.manifest.name,
+        ...(selection.target.kind === 'skill' && materialized.skills.length === 1
+          ? { skill: selection.target.skill ?? materialized.skills[0]!.name }
           : {}),
       },
       profile: profile.profile,
+      preparation: materialized.preparation,
       artifacts,
     })
 
@@ -564,16 +522,17 @@ export async function prepareReviewTarget(
         ok: true,
         target: targetReceipt(selection),
         sourceBindingPath,
-        skills: profile.skills.map((skill) => ({
+        preparation: materialized.preparation,
+        skills: materialized.skills.map((skill) => ({
           skill: skill.name,
-          sourcePath: skill.sourcePath,
+          sourcePath: profile!.skills.find((entry) => entry.name === skill.name)?.sourcePath ?? selectedPlugin.manifestPath,
           profile: {
             platform: profile!.platform,
             scope: profile!.scope,
             inputDigest: profile!.profile.inputDigest,
           },
           finalPath: path.join(finalOutput!, 'skills', skill.name),
-          digest: digests.get(`${skill.pluginName}\0${skill.name}`) ?? null,
+          digest: digests.get(`${selectedPlugin.manifest.name}\0${skill.name}`) ?? null,
           state: 'ready',
           evidencePath: sourceBindingPath,
         })),

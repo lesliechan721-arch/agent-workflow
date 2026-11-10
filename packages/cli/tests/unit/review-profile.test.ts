@@ -10,7 +10,7 @@ import { createConfigV4Definition } from '../helpers/config-v4-fixture.js'
 const plugin: PluginMeta = {
   rootDir: '/tmp/review-profile', manifestPath: '/tmp/review-profile/.agents-plugin/plugin.json',
   manifest: {
-    schemaVersion: 3, name: 'review-profile', version: '1.0.0', description: 'Profile test',
+    schemaVersion: 4, name: 'review-profile', version: '1.0.0', description: 'Profile test',
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
     config: normalizePluginConfigDefinition({ schemaVersion: 3, fields: {
       sources: { type: 'array', default: [], validation: { uniqueBy: 'id' }, items: {
@@ -74,7 +74,7 @@ describe('Review profile reference validation', () => {
     } }
     const config = normalizeReviewProfileConfig(rawConfig)
     const profile = parseReviewProfile({ kind: 'review', id: 'codex-user', platform: 'codex',
-      scope: 'user', inputDigest: `sha256:${'a'.repeat(64)}`, config })
+      scope: 'user', requestedSkills: [], inputDigest: `sha256:${'a'.repeat(64)}`, config })
     const resolved = resolveReviewPluginProfileConfig({ plugin: v4Plugin, scope: 'user',
       keys: ['advisorProfile'], config: profile.config })
     expect(resolved.values).toEqual({ advisorProfile: { executor: 'oracle' } })

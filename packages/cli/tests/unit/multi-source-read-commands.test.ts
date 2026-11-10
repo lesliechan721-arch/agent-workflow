@@ -20,7 +20,6 @@ import {
 } from '../../src/utils/catalog-sources.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
-import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { resolvePluginConfigStorePath, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
@@ -139,7 +138,7 @@ describe('multi-source read commands', () => {
     const incompatible = fixturePath('incompatible');
     await createCatalogSnapshotFixture(incompatible, 'demo', ['aw.future-feature.v99'], 'demo\n', (manifest) => {
       manifest.platforms = ['codex'];
-      manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
+      manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.', coverage: ['main'] }] };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -308,19 +307,17 @@ describe('multi-source read commands', () => {
     const skillRoot = path.join(skillsRoot, 'review');
     await fs.copy(path.join(sourceRoot, 'plugins', 'demo', 'skills', 'review'), skillRoot);
     await fs.remove(path.join(skillRoot, 'agents', 'openai.yaml'));
-    await writeSkillOwnerMarker({
-      skillRoot,
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'team',
-        sourceIdentity,
-        pluginId: 'team/demo',
-        plugin: 'demo',
-        artifactKey: 'review',
-        platform: 'codex',
-        scope: 'project',
-      },
+    // Historical markers must remain outside current Native installation evidence.
+    await fs.outputJson(path.join(skillRoot, '.agent-workflows-owner.json'), {
+      schemaVersion: 3,
+      owner: 'agent-workflows',
+      sourceId: 'team',
+      sourceIdentity,
+      pluginId: 'team/demo',
+      plugin: 'demo',
+      artifactKey: 'review',
+      platform: 'codex',
+      scope: 'project',
     });
 
     await declarePlugin('team/demo', ['codex'], 'project');
@@ -467,13 +464,10 @@ describe('multi-source read commands', () => {
     const ownedRoot = path.join(skillsRoot, 'owned');
     await fs.copy(path.join(sourceRoot, 'plugins', 'demo', 'skills', 'owned'), ownedRoot);
     await fs.remove(path.join(ownedRoot, 'SKILL.md'));
-    await writeSkillOwnerMarker({
-      skillRoot: ownedRoot,
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows', sourceId: 'team', sourceIdentity, pluginId: 'team/demo', plugin: 'demo',
-        artifactKey: 'owned', platform: 'codex', scope: 'project',
-      },
+    await fs.outputJson(path.join(ownedRoot, '.agent-workflows-owner.json'), {
+      schemaVersion: 3,
+      owner: 'agent-workflows', sourceId: 'team', sourceIdentity, pluginId: 'team/demo', plugin: 'demo',
+      artifactKey: 'owned', platform: 'codex', scope: 'project',
     });
     await fs.outputFile(path.join(skillsRoot, 'collision', 'foreign.txt'), 'keep\n');
 
@@ -952,12 +946,13 @@ describe('multi-source read commands', () => {
     ]);
 
     const filtered = createCapturedCliIo();
-    expect(await runCli(['plugin', 'status', '--context', 'user', '--json'], {
+    const filteredExit = await runCli(['plugin', 'status', '--context', 'user', '--json'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: filtered.io,
       interactive: false,
-    })).toBe(0);
+    });
+    expect(filteredExit, filtered.readStdout()).toBe(0);
     expect(JSON.parse(filtered.readStdout())).toMatchObject({
       schemaVersion: 1, command: 'plugin.status', status: 'success', data: { inventory: [] }, diagnostics: [],
     });
@@ -1107,7 +1102,9 @@ describe('multi-source read commands', () => {
   it('keeps a namespaced requirement when delivery is unsupported and returns a config failure receipt', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const good = fixturePath('good');
-    await createCatalogSnapshotFixture(good);
+    await createCatalogSnapshotFixture(good, 'demo', [], 'demo\n', (manifest) => {
+      manifest.platforms = ['claude'];
+    });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
@@ -1155,7 +1152,7 @@ describe('multi-source read commands', () => {
       const good = fixturePath('good');
       await createCatalogSnapshotFixture(good, 'demo', [], 'demo\n', (manifest) => {
         manifest.platforms = [platform];
-        manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
+        manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.', coverage: ['main'] }] };
       });
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({

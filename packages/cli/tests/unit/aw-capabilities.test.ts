@@ -35,7 +35,7 @@ describe('current AW executable capabilities', () => {
     expect(result.capabilities).toContain('aw.cli-output.v1')
     expect(result.capabilities).not.toContain('aw.self-check.v1')
     expect(result.capabilities).not.toContain('aw.plugin-authoring.v1')
-    expect(result.capabilities).toContain('aw.plugin-manifest.v3')
+    expect(result.capabilities).toContain('aw.plugin-manifest.v4')
     expect(result.capabilities).toContain('aw.plugin-config-array.v1')
     expect(result.capabilities).toContain('aw.plugin-config.v5')
     expect(result.capabilities).toContain('aw.catalog-snapshot.v7')

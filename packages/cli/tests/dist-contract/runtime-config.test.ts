@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { expect, it } from 'vitest';
 
-import { createRuntimeConfigBinding, createRuntimeConfigSnapshot } from '../../../plugin-core/src/runtime-config.js';
+import { createRuntimeConfigBinding, createRuntimeConfigSnapshot, createRuntimeConfigOrigin } from '../../../plugin-core/src/runtime-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const exec = promisify(execFile);
@@ -39,7 +39,10 @@ it('ships a standalone runtime reader in the CLI tarball', async () => {
     declaration: { keys: ['displayStyle'] },
     definition: { fields: { displayStyle: { type: 'string' } } }, values: { displayStyle: 'compact' },
   });
-  await fs.outputJson(path.join(skillRoot, '.aw-runtime-config.json'), createRuntimeConfigBinding(snapshot));
+  await fs.outputJson(path.join(skillRoot, '.aw-runtime-config.json'), createRuntimeConfigBinding(snapshot, { originPath: '.aw-runtime-native-receipt.json' }));
+  await fs.outputJson(path.join(skillRoot, '.aw-runtime-native-receipt.json'), createRuntimeConfigOrigin({
+    snapshot, inputDigest: `sha256:${'2'.repeat(64)}`,
+  }));
   const env = { ...isolation.env };
   delete env.AW_PLUGIN_CONTEXT;
   const execution = await exec(process.execPath, [path.join(skillRoot, 'scripts/caller.mjs')], { cwd: root, env });

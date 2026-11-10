@@ -11,6 +11,8 @@ aw target set codex claude
 aw plugin install decision-kit --scope user
 ```
 
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。实际调用控制与客户端能力按目标核对，无法保留的组件语义会显示为未满足。
+
 安装会同时满足 `human-content` 依赖，为复杂材料提供 `explain-for-review`。普通短问题仍直接说明，不强制制作阅读页。
 
 ## 包含的 Skill
@@ -61,9 +63,9 @@ aw plugin install decision-kit --scope user
 - 持久化原型保存问题、可重放证据和结论；只有标准网页 Review 或用户明确要求时才需要 `prototype.json`。构建和迭代默认委派一个 Builder；极小新建、局部微调或子代理不可用时由主代理完成，主代理负责必要验收。
 - `decision-prototype` 可以生成清楚标记的临时原型，并按需启动仅绑定本机的 Review 会话。页面用 tabs 展示单个大预览，可按需并排比较；用户选择总体判断后，页面才显示相关评论、受控参数或 drawer 标注。页面只有一个提交动作，同一 revision 的首个有效反馈生效。Agent 优先使用用户可交互的原生预览，脚本的 `open` 操作提供本机默认浏览器兜底；脚本技术失败后由 Agent 使用系统浏览器能力打开同一 URL，均失败则输出 URL 供用户自行打开。权限拒绝不能绕过。所有 `submitted` 回执直接包含当前 revision 已校验的完整反馈和文件路径。原型不会自动成为生产实现。
 
-## Portable Agent Skills
+## Skill 导出
 
-四个 Skill 也可通过 portable-agent-skills 分发；完整依赖闭包同时提供 Human Content 的 `explain-for-review`。使用 `aw plugin install decision-kit --scope <project|user>` 安装，或使用 `aw dev skill export decision-kit --scope <project|user> --out <dir>` 导出。
+四个 Skill 可按所选目标导出；完整依赖闭包同时提供 Human Content 的 `explain-for-review`。使用 `aw plugin install decision-kit --scope <project|user>` 安装，或使用 `aw dev skill export decision-kit --scope <project|user> --out <dir>` 导出。
 
 ## Review 默认期限
 

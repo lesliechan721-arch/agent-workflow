@@ -12,6 +12,7 @@ import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/
 import { createDefaultPluginProcessRunner, defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
 import { terminateProcessTree } from '../../src/utils/process-tree.js';
 import { waitForProcessExit } from '../support/process-tree.js';
+import { prepareAgentCommandSets, resolveManagedCommandSkillProducers } from '../../src/utils/managed-command-preparation.js';
 
 describe('managed command package materialization', () => {
   let isolated: IsolatedTestEnvironment;
@@ -32,7 +33,7 @@ describe('managed command package materialization', () => {
     const pluginRoot = path.dirname(sourceRoot);
     const ready = path.join(pluginRoot, 'renderer-ready.json');
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3, name: 'package-lifecycle', version: '1.0.0', description: 'Package lifecycle fixture.',
+      schemaVersion: 4, name: 'package-lifecycle', version: '1.0.0', description: 'Package lifecycle fixture.',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
       managedCommands: {
@@ -105,30 +106,70 @@ describe('managed command package materialization', () => {
     expect((await listManagedCommands(isolated.env)).commands).toEqual([]);
   });
 
-  // Native static payload paths have no activation scope, so their IDs must not depend on the caller's project.
+  // Shared activation must retain one physical identity, while different physical placements get distinct IDs.
   it('gives static native Skills one shared user identity across both platforms and project activations', async () => {
     const pluginRoot = path.dirname(sourceRoot);
     await fs.outputFile(path.join(pluginRoot, 'skills', 'provider', 'SKILL.md'), '---\nname: provider\ndescription: Shared static fixture.\n---\n');
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3, name: 'static-identity', version: '1.0.0', description: 'Static identity fixture.', skills: './skills',
+      schemaVersion: 4, name: 'static-identity', version: '1.0.0', description: 'Static identity fixture.', skills: './skills',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
     });
     const plugin = { ...await readPluginManifest(pluginRoot), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
     for (const platform of ['codex', 'claude'] as const) {
       const identities = await Promise.all((['user', 'project', 'project'] as const).map((scope, index) => managedCommandProducerIdentity({
-        plugin, producer: { kind: 'static-skill', platform, skillKey: 'provider' }, platform, scope,
+        plugin, producer: { kind: 'static-skill', platform, skillKey: 'provider' }, scope,
+        renderUnit: { physicalKey: `sha256:${'a'.repeat(64)}`, renderScope: { kind: 'user' } },
         cwd: path.join(isolated.layout.fixtureCwd, `project-${index}`),
       })));
-      expect(identities[0]).toMatchObject({ kind: 'static-skill', platform, scope: 'user', projectRoot: null });
+      expect(identities[0]).toMatchObject({ kind: 'static-skill', platform, scope: 'user', projectRoot: null, placementKey: `sha256:${'a'.repeat(64)}` });
       expect(identities).toEqual([identities[0], identities[0], identities[0]]);
+      await expect(managedCommandProducerIdentity({ plugin, producer: { kind: 'static-skill', platform, skillKey: 'provider' }, scope: 'user', cwd: isolated.layout.fixtureCwd })).rejects.toThrow('verified render unit');
     }
+  });
+
+  // Test Value Gate: a static Skill can request its dynamic command set without a platform-component renderer request or sensitive config input.
+  it('renders one agent command request from the complete candidate Skill and only the set config keys', async () => {
+    const pluginRoot = path.dirname(sourceRoot);
+    const resourceRoot = path.join(pluginRoot, 'skills/provider');
+    const capturedPath = path.join(pluginRoot, 'captured-command-context.json');
+    await fs.outputFile(path.join(resourceRoot, 'SKILL.md'), '---\nname: provider\ndescription: Static command producer.\n---\n');
+    await fs.outputFile(path.join(resourceRoot, 'run.mjs'), 'process.exitCode = 0;\n');
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin/plugin.json'), {
+      schemaVersion: 4, name: 'agent-command-render', version: '1.0.0', description: 'Agent command renderer fixture.', skills: './skills',
+      marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+      requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
+      config: { schemaVersion: 5, fields: { mode: { type: 'string', default: 'one' }, unrelated: { type: 'string', default: 'hidden' }, secret: { type: 'string', sensitive: true } } },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      managedCommands: { sets: [{ set: 'tools', mode: 'dynamic', refreshKeys: ['mode'], producer: { kind: 'static-skill', platform: 'codex', skillKey: 'provider' } }] },
+    });
+    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+      "import fs from 'node:fs';",
+      'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      `fs.writeFileSync(${JSON.stringify(capturedPath)}, JSON.stringify({ context, surface: process.env.AW_PLUGIN_SURFACE, platform: process.env.AW_PLUGIN_PLATFORM }));`,
+      'console.log(JSON.stringify({version:2,artifacts:[{id:"command-set.tools",target:"aw.command-set",kind:"commandSet",platform:"codex",state:"present",refreshKeys:["mode"],entries:[{key:"run",runner:"node",entry:"run.mjs"}]}]}));',
+    ].join('\n'));
+    const plugin = { ...await readPluginManifest(pluginRoot), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
+    const physicalKey = `sha256:${'b'.repeat(64)}`;
+    const [resolved] = await resolveManagedCommandSkillProducers({ plugin, platform: 'codex', renderUnit: { physicalKey, renderScope: { kind: 'user' } },
+      components: { components: [{ id: 'skill:provider', kind: 'skill', name: 'provider', content: { files: { 'SKILL.md': { text: '# Provider' } } } }], omitted: [], unmet: [], sources: { 'skill:provider': 'static' } },
+      skillResources: [{ componentId: 'skill:provider', resourceRoot, physicalKey }], cwd: isolated.layout.fixtureCwd });
+    if (resolved?.state !== 'ready') throw new Error('Missing static candidate.');
+    const candidate = await prepareAgentCommandSets({ plugin, resolved, cwd: isolated.layout.fixtureCwd, env: isolated.env, changedConfigKeys: ['mode', 'secret', 'unrelated'] });
+    expect(candidate.sets).toMatchObject([{ set: 'tools', state: 'present', entries: [{ key: 'run', variant: 'default', entry: 'run.mjs' }] }]);
+    const captured = await fs.readJson(capturedPath);
+    expect(captured).toMatchObject({ surface: 'agent-commands', platform: 'codex', context: { schemaVersion: 1, surface: 'agent-commands', scope: 'user', requestedArtifactIds: ['command-set.tools'], changedConfigKeys: ['mode'], producers: [{ componentId: 'skill:provider', resourceRoot }] } });
+    expect(Object.keys(captured.context.config.schema.fields)).toEqual(['mode']);
+    expect(captured.context.config.values).toEqual({ mode: 'one' });
+    expect(await fs.pathExists(path.join(resourceRoot, '.aw-command-producer.json'))).toBe(false);
+    await expect(prepareAgentCommandSets({ plugin, resolved, cwd: isolated.layout.fixtureCwd, env: isolated.env,
+      previousProducer: { record: { schemaVersion: 1, producer: { ...candidate.producer, placementKey: `sha256:${'c'.repeat(64)}` }, sets: candidate.sets }, artifacts: candidate.artifacts } })).rejects.toMatchObject({ code: 'commandIdentityConflict' });
   });
 
   // Test Value Gate: a retained project package must not block user config apply outside a repository.
   it('discovers user packages outside a repository without including retained or declared project packages', async () => {
     const pluginRoot = path.dirname(sourceRoot);
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3, name: 'discovery-scope', version: '1.0.0', description: 'Package scope fixture.',
+      schemaVersion: 4, name: 'discovery-scope', version: '1.0.0', description: 'Package scope fixture.',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       managedCommands: { packages: [
         { key: 'user-tools', scope: 'user', platforms: ['codex'], sourceDir: './tools' },
@@ -138,7 +179,7 @@ describe('managed command package materialization', () => {
     const plugin = { ...await readPluginManifest(pluginRoot), sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}` };
     await syncManagedCommandPackage({
       producer: { sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name,
-        kind: 'package', key: 'project-tools', platform: null, scope: 'project', projectRoot: isolated.layout.fixtureCwd },
+        kind: 'package', key: 'project-tools', platform: null, placementKey: null, scope: 'project', projectRoot: isolated.layout.fixtureCwd },
       sourceDirectory: sourceRoot, sets: [], env: isolated.env,
     });
     const outside = path.join(isolated.layout.rootDir, 'outside');

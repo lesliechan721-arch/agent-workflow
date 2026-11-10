@@ -5,6 +5,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { OperationKind } from './controller.js';
+import type { PlatformName, Scope } from '../types.js';
 import {
   safeDiagnosticCode,
   sanitizeDiagnosticDetailText,
@@ -34,7 +35,7 @@ export interface SafeOperationDiagnostic {
   stage?: string;
   sourceId?: string;
   safeMessage: string;
-  target?: { pluginId?: string; platform: 'codex' | 'claude'; scope: 'user' | 'project' };
+  target?: { pluginId?: string; platform: PlatformName; scope: Scope };
   exitCode?: number;
   causes: Array<{ code?: string; safeMessage: string }>;
   detailLines: string[];
@@ -63,8 +64,8 @@ export interface OperationDiagnosticDetail {
 
 export interface OperationHistoryTarget {
   pluginId?: string;
-  platform: 'codex' | 'claude';
-  scope: 'user' | 'project';
+  platform: PlatformName;
+  scope: Scope;
   state: 'completed' | 'kept' | 'failed' | 'skipped';
   errorCode?: string;
   diagnosticIds: string[];

@@ -106,7 +106,7 @@ export async function inspectSystemCodex(
       continue;
     }
     if (candidate.expectedVersion && version !== candidate.expectedVersion) {
-      const message = 'A Windows npm Codex launcher did not match its package version and was excluded. Repair the npm installation.';
+      const message = 'An npm Codex launcher did not match its package version and was excluded. Repair the npm installation.';
       if (!diagnostics.includes(message)) diagnostics.push(message);
       continue;
     }

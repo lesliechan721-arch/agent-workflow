@@ -689,14 +689,18 @@ describe('ConsoleAppV4', () => {
     const loaded = dependencyLoadResult({ rootState: 'present' });
     const settings = agentSettings();
     if (direct) {
+      loaded.payload.targets = loaded.payload.targets.map((target) => target.platform === 'codex'
+        ? { ...target, placements: target.placements.filter((placement) => placement.scope !== 'user') } : target)
+        .filter((target) => target.platform === 'codex' ? target.placements.length > 0 : target.scope !== 'user');
       settings.plugins = [{ pluginId: 'official/agent-lab', scopes: ['user'], supportedTargets: ['codex', 'claude'] }];
       loaded.scopedRecovery = { user: { scope: 'user', intent: { state: 'valid' },
         selection: { agents: ['codex', 'claude'], preferences: 'valid' }, inventory: [{
           pluginId: 'official/agent-lab', source: 'official', sourceState: 'ready', blockers: [],
-          targetResults: [{ pluginId: 'official/agent-lab', agent: 'codex', scope: 'user',
-            delivery: { kind: 'native', platform: 'codex' }, execution: 'no-op', observation: 'verified',
-            content: 'satisfied', blockers: [], requiredBy: [], relation: 'root' }],
-        }], errors: [], allSatisfied: true } };
+          targetResults: (['codex', 'claude'] as const).map((agent) => ({ pluginId: 'official/agent-lab', agent, scope: 'user' as const,
+            delivery: { kind: 'native' as const, platform: agent }, execution: 'no-op' as const, observation: 'verified' as const,
+            content: 'satisfied' as const, blockers: [], requiredBy: ['official/agent-lab'], relation: 'root' as const })),
+        }], existingTargets: (['codex', 'claude'] as const).map((agent) => ({ pluginId: 'official/agent-lab', agent, scope: 'user' as const })),
+        errors: [], allSatisfied: true } };
     }
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded),
       readAgentSettings: vi.fn(async () => settings),
@@ -1978,9 +1982,13 @@ describe('ConsoleAppV4', () => {
             descriptionState: 'absent', tools: ['Codex'] },
           { id: 'agent:trusted', name: '可信代理', type: 'agent', description: '可信用途说明。',
             descriptionState: 'available', tools: ['Claude Code'] },
-          { id: 'command:broken', name: '受阻命令', type: 'command', description: null,
+          { id: 'hook:broken', name: '受阻 Hook', type: 'hook', description: null,
             descriptionState: 'issue', tools: ['Codex'],
             issue: { code: 'invalidMetadata', message: '安全简介元信息无效。' } },
+          { id: 'mcp:service', name: '上下文服务', type: 'mcpServer', description: null,
+            descriptionState: 'absent', tools: ['Codex'] },
+          { id: 'instruction:policy', name: '持续规则', type: 'instruction', description: null,
+            descriptionState: 'absent', tools: ['Codex'] },
         ],
       });
       vi.spyOn(value, 'getPluginContentState').mockReturnValue('ready');
@@ -2012,12 +2020,12 @@ describe('ConsoleAppV4', () => {
       await input(instance, '/', '可信', '\r');
       expect(instance.lastFrame()).toMatch(/搜索 可信\s+\[\/\]/u);
       expect(instance.lastFrame()).toContain('可信代理');
-      expect(instance.lastFrame()).not.toContain('受阻命令');
+      expect(instance.lastFrame()).not.toContain('受阻 Hook');
       await input(instance, '\u001B[C');
-      expect(instance.lastFrame()).toContain('[命令 0]');
+      expect(instance.lastFrame()).toContain('[Hook 0]');
       expect(instance.lastFrame()).toContain('当前条件无匹配');
       await input(instance, '/', '\u0015', '\r');
-      expect(instance.lastFrame()).toContain('受阻命令');
+      expect(instance.lastFrame()).toContain('受阻 Hook');
       await input(instance, '\r');
       expect(instance.lastFrame()).toContain('invalidMetadata');
       expect(instance.lastFrame()).not.toContain('菜单');
@@ -2032,8 +2040,15 @@ describe('ConsoleAppV4', () => {
       trace.push({ label: 'item issue reader', size: { columns, rows },
         inputs: ['Enter'], frame: instance.lastFrame() ?? '' });
       await escape(instance);
-      expect(instance.lastFrame()).toContain('受阻命令');
-      expect(value.snapshot.router.current.context.contentTypeTab).toBe('command');
+      expect(instance.lastFrame()).toContain('受阻 Hook');
+      expect(value.snapshot.router.current.context.contentTypeTab).toBe('hook');
+      await input(instance, '\u001B[C');
+      expect(instance.lastFrame()).toContain('[MCP Server 1]');
+      expect(instance.lastFrame()).toContain('上下文服务');
+      await input(instance, '\u001B[C');
+      expect(instance.lastFrame()).toContain('[指令 1]');
+      expect(instance.lastFrame()).toContain('持续规则');
+      trace.push(acceptanceTraceStep(instance, { columns, rows }, 'instruction type', ['right', 'right']));
       await writeAcceptanceTrace(`b04/content-${columns}x${rows}`, trace);
     },
   );

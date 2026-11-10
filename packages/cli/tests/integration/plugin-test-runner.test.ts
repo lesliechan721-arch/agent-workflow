@@ -192,6 +192,25 @@ afterEach(async () => {
 });
 
 describe('plugin script test runner', () => {
+  it('runs a current generic-only plugin through the explicit canonical target', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readManifest(repoRoot);
+    manifest.platforms = ['generic'];
+    manifest.scripts = { tests: { node: ['./scripts/generic.test.mjs'] } };
+    await writeManifest(repoRoot, manifest);
+    await writeNodeTestFile(repoRoot, 'generic.test.mjs', [
+      'import test from "node:test";',
+      'import assert from "node:assert/strict";',
+      'import fs from "node:fs";',
+      'const context=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,"utf8"));',
+      'test("generic context",()=>assert.equal(context.platform,"generic"));',
+    ].join('\n'));
+    const output = captureOutput();
+    const code = await runPluginScriptTests(['git-commit', '--platform', 'generic'], { repoRoot, ...output });
+    expect({ code, stderr: output.readStderr() }).toEqual({ code: 0, stderr: '' });
+    expect(output.readStdout()).toContain('git-commit / generic');
+  });
+
   // Test Value Gate: CI file shards must cover every installed test exactly
   // once, including non-ASCII names, and preserve a selected test's failure.
   it('runs disjoint Node file shards without omissions and propagates failures', async () => {
@@ -459,7 +478,7 @@ describe('plugin script test runner', () => {
       },
     };
     await fs.outputJson(path.join(repoRoot, 'plugins', 'config-provider', '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3, name: 'config-provider', version: '0.1.0', description: 'Plugin test config provider.',
+      schemaVersion: 4, name: 'config-provider', version: '0.1.0', description: 'Plugin test config provider.',
       platforms: ['codex', 'claude'],
       marketplace: { category: 'test', strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
@@ -710,7 +729,7 @@ describe('plugin script test runner', () => {
 
     expect(exitCode).toBe(1);
     expect(output.readStdout()).toBe('');
-    expect(output.readStderr()).toContain('--platform must be one of: codex, claude, both.');
+    expect(output.readStderr()).toContain('--platform must be one of: codex, claude, antigravity, cursor, opencode, pi, gemini, copilot, grok, generic, both.');
     expect(output.readStderr()).not.toContain('auto');
   });
 
@@ -1120,7 +1139,7 @@ describe('plugin script test runner', () => {
       name: 'registry-provider',
       version: '0.1.0',
       description: 'registry provider',
-      schemaVersion: 3,
+      schemaVersion: 4,
       platforms: ['codex', 'claude'],
       marketplace: {
         category: 'workflow',

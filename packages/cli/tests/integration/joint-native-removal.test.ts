@@ -10,6 +10,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { git } from '../helpers/catalog-source-fixture.js';
+import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import {
   createCodexNativeTestRuntime,
   createNativeDependencyCatalog,
@@ -19,6 +20,7 @@ import {
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(scope: Scope) {
+  installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true });
   const isolation = getCurrentSourceTestIsolation();
   const { env, layout } = isolation;
   const cwd = layout.fixtureCwd;
@@ -29,11 +31,7 @@ async function fixture(scope: Scope) {
     { name: 'dependency' }, { name: 'parent', dependencies: ['dependency'] },
   ].map((plugin) => ({ ...plugin, configureManifest: (manifest: PluginMeta['manifest']) => {
     manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
-    manifest.artifacts = { targets: [{
-      id: 'dynamic-role', platform: 'codex', scopes: ['user', 'project'],
-      target: 'codex.agentRole', requiresCodexProjectConfig: true,
-      states: ['present'], refreshKeys: [], roleKey: role(plugin.name),
-    }] };
+    manifest.artifacts = { configKeys: [], scopes: ['user', 'project'] };
   } }));
   for (const { name } of definitions) await writeDynamicRoleRenderer({
     pluginRoot: path.join(source, 'plugins', name), roleKey: role(name),
@@ -51,10 +49,12 @@ async function fixture(scope: Scope) {
 
   const codexRoot = scope === 'user' ? env.CODEX_HOME! : path.join(cwd, '.codex');
   const configPath = path.join(codexRoot, 'config.toml');
-  const rolePath = (name: string) => path.join(codexRoot, 'agents', `aw-${name}-${role(name)}.toml`);
+  const nativeLayout = await getNativeTestLayout({ platform: 'codex', pluginId: 'team/parent', scope, cwd, env });
+  const nativeId = (name: string) => `${name}@${nativeLayout.marketplaceName!}`;
+  const rolePath = (name: string) => path.join(codexRoot, 'agents', `aw-team-${name}-${role(name)}.toml`);
   for (const name of ['parent', 'dependency']) {
     expect(await fs.pathExists(rolePath(name))).toBe(true);
-    expect((await readCodexConfigFile(configPath)).snapshot.plugins[`${name}@aw`]?.enabled).toBe(true);
+    expect((await readCodexConfigFile(configPath)).snapshot.plugins[nativeId(name)]?.enabled).toBe(true);
   }
   const foreignPath = path.join(codexRoot, 'agents', 'foreign.toml');
   const foreignContent = 'name = "foreign"\ndescription = "Foreign role."\ndeveloper_instructions = "Keep this role."\n';
@@ -74,7 +74,7 @@ async function fixture(scope: Scope) {
     expect(current.agents.foreign).toMatchObject({ description: 'Foreign role.', configFile: 'agents/foreign.toml' });
     expect(current.plugins['foreign@elsewhere']?.enabled).toBe(true);
   };
-  return { location, runtime, configPath, rolePath, expectProtectedContent };
+  return { location, runtime, configPath, rolePath, nativeId, expectProtectedContent };
 }
 
 // Native removal must retire scoped extensions and activation while preserving shared packages and foreign config.
@@ -91,11 +91,12 @@ describe('joint Codex removal', () => {
     expect(removed.status, JSON.stringify(removed)).toBe('success');
     expect(removed.data).toMatchObject({ requirements: { roots: [] }, changes: { requirements: 'changed' } });
     const current = (await readCodexConfigFile(value.configPath)).snapshot;
-    expect(current.plugins['parent@aw']?.enabled).not.toBe(true);
+    expect(current.plugins[value.nativeId('parent')]?.enabled).not.toBe(true);
     expect(await fs.pathExists(value.rolePath('parent'))).toBe(false);
-    expect(current.plugins['dependency@aw']?.enabled === true).toBe(keep);
+    expect(current.plugins[value.nativeId('dependency')]?.enabled === true).toBe(keep);
     expect(await fs.pathExists(value.rolePath('dependency'))).toBe(keep);
-    expect(current.agents['dependency-role'] !== undefined).toBe(keep);
+    if (keep) expect(await fs.readFile(value.rolePath('dependency'), 'utf8')).toContain('name = "aw-team-dependency-dependency-role"');
+    else expect(current.agents['aw-team-dependency-dependency-role']).toBeUndefined();
     await value.expectProtectedContent();
   }, 30_000);
 
@@ -113,10 +114,10 @@ describe('joint Codex removal', () => {
     expect(removed.status, JSON.stringify(removed)).toBe('success');
     expect(removed.data).toMatchObject({ requirements: { roots: ['team/parent'] }, changes: { requirements: 'none' } });
     const current = (await readCodexConfigFile(value.configPath)).snapshot;
-    expect(current.plugins['dependency@aw']?.enabled).not.toBe(true);
-    expect(current.agents['dependency-role']).toBeUndefined();
+    expect(current.plugins[value.nativeId('dependency')]?.enabled).not.toBe(true);
+    expect(current.agents['aw-team-dependency-dependency-role']).toBeUndefined();
     expect(await fs.pathExists(value.rolePath('dependency'))).toBe(false);
-    expect(current.plugins['parent@aw']?.enabled).toBe(true);
+    expect(current.plugins[value.nativeId('parent')]?.enabled).toBe(true);
     expect(await fs.readFile(value.rolePath('parent'))).toEqual(parentBefore);
     await value.expectProtectedContent();
   }, 30_000);

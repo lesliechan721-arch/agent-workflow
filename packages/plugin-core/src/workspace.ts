@@ -28,7 +28,7 @@ import {
   readPluginManifest,
   validatePlatformManifestProjection,
 } from './manifest-contract.js';
-import { assertPluginDependencyPlatformCoverage, PORTABLE_PLATFORM_TARGETS, resolveSupportedPlatforms } from './platform-support.js';
+import { assertPluginDependencyPlatformCoverage, isPlatformTarget, resolveSupportedPlatforms } from './platform-support.js';
 import { validatePortableSkillDirectoriesRoot } from './portable-skill-validation.js';
 import { assertPluginConfigReferenceSchemas } from './plugin-config.js';
 import {
@@ -710,7 +710,8 @@ async function validateBundleRuntimeRequirementsReceipts(
 ): Promise<void> {
   const files = await listBundleFiles(pluginRoot);
   const expectedReceiptPaths = new Set(files.flatMap((relative) =>
-    /^(?:claude|codex|antigravity|cursor|opencode|pi|generic)\/skills\/[^/]+\/SKILL\.md$/u.test(relative)
+    relative.split('/').length === 4 && isPlatformTarget(relative.split('/')[0])
+      && relative.split('/')[1] === 'skills' && relative.split('/')[3] === 'SKILL.md'
       ? [path.posix.join(path.posix.dirname(relative), AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME)]
       : []));
   const actualReceiptPaths = files.filter((relative) =>
@@ -1541,13 +1542,9 @@ async function validateCatalogPluginEntriesComplete(
     }
     if (plugin.manifest.skills) {
       const supported = resolveSupportedPlatforms(plugin.manifest);
-      for (const platform of PORTABLE_PLATFORM_TARGETS) {
-        if (supported.has(platform)) {
-          const dynamicSkillKeys = new Set((plugin.manifest.artifacts?.targets ?? [])
-            .filter((target) => target.target === 'agent-skills.skill' && target.platform === platform)
-            .map((target) => target.skillKey!));
-          await validatePortableSkillDirectoriesRoot(path.join(pluginRoot, platform, 'skills'), { dynamicSkillKeys });
-        }
+      for (const platform of supported) {
+        if (platform === 'codex' || platform === 'claude') continue;
+        await validatePortableSkillDirectoriesRoot(path.join(pluginRoot, platform, 'skills'), { frontmatterProfile: 'claude-current' });
       }
     }
     const expected = await expectedCatalogEntry(plugin, pluginRoot);

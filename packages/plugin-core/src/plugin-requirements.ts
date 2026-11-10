@@ -38,14 +38,14 @@ function hasRuntimeImports(manifest: PluginManifestSource | NormalizedPluginMani
   return (manifest.buildConfig?.runtimeExports?.length ?? 0) > 0
     || (manifest.buildConfig?.buildImports?.length ?? 0) > 0
     || (manifest.buildConfig?.skillRuntimeFiles ?? []).some((entry) => entry.import !== undefined)
-    || (manifest.artifacts?.targets ?? []).some((target) => (target.runtimeImports?.length ?? 0) > 0)
+    || (manifest.artifacts?.runtimeImports?.length ?? 0) > 0
 }
 
 export function deriveAwCapabilitiesFromManifest(
   manifest: PluginManifestSource | NormalizedPluginManifest,
 ): AwCapabilityId[] {
   const capabilities: RegisteredAwCapabilityId[] = []
-  if ((manifest as { schemaVersion?: number }).schemaVersion === 3) capabilities.push('aw.plugin-manifest.v3')
+  if ((manifest as { schemaVersion?: number }).schemaVersion === 4) capabilities.push('aw.plugin-manifest.v4')
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
   if (manifest.nativeTools) capabilities.push('aw.native-tools.v2')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
@@ -98,10 +98,7 @@ export function deriveAwCapabilitiesFromManifest(
     capabilities.push('aw.managed-commands.v1', 'aw.claude.sandbox-exclusions.v1')
   }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
-  if ((manifest.artifacts?.targets?.length ?? 0) > 0) capabilities.push('aw.dynamic-artifacts.v2')
-  if ((manifest.artifacts?.targets ?? []).some((target) => target.runtimeConfig !== undefined)) {
-    capabilities.push('aw.installed-runtime-config.v2')
-  }
+  if (manifest.artifacts) capabilities.push('aw.platform-components.v3')
   if ([...resolveSupportedPlatforms(manifest)].some(isPortablePlatformTarget)) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')
   return normalizeAwCapabilities(capabilities)
@@ -325,7 +322,7 @@ export async function scanPluginAwCliRequirements(options: {
   }
   const skillCollections = new Set([
     options.manifest.skills,
-  ].filter((value): value is string => value !== undefined))
+  ].filter((value): value is "./skills" => value !== undefined))
   const skillFiles = (await Promise.all(
     [...skillCollections].map((value) => actualSkillMainFiles(options.pluginRoot, value)),
   )).flat()

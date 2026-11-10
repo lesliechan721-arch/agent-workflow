@@ -31,7 +31,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
@@ -79,7 +79,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
@@ -140,7 +140,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
@@ -201,7 +201,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
@@ -245,7 +245,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
@@ -289,7 +289,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
@@ -336,7 +336,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
@@ -383,7 +383,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
@@ -427,7 +427,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",

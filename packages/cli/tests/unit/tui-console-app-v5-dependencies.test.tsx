@@ -716,7 +716,7 @@ describe('ConsoleAppV4', () => {
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('请求仍有未完成目标。');
     expect(frame).toContain('✓ 完成 content-toolkit（official）');
-    expect(frame).toContain('× 安装失败 skill-toolkit（official）');
+    expect(frame).toContain('× 执行失败 skill-toolkit（official）');
     const details = await readScopedDetails(instance);
     expect(details).toContain('official/content-toolkit');
     expect(details).toContain('no-op · verified');
@@ -729,7 +729,7 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
-      scope: 'project', exactTargets: [{ pluginId: 'official/skill-toolkit', agent: 'codex' }],
+      scope: 'project', exactTargets: [{ pluginId: 'official/skill-toolkit', agent: 'codex', scope: 'project' }],
     }), expect.any(AbortSignal));
   });
 
@@ -1713,7 +1713,7 @@ describe('ConsoleAppV4', () => {
 
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain('请求仍有未完成目标。');
-      expect(frame).toContain('× 安装失败 skill-toolkit（official）');
+      expect(frame).toContain('× 执行失败 skill-toolkit（official）');
       expect(frame).toContain('重试明确失败项（1）');
       const details = await readScopedDetails(instance);
       expect(details).toContain('official/skill-toolkit');
@@ -1730,7 +1730,7 @@ describe('ConsoleAppV4', () => {
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
       expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
         kind: 'recovery', scope: 'project',
-        exactTargets: [{ pluginId: 'official/skill-toolkit', agent: 'codex' }],
+        exactTargets: [{ pluginId: 'official/skill-toolkit', agent: 'codex', scope: 'project' }],
       }), expect.any(AbortSignal));
       expect(executeScopedTask).toHaveBeenCalledTimes(1);
     },

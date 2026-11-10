@@ -1,11 +1,19 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "agent-subagent",
   "version": "0.1.0",
   "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
   "platforms": [
     "codex",
-    "claude"
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "gemini",
+    "copilot",
+    "grok",
+    "generic"
   ],
   "marketplace": {
     "category": "workflow",
@@ -871,86 +879,17 @@
     }
   },
   "artifacts": {
-    "targets": [
-      {
-        "id": "spawn-subagent-skill",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.skill",
-        "projectManagedKind": "skill",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "simpleTaskProfile",
-          "generalTaskProfile",
-          "complexTaskProfile",
-          "advancedTaskProfile",
-          "taskCustomProfiles",
-          "subagentCommands",
-          "subagentRetentionHours"
-        ],
-        "skillKey": "spawn-subagent",
-        "sourceDirs": [
-          "./skills/spawn-subagent"
-        ],
-        "runtimeConfig": {
-          "keys": [
-            "subagentCommands",
-            "subagentRetentionHours"
-          ]
-        }
-      },
-      {
-        "id": "subagent-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "subagent"
-      },
-      {
-        "id": "spawn-subagent-claude-skill",
-        "platform": "claude",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "claude.skill",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "simpleTaskProfile",
-          "generalTaskProfile",
-          "complexTaskProfile",
-          "advancedTaskProfile",
-          "taskCustomProfiles",
-          "subagentCommands",
-          "subagentRetentionHours"
-        ],
-        "skillKey": "spawn-subagent",
-        "sourceDirs": [
-          "./skills/spawn-subagent"
-        ],
-        "runtimeConfig": {
-          "keys": [
-            "subagentCommands",
-            "subagentRetentionHours"
-          ]
-        }
-      }
+    "configKeys": [
+      "simpleTaskProfile",
+      "generalTaskProfile",
+      "complexTaskProfile",
+      "advancedTaskProfile",
+      "taskCustomProfiles",
+      "subagentCommands",
+      "subagentRetentionHours"
+    ],
+    "sourceDirs": [
+      "./skills/spawn-subagent"
     ]
   },
   "requires": {
@@ -983,7 +922,8 @@
         "set": "guide",
         "producer": {
           "kind": "artifact",
-          "artifactId": "spawn-subagent-skill"
+          "artifactId": "spawn-subagent-skill",
+          "platform": "codex"
         },
         "mode": "static",
         "entries": [
@@ -999,7 +939,8 @@
         "set": "guide-communication",
         "producer": {
           "kind": "artifact",
-          "artifactId": "spawn-subagent-skill"
+          "artifactId": "spawn-subagent-skill",
+          "platform": "codex"
         },
         "mode": "static",
         "entries": [
@@ -1016,7 +957,8 @@
         "set": "guide-claude",
         "producer": {
           "kind": "artifact",
-          "artifactId": "spawn-subagent-claude-skill"
+          "artifactId": "spawn-subagent-claude-skill",
+          "platform": "claude"
         },
         "mode": "static",
         "entries": [
@@ -1032,7 +974,8 @@
         "set": "guide-communication-claude",
         "producer": {
           "kind": "artifact",
-          "artifactId": "spawn-subagent-claude-skill"
+          "artifactId": "spawn-subagent-claude-skill",
+          "platform": "claude"
         },
         "mode": "static",
         "entries": [
@@ -1104,7 +1047,15 @@
           }
         ],
         "agentOverrides": {
-          "claude": null
+          "claude": null,
+          "antigravity": null,
+          "cursor": null,
+          "opencode": null,
+          "pi": null,
+          "gemini": null,
+          "copilot": null,
+          "grok": null,
+          "generic": null
         }
       },
       {
@@ -1162,7 +1113,15 @@
           }
         ],
         "agentOverrides": {
-          "codex": null
+          "codex": null,
+          "antigravity": null,
+          "cursor": null,
+          "opencode": null,
+          "pi": null,
+          "gemini": null,
+          "copilot": null,
+          "grok": null,
+          "generic": null
         }
       }
     ]

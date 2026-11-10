@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
-import { compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARGETS, PORTABLE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
+import { compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { CatalogWorkspaceMissingError, resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
 import {
@@ -107,7 +107,6 @@ import type {
   ConfigFieldEntry,
   ConfigMutationCommand,
   PlatformTarget,
-  PortablePlatformTarget,
   Scope,
 } from './types.js';
 import { materializePortableSkillsToDirectory, PortableCommandError } from './portable/commands.js';
@@ -161,6 +160,7 @@ import {
 } from './commands/aw-capabilities.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
 import { targetsSet, targetsList, targetsChangeExclusion } from './commands/targets-command.js';
+import { runCursorWorkspaceHookCli } from './platforms/cursor-workspace-hook.js';
 import type { RecoveryReceipt } from './recovery/receipt.js';
 import { normalizeAgents } from './intent/deployment-preferences.js';
 import { resolveWorkContext } from './intent/work-context.js';
@@ -964,7 +964,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   devPlugin
     .command('capabilities')
     .description('Show the current plugin manifest authoring surface')
-    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | pre-apply | artifacts')
+    .option('--surface <surface>', 'manifest | build-config | extensions | mcp | config | pre-apply | artifacts | platform-components | platform-capabilities | hook-handlers | managed-commands | native-tools')
     .option('--json', 'emit one machine-readable JSON object', false)
     .action((rawOptions: { surface?: string; json?: boolean }) => {
       try {
@@ -1260,14 +1260,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('export')
     .description('Write portable Skills to a safe output directory')
     .argument('<plugin>', 'plugin or source/plugin selector')
-    .addOption(strictValueOption('--platform <target>', 'Portable platform target', PORTABLE_PLATFORM_TARGETS).makeOptionMandatory())
+    .addOption(strictValueOption('--platform <target>', 'Platform target profile', PLATFORM_TARGETS).makeOptionMandatory())
     .addOption(strictValueOption('-s, --scope <scope>', 'artifact scope', ['user', 'project']).makeOptionMandatory())
     .requiredOption('--out <dir>', 'output directory')
     .option('--skill <name...>', 'write only selected Skill names')
     .option('-j, --json', 'emit one receipt v5 JSON object', false)
     .action(async (selector: string, rawOptions: {
       scope: string;
-      platform: PortablePlatformTarget;
+      platform: PlatformTarget;
       out: string;
       skill?: string[];
       json?: boolean;
@@ -1344,7 +1344,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
     .option('--no-skills', 'create the plugin without a skills directory')
     .option('--with-mcp', 'add a minimal .mcp.json', false)
-    .option('--with-apps', 'add a minimal .app.json', false)
     .option('--with-config-api', 'add AW config schema and helper', false)
     .option('--with-pre-apply', 'add an idempotent Node preApply environment check', false);
 
@@ -1370,7 +1369,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .description('Validate one source plugin directory')
     .argument('<plugin-directory>', 'source plugin directory')
     .option('--strict-agent-skills', 'allow only Agent Skills portable core frontmatter', false)
-    .option('--claude-skill-profile <profile>', 'minimum | current (default: minimum)')
+    .option('--claude-skill-profile <profile>', 'current (default) | minimum (Claude 2.1.88 fields)')
     .option('--version-base <git-ref>', 'production bundle comparison base (default: HEAD)')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
     .option('--json', 'emit one machine-readable JSON result', false);
@@ -2342,8 +2341,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   };
 
   const targets = program.command('target').description('Manage the local platform policy');
+  program.command('internal', { hidden: true }).description('AW host integration protocols')
+    .command('cursor-workspace-open').description('Return current Cursor workspace plugin paths')
+    .requiredOption('--scope <scope>', 'user or project scope')
+    .option('--project-root <path>', 'the exact project workspace root')
+    .option('--plugin-id <source/plugin>', 'return only the exact required plugin package')
+    .action(async (rawOptions: { scope: string; projectRoot?: string; pluginId?: string }) => {
+      commandExitState.exitCode = await runCursorWorkspaceHookCli(['--scope', rawOptions.scope,
+        ...(rawOptions.projectRoot ? ['--project-root', rawOptions.projectRoot] : []),
+        ...(rawOptions.pluginId ? ['--plugin-id', rawOptions.pluginId] : [])],
+      { cwd, env, stdin: options.stdin ?? process.stdin, stdout: io.stdout, stderr: io.stderr });
+    });
   contextualCommand(targets.command('set').argument('[targets...]'))
     .option('--none', 'save an empty target set', false)
+    .option('--force', 'save newly selected unavailable targets without bypassing installation requirements', false)
     .option('--apply', 'apply the saved target policy in this work context', false)
     .option('-y, --yes', 'confirm reviewed output changes', false)
     .action(async (agents: string[], rawOptions: RawRecoveryOptions) => {
@@ -2355,13 +2366,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         await showWorkContext(context, rawOptions);
         return targetsSet({ cwd: context.cwd, env: context.env, targets: normalized,
           context: recoveryContext(rawOptions), apply: rawOptions.apply, yes: rawOptions.yes,
+          force: rawOptions.force,
           cliVersion: resolveCliVersion(), runtime: recoveryRuntime(context, rawOptions, true) });
       });
     });
   contextualCommand(targets.command('list'))
     .action(async (rawOptions: RawRecoveryOptions) =>
       runRecoveryAction('targets:list', rawOptions, (context) =>
-        targetsList({ cwd: context.cwd, env: context.env, context: recoveryContext(rawOptions) })));
+        targetsList({ cwd: context.cwd, env: context.env, context: recoveryContext(rawOptions),
+          runtime: { nativeCliRunner: context.nativeCliRunner } })));
   for (const action of ['exclude', 'include'] as const) {
     contextualCommand(targets.command(action).argument('<plugin>'))
       .addOption(strictValueOption('--target <target>', 'one canonical platform target', PLATFORM_TARGETS).makeOptionMandatory())
@@ -2903,6 +2916,10 @@ function scanPresentation(program: Command, argv: readonly string[]): { json: bo
 export async function runCli(argv: string[], options: CliRuntimeOptions = {}): Promise<number> {
   const interruption = createPublicCommandInterruption();
   const io = { ...createDefaultIo(), ...options.io };
+  if (argv[0] === 'internal' && argv[1] === 'cursor-workspace-open') {
+    return runCursorWorkspaceHookCli(argv.slice(2), { cwd: options.cwd ?? process.cwd(), env: options.env,
+      stdin: options.stdin ?? process.stdin, stdout: io.stdout, stderr: io.stderr });
+  }
   const delimiter = argv.indexOf('--');
   const awArgs = delimiter < 0 ? argv : argv.slice(0, delimiter);
   const context = createCliExecutionContext({ ...options, io });

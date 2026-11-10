@@ -1,9 +1,10 @@
-import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js';
+import type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js';
 import type { ManagedCommands, ManagedCommandPermission, PermissionCommand } from './managed-commands.js';
 
-export type PlatformName = 'codex' | 'claude';
-export type PortablePlatformTarget = 'antigravity' | 'cursor' | 'opencode' | 'pi' | 'generic';
-export type PlatformTarget = PlatformName | PortablePlatformTarget;
+export type PlatformName = 'codex' | 'claude' | 'antigravity' | 'cursor' | 'opencode' | 'pi' | 'gemini' | 'copilot' | 'grok';
+export type PortablePlatformTarget = 'generic';
+export type PlatformTarget = PlatformName | 'generic';
+export type PlatformId = PlatformTarget;
 export type DistributionName = 'agent-skills';
 export type Scope = 'project' | 'user';
 export type CatalogChannel = 'latest' | 'beta';
@@ -21,7 +22,7 @@ export type CodexProjectManagedKind =
   | 'hook'
   | 'agent';
 
-export type PluginInterfaceMeta = NonNullable<PluginManifestSourceV3['interface']>;
+export type PluginInterfaceMeta = NonNullable<PluginManifestSourceV4['interface']>;
 
 export interface MarketplaceOwner { name: string; url: string }
 export interface MarketplaceInterfaceMeta { displayName: string }
@@ -30,9 +31,9 @@ export interface MarketplaceSourceMeta {
   interface: MarketplaceInterfaceMeta;
   catalog: { version: string };
 }
-export type MarketplacePolicy = PluginManifestSourceV3['marketplace']['policy'] & { products?: string[] };
+export type MarketplacePolicy = PluginManifestSourceV4['marketplace']['policy'] & { products?: string[] };
 export type MarketplaceAuthenticationPolicy = MarketplacePolicy['authentication'];
-export type PluginMarketplaceMeta = PluginManifestSourceV3['marketplace'];
+export type PluginMarketplaceMeta = PluginManifestSourceV4['marketplace'];
 
 export type TemplateValue = string | boolean;
 export type TemplateVarByPlatform = Partial<Record<PlatformTarget, TemplateValue>>;
@@ -41,17 +42,6 @@ export interface BuildConfigTemplates {
   include: string[];
 }
 export interface BuildConfigFileRuleSet { include: string[]; exclude: string[] }
-export interface ClaudeManifestOverrides {
-  commands?: string;
-  outputStyles?: string;
-  lspServers?: string | Array<string | Record<string, unknown>> | Record<string, unknown>;
-  userConfig?: Record<string, unknown>;
-  channels?: Record<string, unknown> | Array<Record<string, unknown>>;
-}
-export interface BuildConfigManifestOverrides {
-  claude?: ClaudeManifestOverrides;
-  codex?: Record<string, never>;
-}
 export interface BuildConfigRuntimeExport {
   name: string;
   source: string;
@@ -75,7 +65,6 @@ export interface BuildConfig {
   cacheable?: true;
   templates?: BuildConfigTemplates;
   fileRules?: Partial<Record<PlatformTarget, BuildConfigFileRuleSet>>;
-  manifestOverrides?: BuildConfigManifestOverrides;
   runtimeExports?: BuildConfigRuntimeExport[];
   buildImports?: BuildConfigBuildImport[];
   skillRuntimeFiles?: BuildConfigSkillRuntimeFile[];
@@ -355,30 +344,34 @@ export interface PluginConfigValidationIssue {
   recoverable: true;
 }
 
-export interface PlatformAgentOverrides<T> { claude?: Partial<T> | null; codex?: Partial<T> | null }
+export type PlatformAgentOverrides<T> = Partial<Record<PlatformTarget, Partial<T> | null>>;
 export interface InstructionDefinition {
   name: string; title: string; content: string; paths?: string[];
-  agentOverrides?: PlatformAgentOverrides<{ name: string; title: string; content: string; paths?: string[] }>;
+  coverage: import('./plugin-components.js').InstructionAudience[];
+  agentOverrides?: PlatformAgentOverrides<Omit<InstructionDefinition, 'agentOverrides'>>;
 }
 export interface PermissionDefinition {
   name: string; allow?: PermissionCommand[]; ask?: PermissionCommand[]; deny?: PermissionCommand[];
-  /** Present after resolving the Claude override; source declarations use agentOverrides.claude. */
   sandbox?: { excludedCommands: ManagedCommandPermission[] };
-  agentOverrides?: {
+  agentOverrides?: Partial<Record<PlatformTarget, Partial<Omit<PermissionDefinition, 'agentOverrides' | 'sandbox'>> | null>> & {
     claude?: Partial<Omit<PermissionDefinition, 'agentOverrides'>> | null;
-    codex?: Partial<Omit<PermissionDefinition, 'agentOverrides' | 'sandbox'>> | null;
   };
 }
 export type HookEvent = 'before_tool' | 'after_tool' | 'session_start';
 export interface HookDefinition {
-  event: HookEvent; matcher?: string; command: string;
-  agentOverrides?: PlatformAgentOverrides<{ event: HookEvent; matcher?: string; command: string }>;
+  id: string; event: HookEvent; feedback: import('./plugin-components.js').HookFeedback;
+  matcher?: string; command?: string; requires?: import('./plugin-components.js').FeatureRequirement[];
+  agentOverrides?: PlatformAgentOverrides<Omit<HookDefinition, 'id' | 'agentOverrides'>>;
 }
-export interface NativeHookDefinition { event: string; matcher?: string; command: string }
-export interface NativeHooksByPlatform { claude?: NativeHookDefinition[]; codex?: NativeHookDefinition[] }
+export interface NativeHookDefinition {
+  id: string; event: string; feedback: import('./plugin-components.js').HookFeedback;
+  matcher?: string; command: string; requires?: import('./plugin-components.js').FeatureRequirement[];
+}
+export type NativeHooksByPlatform = Partial<Record<PlatformTarget, NativeHookDefinition[]>>;
 export interface AgentDefinition {
-  name: string; description: string; prompt: string; tools?: string[];
-  agentOverrides?: PlatformAgentOverrides<{ name: string; description: string; prompt: string; tools?: string[] }>;
+  name: string; description: string; prompt: string; model?: string; tools?: string[];
+  promptMode?: 'host-default' | 'append' | 'replace';
+  agentOverrides?: PlatformAgentOverrides<Omit<AgentDefinition, 'agentOverrides'>>;
 }
 export interface PluginExtensions {
   instructions?: InstructionDefinition[];
@@ -389,15 +382,8 @@ export interface PluginExtensions {
 }
 
 export type ArtifactState = 'present' | 'disabled';
-export type ArtifactTarget =
-  | 'codex.developerInstructionsBlock'
-  | 'codex.agentRole'
-  | 'codex.skill'
-  | 'claude.skill'
-  | 'agent-skills.skill'
-  | 'aw.command-set'
-  | 'aw.command-package';
-export type DynamicArtifactKind = 'instruction' | 'codexRole' | 'skill' | 'commandSet' | 'commandPackage';
+export type ArtifactTarget = 'aw.command-set' | 'aw.command-package';
+export type DynamicArtifactKind = 'commandSet' | 'commandPackage';
 export type ManagedArtifactId = string;
 export interface ArtifactRuntimeImportDefinition extends BuildConfigImportReference {
   name: string;
@@ -411,31 +397,17 @@ export interface ArtifactRuntimeImportDefinition extends BuildConfigImportRefere
     capabilitySetDigest: string;
   };
 }
-interface PluginArtifactTargetDefinitionBase {
-  id: string;
-  scopes: Scope[];
-  kind?: Exclude<DynamicArtifactKind, 'commandSet' | 'commandPackage'>;
-  projectManagedKind?: CodexProjectManagedKind;
-  states: ArtifactState[];
-  refreshKeys: string[];
-  requiresCodexProjectConfig?: boolean;
-  roleKey?: string;
-  skillKey?: string;
+export interface PluginArtifactsConfig {
+  configKeys: string[];
   sourceDirs?: string[];
   runtimeImports?: ArtifactRuntimeImportDefinition[];
-  runtimeConfig?: import('./runtime-config.js').PluginRuntimeConfigDeclaration;
+  scopes?: Scope[];
 }
-export type PluginArtifactTargetDefinition = PluginArtifactTargetDefinitionBase & (
-  | { target: 'codex.skill' | 'codex.developerInstructionsBlock' | 'codex.agentRole'; platform: 'codex'; distribution?: never }
-  | { target: 'claude.skill'; platform: 'claude'; distribution?: never }
-  | { target: 'agent-skills.skill'; platform: PortablePlatformTarget; distribution: 'agent-skills' }
-);
-export interface PluginArtifactsConfig { targets?: PluginArtifactTargetDefinition[] }
 export interface PluginRequirements { aw: { capabilities?: string[] } }
 
-export type PluginManifestSource = PluginManifestSourceV3;
+export type PluginManifestSource = PluginManifestSourceV4;
 export type NormalizedPluginManifest = Omit<
-  PluginManifestSourceV3,
+  PluginManifestSourceV4,
   'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config' | 'managedCommands' | 'nativeTools'
 > & {
   requires?: PluginRequirements;
@@ -496,10 +468,8 @@ export interface CatalogManifestV7 {
 }
 export interface PlatformPluginManifest {
   name: string; version: PluginVersion; description: string;
-  skills?: string; mcpServers?: string; apps?: string; interface?: PluginInterfaceMeta;
-  agents?: string[]; hooks?: string | RenderedHooksManifest; commands?: string; outputStyles?: string;
-  lspServers?: string | Array<string | Record<string, unknown>> | Record<string, unknown>;
-  userConfig?: Record<string, unknown>; channels?: Record<string, unknown> | Array<Record<string, unknown>>;
+  skills?: string; mcpServers?: string; interface?: PluginInterfaceMeta;
+  agents?: string[]; hooks?: string | RenderedHooksManifest;
 }
 export interface CodexHookHandler { type: 'command'; command: string }
 export interface RenderedHooksManifest { hooks: Record<string, Array<{ matcher?: string; hooks: CodexHookHandler[] }>> }
@@ -511,12 +481,4 @@ export interface CodexSharedHookGroup {
 export interface ArtifactPlanArtifactBase {
   id: string; platform?: PlatformTarget; distribution?: DistributionName; target: ArtifactTarget;
   kind: DynamicArtifactKind; state: ArtifactState; refreshKeys: string[]; disabledReason?: string;
-}
-export interface CodexSkillArtifact extends ArtifactPlanArtifactBase {
-  platform: 'codex';
-  target: 'codex.skill'; kind: 'skill'; skillKey?: string; content?: { files?: Record<string, string> };
-}
-export interface ClaudeSkillArtifact extends ArtifactPlanArtifactBase {
-  platform: 'claude';
-  target: 'claude.skill'; kind: 'skill'; skillKey?: string; content?: { files?: Record<string, string> };
 }

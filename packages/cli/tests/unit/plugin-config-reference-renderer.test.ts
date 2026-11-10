@@ -5,7 +5,9 @@ import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/m
 
 import type { PluginMeta } from '../../src/types.js';
 import { resolveEffectivePluginConfig, writePluginConfigStore } from '../../src/utils/plugin-config.js';
-import { runArtifactRenderer, resolveArtifactRendererTarget, writeArtifactRendererContext } from '../../src/utils/artifact-renderer.js';
+import { preparePlatformComponents, resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
+import { selectPlatformRenderConfig } from '../../src/utils/artifact-request.js';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { createArtifactRuntimeConfigSnapshots } from '../../src/utils/runtime-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -15,9 +17,9 @@ async function fixture(transitive = false) {
   const rootDir = path.join(cwd, 'reference-renderer');
   const manifestPath = path.join(rootDir, '.agents-plugin', 'plugin.json');
   const manifest: PluginMeta['manifest'] = {
-    schemaVersion: 3, name: 'reference-renderer', version: '1.0.0', description: 'Reference fixture',
+    schemaVersion: 4, name: 'reference-renderer', version: '1.0.0', description: 'Reference fixture',
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-    config: normalizePluginConfigDefinition({ schemaVersion: 3, fields: {
+    config: normalizePluginConfigDefinition({ schemaVersion: 5, fields: {
       registry: { type: 'array', validation: { uniqueBy: 'id' }, items: {
         type: 'object', properties: { id: { type: 'string', required: true,
           ...(transitive ? { valueRef: { field: 'providers', key: 'id', include: ['reserved-provider'] } } : {}),
@@ -29,11 +31,8 @@ async function fixture(transitive = false) {
       } } } : {}),
     } }),
     scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-    artifacts: { targets: [{
-      id: 'selected-skill', platform: 'codex', target: 'codex.skill', scopes: ['user'], states: ['present'],
-      refreshKeys: ['selected'], skillKey: 'selected-skill', delivery: { mode: 'aw-extension' },
-      runtimeConfig: { keys: ['selected'] },
-    }] },
+    requires: { aw: { capabilities: ['aw.installed-runtime-config.v2'] } },
+    artifacts: { configKeys: ['selected'] },
   };
   await fs.outputJson(manifestPath, manifest);
   await fs.outputFile(path.join(rootDir, 'render.mjs'), 'throw new Error("must not run for invalid config");\n');
@@ -61,18 +60,15 @@ describe('config reference dependency failures in renderer and runtime', () => {
       expect.objectContaining({ key: 'selected', code: 'valueRefSource' }),
     ]));
     expect(() => createArtifactRuntimeConfigSnapshots({ ...options, manifest: plugin.manifest, platform: 'codex',
-      config: { mode: 'artifact-render', targetScope: 'user', ...effective }, requestedArtifactIds: ['selected-skill'] }))
+      config: { mode: 'artifact-render', targetScope: 'user', ...effective }, components: [{ id: 'selected-skill', kind: 'skill', name: 'selected-skill', content: { files: {} }, runtimeConfig: { keys: ['selected'] } }] }))
       .toThrow('runtimeConfigInvalid');
-    const runner = vi.fn();
-    await expect(runArtifactRenderer({ plugin, event: 'install', platform: 'codex', scope: 'user', cwd: options.cwd,
-      commandEnv: options.env, requestedArtifactIds: ['selected-skill'], runner }))
-      .rejects.toThrow(/runtimeConfigInvalid|Invalid AW config/u);
-    // A renderer without runtime metadata must reject the same selected-only dependency failure.
-    delete plugin.manifest.artifacts!.targets![0]!.runtimeConfig;
-    await expect(runArtifactRenderer({ plugin, event: 'install', platform: 'codex', scope: 'user', cwd: options.cwd,
-      commandEnv: options.env, requestedArtifactIds: ['selected-skill'], runner }))
+    const run = vi.fn();
+    await expect(preparePlatformComponents({ plugin, platform: 'codex', renderScope: 'user', kinds: ['skill'],
+      capabilities: getAuthoringPlatformCapabilities('codex', 'user'),
+      config: { mode: 'artifact-render', targetScope: 'user', ...effective }, cwd: options.cwd,
+      commandEnv: options.env, runner: { run } }))
       .rejects.toThrow('Invalid AW config');
-    expect(runner).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('propagates an invalid transitive source to the selected-only consumer', async () => {
@@ -85,26 +81,28 @@ describe('config reference dependency failures in renderer and runtime', () => {
       expect.objectContaining({ key: 'providers', code: 'valueRefReserved' }),
       expect.objectContaining({ key: 'selected', code: 'valueRefSource' }),
     ]));
-    const runner = vi.fn();
-    await expect(runArtifactRenderer({ plugin, event: 'install', platform: 'codex', scope: 'user', cwd: options.cwd,
-      commandEnv: options.env, requestedArtifactIds: ['selected-skill'], runner }))
-      .rejects.toThrow(/runtimeConfigInvalid|Invalid AW config/u);
-    expect(runner).not.toHaveBeenCalled();
+    const run = vi.fn();
+    await expect(preparePlatformComponents({ plugin, platform: 'codex', renderScope: 'user', kinds: ['skill'],
+      capabilities: getAuthoringPlatformCapabilities('codex', 'user'),
+      config: { mode: 'artifact-render', targetScope: 'user', ...effective }, cwd: options.cwd,
+      commandEnv: options.env, runner: { run } }))
+      .rejects.toThrow('Invalid AW config');
+    expect(run).not.toHaveBeenCalled();
   });
 
-  it('keeps a valid dependency source private in the selected renderer projection', async () => {
+  it('includes verified non-sensitive validation dependencies without widening runtime keys', async () => {
     const { plugin, options } = await fixture();
     await writePluginConfigStore({ ...options, values: { registry: [{ id: 'remote', enabled: true }], selected: 'built-in' } });
-    const target = await resolveArtifactRendererTarget(plugin);
-    const written = await writeArtifactRendererContext({ ...options, target, event: 'install', platform: 'codex',
-      commandEnv: options.env, requestedArtifactIds: ['selected-skill'] });
-    try {
-      expect(written.context.config.values).toEqual({ selected: 'built-in' });
-      expect(written.context.config.sources).toEqual({ selected: 'common' });
-      expect(written.context.config.issues).toEqual([]);
-      expect(written.runtimeConfigSnapshots['selected-skill']!.allowedKeys).toEqual(['selected']);
-    } finally {
-      await fs.remove(written.tempDir);
-    }
+    const resolved = await resolveArtifactRenderConfig({ ...options, manifest: plugin.manifest, platform: 'codex' });
+    const projected = selectPlatformRenderConfig({ resolved, keys: ['selected'], nonSensitive: true });
+    expect(projected.values).toEqual({ selected: 'built-in', registry: [{ id: 'remote', enabled: true }] });
+    expect(projected.sources).toEqual({ selected: 'common', registry: 'common' });
+    expect(projected.issues).toEqual([]);
+    const snapshots = createArtifactRuntimeConfigSnapshots({ ...options, manifest: plugin.manifest,
+      platform: 'codex', config: resolved, components: [{ id: 'selected-skill', kind: 'skill', name: 'selected-skill',
+        content: { files: {} }, runtimeConfig: { keys: ['selected'] } }],
+    });
+    expect(snapshots['selected-skill']!.allowedKeys).toEqual(['selected']);
+    expect(snapshots['selected-skill']!.effectiveValues).toEqual({ selected: 'built-in' });
   });
 });

@@ -21,9 +21,10 @@ import {
   resolveManagedCommand,
   syncManagedCommandPackage,
   updateUserCommand,
-  writeInstalledCommandProducer,
 } from '../../src/utils/managed-command-store.js';
 import { buildManagedCommandEnvironment, prepareManagedCommandRun } from '../../src/utils/managed-command-runtime.js';
+import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
+import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 
 describe('managed command store and run preparation', () => {
   let isolated: IsolatedTestEnvironment;
@@ -40,15 +41,21 @@ describe('managed command store and run preparation', () => {
 
   async function installedNativeProducer() {
     const sourceIdentity = `sha256:${'a'.repeat(64)}`;
-    const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity, pluginName: 'example', kind: 'static-skill', key: 'guide', platform: 'codex', scope: 'user', projectRoot: null };
-    const marketplaceRoot = path.join(isolated.layout.awHomeDir, 'marketplaces', producer.sourceId);
-    const pluginRoot = path.join(marketplaceRoot, 'plugins', producer.pluginName);
-    const resourceRoot = path.join(pluginRoot, 'codex', 'skills', producer.key);
+    const ctx = { env: isolated.env, cwd: isolated.layout.fixtureCwd };
+    const resolution = await resolveDeployments(ctx, { plugin: { sourceId: 'fixture', sourceIdentity, pluginId: 'fixture/example', version: '1.0.0' }, scope: { kind: 'user' }, operation: 'ensure', recoveryCandidates: [],
+      discovery: { platform: 'codex', availability: 'available', diagnostics: [], installations: [{ id: 'test-client', product: 'cli', version: null, availability: 'available', reasonCodes: [], entry: { kind: 'cli', executable: '', configRoot: isolated.layout.codexHomeDir } }] } });
+    const binding = resolution.bindings[0]!;
+    const layout = await getDeploymentLayout(ctx, binding);
+    const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity, pluginName: 'example', kind: 'static-skill', key: 'guide', platform: 'codex', scope: 'user', projectRoot: null,
+      placementKey: binding.physicalKey };
+    const marketplaceRoot = layout.marketplaceRoot!;
+    const pluginRoot = layout.packageRoot;
+    const resourceRoot = path.join(pluginRoot, 'skills', producer.key);
     await fs.mkdir(resourceRoot, { recursive: true });
     await fs.cp(source, resourceRoot, { recursive: true });
     for (const [relativePath, value] of [
-      ['config.json', { schemaVersion: 2, sourceId: producer.sourceId, sourceIdentity, marketplaceName: 'aw' }],
-      ['.agents/plugins/marketplace.json', { name: 'aw', plugins: [{ name: producer.pluginName, source: `./plugins/${producer.pluginName}` }] }],
+      ['config.json', { schemaVersion: 2, sourceId: producer.sourceId, sourceIdentity, marketplaceName: layout.marketplaceName }],
+      ['.agents/plugins/marketplace.json', { name: layout.marketplaceName, plugins: [{ name: producer.pluginName, source: `./plugins/${producer.pluginName}` }] }],
       [`plugins/${producer.pluginName}/.agents-plugin/plugin.json`, { name: producer.pluginName, version: '1.0.0', skills: './skills' }],
       [`plugins/${producer.pluginName}/.codex-plugin/plugin.json`, { name: producer.pluginName, version: '1.0.0', skills: './codex/skills' }],
     ] as const) {
@@ -57,6 +64,9 @@ describe('managed command store and run preparation', () => {
       await fs.writeFile(filePath, JSON.stringify(value));
     }
     await fs.writeFile(path.join(resourceRoot, 'SKILL.md'), '# Native Guide\n');
+    await writeSkillOwnerMarker({ skillRoot: pluginRoot, allowedRoot: path.dirname(pluginRoot),
+      identity: { owner: 'agent-workflows', sourceId: producer.sourceId, sourceIdentity, physicalKey: binding.physicalKey, pluginId: 'fixture/example', plugin: 'example', platform: 'codex', scope: 'user', artifactKey: path.basename(pluginRoot) },
+      nativeProjection: { physicalIdentity: layout.physicalIdentity, components: [{ id: 'skill:guide', nativeName: 'guide', relativeOutputs: ['skills/guide/SKILL.md', 'skills/guide/entry.mjs', 'skills/guide/lib/dependency.mjs'] }], inputDigest: `sha256:${'b'.repeat(64)}`, contentDigest: `sha256:${'c'.repeat(64)}` } });
     const sets = [{ set: 'tools', state: 'present' as const, entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'entry.mjs' })] }];
     const [id] = await publishManagedCommandBindings({ producer, resourceRoot, sets, env: isolated.env });
     const bindingPath = path.join(isolated.layout.awHomeDir, 'commands', 'bindings', `${id!}.json`);
@@ -115,7 +125,7 @@ describe('managed command store and run preparation', () => {
 
   // Protects actual producer truth and offline removal after source identity or project location changes.
   it('runs from the installed package record and removes corrupt content by exact old package identity', async () => {
-    const producer: ProducerIdentity = { sourceId: 'old-source', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example', kind: 'package', key: 'tool', platform: null, scope: 'project', projectRoot: path.normalize(await fs.realpath(isolated.layout.fixtureCwd)) };
+    const producer: ProducerIdentity = { sourceId: 'old-source', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example', kind: 'package', key: 'tool', platform: null, placementKey: null, scope: 'project', projectRoot: path.normalize(await fs.realpath(isolated.layout.fixtureCwd)) };
     const entry = normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'entry.mjs' });
     const synced = await syncManagedCommandPackage({ producer, sourceDirectory: source, sets: [{ set: 'tools', state: 'present', entries: [entry] }], env: isolated.env });
     expect(synced.id).toBe(getCommandPackageId(producer));
@@ -138,12 +148,9 @@ describe('managed command store and run preparation', () => {
   // A digest collision must fail before changing either the producer or any
   // binding, including when both conflicting identities are new candidates.
   it('rejects digest collisions in publication and package sync without replacing existing state', async () => {
-    const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null };
+    const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example', kind: 'package', key: 'tools', platform: null, placementKey: null, scope: 'user', projectRoot: null };
     const entries = ['first', 'second'].map((key) => normalizeCommandDefinition({ key, runner: 'node', entry: 'entry.mjs' }));
-    const recordPath = path.join(source, COMMAND_PRODUCER_RECORD);
     const bindings = path.join(isolated.layout.awHomeDir, 'commands', 'bindings');
-    await writeInstalledCommandProducer(source, { schemaVersion: 1, producer, sets: [] });
-    const before = await fs.readFile(recordPath, 'utf8');
     const createHash = crypto.createHash;
     const hashSpy = vi.spyOn(crypto, 'createHash').mockImplementation((algorithm, options) => {
       const hash = createHash(algorithm, options);
@@ -154,7 +161,10 @@ describe('managed command store and run preparation', () => {
     });
     syncBuiltinESMExports();
     try {
-      const publish = (selected: typeof entries) => publishManagedCommandBindings({ producer, resourceRoot: source, sets: [{ set: 'tools', state: 'present', entries: selected }], env: isolated.env });
+      const empty = await syncManagedCommandPackage({ producer, sourceDirectory: source, sets: [], env: isolated.env });
+      const recordPath = path.join(empty.resourceRoot, COMMAND_PRODUCER_RECORD);
+      const before = await fs.readFile(recordPath, 'utf8');
+      const publish = (selected: typeof entries) => publishManagedCommandBindings({ producer, resourceRoot: empty.resourceRoot, sets: [{ set: 'tools', state: 'present', entries: selected }], env: isolated.env });
       await expect(publish(entries)).rejects.toMatchObject({ code: 'commandIdentityConflict' });
       expect(await fs.readFile(recordPath, 'utf8')).toBe(before);
       await expect(fs.lstat(bindings)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -209,7 +219,7 @@ describe('managed command store and run preparation', () => {
     };
     const entry = { ...installed.sets[0]!.entries[0]!, ...(difference === 'command' ? { key: 'other' } : {}) };
     const sets = [{ ...installed.sets[0]!, entries: [entry] }];
-    const id = getPluginCommandId({ schemaVersion: 1, producer, set: sets[0]!.set, key: entry.key, variant: entry.variant });
+    const id = getPluginCommandId({ schemaVersion: 2, producer, set: sets[0]!.set, key: entry.key, variant: entry.variant });
     const bindingPath = path.join(path.dirname(installed.bindingPath), `${id}.json`);
     await fs.writeFile(bindingPath, '{broken');
     const before = await fs.readFile(path.join(installed.resourceRoot, COMMAND_PRODUCER_RECORD), 'utf8');

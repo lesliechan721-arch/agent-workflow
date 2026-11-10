@@ -9,12 +9,9 @@ import {
   validatePortableSkillDirectory as validateCorePortableSkillDirectory,
   validatePortableSkillName as validateCorePortableSkillName,
   parseAwPluginRequirementsReceipt,
+  type SkillFrontmatterProfile,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
-import type {
-  ClaudeSkillArtifact,
-  CodexSkillArtifact,
-} from '../types.js';
 import {
   assertOwnedSkillPath,
   createSkillOwnerMarkerContent,
@@ -28,6 +25,13 @@ import { validateSkillFrontmatterCapabilities } from '@lesliechan721/aw-plugin-c
 export const SKILL_FILE_PATH = 'SKILL.md';
 export const CODEX_OPENAI_YAML_PATH = 'agents/openai.yaml';
 export const AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH = 'aw-plugin-requirements.json';
+
+interface SkillTreeInput {
+  target: 'codex.skill' | 'claude.skill';
+  skillKey?: string;
+  state: 'present' | 'disabled';
+  content?: { files?: Record<string, string> };
+}
 
 export interface DynamicSkillTree {
   skillKey: string;
@@ -177,8 +181,11 @@ export function parsePortableSkillFrontmatter(rawContent: string): Record<string
   return frontmatter;
 }
 
-export async function validatePortableSkillDirectory(rootDir: string): Promise<DynamicSkillTree> {
-  return validateCorePortableSkillDirectory(rootDir);
+export async function validatePortableSkillDirectory(
+  rootDir: string,
+  options: { frontmatterProfile?: SkillFrontmatterProfile } = {},
+): Promise<DynamicSkillTree> {
+  return validateCorePortableSkillDirectory(rootDir, options);
 }
 
 export async function validatePortableSkillDirectoriesRoot(rootDir: string): Promise<DynamicSkillTree[]> {
@@ -244,7 +251,7 @@ async function collectDirectoryFiles(
 }
 
 function validatePresentSkillTree(options: {
-  target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'];
+  target: SkillTreeInput['target'];
   skillKey: string;
   files: Record<string, Buffer>;
 }): void {
@@ -266,7 +273,7 @@ function validatePresentSkillTree(options: {
 
 export async function validateSkillDirectory(
   rootDir: string,
-  target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'],
+  target: SkillTreeInput['target'],
   options?: {
     ownerMarkerPolicy?: 'reject' | 'ignore';
     requirementsReceiptPolicy?: 'reject' | 'allow';
@@ -297,7 +304,7 @@ export async function validateSkillDirectory(
 
 export async function validateSkillDirectoriesRoot(
   rootDir: string,
-  target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'],
+  target: SkillTreeInput['target'],
 ): Promise<DynamicSkillTree[]> {
   const rootStats = await fs.lstat(rootDir).catch(() => null);
   if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
@@ -321,7 +328,7 @@ export async function validateSkillDirectoriesRoot(
 }
 
 export async function createDynamicSkillExpectedTree(options: {
-  artifact: Pick<CodexSkillArtifact | ClaudeSkillArtifact, 'target' | 'skillKey' | 'state' | 'content'>;
+  artifact: SkillTreeInput;
   sourceDirs?: string[];
   requireReadme?: boolean;
   requirementsReceipt?: Buffer;
@@ -582,7 +589,7 @@ export async function writeDynamicSkillTree(
 
 export async function readDynamicSkillTree(
   rootDir: string,
-  target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'],
+  target: SkillTreeInput['target'],
 ): Promise<DynamicSkillTree | null> {
   const rootStats = await fs.lstat(rootDir).catch(() => null);
   if (!rootStats) {

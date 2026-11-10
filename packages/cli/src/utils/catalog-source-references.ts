@@ -1,10 +1,12 @@
+import crypto from 'node:crypto';
 import { readIntentReferences } from '../recovery/demand.js';
 import { resolveIntentPath } from '../intent/intent-store.js';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
+import { computeCanonicalDirectoryDigest } from '@lesliechan721/agent-skill-eval';
+import { NATIVE_PLATFORM_TARGETS, isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { readClaudeSettings } from '../adapters/helpers.js';
 import { readCodexConfigFile } from './codex-config.js';
@@ -24,9 +26,14 @@ import {
   parseOwnedTextHeader,
   readSkillOwnerMarker,
   SKILL_OWNER_MARKER,
+  type OwnedComponent,
 } from './ownership.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
+import { getDeploymentLayout, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
+import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
+import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
+import type { DeploymentBinding, InstallRoute, RecoveryCandidate } from '../platforms/contracts.js';
 import type { PlatformName, Scope } from '../types.js';
 
 export type CatalogSourceReferenceKind =
@@ -49,6 +56,9 @@ export interface CatalogSourceReference {
   scope?: string;
   projectKey?: string | null;
   pluginVersion?: string;
+  ownedComponent?: OwnedComponent;
+  pathEvidence?: string;
+  recoveryCandidate?: RecoveryCandidate;
 }
 
 export function canonicalMarketplaceRegistrationNames(
@@ -559,6 +569,7 @@ function ownerReferenceFromRaw(
       kind: 'namespacedOwner',
       location: entryPath,
       sourceId: raw.sourceId,
+      ...(typeof raw.sourceIdentity === 'string' ? { sourceIdentity: raw.sourceIdentity } : {}),
       ...(typeof raw.plugin === 'string' ? { pluginName: raw.plugin } : {}),
       ...(typeof raw.platform === 'string' ? { platform: raw.platform } : {}),
       ...(typeof raw.scope === 'string' ? { scope: raw.scope } : {}),
@@ -643,7 +654,8 @@ async function readOwnedHeaderReference(
   }
   if (!parsed) return null;
   if (requireGeneratedName
-    && !path.basename(filePath).startsWith(`aw-${parsed.identity.plugin}-`)) {
+    && !path.basename(filePath).startsWith(parsed.identity.sourceId
+      ? `aw-${parsed.identity.sourceId}-${parsed.identity.plugin}-` : `aw-${parsed.identity.plugin}-`)) {
     errors.push(inventoryError(
       new Error('Owned text header path does not match its plugin identity.'),
       filePath,
@@ -654,16 +666,16 @@ async function readOwnedHeaderReference(
         global: false,
         ...(parsed.identity.sourceId ? { sourceId: parsed.identity.sourceId } : {}),
         pluginName: parsed.identity.plugin,
-        platform: parsed.identity.platform,
+        ...(parsed.identity.platform !== 'generic' ? { platform: parsed.identity.platform } : {}),
         scope: parsed.identity.scope,
       },
     ));
     return null;
   }
-  return ownerReferenceFromRaw(filePath, {
-    schemaVersion: 3,
-    ...parsed.identity,
-  });
+  const reference = ownerReferenceFromRaw(filePath, { schemaVersion: 3, ...parsed.identity });
+  return reference ? { ...reference, ownedComponent: { kind: 'owned-text-file', path: filePath,
+    allowedRoot: path.dirname(filePath), identity: parsed.identity },
+    pathEvidence: await offlineOwnedPathEvidence(filePath) } : null;
 }
 
 async function findOwnedHeadersInDirectory(
@@ -825,9 +837,12 @@ function sharedOwnerTokenReferences(
       kind: 'namespacedOwner',
       location: filePath,
       sourceId: identity.sourceId,
+      ...(identity.sourceIdentity ? { sourceIdentity: identity.sourceIdentity } : {}),
       pluginName: identity.plugin,
       platform: identity.platform,
       scope: identity.scope,
+      ...(identity.platform === 'claude' ? { ownedComponent: { kind: 'shared-config' as const, identity, label: filePath,
+        locator: { kind: 'claude-permissions' as const, settingsPath: filePath, ownerKey: token } } } : {}),
     });
   }
   return output;
@@ -1145,6 +1160,171 @@ function registeredMarketplaceRoots(
     }));
 }
 
+/** Operation-local fingerprints bind reviewed output bytes; they do not confer ownership. */
+export async function offlineOwnedPathEvidence(location: string): Promise<string> {
+  const stat = await fs.lstat(location);
+  if (stat.isSymbolicLink()) throw new Error('offlineCleanupPathUnsafe');
+  if (stat.isDirectory()) return computeCanonicalDirectoryDigest(location);
+  if (!stat.isFile()) throw new Error('offlineCleanupPathUnsafe');
+  return `sha256:${crypto.createHash('sha256').update(await fs.readFile(location)).digest('hex')}`;
+}
+
+async function observedProjectReference(options: {
+  binding: DeploymentBinding;
+  layout: Awaited<ReturnType<typeof getDeploymentLayout>>;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  errors: CatalogSourceInventoryError[];
+}): Promise<boolean> {
+  const { binding, layout, errors, env, cwd } = options;
+  if (binding.scope.kind !== 'project') return false;
+  const projectRoot = binding.scope.projectRoot;
+  const nativeId = layout.nativeIdentity.registrationId ?? layout.nativeIdentity.packageId;
+  const settingsPath = binding.platform === 'codex' ? path.join(projectRoot, '.codex/config.toml')
+    : binding.platform === 'claude' ? path.join(projectRoot, '.claude/settings.local.json')
+      : binding.platform === 'copilot' ? path.join(projectRoot, '.github/copilot/settings.local.json') : undefined;
+  if (settingsPath) {
+    const recorded = await inventoryRead({ errors, env, cwd, location: settingsPath, kind: 'nativeProjectActivationRead', absent: false,
+      operation: async () => {
+        if (binding.platform === 'codex') return Object.hasOwn((await readCodexConfigFile(settingsPath)).snapshot.plugins, nativeId);
+        const value: unknown = await readJsonFileIfExists(settingsPath);
+        if (value == null) return false;
+        if (!isRecord(value) || value.enabledPlugins !== undefined && !isRecord(value.enabledPlugins)) throw new Error('nativeProjectActivationInvalid');
+        return isRecord(value.enabledPlugins) && Object.hasOwn(value.enabledPlugins, nativeId);
+      } });
+    if (recorded) return true;
+  }
+  if (binding.platform !== 'codex' && binding.platform !== 'claude') return false;
+  const policyKey = await getInvocationPolicyPhysicalKey({ cwd, env }, binding);
+  const supplementKeys = new Set([policyKey, ...layout.renderUnits.filter((unit) => unit.output === 'supplement').map((unit) => unit.physicalKey)]);
+  const references = binding.platform === 'codex'
+    ? [...await findOwnedHeadersInDirectory(path.join(projectRoot, '.codex/agents'), new Set(['.toml']), false, errors, env, cwd),
+      ...await findOwnedHeadersInDirectory(path.join(projectRoot, '.codex/rules'), new Set(['.rules']), false, errors, env, cwd)]
+    : await claudeSharedOwnerReferences(path.join(projectRoot, '.claude/settings.local.json'), 'project', errors, env, cwd);
+  if (references.some((reference) => {
+    const identity = reference.ownedComponent?.identity;
+    return identity?.pluginId === binding.plugin.pluginId && identity.sourceIdentity === binding.plugin.sourceIdentity
+      && identity.platform === binding.platform && identity.scope === 'project' && identity.physicalKey !== undefined
+      && supplementKeys.has(identity.physicalKey);
+  })) return true;
+  if (binding.platform !== 'claude' || !layout.marketplaceName) return false;
+  const installedPath = path.join(resolvePlatformConfigRoot('claude', { cwd, env }), 'plugins/installed_plugins.json');
+  return inventoryRead({ errors, env, cwd, location: installedPath, kind: 'nativeProjectRegistrationRead', absent: false,
+    operation: async () => {
+      const value = await readJsonFileIfExists<Record<string, unknown>>(installedPath) ?? null;
+      return claudeConsumersFromInstalled(value, layout.marketplaceName!, projectRoot).some((consumer) =>
+        consumer.scope === 'project' && consumer.pluginName === binding.plugin.pluginId.split('/').at(-1));
+    } });
+}
+
+async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.ProcessEnv; scope?: Scope },
+  errors: CatalogSourceInventoryError[]): Promise<CatalogSourceReference[]> {
+  const references: CatalogSourceReference[] = [];
+  const ctx = { cwd: options.cwd, env: options.env };
+  const projectRoot = canonicalizePathThroughExistingAncestorSync(resolveRepoRootSync(options.cwd));
+  const roots = new Map<string, { platform: PlatformName; scope: Scope; route: InstallRoute; hostRoot: string; managed: boolean; sourceId?: string }>();
+  const add = (root: string, platform: PlatformName, scope: Scope, route: InstallRoute, hostRoot: string, managed = false, sourceId?: string) =>
+    roots.set(root, { platform, scope, route, hostRoot, managed, sourceId });
+  for (const platform of NATIVE_PLATFORM_TARGETS) {
+    const hostRoot = resolvePlatformConfigRoot(platform, ctx);
+    if (platform === 'cursor') add(path.join(hostRoot, 'aw-plugins'), platform, 'user', 'cursor-workspace-hook', hostRoot);
+    if (platform === 'opencode' || platform === 'antigravity') add(path.join(hostRoot, 'plugins'), platform, 'user', `${platform}-directory`, hostRoot);
+    if (platform === 'pi') add(path.join(hostRoot, 'aw-packages'), platform, 'user', 'pi-package', hostRoot);
+    if (options.scope !== 'user') {
+      if (platform === 'cursor') add(path.join(projectRoot, '.cursor/aw-plugins'), platform, 'project', 'cursor-workspace-hook', hostRoot);
+      if (platform === 'opencode') add(path.join(projectRoot, '.opencode/plugins'), platform, 'project', 'opencode-directory', hostRoot);
+      if (platform === 'antigravity') add(path.join(projectRoot, '.agents/plugins'), platform, 'project', 'antigravity-directory', hostRoot);
+      if (platform === 'pi') add(path.join(projectRoot, '.pi/aw-packages'), platform, 'project', 'pi-package', hostRoot);
+      if (platform === 'grok') add(path.join(projectRoot, '.grok/plugins'), platform, 'project', 'grok-directory', hostRoot);
+    }
+  }
+  const awRoot = resolveAwHome(options.env);
+  const managed = path.join(awRoot, 'platforms');
+  for (const platform of NATIVE_PLATFORM_TARGETS) {
+    const namespaces = await inventoryCanonicalDirectoryEntries({ location: path.join(managed, platform),
+      kind: 'nativeNamespaceRead', errors, env: options.env, cwd: options.cwd });
+    const route: Partial<Record<PlatformName, InstallRoute>> = { codex: 'codex-marketplace', claude: 'claude-marketplace',
+      copilot: 'copilot-marketplace', gemini: 'gemini-extension', antigravity: 'antigravity-cli', grok: 'grok-cli' };
+    if (!route[platform]) continue;
+    for (const namespace of namespaces) {
+      if (!namespace.isDirectory() || namespace.isSymbolicLink()) continue;
+      const base = path.join(managed, platform, namespace.name);
+      const sourcesRoot = path.join(base, ['codex', 'claude', 'copilot'].includes(platform) ? 'marketplaces' : 'packages');
+      const sources = await inventoryCanonicalDirectoryEntries({ location: sourcesRoot, kind: 'nativeSourceRead', errors, env: options.env, cwd: options.cwd });
+      for (const source of sources) if (source.isDirectory() && !source.isSymbolicLink()) {
+        add(path.join(sourcesRoot, source.name, ...(['codex', 'claude', 'copilot'].includes(platform) ? ['plugins'] : [])),
+          platform, 'user', route[platform]!, resolvePlatformConfigRoot(platform, ctx), true, source.name);
+      }
+    }
+  }
+  for (const [root, descriptor] of roots) {
+    if (canonicalizePathThroughExistingAncestorSync(root) !== path.resolve(root)) {
+      errors.push(inventoryError(new Error('Native namespace path contains a symbolic link.'), root, 'nativeNamespaceUnsafe',
+        options.env, options.cwd, { global: false, platform: descriptor.platform, scope: descriptor.scope,
+          ...(descriptor.sourceId ? { sourceId: descriptor.sourceId } : {}) }));
+      continue;
+    }
+    const entries = await inventoryCanonicalDirectoryEntries({ location: root, kind: 'nativePackageRead', errors, env: options.env, cwd: options.cwd });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const packageRoot = path.join(root, entry.name);
+      const markerPath = path.join(packageRoot, SKILL_OWNER_MARKER);
+      try {
+        const marker = await readSkillOwnerMarker({ skillRoot: packageRoot, allowedRoot: root });
+        if (!marker) continue;
+        if (!marker.sourceId || !marker.sourceIdentity || !marker.physicalKey || !marker.pluginId
+          || marker.platform !== descriptor.platform || marker.scope !== descriptor.scope) continue;
+        const { schemaVersion: _schema, nativeProjection: projection, ...identity } = marker;
+        let configRoot = descriptor.hostRoot;
+        const physical = projection?.physicalIdentity;
+        if (descriptor.managed && physical && physical.platform === descriptor.platform && physical.route === descriptor.route
+          && physical.sourceIdentity === marker.sourceIdentity && physical.pluginId === marker.pluginId
+          && getPhysicalKey(physical) === marker.physicalKey) configRoot = physical.namespaceRoot;
+        const binding: DeploymentBinding = { id: '', plugin: { sourceId: marker.sourceId, sourceIdentity: marker.sourceIdentity,
+          pluginId: marker.pluginId, version: '0.0.0' }, platform: descriptor.platform,
+          scope: descriptor.scope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot }, route: descriptor.route,
+          consumers: [{ id: identityDigest({ platform: descriptor.platform, route: descriptor.route, configRoot }),
+            product: 'cli', version: null, availability: 'missing', reasonCodes: ['client-missing'],
+            entry: { kind: 'directory', configRoot } }], physicalKey: marker.physicalKey,
+          activationKey: '', renderUnitIds: [] };
+        const layout = await getDeploymentLayout(ctx, binding);
+        if (canonicalizePathThroughExistingAncestorSync(layout.packageRoot) !== canonicalizePathThroughExistingAncestorSync(packageRoot)
+          || getPhysicalKey(layout.physicalIdentity) !== marker.physicalKey) throw new Error('nativeOwnerPlacementMismatch');
+        const component: OwnedComponent = { kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity };
+        const scopes: Scope[] = descriptor.scope === 'user' && options.scope !== 'user'
+          && ['codex', 'claude', 'gemini', 'copilot'].includes(descriptor.platform) ? ['user', 'project'] : [descriptor.scope];
+        const pathEvidence = await offlineOwnedPathEvidence(packageRoot);
+        for (const scope of scopes) {
+          const scopedBinding = { ...binding, scope: scope === 'user' ? { kind: 'user' as const }
+            : { kind: 'project' as const, projectRoot }, consumers: binding.consumers.map((consumer) => ({ ...consumer })) };
+          const scopedLayout = await getDeploymentLayout(ctx, scopedBinding);
+          if (scope === 'project' && descriptor.scope === 'user'
+            && !await observedProjectReference({ binding: scopedBinding, layout: scopedLayout, cwd: options.cwd, env: options.env, errors })) continue;
+          scopedBinding.activationKey = identityDigest({ physicalKey: scopedBinding.physicalKey, scope: scopedBinding.scope,
+            activationPath: scopedLayout.activationPath });
+          scopedBinding.id = identityDigest({ sourceIdentity: marker.sourceIdentity, pluginId: marker.pluginId,
+            platform: scopedBinding.platform, scope: scopedBinding.scope, route: scopedBinding.route, physicalKey: scopedBinding.physicalKey });
+          scopedBinding.renderUnitIds = scopedLayout.renderUnits.map((unit) => unit.id);
+          const recoveryCandidate: RecoveryCandidate = { binding: scopedBinding, physicalIdentity: scopedLayout.physicalIdentity,
+            nativeIdentity: scopedLayout.nativeIdentity, evidence: 'verified' };
+          references.push({ kind: 'namespacedOwner', location: markerPath, sourceId: marker.sourceId,
+            sourceIdentity: marker.sourceIdentity, pluginName: marker.plugin, platform: descriptor.platform, scope,
+            ownedComponent: component, recoveryCandidate, pathEvidence });
+        }
+      } catch (error) {
+        errors.push(inventoryError(error, markerPath, 'nativeOwnerRead', options.env, options.cwd,
+          { global: false, platform: descriptor.platform, scope: descriptor.scope }));
+      }
+    }
+  }
+  // Grok rules are scope-local supplements. Codex supplements and Claude permission tokens use their existing exact readers.
+  for (const scope of options.scope === 'user' ? ['user'] as const : ['user', 'project'] as const) {
+    const root = scope === 'user' ? path.join(resolvePlatformConfigRoot('grok', ctx), 'rules') : path.join(projectRoot, '.grok/rules');
+    references.push(...await findOwnedHeadersInDirectory(root, new Set(['.md', '.rules']), false, errors, options.env, options.cwd));
+  }
+  return references;
+}
+
 export async function inventoryCatalogSourceReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -1270,6 +1450,7 @@ export async function inventoryCatalogSourceReferences(options: {
       }
     }
   }
+  references.push(...await nativeOwnedReferences({ ...options, env }, errors));
   const ownerInventory = await inventoryLegacyOwnerReferences(options);
   references.push(...ownerInventory.references);
   errors.push(...ownerInventory.errors);
@@ -1277,7 +1458,7 @@ export async function inventoryCatalogSourceReferences(options: {
     [path.join(getCodexHome(env), 'config.toml'), 'nativeStateRead', () => codexSharedOwnerReferences(path.join(getCodexHome(env), 'config.toml'), 'user', errors, env, options.cwd)],
     [path.join(getClaudeHome(env), 'settings.json'), 'nativeStateRead', () => claudeSharedOwnerReferences(path.join(getClaudeHome(env), 'settings.json'), 'user', errors, env, options.cwd)],
     [path.join(resolveRepoRootSync(options.cwd), '.codex', 'config.toml'), 'nativeStateRead', () => codexSharedOwnerReferences(path.join(resolveRepoRootSync(options.cwd), '.codex', 'config.toml'), 'project', errors, env, options.cwd)],
-    [path.join(resolveRepoRootSync(options.cwd), '.claude', 'settings.json'), 'nativeStateRead', () => claudeSharedOwnerReferences(path.join(resolveRepoRootSync(options.cwd), '.claude', 'settings.json'), 'project', errors, env, options.cwd)],
+    [path.join(resolveRepoRootSync(options.cwd), '.claude', 'settings.local.json'), 'nativeStateRead', () => claudeSharedOwnerReferences(path.join(resolveRepoRootSync(options.cwd), '.claude', 'settings.local.json'), 'project', errors, env, options.cwd)],
   ] as const) {
     references.push(...await inventoryRead({
       operation, absent: [], errors, location, kind, env, cwd: options.cwd,

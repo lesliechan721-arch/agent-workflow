@@ -931,16 +931,22 @@ describe('TUI v4 real catalog source boundary', () => {
   });
 
   it('keeps a real path source available from Active after its workspace directory is removed', async () => {
+    const isolation = getCurrentSourceTestIsolation();
     const { controller, firstRoot } = await configuredController();
     await controller.load();
     expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'ready' });
+    const active = (await readCatalogGenerationState(isolation.env)).sources.local?.active;
+    expect(active).toBeDefined();
 
     await fs.remove(firstRoot);
     await controller.reloadCatalog({ sourceId: 'local' });
 
     expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'ready' });
-    const issue = controller.listUserIssues().find((entry) => entry.sourceId === 'local');
-    expect(issue).toBeUndefined();
+    expect((await readCatalogGenerationState(isolation.env)).sources.local?.active).toEqual(active);
+    expect(controller.getPluginOverview('local/one')).toBeDefined();
+    const sourceIssues = controller.listUserIssues().filter((entry) => entry.sourceId === 'local'
+      && ['sourceUnavailable', 'sourceMissing', 'sourceIdentityChanged'].includes(entry.category));
+    expect(sourceIssues).toEqual([]);
     controller.dispose();
   });
 

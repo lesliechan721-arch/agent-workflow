@@ -67,7 +67,7 @@ describe('scoped CLI declaration and preference boundaries', () => {
     await writePreferences(location, { ...createEmptyPreferences(),
       exclusions: [{ plugin: 'team/dependency', target: 'codex' }],
     });
-    const set = await jsonCommand(['target', 'set', 'cursor', 'codex', '--context', 'project'], location);
+    const set = await jsonCommand(['target', 'set', 'cursor', 'codex', '--force', '--context', 'project'], location);
     expect(set).toMatchObject({ exit: 0, stdout: {
       command: 'target.set', status: 'success', data: { preferencesChanged: true,
         selection: { targets: ['codex', 'cursor'], origin: 'preference' } },

@@ -170,9 +170,12 @@ export function flattenStatusTargets(targets: readonly StatusV8Target[]): Status
 export function statusTargetHasLiveConfigConsumer(target: StatusScopedTarget): boolean {
   return target.components.some((component) =>
     component.kind === 'ownership'
-    && (target.platform !== 'codex' || (component.key !== 'native'
-      && !component.key.startsWith('activation-') && !component.key.startsWith('marketplace-')))
+    && component.key !== 'native'
+    && component.key !== target.pluginName
+    && !component.key.startsWith('activation-') && !component.key.startsWith('marketplace-')
     && ['present', 'partial'].includes(component.state))
+    || (target.platform === 'claude' && target.components.some((component) => component.kind === 'activation'
+      && component.key === target.scope && component.state === 'enabled'))
     || (target.sharedComponents?.some((component) =>
       component.kind === 'sharedNative' && ['usable', 'replaceable'].includes(component.state)) === true
       && target.components.some((component) => component.kind === 'activation'
@@ -509,7 +512,7 @@ interface StatusPluginCapability {
   configSchema?: Record<string, PluginConfigSchemaField>;
   configIssues?: StatusV8PluginSummary['configIssues'];
   configDiagnostic?: StatusV8PluginSummary['configDiagnostic'];
-  targets: Record<PlatformName, Record<Scope, boolean>>;
+  targets: Record<'codex' | 'claude', Record<Scope, boolean>>;
   states: Partial<Record<PlatformName, Partial<Record<Scope, {
     state: StatusOwnershipState;
     errors: StatusV8Reason[];
@@ -535,12 +538,14 @@ function resolveCatalogEntrySupportedPlatforms(
 }
 
 export interface StatusV8PluginSummary {
+  /** Source index metadata can survive an unreadable individual plugin definition. */
+  definitionUnavailable?: boolean;
   pluginName: string;
   pluginId: string;
   displayName?: string;
   description: string;
   version?: string;
-  supportedTargets?: Record<PlatformName, Scope[]>;
+  supportedTargets?: Partial<Record<PlatformName, Scope[]>>;
   platforms?: PlatformTarget[];
   configFieldCount?: number;
   configSchema?: Record<string, PluginConfigSchemaField>;
@@ -719,9 +724,11 @@ function sourceRequestedRef(source: CatalogSource, cliVersion: string): string {
   return source.type === 'git' ? resolveCatalogSourceRef(source.refPolicy, cliVersion) : 'path';
 }
 
-function selectedPlatforms(value: string | undefined): PlatformName[] {
+function selectedPlatforms(value: string | undefined): Array<'codex' | 'claude'> {
   const selection = value === undefined ? 'both' : parsePlatformValue(value);
-  return selection === 'both' ? ['codex', 'claude'] : [selection];
+  if (selection === 'both') return ['codex', 'claude'];
+  if (selection === 'codex' || selection === 'claude') return [selection];
+  throw new Error('statusPlatformAdapterRequired: use recovery status for this platform.');
 }
 
 function selectedScopes(value: string | undefined): Scope[] {
@@ -751,7 +758,7 @@ function calculateDesiredTargetStates(options: {
     name: string;
     dependencies: string[];
     source: { id: string };
-    targets: Record<PlatformName, Record<Scope, boolean>>;
+    targets: Record<'codex' | 'claude', Record<Scope, boolean>>;
     states?: StatusPluginCapability['states'];
     codex?: { pluginId: string };
   }>;
@@ -871,9 +878,11 @@ function projectDependencyClosureForTarget(options: {
     name: string;
     dependencies: string[];
     source: { id: string };
-    targets: Record<PlatformName, Record<Scope, boolean>>;
+    targets: Record<'codex' | 'claude', Record<Scope, boolean>>;
   }>;
 }): Set<string> {
+  const platform = options.platform;
+  if (platform !== 'codex' && platform !== 'claude') return new Set();
   const byId = new Map(options.available.map((entry) => [
     formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
     entry,
@@ -889,8 +898,8 @@ function projectDependencyClosureForTarget(options: {
       });
       const dependencyEntry = byId.get(dependencyId);
       if (!dependencyEntry
-        || (!dependencyEntry.targets[options.platform].user
-          && !dependencyEntry.targets[options.platform].project)
+        || (!dependencyEntry.targets[platform].user
+          && !dependencyEntry.targets[platform].project)
         || closure.has(dependencyId)) {
         continue;
       }
@@ -1482,6 +1491,8 @@ async function statusCommandV8InSession(options: {
   const configured = new Map(snapshot.config.sources.map((source) => [source.id, source]));
   const requested = options.plugins ?? [];
   const platforms = selectedPlatforms(options.platform);
+  const coversPlatform = (value: unknown): value is 'codex' | 'claude' =>
+    (value === 'codex' || value === 'claude') && platforms.includes(value);
   const scopes = selectedScopes(options.scope);
 
   const selectorErrors: Array<{ code: string; message: string }> = [];
@@ -1505,7 +1516,7 @@ async function statusCommandV8InSession(options: {
         (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
         && reference.sourceId === parsed.sourceId
         && reference.pluginName === parsed.pluginName
-        && platforms.includes(reference.platform as PlatformName)
+        && coversPlatform(reference.platform)
         && scopes.includes(reference.scope as Scope)
         && (reference.scope !== 'project' || reference.projectKey === currentProjectKey));
       if (hasLiveReference) {
@@ -2420,9 +2431,7 @@ async function statusCommandV8InSession(options: {
                       activations: {},
                     };
                 let residueFailed = false;
-                const hasNativeRenderTargets = (plugin.manifest.artifacts?.targets ?? []).some((target) =>
-                  target.platform === 'codex'
-                  && target.target === 'codex.skill');
+                const hasNativeRenderTargets = plugin.manifest.artifacts !== undefined;
                 const sharedInspection = codexSurface.nativeKinds.length > 0
                   ? await inspectCodexSharedNativeLive({
                       pluginName: entry.name,
@@ -2685,7 +2694,7 @@ async function statusCommandV8InSession(options: {
               const parsed = parsePluginId(root.pluginId);
               return parsed.pluginName === selector.parsed.pluginName
                 && (selector.parsed.sourceId === undefined || parsed.sourceId === selector.parsed.sourceId)
-                && root.platforms.some((platform) => platforms.includes(platform));
+                && root.platforms.some(coversPlatform);
             }));
         if (!selectorHasInventoryError && !selectorHasLiveOrIntent) {
           selectorErrors.push({
@@ -2810,7 +2819,7 @@ async function statusCommandV8InSession(options: {
     reference.pluginName !== undefined
     && reference.platform !== undefined
     && reference.scope !== undefined
-    && platforms.includes(reference.platform as PlatformName)
+    && coversPlatform(reference.platform)
     && scopes.includes(reference.scope as Scope)
     && (reference.scope !== 'project' || reference.projectKey === currentProjectKey)
     && (requested.length === 0 || referenceSelectors.some((selector) =>
@@ -2822,7 +2831,7 @@ async function statusCommandV8InSession(options: {
     && reference.pluginName !== undefined
     && reference.platform !== undefined
     && reference.scope !== undefined
-    && platforms.includes(reference.platform as PlatformName)
+    && coversPlatform(reference.platform)
     && scopes.includes(reference.scope as Scope)
     && (requested.length === 0 || plannedSelectors.some((selector) =>
       selector.parsed.pluginName === reference.pluginName)));
@@ -2952,7 +2961,7 @@ async function statusCommandV8InSession(options: {
         && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === parsed.sourceId))) {
         continue;
       }
-      for (const platform of root.platforms.filter((candidate) => platforms.includes(candidate))) {
+      for (const platform of root.platforms.filter(coversPlatform)) {
         if (!scopes.includes(scope)) continue;
         const key = `${root.pluginId}\0${platform}\0${scope}`;
         if (targetKeys.has(key)) continue;

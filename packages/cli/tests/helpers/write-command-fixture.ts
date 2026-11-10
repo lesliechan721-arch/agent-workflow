@@ -1,6 +1,7 @@
 import { readIntentFixture } from './plugin-intent-fixture.js';
 import { expect, vi } from 'vitest';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import {
   cleanupWriteCommand as nativeCleanupWriteCommand,
   installWriteCommand as nativeInstallWriteCommand,
@@ -224,6 +225,7 @@ export async function createCodexNativeTestRuntime(
   const installed = new Set<string>();
   const installedVersions = new Map<string, string>();
   const marketplaceRoots = new Map<string, string>();
+  const packageRoots = new Map<string, string>();
   const userConfigPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
   const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
     const args = invocation.args;
@@ -264,9 +266,10 @@ export async function createCodexNativeTestRuntime(
         'plugins',
         pluginName,
       );
+      packageRoots.set(pluginId, marketplacePluginRoot);
       const pluginVersion = String((await fs.readJson(path.join(
         marketplacePluginRoot,
-        '.agents-plugin',
+        '.codex-plugin',
         'plugin.json',
       ))).version);
       installedVersions.set(pluginId, pluginVersion);
@@ -291,6 +294,7 @@ export async function createCodexNativeTestRuntime(
       const separator = pluginId.lastIndexOf('@');
       installed.delete(pluginId);
       installedVersions.delete(pluginId);
+      packageRoots.delete(pluginId);
       await fs.remove(path.join(
         isolation.env.CODEX_HOME!,
         'plugins',
@@ -343,6 +347,8 @@ export async function createCodexNativeTestRuntime(
       argsPrefix: [] as string[],
     })),
     installed,
+    marketplaceRoots,
+    packageRoots,
   };
 }
 
@@ -496,13 +502,72 @@ export async function writeIntentRoundTripCodexPackage(root: string): Promise<st
     }),
     fs.outputFile(launcher, [
       '#!/usr/bin/env node',
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
       'const args = process.argv.slice(2);',
-      'if (args.includes("--version")) console.log("codex-cli 0.200.0");',
-      'if (args[0] === "plugin" && args[1] === "list") console.log(JSON.stringify({ installed: [], available: [] }));',
+      'if (args.includes("--version")) { console.log("codex-cli 0.200.0"); process.exit(0); }',
+      `const { parseTOML, getStaticTOMLValue } = require(${JSON.stringify(createRequire(import.meta.url).resolve('toml-eslint-parser'))});`,
+      'const parse = (text) => getStaticTOMLValue(parseTOML(text));',
+      'const scalar = (value) => Array.isArray(value) ? `[${value.map(scalar).join(", ")}]`',
+      '  : value && typeof value === "object" ? `{ ${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)} = ${scalar(item)}`).join(", ")} }` : JSON.stringify(value);',
+      'const stringify = (value) => { const lines = []; const table = (object, keys = []) => {',
+      '  if (keys.length) lines.push(`[${keys.map((key) => JSON.stringify(key)).join(".")}]`);',
+      '  const entries = Object.entries(object); const nested = (item) => item && typeof item === "object" && !Array.isArray(item);',
+      '  for (const [key, item] of entries) if (!nested(item)) lines.push(`${JSON.stringify(key)} = ${scalar(item)}`);',
+      '  for (const [key, item] of entries) if (nested(item)) table(item, [...keys, key]);',
+      '}; table(value); return lines.join("\\n") + "\\n"; };',
+      'const home = process.env.CODEX_HOME;',
+      'if (!home) throw new Error("The controlled Codex fixture requires CODEX_HOME.");',
+      'fs.mkdirSync(home, { recursive: true });',
+      'const statePath = path.join(home, "controlled-native-state.json");',
+      'const configPath = path.join(home, "config.toml");',
+      'const read = (file, fallback) => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : fallback;',
+      'const state = JSON.parse(read(statePath, JSON.stringify({ marketplaces: {}, installed: {} })));',
+      'const config = parse(read(configPath, ""));',
+      'for (const [name, value] of Object.entries(config.marketplaces ?? {})) {',
+      '  if (value.source_type === "local" && typeof value.source === "string") state.marketplaces[name] ??= value.source;',
+      '}',
+      'if (args[0] !== "plugin") throw new Error("Unexpected controlled Codex invocation.");',
+      'if (args[1] === "marketplace" && args[2] === "add") {',
+      '  const root = args[3]; const name = JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8")).marketplaceName;',
+      '  state.marketplaces[name] = root; (config.marketplaces ??= {})[name] = { source: root, source_type: "local" };',
+      '} else if (args[1] === "marketplace" && args[2] === "remove") {',
+      '  delete state.marketplaces[args[3]]; if (config.marketplaces) delete config.marketplaces[args[3]];',
+      '} else if (args[1] === "add" || args[1] === "remove") {',
+      '  const id = args[2]; const at = id.lastIndexOf("@"); const name = id.slice(0, at); const marketplace = id.slice(at + 1);',
+      '  const cache = path.join(home, "plugins", "cache", marketplace, name);',
+      '  if (args[1] === "add") {',
+      '    const root = path.join(state.marketplaces[marketplace], "plugins", name);',
+      '    const version = JSON.parse(fs.readFileSync(path.join(root, ".codex-plugin", "plugin.json"), "utf8")).version;',
+      '    fs.mkdirSync(cache, { recursive: true }); fs.cpSync(root, path.join(cache, version), { recursive: true, force: true });',
+      '    state.installed[id] = version; (config.plugins ??= {})[id] = { enabled: true };',
+      '  } else { delete state.installed[id]; if (config.plugins) delete config.plugins[id]; fs.rmSync(cache, { recursive: true, force: true }); }',
+      '} else if (args[1] === "list") {',
+      '  const marketplace = args[args.indexOf("--marketplace") + 1];',
+      '  const project = parse(read(path.join(process.cwd(), ".codex", "config.toml"), ""));',
+      '  console.log(JSON.stringify({ installed: Object.entries(state.installed).filter(([id]) => id.endsWith(`@${marketplace}`)).map(([id, version]) => ({',
+      '    pluginId: id, installed: true, enabled: config.plugins?.[id]?.enabled === true || project.plugins?.[id]?.enabled === true, version,',
+      '  })), available: [] })); process.exit(0);',
+      '} else throw new Error("Unexpected controlled Codex plugin command.");',
+      'fs.writeFileSync(configPath, stringify(config)); fs.writeFileSync(statePath, JSON.stringify(state));',
     ].join('\n')),
   ]);
   await fs.chmod(launcher, 0o755);
   await fs.ensureDir(binRoot);
+  if (process.platform !== 'win32') {
+    // The isolated PATH must still permit the real read-only process-tree audit.
+    const processInspector = await fs.realpath('/bin/ps').catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return fs.realpath('/usr/bin/ps');
+    });
+    await fs.symlink(processInspector, path.join(binRoot, 'ps'));
+  }
+  const nodeEntry = path.join(binRoot, process.platform === 'win32' ? 'node.exe' : 'node');
+  try { await fs.symlink(process.execPath, nodeEntry, 'file'); }
+  catch (error) {
+    if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM') throw error;
+    await fs.copyFile(process.execPath, nodeEntry);
+  }
   if (process.platform === 'win32') {
     await fs.outputFile(
       path.join(binRoot, 'codex.CMD'),
@@ -611,7 +676,7 @@ export async function configureCodexAliasCatalog(options: {
   await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
     manifest.platforms = ['codex'];
     manifest.extensions = {
-      instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
+      instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.', coverage: ['main'] }],
     };
   });
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
@@ -623,14 +688,7 @@ export async function configureCodexAliasCatalog(options: {
     expectedDigest: snapshot.digest,
     env,
   });
-  return {
-    env,
-    nativeCliRunner: vi.fn(async (_invocation: NativeCliInvocation) => ({
-      exitCode: 0,
-      stdout: 'codex-cli 99.0.0',
-      stderr: '',
-    })),
-  };
+  return createCodexNativeTestRuntime({ env, layout: { fixtureCwd: options.cwd } });
 }
 
 export async function writeDynamicSkillRenderer(options: {
@@ -645,19 +703,24 @@ export async function writeDynamicSkillRenderer(options: {
       ? 'process.env.AW_HOME'
       : JSON.stringify(options.counterRoot)};`,
     'const counter = `${counterRoot}/render-count-${process.env.AW_PLUGIN_NAME}.txt`;',
+    'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+    'if (context.surface !== "agent-plugin") throw new Error("Expected the agent-plugin surface.");',
+    'const plan = { version: 3, components: [], omitted: [], unmet: [] };',
+    'if (context.allowedOutputKinds.includes("skill")) {',
     'const previous = Number(await readFile(counter, "utf8").catch(() => "0"));',
     'await writeFile(counter, String(previous + 1));',
     ...(options.fail ? ['throw new Error("renderer failed");'] : []),
-    'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-    'console.log(JSON.stringify({ version: 2, artifacts: [{',
-    '  id: "dynamic-skill", kind: "skill", platform: context.platform,',
-    '  target: "codex.skill", state: "present", refreshKeys: [],',
-    `  skillKey: ${JSON.stringify(options.skillKey)}, content: { files: {`,
-    `    "SKILL.md": ${JSON.stringify(`---\nname: ${options.skillKey}\ndescription: Dynamic skill.\n---\n`)},`,
-    '    "README.md": "Dynamic skill.\\n",',
-    '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n"',
-    '  } }',
-    '}] }));',
+    'const fact = context.platformCapabilities.kinds.skill;',
+    'if (fact.status !== "supported") plan.unmet.push({ id: "dynamic-skill", kind: "skill",',
+    `  name: ${JSON.stringify(options.skillKey)}, requiredFeatures: [{ feature: "component.kind.skill" }], reasonCode: fact.reasonCodes[0] ?? "capability-unverified" });`,
+    'else plan.components.push({ id: "dynamic-skill", kind: "skill",',
+    `  name: ${JSON.stringify(options.skillKey)}, content: { files: {`,
+    `    "SKILL.md": { text: ${JSON.stringify(`---\nname: ${options.skillKey}\ndescription: Dynamic skill.\n---\n`)} },`,
+    '    "README.md": { text: "Dynamic skill.\\n" },',
+    '    "agents/openai.yaml": { text: "policy:\\n  allow_implicit_invocation: true\\n" }',
+    '  } } });',
+    '}',
+    'console.log(JSON.stringify(plan));',
   ].join('\n'));
 }
 
@@ -671,16 +734,21 @@ export async function writeDynamicRoleRenderer(options: {
     'import { readFile, writeFile } from "node:fs/promises";',
     `const counterRoot = ${options.counterRoot === undefined ? 'process.env.AW_HOME' : JSON.stringify(options.counterRoot)};`,
     'const counter = `${counterRoot}/render-count-${process.env.AW_PLUGIN_NAME}.txt`;',
+    'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+    'if (context.surface !== "agent-plugin") throw new Error("Expected the agent-plugin surface.");',
+    'const plan = { version: 3, components: [], omitted: [], unmet: [] };',
+    'if (context.allowedOutputKinds.includes("agent")) {',
     'const previous = Number(await readFile(counter, "utf8").catch(() => "0"));',
     'await writeFile(counter, String(previous + 1));',
     ...(options.fail ? ['throw new Error("renderer failed");'] : []),
-    'console.log(JSON.stringify({ version: 2, artifacts: [{',
-    '  id: "dynamic-role", kind: "codexRole", platform: "codex",',
-    '  target: "codex.agentRole", state: "present", refreshKeys: [],',
-    `  roleKey: ${JSON.stringify(options.roleKey)}, content: {`,
-    '    registration: { description: "Dynamic role." },',
-    `    roleFile: { name: ${JSON.stringify(options.roleKey)}, description: "Dynamic role.", developer_instructions: "Use this role." }`,
-    '  }',
-    '}] }));',
+    'const requirements = [{ feature: "component.kind.agent" }, { feature: "agent.execution", values: ["isolated-context"] }, { feature: "agent.prompt-mode", values: ["host-default"] }];',
+    'const factFor = (feature) => feature === "component.kind.agent" ? context.platformCapabilities.kinds.agent : context.platformCapabilities.features[feature];',
+    'const missing = requirements.filter((required) => { const fact = factFor(required.feature); return fact?.status !== "supported" || required.values?.some((value) => !fact.values?.includes(value)); });',
+    'if (missing.length) plan.unmet.push({ id: "dynamic-role", kind: "agent",',
+    `  name: ${JSON.stringify(options.roleKey)}, requiredFeatures: missing, reasonCode: factFor(missing[0].feature)?.reasonCodes[0] ?? "interface-unsupported" });`,
+    'else plan.components.push({ id: "dynamic-role", kind: "agent",',
+    `  name: ${JSON.stringify(options.roleKey)}, content: { description: "Dynamic role.", prompt: "Use this role." } });`,
+    '}',
+    'console.log(JSON.stringify(plan));',
   ].join('\n'));
 }

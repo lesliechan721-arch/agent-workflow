@@ -155,3 +155,25 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
   CI 通过 `AW_TEST_TIMING` 记录 `commandSequence` 时序诊断。注意：嵌套 stage 的耗时不可直接简单相加（因为包含等待与并发阶段，累计值不等于实际 wall-clock 耗时）。
 - 双平台 TUI 并发用例在断言前输出 `AW_TEST_RESULT`，包含重新安装与配置保存双方的结果、错误码和脱敏诊断摘要，不输出原始 receipt 或完整异常。
 - 精确依赖移除与配置运行时同步用例使用 `AW_TEST_TIMING` 分别记录 fixture、命令、renderer 及恢复阶段；测试结束时报告尚未完成的已跟踪阶段。精确移除及 provider 切换用例在 Windows 使用 60 秒预算，配置运行时同步用例使用 30 秒预算，其它平台分别保留 30 秒与 15 秒。预算覆盖用例中的完整准备与执行，不替代阶段计时或性能门禁。
+
+## 6. 无认证 Native 客户端资格
+
+[`native-platform-qualification.yml`](../../.github/workflows/native-platform-qualification.yml) 是独立手动工作流，不属于普通 PR 更新、自动 Beta 或发布通过门禁。可在 Actions 选择一个固定客户端或 `all`；首次工作流尚未进入默认分支时，也可手动给 PR 添加 `native-qualification` 标签运行全部客户端。只有本次添加该标签才触发，普通 PR 更新不触发；重跑使用 Actions 的 rerun 或重新添加标签。随后，使用 Linux、macOS、Windows 的 x64/arm64 托管 runner；矩阵失败互不取消，最多同时执行三个资格 job。只有实际运行成功的精确单元才构成证据，工作流文件存在不表示矩阵已通过。
+
+候选 job 正式构建一次，运行资格执行器测试，记录源 SHA、全部 dist 和资格脚本文件摘要。各系统下载同一候选并校验字节，不重新编译。客户端包名、精确版本和官方来源集中在 [`native-platform-runtime.mjs`](../../scripts/qualification/native-platform-runtime.mjs)；通过公共 npm 在临时前缀安装，禁用安装脚本，记录 lock 摘要和 package integrity，不使用浮动 latest。Codex 和 Claude 直接选择固定官方 optional 平台包的原生入口，校验包身份、精确版本并记录实际 binary 摘要；不运行复制 binary 的 postinstall，也不通过替换进程的 Node wrapper。缺少对应客户端分发或依赖安装脚本的入口须报告未验证/失败，不静默改用其他版本。
+
+资格场景使用候选的真实 `projectPlatform` 和 Marketplace 投影生成普通 Skill 包，明确使用测试候选 profile，不改生产能力资格。真实客户端负责安装、更新、移除和只读发现；user/project 各有独立临时 HOME、AW/Agent/XDG 根及有效 Git 项目，neutral 工作目录位于其外。仅允许本地管理命令、Codex `skills/list`与 Pi `get_commands/get_state`；不提供凭据、不登录、不发送 prompt、不调用模型、不连接已有 server。下载阶段可访问公共 npm，并可沿用 HTTP(S) 下载代理；此类网络传输认证不会传给客户端。下载子进程禁用安装脚本并有超时与输出上限，npm 改写进程标题会影响 macOS 标记检查，因此该阶段不声称已验证进程树。客户端阶段使用阻断代理，这不是 OS 网络防火墙。进程使用既有 verified-observed 管理并在 finally 清理临时目录，不声称 OS 强制容器隔离。
+
+报告区分 Skill 发现、组件 inventory 和 activation inventory；Claude details 只证明组件清单。Copilot 的 live 来源先通过 uninstall 验证停用，再注销本测试独占的 marketplace，最后验证插件和 Skill 消失；project 管理查询未观察到配置生效时保留失败，不能直接推断宿主无 project 支持。每个 scope 记录断言、退出码、有限脱敏命令输出及清理结果。断言失败终止该 scope 的后续步骤，另一 scope 和客户端仍继续。Grok 项目目录仅观察 inventory，没有已验证的公开启用/信任流程；Gemini 项目 neutral 隔离和 Grok 本地更新必须按实际行为判定，不因为是已知问题而算通过。失败和未验证均返回非零，报告通过 `always()` 上传并生成 job summary，保留14天；需要长期引用的通过证据另按固定资格归档规则保存。
+
+本入口不覆盖完整公开 AW install 编排、模型/调用控制、MCP/Hooks/Agents/Instructions 执行、Desktop、最低版本矩阵，以及尚未接入的 Antigravity/Cursor/OpenCode。OpenCode 2.2.6 standalone 在 Unix 分离进程组，不满足当前收尾合同，其冷启动清单也未等待插件激活，因此该探针未纳入可执行矩阵；这些观察不能据以判定生产能力不支持。Cursor 目标 Hook 已观察到需要登录；Antigravity 固定版本分发与无认证管理入口仍缺少验证。它不申请 Secrets，也不使用自托管 runner。取得报告后仍需核对具体资格范围，不能自动将 production profile 提升为 supported。
+
+本地复现先运行 `pnpm build` 和 `pnpm test:qualification:native-platforms:harness`，再创建候选清单并显式选择已安装入口或临时下载：
+
+```bash
+node scripts/qualification/native-platforms.mjs --write-candidate /tmp/aw-native-candidate.json --source-sha "$(git rev-parse HEAD)"
+pnpm qualification:native-platforms --candidate /tmp/aw-native-candidate.json --client codex --executable /absolute/path/to/codex --report /tmp/aw-native-report.json
+# --install 替代 --executable：明确允许在临时目录下载固定公共 npm 包。
+```
+
+本地未提交源码的 SHA 仅标识 checkout 基线，实际候选字节由清单摘要标识；不能把本地报告称为该 Git commit 的干净构建。Actions 报告另绑定 run ID、attempt、runner image 和操作系统版本。远端执行要求工作流及对应源码已经存在于 GitHub。`workflow_dispatch` 入口要求工作流先存在于默认分支（[GitHub 事件规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)）；显式 PR 标签入口允许合并前验证，并绑定该次 PR 合并候选 SHA。不通过该入口提交源码、发布产品或修改真实用户配置。

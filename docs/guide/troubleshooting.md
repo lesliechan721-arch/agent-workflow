@@ -16,7 +16,7 @@
 | `aw source sync` 网络超时或报错 `replace-required` | 远端不可达或本地快照存储损坏 | [2. 来源同步失败或快照损坏](#2-来源刷新失败或-active-快照损坏) |
 | `aw plugin status` 显示 `needsSync`、`orphaned` 或 `blocked` | 意图与现场产物不一致、依赖缺失或权限受阻 | [3. 现场状态异常](#3-现场状态异常blocked-pending-unconfirmed-或底层-needssync-orphaned) |
 | `aw plugin remove --only outputs` 跳过部分文件未删除 | 严格保护外部 (foreign) 或共享 (shared) 文件 | [4. 清理输出被跳过或失败](#4-清理输出跳过部分文件或清理失败) |
-| 报错 `codexSystemCliUnsupported` 或 `claudeCliNotFound` | 本机 Codex CLI 版本低于 0.151.0 或 PATH 缺失 | [5. 平台 CLI 缺失或版本不支持](#5-平台-cli-缺失或版本不满足要求) |
+| 报错 `codexSystemCliUnsupported` 或 `claudeCliNotFound` | 本机 Codex CLI 版本低于 0.155.0 或 PATH 缺失 | [5. 平台 CLI 缺失或版本不支持](#5-平台-cli-缺失或版本不满足要求) |
 | `aw command run` 权限被拒或 Claude 沙箱拦截 | 命令未声明沙箱排除或权限前缀不匹配 | [6. 托管命令执行失败或沙箱拦截](#6-托管命令执行失败或沙箱拦截) |
 
 ---
@@ -196,7 +196,7 @@ AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型
    - 检查当前用户对宿主平台目录的读写权限，以及来源快照是否完整健康。
 
 > [!NOTE]
-> **技术依据**：[配置与状态架构说明：状态分层与互斥五态](../maintainers/architecture/config-and-status.md#221-target--placement-的五类互斥状态statusv8state)。
+> **技术依据**：[配置与状态架构说明：平台与组件事实](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 ---
 
@@ -239,8 +239,10 @@ AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型
 ### 可观察症状
 
 - 在 Codex 平台上执行安装或同步时报错：
-  `codexSystemCliUnsupported: Codex CLI version 0.145.0 is unsupported (minimum: 0.151.0)`
+  `codexSystemCliUnsupported: Codex CLI version 0.145.0 is unsupported (minimum: 0.155.0)`
 - 在 Claude 平台上报错：`claudeCliNotFound`。
+
+先运行 aw target list，区分 missing、unsupported 与 unknown。接口最低版本通过仍不代表该组件已取得运行资格；具体 unmet 会保留必需 feature 与值。
 
 ### 保留状态
 
@@ -253,8 +255,8 @@ AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型
 ### 恢复条件与下一步
 
 1. **针对 Codex 平台**：
-   - AW 会合并系统 `PATH` 与 Codex 应用程序内置的 CLI，并自动选择版本最高者。
-   - 最低版本要求为 **`0.151.0`**。
+   - AW 分别检查系统 PATH 与已确认的 Codex App 入口；多个产品面分别保留版本、可用性与限制。
+   - 最低版本要求为 **`0.155.0`**。
    - 请更新您的 Codex 客户端或在终端中升级 Codex CLI：
      ```bash
      npm install -g @openai/codex
@@ -265,14 +267,14 @@ AW 严格区分**公开恢复状态回执**与**底层放置事实**两层模型
      aw plugin sync --target codex
      ```
 2. **针对 Claude Code 平台**：
-   - 确保 `claude` 命令在系统 `PATH` 中可执行。
+   - 确保 `claude` 命令在系统 PATH 中可执行且版本至少为 2.1.292。
    - 确认命令可用后重试：
      ```bash
      aw plugin sync --target claude
      ```
 
 > [!NOTE]
-> **技术依据**：[平台策略架构说明：平台环境与 Native 边界](../maintainers/architecture/platforms.md#1-宿主目录与环境边界)。
+> **技术依据**：[平台策略架构说明：平台环境与 Native 边界](../maintainers/architecture/platforms.md#1-客户端与可用性)。
 
 ---
 

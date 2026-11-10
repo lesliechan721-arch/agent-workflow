@@ -31,7 +31,7 @@ describe('plugin authoring capability structure registry', () => {
   it('keeps accepted values equal to the public manifest schema', async () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
     const schema = JSON.parse(await fs.readFile(
-      path.join(root, 'schemas', 'plugin-manifest-v3.json'),
+      path.join(root, 'schemas', 'plugin-manifest-v4.json'),
       'utf8',
     ))
     expect(getPluginAuthoringAcceptedValues('manifest', 'marketplace.policy.installation'))
@@ -53,15 +53,10 @@ describe('plugin authoring capability structure registry', () => {
       .toEqual(schema.$defs.buildConfig.properties.skillRuntimeFiles.items.properties.platforms.items.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.generatedSkillRuntimeFiles[].platforms'))
       .toEqual(schema.$defs.buildConfig.properties.generatedSkillRuntimeFiles.items.properties.platforms.items.enum)
-    expect([...getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].target')].sort())
-      .toEqual(schema.$defs.artifactTarget.oneOf.flatMap(
-        (entry: { properties: { target: { const?: string; enum?: string[] } } }) =>
-          entry.properties.target.enum ?? [entry.properties.target.const!],
-      ).sort())
-    expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].scopes'))
-      .toEqual(schema.$defs.artifactTarget.oneOf[0].properties.scopes.items.enum)
-    expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].states'))
-      .toEqual(schema.$defs.artifactTarget.oneOf[0].properties.states.items.enum)
+    expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.scopes'))
+      .toEqual(schema.$defs.artifacts.properties.scopes.items.enum)
+    expect(getPluginAuthoringAcceptedValues('manifest', 'schemaVersion')).toEqual([schema.properties.schemaVersion.const])
+
 
   })
 
@@ -75,19 +70,13 @@ describe('plugin authoring capability structure registry', () => {
       }))
   })
 
-  it('publishes required nested artifact identity fields', () => {
-    expect(getPluginAuthoringCapabilitySurface('artifacts').entries)
-      .toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          field: 'rendererContext.requestedArtifactIds',
-          type: 'non-empty unique artifact id[]',
-          required: true,
-        }),
-        expect.objectContaining({ field: 'artifacts.targets[].id', required: true }),
-        expect.objectContaining({ field: 'artifacts.targets[].refreshKeys', required: true }),
-        expect.objectContaining({ field: 'artifacts.targets[].platform', required: true }),
-        expect.objectContaining({ field: 'artifacts.targets[].skillKey', required: 'for Skill targets' }),
-      ]))
+  it('publishes renderer permissions and component collections without removed targets', () => {
+    expect(getPluginAuthoringCapabilitySurface('artifacts').entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: 'artifacts.configKeys', required: true }),
+      expect.objectContaining({ field: 'rendererContext.platformCapabilities', required: true }),
+    ]))
+    expect(getPluginAuthoringAcceptedValues('platform-components', 'components[].kind')).toEqual(['skill', 'mcp', 'agent', 'hook', 'instruction'])
+    expect(() => getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].target')).toThrow()
   })
 
   it('publishes required runtime export capability metadata', () => {

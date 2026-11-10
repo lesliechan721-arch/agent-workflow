@@ -20,8 +20,8 @@ async function fixture() {
   await fs.outputFile(path.join(source, 'scripts', 'run.sh'), '#!/bin/sh\nexit 0\n');
   await fs.chmod(path.join(source, 'scripts', 'run.sh'), 0o755);
   const identity: PortableOwnerIdentity = { pluginId: 'team/plugin', logicalIdentity: 'catalog-identity',
-    platform: 'cursor', scope: 'project', skill: 'alpha' };
-  const configDigest = portableJsonDigest('cursor-config');
+    platform: 'generic', scope: 'project', skill: 'alpha' };
+  const configDigest = portableJsonDigest('generic-config');
   const observe = (expectedDigest?: string) => observePortableSkill({ destinationRoot, skill: 'alpha', identity,
     ...(expectedDigest ? { expectedDigest, configDigest } : {}) });
   const install = async () => {
@@ -44,11 +44,11 @@ describe('AW Portable writer', () => {
     expect(await fs.readFile(path.join(value.output, 'references', 'guide.md'), 'utf8')).toBe('A complete local guide.\n');
     expect((await fs.lstat(value.output)).isSymbolicLink()).toBe(false);
     if (process.platform !== 'win32') expect((await fs.stat(path.join(value.output, 'scripts', 'run.sh'))).mode & 0o111).toBeTruthy();
-    expect(await scanPortableSkills({ destinationRoot: value.destinationRoot, platform: 'cursor', scope: 'project' }))
+    expect(await scanPortableSkills({ destinationRoot: value.destinationRoot, platform: 'generic', scope: 'project' }))
       .toMatchObject({ complete: true, targets: [{ ownership: 'aw', observation: 'satisfied' }] });
   });
 
-  // Test Value Gate: old content, damaged content, unavailable ownership and another target require distinct actions.
+  // Test Value Gate: old content, damaged content, unavailable ownership and another source require distinct actions.
   it('distinguishes stale, damaged, unknown and foreign outputs', async () => {
     const value = await fixture();
     const original = await value.install();
@@ -56,7 +56,7 @@ describe('AW Portable writer', () => {
     await fs.appendFile(path.join(value.output, 'README.md'), 'User edit.\n');
     expect(await value.observe(original)).toMatchObject({ ownership: 'aw', observation: 'drifted', contentState: 'damaged' });
     expect(await observePortableSkill({ destinationRoot: value.destinationRoot, skill: 'alpha',
-      identity: { ...value.identity, platform: 'pi' } })).toMatchObject({ ownership: 'external', observation: 'conflict' });
+      identity: { ...value.identity, pluginId: 'other/plugin' } })).toMatchObject({ ownership: 'external', observation: 'conflict' });
     await fs.writeFile(path.join(value.output, SKILL_OWNER_MARKER), '{broken');
     expect(await value.observe(original)).toMatchObject({ ownership: 'unknown', observation: 'unknown', blocker: 'portableOwnerInvalid' });
   });

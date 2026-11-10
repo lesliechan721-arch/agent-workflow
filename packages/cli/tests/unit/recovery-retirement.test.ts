@@ -28,6 +28,7 @@ import { observePreferences, writePreferences } from '../../src/intent/deploymen
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
+import { nativeToolFixture } from '../helpers/native-tools.js';
 import { resolveManagedCommand, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 
 function removedEvidence() {
@@ -59,7 +60,7 @@ describe('retire strong state and residue', () => {
     await addRoot(options, 'local/demo', 'sha256:logical');
     const runtime = { inventoryCatalogSourceReferences: async () =>
       ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) };
-    const plan = await prepareRetire({ ...options, selector: 'local/demo', targets: ['cursor'], yes: true }, runtime);
+    const plan = await prepareRetire({ ...options, selector: 'local/demo', targets: ['generic'], yes: true }, runtime);
     const failure = new Error('observation unavailable');
     backend.portable.mockRejectedValue(failure);
     expect((await executeRetire(plan, runtime)).blockers).toContainEqual(expect.objectContaining({ code: 'operationReviewStale' }));
@@ -109,26 +110,26 @@ describe('retire strong state and residue', () => {
     const configPath = resolvePluginConfigStorePath({ ...options, sourceId: 'local', pluginName: 'demo' });
     await fs.outputFile(configPath, 'saved config bytes');
     backend.portable.mockResolvedValue({ state: 'present', blockers: [], targets: [
-      { skill: 'demo', agent: 'cursor', physicalPath: path.join(options.cwd, 'portable-demo') },
+      { skill: 'demo', agent: 'generic', physicalPath: path.join(options.cwd, 'portable-demo') },
     ] });
     const runtime = { inventoryCatalogSourceReferences: async () =>
       ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) };
-    const first = await runRetire({ ...options, selector: 'local/demo', targets: ['cursor'], yes: true }, runtime);
+    const first = await runRetire({ ...options, selector: 'local/demo', targets: ['generic'], yes: true }, runtime);
     expect(first.declarationChanged).toBe(true);
     expect(first.configChanged).toBe(false);
     expect(first.ok).toBe(false);
-    expect(first.remainingTargets).toEqual([expect.objectContaining({ pluginId: 'local/demo', agent: 'cursor' })]);
+    expect(first.remainingTargets).toEqual([expect.objectContaining({ pluginId: 'local/demo', agent: 'generic' })]);
     expect((await observeIntent(options)).state).toBe('valid');
     expect((await observeIntent(options)).value.roots).toEqual([]);
     expect(await fs.readFile(configPath, 'utf8')).toBe('saved config bytes');
-    const second = await runRetire({ ...options, selector: 'local/demo', targets: ['cursor'], yes: true }, runtime);
+    const second = await runRetire({ ...options, selector: 'local/demo', targets: ['generic'], yes: true }, runtime);
     expect(second.declarationChanged).toBe(false);
     expect(second.remainingTargets).toEqual(first.remainingTargets);
     backend.portable.mockResolvedValue({ state: 'absent', targets: [], blockers: [] });
-    const cleared = await runRetire({ ...options, selector: 'local/demo', targets: ['cursor'] }, runtime);
+    const cleared = await runRetire({ ...options, selector: 'local/demo', targets: ['generic'] }, runtime);
     expect(cleared).toMatchObject({ ok: true, declarationChanged: false, preferencesChanged: false,
       configChanged: false, outputsMayHaveChanged: false, remainingTargets: [],
-      targetResults: [expect.objectContaining({ agent: 'cursor', execution: 'no-op',
+      targetResults: [expect.objectContaining({ agent: 'generic', execution: 'no-op',
         observation: 'missing', content: 'absent', blockers: [] })] });
     expect(await fs.readFile(configPath, 'utf8')).toBe('saved config bytes');
     expect(backend.execute).not.toHaveBeenCalled();
@@ -141,7 +142,7 @@ describe('retire strong state and residue', () => {
     const physicalPath = path.join(options.env.HOME!, '.agents', 'skills', 'demo');
     backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
     backend.portable.mockResolvedValue({ state: 'present', blockers: [], targets: [
-      { skill: 'demo', agent: 'cursor', physicalPath },
+      { skill: 'demo', agent: 'generic', physicalPath },
     ] });
     backend.resetConfig.mockResolvedValue({ deleted });
     backend.execute.mockResolvedValue({ overallState: 'succeeded', rebuildResults: [], targetResults: [],
@@ -151,7 +152,7 @@ describe('retire strong state and residue', () => {
         ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
     });
     expect(result).toMatchObject({ ok: false, declarationChanged: true, configChanged: deleted });
-    expect(result.recoveryActions).toContain('aw plugin remove local/demo --only outputs --scope user --target cursor');
+    expect(result.recoveryActions).toContain('aw plugin remove local/demo --only outputs --scope user --target generic');
     expect(result.recoveryActions.some((action) => action.includes(physicalPath) && action.includes('AW 不自动删除')))
       .toBe(true);
     expect(result.recoveryActions.join('\n')).not.toContain('--delete-config');
@@ -179,12 +180,12 @@ describe('retire strong state and residue', () => {
     'rejects Portable residue that %s after Review', async (change) => {
       const options = location();
       await addRoot(options, 'local/demo', 'sha256:logical');
-      await writePreferences(options, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['cursor'],
+      await writePreferences(options, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['generic'],
         exclusions: [{ plugin: 'local/demo', target: 'codex' }] });
       backend.inspect.mockImplementation(async () => ({ ...removedEvidence(),
         configTargets: [{ scope: 'user', kind: 'file', fingerprint: 'sha256:config' }] }));
       const absent = { state: 'absent', targets: [], blockers: [] };
-      const present = { state: 'present', targets: [{ skill: 'demo', agent: 'cursor',
+      const present = { state: 'present', targets: [{ skill: 'demo', agent: 'generic',
         physicalPath: path.join(options.cwd, 'portable-demo') }], blockers: [] };
       const changed = change === 'appeared' ? present : change === 'removed' ? absent
         : { ...present, targets: [{ ...present.targets[0]!, physicalPath: path.join(options.cwd, 'other-demo') }] };
@@ -192,7 +193,7 @@ describe('retire strong state and residue', () => {
         .mockResolvedValueOnce(changed);
       const beforeIntent = await observeIntent(options);
       const beforePreferences = await observePreferences(options);
-      const plan = await prepareRetire({ ...options, selector: 'local/demo', targets: ['cursor'],
+      const plan = await prepareRetire({ ...options, selector: 'local/demo', targets: ['generic'],
         deleteConfig: true, yes: true }, { inventoryCatalogSourceReferences: async () =>
           ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) });
 
@@ -228,24 +229,39 @@ describe('retire strong state and residue', () => {
     expect(backend.execute).not.toHaveBeenCalled();
   });
 
-  it.each(['codex', 'cursor'] as const)('retires the declared scope when %s observation is unknown and leaves exact output cleanup retryable', async (agent) => {
+  it('retires the declared scope when generic observation is unknown and leaves exact output cleanup retryable', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
     backend.portable.mockResolvedValue({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'] });
     backend.execute.mockResolvedValue({ overallState: 'succeeded', rebuildResults: [], targetResults: [],
       platforms: [], plugins: [], warnings: [], receiptTargets: [] });
-    const result = await runRetire({ ...options, selector: 'local/demo', targets: [agent], yes: true }, {
+    const result = await runRetire({ ...options, selector: 'local/demo', targets: ['generic'], yes: true }, {
       inventoryCatalogSourceReferences: async () =>
         ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
     });
     expect(result.declarationChanged).toBe(true);
     expect(result.ok).toBe(false);
-    expect(result.remainingTargets).toEqual([expect.objectContaining({ pluginId: 'local/demo', agent })]);
+    expect(result.remainingTargets).toEqual([expect.objectContaining({ pluginId: 'local/demo', agent: 'generic' })]);
     expect(result.targetResults[0]?.blockers).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'portableObservationFailed' }),
     ]));
-    expect(backend.execute).toHaveBeenCalledTimes(agent === 'codex' ? 1 : 0);
+    expect(backend.execute).not.toHaveBeenCalled();
     expect((await observeIntent(options)).value.roots).toEqual([]);
+  });
+
+  // Test Value Gate: unavailable generic output observations cannot block an independent native-only retirement.
+  it('does not attach generic observation failures to a native-only request', async () => {
+    const options = location();
+    await addRoot(options, 'local/demo', 'sha256:logical');
+    backend.portable.mockResolvedValue({ state: 'unknown', targets: [], blockers: ['portableObservationFailed'] });
+    backend.execute.mockResolvedValue({ overallState: 'succeeded', rebuildResults: [], targetResults: [],
+      platforms: [], plugins: [], warnings: [], receiptTargets: [] });
+    const result = await runRetire({ ...options, selector: 'local/demo', targets: ['codex'], yes: true }, {
+      inventoryCatalogSourceReferences: async () =>
+        ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
+    });
+    expect(result).toMatchObject({ ok: true, declarationChanged: true, remainingTargets: [] });
+    expect(result.targetResults[0]!.blockers).toEqual([]);
   });
 
   it('does not turn retained shared Native content into a verified absence', async () => {
@@ -305,7 +321,7 @@ describe('retire strong state and residue', () => {
     });
   });
 
-  it.each([{ targets: undefined }, { targets: ['cursor'] }])('returns a no-op for a fully absent removed plugin with targets $targets without requiring confirmation', async ({ targets }) => {
+  it.each([{ targets: undefined }, { targets: ['generic'] }])('returns a no-op for a fully absent removed plugin with targets $targets without requiring confirmation', async ({ targets }) => {
     const options = location();
     const result = await runRetire({ ...options, selector: 'local/demo', targets }, {
       inventoryCatalogSourceReferences: async () =>
@@ -315,24 +331,24 @@ describe('retire strong state and residue', () => {
       configChanged: false, outputsMayHaveChanged: false });
     expect(result.remainingTargets).toEqual([]);
     if (targets) expect(result.targetResults).toEqual([expect.objectContaining({
-      agent: 'cursor', execution: 'no-op', observation: 'missing', content: 'absent', blockers: [],
+      agent: 'generic', execution: 'no-op', observation: 'missing', content: 'absent', blockers: [],
     })]);
     expect(backend.execute).not.toHaveBeenCalled();
   });
 
-  it('keeps declaration authorization separate from an absent Cursor output', async () => {
+  it('keeps declaration authorization separate from an absent Generic output', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');
     const runtime = { inventoryCatalogSourceReferences: async () =>
       ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) };
-    const request = { ...options, selector: 'local/demo', targets: ['cursor'] };
+    const request = { ...options, selector: 'local/demo', targets: ['generic'] };
     const cancelled = await runRetire(request, runtime);
     expect(cancelled).toMatchObject({ ok: false, declarationChanged: false,
       blockers: [expect.objectContaining({ code: 'operationReviewRequired' })] });
     expect((await observeIntent(options)).value.roots).toEqual([{ pluginId: 'local/demo' }]);
     const retired = await runRetire({ ...request, yes: true }, runtime);
     expect(retired).toMatchObject({ ok: true, declarationChanged: true, outputsMayHaveChanged: false,
-      remainingTargets: [], targetResults: [expect.objectContaining({ agent: 'cursor', execution: 'no-op' })] });
+      remainingTargets: [], targetResults: [expect.objectContaining({ agent: 'generic', execution: 'no-op' })] });
     expect((await observeIntent(options)).value.roots).toEqual([]);
     expect(backend.execute).not.toHaveBeenCalled();
   });
@@ -366,7 +382,7 @@ describe('retire managed command results', () => {
   async function installedPackage() {
     const options = location();
     const producer: ProducerIdentity = { sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`,
-      pluginName: 'demo', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null };
+      pluginName: 'demo', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null };
     const sourceDirectory = path.join(options.cwd, 'retained-command-source');
     await fs.outputFile(path.join(sourceDirectory, 'run.mjs'), 'process.exit(0);\n');
     const installed = await syncManagedCommandPackage({ producer, sourceDirectory,
@@ -464,5 +480,26 @@ describe('retire managed command results', () => {
       : { execution: 'applied', blockers: [] });
     expect(result.errors).toContainEqual(expect.objectContaining({ code: 'commandBindingInvalid', pluginId: 'local/demo' }));
     expect(result.recoveryActions).toContain(recoveryAction);
+  });
+});
+
+// Test Value Gate: frozen Skill native tools must appear in retirement Review even when no legacy artifact action exists.
+describe('retire frozen Skill native tools', () => {
+  it('reviews the top-level closure before any unauthorized output mutation', async () => {
+    const options = location();
+    const change = { producer: { sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
+      kind: 'static-skill' as const, key: 'example', platform: 'codex' as const, scope: 'user' as const, projectRoot: null, placementKey: `sha256:${'b'.repeat(64)}` },
+      before: nativeToolFixture().closure, after: null };
+    const operationPlan = createOperationPlan({ intentChanges: [], actions: [], changes: [], warnings: [], nativeToolChanges: [change],
+      evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } });
+    backend.preview.mockResolvedValue({ operationPlan });
+    const plan = await prepareRetire({ ...options, selector: 'local/demo', targets: ['codex'] },
+      { inventoryCatalogSourceReferences: async () => ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }) });
+    expect(plan.receipt.nativeToolChanges).toEqual([change]);
+    expect(plan.changes.join('\n')).toContain('aw.windows-job.v1');
+    expect(plan.changes.join('\n')).toContain('local/demo · example');
+    const result = await executeRetire(plan);
+    expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'operationReviewRequired' }));
+    expect(backend.execute).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
 import type { InitCommandResult } from '../commands/init.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
-import type { OperationPlan } from '../commands/operation-plan.js';
+import { operationPlanNativeToolChanges, type OperationPlan } from '../commands/operation-plan.js';
 import type { RebuildResult } from '../commands/rebuild-operations.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type {
@@ -373,10 +373,11 @@ export function buildRebuildReceiptJson(
   if (state !== 'succeeded' && targetResults.length === 0 && commandResults.length === 0) {
     recoveryActions.push(...earlyFailureRecovery(command, errors[0]?.code));
   }
+  const nativeToolChanges = operationPlanNativeToolChanges(result.operationPlan);
   return {
     ok: state === 'succeeded',
     command,
-    ...(result.operationPlan?.actions.some((action) => action.nativeToolChanges?.length) ? { nativeToolChanges: result.operationPlan.actions.flatMap((action) => action.nativeToolChanges ?? []) } : {}),
+    ...(nativeToolChanges.length ? { nativeToolChanges } : {}),
     receiptSchemaVersion: 6,
     ...(result.dependencyPlan ? {
       dependencyPlanSchemaVersion: 2,

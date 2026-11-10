@@ -103,7 +103,7 @@ test('manifest exposes the four decision and project knowledge Skills', async ()
   assert.equal(manifest.skills, './skills');
   assert.equal(manifest.extensions?.instructions?.length ?? 0, 0);
   assert.equal(manifest.config, undefined);
-  assert.deepEqual(manifest.platforms, ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic']);
+  assert.deepEqual(manifest.platforms, ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic']);
   assert.equal(Object.hasOwn(manifest, 'distributions'), false);
   assert.equal(manifest.artifacts, undefined);
   assert.equal(manifest.scripts.artifacts, undefined);

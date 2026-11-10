@@ -88,7 +88,7 @@ async function writeWindowsAgentNpmFixture(root: string, agent: 'claude' | 'code
   await Promise.all([
     fs.writeJson(path.join(packageRoot, 'package.json'), {
       name: packageName,
-      version: agent === 'codex' ? '0.200.0' : '2.1.88',
+      version: agent === 'codex' ? '0.200.0' : '2.1.292',
       bin: { [agent]: launcherEntry },
     }),
     fs.outputFile(launcher, '#!/usr/bin/env node\n'),
@@ -144,7 +144,7 @@ describe('native-cli', () => {
         queueMicrotask(() => callback(
           null,
           targetArgs.includes('--version')
-            ? agent === 'codex' ? 'codex-cli 0.200.0' : '2.1.88 (Claude Code)'
+            ? agent === 'codex' ? 'codex-cli 0.200.0' : '2.1.292 (Claude Code)'
             : 'ok',
           '',
         ));
@@ -171,7 +171,7 @@ describe('native-cli', () => {
         cwd: root,
         env,
         runner,
-      })).resolves.toMatchObject({ status: 'supported', detectedVersion: agent === 'codex' ? '0.200.0' : '2.1.88' });
+      })).resolves.toMatchObject({ status: 'supported', detectedVersion: agent === 'codex' ? '0.200.0' : '2.1.292' });
       await expect(runner({
         command: agent,
         args: ['plugin', 'list'],

@@ -66,7 +66,7 @@ describe('rendered contract validators', () => {
           ],
         },
       }, 'claude.hooks'),
-    ).toThrow('claude.hooks.hooks.sessionStop');
+    ).toThrow('Invalid claude native hook event "sessionStop".');
 
     expect(() =>
       validateRenderedHooksContent({
@@ -79,7 +79,7 @@ describe('rendered contract validators', () => {
           ],
         },
       }, 'codex.hooks'),
-    ).toThrow('codex.hooks.hooks.SessionEnd');
+    ).toThrow('Invalid codex native hook event "SessionEnd".');
   });
 
   it('rejects matcherless matchers in strict generated mode', () => {

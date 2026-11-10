@@ -10,7 +10,6 @@ import type {
   AgentVersionProbeResult,
   AgentVersionRequirement,
   CodexOperationRequirement,
-  PlatformName,
   Scope,
 } from '../types.js';
 import { compareStrictSemVer, tryParseStrictSemVer } from './manifest.js';
@@ -35,14 +34,16 @@ export interface ProbeAgentVersionOptions {
 }
 
 const VERSION_ARGUMENTS = ['--version'];
+type SemVerProbePlatform = keyof typeof MINIMUM_AGENT_VERSIONS;
+type SemVerProbeRequirement = AgentVersionRequirement & { platform: SemVerProbePlatform };
 
 let probeCacheByRunner = new WeakMap<NativeCliRunner, Map<string, Promise<AgentVersionProbeResult>>>();
 
-export function getMinimumAgentVersion(platform: PlatformName): string {
+export function getMinimumAgentVersion(platform: SemVerProbePlatform): string {
   return MINIMUM_AGENT_VERSIONS[platform];
 }
 
-export function getAgentVersionRequirement(platform: PlatformName): AgentVersionRequirement {
+export function getAgentVersionRequirement(platform: SemVerProbePlatform): SemVerProbeRequirement {
   return {
     platform,
     command: AGENT_VERSION_PROBE_COMMANDS[platform],
@@ -85,8 +86,8 @@ function createEnvFingerprint(env: NodeJS.ProcessEnv): string {
 }
 
 function buildProbeCacheKey(
-  platform: PlatformName,
-  requirement: AgentVersionRequirement,
+  platform: SemVerProbePlatform,
+  requirement: SemVerProbeRequirement,
   options: ProbeAgentVersionOptions,
 ): string {
   const env = options.env ?? process.env;
@@ -140,7 +141,7 @@ function createFailureProbeResult(
 }
 
 export async function probeAgentVersion(
-  platform: PlatformName,
+  platform: SemVerProbePlatform,
   options: ProbeAgentVersionOptions = {},
 ): Promise<AgentVersionProbeResult> {
   const baseRequirement = getAgentVersionRequirement(platform);
@@ -189,7 +190,7 @@ export function probeCodexOperationVersion(
 }
 
 async function probeAgentVersionUncached(
-  requirement: AgentVersionRequirement,
+  requirement: SemVerProbeRequirement,
   runner: NativeCliRunner,
   options: ProbeAgentVersionOptions,
 ): Promise<AgentVersionProbeResult> {

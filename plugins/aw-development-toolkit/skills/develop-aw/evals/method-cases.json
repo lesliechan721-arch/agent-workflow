@@ -34,7 +34,7 @@
         "workspaceFiles": {
           "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
           "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
-          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
           "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
@@ -58,9 +58,9 @@
         "boundary",
         "workspace_valid"
       ],
-      "prompt": "将 catalog/plugins/provider/shared/read-note.mjs 作为 provider 的公开共享脚本提供给 consumer 的 notes Skill，支持 consumer 已声明的 Native 和 Portable 分发。该脚本的运行要求是 aw.self-check.v2。允许修改两个插件源码及在 out/ 准备隔离包；不要安装、运行模型或发布。给出 owner、分发和能力传播依据。",
+      "prompt": "将 catalog/plugins/provider/shared/read-note.mjs 作为 provider 的公开共享脚本提供给 consumer 的 notes Skill，支持 consumer 已声明的各目标平台。该脚本的运行要求是 aw.self-check.v2。允许修改两个插件源码及在 out/ 准备隔离包；不要安装、运行模型或发布。给出 owner、分发和能力传播依据。",
       "assertions": [
-        "provider 用 runtimeExports 显式声明来源和运行 capability；consumer 用 Skill runtime file import 投影到实际 Native/Portable surface。",
+        "provider 用 runtimeExports 显式声明来源和运行 capability；consumer 用 Skill runtime file import 投影到各具体目标，区分 Native 包与 generic 通用输出。",
         "区分安装依赖、buildImports 与运行期文件复用，不猜 sibling 路径，不以 buildImports 传播运行 capability。",
         "修改位于 provider/consumer 权威声明，核对所选 final 的脚本与能力要求；没有真实验证的 surface 明确披露。"
       ],
@@ -68,12 +68,12 @@
         "workspaceFiles": {
           "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
           "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
-          "catalog/plugins/provider/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"provider\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.self-check.v2\"\n      ]\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\",\n    \"antigravity\",\n    \"cursor\",\n    \"opencode\",\n    \"pi\",\n    \"generic\"\n  ]\n}\n",
+          "catalog/plugins/provider/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"provider\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.self-check.v2\"\n      ]\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\",\n    \"antigravity\",\n    \"cursor\",\n    \"opencode\",\n    \"pi\",\n    \"gemini\",\n    \"copilot\",\n    \"grok\",\n    \"generic\"\n  ]\n}\n",
           "catalog/plugins/provider/README.md": "# provider\n\nExplain the supplied task.\n",
           "catalog/plugins/provider/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/provider/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
           "catalog/plugins/provider/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n",
-          "catalog/plugins/consumer/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"consumer\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\",\n    \"antigravity\",\n    \"cursor\",\n    \"opencode\",\n    \"pi\",\n    \"generic\"\n  ]\n}\n",
+          "catalog/plugins/consumer/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"consumer\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\",\n    \"antigravity\",\n    \"cursor\",\n    \"opencode\",\n    \"pi\",\n    \"gemini\",\n    \"copilot\",\n    \"grok\",\n    \"generic\"\n  ]\n}\n",
           "catalog/plugins/consumer/README.md": "# consumer\n\nExplain the supplied task.\n",
           "catalog/plugins/consumer/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/consumer/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
@@ -115,14 +115,14 @@
       ],
       "prompt": "catalog/plugins/notes 只在两个平台之间有静态说明和文件集合差异。请只读给出实现选择与验证范围，允许只读文件命令；不执行插件代码、build、renderer、prepare、Eval 或真实安装，不改文件。",
       "assertions": [
-        "选择足够的静态模板与文件规则；只有 manifest 专属字段确有需要时使用当前支持的覆盖。",
+        "使用平台模板和文件规则处理静态文字与文件差异，不透传宿主 manifest 字段。",
         "说明两个平台 final 的文字、文件集合与引用闭包需要分别验证；尚未取得的 final 明确为未验证，不执行 build 或 renderer；无依据增加 renderer 或第二套 manifest schema 不成立。"
       ],
       "input": {
         "workspaceFiles": {
           "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
           "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
-          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\"\n  ]\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\"\n  ]\n}\n",
           "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
           "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
@@ -146,23 +146,23 @@
         "boundary",
         "workspace_valid"
       ],
-      "prompt": "catalog/plugins/notes 已声明动态 Codex/user Skill target。请让其 show-style.mjs 读取这次安装生效的 displayStyle。允许修改该插件声明和脚本，并在 out/ 生成隔离验证产物；不进行真实安装、模型 Eval 或发布。请说明安装态读取与本次能够验证的范围。",
+      "prompt": "catalog/plugins/notes 已声明动态 Codex/user Skill 组件。请让其 show-style.mjs 读取这次安装生效的 displayStyle。允许修改该插件声明和脚本，并在 out/ 生成隔离验证产物；不进行真实安装、模型 Eval 或发布。请说明安装态读取与本次能够验证的范围。",
       "assertions": [
-        "只在已有动态 Skill target 声明 runtimeConfig，并核对 keys 属于 refreshKeys、非敏感依赖闭包和 user scope。",
-        "脚本从实际 final 的 AW 注入 reader 读取本产物的安装生效配置；不读取最新全局 store，不自建 reader 或手写保留 receipt。",
+        "在 renderer 的动态 Skill 组件声明 runtimeConfig，核对 keys 属于 artifacts.configKeys 的非敏感闭包、render scope 为 user，且平台能力支持 aw.installed-runtime-config.v2。",
+        "脚本从实际 final 的 AW 注入 reader 读取本产物的安装生效配置；不读取最新全局 store，不自建 reader 或手写保留 receipt；renderer 按批次返回完整 v3 集合。",
         "实现修改并进行相称验证；未真实安装时不声称已验证安装态生效值。"
       ],
       "input": {
         "workspaceFiles": {
           "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
           "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
-          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"config\": {\n    \"schemaVersion\": 5,\n    \"fields\": {\n      \"displayStyle\": {\n        \"type\": \"string\",\n        \"default\": \"compact\"\n      }\n    }\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-config.v5\"\n      ]\n    }\n  },\n  \"scripts\": {\n    \"artifacts\": {\n      \"render\": {\n        \"runner\": \"node\",\n        \"path\": \"./scripts/render.mjs\"\n      }\n    }\n  },\n  \"artifacts\": {\n    \"targets\": [\n      {\n        \"id\": \"notes\",\n        \"platform\": \"codex\",\n        \"target\": \"codex.skill\",\n        \"scopes\": [\n          \"user\"\n        ],\n        \"states\": [\n          \"present\"\n        ],\n        \"refreshKeys\": [\n          \"displayStyle\"\n        ],\n        \"skillKey\": \"notes\",\n        \"sourceDirs\": [\n          \"./skills/notes\"\n        ]\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\"\n  ]\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"config\": {\n    \"schemaVersion\": 5,\n    \"fields\": {\n      \"displayStyle\": {\n        \"type\": \"string\",\n        \"default\": \"compact\"\n      }\n    }\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-config.v5\"\n      ]\n    }\n  },\n  \"scripts\": {\n    \"artifacts\": {\n      \"render\": {\n        \"runner\": \"node\",\n        \"path\": \"./scripts/render.mjs\"\n      }\n    }\n  },\n  \"artifacts\": {\n    \"configKeys\": [\n      \"displayStyle\"\n    ],\n    \"sourceDirs\": [\n      \"./skills/notes\"\n    ],\n    \"scopes\": [\n      \"user\"\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\"\n  ]\n}\n",
           "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
           "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
           "catalog/plugins/notes/skills/notes/agents/openai.yaml": "interface:\n  display_name: Notes\n  short_description: Summarize supplied facts.\npolicy:\n  allow_implicit_invocation: true\n",
           "catalog/plugins/notes/skills/notes/scripts/show-style.mjs": "console.log('compact');\n",
-          "catalog/plugins/notes/scripts/render.mjs": "import fs from 'node:fs';\nconst c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));\nconsole.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,kind:'skill',platform:'codex',target:'codex.skill',state:'present',refreshKeys:['displayStyle'],skillKey:'notes',content:{files:{}}}))}));\n"
+          "catalog/plugins/notes/scripts/render.mjs": "import fs from 'node:fs';\nconst context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));\nif (context.surface !== 'agent-plugin') throw new Error('Expected agent-plugin surface.');\nconst plan = { version: 3, components: [], omitted: [], unmet: [] };\nif (context.allowedOutputKinds.includes('skill')) {\n  const manual = context.platformCapabilities.features['skill.invocation.manual'];\n  if (context.platformCapabilities.kinds.skill.status !== 'supported' || manual.status !== 'supported' || !manual.values.includes('true')) {\n    plan.unmet.push({ id: 'notes', kind: 'skill', name: 'notes',\n      requiredFeatures: [{ feature: 'skill.invocation.manual', values: ['true'] }],\n      reasonCode: manual.reasonCodes[0] ?? 'capability-unverified' });\n  } else {\n    const files = Object.fromEntries(['SKILL.md', 'README.md', 'agents/openai.yaml', 'scripts/show-style.mjs']\n      .map(name => [name, { source: { kind: 'bundle', path: `skills/notes/${name}` } }]));\n    plan.components.push({ id: 'notes', kind: 'skill', name: 'notes',\n      requires: [{ feature: 'skill.invocation.manual', values: ['true'] }], content: { files } });\n  }\n}\nconsole.log(JSON.stringify(plan));\n"
         }
       },
       "expected": {
@@ -170,12 +170,13 @@
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "catalog/plugins/notes/.agents-plugin/plugin.json",
+          "catalog/plugins/notes/scripts/render.mjs",
           "catalog/plugins/notes/skills/notes/scripts/show-style.mjs",
           "out/**"
         ],
         "artifacts": [
           {
-            "path": "catalog/plugins/notes/.agents-plugin/plugin.json",
+            "path": "catalog/plugins/notes/scripts/render.mjs",
             "contains": [
               "runtimeConfig"
             ]
@@ -203,15 +204,15 @@
       ],
       "prompt": "catalog/plugins/notes 是静态 Skill，其 show-style.mjs 需要读取本次安装生效的 displayStyle。请只读分析支持路径和选择依据，允许只读文件命令；不执行插件代码、build、renderer、prepare、Eval 或真实安装，不改文件。",
       "assertions": [
-        "明确 runtimeConfig 属于动态 Skill target，不能直接加到静态 Skill 或 manifest 顶层。",
-        "判断是否采用受支持的动态 target/renderer 路径并说明必要声明与验证；不采用时明确当前静态路径的能力限制。",
-        "不绕过 target 合同自建 reader、receipt 或读取全局 store。"
+        "明确 runtimeConfig 属于 renderer 输出的动态 Skill 组件，不能直接加到静态 Skill 或 manifest 顶层。",
+        "判断是否采用受支持的动态组件/renderer 路径并说明 configKeys、sourceDirs、批次和平台运行能力要求；动态接管时把模板移出静态发布入口，避免重名发布；不采用时明确当前静态路径的能力限制。",
+        "不绕过组件合同自建 reader、receipt 或读取全局 store。"
       ],
       "input": {
         "workspaceFiles": {
           "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
           "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
-          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"config\": {\n    \"schemaVersion\": 5,\n    \"fields\": {\n      \"displayStyle\": {\n        \"type\": \"string\",\n        \"default\": \"compact\"\n      }\n    }\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-config.v5\"\n      ]\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\"\n  ]\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"config\": {\n    \"schemaVersion\": 5,\n    \"fields\": {\n      \"displayStyle\": {\n        \"type\": \"string\",\n        \"default\": \"compact\"\n      }\n    }\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-config.v5\"\n      ]\n    }\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"platforms\": [\n    \"codex\",\n    \"claude\"\n  ]\n}\n",
           "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
           "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
@@ -246,7 +247,7 @@
         "workspaceFiles": {
           "catalog/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"aw-method-fixture\"\n}\n",
           "catalog/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Method fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
-          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "catalog/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Bounded AW method fixture\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "catalog/plugins/notes/README.md": "# notes\n\nExplain the supplied task.\n",
           "catalog/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Summarize supplied facts.\n---\n\nUse supplied facts and report unknowns.\n",
           "catalog/plugins/notes/skills/notes/README.md": "# Notes\n\nSummarize the supplied facts.\n",
@@ -294,7 +295,7 @@
         "workspaceFiles": {
           "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"simplification-fixture\"\n}\n",
           "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  },\n  \"interface\": {\n    \"displayName\": \"AW method fixture\"\n  }\n}\n",
-          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Simplification fixture\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Simplification fixture\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  },\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\n# Demo skill\n\nUse only supplied facts. Use only supplied facts.\nRead references/policy.md before writing.\n",
           "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nPreserve privacy and identify unknowns.\n",
           "fixture-control.json": "{\n  \"sourceWorkspace\": \"project\",\n  \"skillRelative\": \"plugins/demo-plugin/skills/demo-skill\",\n  \"providerRelative\": \"plugins/demo-plugin/shared/policy.md\",\n  \"manifestRelative\": \"plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"baselineWorkspace\": \"_simplify/baseline/project\",\n  \"candidateWorkspace\": \"_simplify/candidate/project\",\n  \"baselineOutput\": \"_simplify/final/baseline\",\n  \"candidateOutput\": \"_simplify/final/candidate\",\n  \"additionalInputs\": [\n    \"plugins/demo-plugin/shared/untracked-policy.md\"\n  ]\n}\n",

@@ -1,10 +1,19 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "codex-enhance",
   "version": "0.2.0",
   "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
   "platforms": [
-    "codex"
+    "codex",
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "gemini",
+    "copilot",
+    "grok",
+    "generic"
   ],
   "marketplace": {
     "category": "workflow",
@@ -436,85 +445,19 @@
     }
   },
   "artifacts": {
-    "targets": [
-      {
-        "id": "codex-explore-skill",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.skill",
-        "projectManagedKind": "skill",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "quickProfile",
-          "standardProfile",
-          "deepProfile",
-          "exploreCustomProfiles"
-        ],
-        "skillKey": "codex-explore",
-        "sourceDirs": [
-          "./skills/codex-explore"
-        ]
-      },
-      {
-        "id": "codex-explore-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-explore"
-      },
-      {
-        "id": "codex-advisor-skill",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.skill",
-        "projectManagedKind": "skill",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "advisorGeneralProfile",
-          "advisorAdvancedProfile",
-          "advisorExpertProfile",
-          "advisorCustomProfiles"
-        ],
-        "skillKey": "codex-advisor",
-        "sourceDirs": [
-          "./skills/codex-advisor"
-        ]
-      },
-      {
-        "id": "codex-advisor-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "codex-advisor"
-      }
+    "configKeys": [
+      "quickProfile",
+      "standardProfile",
+      "deepProfile",
+      "exploreCustomProfiles",
+      "advisorGeneralProfile",
+      "advisorAdvancedProfile",
+      "advisorExpertProfile",
+      "advisorCustomProfiles"
+    ],
+    "sourceDirs": [
+      "./skills/codex-explore",
+      "./skills/codex-advisor"
     ]
   },
   "requires": {

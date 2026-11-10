@@ -22,6 +22,7 @@ import { deletePluginConfigStore } from '../utils/plugin-config.js';
 import { parseScriptTimeoutMs } from './options.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import { readJointDemand, deriveJointDemand } from '../recovery/joint-demand.js';
+import { deploymentConfirmationEffects } from './deployment-confirmation.js';
 
 export type { LifecycleData } from './public-lifecycle-result.js';
 export interface PublicLifecycleOptions {
@@ -58,6 +59,9 @@ export function effectsForPlan(plan: RecoveryPlan): Confirmation['effects'] {
       effects.push({ code: 'runPreApply', message: 'Run the plugin preApply script.', impact: 'unknown', subject: { pluginId: authorization.pluginId, target: authorization.platform, scope: authorization.scope } });
     }
     for (const group of child.nativeGroups) {
+      for (const deployment of group.preview.operationPlan?.deploymentPlans ?? []) {
+        effects.push(...deploymentConfirmationEffects(deployment));
+      }
       for (const native of group.preview.codexReconcilePlans ?? []) if (native.review.requiresConfirmation) for (const pluginId of native.review.sharedImpact.pluginIds) {
         effects.push({ code: 'replaceSharedOutput', message: 'Replace shared native output used by other projects.', impact: 'shared', subject: { pluginId, target: 'codex', scope: child.options.scope } });
       }

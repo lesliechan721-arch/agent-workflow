@@ -11,6 +11,7 @@
 - **用户级意图（User Intent）**：保存在用户个人配置目录（`<AW_HOME>/plugin-intents.json`），记录用户全局期望启用的插件集合。
 - **项目级意图（Project Intent）**：保存在当前项目根目录的声明文件中（`<projectRoot>/.agent-workflows/plugin-intents.json`），记录当前仓库共享的插件需求。
 - **本机部署偏好（DeploymentPreferences schema 2）**：记录用户在本机上选择的目标客户端平台（`codex`、`claude` 等），由 `aw target set` 维护。
+- **选择与可用性分离**：十个 target 的选择仅由用户保存；发现结果不自动删除已选项。可用性为 available/missing/unsupported/unknown/notApplicable，generic 为 notApplicable。CLI 新增不可用目标需要显式 force；TUI 的本机草稿与保存时确认规则见 [TUI](tui.md)。
 - **意图与清理边界**：
   取消项目需求（Intent）仅代表逻辑诉求的移除，**绝对不授予删除共享产物或未证实归属输出的权限**。具体清理门禁参见[插件生命周期](lifecycle.md#ownership-与删除权限)。
 
@@ -18,16 +19,16 @@
 
 ## 2. 联合恢复状态（Live Status）分层架构
 
-命令 `aw plugin status [--context user|project]` 组合授权上下文中的两份 Intent、单一本机策略、Active Catalog、Native 与 Portable 现场，输出统一的联合恢复状态。只读操作不创建持久状态、不运行 renderer/preApply、不取得工具或修改信任。未知需求保持 `unknown`；基础现场观察复用，不能递归调用 status。
+命令 `aw plugin status [--context user|project]` 组合授权上下文中的两份 Intent、单一本机策略、Active Catalog、各原生平台与 generic 现场，输出统一的联合恢复状态。只读操作不创建持久状态、不运行 renderer/preApply、不取得工具或修改信任。未知需求保持 `unknown`；基础现场观察复用，不能递归调用 status。
 
 状态模型在架构上严格区分为**公开恢复状态合同**与**内部状态事实模型**两层：
 
 ```mermaid
 flowchart TD
-    subgraph S1["底层现场观测与事实生成 (commands/status-v6.ts)"]
-        F1["各平台组件浅检查 (StatusV8Component)"]
-        F2["Target / Placement 五态判定 (StatusV8State)"]
-        F3["原因、冲突证据与建议恢复动作 (StatusV8Reason / StatusV8RecoveryAction)"]
+    subgraph S1["固定 adapter 与 generic writer 的只读现场"]
+        F1["包、注册、归属及组件 presence"]
+        F2["产品面 activation、trust、load"]
+        F3["具体能力缺口、冲突证据与恢复动作"]
     end
 
     subgraph S2["CLI data 与 TUI 共享状态事实"]
@@ -58,111 +59,44 @@ flowchart TD
 - **独立额外残留（extraObserved）**：磁盘上观测到的额外未管理残留记录在 `data.extraObserved` 列表中，**绝不混入 `counts.unconfirmed`**。
 - **错误与覆盖**：完整诊断进入顶层 `diagnostics`；data 保留实际 coverage，明确其它项目未观察。
 
-### 2.2 内部状态事实模型（Internal Target & Placement Facts）
+### 2.2 平台、产品面与组件事实
 
-由 `packages/cli/src/commands/status-v6.ts` 生成，作为统一 inventory 和各 target/placement 的底层事实输入，绝不直接将内部五态伪装成顶层回执的唯一 schema：
+recovery/status 复用固定 adapter 的 discover/resolve/inspect；generic 复用受管 Skills writer 的现场证据。既有浅检查 helper 可以提供归属和配置事实，但不代替十个平台的部署观测。
 
-<a id="221-target--placement-的五类互斥状态statusv8state"></a>
-#### 2.2.1 Target / Placement 的五类互斥状态（StatusV8State）
+DeploymentObservation 分开保存 package、registration、ownership、各产品面的 activation/trust/load 和组件 presence。已知缺失与无法观察不同；load=observed 仅表示宿主加载证据，不证明模型采用正文。平台缺失、接口不支持、权限或信任受限分别保留原因，不把它们折叠成未安装。
 
-针对每个插件与平台 placement，内部状态判定器计算出以下五种互斥状态之一：
+包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。输入摘要包括 renderer 的 configKeys，以及当前平台、实际渲染 scope 下 Skill producer 动态命令集的 refreshKeys 和非敏感校验依赖；命令配置单独变化也必须显示漂移。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
-| 内部状态 | 判定依据 | 建议恢复动作 |
-|---|---|---|
-| `ready` | 所需能力和依赖可用；允许不改变有效使用结果的 Codex 项目重复开启 | 无 |
-| `needsSync` | desired 已保存，但组件或依赖缺失、不完整、可替换或待同步 | `aw plugin sync` 或 `aw plugin sync --rebuild` |
-| `orphaned` | 没有该范围的 desired，但实际激活或 AW-owned 扩展仍存在；用户级已启用时，无害的 Codex 原生项目重复开启除外 | `aw plugin remove --only outputs` |
-| `blocked` | 来源不可用，或 foreign、unreadable、collision 或其它安全问题阻止收敛 | 按 `recoveryActions` 刷新来源、清理 AW-owned 输出或手动修复 |
-| `absent` | 没有 desired intent、实际激活或需清理的范围输出；允许保留有效共享内容 | 无 |
+成功有意空集合使用既有 platforms 命名空间内可重建的空结果 receipt。它绑定精确 binding/scope、全部 render units 与可只读复算的来源、资源、配置、能力和消费者输入摘要；不是安装或删除凭证。缺失、损坏或过期时提示重新准备。匹配 receipt 后仍检查实际包、注册、激活与补足，不能掩盖撤销失败或 foreign 残留。它不使用包含 staging 或旧现场的操作 fingerprint。
 
-#### 2.2.2 辅助事实组件与适配器
+generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有准备成功、无 unmet 且明确有意为空时，才可在匹配证据及现场条件下报告成功空集合。全部 unmet 保留旧 Skill；混合集合可以写入独立的可支持 Skill，但保留受缺口影响的旧输出并报告 partial，不能由候选列表为空推导删除权限或 satisfied。
 
-- **原因诊断（StatusV8Reason）**：记录稳定错误/告警码（`code`）、说明（`message`）、严重性（`severity: 'warning' | 'blocking'`）、依赖问题（`dependencyPluginId`、`rootIssueId`、`rootIssueCode`）与脱敏的冲突证据。`needsSync` warning 本身不使命令失败；安全 blocker 使 `hasErrors=true`。
-- **浅事实组件（StatusV8Component）**：记录各平台组件的浅检查事实（`kind: 'intent' | 'ownership' | 'sharedNative' | 'activation' | 'extension' | 'dependency' | 'systemConsumer'`，`state`，`metadata`）。
-- **恢复动作（StatusV8RecoveryAction）**：提供明确的恢复操作建议（`command: 'sync' | 'cleanup' | 'reinstall' | 'uninstall' | 'manual'`，`scope`，`description`）。
-- <a id="shared-native-classification"></a>**共享 Native 五态与诊断判定（唯一完整定义）**：
-  针对 Codex 等平台的共享原生层，底层由 `packages/cli/src/utils/codex-shared-native.ts` 结合精确路径与官方 list 执行统一判定：
-  - **静态包（static package）**：由整个插件统一物化，没有逐 Skill 的 AW-owned 独立组件；不按逐 Skill 独立执行预检、写入或清理，缺失逐 Skill marker 绝不阻断重建或清理流程；用户手动修改文件可能导致覆盖。
-  - **动态包（dynamic `codex-native`）**：由 AW 生成 `.agents-plugin/aw-codex-native-render.json` 记录规范化 identity 和 digest，该 receipt 仅作为现场诊断证据而非持久 ledger；状态检查只读检查 AW-owned canonical marketplace projection 与 receipt，**绝不运行 renderer**。
-  - **共享 Native 五态分类**：
-    - `usable`：规范注册有效、版本匹配且投影与渲染证据一致；
-    - `missing`：官方观测明确为 absent；
-    - `replaceable`：
-      - `outdated`：版本落后于 desired；
-      - `damaged`：receipt/内容缺失、格式损坏或摘要不匹配；
-      - `renderDrift`：projection 完整有效但与当前 renderer/config/render input/target evidence 证据不一致；
-    - `blocked`：
-      - `foreign`：exclusive artifact slot 被外部占用、非规范注册或路径安全失败（`marketplacePathUnsafe`、`marketplaceRegistrationForeign`）；
-      - `unreadable`：真实 I/O 失败、官方 list 执行失败或遇到重复（`pluginListUnavailable`、`pluginListDuplicate`、`codexNativeObservationFailed`）；
-    - `unobserved`：本机缺少兼容客户端，或客户端未解析（此时 desired target 使用 `needsSync` 和 `codexSharedNativeUnobserved` 告警）。
-  具体安全路径检查参见[平台边界与平台策略架构说明](platforms.md#11-生产-agent-目录解析)。
-- **依赖就绪度（Dependency Readiness）**：在 components 中公开 `ready | absent | blockedByCollision | incomplete | error` 五种就绪度。
-- **Ownership Health Adapter**：`state: present | absent | partial | error` 仅作为 `components` 中的归属健康适配数据，**绝不替代 target 顶层的 `state`**。
+## 3. 现场证据、共享引用与 scope
+
+### 3.1 只读观察
+
+状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。目录存在、同名 executable 或版本通过都不足以证明原生注册或组件可用。原生 registration、activation 与 trust 按对应路由的公开命令或配置观察；Codex private cache 不进入删除授权。
+
+同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。跨调用不缓存弱现场结论。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
+
+### 3.2 scope 与共享物理包
+
+逻辑需求和物理输出分别判断。Codex、Claude、Gemini、Copilot 共享包按 canonical user scope 渲染，各需求保持自身 activation；独立 scope 路由不因存在用户需求就省略项目部署。同 physicalKey 只算一个物理实例，但保留所有实际产品面与需求引用。
+
+Codex 显式 project false 覆盖 user true。撤销项目需求时移除 AW 自身项目 activation entry，让有效用户激活继续继承；不能写 false 代替删除。用户操作不读取或修改未授权项目，也不能把共享 payload 当作项目已启用。
+
+共享引用在本次内存中按 JointDemandSnapshot、实际 owner 和路由可证明的原生注册/activation 记录确定：明确仍有引用为 present，完整覆盖且无引用才为 none，其余为 unknown。两份 Intent 可读不证明全部历史项目无引用。unknown 时可撤本次精确 activation，但保留共享包与恢复说明。无 Intent 不自动新增依赖需求。
+
+依赖按完整身份和实际布局选择；提供者失败只阻断其真实消费者，独立平台和无依赖命令包继续。共享包损坏不改用另一条安装路由。foreign、不可读现场、配置损坏与能力缺口保持可见，不能由无需求豁免吞掉。
+
+### 3.3 弱证据与恢复
+
+owner、来源绑定与空结果 receipt 均可重建。损坏弱证据不能永久阻断有充分 live ownership 的精确清理，也不能授予 foreign/shared 内容的删除权。历史文件不自动迁移或遍历删除；强配置的显式恢复仍遵循各自 schema 门禁。
+
+Core compile/select profile 借用对象修改前复制，不跨命令缓存；正则 binding 在 finally 中释放。生命周期与离线清理的具体授权见[生命周期](lifecycle.md)。
 
 ---
 
-## 3. 现场证据收集、观测分工与 Scope 判定规则
-
-<a id="23-浅检查原则与脱敏冲突证据collision-evidence"></a>
-### 3.1 浅检查原则与官方客户端观测分工
-
-状态检查坚持浅检查（shallow check）原则，但**浅检查绝对不等于跳过官方客户端观测**：
-
-- **官方命令观测**：Native 状态检查必须使用 official scoped list 核对 static registration、plugin ID 和 active version：
-  - 只有成功的 `codex plugin list --marketplace <AW marketplace> --json` 执行结果决定 native 的 `installed`、`absent` 和 active version；
-  - 公开 Codex config 决定 activation 和 marketplace ownership；
-  - AW-owned canonical marketplace source projection 决定可重建的 `renderDrift`。
-  - Codex private cache 和 installed manifest 不受 AW 完全控制，不进入普通 lifecycle、repair、residue 或 cleanup 成败判断，AW **绝不直接删除它们**。
-- **动态 Native 投影与静态包观测分工**：
-  动态 Native 投影与静态包的观测分工与五态判定统一遵循[§2.2.2 共享 Native 五态与诊断判定](#shared-native-classification)：状态收集阶段仅执行只读检查与 receipt 核对，绝对不运行 renderer；静态包不按逐 Skill 检查 marker；精确五态判定（`usable` / `missing` / `replaceable` / `blocked` / `unobserved`）由该章节权威定义。
-- **观测快照管理与代数（Snapshot Generations）**：
-  - 每个 status、Review preview 和锁内执行 session 按 marketplace 复用 operation-local exact/neutral list snapshot。
-  - 每个 operation/marketplace 的相关 target 和 activation 全部是 user 时，每代只读取 neutral；存在 project 时，每代最多读取一次 exact 和一次 neutral。
-  - 一次 session 只创建并清理一个独立 neutral 临时 cwd。
-  - **预览与锁内执行严格隔离**：preview 与锁内执行不共享 snapshot。
-  - 锁内执行复用一代 pre snapshot；全部 native registration 与 activation mutation 完成后，每个发生真实 mutation 的 marketplace 只捕获一代 post snapshot，并让该 marketplace 的全部 target postcheck 复用它。无实际变更（no-op）时不捕获 post snapshot。
-- **观测不足（Unobserved vs Blocked vs Assumed）**：
-  - 本机 PATH/App 中没有 compatible consumer，或 consumer incompatible/unresolved 时，shared native 必须标为 `unobserved`；desired target 使用 `needsSync` 和 `codexSharedNativeUnobserved` warning，compatibility blocker 仍独立保留。
-  - 本机没有兼容 Codex consumer 时，activation support 只标为 `assumed`，**绝不能宣称真实 Agent 已加载**。
-  - official list 调用失败是 `blocked/unreadable`（`codexNativeObservationFailed`）。
-- **Foreign 外部占用与冲突脱敏**：
-  - `foreign` 表示 exclusive artifact slot 已被当前插件不拥有的内容占用；它**不能作为已安装证据**。
-  - 公开 collision evidence 只包含安全字段：`reason`（`ownerMismatch | unownedContent | typeMismatch`）、`artifactKind`、`artifactKey`、`expectedOwner` 和可选 `actualOwner`，**严禁泄漏组件绝对路径、系统凭据、未知 stderr 或临时内部信息**。
-
-<a id="24-codex-原生开关覆盖与共享边界"></a>
-### 3.2 Codex 开关优先级与无害 Native Overlap
-
-- **项目配置优先**：Codex 原生插件的有效开关按项目配置优先于用户配置计算，显式 project `false` 必须覆盖 user `true`。
-- **无害 Native Overlap**：用户级 desired 且 user 已启用时，pure-native 的重复 project `true` 视为无害幂等，不产生 activation drift，不报告 `dependencyScopeConflict`，也不构成本 scope 的 orphaned 残留。
-- **单物理身份保证**：Codex shared native 在顶层 `components` 记录为 `sharedNative` 与 `systemConsumer`，同一 shared native identity 在顶层只出现一次，不伪装成两个 owner。
-
-### 3.3 Scope 隔离与依赖恢复边界
-
-- **User 恢复范围**：User 恢复只处理用户激活，不读取或删除调用项目的关闭覆盖；需要启用当前项目时，显式保存 Project 声明并在该项目执行 `aw plugin sync --context project`。
-- **共享内容与禁用激活不构成使用**：共享内容（shared native payload）或禁用的 activation 不构成本 scope 的使用或清理依据。
-- **依赖检查范围与 Scope 判定规则**：
-  - **三类检查范围**：依据当前实现（`commands/status-v6.ts:2189`），依赖检查不仅针对已启用的组件，而是严格覆盖以下三类场景：
-    1. 期望作用域内（`desiredInScope`）：即使尚未实际启用或尚未生成物理输出，只要存在 desired 诉求，就必须执行依赖完整性检查，防止漏报安装阻断；
-    2. 实际启用作用域（`actualCodexActivation`）；
-    3. 适用扩展残留作用域（`hasScopedExtensionResidue`）；
-    4. 对非 Codex 平台，存在已观察到的现场（`liveState === 'present' || liveState === 'partial'`）。
-  - **Provider 选择与放置规则**：
-    - User scope 仅能使用用户依赖（`dependencyPlacementsFor` 仅返回 `['user']`）；
-    - Project scope 按联合需求（`['project', 'user']`）选择 provider；
-    - 若配置了显式 `dependencyScopeOverrides`，以覆盖指定的 scope 为准。
-  - **无 Intent 不自动扩展**：没有 Intent 诉求时不自动新增依赖需求或 target。
-  - **豁免不能吞掉关键诊断**：无使用范围或未启用状态的豁免**绝对不能掩盖或吞掉配置不可读（`unreadable`）、原生官方命令观测失败（`codexNativeObservationFailed`）以及共享内容物理损坏（`replaceable: damaged`）的真实诊断与证据**。
-- **损坏共享内容恢复限制**：User provider 损坏时不降级。当所有范围均无 desired 且 shared native 损坏时，系统只能提示用户显式选择 scope 后运行 `aw plugin install`，**普通 cleanup 不承诺修复 shared native**。
-
-### 3.4 历史格式拒绝与内存生命周期
-
-- **旧版格式拒绝**：旧 User/Project 偏好、旧 Status、旧 Receipt 入口一律明确拒绝。旧文件保留在磁盘，不自动迁移、不主动遍历删除，由系统提供显式 schema-independent 重置/恢复入口。
-- **历史项目配置**：历史项目配置文件不读取、不自动迁移。
-- **Core 编译与 Profile 内存管理**：Core compile 与 select profile 借用对象在修改前必须复制，不跨命令缓存。正则 binding 确保在 `finally` 中释放，确保内存耗尽时的安全恢复。
-
----
-
-<a id="3-config-store-v6-持久化与写管线"></a>
 ## 4. Config Store v6 持久化与写管线
 
 <a id="store-v6"></a><a id="31-命名空间与-envelope-存储"></a>
@@ -183,7 +117,7 @@ flowchart TD
   - `common: Record<string, PluginConfigValue>`
   - `platforms: Partial<Record<PlatformTarget, Record<string, PluginConfigValue>>>`
 - **强制 Source Binding**：`binding` 必须且仅包含 `kind: 'source'` 与 `sourceIdentity`，且 `sourceIdentity` 必须严格匹配 `^sha256:[0-9a-f]{64}$` 哈希格式。
-- **受支持平台目标白名单**：`platforms` 的键必须严格属于受支持的平台目标（`PLATFORM_TARGETS`：`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`），未知平台键直接拒绝。
+- **受支持平台目标白名单**：`platforms` 的键必须严格属于受支持的平台目标（`PLATFORM_TARGETS`：`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`），未知平台键直接拒绝。
 - **配置内容纯粹性**：`common` 与 `platforms[P]` 仅保存用户值，**绝不包含 UI 装饰、摘要或状态字段**。
 - **覆盖解析顺序**：
   ```text
@@ -215,7 +149,7 @@ sequenceDiagram
     Store-->>User: 1. configWrite: succeeded (强配置已固化)
 
     User->>Pipeline: 触发产物刷新 (Apply)
-    Pipeline->>Platform: 重新物化受影响的 Native/Portable 产物
+    Pipeline->>Platform: 重新物化受影响的 各平台产物
     alt 物化成功
         Platform-->>User: status: success
     else 物化失败 (如依赖缺失/现场冲突)
@@ -233,8 +167,9 @@ sequenceDiagram
   - Config Review 与锁内 writer 使用同一用户文档、profile、context 和有效输入证据。
   - `common` 变化检查公共及已知相关平台，平台变化只检查该平台；same-platform `valueRef` 的 provider 使用相同编译配置。
   - 普通保存保护授权来源中原先有效的引用，包括尚未安装的消费者。
-  - apply 通过联合恢复计划，只刷新已存在且受影响的 Native、Portable 与无平台命令包；缺失输出提示 sync，不新增 Intent 或 target。无平台命令包只读公共 schema/common。提供者失败阻止相关消费者，其它独立目标继续。
-  - 平台配置变更命中 Native Skill `refreshKeys` 时，保存仍只提交用户配置。后续 apply Review 明示共享包体影响与必要脚本授权；缺少 apply 授权不撤销已经保存的值。
+  - apply 通过联合恢复计划，只刷新已存在且受影响的 原生平台、generic 与无平台命令包；缺失输出提示 sync，不新增 Intent 或 target。无平台命令包只读公共 schema/common。提供者失败阻止相关消费者，其它独立目标继续。
+  - 共享影响通过 sharedNativeRenderUnits 记录 pluginName、platform、renderScope、configKeys、dynamicComponents 和真实 commandSets；没有准备结果时不伪造动态 Skill 身份。
+  - 平台配置变更命中 renderer configKeys 或真实命令声明的 refreshKeys 时，保存仍只提交用户配置。后续 apply Review 明示共享包体影响与必要脚本授权；缺少 apply 授权不撤销已经保存的值。
 
 ### 4.3 配置变更命令行为与显式恢复（Set / Unset / Reset）
 

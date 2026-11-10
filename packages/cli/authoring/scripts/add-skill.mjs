@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import crypto from 'node:crypto';
 
-import { resolveSupportedPlatforms as resolveManifestPlatforms } from '@lesliechan721/aw-plugin-core/manifest';
+import { assertPluginManifestStructure, resolveSupportedPlatforms as resolveManifestPlatforms } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { parseStrictSemVer } from './lib/semver.mjs';
 import {
@@ -203,27 +203,9 @@ function atomicReplaceRegularFile(filePath, content, expectedIdentity) {
   }
 }
 
-function assertSkillNameAvailable(pluginRoot, manifest, skillName) {
+function assertSkillNameAvailable(pluginRoot, skillName) {
   const skillRoot = path.join(pluginRoot, 'skills', skillName);
   requireAbsent(skillRoot, 'Skill');
-
-  const dynamicConflict = manifest.artifacts?.targets?.find(
-    (target) => target && typeof target === 'object' && target.skillKey === skillName,
-  );
-  if (dynamicConflict) {
-    fail(`Skill name ${JSON.stringify(skillName)} conflicts with dynamic artifact ${JSON.stringify(dynamicConflict.id)}.`);
-  }
-
-  if (typeof manifest.slashCommands === 'string') {
-    const commandPath = path.join(
-      pluginRoot,
-      manifest.slashCommands.replace(/^\.\//, ''),
-      `${skillName}.md`,
-    );
-    if (lstatOrNull(commandPath)) {
-      fail(`Skill name ${JSON.stringify(skillName)} conflicts with slash command ${commandPath}.`);
-    }
-  }
 }
 
 function addSkillsCapability(manifest) {
@@ -323,6 +305,7 @@ function main() {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     fail('Plugin manifest must be a JSON object.');
   }
+  assertPluginManifestStructure(manifest);
   if (manifest.name !== pluginName) {
     fail(`Plugin manifest name ${JSON.stringify(manifest.name)} does not match directory ${JSON.stringify(pluginName)}.`);
   }
@@ -334,7 +317,7 @@ function main() {
   if (args.skillInvocation === 'claude-model-only' && !platforms.claude) {
     fail('claude-model-only invocation requires a plugin that supports CLAUDE.');
   }
-  assertSkillNameAvailable(pluginRoot, manifest, skillName);
+  assertSkillNameAvailable(pluginRoot, skillName);
 
   const nextManifest = structuredClone(manifest);
   addSkillsCapability(nextManifest);
@@ -387,7 +370,7 @@ function main() {
       console.log(`  - ${path.join(finalSkillRoot, relativePath)}`);
     }
     if (!platforms.codex) {
-      console.log('[WARN] Claude-only plugin: Codex metadata and v2 model eval starter were not generated.');
+      console.log('[WARN] Plugin does not support Codex: Codex metadata and v2 model eval starter were not generated.');
     }
     if (args.skillInvocation === 'claude-model-only' && platforms.codex) {
       console.log('[WARN] Codex has no hidden-user-entry equivalent; Codex remains model-invocable and explicitly invocable.');

@@ -98,10 +98,12 @@ describe('CLI JSON recovery and independent command harness', () => {
       data: {}
     });
     expect(value.data.capabilities.artifacts).toContainEqual(expect.objectContaining({
-      field: 'artifacts.targets[].platform',
-      acceptedValues: ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic'],
+      field: 'artifacts.configKeys', required: true,
     }));
-    expect(value.data.capabilities.artifacts.some((entry) => entry.field.startsWith('artifacts.targets[].delivery'))).toBe(false);
+    expect(value.data.capabilities.artifacts).toContainEqual(expect.objectContaining({
+      field: 'rendererContext.allowedOutputKinds', acceptedValues: ['skill', 'mcp', 'agent', 'hook', 'instruction'],
+    }));
+    expect(value.data.capabilities.artifacts.some((entry) => entry.field.startsWith('artifacts.targets'))).toBe(false);
   });
 
   it.each(['sync', 'status'] as const)('serializes real empty %s results as one complete document', async (command) => {

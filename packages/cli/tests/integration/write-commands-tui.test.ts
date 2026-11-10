@@ -1,6 +1,6 @@
+import { installNativeTestQualification, getNativeTestLayout } from '../helpers/native-execution-fixture.js';
 import { describe, beforeEach, expect, it } from 'vitest';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
-import { render } from 'ink-testing-library';
 import {
   observePreferences,
   resolvePreferencesPath,
@@ -9,7 +9,7 @@ import {
 } from '../../src/intent/deployment-preferences.js';
 import { observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import { setRebuildCommandTestHooksForTests } from '../../src/commands/rebuild-command.js';
-import { statusCommandV8 } from '../../src/commands/status-v6.js';
+import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
@@ -39,6 +39,7 @@ import {
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
+    installNativeTestQualification({ discovery: true, trust: true });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 
@@ -56,7 +57,7 @@ describe('five namespaced write commands', () => {
     });
     const runtime = {
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
     };
     const projectInstall = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
@@ -102,11 +103,14 @@ describe('five namespaced write commands', () => {
       config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest, env: isolation.env,
     });
-    const foreignPath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-leaf-leaf-role.toml');
+    const layout = await getNativeTestLayout({ platform: 'codex', pluginId: 'team/leaf',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env });
+    const foreignPath = path.join(layout.supplementRoot!, 'aw-team-leaf-leaf-role.toml');
     await fs.outputFile(foreignPath, 'developer_instructions = "foreign"\n');
+    const nativeCliRunner = (await createCodexNativeTestRuntime(isolation)).nativeCliRunner;
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner,
     }));
     const controller = new TuiController(dependencies);
     const plan = await controller.prepareScopedTask({
@@ -115,15 +119,17 @@ describe('five namespaced write commands', () => {
     });
     expect(plan.kind).toBe('recovery');
     expect(plan.plan.receipt.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/root', blockers: expect.arrayContaining([
-        expect.objectContaining({ code: 'artifactCollision' }),
+      expect.objectContaining({ pluginId: 'team/root', agent: 'codex', scope: 'project', execution: 'not-run', blockers: expect.arrayContaining([
+        expect.objectContaining({ code: 'artifactCollision', pluginId: 'team/leaf' }),
       ]) }),
     ]));
     expect(plan.plan.receipt.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/leaf', blockers: expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/leaf', agent: 'codex', scope: 'project', execution: 'not-run', blockers: expect.arrayContaining([
         expect.objectContaining({ code: 'artifactCollision' }),
       ]) }),
     ]));
+    expect(nativeCliRunner.mock.calls.every(([invocation]) => !invocation.args.includes('plugin')
+      || invocation.args.includes('list'))).toBe(true);
     await controller.discardScopedPlan(plan);
     controller.dispose();
     await expect(fs.readFile(foreignPath, 'utf8')).resolves.toBe('developer_instructions = "foreign"\n');
@@ -144,7 +150,7 @@ describe('five namespaced write commands', () => {
     ] }, expectedDigest: snapshot.digest, env: isolation.env });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
     }));
     const controller = new TuiController(dependencies);
     const originalPreferences = await observePreferences({ scope: 'user',
@@ -185,7 +191,7 @@ describe('five namespaced write commands', () => {
     const intentPath = await resolveIntentPath(location);
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       ...location, interactive: false,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
     }));
     const controller = new TuiController(dependencies);
     const plan = await controller.prepareScopedTask({ kind: 'recovery', command: 'install',
@@ -253,7 +259,7 @@ describe('five namespaced write commands', () => {
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
       interactive: false,
     }));
     const plan = await dependencies.prepareScopedTask({
@@ -291,7 +297,7 @@ describe('five namespaced write commands', () => {
     });
     const runtime = {
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
     };
     const preview = await installFixturePlugin(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
@@ -330,7 +336,7 @@ describe('five namespaced write commands', () => {
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
       interactive: false,
     }));
     const installPlan = await dependencies.prepareScopedTask!({
@@ -363,7 +369,7 @@ describe('five namespaced write commands', () => {
     const context = createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
       interactive: false,
     });
     const dependencies = createTuiControllerDependencies(context);
@@ -397,11 +403,12 @@ describe('five namespaced write commands', () => {
     await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
       { id: 'team', type: 'path', primary: true, path: sourceRoot },
     ] }, expectedDigest: snapshot.digest, env: location.env });
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: location.env });
     const context = createCliExecutionContext({ ...location, interactive: false,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }) });
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner });
     const dependencies = createTuiControllerDependencies(context);
     const controller = new TuiController(dependencies);
-    const agentPath = path.join(location.cwd, '.codex', 'agents', 'aw-demo-reviewer.toml');
+    const agentPath = path.join(location.cwd, '.codex', 'agents', 'aw-team-demo-reviewer.toml');
     const foreignPath = path.join(location.cwd, '.codex', 'agents', 'foreign.toml');
     await fs.outputFile(agentPath, '# agent-workflows-owner: {invalid\nowned damaged output\n');
     await fs.outputFile(foreignPath, 'foreign bytes\n');
@@ -447,7 +454,7 @@ describe('five namespaced write commands', () => {
     const context = createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
       interactive: false,
     });
     await expect(installFixturePlugin(['team/root'], {
@@ -459,12 +466,13 @@ describe('five namespaced write commands', () => {
     await expect(controller.getForceCleanupCandidate('team/leaf', 'codex', 'project'))
       .resolves.toBeUndefined();
     controller.dispose();
-    await expect(statusCommandV8({
-      plugins: ['team/root'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
-    })).resolves.toMatchObject({
-      payload: { targets: [expect.objectContaining({ state: 'ready' })] },
+    const status = await readRecoveryStatus({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      cliVersion: '1.0.0', targets: ['codex'], scope: 'project', nativeCliRunner: context.nativeCliRunner,
     });
+    expect(status.observedTargets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/root', agent: 'codex', scope: 'project', content: 'satisfied', observation: 'verified' }),
+    ]));
   });
 
   it.each(['path', 'git'] as const)(
@@ -479,7 +487,7 @@ describe('five namespaced write commands', () => {
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'review A\n', (manifest) => {
         manifest.platforms = ['codex'];
         manifest.extensions = { instructions: [{ name: 'review', title: 'Review',
-          content: 'Review source content.' }] };
+          content: 'Review source content.', coverage: ['main'] }] };
       });
       let source: CatalogSource;
       if (provider === 'git') {
@@ -509,7 +517,7 @@ describe('five namespaced write commands', () => {
       const dependencies = createTuiControllerDependencies(createCliExecutionContext({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+        nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
         interactive: false,
       }));
       const plan = await dependencies.prepareScopedTask!({
@@ -518,7 +526,7 @@ describe('five namespaced write commands', () => {
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'review B\n', (manifest) => {
         manifest.platforms = ['codex'];
         manifest.extensions = { instructions: [{ name: 'review', title: 'Review',
-          content: 'Review source content.' }] };
+          content: 'Review source content.', coverage: ['main'] }] };
       });
       if (provider === 'git') {
         const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
@@ -557,7 +565,7 @@ describe('five namespaced write commands', () => {
       (manifest) => {
         manifest.platforms = ['codex'];
         manifest.extensions = {
-          instructions: [{ name: 'review', title: 'Review', content }],
+          instructions: [{ name: 'review', title: 'Review', content, coverage: ['main'] }],
         };
         manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', title: 'Mode' } } };
       },
@@ -575,7 +583,7 @@ describe('five namespaced write commands', () => {
     const context = createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
       interactive: false,
     });
     const executeWithSourceAdvance = async (
@@ -648,6 +656,7 @@ describe('five namespaced write commands', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-config-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
+        schemaVersion: 5,
         fields: {
           level: {
             type: 'string',
@@ -679,7 +688,7 @@ describe('five namespaced write commands', () => {
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
       interactive: false,
     }));
     const page = await dependencies.getConfigPage!(
@@ -792,28 +801,18 @@ describe('five namespaced write commands', () => {
       'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
       'const files = { "SKILL.md": "---\\nname: review\\ndescription: Review.\\n---\\n", "README.md": "Review.\\n" };',
       'if (context.platform === "codex") files["agents/openai.yaml"] = "policy:\\n  allow_implicit_invocation: true\\n";',
-      'console.log(JSON.stringify({ version: 2, artifacts: [{',
-      '  id: `${context.platform}-review`, kind: "skill", platform: context.platform,',
-      '  target: `${context.platform}.skill`, state: "present", refreshKeys: [],',
-      '  skillKey: "review", content: { files }',
-      '}] }));',
+      'console.log(JSON.stringify({ version: 3, omitted: [], unmet: [], components: context.allowedOutputKinds.includes("skill") ? [{',
+      '  id: `${context.platform}-review`, kind: "skill", name: "review",',
+
+      '  content: { files: Object.fromEntries(Object.entries(files).map(([name, text]) => [name, { text }])) }',
+      '}] : [] }));',
     ].join('\n'));
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.platforms = ['codex', 'claude'];
       manifest.scripts = {
         artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
       };
-      manifest.artifacts = {
-        targets: (['codex', 'claude'] as const).map((platform) => ({
-          id: `${platform}-review`,
-          platform,
-          scopes: ['user', 'project'],
-          target: `${platform}.skill`,
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'review',
-        })),
-      };
+      manifest.artifacts = { configKeys: [] };
       manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', title: '模式' } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -953,7 +952,7 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.platforms = ['codex'];
       manifest.extensions = {
-        instructions: [{ name: 'review', title: 'Review', content: 'scope evidence' }],
+        instructions: [{ name: 'review', title: 'Review', content: 'scope evidence', coverage: ['main'] }],
         agents: [{ name: 'reviewer', description: 'Review.', prompt: 'scope evidence' }],
       };
     });
@@ -966,7 +965,7 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const nativeCliRunner = async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' });
+    const nativeCliRunner = (await createCodexNativeTestRuntime(isolation)).nativeCliRunner;
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
 
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
@@ -982,7 +981,7 @@ describe('five namespaced write commands', () => {
     expect(concurrent.overallState).toBe('succeeded');
     const projectIntent = await readFixtureRequirements({ scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env });
-    const projectAgentPath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-demo-reviewer.toml');
+    const projectAgentPath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-team-demo-reviewer.toml');
     const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     const projectAgent = await fs.readFile(projectAgentPath);
     const projectConfig = await fs.readFile(projectConfigPath);
@@ -992,7 +991,7 @@ describe('five namespaced write commands', () => {
       scope: 'user', ok: false, declarationChanged: false, outputsMayHaveChanged: false,
       blockers: [expect.objectContaining({ code: 'operationReviewStale' })],
     } });
-    await expect(fs.pathExists(path.join(isolation.env.CODEX_HOME!, 'agents', 'aw-demo-reviewer.toml')))
+    await expect(fs.pathExists(path.join(isolation.env.CODEX_HOME!, 'agents', 'aw-team-demo-reviewer.toml')))
       .resolves.toBe(false);
     await expect(observeIntent({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }))
       .resolves.toMatchObject({ state: 'absent' });
@@ -1008,7 +1007,7 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.platforms = ['codex'];
       manifest.extensions = {
-        instructions: [{ name: 'review', title: 'Review', content: 'Review changes.' }],
+        instructions: [{ name: 'review', title: 'Review', content: 'Review changes.', coverage: ['main'] }],
         agents: [{ name: 'reviewer', description: 'Review.', prompt: 'Review changes.' }],
       };
     });
@@ -1018,13 +1017,13 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const nativeCliRunner = async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' });
+    const nativeCliRunner = (await createCodexNativeTestRuntime(isolation)).nativeCliRunner;
     await expect(installFixturePlugin(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
       scope: 'project',
     }, { env: isolation.env, nativeCliRunner })).resolves.toMatchObject({ overallState: 'succeeded' });
-    const agentPath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-demo-reviewer.toml');
+    const agentPath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-team-demo-reviewer.toml');
     await expect(fs.pathExists(agentPath)).resolves.toBe(true);
     await fs.remove(agentPath);
     const foreignPath = path.join(path.dirname(agentPath), 'foreign.toml');
@@ -1065,7 +1064,7 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.platforms = ['codex'];
       manifest.extensions = {
-        instructions: [{ name: 'review', title: 'Review', content: 'must not be written' }],
+        instructions: [{ name: 'review', title: 'Review', content: 'must not be written', coverage: ['main'] }],
       };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -1081,7 +1080,7 @@ describe('five namespaced write commands', () => {
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      nativeCliRunner: (await createCodexNativeTestRuntime(isolation)).nativeCliRunner,
       interactive: false,
     }));
     const request = { kind: 'recovery' as const, command: 'install' as const,
@@ -1091,7 +1090,7 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'changed\n', (manifest) => {
       manifest.platforms = ['codex'];
       manifest.extensions = {
-        instructions: [{ name: 'review', title: 'Review', content: 'changed content' }],
+        instructions: [{ name: 'review', title: 'Review', content: 'changed content', coverage: ['main'] }],
       };
     });
     await syncCatalogSourceGeneration({

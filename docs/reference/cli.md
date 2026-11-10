@@ -29,6 +29,18 @@
 
 `--yes` 不绕过 ownership、依赖、scope、stale、发布 digest 或宿主审批。执行开始后出现新影响不得扩大原授权；按真实变化报告 blocked 或 partial。cache prune preview 和 publication plan 分别保持 preview/prepared，不表示已经删除或发布。
 
+`aw dev plugin validate` 默认保留当前共同来源的合法 frontmatter，由能力准备报告目标缺口；显式 `--claude-skill-profile minimum` 仅对声明的 Claude 目标要求 2.1.88 字段，`--strict-agent-skills` 优先使用严格 Portable 字段集，模板与普通源码适用同一规则。
+
+### 1.1 本机 target 选择
+
+`aw target list` 列出 codex、claude、antigravity、cursor、opencode、pi、gemini、copilot、grok、generic。每项保留显示名、已选状态、发现的产品面、安装入口、版本、可用性、原因码和恢复指引。可用性为 `available | missing | unsupported | unknown | notApplicable`；generic 为“通用输出，无需客户端”，可直接手动选择。
+
+`aw target set ...` 在保存前检查新增选择。新增 missing、unsupported 或 unknown 且没有 `--force` 时，整体不保存，返回 blocked/3，并列出需强制选择的项及重试命令。非法 ID 始终为参数错误/2。保留已有选择、取消选择及 `--none` 不因可用性受阻；先取消再选择属于新增。
+
+`--force` 只确认仍将不可用平台保存为 target，不安装客户端、不伪造可用性、不绕过写入接口、trust、ownership 或删除检查，也不代替 `--yes`。`--apply` 先准备候选偏好的维护影响，完成确认和输入重查后再保存；缺少确认或输入已变化时不保存候选。维护结果与偏好保存分开；保存成功后应用失败保留已保存值及其他平台结果。
+
+探测只读、有时限、限制输出，不检查登录或调用模型。一项失败不丢其他结果；unknown 不能当 missing。Claude/Copilot 仅识别 CLI，其余纳入 App 的平台按真实身份和入口判断。版本、OS 与具体路径条件见[平台边界](../maintainers/architecture/platforms.md)。
+
 ## 2. 统一结果结构
 
 所有 AW 自管、非 TUI、非子程序透传命令使用同一个结果外壳。JSON 是稳定机器合同；文本是同一结果的英文呈现。成功、部分完成、业务阻断和受控错误均走同一序列化出口。
@@ -119,6 +131,8 @@ effects 只描述本次请求拟执行的重要影响，不表示已经发生。
 | command 管理 | 命令与 package 身份、可用性、实际变化、诊断；不把 run 子程序输出包入 data |
 | self/help | 当前 executable 能力、实际参数与结果 schema 信息；使用当前注册事实，不维护另一份手写命令真值 |
 
+plugin.show 的 components 只报告五类静态声明事实；权限在 invocationPolicy.declarations 计数。dynamicComponents 保留 declared、state（unprepared/not-declared）、configKeys 与 scopes：未准备时 kinds/names/count 为 null；没有动态 renderer 时为 []/[]/0。普通查询不运行脚本，不把 null 当空集合。
+
 生命周期公开 payload 的最低固定字段为：
 
 ```typescript
@@ -148,6 +162,7 @@ type LifecycleData = {
     content: 'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown';
     requiredBy: string[];
     blockerCodes: string[];
+    // deploymentPlans、deploymentReceipts 按本次准备与执行事实提供。
     // delivery、relation、requirementScope、providerScope、satisfaction
     // 按适用条件保留，公开类型有固定定义，不能以 backend: unknown 替代。
   }>;
@@ -159,6 +174,8 @@ type LifecycleData = {
 
 生命周期数据中，`target` 表示目标平台，`requirements` 表示需求；state、roots、合法性和空值含义由对应领域定义。`blockerCodes` 关联顶层含同 subject 的完整诊断；适用的 delivery、依赖关系及需求/提供者 scope 不因简短样例而省略。
 
+平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、trust、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
+
 remainingTargets 只列本次请求选择中未完成的目标，不能把过滤掉的平台或未检查的其它项目加入自动重试。所有长期需求是否满足由已有 allSatisfied 与 coverage 事实表达，不能从本次 status=success 推断整个机器已同步。
 
 `changes.outputs` 无法证明具体结果时为 unknown，不能从“执行器返回了”推断已改变或未改变。来源准备已经启用、需求已保存但部署受阻时，必须分别列出这些变化。没有物理操作的 requirements-only 返回空 targetResults，不伪造各平台安装成功。
@@ -166,6 +183,8 @@ remainingTargets 只列本次请求选择中未完成的目标，不能把过滤
 ## 5. 机器可用的下一步与可扩展性
 
 下一步命令提供 argv 数组，不让调用者从 shell 字符串猜测引号。它是建议数据，不是执行授权。由 AW 根据可信业务事实构造，不接受插件 stderr 中嵌入的任意命令。不得自动加入 `--yes`；需要确认时用 requiresConfirmation 表达。不能安全生成命令时返回 manual 说明，不能给假定可安全重试的命令。
+
+清理失败的 manual 说明保留该插件、平台和 scope 的实际隔离文件及残留位置，供用户定位恢复；不得借用其他目标的位置，也不能把隔离或保留写成已恢复、已删除。
 
 自动化应忽略未知可选字段。新增命令、新的非必填字段和新的诊断 code 可作为兼容扩展；删除/改义字段、收窄有效值或改变 status 含义须提升输出 schemaVersion。输出协议版本与 CLI 包版本、持久文件格式分别管理。
 

@@ -37,22 +37,9 @@ export function portableRecoveryLayout(context: ScopeContext, options: PortableL
       throw new Error('portableEnvironmentUnsupported');
     }
   }
-  const relativeRoots: Record<PortableAgent, string[]> = scope === 'user' ? {
-    antigravity: ['.gemini', 'config', 'skills'],
-    cursor: ['.cursor', 'skills'],
-    opencode: ['.config', 'opencode', 'skills'],
-    pi: ['.pi', 'agent', 'skills'],
-    generic: ['.agents', 'skills'],
-  } : {
-    antigravity: ['.agents', 'skills'],
-    cursor: ['.cursor', 'skills'],
-    opencode: ['.opencode', 'skills'],
-    pi: ['.pi', 'skills'],
-    generic: ['.agents', 'skills'],
-  };
   const targetRoot = (agent: PortableAgent): string => {
-    if (!isPortablePlatformTarget(agent)) throw new Error('portableInvalidAgentSelection');
-    return paths.join(scope === 'user' ? targetHomes.home : executionCwd, ...relativeRoots[agent]);
+    if (agent !== 'generic' || !isPortablePlatformTarget(agent)) throw new Error('portableInvalidAgentSelection');
+    return paths.join(scope === 'user' ? targetHomes.home : executionCwd, '.agents', 'skills');
   };
   return {
     cwd: executionCwd, scope, generationRoot: context.generationRoot, targetRoot,

@@ -46,7 +46,7 @@
 | `pnpm test:smoke` | 运行完整 smoke suite |
 | `pnpm test:smoke:build` | 等价于 `pnpm test:dist`；校验正式 build 产物，并证明官方入口使用 `--strict-requirements` 语义 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
-| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `dev catalog create → dev plugin create/validate/test/build → dev catalog build/validate → source add --path → source sync → target set cursor → plugin install source/plugin --scope project`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
+| `pnpm test:smoke:authoring:external` | 从同一版本候选工具包在全新 Workspace v1 执行 `dev catalog create → dev plugin create/validate/test/build → dev catalog build/validate → source add --path → source sync → target set generic → plugin install source/plugin --scope project`，并验证隔离 homes 内的 receipt、项目安装结果及独立 User 声明读取 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `两个 Windows 平台包 → Eval → Core → CLI → CLI 完成 tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:release:automation` | 在已有正式 build 后验证精确 source tag、临时 bare remote、artifact 恢复与真实 smoke harness 边界；不访问官方发布目标 |
@@ -71,6 +71,8 @@
 Catalog build 的 unit/integration 必须覆盖第三方公开 `aw dev catalog build` 的默认 advisory，以及官方 strict scanner 对不匹配 requirement 的阻断。`pnpm test:smoke:build` 必须证明官方 `pnpm build` 使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖此门禁。
 
 Codex project native qualification 是显式 suite。它不得由 `pnpm test`、unit、integration、build 或 release 默认链隐式调用。runner 必须覆盖真实用户 home 环境变量，使用自己的临时 Codex home、AW home、项目和本地 marketplace，只执行本地命令，并在成功或失败后清理。报告不得包含真实或临时绝对路径、credential 或 native stderr；退出码反映最低 qualification 合同。报告是一次性兼容性证据，不是 installed ledger。macOS 报告只证明该次 macOS 运行；Windows 必须在 Windows 上独立运行，未运行时保留明确的 evidence gap。
+
+新的多平台有限资格证据见 [Native Skills 固定版本记录](../../scripts/qualification/evidence/README.md)。它分别记录宿主发现、scope 隔离与生命周期的实际覆盖，不代替模型调用语义或 AW adapter 端到端验证；0.151.0 等历史 suite 不能证明当前版本行为。
 
 Harness 的确定性测试可以使用 fake executable，但 fake 只验证 runner 本身。native kind 的 `supported` 结果、project activation 和 trust 行为只能来自显式真实 qualification；无法从 `0.151.0` 离线 JSON 或行为证明的 kind 必须报告 `unsupported`。
 
@@ -155,6 +157,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 | Codex shared native/project activation qualification | 独立 qualification | `pnpm test:qualification:codex-project-native:harness`，并在支持的本机运行 `pnpm qualification:codex-project-native`；Windows 未实跑时必须报告证据缺口 |
+| 无认证 Native 托管资格 | 独立 qualification | build 后运行 `pnpm test:qualification:native-platforms:harness`，有精确 binary 时运行 `pnpm qualification:native-platforms`；远端矩阵、边界及报告见 [CI 无认证资格](ci.md#6-无认证-native-客户端资格)。Harness 不能替代真实客户端结果 |
 | Codex native 性能与版本合同 | Unit + Integration + 独立 qualification | Codex observation/native CLI 定向 unit、grouped write 与 Git batch integration、`pnpm test:qualification:codex-native-performance:harness`；有精确 binary 时分别运行两个版本的 `pnpm qualification:codex-native-performance`，缺失版本必须报告证据缺口 |
 | User/Project Portable provider 行为 | 独立 qualification + Unit/Integration | 定向恢复测试与 `pnpm test:qualification:project-skills-provider:harness`；支持的本机运行 `pnpm qualification:project-skills-provider`，记录固定版本、OS、scope、Agent、lock、内容和失败证据，其他平台实测待补，不以实测范围建立 OS/架构门禁 |
 

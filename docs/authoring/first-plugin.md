@@ -24,7 +24,7 @@ aw dev catalog create --workspace-root /path/to/my-workspace
 ```text
 <workspace>/plugins/<plugin-name>/
   ├── .agents-plugin/
-  │   └── plugin.json          # 插件核心描述文件（Manifest v3）
+  │   └── plugin.json          # 插件核心描述文件（Manifest v4）
   ├── README.md                # 面向人类用户的说明（符合规范）
   ├── skills/                  # 静态 Skill 集合目录
   │   └── <skill-name>/
@@ -57,13 +57,13 @@ aw dev plugin create "$plugin" \
   --workspace-root "$workspace"
 ```
 
-### 真实 Manifest v3 结构解析 (`.agents-plugin/plugin.json`)
+### 真实 Manifest v4 结构解析 (`.agents-plugin/plugin.json`)
 
-`aw dev plugin create` 生成的 `plugin.json` 采用合法的 **Plugin Manifest v3** 格式：
+`aw dev plugin create` 生成的 `plugin.json` 采用合法的 **Plugin Manifest v4** 格式：
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "platforms": [
     "codex",
     "claude"
@@ -96,10 +96,10 @@ aw dev plugin create "$plugin" \
 }
 ```
 
-- `schemaVersion: 3`：Manifest 协议版本，当前工具拒绝 v2 或更早版本。
+- `schemaVersion: 4`：Manifest 协议版本，当前工具拒绝其他版本。
 - `name`：插件名称（全小写连字符命名）。
 - `version`：单插件产物版本（严格的语义化版本号）。
-- `platforms`：支持的平台列表。缺省或空数组表示支持全部七个平台；显式声明时仅允许从 `codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic` 中选择。
+- `platforms`：支持的平台列表。缺省或空数组表示支持全部十个平台；显式声明时仅允许从 `codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic` 中选择。
 - `skills: "./skills"`：指向包含静态 Skill 树的相对目录路径（注意：此处是目录路径字符串，非对象映射）。
 - `extensions`：声明指令、权限、Hook 与 Agent 角色等扩展数组。
 
@@ -186,9 +186,9 @@ AW 允许插件按需声明配置、运行时资源、托管命令与原生工�
 
 - **适用场景**：插件需要根据用户配置在安装时动态生成针对特定宿主平台的 Skill 或规则，或脚本需要在运行时读取已生效配置。
 - **机制**：
-  - 在 Manifest 中通过 `scripts.artifacts.render`（配置 `{ runner: "node", path: "./scripts/render.mjs" }`）声明渲染脚本，并声明 `artifacts.targets`。
-  - 在脚本中通过相对导入 `scripts/aw-runtime-config.mjs` 读取已生效配置。
-- **完整合同**：详细隔离上下文、16 MiB 限制、`ArtifactPlan v2` 结构与 `preApply` 脚本生命周期见 [插件运行时合同](../reference/plugin-runtime.md)。
+  - 在 Manifest 中通过 `scripts.artifacts.render`（配置 `{ runner: "node", path: "./scripts/render.mjs" }`）声明渲染脚本，并用 `artifacts.configKeys` 声明所需配置，按需声明 `sourceDirs`、`runtimeImports` 与 `scopes`。
+  - renderer 按当前平台、render scope 和 kinds 返回完整组件集合 v3；Skill 需要安装态配置时，在组件中声明 runtimeConfig，运行脚本再按生成的模块路径读取。
+- **完整合同**：详细隔离上下文、16 MiB 限制、组件集合 v3 结构与 `preApply` 脚本生命周期见 [插件运行时合同](../reference/plugin-runtime.md)。
 
 ### 扩展 3：声明托管命令（Managed Commands）
 

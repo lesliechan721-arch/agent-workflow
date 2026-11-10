@@ -4,12 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'fs-extra';
 
 import {
-} from '../../src/commands/rebuild-command.js';
-import {
   installWriteCommand,
   reinstallWriteCommand,
   syncWriteCommand,
   taskWriteCommand,
+  failedWriteCommandResult,
+  mergeWriteCommandResults,
 } from '../../src/commands/write-commands.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -23,6 +23,8 @@ import { resolvePreferencesPath } from '../../src/intent/deployment-preferences.
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { git } from '../helpers/catalog-source-fixture.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
+import type { DeploymentExclusion } from '../../src/platforms/contracts.js';
+import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -33,7 +35,15 @@ async function configureTaskCatalog(): Promise<{
   const isolation = getCurrentSourceTestIsolation();
   const root = path.join(isolation.layout.fixtureCwd, 'rebuild-task-source');
   await git(isolation.layout.fixtureCwd, ['init', '--quiet']);
-  await createDependencyCatalogSnapshotFixture(root, [
+  // These cases exercise dependency placement and preApply scheduling; they do not require client component qualification.
+  const catalogFixture = (entries: Parameters<typeof createDependencyCatalogSnapshotFixture>[1]) =>
+    createDependencyCatalogSnapshotFixture(root, entries.map((entry) => ({ ...entry,
+      configureManifest: (manifest) => {
+        entry.configureManifest?.(manifest);
+        manifest.extensions = undefined;
+      },
+    })));
+  await catalogFixture([
     { name: 'alpha' },
     { name: 'beta' },
     { name: 'root', dependencies: ['alpha'] },
@@ -81,7 +91,7 @@ async function configureTaskCatalog(): Promise<{
       'await writeFile(file, String(count + 1));',
     ].join('\n'),
   );
-  await createDependencyCatalogSnapshotFixture(root, [
+  await catalogFixture([
     { name: 'alpha' },
     { name: 'beta' },
     { name: 'root', dependencies: ['alpha'] },
@@ -122,14 +132,16 @@ async function configureTaskCatalog(): Promise<{
     cliVersion: '1.0.0',
     env: isolation.env,
   });
-  return { cwd: isolation.layout.fixtureCwd, env: isolation.env };
+  const bin = path.join(isolation.layout.fixtureCwd, 'bin');
+  await fs.outputFile(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  return { cwd: isolation.layout.fixtureCwd, env: { ...isolation.env, PATH: `${bin}${path.delimiter}${isolation.env.PATH ?? ''}` } };
 }
 
 function createClaudeNativeRunner(cwd: string, env: NodeJS.ProcessEnv) {
   const marketplaceRoots = new Map<string, string>();
   return vi.fn(async (invocation: NativeCliInvocation) => {
-    if (invocation.command !== 'claude' || invocation.args[0] !== 'plugin') {
-      return { exitCode: 0, stdout: 'claude 99.0.0', stderr: '' };
+    if (path.basename(invocation.command) !== 'claude' || invocation.args[0] !== 'plugin') {
+      return { exitCode: 0, stdout: '2.1.317 (Claude Code)', stderr: '' };
     }
     const scopeIndex = invocation.args.indexOf('--scope');
     const scope = scopeIndex === -1 ? 'user' : invocation.args[scopeIndex + 1]!;
@@ -205,7 +217,7 @@ function createClaudeNativeRunner(cwd: string, env: NodeJS.ProcessEnv) {
       delete plugins[pluginId];
       await fs.outputJson(installedPath, { plugins });
     }
-    return { exitCode: 0, stdout: 'claude 99.0.0', stderr: '' };
+    return { exitCode: 0, stdout: '2.1.317 (Claude Code)', stderr: '' };
   });
 }
 
@@ -311,7 +323,7 @@ describe('Native rebuild task execution input', () => {
     expect(result.dependencyPlan?.targets.find((target) => target.pluginId === 'team/z'))
       .toEqual(expect.objectContaining({ relation: 'requested', requestedScope: 'project' }));
     expect(result.targetResults.some((entry) => entry.target.pluginId === 'team/z'
-      && entry.state === 'completed')).toBe(true);
+      && entry.state === 'completed'), JSON.stringify(result.targetResults)).toBe(true);
     await expect(fs.readFile(path.join(env.AW_HOME!, 'z-pre-apply-count.txt'), 'utf8'))
       .resolves.toBe('1');
   });
@@ -350,5 +362,25 @@ describe('Native rebuild task execution input', () => {
       await reinstallWriteCommand(['team/alpha'], { cwd, platform: 'claude', scope: 'project' }, runtime);
     });
     expect(await Promise.all([fs.readFile(intentPath), fs.readFile(preferencesPath)])).toEqual(before);
+  });
+});
+
+describe('excluded products at the public write boundary', () => {
+  it('keeps all-excluded facts through failed writes and operation aggregation', () => {
+    const exclusion: DeploymentExclusion = { platform: 'codex', pluginId: 'team/demo', scope: { kind: 'user' },
+      productId: 'fixture-old-codex', product: null, reasonCode: 'version-unsupported', execution: 'not-run',
+      recoveryActions: ['Update Codex and prepare again.'] };
+    const error = Object.assign(new Error('platformUnavailable: version-unsupported'), { deploymentExclusions: [exclusion] });
+    const failed = failedWriteCommandResult('install', ['team/demo'], {
+      cwd: getCurrentSourceTestIsolation().layout.fixtureCwd, platform: 'codex', scope: 'user',
+    }, error);
+    expect(failed.deploymentExclusions).toEqual([exclusion]);
+    expect(failed.rebuildResults[0]!.deploymentExclusions).toEqual([exclusion]);
+    failed.operationPlan = createOperationPlan({ deploymentExclusions: [exclusion], intentChanges: [], actions: [], changes: [], warnings: [],
+      evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } });
+    const merged = mergeWriteCommandResults([failed]);
+    expect(merged.deploymentExclusions).toEqual([exclusion]);
+    expect(merged.operationPlan!.deploymentExclusions).toEqual([exclusion]);
+    expect(merged.rebuildResults[0]!.actions).toEqual([]);
   });
 });

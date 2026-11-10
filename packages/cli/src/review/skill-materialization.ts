@@ -1,38 +1,39 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { computeCanonicalDirectoryDigest } from '@lesliechan721/agent-skill-eval';
 import {
-  getCommandPackageId,
-  getManagedCommandArtifactTargets,
-  parseManagedCommandPlaceholders,
-  validateCommandEntryFiles,
+  COMPONENT_KINDS,
+  normalizeStaticPluginComponents,
+  resolveInvocationPolicy,
+  type ComponentKind,
+  type PlatformCapabilitiesV1,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../generators/local-plugin.js';
-import type { PlatformName, PluginMeta, Scope } from '../types.js';
-import { validateArtifactPlan } from '../utils/artifact-plan.js';
-import { runArtifactRenderer } from '../utils/artifact-renderer.js';
+import type { PlatformTarget, PluginMeta, Scope } from '../types.js';
+import { resolveDeployments } from '../platforms/layout.js';
+import { projectPlatform } from '../platforms/projection.js';
+import { artifactValueDigest } from '../utils/artifact-plan.js';
+import { preparePlatformComponents, resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { createCatalogRuntimeImportResolver } from '../utils/catalog-runtime-projection.js';
-import { createCodexSkillExpectedTree } from '../utils/codex-skill-staging.js';
-import {
-  createDynamicSkillExpectedTree,
-  validateSkillDirectory,
-  writeDynamicSkillTree,
-  type DynamicSkillTree,
-} from '../utils/dynamic-skill-tree.js';
-import {
-  commandSetsForProducer,
-  createManagedCommandReferenceResolver,
-  managedCommandProducerIdentity,
-  prepareManagedCommandPackage,
-  resolveSkillManagedCommandReferences,
-  type ManagedCommandCandidate,
-} from '../utils/managed-command-materialization.js';
-import { validateManagedCommandResource } from '../utils/managed-command-store.js';
-import { createAwPluginRequirementsReceipt } from '../utils/manifest.js';
-import { prepareWindowsJobHelper } from '../utils/process-tree.js';
-import { injectInstalledRuntimeConfig } from '../utils/runtime-config.js';
-import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
+import { finalizePlatformSkillProducers } from '../utils/component-command-preparation.js';
+import { getAuthoringPlatformCapabilities } from './platform-profile.js';
+
+export interface ComponentPreparationBinding {
+  plugin: string;
+  platform: PlatformTarget;
+  renderScope: Scope;
+  profileId: string;
+  capabilitiesDigest: string;
+  expectedDigest: string;
+  resourceDigest: string;
+  renderInputDigest: string;
+  outputs: Array<{ path: string; digest: string }>;
+  components: Array<{ id: string; kind: ComponentKind; name: string; source: 'static' | 'dynamic' }>;
+  omitted: import('@lesliechan721/aw-plugin-core/manifest').ExpectedComponentSet['omitted'];
+  unmet: import('@lesliechan721/aw-plugin-core/manifest').ExpectedComponentSet['unmet'];
+}
 
 export interface PreparedSkillPluginBundle {
   bundleRoot: string;
@@ -87,149 +88,128 @@ export async function prepareSkillPluginBundle(options: {
   }
 }
 
-/** Prepare only producers referenced by these isolated Skill trees, without publishing bindings. */
-export async function prepareIsolatedSkillCommandReferences(options: {
+/** Prepare a fixed author profile without discovery or native registration. */
+export async function materializeProfilePluginComponents(options: {
   plugin: PluginMeta;
   plugins?: readonly PluginMeta[];
-  platform: PlatformName;
+  platform: PlatformTarget;
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  trees: readonly DynamicSkillTree[];
-  candidates?: readonly ManagedCommandCandidate[];
+  outputRoot: string;
+  selectedSkills?: readonly string[];
+  kinds?: readonly ComponentKind[];
+  config?: ResolvedArtifactRenderConfig;
+  packagePreparationCache?: Parameters<typeof finalizePlatformSkillProducers>[0]['packagePreparationCache'];
+  signal?: AbortSignal;
   scriptTimeoutMs?: number;
-}): Promise<ManagedCommandCandidate[]> {
-  const candidates = [...(options.candidates ?? [])];
-  const pending = options.trees.map((tree) => ({ tree, scope: options.scope }));
-  const prepared = new Set(candidates.map((candidate) => getCommandPackageId(candidate.producer)));
-  const temporaryRoots: string[] = [];
-  const referencedTrees = new Set<DynamicSkillTree>();
-  try {
-    for (let index = 0; index < pending.length; index += 1) {
-      const consumer = pending[index]!;
-      const references = Object.entries(consumer.tree.files)
-        .filter(([relativePath]) => relativePath.endsWith('.md'))
-        .flatMap(([, content]) => parseManagedCommandPlaceholders(content.toString('utf8')));
-      if (references.length > 0) referencedTrees.add(consumer.tree);
-      if (references.length > 0
-        && !options.plugin.manifest.requires?.aw.capabilities?.includes('aw.managed-commands.v1')) {
-        throw new Error('commandReferenceInvalid: managed command references require aw.managed-commands.v1.');
-      }
-      for (const { reference } of references) {
-        const set = options.plugin.manifest.managedCommands?.sets.find((entry) => entry.set === reference.set);
-        if (!set) throw new Error('commandReferenceInvalid: the command set is not declared by this plugin.');
-        const producerRef = set.producer;
-        const declaration = producerRef.kind === 'artifact'
-          ? options.plugin.manifest.artifacts?.targets?.find((target) => target.id === producerRef.artifactId)
-          : undefined;
-        if (producerRef.kind === 'static-skill' && producerRef.platform !== options.platform
-          || producerRef.kind === 'artifact' && (declaration?.platform !== options.platform
-            || declaration.target !== 'codex.skill' && declaration.target !== 'claude.skill' && !declaration.scopes.includes(consumer.scope))) {
-          throw new Error('commandReferenceInvalid: the producer is unavailable on this platform and scope.');
-        }
-        if (producerRef.kind === 'package') {
-          const commandPackage = options.plugin.manifest.managedCommands?.packages.find((entry) =>
-            entry.key === producerRef.packageKey);
-          if (!commandPackage?.platforms.includes(options.platform)
-            || consumer.scope === 'user' && commandPackage.scope === 'project') {
-            throw new Error('commandReferenceInvalid: the command package is unavailable to this consumer.');
-          }
-        }
-        const producer = await managedCommandProducerIdentity({
-          ...options, producer: producerRef, scope: consumer.scope,
+}): Promise<{
+  skills: Array<{ id: string; name: string; path: string; dynamic: boolean }>;
+  preparation: ComponentPreparationBinding[];
+}> {
+  const sourceId = options.plugin.sourceId ?? 'authoring';
+  const pluginId = options.plugin.pluginId ?? `${sourceId}/${options.plugin.manifest.name}`;
+  const sourceIdentity = options.plugin.sourceIdentity ?? await computeCanonicalDirectoryDigest(options.plugin.rootDir);
+  options = { ...options, plugin: { ...options.plugin, sourceId, sourceIdentity, pluginId } };
+  const productRoot = path.join(options.env.HOME!, 'profile-host', options.platform);
+  await fs.ensureDir(productRoot);
+  const resolution = await resolveDeployments({ cwd: options.cwd, env: options.env }, {
+    plugin: {
+      sourceId, sourceIdentity,
+      pluginId, version: options.plugin.manifest.version,
+    },
+    scope: options.scope === 'project' ? { kind: 'project', projectRoot: options.cwd } : { kind: 'user' },
+    operation: 'ensure', recoveryCandidates: [],
+    discovery: {
+      platform: options.platform, availability: 'notApplicable', diagnostics: [],
+      installations: [{
+        id: `profile:${options.platform}`, product: options.platform === 'generic' ? 'generic' : 'cli',
+        version: null, availability: 'notApplicable', reasonCodes: [],
+        entry: options.platform === 'generic' ? { kind: 'generic', root: productRoot } : { kind: 'directory', configRoot: productRoot },
+      }],
+    },
+  });
+  const binding = resolution.bindings[0];
+  if (!binding) throw new Error('authorProfileLayoutMissing');
+  const preparation: ComponentPreparationBinding[] = [];
+  let packageCommandResolver: Awaited<ReturnType<typeof finalizePlatformSkillProducers>>['commandResolver'];
+  const skills: Array<{ id: string; name: string; path: string; dynamic: boolean }> = [];
+  for (const unit of resolution.renderUnits) {
+    const kinds = unit.kinds.filter((kind) => (options.kinds ?? COMPONENT_KINDS).includes(kind));
+    if (!kinds.length) continue;
+    const capabilities: PlatformCapabilitiesV1 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind);
+    const config = options.config ? { ...options.config, targetScope: unit.renderScope.kind } : await resolveArtifactRenderConfig({
+      pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest,
+      referencePlugins: options.plugins, sourceId: options.plugin.sourceId,
+      sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity,
+      platform: options.platform, scope: unit.renderScope.kind, cwd: options.cwd, env: options.env,
+    });
+    const platformResourceRoot = path.join(options.plugin.rootDir, options.platform);
+    const staticResourceRoot = await fs.pathExists(platformResourceRoot) ? platformResourceRoot : options.plugin.rootDir;
+    const staticExpected = await normalizeStaticPluginComponents({
+      pluginRoot: options.plugin.rootDir,
+      staticResourceRoot,
+      manifest: options.plugin.manifest, platform: options.platform, capabilities, allowedOutputKinds: kinds,
+    });
+    const prepared = await preparePlatformComponents({
+      ...options, renderScope: unit.renderScope.kind, kinds, capabilities, config, staticExpected,
+      staticResourceRoot,
+      commandEnv: options.env,
+    });
+    const finalized = await finalizePlatformSkillProducers({
+      ...options, renderUnit: unit, prepared,
+      skillWorkRoot: path.join(options.outputRoot, '.prepare-skills', unit.id.replace(/[^a-z0-9]/gu, '')),
+    });
+    if (unit.kinds.includes('skill')) packageCommandResolver = finalized.commandResolver;
+    try {
+      const current = finalized.prepared;
+      const relativeNativeRoot = `native/${unit.id.replace(/[^a-z0-9]/gu, '')}`;
+      const nativeRoot = path.join(options.outputRoot, relativeNativeRoot);
+      // Preserve a computed capability gap without resolving policy against unavailable producers.
+      if (current.empty !== 'unmet') {
+        await projectPlatform({
+          cwd: options.cwd, env: options.env, commandResolver: finalized.commandResolver ?? packageCommandResolver,
+          stagingRoot: nativeRoot,
+        }, {
+          binding, renderUnit: unit, capabilities,
+          components: current.expected.components,
+          resources: current.resources,
+          policy: resolveInvocationPolicy(options.plugin.manifest, options.platform),
         });
-        const identity = getCommandPackageId(producer);
-        if (prepared.has(identity)) continue;
-        prepared.add(identity);
-        if (producerRef.kind === 'package') {
-          const commandPackage = await prepareManagedCommandPackage({
-            ...options, packageKey: producerRef.packageKey, scope: producer.scope, event: 'materialize',
-            referencePlugins: options.plugins,
-          });
-          candidates.push({ producer: commandPackage.producer, sets: commandPackage.sets });
-          await commandPackage.cleanup();
-          continue;
-        }
-
-        const commandTargets = getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) =>
-          JSON.stringify(target.producer) === JSON.stringify(producerRef));
-        const requestedArtifactIds = [
-          ...(producerRef.kind === 'artifact' ? [producerRef.artifactId] : []),
-          ...commandTargets.map((target) => target.id),
-        ];
-        let artifacts: ReturnType<typeof validateArtifactPlan>['artifacts'] = [];
-        let tree: DynamicSkillTree;
-        let resourceRoot: string;
-        let render: Awaited<ReturnType<typeof runArtifactRenderer>> | undefined;
-        if (requestedArtifactIds.length > 0) {
-          if (process.platform === 'win32') {
-            await prepareWindowsJobHelper();
-          }
-          render = await runArtifactRenderer({
-            plugin: options.plugin,
-            referencePlugins: options.plugins,
-            platform: options.platform,
-            scope: producer.scope,
-            ...((declaration?.target === 'codex.skill' || declaration?.target === 'claude.skill') ? { configScope: 'user' as const } : {}),
-            event: 'materialize', cwd: options.cwd, commandEnv: options.env,
-            requestedArtifactIds, previousArtifacts: [], scriptTimeoutMs: options.scriptTimeoutMs,
-          });
-          artifacts = validateArtifactPlan({
-            manifest: options.plugin.manifest, plan: render.plan,
-            platform: options.platform, scope: producer.scope,
-            requestedArtifactIds: render.context.requestedArtifactIds,
-            renderConfig: render.context.config,
-            rendererDigest: render.target.rendererDigest, manifestDigest: render.target.manifestDigest,
-          }).artifacts;
-        }
-        if (producerRef.kind === 'static-skill') {
-          resourceRoot = path.join(options.plugin.rootDir, options.platform, 'skills', producerRef.skillKey);
-          tree = await validateSkillDirectory(resourceRoot, `${options.platform}.skill`, {
-            requirementsReceiptPolicy: 'allow',
-          });
-        } else {
-          const artifact = artifacts.find((entry) => entry.id === producerRef.artifactId);
-          if (!artifact || artifact.state !== 'present'
-            || artifact.target !== 'codex.skill' && artifact.target !== 'claude.skill') {
-            throw new Error('commandReferenceInvalid: the producer did not produce a present Skill.');
-          }
-          const sourceDirs = render!.context.artifactSources.find((source) =>
-            source.id === artifact.id && source.target === artifact.target)?.sourceDirs ?? [];
-          const receipt = createAwPluginRequirementsReceipt(
-            options.plugin.manifest,
-            options.plugin.manifest.requires?.aw.capabilities ?? [],
-          );
-          const treeOptions = {
-            sourceDirs, requireReadme: true,
-            requirementsReceipt: Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`),
-            sourceRequirementsReceiptPolicy: 'allow' as const,
-          };
-          tree = artifact.target === 'codex.skill'
-            ? await createCodexSkillExpectedTree({ ...treeOptions, artifact })
-            : await createDynamicSkillExpectedTree({ ...treeOptions, artifact });
-          await injectInstalledRuntimeConfig(tree, render!.runtimeConfigSnapshots[artifact.id]);
-          const temporaryRoot = await fs.mkdtemp(path.join(options.env.TMPDIR!, 'aw-review-command-'));
-          temporaryRoots.push(temporaryRoot);
-          resourceRoot = path.join(temporaryRoot, tree.skillKey);
-          await writeDynamicSkillTree(resourceRoot, tree);
-        }
-        const sets = commandSetsForProducer({ plugin: options.plugin, producer: producerRef, artifacts });
-        await validateManagedCommandResource(resourceRoot);
-        await validateCommandEntryFiles(resourceRoot, sets.flatMap((entry) => entry.entries));
-        await validateRuntimeSkillClosure(resourceRoot);
-        candidates.push({ producer, sets });
-        pending.push({ tree, scope: producer.scope });
       }
+      const outputs = current.empty !== 'unmet' && await fs.pathExists(nativeRoot)
+        ? [{ path: relativeNativeRoot, digest: await computeCanonicalDirectoryDigest(nativeRoot) }] : [];
+      for (const skill of finalized.skills) {
+        const component = current.expected.components.find((entry) => entry.id === skill.componentId)!;
+        if (options.selectedSkills?.length && !options.selectedSkills.includes(component.name)) continue;
+        const destination = path.join(options.outputRoot, 'skills', component.name);
+        await fs.copy(skill.resourceRoot, destination, { overwrite: false, errorOnExist: true, dereference: false });
+        skills.push({ id: component.id, name: component.name, path: destination,
+          dynamic: current.expected.sources[component.id] === 'dynamic' });
+      }
+      preparation.push({
+        plugin: options.plugin.manifest.name, platform: options.platform, renderScope: unit.renderScope.kind, profileId: capabilities.profileId,
+        capabilitiesDigest: current.evidence.capabilitiesDigest,
+        expectedDigest: artifactValueDigest(current.expected),
+        resourceDigest: current.evidence.resourceDigest,
+        renderInputDigest: current.evidence.renderInputDigest,
+        outputs,
+        components: current.expected.components.map(({ id, kind, name }) => ({ id, kind, name, source: current.expected.sources[id]! })),
+        omitted: current.expected.omitted, unmet: current.expected.unmet,
+      });
+    } finally {
+      await finalized.cleanup();
     }
-    for (const { tree, scope } of pending) {
-      if (!referencedTrees.has(tree)) continue;
-      const resolve = await createManagedCommandReferenceResolver({ ...options, scope, candidates });
-      resolveSkillManagedCommandReferences(tree, resolve);
-    }
-    return candidates;
-  } finally {
-    await Promise.all(temporaryRoots.map((root) => fs.remove(root)));
   }
+  await fs.remove(path.join(options.outputRoot, '.prepare-skills'));
+  await fs.ensureDir(path.join(options.outputRoot, 'skills'));
+  for (const selected of options.selectedSkills ?? []) {
+    if (skills.some((skill) => skill.name === selected)
+      || preparation.some((unit) => unit.unmet.some((entry) => entry.kind === 'skill' && entry.name === selected)
+        || unit.omitted.some((entry) => entry.kind === 'skill' && entry.id === `skill:${selected}`))) continue;
+    throw new Error(`Selected Skill was not produced by the complete component set: ${selected}.`);
+  }
+  return { skills, preparation };
 }
 
 export async function createIsolatedSkillEnv(

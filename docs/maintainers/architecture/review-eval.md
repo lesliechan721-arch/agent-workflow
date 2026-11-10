@@ -48,8 +48,8 @@ flowchart TD
 
 1. **物理路径安全校验**：通过 `resolvePhysicalPath` 解析物理真实路径，检查路径链上的每个祖先节点；若发现任何符号链接（symlink），立即抛出 `unsafeOutput` 错误并退出码 2。
 2. **临时环境隔离**：通过 `createIsolatedSkillEnv` 为被测插件构建临时的、由 AW 托管的 `HOME` 与工作目录，确保配置仅由平台 manifest defaults 与传入的 `--config <file>`（注意 Review 使用 `--config`，而非 `--config-file`）决定，**绝不读取用户本地真实配置 Store**。
-3. **构建与物化执行**：调用 `prepareSkillPluginBundle`，在 staging 目录中生成 bundle 与各平台投影产物，并对每个产物计算 sha256 digest。
-4. **生成 Source Binding v2**：调用 `writeAwSourceBinding`，在审核输出根目录下写入 `aw-source-binding.json`（schema 2），精确绑定 Workspace 身份、Profile 输入（Review profile 的 `id` 规范化为 `${platform}-${scope}` 如 `codex-user`）和生成的所有产物摘要。
+3. **构建与物化执行**：调用 `prepareSkillPluginBundle`，在 staging 生成 bundle；随后复用安装链的 `preparePlatformComponents`、命令 producer 收束与固定 adapter project。作者入口使用显式固定 profile，不读取本机客户端可用性；未核验能力保留 unmet。准备失败与合法空集合分别处理。
+4. **生成 Source Binding v2**：调用 `writeAwSourceBinding`，在审核输出根目录下写入 `aw-source-binding.json`（schema 2），精确绑定 Workspace 身份、Profile 输入（Review profile 的 `id` 规范化为 `${platform}-${scope}` 如 `codex-user`）和生成的所有产物摘要。绑定同时保存完整组件集合、能力、资源与投影的准备摘要。inspect 只重算来源/profile/config 并校验产物，不重新运行脚本。
 5. **原子提交通知**：全部产物和绑定校验通过后，原子移动至目标 `--out` 目录；若准备失败，仅清理内部 staging 目录，保留已产生的错误日志。后续 inspect 通过原源目标结合 `--materialization <new-dir>/aw-source-binding.json` 进行闭环核验。
 
 <a id="12-快照复用与锁内执行隔离"></a>

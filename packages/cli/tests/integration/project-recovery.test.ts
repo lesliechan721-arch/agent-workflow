@@ -2,9 +2,8 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as nativeStatus from '../../src/commands/status-v6.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { targetsSet, targetsChangeExclusion } from '../../src/commands/targets-command.js';
 import { createEmptyPreferences, resolvePreferencesPath, setTargets, type AgentId } from '../../src/intent/deployment-preferences.js';
@@ -20,11 +19,12 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-const PORTABLE_TARGETS = ['antigravity', 'cursor', 'generic', 'opencode', 'pi'] as const;
+const FIXTURE_TARGETS = ['generic', 'opencode'] as const;
 type Agent = AgentId;
 
 async function fixture(plugins: Array<{
@@ -46,7 +46,7 @@ async function fixture(plugins: Array<{
     await fs.outputFile(path.join(skill, 'SKILL.md'),
       `---\nname: ${name}\ndescription: ${name} fixture\n---\n${name}\n`);
     await fs.outputFile(path.join(skill, 'README.md'), `# ${plugin.name}\n`);
-    for (const target of PORTABLE_TARGETS) {
+    for (const target of FIXTURE_TARGETS) {
       await fs.copy(path.join(pluginRoot, 'skills'), path.join(pluginRoot, target, 'skills'));
     }
   }
@@ -54,10 +54,10 @@ async function fixture(plugins: Array<{
     name: plugin.name,
     ...(plugin.dependencies ? { dependencies: plugin.dependencies } : {}),
     configureManifest: (manifest) => {
-      manifest.platforms = [...PORTABLE_TARGETS, ...(plugin.native ? ['codex', 'claude'] as const : [])];
+      manifest.platforms = [...FIXTURE_TARGETS, ...(plugin.native ? ['codex', 'claude'] as const : [])];
       manifest.skills = './skills';
       if (plugin.native) manifest.extensions = {
-        instructions: [{ name: 'native', title: 'Native', content: 'Native.' }],
+        instructions: [{ name: 'native', title: 'Native', content: 'Native.', coverage: ['main'] }],
       };
       else delete manifest.extensions;
       if (plugin.configurable) manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string' } }, platforms: {} };
@@ -73,7 +73,7 @@ async function fixture(plugins: Array<{
   const intentPath = await resolveIntentPath({ scope, cwd, env: isolation.env });
   await writeIntentFixture({ scope, cwd, env: isolation.env }, {
     roots: plugins.filter((plugin) => plugin.name !== 'shared').map((plugin) => ({ pluginId: `team/${plugin.name}` })),
-    targets: ['cursor'],
+    targets: ['generic'],
   });
   return { cwd, sourceRoot, intentPath, env: isolation.env, scope,
     options: (targets?: Agent[]) => ({ scope, context: scope, cwd, env: isolation.env,
@@ -89,7 +89,7 @@ async function rebuildCatalogEntries(sourceRoot: string, names: string[]): Promi
     const pluginRoot = path.join(sourceRoot, 'plugins', name);
     const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
     const receipt = createAwPluginRequirementsReceipt({ name, version: '1.0.0' }, plugin.manifest.requires?.aw.capabilities ?? []);
-    for (const target of PORTABLE_TARGETS) {
+    for (const target of FIXTURE_TARGETS) {
       const root = path.join(pluginRoot, target, 'skills');
       for (const skill of await fs.readdir(root)) await fs.outputJson(path.join(root, skill, 'aw-plugin-requirements.json'), receipt);
     }
@@ -99,15 +99,12 @@ async function rebuildCatalogEntries(sourceRoot: string, names: string[]): Promi
   await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries });
 }
 
-function portableRoot(setup: Pick<Fixture, 'cwd' | 'env'>, target: typeof PORTABLE_TARGETS[number], scope: 'user' | 'project' = 'project'): string {
-  const roots = scope === 'user' ? {
-    antigravity: '.gemini/config/skills', cursor: '.cursor/skills', generic: '.agents/skills',
-    opencode: '.config/opencode/skills', pi: '.pi/agent/skills',
-  } : {
-    antigravity: '.agents/skills', cursor: '.cursor/skills', generic: '.agents/skills',
-    opencode: '.opencode/skills', pi: '.pi/skills',
-  };
-  return path.join(scope === 'user' ? setup.env.HOME! : setup.cwd, roots[target]);
+function portableRoot(setup: Pick<Fixture, 'cwd' | 'env'>, target: 'generic', scope: 'user' | 'project' = 'project'): string {
+  return path.join(scope === 'user' ? setup.env.HOME! : setup.cwd, '.agents', 'skills');
+}
+function nativeSkillRoot(setup: Pick<Fixture, 'cwd' | 'env'>, plugin: string, scope: 'user' | 'project' = 'project'): string {
+  const host = scope === 'user' ? path.join(setup.env.HOME!, '.config', 'opencode') : path.join(setup.cwd, '.opencode');
+  return path.join(host, 'plugins', `aw-team-${plugin}`, 'skills', plugin);
 }
 
 // Compare discoverable output bytes, including the AW ownership marker, across recovery operations.
@@ -122,7 +119,8 @@ async function portableOutputSnapshot(setup: Pick<Fixture, 'cwd' | 'env'>): Prom
     }
   };
   for (const scope of ['user', 'project'] as const) {
-    for (const root of new Set(PORTABLE_TARGETS.map((target) => portableRoot(setup, target, scope)))) await visit(root);
+    await visit(portableRoot(setup, 'generic', scope));
+    await visit(scope === 'user' ? path.join(setup.env.HOME!, '.config', 'opencode', 'plugins') : path.join(setup.cwd, '.opencode', 'plugins'));
   }
   return files.sort();
 }
@@ -138,6 +136,7 @@ async function nativeRuntime(setup: Fixture) {
 }
 
 describe('scoped recovery integration', () => {
+  beforeEach(() => { installNativeTestQualification({ discovery: true, trust: true }); });
   // Test Value Gate: preparation must retain a useful failure stage and known errno without exposing arbitrary error data.
   it.each(['ENAMETOOLONG', 'private-config-value'])('reports safe Portable preparation diagnostics (%s)', async (code) => {
     const setup = await fixture([{ name: 'alpha' }]);
@@ -199,23 +198,18 @@ describe('scoped recovery integration', () => {
   it('reads complete Native inventory before filtering a User check and retains an unreadable inventory error', async () => {
     const setup = await fixture([{ name: 'alpha', native: true }, { name: 'beta', native: true }], 'user');
     await setTargets(setup.options(), ['claude']);
-    const native = vi.spyOn(nativeStatus, 'statusCommandV8').mockImplementation(async (input) => ({
-      payload: { schemaVersion: 8, catalog: { primarySourceId: 'team', configDigest: 'config',
-        compositeDigest: 'catalog', sources: [] },
-      filters: { plugins: input.plugins ?? [], platform: 'both', cwd: input.cwd }, targets: [],
-      errors: [{ code: 'stateInventoryFailed', message: 'Native inventory unreadable' }] },
-      nativeObservations: [{ pluginId: 'team/alpha', platform: 'claude', content: 'satisfied', blockers: [] }],
-      nativeExtraObserved: [],
-    }) as never);
-    try {
-      const checked = await checkRecovery(['team/alpha'], { ...setup.options(), all: false });
-      expect(checked.ok).toBe(false);
-      expect(checked.requestedRoots).toEqual(['team/alpha']);
-      expect(checked.errors).toContainEqual(expect.objectContaining({ code: 'stateInventoryFailed' }));
-      expect(native).toHaveBeenCalledWith(expect.objectContaining({ scope: 'user' }));
-      expect(native.mock.calls.every(([input]) => input.plugins === undefined)).toBe(true);
-      expect(await portableOutputSnapshot(setup)).toEqual([]);
-    } finally { native.mockRestore(); }
+    const settings = path.join(setup.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    const invalidBytes = '{unreadable native inventory';
+    await fs.outputFile(settings, invalidBytes);
+    const checked = await checkRecovery(['team/alpha'], { ...setup.options(), all: false });
+    expect(checked.ok).toBe(false);
+    expect(checked.requestedRoots).toEqual(['team/alpha']);
+    expect(checked.errors).toContainEqual(expect.objectContaining({ code: 'nativeStateUnreadable' }));
+    expect(checked.coverage).toMatchObject({ scopes: ['user'] });
+    expect(checked.targetResults).toContainEqual(expect.objectContaining({ pluginId: 'team/alpha',
+      agent: 'claude', scope: 'user', delivery: { kind: 'native', platform: 'claude' } }));
+    expect(await fs.readFile(settings, 'utf8')).toBe(invalidBytes);
+    expect(await portableOutputSnapshot(setup)).toEqual([]);
   });
 
   // Test Value Gate: a selected root must include its dependencies without turning another root into its requirement.
@@ -224,7 +218,7 @@ describe('scoped recovery integration', () => {
       { name: 'beta' }], 'user');
     const options = { ...setup.options(), all: false, nativeObservations: [] };
     expect((await runRecovery('sync', ['team/alpha'], options)).ok).toBe(true);
-    await fs.remove(path.join(portableRoot(setup, 'cursor', 'user'), 'beta'));
+    await fs.remove(path.join(portableRoot(setup, 'generic', 'user'), 'beta'));
     const before = await portableOutputSnapshot(setup);
     const alpha = await checkRecovery(['team/alpha'], options);
     expect(alpha.requestedRoots).toEqual(['team/alpha']);
@@ -277,15 +271,15 @@ describe('scoped recovery integration', () => {
   it('cleans an owned Portable target without inventing a Native cleanup', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
     expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
-    const owned = path.join(portableRoot(setup, 'cursor'), 'alpha');
-    const foreign = path.join(portableRoot(setup, 'cursor'), 'foreign', 'SKILL.md');
+    const owned = path.join(portableRoot(setup, 'generic'), 'alpha');
+    const foreign = path.join(portableRoot(setup, 'generic'), 'foreign', 'SKILL.md');
     await fs.outputFile(foreign, 'Foreign.\n');
     const before = await fs.readFile(setup.intentPath);
     const nativeCliRunner = vi.fn(async () => ({ exitCode: 1, stdout: '', stderr: 'must not run' }));
     const result = await runRecovery('cleanup', ['team/alpha'], { ...setup.options(), all: false }, { nativeCliRunner });
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.targetResults).toEqual([expect.objectContaining({
-      pluginId: 'team/alpha', agent: 'cursor', delivery: expect.objectContaining({ kind: 'agent-skills', provider: 'aw' }),
+      pluginId: 'team/alpha', agent: 'generic', delivery: expect.objectContaining({ kind: 'agent-skills', provider: 'aw' }),
       execution: 'applied', blockers: [],
     })]);
     expect(nativeCliRunner).not.toHaveBeenCalled();
@@ -308,9 +302,9 @@ describe('scoped recovery integration', () => {
     const before = await Promise.all(files.map((file) => fs.readFile(file)));
     await fs.remove(setup.sourceRoot);
     await fs.remove(path.join(setup.env.AW_HOME!, 'catalog-store'));
-    const result = await runRecovery('cleanup', ['team/alpha'], { ...setup.options(['cursor']), all: false });
+    const result = await runRecovery('cleanup', ['team/alpha'], { ...setup.options(['generic']), all: false });
     expect(result.ok, JSON.stringify(result)).toBe(true);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'alpha'))).toBe(false);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'generic'), 'alpha'))).toBe(false);
     expect(await Promise.all(files.map((file) => fs.readFile(file)))).toEqual(before);
   });
 
@@ -319,28 +313,28 @@ describe('scoped recovery integration', () => {
     const timing = createCommandTestTiming(test);
     const setup = await timing.measure('fixture', 'shared Portable dependencies', () =>
       fixture([{ name: 'alpha' }, { name: 'beta', dependencies: ['alpha'], configurable: true }]));
-    await setTargets(setup.options(), ['cursor', 'pi']);
+    await setTargets(setup.options(), ['generic', 'opencode']);
     const options = { ...setup.options(), all: false };
-    expect((await timing.measure('command', 'sync Cursor consumer', () =>
-      runRecovery('sync', ['team/beta'], { ...options, targets: ['cursor'] }))).ok).toBe(true);
-    const shared = path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md');
-    const consumer = path.join(portableRoot(setup, 'cursor'), 'beta', 'SKILL.md');
+    expect((await timing.measure('command', 'sync generic consumer', () =>
+      runRecovery('sync', ['team/beta'], { ...options, targets: ['generic'] }))).ok).toBe(true);
+    const shared = path.join(portableRoot(setup, 'generic'), 'alpha', 'SKILL.md');
+    const consumer = path.join(portableRoot(setup, 'generic'), 'beta', 'SKILL.md');
     const before = await Promise.all([fs.readFile(shared), fs.readFile(consumer)]);
-    const independent = await timing.measure('command', 'sync Pi provider', () =>
-      runRecovery('sync', ['team/alpha'], { ...options, targets: ['pi'] }));
+    const independent = await timing.measure('command', 'sync OpenCode provider', () =>
+      runRecovery('sync', ['team/alpha'], { ...options, targets: ['opencode'] }));
     expect(independent.ok, JSON.stringify(independent)).toBe(true);
-    expect(independent.targetResults.map((target) => target.agent)).toEqual(['pi']);
+    expect(independent.targetResults.map((target) => target.agent)).toEqual(['opencode']);
     expect(await Promise.all([fs.readFile(shared), fs.readFile(consumer)])).toEqual(before);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'beta'))).toBe(false);
+    expect(await fs.pathExists(path.join(nativeSkillRoot(setup, 'beta')))).toBe(false);
 
-    const reviewed = await timing.measure('review', 'prepare Pi provider', () =>
-      prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['pi'] }));
-    await setTargets(setup.options(), ['cursor']);
+    const reviewed = await timing.measure('review', 'prepare OpenCode provider', () =>
+      prepareRecovery('sync', ['team/alpha'], { ...options, targets: ['opencode'] }));
+    await setTargets(setup.options(), ['generic']);
     const stale = await timing.measure('review', 'reject changed targets', () => executeRecovery(reviewed));
     expect(stale.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
     expect(stale.outputsMayHaveChanged).toBe(false);
     expect(await Promise.all([fs.readFile(shared), fs.readFile(consumer)])).toEqual(before);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(nativeSkillRoot(setup, 'alpha'), 'SKILL.md'))).toBe(true);
   }, 30_000);
 
   // Test Value Gate: Native refresh and Portable cleanup must preserve each other's valid output.
@@ -351,23 +345,23 @@ describe('scoped recovery integration', () => {
         fixture([{ name: 'dual', native: true }], scope));
       const runtime = await nativeRuntime(setup);
       await fs.remove(setup.intentPath);
-      await setTargets(setup.options(), ['codex', 'cursor']);
+      await setTargets(setup.options(), ['codex', 'generic']);
       const options = { ...setup.options(), all: false };
       const installed = await timing.measure('command', 'install mixed output', () =>
         runRecovery('install', ['team/dual'], options, runtime));
       expect(installed.ok, JSON.stringify(installed)).toBe(true);
       expect(installed.targetResults.map(({ agent, delivery }) => [agent, delivery?.kind]))
-        .toEqual([['codex', 'native'], ['cursor', 'agent-skills']]);
-      const portablePath = path.join(portableRoot(setup, 'cursor', scope), 'dual', 'SKILL.md');
+        .toEqual([['codex', 'native'], ['generic', 'agent-skills']]);
+      const portablePath = path.join(portableRoot(setup, 'generic', scope), 'dual', 'SKILL.md');
       const portableBytes = await fs.readFile(portablePath);
       const writes = await portableOutputSnapshot(setup);
       const owner = await fs.readJson(path.join(path.dirname(portablePath), SKILL_OWNER_MARKER));
-      expect(owner).toMatchObject({ owner: 'agent-workflows', kind: 'portable-skill', platform: 'cursor', scope });
+      expect(owner).toMatchObject({ owner: 'agent-workflows', kind: 'portable-skill', platform: 'generic', scope });
       const repeated = await timing.measure('command', 'sync mixed output', () =>
         runRecovery('sync', ['team/dual'], options, runtime));
       expect(repeated.ok, JSON.stringify(repeated)).toBe(true);
       expect(repeated.remainingTargets).toEqual([]);
-      expect(repeated.targetResults.find((target) => target.agent === 'cursor')?.execution).toBe('no-op');
+      expect(repeated.targetResults.find((target) => target.agent === 'generic')?.execution).toBe('no-op');
       expect(await portableOutputSnapshot(setup)).toEqual(writes);
 
       for (const narrowed of [
@@ -388,13 +382,13 @@ describe('scoped recovery integration', () => {
       expect(nativeOnly.ok, JSON.stringify(nativeOnly)).toBe(true);
       expect(await fs.readFile(portablePath)).toEqual(changedBytes);
       expect((await timing.measure('command', 'check edited Portable output', () =>
-        checkRecovery(['team/dual'], { ...options, targets: ['cursor'], nativeObservations: [] }))).ok).toBe(false);
+        checkRecovery(['team/dual'], { ...options, targets: ['generic'], nativeObservations: [] }))).ok).toBe(false);
       const nativeConfig = scope === 'user'
         ? path.join(setup.env.AW_CODEX_HOME!, 'config.toml')
         : path.join(setup.cwd, '.codex', 'config.toml');
       const nativeConfigBytes = await fs.readFile(nativeConfig);
       const cleaned = await timing.measure('command', 'cleanup Portable output', () =>
-        runRecovery('cleanup', ['team/dual'], { ...options, targets: ['cursor'], force: true }, runtime));
+        runRecovery('cleanup', ['team/dual'], { ...options, targets: ['generic'], force: true }, runtime));
       expect(cleaned.ok, JSON.stringify(cleaned)).toBe(true);
       expect(await fs.pathExists(portablePath)).toBe(false);
       expect(await fs.readFile(nativeConfig)).toEqual(nativeConfigBytes);
@@ -405,14 +399,14 @@ describe('scoped recovery integration', () => {
   // Test Value Gate: changing selected targets must preserve prior output while the replacement conflicts.
   it.each([false, true])('preserves a prior target while foreign output blocks its replacement (renamed Skill=%s)', async (renamedSkill) => {
     const setup = await fixture([{ name: 'alpha' }]);
-    await setTargets(setup.options(), ['pi']);
+    await setTargets(setup.options(), ['opencode']);
     expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
-    const prior = path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md');
+    const prior = path.join(nativeSkillRoot(setup, 'alpha'), 'SKILL.md');
     const priorBytes = await fs.readFile(prior);
     const skillName = renamedSkill ? 'current' : 'alpha';
     if (renamedSkill) {
       const pluginRoot = path.join(setup.sourceRoot, 'plugins', 'alpha');
-      for (const root of ['skills', ...PORTABLE_TARGETS.map((target) => `${target}/skills`)]) {
+      for (const root of ['skills', ...FIXTURE_TARGETS.map((target) => `${target}/skills`)]) {
         await fs.move(path.join(pluginRoot, root, 'alpha'), path.join(pluginRoot, root, skillName));
         await fs.writeFile(path.join(pluginRoot, root, skillName, 'SKILL.md'),
           `---\nname: ${skillName}\ndescription: Current fixture\n---\nCurrent.\n`);
@@ -420,8 +414,8 @@ describe('scoped recovery integration', () => {
       await rebuildCatalogEntries(setup.sourceRoot, ['alpha']);
       await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: setup.env, impactConfirmed: true });
     }
-    await setTargets(setup.options(), ['cursor']);
-    const replacement = path.join(portableRoot(setup, 'cursor'), skillName);
+    await setTargets(setup.options(), ['generic']);
+    const replacement = path.join(portableRoot(setup, 'generic'), skillName);
     const foreign = path.join(replacement, 'SKILL.md');
     await fs.outputFile(foreign, 'Foreign replacement.\n');
     const before = await portableOutputSnapshot(setup);
@@ -444,7 +438,7 @@ describe('scoped recovery integration', () => {
     const recovered = await runRecovery('sync', [], setup.options());
     expect(recovered.ok, JSON.stringify(recovered)).toBe(true);
     expect(await fs.readJson(path.join(replacement, SKILL_OWNER_MARKER)))
-      .toMatchObject({ pluginId: 'team/alpha', platform: 'cursor', skill: skillName });
+      .toMatchObject({ pluginId: 'team/alpha', platform: 'generic', skill: skillName });
     expect(await fs.readFile(prior)).toEqual(priorBytes);
     expect(await fs.readFile(path.join(saved, 'SKILL.md'), 'utf8')).toBe('Foreign replacement.\n');
   });
@@ -458,7 +452,7 @@ describe('scoped recovery integration', () => {
     else if (change === 'preferences') {
       const filePath = await resolvePreferencesPath(setup.options());
       await fs.outputFile(filePath, JSON.stringify(createEmptyPreferences()));
-    } else await fs.outputFile(path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md'), 'Foreign.\n');
+    } else await fs.outputFile(path.join(portableRoot(setup, 'generic'), 'alpha', 'SKILL.md'), 'Foreign.\n');
     const before = await portableOutputSnapshot(setup);
     const result = await executeRecovery(plan);
     expect(result.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
@@ -518,28 +512,28 @@ describe('scoped recovery integration', () => {
     expect(result.targetResults.find((target) => target.pluginId === 'offline/beta')?.blockers.length).toBeGreaterThan(0);
     expect(result.targetResults.find((target) => target.pluginId === 'team/alpha')?.execution).toBe('applied');
     expect(result.remainingTargets.map((target) => target.pluginId)).toContain('offline/beta');
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'generic'), 'alpha', 'SKILL.md'))).toBe(true);
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
   });
 
   // Test Value Gate: exact retry pairs cannot turn into a Cartesian product of roots and Agents.
   it('runs only exact non-rectangular retry pairs and preserves declaration bytes', async () => {
     const setup = await fixture([{ name: 'alpha' }, { name: 'beta' }]);
-    await setTargets(setup.options(), ['cursor', 'pi']);
+    await setTargets(setup.options(), ['generic', 'opencode']);
     const before = await fs.readFile(setup.intentPath);
     const result = await runRecovery('sync', [], {
       ...setup.options(), exactTargets: [
-        { pluginId: 'team/alpha', agent: 'cursor' }, { pluginId: 'team/beta', agent: 'pi' },
+        { pluginId: 'team/alpha', agent: 'generic' }, { pluginId: 'team/beta', agent: 'opencode' },
       ],
     });
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.targetResults.map(({ pluginId, agent }) => [pluginId, agent])).toEqual([
-      ['team/alpha', 'cursor'], ['team/beta', 'pi'],
+      ['team/alpha', 'generic'], ['team/beta', 'opencode'],
     ]);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md'))).toBe(true);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'beta', 'SKILL.md'))).toBe(true);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'beta'))).toBe(false);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha'))).toBe(false);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'generic'), 'alpha', 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(nativeSkillRoot(setup, 'beta'), 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'generic'), 'beta'))).toBe(false);
+    expect(await fs.pathExists(path.join(nativeSkillRoot(setup, 'alpha')))).toBe(false);
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
   });
 
@@ -547,7 +541,7 @@ describe('scoped recovery integration', () => {
     const setup = await fixture([{ name: 'alpha' }]);
     const before = await fs.readFile(setup.intentPath);
     const result = await runRecovery('sync', [], {
-      ...setup.options(), exactTargets: [{ pluginId: 'team/misspelled', agent: 'cursor' }],
+      ...setup.options(), exactTargets: [{ pluginId: 'team/misspelled', agent: 'generic' }],
     });
     expect(result.ok).toBe(false);
     expect(result.blockers.map((entry) => entry.code)).toContain('invalidExactTargets');
@@ -560,16 +554,16 @@ describe('scoped recovery integration', () => {
   it('keeps shared bytes and prior output when local Agent selection changes', async () => {
     const setup = await fixture([{ name: 'alpha' }]);
     const before = await fs.readFile(setup.intentPath);
-    expect((await targetsSet({ cwd: setup.cwd, env: setup.env, targets: ['cursor'] })).ok).toBe(true);
+    expect((await targetsSet({ cwd: setup.cwd, env: setup.env, targets: ['generic'] })).ok).toBe(true);
     expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
-    const cursorSkill = path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md');
-    const cursorBytes = await fs.readFile(cursorSkill);
-    expect((await targetsSet({ cwd: setup.cwd, env: setup.env, targets: ['pi'] })).ok).toBe(true);
+    const genericSkill = path.join(portableRoot(setup, 'generic'), 'alpha', 'SKILL.md');
+    const genericBytes = await fs.readFile(genericSkill);
+    expect((await targetsSet({ cwd: setup.cwd, env: setup.env, targets: ['opencode'], force: true })).ok).toBe(true);
     const second = await runRecovery('sync', [], setup.options());
-    expect(second.selection.agents).toEqual(['pi']);
+    expect(second.selection.agents).toEqual(['opencode']);
     expect(second.ok, JSON.stringify(second)).toBe(true);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md'))).toBe(true);
-    expect(await fs.readFile(cursorSkill)).toEqual(cursorBytes);
+    expect(await fs.pathExists(path.join(nativeSkillRoot(setup, 'alpha'), 'SKILL.md'))).toBe(true);
+    expect(await fs.readFile(genericSkill)).toEqual(genericBytes);
     expect(await fs.readFile(setup.intentPath)).toEqual(before);
   });
 
@@ -583,8 +577,8 @@ describe('scoped recovery integration', () => {
     const options = { cwd: setup.cwd, env: setup.env, context: setup.scope,
       cliVersion: '1.0.0', apply: true, runtime: { directCli: true } };
     const result = action === 'set'
-      ? await targetsSet({ ...options, targets: ['pi'] })
-      : await targetsChangeExclusion({ ...options, selector: 'team/alpha', target: 'cursor', excluded: true });
+      ? await targetsSet({ ...options, targets: ['opencode'], force: true })
+      : await targetsChangeExclusion({ ...options, selector: 'team/alpha', target: 'generic', excluded: true });
     expect(result.ok).toBe(false);
     expect(result.preferencesChanged).toBe(false);
     expect(result.outputsMayHaveChanged).toBe(false);
@@ -600,12 +594,12 @@ describe('scoped recovery integration', () => {
     expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
     const intentBefore = await fs.readFile(setup.intentPath);
     const result = await targetsSet({ cwd: setup.cwd, env: setup.env, context: setup.scope,
-      cliVersion: '1.0.0', apply: true, yes: true, targets: ['pi'], runtime: { directCli: true } });
+      cliVersion: '1.0.0', apply: true, yes: true, targets: ['opencode'], force: true, runtime: { directCli: true } });
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(result.preferencesChanged).toBe(true);
-    expect(result.policy?.targets).toEqual(['pi']);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha', 'SKILL.md'))).toBe(true);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'cursor'), 'alpha'))).toBe(false);
+    expect(result.policy?.targets).toEqual(['opencode']);
+    expect(await fs.pathExists(path.join(nativeSkillRoot(setup, 'alpha'), 'SKILL.md'))).toBe(true);
+    expect(await fs.pathExists(path.join(portableRoot(setup, 'generic'), 'alpha'))).toBe(false);
     expect(await fs.readFile(setup.intentPath)).toEqual(intentBefore);
   });
 
@@ -615,12 +609,12 @@ describe('scoped recovery integration', () => {
     const outputs = await portableOutputSnapshot(setup);
     let changed = false;
     const result = await targetsSet({ cwd: setup.cwd, env: setup.env, context: setup.scope,
-      cliVersion: '1.0.0', apply: true, yes: true, targets: ['pi'], runtime: { directCli: true,
+      cliVersion: '1.0.0', apply: true, yes: true, targets: ['opencode'], force: true, runtime: { directCli: true,
         debugLogger: { log: async (event) => {
           if (!changed && event.type === 'performance:stage' && event.data?.name === 'recovery.plan'
             && event.data.phase === 'success') {
             changed = true;
-            await setTargets(setup.options(), ['opencode']);
+            await setTargets(setup.options(), ['cursor']);
           }
         } },
       } });
@@ -628,9 +622,9 @@ describe('scoped recovery integration', () => {
     expect(result.ok).toBe(false);
     expect(result.preferencesChanged).toBe(false);
     expect(result.blockers.map((entry) => entry.code)).toContain('operationReviewStale');
-    expect((await fs.readJson(await resolvePreferencesPath(setup.options()))).targets).toEqual(['opencode']);
+    expect((await fs.readJson(await resolvePreferencesPath(setup.options()))).targets).toEqual(['cursor']);
     expect(await portableOutputSnapshot(setup)).toEqual(outputs);
-    expect(await fs.pathExists(path.join(portableRoot(setup, 'pi'), 'alpha'))).toBe(false);
+    expect(await fs.pathExists(path.join(nativeSkillRoot(setup, 'alpha')))).toBe(false);
   });
 
   // Test Value Gate: missing machine targets reject install before declaration; a later output failure retains its verified root.
@@ -649,8 +643,8 @@ describe('scoped recovery integration', () => {
     expect(noTarget.declarationChanged).toBe(false);
     expect(await fs.pathExists(setup.intentPath)).toBe(false);
     expect(await portableOutputSnapshot(setup)).toEqual([]);
-    await setTargets(setup.options(), ['cursor']);
-    const foreign = path.join(portableRoot(setup, 'cursor'), 'alpha', 'SKILL.md');
+    await setTargets(setup.options(), ['generic']);
+    const foreign = path.join(portableRoot(setup, 'generic'), 'alpha', 'SKILL.md');
     await fs.outputFile(foreign, 'Foreign.\n');
     const failed = await runRecovery('install', ['team/alpha'], installOptions);
     expect(failed.ok).toBe(false);
@@ -666,7 +660,7 @@ describe('scoped recovery integration', () => {
     const missing = await readRecoveryStatus(options);
     expect(missing.inventory?.[0]?.targetResults[0]).toMatchObject({ content: 'absent', observation: 'missing' });
     expect((await runRecovery('sync', [], setup.options())).ok).toBe(true);
-    const owned = path.join(portableRoot(setup, 'cursor'), 'alpha');
+    const owned = path.join(portableRoot(setup, 'generic'), 'alpha');
     const ownerPath = path.join(owned, SKILL_OWNER_MARKER);
     const owner = await fs.readJson(ownerPath);
     const before = await fs.readFile(setup.intentPath);
@@ -678,7 +672,7 @@ describe('scoped recovery integration', () => {
     expect(unsafe.ok).toBe(false);
     expect(await fs.pathExists(owned)).toBe(true);
     await fs.writeJson(ownerPath, { ...owner, filesDigest: 'damaged' });
-    const foreign = path.join(portableRoot(setup, 'cursor'), 'foreign', 'SKILL.md');
+    const foreign = path.join(portableRoot(setup, 'generic'), 'foreign', 'SKILL.md');
     await fs.outputFile(foreign, 'Foreign.\n');
     const cleaned = await runRecovery('cleanup', ['team/alpha'], { ...setup.options(), all: false, force: true });
     expect(cleaned.ok, JSON.stringify(cleaned)).toBe(true);
@@ -704,7 +698,7 @@ describe('scoped recovery integration', () => {
     for (const status of statuses) expect(status).toMatchObject({
       schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: true,
       allSatisfied: true, errors: [], inventory: [{ pluginId: 'team/alpha', targetResults: [{
-        agent: 'cursor', content: 'satisfied', observation: 'verified', blockers: [],
+        agent: 'generic', content: 'satisfied', observation: 'verified', blockers: [],
       }] }],
     });
     expect(statuses[1]).toEqual(statuses[0]);

@@ -168,12 +168,13 @@ describe('TuiController session retirement', () => {
         updates: { mode: 'fast' }, changes: [{ key: 'mode', title: '模式', before: 'safe', after: 'fast' }] },
       evidence: { ...baseEvidence, config: { scope: 'user', storeDigest: 'fixture',
         affectedTargets: [{ platform: 'claude', scope: 'project' }],
-        sharedNativeRenderTargets: [{ id: 'command-set.tools', skillKey: 'provider', refreshKeys: ['mode'], platform: 'claude' }] } },
+        sharedNativeRenderUnits: [{ pluginName: 'demo', platform: 'claude', renderScope: 'user',
+          configKeys: ['mode'], dynamicComponents: false, commandSets: [] }] } },
     });
     expect(review.requiresConfirmation).toBe(apply);
     expect(review.changes).toContainEqual(expect.objectContaining({
-      title: apply ? '重新生成 provider 原生 Skill' : 'Claude Code 由平台共用的内容待同步',
-      description: apply ? '配置来源为用户配置；更新 Claude Code 由平台共用的内容会影响所有启用项目。' : '用户配置已保存；原生 Skill 尚未重新生成。',
+      title: apply ? '重新生成 demo 共享组件集合' : 'Claude Code 由平台共用的内容待同步',
+      description: apply ? '配置来源为用户配置；更新 Claude Code 由平台共用的内容会影响所有启用项目。' : '用户配置已保存；共享组件集合 尚未重新生成。',
     }));
     expect(review.changes.some((entry) => entry.title === '当前项目 Agent role 继续使用当前项目配置')).toBe(false);
   });
@@ -182,18 +183,19 @@ describe('TuiController session retirement', () => {
       intent: { kind: 'configSave', pluginId: 'official/demo', scope: 'user', apply: true, retryApply: true },
       evidence: { ...baseEvidence, config: { scope: 'user', storeDigest: 'fixture',
         affectedTargets: [{ platform: 'claude', scope: 'project' }],
-        sharedNativeRenderTargets: [{ id: 'command-set.tools', skillKey: 'provider', refreshKeys: ['mode'], platform: 'claude' }] } },
+        sharedNativeRenderUnits: [{ pluginName: 'demo', platform: 'claude', renderScope: 'user',
+          configKeys: ['mode'], dynamicComponents: false, commandSets: [] }] } },
     });
     expect(review.requiresConfirmation).toBe(true);
-    expect(review.changes).toContainEqual(expect.objectContaining({ title: '重新生成 provider 原生 Skill',
-      description: expect.stringContaining('Claude Code 由平台共用的内容会影响所有启用项目') }));
+    expect(review.changes).toContainEqual(expect.objectContaining({ title: '重新生成 demo · Claude Code 共享组件集合',
+      description: expect.stringContaining('影响所有启用项目') }));
   });
   it('shows a retained package from the cleanup plan with shared impact and an exact remove command', () => {
     const packageId = `pkg_${'2'.repeat(64)}`;
     const recoveryAction = `aw command package remove ${packageId} --yes`;
     const action = { kind: 'retainManagedCommandPackage' as const, pluginId: 'official/demo', scope: 'user' as const,
       producer: { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
-        kind: 'package' as const, key: 'tools', platform: null, scope: 'user' as const, projectRoot: null },
+        kind: 'package' as const, key: 'tools', platform: null, placementKey: null, scope: 'user' as const, projectRoot: null },
       packageId, commandIds: ['installed-command'], availability: 'ready' as const, recoveryAction };
     const review = buildOperationReviewProjection({
       intent: { kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/demo', platform: 'codex', scope: 'project' },
@@ -214,7 +216,7 @@ describe('TuiController session retirement', () => {
         evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] },
         actions: [{ kind: 'syncManagedCommandPackage', pluginId: 'official/demo', scope: 'user',
           producer: { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
-            kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null },
+            kind: 'package', key: 'tools', platform: null, placementKey: null, scope: 'user', projectRoot: null },
           sets: [{ set: 'guide', state: 'present', entries: [{ key: 'subagent', variant: 'default',
             runner: 'node', entry: 'runtime.mjs', args: ['--fixed', 'value'], env: {}, envFrom: {}, cwd: 'resource' }] },
           { set: 'optional', state: 'disabled', entries: [] }], files: [], contentDigest: 'sha256:prepared',
@@ -6750,8 +6752,8 @@ describe('TUI v4 Review safety', () => {
   });
 
   it.each([
-    [false, ['Codex 由平台共用的内容待同步'], '用户配置已保存；动态 Skill 尚未重新生成。'],
-    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为用户配置；更新 Codex 由平台共用的内容会影响所有启用项目。'],
+    [false, ['Codex 由平台共用的内容待同步'], '用户配置已保存；共享组件集合（动态名称和数量待准备） 尚未重新生成。'],
+    [true, ['重新生成 enhance 共享组件集合（动态名称和数量待准备）'], '配置来源为用户配置；更新 Codex 由平台共用的内容会影响所有启用项目。'],
   ] as const)('describes shared native render impact when apply=%s', async (apply, impactTitles, description) => {
     const evidence: OperationEvidence = {
       ...baseEvidence,
@@ -6763,10 +6765,8 @@ describe('TUI v4 Review safety', () => {
           { platform: 'codex', scope: 'user' },
           { platform: 'codex', scope: 'project' },
         ],
-        sharedNativeRenderTargets: [
-          { id: 'explore', skillKey: 'codex-explore', refreshKeys: ['exploreWait'] },
-          { id: 'subagent', skillKey: 'codex-subagent-guide', refreshKeys: ['subagentWait'] },
-        ],
+        sharedNativeRenderUnits: [{ pluginName: 'enhance', platform: 'codex', renderScope: 'user',
+          configKeys: ['exploreWait', 'subagentWait'], dynamicComponents: true, commandSets: [] }],
       },
     };
     const controller = new TuiController(dependencies({
@@ -6802,10 +6802,8 @@ describe('TUI v4 Review safety', () => {
           schemaIdentity: 'sha256:schema',
           storeDigest: 'sha256:store',
           affectedTargets: [],
-          sharedNativeRenderTargets: [
-            { id: 'explore', skillKey: 'codex-explore', refreshKeys: ['exploreWait'] },
-            { id: 'subagent', skillKey: 'codex-subagent-guide', refreshKeys: ['subagentWait'] },
-          ],
+          sharedNativeRenderUnits: [{ pluginName: 'enhance', platform: 'codex', renderScope: 'user',
+            configKeys: ['exploreWait', 'subagentWait'], dynamicComponents: true, commandSets: [] }],
         },
       };
       const controller = new TuiController(dependencies({

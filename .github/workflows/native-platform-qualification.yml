@@ -1,0 +1,94 @@
+name: Native platform qualification (no authentication)
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Fixed-version client to verify
+        type: choice
+        default: all
+        options: [all, codex, pi, claude, gemini, copilot, grok]
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:qualification:native-platforms:harness
+      - name: Bind the candidate to this source and exact bundle bytes
+        shell: bash
+        run: |
+          node scripts/qualification/native-platforms.mjs --write-candidate "$RUNNER_TEMP/candidate.json" --source-sha "$GITHUB_SHA"
+          tar -czf "$RUNNER_TEMP/native-candidate.tgz" packages/cli/dist packages/cli/plugins-dist packages/plugin-core/dist packages/agent-skill-eval/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-qualification-candidate
+          path: |
+            ${{ runner.temp }}/candidate.json
+            ${{ runner.temp }}/native-candidate.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  qualify:
+    needs: candidate
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    env:
+      QUALIFICATION_CLIENT: ${{ inputs.client || 'all' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-qualification-candidate
+          path: ${{ runner.temp }}/native-candidate
+      - name: Restore the same candidate without rebuilding
+        shell: bash
+        run: tar -xzf "$RUNNER_TEMP/native-candidate/native-candidate.tgz"
+      - name: Verify real clients in credential-free temporary environments
+        shell: bash
+        run: |
+          node scripts/qualification/native-platforms.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --report "$RUNNER_TEMP/native-results/report.json"
+      - name: Summarize observed scope results
+        if: always()
+        shell: bash
+        run: node scripts/qualification/native-platform-summary.mjs "$RUNNER_TEMP/native-results/report.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-qualification-${{ matrix.runner }}
+          path: ${{ runner.temp }}/native-results/report.json
+          if-no-files-found: error
+          retention-days: 14

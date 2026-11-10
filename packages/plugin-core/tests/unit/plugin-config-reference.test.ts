@@ -32,7 +32,7 @@ const config = () => normalizePluginConfigDefinition({ schemaVersion: 3, fields 
 describe('Config v3 scalar references and property uniqueness', () => {
   // Protect schema and bundle consumers from silently dropping relational constraints.
   it('retains public constraints in source and bundle, and derives capability requirements', () => {
-    const source = { schemaVersion: 3, name: 'backend-choice', version: '1.0.0', description: 'Example',
+    const source = { schemaVersion: 4, name: 'backend-choice', version: '1.0.0', description: 'Example',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       config: { schemaVersion: 3, fields } }
     assertPluginManifestStructure(source)

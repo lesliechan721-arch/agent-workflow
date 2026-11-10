@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { compilePluginConfigDefinition, getPluginConfigDependencyKeys } from './plugin-config.js';
-import { formatManifestPlatformsForError, supportsPlatform } from './platform-support.js';
+import { formatManifestPlatformsForError, supportsPlatform, NATIVE_PLATFORM_TARGETS } from './platform-support.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
 import { normalizeNativeToolClosure, type NativeToolClosure } from './native-tools.js';
 import type {
@@ -24,7 +24,7 @@ export interface ManagedCommandReference { set: string; key: string; variant: st
 export interface ManagedCommandPermission { command: ManagedCommandReference; argsPrefix: string[] }
 export type PermissionCommand = string | ManagedCommandPermission;
 export type ManagedCommandProducerRef =
-  | { kind: 'artifact'; artifactId: string }
+  | { kind: 'artifact'; platform: PlatformName; artifactId: string }
   | { kind: 'static-skill'; platform: PlatformName; skillKey: string }
   | { kind: 'package'; packageKey: string };
 export interface ManagedCommandPackage {
@@ -38,10 +38,10 @@ export interface ManagedCommands { packages: ManagedCommandPackage[]; sets: Mana
 export interface ProducerIdentity {
   sourceId: string; sourceIdentity: string; pluginName: string;
   kind: 'artifact' | 'static-skill' | 'package'; key: string;
-  platform: PlatformName | null; scope: Scope; projectRoot: string | null;
+  platform: PlatformName | null; scope: Scope; projectRoot: string | null; placementKey: string | null;
 }
 export interface CommandIdentity {
-  schemaVersion: 1; producer: ProducerIdentity; set: string; key: string; variant: string;
+  schemaVersion: 2; producer: ProducerIdentity; set: string; key: string; variant: string;
 }
 export interface InstalledCommandProducer {
   schemaVersion: 1;
@@ -185,14 +185,14 @@ export function normalizeManagedCommandPermission(value: unknown, field = 'comma
 function normalizeProducerRef(value: unknown, field: string): ManagedCommandProducerRef {
   const input = object(value, field, ['kind', 'artifactId', 'platform', 'skillKey', 'packageKey']);
   if (input.kind === 'artifact') {
-    object(value, field, ['kind', 'artifactId']);
-    return { kind: 'artifact', artifactId: nonempty(input.artifactId, `${field}.artifactId`) };
+    object(value, field, ['kind', 'platform', 'artifactId']);
+    return { kind: 'artifact', platform: enumeration(input.platform, `${field}.platform`, NATIVE_PLATFORM_TARGETS), artifactId: nonempty(input.artifactId, `${field}.artifactId`) };
   }
   if (input.kind === 'static-skill') {
     object(value, field, ['kind', 'platform', 'skillKey']);
     const skillKey = normalizeCommandRelativeFile(input.skillKey, `${field}.skillKey`);
     if (skillKey.includes('/')) throw new Error(`Invalid ${field}.skillKey: expected a declared Skill key.`);
-    return { kind: 'static-skill', platform: enumeration(input.platform, `${field}.platform`, ['codex', 'claude']), skillKey };
+    return { kind: 'static-skill', platform: enumeration(input.platform, `${field}.platform`, NATIVE_PLATFORM_TARGETS), skillKey };
   }
   object(value, field, ['kind', 'packageKey']);
   if (input.kind !== 'package') throw new Error(`Invalid ${field}.kind.`);
@@ -205,7 +205,7 @@ export function normalizeManagedCommands(value: unknown, field = 'managedCommand
     return input.packages.map((entry, index): ManagedCommandPackage => {
       const label = `${field}.packages[${index}]`;
       const item = object(entry, label, ['key', 'scope', 'platforms', 'sourceDir', 'render', 'refreshKeys']);
-      const platforms = strings(item.platforms, `${label}.platforms`, true).map((platform) => enumeration<PlatformName>(platform, `${label}.platforms`, ['codex', 'claude']));
+      const platforms = strings(item.platforms, `${label}.platforms`, true).map((platform) => enumeration<PlatformName>(platform, `${label}.platforms`, NATIVE_PLATFORM_TARGETS));
       if (platforms.length === 0) throw new Error(`Invalid ${label}.platforms: expected a non-empty array.`);
       if (item.render !== undefined && item.render !== true) throw new Error(`Invalid ${label}.render: expected true.`);
       const refreshKeys = item.refreshKeys === undefined ? [] : strings(item.refreshKeys, `${label}.refreshKeys`, true);
@@ -242,7 +242,7 @@ export function normalizeManagedCommands(value: unknown, field = 'managedCommand
 }
 
 export function normalizeProducerIdentity(value: unknown, field = 'producer identity'): ProducerIdentity {
-  const input = object(value, field, ['sourceId', 'sourceIdentity', 'pluginName', 'kind', 'key', 'platform', 'scope', 'projectRoot']);
+  const input = object(value, field, ['sourceId', 'sourceIdentity', 'pluginName', 'kind', 'key', 'platform', 'scope', 'projectRoot', 'placementKey']);
   const sourceId = nonempty(input.sourceId, `${field}.sourceId`);
   if (!/^[a-z][a-z0-9-]{0,31}$/u.test(sourceId)) throw new Error(`Invalid ${field}.sourceId.`);
   const sourceIdentity = nonempty(input.sourceIdentity, `${field}.sourceIdentity`);
@@ -254,7 +254,7 @@ export function normalizeProducerIdentity(value: unknown, field = 'producer iden
   if (kind === 'package') name(key, `${field}.key`);
   const platform = kind === 'package'
     ? (input.platform === null ? null : (() => { throw new Error(`Invalid ${field}.platform: package requires null.`); })())
-    : enumeration(input.platform, `${field}.platform`, ['codex', 'claude']);
+    : enumeration(input.platform, `${field}.platform`, NATIVE_PLATFORM_TARGETS);
   const scope = enumeration(input.scope, `${field}.scope`, ['user', 'project']);
   let projectRoot: string | null = null;
   if (scope === 'user') {
@@ -267,29 +267,37 @@ export function normalizeProducerIdentity(value: unknown, field = 'producer iden
     const driveCanonical = process.platform === 'win32' ? canonical.replace(/^[a-z]:/u, (drive) => drive.toUpperCase()) : canonical;
     if (driveCanonical !== projectRoot) throw new Error(`Invalid ${field}.projectRoot: expected a canonical absolute path.`);
   }
-  return { sourceId, sourceIdentity, pluginName, kind, key, platform, scope, projectRoot };
+  let placementKey: string | null;
+  if (kind === 'package') {
+    if (input.placementKey !== null) throw new Error(`Invalid ${field}.placementKey: package requires null.`);
+    placementKey = null;
+  } else {
+    placementKey = nonempty(input.placementKey, `${field}.placementKey`);
+    if (!/^sha256:[0-9a-f]{64}$/u.test(placementKey)) throw new Error(`Invalid ${field}.placementKey: expected verified physical identity.`);
+  }
+  return { sourceId, sourceIdentity, pluginName, kind, key, platform, scope, projectRoot, placementKey };
 }
 export function normalizeCommandIdentity(value: unknown, field = 'command identity'): CommandIdentity {
   const input = object(value, field, ['schemaVersion', 'producer', 'set', 'key', 'variant']);
-  if (input.schemaVersion !== 1) throw new Error(`Invalid ${field}.schemaVersion: expected 1.`);
+  if (input.schemaVersion !== 2) throw new Error(`Invalid ${field}.schemaVersion: expected 2.`);
   // Identity records have no defaults: every identity field is part of the hash contract.
   if (input.variant === undefined) throw new Error(`Invalid ${field}.variant: required.`);
-  return { schemaVersion: 1, producer: normalizeProducerIdentity(input.producer, `${field}.producer`), set: name(input.set, `${field}.set`), key: name(input.key, `${field}.key`), variant: name(input.variant, `${field}.variant`) };
+  return { schemaVersion: 2, producer: normalizeProducerIdentity(input.producer, `${field}.producer`), set: name(input.set, `${field}.set`), key: name(input.key, `${field}.key`), variant: name(input.variant, `${field}.variant`) };
 }
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+export function canonicalizeIdentityValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalizeIdentityValue).join(',')}]`;
   if (value !== null && typeof value === 'object') {
     const input = value as Record<string, unknown>;
-    return `{${Object.keys(input).sort().map((key) => `${JSON.stringify(key)}:${canonical(input[key])}`).join(',')}}`;
+    return `{${Object.keys(input).sort().map((key) => `${JSON.stringify(key)}:${canonicalizeIdentityValue(input[key])}`).join(',')}}`;
   }
   return JSON.stringify(value);
 }
-export function canonicalizeCommandIdentity(value: CommandIdentity): string { return canonical(normalizeCommandIdentity(value)); }
+export function canonicalizeCommandIdentity(value: CommandIdentity): string { return canonicalizeIdentityValue(normalizeCommandIdentity(value)); }
 export function getPluginCommandId(identity: CommandIdentity): string {
   return `cmdp_${createHash('sha256').update(canonicalizeCommandIdentity(identity), 'utf8').digest('hex').slice(0, 16)}`;
 }
 export function getCommandPackageId(producer: ProducerIdentity): string {
-  return `pkg_${createHash('sha256').update(canonical(normalizeProducerIdentity(producer)), 'utf8').digest('hex')}`;
+  return `pkg_${createHash('sha256').update(canonicalizeIdentityValue(normalizeProducerIdentity(producer)), 'utf8').digest('hex')}`;
 }
 export function isManagedCommandId(value: unknown): value is string { return typeof value === 'string' && (PLUGIN_COMMAND_ID.test(value) || USER_COMMAND_ID.test(value)); }
 export function isUserCommandId(value: unknown): value is string { return typeof value === 'string' && USER_COMMAND_ID.test(value); }
@@ -376,13 +384,14 @@ export function validateManagedCommandManifest(manifest: NormalizedPluginManifes
     if (producer.kind === 'package') {
       if (!managed.packages.some((pkg) => pkg.key === producer.packageKey)) throw new Error(`Invalid managedCommands set ${item.set}: unknown package producer.`);
     } else if (producer.kind === 'artifact') {
-      const targets = (manifest.artifacts?.targets ?? []).filter((target) => target.id === producer.artifactId);
-      if (targets.length !== 1 || !['codex.skill', 'claude.skill'].includes(targets[0]!.target)) throw new Error(`Invalid managedCommands set ${item.set}: artifact producer must uniquely identify a platform Skill.`);
-      platform = targets[0]!.target === 'claude.skill' ? 'claude' : 'codex';
+      platform = producer.platform;
+      if (!manifest.artifacts) throw new Error(`Invalid managedCommands set ${item.set}: dynamic Skill producer requires artifacts.`);
+      if (!supportsPlatform(manifest, producer.platform)) throw new Error(`Invalid managedCommands set ${item.set}: producer platform is outside plugin support.`);
+      if (producer.artifactId.startsWith('command-set.') || producer.artifactId.startsWith('command-package.') || /[/\\]/u.test(producer.artifactId)) throw new Error(`Invalid managedCommands set ${item.set}: reserved or invalid component ID.`);
     } else {
       platform = producer.platform;
       if (!supportsPlatform(manifest, producer.platform)) throw new Error(`Invalid managedCommands set ${item.set}: static Skill producer requires ${producer.platform.toUpperCase()} support, but ${formatManifestPlatformsForError(manifest)}.`);
-      if (!manifest.skills || (manifest.artifacts?.targets ?? []).some((target) => target.platform === producer.platform && target.skillKey === producer.skillKey)) throw new Error(`Invalid managedCommands set ${item.set}: expected a static Skill producer.`);
+      if (!manifest.skills) throw new Error(`Invalid managedCommands set ${item.set}: expected a static Skill producer.`);
     }
     if (item.mode === 'dynamic') validateKeys(item.refreshKeys, `managedCommands.sets.${item.set}.refreshKeys`, platform);
   }
@@ -407,11 +416,10 @@ export function getManagedCommandArtifactTargets(manifest: NormalizedPluginManif
       const pkg = managed.packages.find((item) => item.key === producer.packageKey)!;
       result.push({ ...base, surface: { kind: 'aw', name: 'managed-commands' }, scopes: [pkg.scope], packageKey: pkg.key });
     } else if (set.producer.kind === 'static-skill') {
-      result.push({ ...base, platform: set.producer.platform, surface: { kind: 'platform', platform: set.producer.platform }, scopes: ['user'] });
+      result.push({ ...base, platform: set.producer.platform, surface: { kind: 'platform', platform: set.producer.platform }, scopes: ['user', 'project'] });
     } else {
-      const target = manifest.artifacts!.targets!.find((item) => item.id === (producer as Extract<ManagedCommandProducerRef, { kind: 'artifact' }>).artifactId)!;
-      const platform = target.target === 'claude.skill' ? 'claude' : 'codex';
-      result.push({ ...base, platform, surface: { kind: 'platform', platform }, scopes: ['user'] });
+      const platform = producer.platform;
+      result.push({ ...base, platform, surface: { kind: 'platform', platform }, scopes: manifest.artifacts?.scopes ?? ['user', 'project'] });
     }
   }
   return result;
@@ -466,4 +474,19 @@ export async function validateManagedCommandSources(pluginRoot: string, manifest
       set.producer.kind === 'package' && set.producer.packageKey === pkg.key && set.mode === 'static' ? set.entries : []);
     await validateCommandEntryFiles(current, entries);
   }
+}
+
+/** Validates command-only v2 renderer output before matching it to the exact request. */
+export function normalizeCommandSetArtifact(value: unknown, field = 'command set artifact'): CommandSetArtifact {
+  const input = object(value, field, ['id', 'target', 'kind', 'platform', 'state', 'refreshKeys', 'entries', 'disabledReason']);
+  if (input.target !== 'aw.command-set' || input.kind !== 'commandSet') throw new Error(`Invalid ${field}: expected aw.command-set.`);
+  const state = enumeration(input.state, `${field}.state`, ['present', 'disabled']);
+  const entries = normalizeCommandDefinitions(input.entries, `${field}.entries`);
+  if (state === 'disabled' && entries.length) throw new Error(`Invalid ${field}: disabled set requires empty entries.`);
+  if (state !== 'disabled' && input.disabledReason !== undefined) throw new Error(`Invalid ${field}.disabledReason.`);
+  return { id: nonempty(input.id, `${field}.id`), target: 'aw.command-set', kind: 'commandSet', state,
+    refreshKeys: strings(input.refreshKeys, `${field}.refreshKeys`, true), entries,
+    ...(input.platform === undefined ? {} : { platform: enumeration(input.platform, `${field}.platform`, NATIVE_PLATFORM_TARGETS) }),
+    ...(input.disabledReason === undefined ? {} : { disabledReason: nonempty(input.disabledReason, `${field}.disabledReason`) }),
+  };
 }

@@ -109,7 +109,7 @@ async function escape(instance: ReturnType<typeof render>): Promise<void> {
 describe('TUI config save batch result', () => {
   it('shows a shared package as retained after cleanup using the unchanged command result schema', async () => {
     const producer = { sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
-      kind: 'package' as const, key: 'tools', platform: null, scope: 'user' as const, projectRoot: null };
+      kind: 'package' as const, key: 'tools', platform: null, placementKey: null, scope: 'user' as const, projectRoot: null };
     const recovery = `aw command package remove ${getCommandPackageId(producer)} --yes`;
     const commandResult = { producer, state: 'partial', commandIds: ['installed-command'], removedCommandIds: [],
       errors: [{ code: 'commandResourceUnavailable', message: 'The retained package is unavailable.' }], recoveryActions: [recovery] };
@@ -130,7 +130,7 @@ describe('TUI config save batch result', () => {
   });
   it('keeps a retained command package visible in config Review and Result without a platform target', async () => {
     const producer = { sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`,
-      pluginName: 'demo', kind: 'package' as const, key: 'tools', platform: null,
+      pluginName: 'demo', kind: 'package' as const, key: 'tools', platform: null, placementKey: null,
       scope: 'user' as const, projectRoot: null };
     const commandResult = { producer, state: 'failed', commandIds: [], removedCommandIds: [],
       errors: [{ code: 'commandPackageApplyFailed', message: 'The command package could not be refreshed.' }],

@@ -14,6 +14,8 @@ aw target set claude
 aw plugin install browser-use --scope user --yes
 ```
 
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。实际调用控制与客户端能力按目标核对，无法保留的组件语义会显示为未满足。
+
 需要提前安装 `agent-browser` 和所需浏览器，安装要求以[上游文档](https://agent-browser.dev/)为准。安装前脚本检查 `agent-browser --version` 能否在当前 PATH 中运行；检查失败时阻止该目标安装。`--yes` 授权运行此脚本。
 
 ## 使用

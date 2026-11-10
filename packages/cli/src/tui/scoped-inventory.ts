@@ -61,6 +61,8 @@ export interface ScopedInventoryViewModel {
 }
 
 export interface RecoveryInventoryInput {
+  existingTargets?: Array<{ pluginId: string; agent: AgentId; scope: Scope }>;
+  observedTargets?: RecoveryTarget[];
   scope: Scope;
   intent: { state: string };
   selection: { agents: AgentId[]; preferences: string };
@@ -77,17 +79,13 @@ export interface RecoveryInventoryInput {
   extraObserved?: Array<{
     pluginId: string; agent: AgentId | null; scope: Scope;
     delivery: RecoveryTarget['delivery']; observation: RecoveryTarget['observation'];
-    content?: RecoveryTarget['content']; backend?: unknown;
+    content?: RecoveryTarget['content']; backend?: unknown; expectedVersion?: string; installedVersion?: string;
   }>;
 }
 
 export interface ScopedInventoryLoadResult extends RecoveryInventoryInput {
-  nativeSnapshot: {
-    payload: StatusV8Payload;
-    pluginSummaries: readonly (Pick<StatusV8PluginSummary, 'pluginId'> & Partial<StatusV8PluginSummary>)[];
-    targetRevisions: readonly StatusTargetRevision[];
-    dependencyOverviews: readonly PluginDependencyOverviewViewModel[];
-  };
+  /** Current observed relations. A refreshed scope replaces its earlier verified edges. */
+  dependencyOverviews?: readonly PluginDependencyOverviewViewModel[];
 }
 
 const stateOrder: Record<InventoryState, number> = {
@@ -95,7 +93,7 @@ const stateOrder: Record<InventoryState, number> = {
 };
 
 function agentForPlatform(platform: PlatformName): AgentId {
-  return platform === 'claude' ? 'claude' : 'codex';
+  return platform;
 }
 
 function targetIdentity(target: Pick<InventoryTarget, 'platform' | 'scope' | 'agent' | 'delivery'>): string {
@@ -191,6 +189,13 @@ export function buildScopedInventory(options: {
         scope: target.scope, location: 'scope', state: targetState(target),
         reasonCodes: target.blockers.map((blocker) => blocker.code),
         agent: target.agent, delivery: target.delivery.kind,
+        ...(target.expectedVersion ? { expectedVersion: target.expectedVersion } : {}),
+        ...(target.installedVersion ? { installedVersion: target.installedVersion } : {}),
+        ...(target.delivery.kind === 'native' ? {
+          observation: target.observation === 'unknown' ? 'unknown' as const : 'known' as const,
+          actual: recovery.existingTargets?.some((item) => item.pluginId === target.pluginId
+            && item.agent === target.agent && item.scope === target.scope) === true,
+        } : {}),
         ...(target.delivery.kind === 'agent-skills' ? {
           observation: target.content === 'drifted' || target.observation === 'verified' || target.observation === 'missing'
             ? 'known' as const : 'unknown' as const,
@@ -236,6 +241,24 @@ export function buildScopedInventory(options: {
           }
         }
       }
+      for (const target of recovery.observedTargets ?? []) {
+        if (target.pluginId !== dependency.pluginId || target.providerScope !== target.scope
+          || !target.contributions?.some((entry) => entry.root === root.pluginId && entry.scope === recovery.scope
+            && entry.path.at(-1) === dependency.pluginId && entry.path.length > 1)
+          || !root.targetResults.some((consumer) => consumer.agent === target.agent)
+          || targets.some((entry) => entry.agent === target.agent && entry.scope === target.scope)) continue;
+        targets.push({ ...(target.delivery?.kind === 'native' ? { platform: target.delivery.platform } : {}),
+          scope: target.scope, location: target.scope === recovery.scope ? 'scope' : 'sharedUser',
+          state: targetState(target), agent: target.agent,
+          ...(target.expectedVersion ? { expectedVersion: target.expectedVersion } : {}),
+          ...(target.installedVersion ? { installedVersion: target.installedVersion } : {}),
+          ...(target.delivery ? { delivery: target.delivery.kind } : {}),
+          observation: target.observation === 'unknown' ? 'unknown' : 'known',
+          actual: recovery.existingTargets?.some((item) => item.pluginId === target.pluginId
+            && item.agent === target.agent && item.scope === target.scope) === true,
+          reasonCodes: target.blockers.map((blocker) => blocker.code),
+        });
+      }
       return { pluginId: dependency.pluginId, displayName: dependency.displayName, targets };
     });
     return {
@@ -265,8 +288,15 @@ export function buildScopedInventory(options: {
     extras.set(target.pluginId, [...(extras.get(target.pluginId) ?? []), {
       ...(target.delivery?.kind === 'native' ? { platform: target.delivery.platform } : {}),
       scope: recovery.scope, location: 'scope', state, reasonCodes: [],
+      ...(target.expectedVersion ? { expectedVersion: target.expectedVersion } : {}),
+      ...(target.installedVersion ? { installedVersion: target.installedVersion } : {}),
       ...(target.agent ? { agent: target.agent } : {}),
       ...(target.delivery ? { delivery: target.delivery.kind } : {}),
+      ...(target.delivery?.kind === 'native' ? {
+        observation: target.observation === 'unknown' ? 'unknown' as const : 'known' as const,
+        actual: recovery.existingTargets?.some((item) => item.pluginId === target.pluginId
+          && item.agent === target.agent && item.scope === target.scope) === true,
+      } : {}),
       ...(target.delivery?.kind === 'agent-skills' ? {
         observation: target.content === 'drifted' || target.observation === 'verified' || target.observation === 'missing'
           ? 'known' as const : 'unknown' as const,

@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflows.dev/schemas/agent-command-context-v1.json",
+  "$ref": "https://agent-workflows.dev/schemas/platform-components.json#/$defs/agentCommandContextV1"
+}

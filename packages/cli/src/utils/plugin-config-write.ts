@@ -1,17 +1,13 @@
 import { resolveWorkContext } from '../intent/work-context.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
-import { statusTargetHasLiveConfigConsumer } from '../commands/status-v6.js';
 import { readDemand, demandNativeProjection } from '../recovery/demand.js';
 import { createScopeContext } from '../intent/scope-context.js';
 import type {
   PreApplyAuthorizationTarget,
   RebuildCommandRuntime,
 } from '../commands/rebuild-command.js';
-import { selectPluginConfigProfile, type PlatformTarget, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
-import {
-  flattenStatusTargets,
-  statusCommandV8,
-} from '../commands/status-v6.js';
+import { selectPluginConfigProfile, NATIVE_PLATFORM_TARGETS, type PlatformTarget, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
+import { readScopedRecoveryStatus } from '../recovery/status.js';
 import { syncWriteCommand } from '../commands/write-commands.js';
 import {
   CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION,
@@ -47,7 +43,7 @@ import {
   summarizeEffectivePluginConfig,
   type PluginConfigValue,
 } from './plugin-config.js';
-import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigTargets } from './plugin-config-impact.js';
+import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigRenderUnits } from './plugin-config-impact.js';
 import { collectPluginConfigReferenceEvidence, resolvePluginConfigReferencePlugins, resolvePluginConfigReferenceConsumers } from './plugin-config-references.js';
 import { orderPluginMetasByDependencies, resolvePluginMetaDependencyClosure } from './plugin-dependencies.js';
 import {
@@ -62,6 +58,7 @@ import {
   redactPluginScriptOutput,
 } from './plugin-scripts.js';
 import { resolveClaudeProjectKey, resolveCodexProjectKey, resolveCliPackageRoot } from './paths.js';
+import { createProjectLocationKey, resolveRequiredCanonicalRepoRoot } from './state-paths.js';
 import { readSafeOperationError } from './safe-operation-diagnostic.js';
 import {
   withAwHomeMutationLock,
@@ -69,6 +66,7 @@ import {
 } from './aw-home-mutation-lock.js';
 import fs from 'fs-extra';
 import path from 'node:path';
+import { parsePluginId } from './multi-source-catalog.js';
 import crypto from 'node:crypto';
 
 export interface PluginConfigWriteRequest {
@@ -253,9 +251,9 @@ function dedupeTargets(targets: ReceiptTargetIdentity[]): ReceiptTargetIdentity[
 }
 
 async function resolveProjectKey(platform: PlatformName, cwd: string): Promise<string> {
-  return platform === 'codex'
-    ? resolveCodexProjectKey(cwd)
-    : resolveClaudeProjectKey(cwd);
+  return platform === 'codex' ? resolveCodexProjectKey(cwd)
+    : platform === 'claude' ? resolveClaudeProjectKey(cwd)
+      : createProjectLocationKey(await resolveRequiredCanonicalRepoRoot(cwd));
 }
 
 async function createCandidateTarget(options: {
@@ -293,29 +291,24 @@ async function discoverVisibleTargets(options: {
   const consumers = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env,
     plugins: options.rebuildRuntime?.referencePlugins });
   const selectors = consumers.map((plugin) => plugin.pluginId ?? plugin.manifest.name);
-  const status = await statusCommandV8({
-    plugins: selectors.length ? selectors : [selector],
-    cwd: options.cwd,
-    env: options.env,
-    nativeCliRunner: options.nativeCliRunner,
-    ...(options.scope === 'project' ? { scope: 'project' } : {}),
-    ...(options.rebuildRuntime?.catalogOperationContext
-      ? { catalogOperationContext: options.rebuildRuntime.catalogOperationContext }
-      : {}),
+  const status = await readScopedRecoveryStatus({ scope: options.scope,
+    cwd: options.cwd, env: options.env,
+    nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
+    catalogOperationContext: options.rebuildRuntime?.catalogOperationContext,
+    codexObservationSession: options.rebuildRuntime?.codexObservationSession,
   });
-  for (const statusTarget of flattenStatusTargets(status.payload.targets)) {
-    if (!selectors.includes(statusTarget.pluginId ?? '')
-      && !consumers.some((plugin) => plugin.manifest.name === statusTarget.pluginName)
-      && statusTarget.pluginId !== selector && statusTarget.pluginName !== options.pluginName) continue;
-    // A declaration alone is not a consumer. Config apply cannot install it.
-    if (!statusTargetHasLiveConfigConsumer(statusTarget)) continue;
-    if (options.scope === 'user' && statusTarget.scope !== 'user') continue;
-    targets.push(await createCandidateTarget({
-      pluginName: statusTarget.pluginName,
-      platform: statusTarget.platform,
-      scope: statusTarget.scope,
-      cwd: options.cwd,
-    }));
+  for (const statusTarget of status.existingTargets ?? []) {
+    if (statusTarget.agent === 'generic' || statusTarget.scope !== options.scope) continue;
+    const identity = parsePluginId(statusTarget.pluginId);
+    if (!selectors.includes(statusTarget.pluginId) && statusTarget.pluginId !== selector
+      && !selectors.some((entry) => !entry.includes('/') && entry === identity.pluginName)) continue;
+    // Existing targets already require this scope's observed activation or owned directory.
+    const plugin = consumers.find((entry) => entry.pluginId === statusTarget.pluginId);
+    targets.push({ ...await createCandidateTarget({ pluginName: identity.pluginName,
+      platform: statusTarget.agent, scope: statusTarget.scope, cwd: options.cwd }),
+      pluginId: statusTarget.pluginId, sourceId: identity.sourceId,
+      ...(plugin?.sourceIdentity ? { sourceIdentity: plugin.sourceIdentity } : {}),
+    });
   }
 
   return { targets: dedupeTargets(targets), failures };
@@ -336,7 +329,7 @@ async function reinstallVisibleTargets(options: {
   preApplyConfirmed?: boolean;
   changedConfigKeys?: string[];
 }): Promise<InternalConfigApplyResult> {
-  const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
+  const nativeCliRunner = options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner ?? getDefaultNativeCliRunner();
   const discovered = options.discovered ?? await resolveConfigApplyTargets(options);
   const managedCommandProducerCache = options.rebuildRuntime?.managedCommandProducerCache
     ?? new Map<string, Promise<CommandProducerResult>>();
@@ -374,7 +367,7 @@ async function reinstallVisibleTargets(options: {
       }
       const blockedPackages = packages.filter((target) => {
         const platforms = plugin.manifest.managedCommands?.packages.find((entry) => entry.key === target.packageKey
-          && entry.scope === target.producer.scope)?.platforms ?? ['codex', 'claude'];
+          && entry.scope === target.producer.scope)?.platforms ?? NATIVE_PLATFORM_TARGETS;
         return dependencyPackageFailed(target.producer.scope) || dependencies.some((dependency) =>
           platforms.some((platform) => failed.has(`${dependency}\0${platform}\0${target.producer.scope}`)
             || (target.producer.scope === 'project' && failed.has(`${dependency}\0${platform}\0user`))));
@@ -759,7 +752,7 @@ async function resolveConfigApplyTargets(options: {
         scope: options.scope,
         cwd: options.cwd,
         env: options.env,
-        nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+        nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
         rebuildRuntime: options.rebuildRuntime,
       });
   const commands = await discoverPluginConfigManagedCommandPackages({
@@ -780,8 +773,8 @@ async function configApplyHasValidSharedNativeTarget(options: {
   const plugins = await resolvePluginConfigReferenceConsumers({ plugin: options.plugin, env: options.env, plugins: options.plugins });
   for (const plugin of plugins) {
     for (const target of options.targets.filter((target) => target.pluginName === plugin.manifest.name)) {
-      const shared = pluginSharedNativeConfigTargets(plugin);
-      if (!shared.some((entry) => (entry.platform ?? 'codex') === target.platform)) continue;
+      const shared = pluginSharedNativeConfigRenderUnits(plugin);
+      if (!shared.some((entry) => entry.platform === target.platform)) continue;
       const effective = await resolveEffectivePluginConfig({ sourceId: plugin.sourceId,
         sourceIdentity: plugin.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity,
         manifest: plugin.manifest, platform: target.platform, targetScope: 'user',
@@ -838,18 +831,18 @@ export async function resolveConfigPreApplyAuthorization(options: {
   const selector = options.plugin.sourceId
     ? options.plugin.pluginId!
     : options.plugin.manifest.name;
-  const groups = new Map<Scope, ReceiptTargetIdentity[]>();
+  const groups = new Map<string, ReceiptTargetIdentity[]>();
   for (const target of applyTargets) {
-    const targets = groups.get(target.scope) ?? [];
+    const key = `${target.scope}\0${target.platform}`;
+    const targets = groups.get(key) ?? [];
     targets.push(target);
-    groups.set(target.scope, targets);
+    groups.set(key, targets);
   }
   const authorization: PreApplyAuthorizationTarget[] = [];
   const availableApplyTargets: ReceiptTargetIdentity[] = [];
   const unavailableTargetResults: ReceiptTargetResult[] = [];
   const resolveGroup = async (targets: ReceiptTargetIdentity[]): Promise<boolean> => {
-    const platforms = new Set(targets.map((target) => target.platform));
-    const platform = platforms.size === 2 ? 'both' as const : [...platforms][0]!;
+    const platform = targets[0]!.platform;
     let context: Awaited<ReturnType<typeof createScopeContext>> | undefined;
     try {
       context = await createScopeContext({ scope: targets[0]!.scope, cwd: options.cwd, env: options.env });
@@ -862,7 +855,7 @@ export async function resolveConfigPreApplyAuthorization(options: {
       }, {
         ...options.rebuildRuntime,
         env: context.env,
-        nativeCliRunner: options.nativeCliRunner,
+        nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
         previewOperationPlan: true,
         resolvePreApplyAuthorization: true,
         executionInput: {
@@ -984,7 +977,7 @@ export async function replayConfigRuntimeWrites(options: {
   preApplyAuthorizedTargets?: readonly PreApplyAuthorizationTarget[];
 }): Promise<ConfigRuntimeReplayReceipt> {
   if (!options.awHomeMutationToken) {
-    await prepareNativeCliExecution({ env: options.env, runner: options.nativeCliRunner });
+    await prepareNativeCliExecution({ env: options.env, runner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner });
   }
   return withAwHomeMutationLock({
     env: options.env,
@@ -1000,7 +993,7 @@ export async function replayConfigRuntimeWrites(options: {
           cwd: options.cwd,
           env,
           applyTargets: options.applyTargets,
-          nativeCliRunner: options.nativeCliRunner,
+          nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
           rebuildRuntime,
         });
       } catch {
@@ -1018,7 +1011,7 @@ export async function replayConfigRuntimeWrites(options: {
         cwd: options.cwd,
         env,
         applyTargets: discovered.targets,
-        nativeCliRunner: options.nativeCliRunner,
+        nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
         rebuildRuntime,
         reinstallCommandImpl: options.reinstallCommandImpl,
       });
@@ -1088,7 +1081,7 @@ export async function replayConfigRuntimeWrites(options: {
         cwd: options.cwd,
         env,
         applyTargets: options.applyTargets,
-        nativeCliRunner: options.nativeCliRunner,
+        nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime,
         discovered,
@@ -1136,7 +1129,11 @@ export interface PreparedPluginConfigApply {
 }
 
 function configApplyRequestedTargets(plan: RecoveryPlan): RecoveryPlan['receipt']['requestedTargets'] {
-  return plan.receipt.requestedTargets.filter((target) => !plan.receipt.targetResults.some((result) =>
+  const targets = plan.joint
+    ? plan.joint.children.filter((child) => child.command !== 'cleanup' && child.command !== 'uninstall')
+      .flatMap((child) => configApplyRequestedTargets(child))
+    : plan.receipt.requestedTargets;
+  return targets.filter((target) => !plan.receipt.targetResults.some((result) =>
     result.pluginId === target.pluginId && result.agent === target.agent && result.scope === target.scope
       && (result.satisfaction === 'unsupported' || result.satisfaction === 'excluded')));
 }
@@ -1152,7 +1149,7 @@ async function prepareConfigApplyPackages(options: ApplyPluginConfigOptions, plu
   const context = options.context ?? options.scope;
   const discoveries: ManagedCommandPackageDiscovery[] = [];
   const scopes: Scope[] = context === 'project' ? ['user', 'project'] : ['user'];
-  const nativeTargets = configApplyRequestedTargets(plan).flatMap((target): ReceiptTargetIdentity[] => target.agent === 'codex' || target.agent === 'claude'
+  const nativeTargets = configApplyRequestedTargets(plan).flatMap((target): ReceiptTargetIdentity[] => target.agent !== 'generic'
     ? [{ pluginName: target.pluginId.split('/').at(-1)!, pluginId: target.pluginId, platform: target.agent, scope: target.scope }] : []);
   for (const plugin of plugins) {
     for (const scope of scopes) {
@@ -1255,7 +1252,7 @@ export async function preparePluginConfigApply(options: ApplyPluginConfigOptions
     scope: target.scope,
   }));
   const retainedLegacyTargets: ReceiptTargetIdentity[] = [];
-  if (exactTargets?.some((target) => target.agent === 'codex' || target.agent === 'claude')) {
+  if (exactTargets?.length) {
     const { readRecoveryStatus } = await import('../recovery/status.js');
     const observed = await readRecoveryStatus({ context, cwd: options.cwd, env: options.env, cliVersion: version,
       nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
@@ -1265,7 +1262,7 @@ export async function preparePluginConfigApply(options: ApplyPluginConfigOptions
     const live = new Set(observed.existingTargets?.map(key));
     const owned = new Set(observed.ownedTargets?.map(key));
     exactTargets = exactTargets.filter((target, index) => {
-      if ((target.agent === 'codex' || target.agent === 'claude') && owned.has(key(target)) && !live.has(key(target))) {
+      if (owned.has(key(target)) && !live.has(key(target))) {
         retainedLegacyTargets.push(options.applyTargets![index]!);
         return false;
       }
@@ -1284,7 +1281,7 @@ export async function preparePluginConfigApply(options: ApplyPluginConfigOptions
   }, {
     ...options.rebuildRuntime,
     referencePlugins,
-    nativeCliRunner: options.nativeCliRunner,
+    nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
     awHomeMutationToken: options.awHomeMutationToken,
     preApplyConfirmed: options.preApplyConfirmed,
   });
@@ -1303,9 +1300,9 @@ export async function preparePluginConfigApply(options: ApplyPluginConfigOptions
       profiles, cwd: options.cwd, env: options.env });
     const authorization = await resolveConfigPreApplyAuthorization({
       plugin: options.plugin, scope: context, cwd: options.cwd, env: options.env,
-      applyTargets: configApplyRequestedTargets(plan).flatMap((target): ReceiptTargetIdentity[] => target.agent === 'codex' || target.agent === 'claude'
+      applyTargets: configApplyRequestedTargets(plan).flatMap((target): ReceiptTargetIdentity[] => target.agent !== 'generic'
         ? [{ pluginName: target.pluginId.split('/').at(-1)!, pluginId: target.pluginId, platform: target.agent, scope: target.scope }] : []),
-      nativeCliRunner: options.nativeCliRunner,
+      nativeCliRunner: options.nativeCliRunner ?? options.rebuildRuntime?.nativeCliRunner,
       rebuildRuntime: { ...plan.runtime, referencePlugins },
     });
     const portableAuthorization = (current: RecoveryPlan): PreApplyAuthorizationTarget[] => [
@@ -1350,7 +1347,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
       }
       if (options.sharedNativeApplyConfirmed !== true && await configApplyHasValidSharedNativeTarget({
         plugin: options.plugin, cwd: options.cwd, env: options.env, plugins: options.rebuildRuntime?.referencePlugins,
-        targets: configApplyRequestedTargets(prepared.plan).flatMap((target): ReceiptTargetIdentity[] => target.agent === 'codex' || target.agent === 'claude'
+        targets: configApplyRequestedTargets(prepared.plan).flatMap((target): ReceiptTargetIdentity[] => target.agent !== 'generic'
           ? [{ pluginName: target.pluginId.split('/').at(-1)!, pluginId: target.pluginId, platform: target.agent, scope: target.scope }] : []),
       })) throwSharedNativeApplyConfirmationRequired();
       const discoveryErrors: ConfigApplyError[] = prepared.commandDiscoveryErrors.map((error) => ({
@@ -1489,7 +1486,7 @@ async function prepareConfigMutationApplySelection(options: ApplyPluginConfigWri
   try {
     prepared = await preparePluginConfigApply({ ...options, plugin: options.plugin });
     const requestedTargets = configApplyRequestedTargets(prepared.plan);
-    if (requestedTargets.some((target) => target.agent !== 'codex' && target.agent !== 'claude')) return undefined;
+    if (requestedTargets.some((target) => target.agent === 'generic')) return undefined;
     const visibleTargets: ReceiptTargetIdentity[] = requestedTargets.map((target) => ({
       pluginName: target.pluginId.split('/').at(-1)!, pluginId: target.pluginId,
       platform: target.agent as PlatformName, scope: target.scope,

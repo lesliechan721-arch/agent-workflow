@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeCommandDefinition, normalizeCommandLaunch, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 import { nativeToolFixture } from '../helpers/native-tools.js';
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
-import { syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
+import { syncManagedCommandPackage, writeInstalledCommandProducer } from '../../src/utils/managed-command-store.js';
 import { prepareNativeToolContext } from '../../src/utils/native-tool-context.js';
 import { buildManagedCommandEnvironment, prepareManagedCommandRun, runManagedCommand } from '../../src/utils/managed-command-runtime.js';
+import { captureNativeToolChanges } from '../../src/utils/native-tool-review.js';
 
 // Test Value Gate: installed evidence and real preparation protect pre-spawn failure,
 // source-update isolation, nested producer authorization, and reserved environment boundaries.
@@ -14,7 +15,7 @@ describe('installed native command preparation', () => {
   let isolated: IsolatedTestEnvironment;
   let source: string;
   let report: string;
-  const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'native-tool', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null };
+  const producer: ProducerIdentity = { sourceId: 'fixture', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'native-tool', kind: 'package', key: 'tools', platform: null, placementKey: null, scope: 'user', projectRoot: null };
   const ready = { state: 'ready' as const, protocol: 'aw.windows-job.v1', executable: process.execPath };
   beforeEach(async () => {
     isolated = await createIsolatedTestEnv();
@@ -46,6 +47,30 @@ describe('installed native command preparation', () => {
     expect(prepared.env.aw_native_tool_context).toBeUndefined();
     expect(prepared.env.AW_NATIVE_OTHER).toBeUndefined();
     expect(JSON.parse(prepared.env.AW_NATIVE_TOOL_CONTEXT!)).toEqual({ schemaVersion: 1, tools: { job: ready } });
+  });
+
+  // Test Value Gate: native closure Review must not interpret an unrelated physical producer as a closure deletion.
+  it('captures native closure changes only for the complete requested producer identities', async () => {
+    const original = nativeToolFixture();
+    const replacement = nativeToolFixture({ policy: 'preferred' });
+    const firstProducer: ProducerIdentity = { ...producer, kind: 'static-skill', platform: 'opencode', key: 'provider', placementKey: `sha256:${'a'.repeat(64)}` };
+    const secondProducer = { ...firstProducer, placementKey: `sha256:${'c'.repeat(64)}` };
+    const sets = [{ set: 'tools', state: 'present' as const, entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'run.mjs' })] }];
+    const roots = [path.join(isolated.layout.fixtureCwd, 'placement-a'), path.join(isolated.layout.fixtureCwd, 'placement-b')];
+    for (const [index, root] of roots.entries()) {
+      for (const [relative, content] of Object.entries(original.files)) await fs.outputFile(path.join(root, relative), content);
+      await writeInstalledCommandProducer(root, { schemaVersion: 1, producer: index === 0 ? firstProducer : secondProducer, sets, nativeTools: original.closure });
+    }
+    const record = { schemaVersion: 1, producer: firstProducer, sets, nativeTools: replacement.closure };
+    const changes = await captureNativeToolChanges({ producers: [firstProducer], env: isolated.env, removed: false, resourceRoots: roots,
+      nextProducers: [record], actions: [] });
+    expect(changes).toEqual([{ producer: firstProducer, before: original.closure, after: replacement.closure }]);
+    const newProducer = { ...firstProducer, placementKey: `sha256:${'d'.repeat(64)}` };
+    expect(await captureNativeToolChanges({ producers: [newProducer], env: isolated.env, removed: false,
+      nextProducers: [{ ...record, producer: newProducer }], actions: [] })).toEqual([{ producer: newProducer, before: null, after: replacement.closure }]);
+    await expect(captureNativeToolChanges({ producers: [firstProducer], env: isolated.env, removed: false, resourceRoots: roots,
+      nextProducers: [record, { ...record, nativeTools: original.closure }], actions: [] })).rejects.toMatchObject({ code: 'commandIdentityConflict' });
+    expect(await captureNativeToolChanges({ producers: [firstProducer], env: isolated.env, removed: true, resourceRoots: roots, actions: [] })).toEqual([{ producer: firstProducer, before: original.closure, after: null }]);
   });
 
   it('rejects environment errors before resolution and required failure before spawn', async () => {

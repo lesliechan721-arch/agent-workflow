@@ -21,7 +21,7 @@
 
 | 文档 | 适用任务 | 主要内容 |
 | --- | --- | --- |
-| [开发你的第一个插件](authoring/first-plugin.md) | 编写单个插件源码 | 从零初始化脚手架、Manifest v3 声明、编写 Skill、验证与测试闭环、只读取证、配置与动态产物扩展、安全删除。 |
+| [开发你的第一个插件](authoring/first-plugin.md) | 编写单个插件源码 | 从零初始化脚手架、Manifest v4 声明、编写 Skill、验证与测试闭环、只读取证、配置与动态产物扩展、安全删除。 |
 | [Catalog 作者指南](authoring/catalog.md) | 维护与分发插件市场 | 初始化 Catalog Workspace、版本管理、聚合构建、本地开发源调试、两阶段发布计划与授权应用、核心发布门禁。 |
 | [插件与 Skill README 规范](authoring/readme-standard.md) | 编写面向人类的产品说明 | 人类 README、Agent 指令（`SKILL.md`）与评测（`evals/`）三者职责边界与内容规范。 |
 
@@ -34,8 +34,8 @@
 | 合同文档 | 核心主题 |
 | --- | --- |
 | [CLI 命令与输出](reference/cli.md) | 非交互命令、JSON 外壳、退出码、确认与生命周期 payload |
-| [Manifest 与配置声明合同](reference/manifest-and-config.md) | Plugin Manifest v3 规范、Config Definition v5、本地 `$ref` 展开、Store v6 Envelope 存储与原子写入解耦。 |
-| [插件运行时合同](reference/plugin-runtime.md) | 静态/动态 Skill 声明、readRuntimeConfig 合同、动态 Renderer 规范、ArtifactPlan v2、preApply 脚本与 Native/Portable 投影。 |
+| [Manifest 与配置声明合同](reference/manifest-and-config.md) | Plugin Manifest v4 规范、Config Definition v5、本地 `$ref` 展开、Store v6 Envelope 存储与原子写入解耦。 |
+| [插件运行时合同](reference/plugin-runtime.md) | 静态/动态 Skill 声明、readRuntimeConfig 合同、完整组件集合 v3、命令响应 v2、preApply 脚本与原生平台投影。 |
 | [托管命令参考合同](reference/managed-commands.md) | 托管命令稳定 ID 算法（`cmdp_` 前缀）、参数权限（`argsPrefix`）、Claude Code 沙箱排除与执行生命周期。 |
 | [原生工具参考合同](reference/native-tools.md) | 原生二进制工具依赖声明（`aw.windows-job.v1`）、平台工具 Reader 协议与平台包按需解析。 |
 | [外部 Catalog 参考合同](reference/catalog.md) | 外部 Catalog Snapshot schema 7 规范、来源配置 schema 2、三层版本分层、发布计划与 Journal 状态机。 |

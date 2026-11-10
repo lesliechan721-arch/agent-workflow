@@ -4,6 +4,9 @@ import { createEmptyPreferences, type AgentId, type DeploymentPreferences } from
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import { readDemand, resolveDelivery, type DemandSnapshot, type ReadDemandOptions } from './demand.js';
 import type { RecoveryDiagnostic } from './receipt.js';
+import type { NativeSharedReference, NativeSharedReferenceView } from '../utils/native-demand.js';
+import type { RecoveryStatus } from './status.js';
+import { hasSharedUserPackage } from '../platforms/layout.js';
 
 export interface JointDemandSnapshot {
   context: WorkContext;
@@ -32,14 +35,9 @@ export interface JointRootTarget {
   blockers: RecoveryDiagnostic[];
   reasons?: RecoveryDiagnostic[];
 }
-export interface PlacementConflict extends RecoveryDiagnostic {
-  left: { target: AgentId; scope: Scope; plugins: string[] };
-  right: { target: AgentId; scope: Scope; plugins: string[] };
-}
 export interface JointDemandPlan {
   roots: JointRootTarget[];
   placements: JointPlacement[];
-  conflicts: PlacementConflict[];
   errors: RecoveryDiagnostic[];
   complete: boolean;
 }
@@ -56,41 +54,8 @@ export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' |
   return { context, user, project, preferences };
 }
 
-/** Direction is significant across scopes. Same-target reuse is checked per plugin. */
-export function targetsConflict(left: { target: AgentId; scope: Scope }, right: { target: AgentId; scope: Scope }): boolean {
-  if (left.target === right.target) return false;
-  if (left.scope === right.scope) {
-    const readers: AgentId[] = ['codex', 'cursor', 'opencode', 'pi'];
-    if (left.scope === 'project') readers.push('antigravity');
-    return left.target === 'generic' && readers.includes(right.target)
-      || right.target === 'generic' && readers.includes(left.target)
-      || left.scope === 'project' && (left.target === 'antigravity' && readers.includes(right.target)
-        || right.target === 'antigravity' && readers.includes(left.target));
-  }
-  const user = left.scope === 'user' ? left.target : right.target;
-  const project = left.scope === 'project' ? left.target : right.target;
-  if (user === 'claude' || project === 'claude') return false;
-  if (user === 'generic') return true;
-  if (project === 'generic') return true;
-  return project === 'antigravity' && ['codex', 'cursor', 'opencode', 'pi'].includes(user);
-}
-
-export function findPlacementConflicts(placements: readonly Pick<JointPlacement, 'pluginId' | 'target' | 'scope'>[]): PlacementConflict[] {
-  const positions = new Map<string, PlacementConflict['left']>();
-  for (const item of placements) {
-    const key = `${item.scope}\0${item.target}`;
-    const position = positions.get(key) ?? { target: item.target, scope: item.scope, plugins: [] };
-    if (!position.plugins.includes(item.pluginId)) position.plugins.push(item.pluginId);
-    positions.set(key, position);
-  }
-  const list = [...positions.values()];
-  return list.flatMap((left, index) => list.slice(index + 1).filter((right) => targetsConflict(left, right))
-    .map((right) => ({ code: 'targetPlacementConflict', left, right,
-      message: `${left.target}@${left.scope} (${left.plugins.join(', ')}) 与 ${right.target}@${right.scope} (${right.plugins.join(', ')}) 的固定发现目录冲突。` })));
-}
-
 export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPlan {
-  const result: JointDemandPlan = { roots: [], placements: [], conflicts: [], errors: [], complete: true };
+  const result: JointDemandPlan = { roots: [], placements: [], errors: [], complete: true };
   const preferences = snapshot.preferences;
   const demands = [snapshot.user, ...(snapshot.project ? [snapshot.project] : [])];
   result.errors.push(...demands.flatMap((demand) => demand.errors));
@@ -171,11 +136,47 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
     const contributions = placement.contributions.filter((contribution) => result.roots.some((entry) =>
       entry.pluginId === contribution.root && entry.scope === contribution.scope
       && entry.target === placement.target && entry.state === 'required'));
+    // Separate native directories need their dependency closure in each scope.
+    // Explicit roots also keep each scope's package, activation or generic output.
+    if (placement.target !== 'generic' && !hasSharedUserPackage(placement.target)
+      || contributions.some((item) => item.scope === 'project' && item.path.length === 1)) {
+      return (['user', 'project'] as const).flatMap((scope) => {
+        const scoped = contributions.filter((item) => item.scope === scope);
+        return scoped.length ? [{ ...placement, scope, contributions: scoped }] : [];
+      });
+    }
     return contributions.length ? [{ ...placement, contributions }] : [];
   });
-  result.conflicts = findPlacementConflicts(result.placements);
-  result.errors.push(...result.roots.flatMap((root) => root.blockers), ...result.conflicts);
+  result.errors.push(...result.roots.flatMap((root) => root.blockers));
   return result;
+}
+
+/** These facts cover only the authorized User and current-project observations. */
+export function deriveSharedReferenceView(snapshot: JointDemandSnapshot, demand: JointDemandPlan,
+  status: RecoveryStatus): NativeSharedReferenceView {
+  const desired: NativeSharedReference[] = demand.placements.flatMap((placement) => placement.target !== 'generic'
+    && placement.plugin.sourceIdentity ? [{ pluginId: placement.pluginId, sourceIdentity: placement.plugin.sourceIdentity,
+      platform: placement.target, scope: placement.scope,
+      projectRoot: placement.scope === 'project' ? snapshot.context.projectRoot ?? null : null }] : []);
+  const plugins = new Map([...snapshot.user.plugins, ...(snapshot.project?.plugins ?? [])].map((plugin) => [plugin.pluginId, plugin]));
+  const observed: NativeSharedReference[] = [];
+  const observations: NativeSharedReferenceView['observations'] = [];
+  for (const target of [...(status.observedTargets ?? status.inventory?.flatMap((root) => root.targetResults) ?? []), ...status.extraObserved]) {
+    const sourceIdentity = plugins.get(target.pluginId)?.sourceIdentity;
+    if (target.agent === null || target.agent === 'generic' || !sourceIdentity) continue;
+    const reference: NativeSharedReference = { pluginId: target.pluginId, sourceIdentity, platform: target.agent,
+      scope: target.scope, projectRoot: target.scope === 'project' ? snapshot.context.projectRoot ?? null : null };
+    if (!target.deploymentObservations?.length) { observations.push({ ...reference, complete: false }); continue; }
+    for (const deployment of target.deploymentObservations) {
+      const { after } = deployment;
+      const actual = { ...reference, physicalKey: after.physicalKey };
+      observations.push({ ...actual, complete: after.registration !== 'unknown' && after.package !== 'unknown'
+        && after.consumers.every((consumer) => consumer.activation !== 'unknown') });
+      if (after.consumers.some((consumer) => consumer.activation === 'enabled')) observed.push(actual);
+    }
+  }
+  return { scopes: [...snapshot.context.scopes], projectRoot: snapshot.context.projectRoot ?? null,
+    desiredComplete: demand.complete, desired, observed, observations };
 }
 
 /** Used before saving an exclusion; placements can be blocked without rejecting targets. */

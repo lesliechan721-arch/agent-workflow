@@ -15,7 +15,7 @@ import { runCliEntry } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function configurePortableManifest(manifest: PluginMeta['manifest']): void {
-  manifest.platforms = ['cursor'];
+  manifest.platforms = ['generic'];
   manifest.skills = './skills';
   delete manifest.extensions;
 }
@@ -26,7 +26,7 @@ async function fixture() {
   const source = path.join(layout.fixtureCwd, 'remove-source');
   await fs.ensureDir(cwd);
   await git(cwd, ['init', '--quiet']);
-  for (const name of ['parent', 'dependency']) for (const folder of ['skills', 'cursor/skills']) {
+  for (const name of ['parent', 'dependency']) for (const folder of ['skills', 'generic/skills']) {
     const skill = path.join(source, 'plugins', name, folder, name);
     await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${name}\ndescription: Test ${name}\n---\nUse ${name}.\n`);
     await fs.outputFile(path.join(skill, 'README.md'), `Use ${name}.\n`);
@@ -38,7 +38,7 @@ async function fixture() {
   for (const name of ['dependency', 'parent']) {
     const root = path.join(source, 'plugins', name);
     const plugin = await readPluginManifest(root, { mode: 'bundle' });
-    await fs.outputJson(path.join(root, 'cursor', 'skills', name, 'aw-plugin-requirements.json'),
+    await fs.outputJson(path.join(root, 'generic', 'skills', name, 'aw-plugin-requirements.json'),
       createAwPluginRequirementsReceipt({ name, version: '1.0.0' }, plugin.manifest.requires?.aw.capabilities ?? []));
     entries.push(await createCatalogManifestV7Entry(plugin, root));
   }
@@ -47,11 +47,11 @@ async function fixture() {
   const config = await readCatalogSourcesConfigSnapshot(env);
   await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: source }] }, expectedDigest: config.digest, env });
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
-  await setTargets({ cwd, env, scope: 'project' }, ['cursor']);
+  await setTargets({ cwd, env, scope: 'project' }, ['generic']);
   const invoke = (command: string, plugins: string[], flags: string[] = []) => runCliEntry([
     'plugin', command, ...plugins, '--scope', 'project', '--context', 'project', '--yes', '--json', ...flags,
   ], { cwd, env });
-  const output = (name: string) => path.join(cwd, '.cursor', 'skills', name);
+  const output = (name: string) => path.join(cwd, '.agents', 'skills', name);
   return { invoke, output, cwd, env, source };
 }
 

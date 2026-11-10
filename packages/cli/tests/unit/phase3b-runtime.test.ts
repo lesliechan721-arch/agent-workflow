@@ -10,10 +10,23 @@ import {
   runRebuildCommand as runNativeRebuildCommand,
   setRebuildCommandTestHooksForTests,
 } from '../../src/commands/rebuild-command.js';
-import { inspectNativeMarketplaceRegistrations } from '../../src/commands/rebuild-integration.js';
+import { getDeploymentLayout } from '../../src/platforms/layout.js';
+import { cursorWorkspaceOpenCommand } from '../../src/platforms/projection.js';
+import { getPhysicalKey } from '../../src/platforms/identity.js';
+import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import type { DeploymentBinding } from '../../src/platforms/contracts.js';
+import { createCommandExecutionContext } from '../../src/commands/runtime.js';
+import { prepareRetire, executeRetire } from '../../src/recovery/retirement.js';
+import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
+import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
+import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
+import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
+import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
+import { disposePreparedPlatformRebuildSession, inspectNativeMarketplaceRegistrations } from '../../src/commands/rebuild-integration.js';
 import {
   cleanupWriteCommand as cleanupNativeWriteCommand,
   installWriteCommand as installNativeWriteCommand,
+  reinstallWriteCommand as reinstallNativeWriteCommand,
   uninstallWriteCommand as uninstallNativeWriteCommand,
 } from '../../src/commands/write-commands.js';
 import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
@@ -24,6 +37,7 @@ import {
   readSkillOwnerMarker,
   renderOwnedTextFile,
   writeSkillOwnerMarker,
+  writeOwnedTextFile,
   type OwnerIdentity,
 } from '../../src/utils/ownership.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
@@ -42,6 +56,8 @@ import {
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
+import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import {
   resetPluginConfigWithHelper,
@@ -49,6 +65,124 @@ import {
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 
 const SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
+
+// Synthetic owner fixtures use one stable namespace; real Native layout identity is exercised below.
+function ownerPhysicalKey(namespaceRoot: string): string {
+  return getPhysicalKey({ sourceIdentity: SOURCE_IDENTITY, pluginId: 'team/demo', platform: 'codex',
+    route: 'codex-marketplace', namespaceRoot, resourceKey: 'aw-team-demo:owner-fixture' });
+}
+
+async function directoryCatalog(root: string, platform: 'opencode' | 'codex' | 'claude') {
+  const pluginRoot = path.join(root, 'plugins/demo');
+  const skillRoot = path.join(pluginRoot, 'skills/demo-skill');
+  await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '---\nname: demo-skill\ndescription: Fixture.\n---\n');
+  await fs.outputFile(path.join(skillRoot, 'README.md'), '# Demo\nUse the fixture.\n');
+  await fs.outputFile(path.join(skillRoot, 'agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
+  const configure = (manifest: Awaited<ReturnType<typeof readPluginManifest>>['manifest']) => {
+    manifest.platforms = [platform]; manifest.skills = './skills'; manifest.extensions = undefined;
+  };
+  await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', configure);
+  const plugin = await readPluginManifest(pluginRoot);
+  const staged = path.join(root, 'prepared-plugin');
+  await bundleLocalPlugin(plugin, staged, { commandEnv: getCurrentSourceTestIsolation().env });
+  await fs.remove(pluginRoot);
+  await fs.move(staged, pluginRoot);
+  const meta = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+  const catalogPath = path.join(root, 'catalog-manifest.json');
+  const catalog = await fs.readJson(catalogPath);
+  await fs.writeJson(catalogPath, { ...catalog, entries: [await createCatalogManifestV7Entry(meta, pluginRoot)] });
+}
+
+function qualifiedSession(runtime: RebuildCommandRuntime): PlatformRebuildSession {
+  const context = createCommandExecutionContext({ env: runtime.env, nativeCliRunner: runtime.nativeCliRunner });
+  // Only qualification facts are synthetic. Layout, preparation, publication and ownership use production code.
+  return new PlatformRebuildSession(context, (platform) => {
+    const adapter = getAgentPluginAdapter(platform);
+    return { ...adapter, capabilities: (input) => {
+      const facts = adapter.capabilities(input);
+      facts.kinds.skill = { ...facts.kinds.skill, status: 'supported', reasonCodes: [] };
+      return facts;
+    } };
+  });
+}
+
+async function nativeFixtureRuntime(): Promise<RebuildCommandRuntime> {
+  const isolation = getCurrentSourceTestIsolation();
+  const env = { ...isolation.env };
+  const bin = path.join(isolation.layout.fixtureCwd, 'phase-native-bin');
+  for (const executable of ['codex', 'claude', 'opencode']) await fs.outputFile(path.join(bin, `${executable}${process.platform === 'win32' ? '.exe' : ''}`), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  env.PATH = [bin, path.dirname(process.execPath), ...(process.platform === 'win32' ? [path.join(env.SystemRoot ?? 'C:\\Windows', 'System32')] : ['/usr/bin', '/bin'])].join(path.delimiter);
+  const installed = new Map<string, string>();
+  const marketplaces = new Map<string, string>();
+  const nativeCliRunner = async (invocation: NativeCliInvocation) => {
+    const platform = path.basename(invocation.command).replace(/\.(?:exe|cmd)$/iu, '');
+    const args = invocation.args;
+    const result = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' });
+    if (args.includes('--version')) return result(platform === 'claude' ? '2.1.317 (Claude Code)' : platform === 'opencode' ? 'opencode 2.0.0' : 'codex-cli 0.167.0');
+    if (platform === 'opencode') throw new Error('Directory loading must not execute native mutations.');
+    const configPath = path.join(env.AW_CODEX_HOME!, 'config.toml');
+    if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') {
+      const root = args[3]!;
+      const { marketplaceName } = await fs.readJson(path.join(root, 'config.json'));
+      marketplaces.set(marketplaceName, root);
+      if (platform === 'codex') await fs.appendFile(configPath,
+        `\n[marketplaces.${JSON.stringify(marketplaceName)}]\nsource = ${JSON.stringify(root)}\nsource_type = "local"\n`).catch(async () => {
+          await fs.outputFile(configPath, `[marketplaces.${JSON.stringify(marketplaceName)}]\nsource = ${JSON.stringify(root)}\nsource_type = "local"\n`);
+        });
+      else {
+        const known = path.join(env.AW_CLAUDE_HOME!, 'plugins/known_marketplaces.json');
+        await fs.outputJson(known, { ...await fs.readJson(known).catch(() => ({})), [marketplaceName]: {
+          source: { source: 'directory', path: root }, installLocation: root } });
+      }
+      return result();
+    }
+    const id = args[2]!;
+    if (platform === 'codex') {
+      if (args[1] === 'add') {
+        const split = id.lastIndexOf('@'); const root = marketplaces.get(id.slice(split + 1))!;
+        const manifest = await fs.readJson(path.join(root, 'plugins', id.slice(0, split), '.codex-plugin/plugin.json'));
+        installed.set(id, manifest.version);
+        await applyCodexConfigTransactionFile(configPath, { upsertPluginActivations: { [id]: true } });
+      }
+      if (args[1] === 'remove') { installed.delete(id); await applyCodexConfigTransactionFile(configPath, { removePluginActivations: [id] }); }
+      if (args[1] === 'list') {
+        const user = await readCodexConfigFile(configPath);
+        const project = await readCodexConfigFile(path.join(invocation.cwd, '.codex/config.toml'));
+        return result(JSON.stringify({ installed: [...installed].map(([pluginId, version]) => {
+          const split = pluginId.lastIndexOf('@'); const name = pluginId.slice(0, split);
+          const marketplaceName = pluginId.slice(split + 1); const root = marketplaces.get(marketplaceName)!;
+          return { pluginId, name, marketplaceName, version, installed: true,
+            source: { source: 'local', path: path.join(root, 'plugins', name) },
+            marketplaceSource: { sourceType: 'local', source: root },
+            enabled: project.snapshot.plugins[pluginId]?.enabled ?? user.snapshot.plugins[pluginId]?.enabled === true };
+        }), available: [] }));
+      }
+      return result();
+    }
+    const scope = args[args.indexOf('--scope') + 1] ?? 'user';
+    const settingsPath = scope === 'local' ? path.join(invocation.cwd, '.claude/settings.local.json') : path.join(env.AW_CLAUDE_HOME!, 'settings.json');
+    const settings = await fs.readJson(settingsPath).catch(() => ({}));
+    const installedPath = path.join(env.AW_CLAUDE_HOME!, 'plugins/installed_plugins.json');
+    const state = await fs.readJson(installedPath).catch(() => ({ plugins: {} }));
+    if (['install', 'update', 'uninstall'].includes(args[1]!)) {
+      const split = id.lastIndexOf('@'); const root = marketplaces.get(id.slice(split + 1))!;
+      const records = (state.plugins[id] ?? []).filter((record: { scope: string }) => record.scope !== scope);
+      if (args[1] !== 'uninstall') {
+        const packageRoot = path.join(root, 'plugins', id.slice(0, split));
+        const manifest = await fs.readJson(path.join(packageRoot, '.claude-plugin/plugin.json'));
+        records.push({ scope, version: manifest.version, installPath: packageRoot,
+          ...(scope === 'local' ? { projectPath: invocation.cwd } : {}) });
+      }
+      const plugins = { ...state.plugins }; if (records.length) plugins[id] = records; else delete plugins[id];
+      await fs.outputJson(installedPath, { plugins });
+    }
+    if (['install', 'enable', 'disable', 'uninstall'].includes(args[1]!)) await fs.outputJson(settingsPath, {
+      ...settings, enabledPlugins: { ...settings.enabledPlugins, [id]: !['disable', 'uninstall'].includes(args[1]!) },
+    });
+    return result();
+  };
+  return { env, nativeCliRunner };
+}
 
 type NativeWriter = typeof installNativeWriteCommand;
 async function invokeNativeWriter(
@@ -60,22 +194,26 @@ async function invokeNativeWriter(
   const isolation = getCurrentSourceTestIsolation();
   const cwd = options.cwd ?? isolation.layout.fixtureCwd;
   const scope = options.scope === 'project' ? 'project' : 'user';
-  const platform = options.platform === 'claude' ? 'claude' : 'codex';
+  const platforms = options.platform === 'both' ? ['codex', 'claude'] as const : [options.platform ?? 'codex'] as const;
   const env = runtime?.env ?? isolation.env;
   const ids = pluginNames.length ? pluginNames : await readIntentReferences({ scope, cwd, env });
   const native = await createNativeTestExecution({ scope, cwd, env,
-    selectedTargets: ids.map((pluginId) => ({ pluginId, platform })),
+    selectedTargets: ids.flatMap((pluginId) => platforms.map((platform) => ({ pluginId, platform }))),
     includeSelectedInDemand: writer === installNativeWriteCommand,
   });
+  const qualified = writer !== cleanupNativeWriteCommand && runtime?.nativeCliRunner ? qualifiedSession(runtime) : undefined;
   try {
-    return await writer(pluginNames, options, { ...runtime, executionInput: native.executionInput });
+    return await writer(pluginNames, options, { ...runtime, ...(qualified ? { platformRebuildSession: qualified } : {}), executionInput: native.executionInput });
   } finally {
+    await qualified?.dispose();
     await native.dispose();
   }
 }
 
 const installWriteCommand = (...args: Parameters<typeof installNativeWriteCommand>) =>
   invokeNativeWriter(installNativeWriteCommand, ...args);
+const reinstallWriteCommand = (...args: Parameters<typeof reinstallNativeWriteCommand>) =>
+  invokeNativeWriter(reinstallNativeWriteCommand, ...args);
 const cleanupWriteCommand = (...args: Parameters<typeof cleanupNativeWriteCommand>) =>
   invokeNativeWriter(cleanupNativeWriteCommand, ...args);
 const uninstallWriteCommand = (...args: Parameters<typeof uninstallNativeWriteCommand>) =>
@@ -233,10 +371,10 @@ describe('phase 3B namespaced runtime stores', () => {
 
   it('does not report a sanitized owned-text inventory error after force removes its exact path', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const filePath = path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-demo-recovered.toml');
+    const filePath = path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-team-demo-recovered.toml');
     const identity: OwnerIdentity = {
-      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
-      pluginId: 'team/demo', plugin: 'demo', artifactKey: 'recovered',
+      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
+      pluginId: 'team/demo', plugin: 'demo', artifactKey: 'aw-team-demo-recovered.toml',
       platform: 'codex', scope: 'user',
     };
     await fs.outputFile(filePath, renderOwnedTextFile('recovered output\n', identity));
@@ -253,7 +391,7 @@ describe('phase 3B namespaced runtime stores', () => {
         errors: [{
           code: 'stateInventoryFailed',
           kind: 'ownerHeaderParse',
-          location: '[catalog-source]/agents/aw-demo-recovered.toml',
+          location: '[catalog-source]/agents/aw-team-demo-recovered.toml',
           message: 'the original owner header was damaged',
           relevance: {
             global: false, sourceId: 'team', pluginName: 'demo', platform: 'codex', scope: 'user',
@@ -284,7 +422,7 @@ describe('phase 3B namespaced runtime stores', () => {
       marketplaceName: 'aw-team',
     });
     const owner: OwnerIdentity = {
-      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
       pluginId: 'team/demo', plugin: 'demo', artifactKey: 'safe-demo',
       platform: 'codex', scope: 'user',
     };
@@ -292,7 +430,7 @@ describe('phase 3B namespaced runtime stores', () => {
     await writeSkillOwnerMarker({ skillRoot: safeRoot, allowedRoot: skillsRoot, identity: owner });
     await fs.outputJson(path.join(damagedRoot, '.agent-workflows-owner.json'), {
       ...JSON.parse(createSkillOwnerMarkerContent({ ...owner, artifactKey: 'damaged-demo' })),
-      sourceIdentity: `sha256:${'0'.repeat(64)}`,
+      sourceIdentity: SOURCE_IDENTITY, physicalKey: 'damaged-key',
     });
 
     const result = await cleanupWriteCommand(['team/demo'], {
@@ -372,7 +510,7 @@ describe('phase 3B namespaced runtime stores', () => {
       skillRoot,
       allowedRoot: path.dirname(skillRoot),
       identity: {
-        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
         pluginId: 'team/demo', plugin: 'demo', artifactKey: 'reviewed-demo',
         platform: 'codex', scope: 'user',
       },
@@ -425,21 +563,21 @@ describe('phase 3B namespaced runtime stores', () => {
     const isolation = getCurrentSourceTestIsolation();
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const reviewedRoot = path.join(skillsRoot, 'reviewed-output');
-    const addedRoot = path.join(skillsRoot, 'added-after-review');
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.codex', 'agents');
+    const reviewedRoot = path.join(skillsRoot, 'aw-team-demo-reviewed-output.toml');
+    const addedRoot = path.join(skillsRoot, 'aw-team-demo-added-after-review.toml');
     const owner: OwnerIdentity = {
-      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
-      pluginId: 'team/demo', plugin: 'demo', artifactKey: 'reviewed-output',
+      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
+      pluginId: 'team/demo', plugin: 'demo', artifactKey: 'aw-team-demo-reviewed-output.toml',
       platform: 'codex', scope: 'project',
     };
     await writeIntentFixture(location, {
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
-    await fs.outputFile(path.join(reviewedRoot, 'SKILL.md'), 'reviewed output\n');
-    await writeSkillOwnerMarker({
-      skillRoot: reviewedRoot, allowedRoot: skillsRoot, identity: owner,
+
+    await writeOwnedTextFile({
+      path: reviewedRoot, allowedRoot: skillsRoot, identity: owner, content: 'reviewed output\n',
     });
     const capturedInventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
@@ -453,45 +591,49 @@ describe('phase 3B namespaced runtime stores', () => {
     const preview = await cleanupWriteCommand(['team/demo'], options, {
       ...runtime, previewOperationPlan: true,
     });
-    await fs.outputFile(path.join(addedRoot, 'SKILL.md'), 'added after Review\n');
-    await writeSkillOwnerMarker({
-      skillRoot: addedRoot,
+
+    await writeOwnedTextFile({
+      path: addedRoot, content: 'added after Review\n',
       allowedRoot: skillsRoot,
-      identity: { ...owner, artifactKey: 'added-after-review' },
+      identity: { ...owner, artifactKey: 'aw-team-demo-added-after-review.toml' },
     });
+    const addedBytes = await fs.readFile(addedRoot);
 
     const result = await cleanupWriteCommand(['team/demo'], options, {
       ...runtime,
       expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
     });
 
-    expect(result.overallState).toBe('failed');
+    expect(result.overallState).toBe('partial');
     await expect(fs.pathExists(reviewedRoot)).resolves.toBe(false);
     await expect(fs.pathExists(addedRoot)).resolves.toBe(true);
+    await expect(fs.readFile(addedRoot)).resolves.toEqual(addedBytes);
     await expect(readIntentFixture(location)).resolves.toMatchObject({ roots: [{ pluginId: 'team/demo', platforms: ['codex'] }] });
     expect(result.rebuildResults[0]).toMatchObject({
       status: 'failed',
-      residual: expect.arrayContaining(['added-after-review']),
+      removed: expect.arrayContaining([path.basename(reviewedRoot)]),
+      residual: expect.arrayContaining([addedRoot]),
+      error: { phase: 'cleanup.owned', message: expect.stringContaining('operationPlanResidual') },
     });
   });
 
-  it('includes an existing project Skill owner marker in force cleanup Review evidence', async () => {
+  it('includes an exact project supplement owner in force cleanup Review evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const skillRoot = path.join(skillsRoot, 'project-force-output');
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.codex', 'agents');
+    const skillRoot = path.join(skillsRoot, 'aw-team-demo-project-force-output.toml');
     await writeIntentFixture(location, {
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
       dependencyScopeOverrides: [],
     });
-    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), 'project force output\n');
-    await writeSkillOwnerMarker({
-      skillRoot,
+
+    await writeOwnedTextFile({
+      path: skillRoot, content: 'force output\n',
       allowedRoot: skillsRoot,
       identity: {
-        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
-        pluginId: 'team/demo', plugin: 'demo', artifactKey: 'project-force-output',
+        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
+        pluginId: 'team/demo', plugin: 'demo', artifactKey: 'aw-team-demo-project-force-output.toml',
         platform: 'codex', scope: 'project',
       },
     });
@@ -508,7 +650,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(preview.operationPlan?.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'removeOwnedArtifact',
         path: path.join(await fs.realpath(isolation.layout.fixtureCwd),
-          '.agents', 'skills', 'project-force-output') }),
+          '.codex', 'agents', 'aw-team-demo-project-force-output.toml') }),
     ]));
     const result = await cleanupWriteCommand(['team/demo'], options, {
       env: isolation.env,
@@ -534,7 +676,7 @@ describe('phase 3B namespaced runtime stores', () => {
       skillRoot,
       allowedRoot: path.dirname(skillRoot),
       identity: {
-        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
         pluginId: 'team/demo', plugin: 'demo', artifactKey: 'cleanup-failure-demo',
         platform: 'codex', scope: 'user',
       },
@@ -563,6 +705,99 @@ describe('phase 3B namespaced runtime stores', () => {
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
     });
     await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
+  });
+
+  // Test Value Gate: a valid package owner remains sufficient for directory cleanup after the source and client are gone.
+  it('keeps offline cleanup evidence separate for two physical source identities of one plugin', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const identities = [SOURCE_IDENTITY, `sha256:${'2'.repeat(64)}`];
+    const root = path.join(isolation.env.AW_CODEX_HOME!, 'agents');
+    const files = [];
+    for (const [index, sourceIdentity] of identities.entries()) {
+      const file = path.join(root, `aw-team-demo-generation-${index}.toml`);
+      files.push(file);
+      await writeOwnedTextFile({ path: file, allowedRoot: root, content: `Generation ${index}.\n`, identity: {
+        owner: 'agent-workflows', sourceId: 'team', sourceIdentity, pluginId: 'team/demo', plugin: 'demo',
+        artifactKey: path.basename(file), platform: 'codex', scope: 'user',
+        physicalKey: getPhysicalKey({ sourceIdentity, pluginId: 'team/demo', platform: 'codex', route: 'codex-marketplace',
+          namespaceRoot: isolation.env.AW_CODEX_HOME!, resourceKey: `aw-team-demo:generation-${index}` }),
+      } });
+    }
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
+    const preview = await cleanupWriteCommand(['team/demo'], options, { env: isolation.env, previewOperationPlan: true });
+    expect(new Set(preview.offlineCleanupPlans!.map((entry) => entry.sourceIdentity))).toEqual(new Set(identities));
+    for (const entry of preview.offlineCleanupPlans!) {
+      expect(entry.plan.actions).toHaveLength(1);
+      expect(entry.plan.actions[0]!.component?.identity.sourceIdentity).toBe(entry.sourceIdentity);
+    }
+    const result = await cleanupWriteCommand(['team/demo'], options, { env: isolation.env,
+      expectedPlanFingerprint: preview.operationPlan!.planFingerprint });
+    expect(result.overallState, JSON.stringify(result)).toBe('succeeded');
+    expect(await Promise.all(files.map((file) => fs.pathExists(file)))).toEqual([false, false]);
+  });
+
+  it('cleans an exact native directory offline despite damaged projection metadata', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const ctx = { cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const binding: DeploymentBinding = { id: 'fixture', plugin: { sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+      pluginId: 'team/demo', version: '1.0.0' }, platform: 'opencode', scope: { kind: 'user' }, route: 'opencode-directory',
+      consumers: [{ id: 'fixture', product: 'cli', version: null, availability: 'missing', reasonCodes: ['client-missing'],
+        entry: { kind: 'directory', configRoot: resolvePlatformConfigRoot('opencode', ctx) } }],
+      physicalKey: '', activationKey: 'fixture', renderUnitIds: [] };
+    const layout = await getDeploymentLayout(ctx, binding);
+    const identity: OwnerIdentity = { owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+      pluginId: 'team/demo', plugin: 'demo', artifactKey: path.basename(layout.packageRoot),
+      physicalKey: getPhysicalKey(layout.physicalIdentity), platform: 'opencode', scope: 'user' };
+    await fs.outputFile(path.join(layout.packageRoot, 'plugin.js'), 'export default {};\n');
+    await fs.outputJson(path.join(layout.packageRoot, '.agent-workflows-owner.json'), {
+      ...JSON.parse(createSkillOwnerMarkerContent(identity)), nativeProjection: { damaged: true },
+    });
+    const nativeCliRunner = vi.fn(async () => { throw new Error('Offline cleanup cannot call a missing client.'); });
+    const options = { cwd: ctx.cwd, platform: 'opencode' as const, scope: 'user' as const };
+    const preview = await cleanupWriteCommand(['team/demo'], options, { env: isolation.env,
+      nativeCliRunner, previewOperationPlan: true, catalogBootstrapError: new Error('Source removed') });
+    expect(preview.offlineCleanupPlans?.[0]?.plan.actions).toContainEqual(expect.objectContaining({
+      action: 'removeOwnedOutput', target: layout.packageRoot, component: expect.objectContaining({ kind: 'owned-directory', identity }),
+    }));
+    const result = await cleanupWriteCommand(['team/demo'], options, { env: isolation.env, nativeCliRunner,
+      expectedPlanFingerprint: preview.operationPlan!.planFingerprint, catalogBootstrapError: new Error('Source removed') });
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(await fs.pathExists(layout.packageRoot)).toBe(false);
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+  });
+
+  it('cleans a lost-source Cursor package and only its exact workspace hook without a client', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
+    const cwd = await fs.realpath(isolation.layout.fixtureCwd);
+    const env = { ...isolation.env, PATH: path.dirname(process.execPath) };
+    const ctx = { cwd, env };
+    const binding: DeploymentBinding = { id: 'fixture', plugin: { sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+      pluginId: 'team/demo', version: '1.0.0' }, platform: 'cursor', scope: { kind: 'project', projectRoot: cwd },
+      route: 'cursor-workspace-hook', consumers: [{ id: 'fixture', product: 'cli', version: null,
+        availability: 'missing', reasonCodes: ['client-missing'], entry: { kind: 'directory', configRoot: resolvePlatformConfigRoot('cursor', ctx) } }],
+      physicalKey: '', activationKey: 'fixture', renderUnitIds: [] };
+    const layout = await getDeploymentLayout(ctx, binding);
+    await fs.outputFile(path.join(layout.packageRoot, '.cursor/workspace.mdc'), 'Owned workspace rules.\n');
+    await writeSkillOwnerMarker({ skillRoot: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot), identity: {
+      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY, pluginId: 'team/demo', plugin: 'demo',
+      artifactKey: path.basename(layout.packageRoot), platform: 'cursor', scope: 'project', physicalKey: getPhysicalKey(layout.physicalIdentity),
+    } });
+    const command = cursorWorkspaceOpenCommand(binding);
+    await fs.outputJson(layout.activationPath, { version: 1, hooks: { workspaceOpen: [{ command }, { command: 'manual-hook' }] } });
+    const preparedArtifactRenderResults = new Map();
+    const runtime: RebuildCommandRuntime = { env, preparedArtifactRenderResults,
+      nativeCliRunner: async () => { throw new Error('No native client is available.'); } };
+    const options = { cwd, platform: 'cursor' as const, scope: 'project' as const };
+    try {
+      const preview = await cleanupWriteCommand(['team/demo'], options, { ...runtime, previewOperationPlan: true });
+      expect(preview.operationPlan!.deploymentPlans).toHaveLength(1);
+      const result = await cleanupWriteCommand(['team/demo'], options, { ...runtime,
+        expectedPlanFingerprint: preview.operationPlan!.planFingerprint, expectedOfflineCleanupEvidence: preview.offlineCleanupPlans![0] });
+      expect(result.overallState, JSON.stringify(result)).toBe('succeeded');
+      expect(await fs.pathExists(layout.packageRoot)).toBe(false);
+      expect((await fs.readJson(layout.activationPath)).hooks.workspaceOpen).toEqual([{ command: 'manual-hook' }]);
+    } finally { await disposePreparedPlatformRebuildSession(preparedArtifactRenderResults); }
   });
 
   it('roundtrips owner schema 3 with stable plugin identity', async () => {
@@ -603,7 +838,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const identity: OwnerIdentity = {
       owner: 'agent-workflows',
       sourceId: 'team',
-      sourceIdentity: SOURCE_IDENTITY,
+      sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
       pluginId: 'team/demo',
       plugin: 'demo',
       artifactKey: 'role',
@@ -618,7 +853,7 @@ describe('phase 3B namespaced runtime stores', () => {
       'copied-skill',
       '.agent-workflows-owner.json',
     );
-    const role = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-demo-role.toml');
+    const role = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-team-demo-role.toml');
     const projectSkillRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'review');
     const nestedSkillMarker = path.join(
       projectSkillRoot,
@@ -1143,6 +1378,7 @@ describe('phase 3B namespaced runtime stores', () => {
         isolation.env.AW_HOME!, 'marketplaces', 'team', '.agents', 'plugins', 'marketplace.json',
       ), { name: 'aw-team' }),
     ]);
+    const { getPhysicalKey, canonicalNamespaceRoot } = await import('../../src/platforms/identity.js');
     await writeSkillOwnerMarker({
       skillRoot,
       allowedRoot: skillsRoot,
@@ -1150,6 +1386,7 @@ describe('phase 3B namespaced runtime stores', () => {
         owner: 'agent-workflows',
         sourceId: 'team',
         sourceIdentity: setReceipt.sourceIdentity,
+        physicalKey: getPhysicalKey({ sourceIdentity: setReceipt.sourceIdentity, pluginId: 'team/demo', platform: 'codex', route: 'codex-marketplace', namespaceRoot: await canonicalNamespaceRoot(isolation.env.CODEX_HOME!), resourceKey: 'aw-team-demo' }),
         pluginId: 'team/demo',
         plugin: 'demo',
         artifactKey: 'review',
@@ -1232,7 +1469,7 @@ describe('phase 3B namespaced runtime stores', () => {
         if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'remove') {
           await fs.outputFile(codexConfig, '');
         }
-        return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
+        return { exitCode: 0, stdout: 'codex-cli 0.167.0', stderr: '' };
       },
     });
     expect(result).toMatchObject({
@@ -1303,7 +1540,7 @@ describe('phase 3B namespaced runtime stores', () => {
       identity: {
         owner: 'agent-workflows',
         sourceId: 'team',
-        sourceIdentity: SOURCE_IDENTITY,
+        sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
         pluginId: 'team/demo',
         plugin: 'demo',
         artifactKey: 'valid',
@@ -1325,7 +1562,7 @@ describe('phase 3B namespaced runtime stores', () => {
         schemaVersion: 2,
         owner: 'agent-workflows',
         sourceId: 'team',
-        sourceIdentity: SOURCE_IDENTITY,
+        sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
         pluginId: 'team/demo',
         plugin: 'demo',
         artifactKey: 'different-parent',
@@ -1374,7 +1611,7 @@ describe('phase 3B namespaced runtime stores', () => {
       identity: {
         owner: 'agent-workflows',
         sourceId: 'team',
-        sourceIdentity: SOURCE_IDENTITY,
+        sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
         pluginId: 'team/demo',
         plugin: 'demo',
         artifactKey: 'valid',
@@ -1399,7 +1636,7 @@ describe('phase 3B namespaced runtime stores', () => {
       schemaVersion: 2,
       owner: 'agent-workflows',
       sourceId: 'team',
-      sourceIdentity: SOURCE_IDENTITY,
+      sourceIdentity: SOURCE_IDENTITY, physicalKey: ownerPhysicalKey(path.join(isolation.layout.fixtureCwd, '.codex')),
       pluginId: 'team/demo',
       plugin: 'demo',
       artifactKey: 'system',
@@ -1422,368 +1659,65 @@ describe('phase 3B namespaced runtime stores', () => {
     }));
   });
 
-  it('keeps unrelated legacy state while planning and installing a namespaced plugin', async () => {
+  it('keeps unrelated legacy state while installing a Native directory package', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'legacy-install-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.extensions = {
-        instructions: [{ name: 'policy', title: 'Policy', content: 'Use policy.' }],
-      };
-      manifest.platforms = ['codex'];
-    });
+    await directoryCatalog(sourceRoot, 'opencode');
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const legacyRoot = path.join(skillsRoot, 'legacy-owner');
-    const legacyMarker = path.join(legacyRoot, '.agent-workflows-owner.json');
-    const legacyContent = Buffer.from('legacy bytes\n\u0000kept\n');
-    const legacyMarkerBytes = Buffer.from(JSON.stringify({
-      schemaVersion: 1,
-      owner: 'agent-workflows',
-      plugin: 'legacy-owner',
-      artifactKey: 'legacy-owner',
-      platform: 'codex',
-      scope: 'project',
-    }));
-    await Promise.all([
-      fs.outputFile(path.join(legacyRoot, 'legacy.bin'), legacyContent),
-      fs.outputFile(legacyMarker, legacyMarkerBytes),
-    ]);
-    const runtime = {
-      env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
-    };
-
-    const previewStages: string[] = [];
-    const preview = await installWriteCommand(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, {
-      ...runtime,
-      previewOperationPlan: true,
-      onPreviewStage(stage) { previewStages.push(stage); },
-    });
-    expect(preview.overallState).toBe('succeeded');
-    expect(previewStages).toEqual(['catalog', 'inventory', 'dependencyPlan']);
-    expect(preview.dependencyPlan?.targets).toContainEqual(expect.objectContaining({
-      pluginId: 'team/demo',
-      action: 'install',
-    }));
-
-    const installed = await installWriteCommand(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, runtime);
-    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
-    await expect(fs.readFile(path.join(legacyRoot, 'legacy.bin'))).resolves.toEqual(legacyContent);
-    await expect(fs.readFile(legacyMarker)).resolves.toEqual(legacyMarkerBytes);
-
-    const samePluginRoot = path.join(skillsRoot, 'same-plugin-owner');
-    const samePluginMarker = path.join(samePluginRoot, '.agent-workflows-owner.json');
-    const samePluginMarkerBytes = Buffer.from(JSON.stringify({
-      schemaVersion: 1,
-      owner: 'agent-workflows',
-      plugin: 'demo',
-      artifactKey: 'same-plugin-owner',
-      platform: 'codex',
-      scope: 'project',
-    }));
-    await fs.outputFile(samePluginMarker, samePluginMarkerBytes);
-    const ignoredSamePluginMarker = await installWriteCommand(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, { ...runtime, previewOperationPlan: true });
-    expect(ignoredSamePluginMarker).toMatchObject({
-      overallState: 'succeeded',
-      targetResults: [],
-    });
-    await expect(fs.readFile(samePluginMarker)).resolves.toEqual(samePluginMarkerBytes);
-    await expect(fs.readFile(legacyMarker)).resolves.toEqual(legacyMarkerBytes);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
+    const legacyMarker = path.join(isolation.layout.fixtureCwd, '.agents/skills/legacy-owner/.agent-workflows-owner.json');
+    const bytes = JSON.stringify({ schemaVersion: 1, owner: 'agent-workflows', plugin: 'legacy-owner',
+      artifactKey: 'legacy-owner', platform: 'codex', scope: 'project' });
+    await fs.outputFile(legacyMarker, bytes);
+    const runtime = await nativeFixtureRuntime();
+    const result = await installWriteCommand(['team/demo'], { cwd: isolation.layout.fixtureCwd, platform: 'opencode', scope: 'project' }, runtime);
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(await fs.pathExists(path.join(isolation.layout.fixtureCwd, '.opencode/plugins/aw-team-demo/.agent-workflows-owner.json'))).toBe(true);
+    expect(await fs.readFile(legacyMarker, 'utf8')).toBe(bytes);
   });
 
   it.each([
-    ['codex', 'foreign-registration'],
-    ['claude', 'foreign-registration'],
-    ['codex', 'orphan-consumer'],
-    ['claude', 'orphan-consumer'],
-  ] as const)(
-    'installs a primary user plugin through a source-bound %s marketplace when aw has a retained %s',
-    async (platform, collision) => {
-      const isolation = getCurrentSourceTestIsolation();
-      const sourceRoot = path.join(isolation.layout.fixtureCwd, `primary-${platform}-collision-source`);
-      await fs.outputFile(
-        path.join(sourceRoot, 'plugins', 'demo', 'skills', 'demo-skill', 'SKILL.md'),
-        '---\nname: demo-skill\ndescription: Demo.\n---\n',
-      );
-      await fs.outputFile(
-        path.join(sourceRoot, 'plugins', 'demo', 'skills', 'demo-skill', 'agents', 'openai.yaml'),
-        'policy:\n  allow_implicit_invocation: true\n',
-      );
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.platforms = [platform];
-        manifest.skills = './skills';
-        manifest.extensions = {
-          instructions: [{ name: 'policy', title: 'Policy', content: 'Use policy.' }],
-        };
-      });
-      const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-      await replaceCatalogSourcesConfig({
-        config: {
-          schemaVersion: 2,
-          sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-        },
-        expectedDigest: initial.digest,
-        env: isolation.env,
-      });
-      const foreignRoot = path.join(isolation.layout.rootDir, `foreign-aw-${platform}`);
-      const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
-      if (platform === 'codex') {
-        await fs.outputFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
-          ...(collision === 'foreign-registration' ? [
-            '[marketplaces.aw]',
-            `source = ${JSON.stringify(foreignRoot)}`,
-            'source_type = "local"',
-          ] : []),
-          '[plugins."legacy-owner@aw"]',
-          'enabled = true',
-          '',
-        ].join('\n'));
-      } else {
-        await Promise.all([
-          fs.outputJson(path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json'), {
-            ...(collision === 'foreign-registration' ? {
-              extraKnownMarketplaces: { aw: { source: { source: 'directory', path: foreignRoot } } },
-            } : {}),
-            enabledPlugins: collision === 'foreign-registration' ? { 'legacy-owner@aw': true } : {},
-          }),
-          fs.outputJson(path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'known_marketplaces.json'), {
-            ...(collision === 'foreign-registration' ? {
-              aw: {
-                source: { source: 'directory', path: foreignRoot },
-                installLocation: foreignRoot,
-              },
-            } : {}),
-          }),
-          fs.outputJson(path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'installed_plugins.json'), {
-            plugins: {
-              'legacy-owner@aw': [{
-                name: 'legacy-owner', marketplace: 'aw', scope: 'user', version: '9.9.9',
-              }],
-            },
-          }),
-        ]);
-      }
-
-      const nativeCliRunner = async (invocation: {
-        agentKind?: 'codex' | 'claude';
-        command: string;
-        args: string[];
-      }) => {
-        const command = invocation.agentKind
-          ?? path.basename(invocation.command).replace(/\.(?:cmd|exe)$/iu, '');
-        if (command === 'codex'
-          && invocation.args[0] === 'plugin'
-          && invocation.args[1] === 'marketplace'
-          && invocation.args[2] === 'add') {
-          await fs.appendFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
-            '[marketplaces.aw-team]',
-            `source = ${JSON.stringify(marketplaceRoot)}`,
-            'source_type = "local"',
-            '',
-          ].join('\n'));
-        }
-        if (command === 'codex'
-          && invocation.args[0] === 'plugin'
-          && invocation.args[1] === 'add') {
-          await fs.appendFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
-            '[plugins."demo@aw-team"]',
-            'enabled = true',
-            '',
-          ].join('\n'));
-          await fs.copy(
-            path.join(marketplaceRoot, 'plugins', 'demo'),
-            path.join(
-              isolation.env.AW_CODEX_HOME!,
-              'plugins', 'cache', 'aw-team', 'demo', '1.0.0',
-            ),
-          );
-        }
-        if (command === 'claude'
-          && invocation.args[0] === 'plugin'
-          && invocation.args[1] === 'marketplace'
-          && invocation.args[2] === 'add') {
-          const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
-          const knownPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'known_marketplaces.json');
-          const settings = await fs.readJson(settingsPath) as Record<string, unknown>;
-          const known = await fs.readJson(knownPath) as Record<string, unknown>;
-          await fs.outputJson(settingsPath, {
-            ...settings,
-            extraKnownMarketplaces: {
-              ...(settings.extraKnownMarketplaces as Record<string, unknown>),
-              'aw-team': { source: { source: 'directory', path: marketplaceRoot } },
-            },
-          });
-          await fs.outputJson(knownPath, {
-            ...known,
-            'aw-team': {
-              source: { source: 'directory', path: marketplaceRoot },
-              installLocation: marketplaceRoot,
-            },
-          });
-        }
-        if (command === 'claude'
-          && invocation.args[0] === 'plugin'
-          && invocation.args[1] === 'install') {
-          const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
-          const installedPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'installed_plugins.json');
-          const settings = await fs.readJson(settingsPath) as Record<string, unknown>;
-          const installed = await fs.readJson(installedPath) as { plugins: Record<string, unknown> };
-          const plugins = { ...installed.plugins };
-          delete plugins.demo;
-          await fs.outputJson(settingsPath, {
-            ...settings,
-            enabledPlugins: {
-              ...(settings.enabledPlugins as Record<string, unknown>),
-              'demo@aw-team': true,
-            },
-          });
-          await fs.outputJson(installedPath, { plugins: {
-            ...plugins,
-            'demo@aw-team': [{ name: 'demo', scope: 'user', version: '1.0.0' }],
-          } });
-        }
-        if (command === 'codex'
-          && invocation.args[0] === 'plugin'
-          && invocation.args[1] === 'list'
-          && invocation.args[2] === '--marketplace'
-          && invocation.args[3] === 'aw-team'
-          && invocation.args[4] === '--json') {
-          const config = await readCodexConfigFile(
-            path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'),
-          );
-          return {
-            exitCode: 0,
-            stdout: JSON.stringify({
-              installed: Object.entries(config.snapshot.plugins)
-                .filter(([pluginId]) => pluginId.endsWith('@aw-team'))
-                .map(([pluginId, plugin]) => ({
-                  pluginId,
-                  installed: true,
-                  enabled: plugin.enabled === true,
-                  version: '1.0.0',
-                })),
-              available: [],
-            }),
-            stderr: '',
-          };
-        }
-        return { exitCode: 0, stdout: `${platform}-cli 99.0.0`, stderr: '' };
-      };
-
-      const result = await installWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform,
-        scope: 'user',
-      }, {
-        env: isolation.env,
-        nativeCliRunner,
-        codexManagerResolver: async () => ({
-          kind: 'system', version: '99.0.0', command: 'codex', argsPrefix: [],
-        }),
-      });
-      expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-      expect(result.rebuildResults[0]?.target.marketplaceName).toBe('aw-team');
-      if (platform === 'codex') {
-        const config = await fs.readFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), 'utf8');
-        if (collision === 'foreign-registration') {
-          expect(config).toContain(`[marketplaces.aw]\nsource = ${JSON.stringify(foreignRoot)}`);
-        } else {
-          expect(config).not.toContain('[marketplaces.aw]');
-        }
-        expect(config).toContain('[plugins."legacy-owner@aw"]');
-        expect(config).toContain(`[marketplaces.aw-team]\nsource = ${JSON.stringify(marketplaceRoot)}`);
-      } else {
-        const settings = await fs.readJson(path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json'));
-        const installed = await fs.readJson(path.join(
-          isolation.env.AW_CLAUDE_HOME!, 'plugins', 'installed_plugins.json',
-        ));
-        if (collision === 'foreign-registration') {
-          expect(settings.extraKnownMarketplaces.aw.source.path).toBe(foreignRoot);
-        } else {
-          expect(settings.extraKnownMarketplaces.aw).toBeUndefined();
-        }
-        if (collision === 'foreign-registration') {
-          expect(settings.enabledPlugins['legacy-owner@aw']).toBe(true);
-        } else {
-          expect(settings.enabledPlugins['legacy-owner@aw']).toBeUndefined();
-        }
-        expect(installed.plugins['legacy-owner@aw'][0]).toMatchObject({ version: '9.9.9' });
-        expect(settings.extraKnownMarketplaces['aw-team'].source.path).toBe(marketplaceRoot);
-      }
-      await expect(fs.readJson(path.join(marketplaceRoot, 'config.json'))).resolves.toMatchObject({
-        sourceId: 'team',
-        marketplaceName: 'aw-team',
-      });
-      if (platform === 'claude') {
-        const reused = await installWriteCommand(['team/demo'], {
-          cwd: isolation.layout.fixtureCwd,
-          platform,
-          scope: 'user',
-        }, { env: isolation.env, nativeCliRunner });
-        expect(reused.overallState, JSON.stringify(reused.rebuildResults)).toBe('succeeded');
-        expect(reused.rebuildResults[0]?.target.marketplaceName).toBe('aw-team');
-      } else {
-        await expect(inspectNativeMarketplaceRegistrations({
-          marketplaceName: 'aw-team',
-          marketplaceRoot,
-          cwd: isolation.layout.fixtureCwd,
-          env: isolation.env,
-        })).resolves.toMatchObject({ codex: 'canonical' });
-      }
-      if (platform === 'codex') {
-        await fs.appendFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
-          '[plugins."demo@aw"]',
-          'enabled = true',
-          '',
-        ].join('\n'));
-      } else {
-        const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
-        const settings = await fs.readJson(settingsPath) as Record<string, unknown>;
-        await fs.outputJson(settingsPath, {
-          ...settings,
-          enabledPlugins: {
-            ...(settings.enabledPlugins as Record<string, unknown>),
-            'demo@aw': true,
-          },
-        });
-      }
-      const samePluginBlocked = await installWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform,
-        scope: 'user',
-      }, { env: isolation.env, nativeCliRunner });
-      expect(samePluginBlocked).toMatchObject({
-        overallState: 'failed',
-        targetResults: expect.arrayContaining([expect.objectContaining({
-          errorCode: 'legacyStateUnsupported',
-          target: expect.objectContaining({ pluginId: 'team/demo', platform, scope: 'user' }),
-        })]),
-      });
-      await expect(fs.readJson(path.join(marketplaceRoot, 'config.json'))).resolves.toMatchObject({
-        marketplaceName: 'aw-team',
-      });
-    },
-  );
+    ['codex', 'foreign-registration'], ['claude', 'foreign-registration'],
+    ['codex', 'orphan-consumer'], ['claude', 'orphan-consumer'],
+  ] as const)('uses its verified %s namespace and retains an independent %s', async (platform, collision) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'primary-collision-source');
+    await directoryCatalog(sourceRoot, platform);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
+    const foreignRoot = path.join(isolation.layout.fixtureCwd, 'foreign-marketplace');
+    const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+    if (platform === 'codex') await fs.outputFile(configPath, [
+      ...(collision === 'foreign-registration' ? ['[marketplaces.aw]', 'source = '+JSON.stringify(foreignRoot), 'source_type = "local"'] : []),
+      '[plugins."legacy-owner@aw"]', 'enabled = true', '',
+    ].join('\n'));
+    else await fs.outputJson(settingsPath, {
+      ...(collision === 'foreign-registration' ? { extraKnownMarketplaces: { aw: { source: { source: 'directory', path: foreignRoot } } } } : {}),
+      enabledPlugins: { 'legacy-owner@aw': true },
+    });
+    const runtime = await nativeFixtureRuntime();
+    const installed = await installWriteCommand(['team/demo'], { cwd: isolation.layout.fixtureCwd, platform, scope: 'user' }, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const deployment = installed.operationPlan?.deploymentPlans?.[0];
+    expect(deployment?.binding.route).toBe(platform+'-marketplace');
+    const layout = deployment!.evidence.layout;
+    expect(layout.marketplaceName).not.toBe('aw');
+    expect(await fs.pathExists(path.join(layout.packageRoot, '.'+platform+'-plugin/plugin.json'))).toBe(true);
+    if (platform === 'codex') {
+      const state = await readCodexConfigFile(configPath);
+      expect(state.snapshot.plugins['legacy-owner@aw']?.enabled).toBe(true);
+      expect(state.snapshot.plugins[layout.nativeIdentity.registrationId!]?.enabled).toBe(true);
+      if (collision === 'foreign-registration') expect(state.snapshot.marketplaces.aw?.source).toBe(foreignRoot);
+    } else {
+      const settings = await fs.readJson(settingsPath);
+      expect(settings.enabledPlugins['legacy-owner@aw']).toBe(true);
+      expect(settings.enabledPlugins[layout.nativeIdentity.registrationId!]).toBe(true);
+      if (collision === 'foreign-registration') expect(settings.extraKnownMarketplaces.aw.source.path).toBe(foreignRoot);
+    }
+  });
 
   it.each(['foreign-registration', 'orphan-consumer', 'claude-orphan-consumer'] as const)(
     'rejects a source-bound marketplace with a retained %s when primary aw is also foreign',
@@ -1847,142 +1781,196 @@ describe('phase 3B namespaced runtime stores', () => {
     },
   );
 
-  it.each(['cleanup', 'uninstall'] as const)(
-    '%s keeps a live platform after the current bundle revokes support',
-    async (command) => {
-      const isolation = getCurrentSourceTestIsolation();
-      const sourceRoot = path.join(isolation.layout.fixtureCwd, `revoked-${command}-source`);
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.platforms = ['codex'];
-        manifest.extensions = {
-          instructions: [{ name: 'policy', title: 'Policy', content: 'Keep this policy.' }],
-        };
-      });
-      const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-      await replaceCatalogSourcesConfig({
-        config: {
-          schemaVersion: 2,
-          sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-        },
-        expectedDigest: initial.digest,
-        env: isolation.env,
-      });
-      const runtime = {
-        env: isolation.env,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
-      };
-      const installed = await installWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
-        scope: 'project',
-      }, runtime);
-      expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.platforms = ['claude'];
-      });
+  it.each(['cleanup', 'uninstall'] as const)('%s keeps a live platform after the current bundle revokes support', async (command) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'revoked-source');
+    await directoryCatalog(sourceRoot, 'opencode');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
+    const runtime = await nativeFixtureRuntime();
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'opencode' as const, scope: 'project' as const };
+    expect((await installWriteCommand(['team/demo'], options, runtime)).overallState).toBe('succeeded');
+    const output = path.join(isolation.layout.fixtureCwd, '.opencode/plugins/aw-team-demo');
+    expect(await fs.pathExists(output)).toBe(true);
+    await directoryCatalog(sourceRoot, 'claude');
+    const result = command === 'cleanup' ? await cleanupWriteCommand(['team/demo'], options, runtime)
+      : await uninstallWriteCommand(['team/demo'], options, runtime);
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result.receiptTargets).toContainEqual(expect.objectContaining({ pluginId: 'team/demo', platform: 'opencode', scope: 'project' }));
+    expect(await fs.pathExists(output)).toBe(false);
+  });
 
-      const result = command === 'cleanup'
-        ? await cleanupWriteCommand(['team/demo'], {
-            cwd: isolation.layout.fixtureCwd,
-            platform: 'both',
-            scope: 'project',
-          }, runtime)
-        : await uninstallWriteCommand(['team/demo'], {
-            cwd: isolation.layout.fixtureCwd,
-            platform: 'both',
-            scope: 'project',
-          }, runtime);
-      expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-      expect(result.receiptTargets).toContainEqual(expect.objectContaining({
-        pluginId: 'team/demo',
-        platform: 'codex',
-        scope: 'project',
-      }));
+  it.each(['codex', 'claude'] as const)('records a %s project reference only after exact project activation exists', async (platform) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    await fs.ensureDir(path.join(cwd, '.git'));
+    const sourceRoot = path.join(cwd, 'shared-user-reference-source');
+    await directoryCatalog(sourceRoot, platform);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
+    const runtime = await nativeFixtureRuntime();
+    const installed = await installWriteCommand(['team/demo'], { cwd, platform, scope: 'user' }, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const installedPlan = installed.operationPlan!.deploymentPlans![0]!;
+    const ownCandidates = (inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>) => inventory.references.filter((reference) =>
+      reference.sourceId === 'team' && reference.pluginName === 'demo' && reference.platform === platform && reference.recoveryCandidate);
+    const before = await inventoryCatalogSourceReferences({ cwd, env: runtime.env, scope: 'project' });
+    expect(ownCandidates(before).map((reference) => reference.scope)).toEqual(['user']);
+    const nativeId = installedPlan.evidence.layout.nativeIdentity.registrationId!;
+    if (platform === 'codex') await applyCodexConfigTransactionFile(path.join(cwd, '.codex/config.toml'), { upsertPluginActivations: { [nativeId]: true } });
+    else await fs.outputJson(path.join(cwd, '.claude/settings.local.json'), { enabledPlugins: { [nativeId]: true } });
+    const after = await inventoryCatalogSourceReferences({ cwd, env: runtime.env, scope: 'project' });
+    expect(ownCandidates(after).map((reference) => reference.scope)).toEqual(['user', 'project']);
+    expect(ownCandidates(after).every((reference) => reference.recoveryCandidate!.binding.physicalKey === installedPlan.binding.physicalKey)).toBe(true);
+  });
+
+  it('repairs a damaged native package through reinstall while retaining its foreign sibling', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-repair-source');
+    await directoryCatalog(sourceRoot, 'opencode');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
+    const runtime = await nativeFixtureRuntime();
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'opencode' as const, scope: 'user' as const };
+    const installed = await installWriteCommand(['team/demo'], options, runtime);
+    expect(installed.overallState, JSON.stringify(installed)).toBe('succeeded');
+    const output = installed.operationPlan!.deploymentPlans![0]!.evidence.layout.packageRoot;
+    const foreign = path.join(path.dirname(output), 'foreign-plugin/keep.txt');
+    await fs.outputFile(foreign, 'Foreign sibling.\n');
+    const markerPath = path.join(output, '.agent-workflows-owner.json');
+    await fs.writeJson(markerPath, { ...await fs.readJson(markerPath), nativeProjection: { damaged: true } });
+    await fs.writeFile(path.join(output, 'skills/demo-skill/SKILL.md'), 'Damaged payload.\n');
+    const repaired = await reinstallWriteCommand(['team/demo'], options, runtime);
+    expect(repaired.overallState, JSON.stringify(repaired)).toBe('succeeded');
+    expect(await fs.readFile(path.join(output, 'skills/demo-skill/SKILL.md'), 'utf8')).toContain('description: Fixture.');
+    const marker = await readSkillOwnerMarker({ skillRoot: output, allowedRoot: path.dirname(output) });
+    expect(marker?.nativeProjection).toMatchObject({ preparation: 'complete', components: expect.arrayContaining([
+      expect.objectContaining({ id: 'skill:demo-skill' }),
+    ]) });
+    expect(await fs.readFile(foreign, 'utf8')).toBe('Foreign sibling.\n');
+  });
+
+  it.each([['codex', false], ['claude', false], ['claude', true]] as const)('freezes %s unregistration after source loss and rejects drift=%s', async (platform, drift) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'lost-native-source');
+    await directoryCatalog(sourceRoot, platform);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
+    const runtime = await nativeFixtureRuntime();
+    const nativeCalls = vi.fn(runtime.nativeCliRunner!);
+    runtime.nativeCliRunner = nativeCalls;
+    const options = { cwd: isolation.layout.fixtureCwd, platform, scope: 'user' as const };
+    const installed = await installWriteCommand(['team/demo'], options, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const installedPlan = installed.operationPlan!.deploymentPlans![0]!;
+    const output = installedPlan.evidence.layout.packageRoot;
+    await fs.remove(sourceRoot);
+    const preparedArtifactRenderResults = new Map();
+    const cleanupRuntime: RebuildCommandRuntime = { ...runtime, preparedArtifactRenderResults,
+      catalogBootstrapError: new Error('Source cannot be read during cleanup.'),
+      sharedReferenceView: { scopes: ['user', 'project'], projectRoot: options.cwd, desiredComplete: true,
+        desired: [], observed: [{ pluginId: 'team/demo', sourceIdentity: installedPlan.binding.plugin.sourceIdentity,
+          platform, scope: 'user', projectRoot: null, physicalKey: installedPlan.binding.physicalKey }],
+        observations: (['user', 'project'] as const).map((scope) => ({ pluginId: 'team/demo',
+          sourceIdentity: installedPlan.binding.plugin.sourceIdentity, platform, scope,
+          projectRoot: scope === 'project' ? options.cwd : null, physicalKey: installedPlan.binding.physicalKey, complete: true })) } };
+    try {
+      const preview = await cleanupWriteCommand(['team/demo'], options, { ...cleanupRuntime, previewOperationPlan: true });
+      expect(preview.operationPlan!.deploymentPlans, JSON.stringify(preview)).toHaveLength(1);
+      expect(preview.operationPlan!.deploymentPlans![0]!.effects.map((effect) => effect.kind)).toContain('unregister');
+      expect(await fs.pathExists(output)).toBe(true);
+      const mutations = () => nativeCalls.mock.calls.filter(([call]) => call.args[0] === 'plugin' && call.args[1] !== 'list').length;
+      const beforeMutations = mutations();
+      if (drift) await fs.appendFile(path.join(output, 'skills/demo-skill/SKILL.md'), '\nChanged after Review.\n');
+      const result = await cleanupWriteCommand(['team/demo'], options, { ...cleanupRuntime,
+        expectedPlanFingerprint: preview.operationPlan!.planFingerprint, expectedOfflineCleanupEvidence: preview.offlineCleanupPlans![0] });
+      if (drift) {
+        expect(result.overallState, JSON.stringify(result)).toBe('failed');
+        expect(await fs.pathExists(output)).toBe(true);
+        expect(mutations()).toBe(beforeMutations);
+      } else {
+        expect(result.overallState, JSON.stringify(result)).toBe('succeeded');
+        expect(await fs.pathExists(output)).toBe(false);
+        expect(result.rebuildResults[0]!.deploymentReceipts?.some((receipt) => receipt.effects.some((effect) => effect.status === 'applied'))).toBe(true);
+      }
+    } finally { await disposePreparedPlatformRebuildSession(preparedArtifactRenderResults); }
+  });
+
+  it.each([['opencode', 'project', false], ['claude', 'user', false], ['opencode', 'project', true]] as const)(
+    'retires removed Catalog entry through its real %s output at %s with drift=%s', async (platform, scope, drift) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const cwd = isolation.layout.fixtureCwd;
+      const sourceRoot = path.join(cwd, 'retired-native-source');
+      await directoryCatalog(sourceRoot, platform);
+      const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
+      const runtime = await nativeFixtureRuntime();
+      const installed = await installWriteCommand(['team/demo'], { cwd, platform, scope }, runtime);
+      expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+      const output = installed.operationPlan!.deploymentPlans![0]!.evidence.layout.packageRoot;
+      const location = { cwd, scope, env: runtime.env };
+      await writeIntentFixture(location, { roots: [{ pluginId: 'team/demo', platforms: [platform] }] });
+      const catalogPath = path.join(sourceRoot, 'catalog-manifest.json');
+      await fs.writeJson(catalogPath, { ...await fs.readJson(catalogPath), entries: [] });
+      await fs.remove(path.join(sourceRoot, 'plugins/demo'));
+      for (const relativePath of ['.agents/plugins/marketplace.json', '.claude-plugin/marketplace.json']) {
+        const manifestPath = path.join(sourceRoot, relativePath);
+        await fs.writeJson(manifestPath, { ...await fs.readJson(manifestPath), plugins: [] });
+      }
+      await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', impactConfirmed: true, cwd, env: runtime.env });
+      const plan = await prepareRetire({ ...location, selector: 'team/demo', targets: [platform], yes: true }, runtime);
+      expect(plan.evidence?.evidence.some((entry) => entry.platform === platform), JSON.stringify(plan.receipt)).toBe(true);
+      expect(plan.plannedImpact.outputs).toBe(true);
+      if (platform === 'claude') expect(plan.operationPlan!.deploymentPlans![0]!.effects.map((effect) => effect.kind)).toContain('unregister');
+      if (drift) await fs.appendFile(path.join(output, 'skills/demo-skill/SKILL.md'), '\nChanged after Review.\n');
+      const result = await executeRetire(plan, { yes: true });
+      if (drift) {
+        expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'operationReviewStale' }));
+        expect((await readIntentFixture(location)).roots).toHaveLength(1);
+        expect(await fs.pathExists(output)).toBe(true);
+      } else {
+        expect(result.ok, JSON.stringify(result)).toBe(true);
+        expect((await readIntentFixture(location)).roots).toEqual([]);
+        expect(await fs.pathExists(output)).toBe(false);
+      }
     },
   );
 
-  it('serializes source identity mutation with first owner publication', async () => {
+  it('serializes source identity mutation with first Native owner publication', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'race-source');
     const replacementRoot = path.join(isolation.layout.fixtureCwd, 'race-replacement');
-    await Promise.all([
-      createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.extensions = {
-          instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
-        };
-        manifest.platforms = ['codex'];
-      }),
-      createCatalogSnapshotFixture(replacementRoot, 'demo'),
-    ]);
+    await Promise.all([directoryCatalog(sourceRoot, 'opencode'), directoryCatalog(replacementRoot, 'opencode')]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const configured = await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
+    const configured = await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: initial.digest, env: isolation.env });
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
-    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
-      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
-    });
-    const installBuilt = deferred();
-    const resumeInstall = deferred();
-    setRebuildCommandTestHooksForTests({
-      afterTargetBuilt: async () => {
-        installBuilt.resolve();
-        await resumeInstall.promise;
-      },
-    });
+    await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env }, { roots: [{ pluginId: 'team/demo', platforms: ['opencode'] }] });
+    const built = deferred(); const resume = deferred();
+    setRebuildCommandTestHooksForTests({ afterTargetBuilt: async () => { built.resolve(); await resume.promise; } });
     let installing: ReturnType<typeof installWriteCommand> | undefined;
     let mutation: ReturnType<typeof updateCatalogSourceCommand> | undefined;
     try {
-      installing = installWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
-        scope: 'project',
-      }, {
-        env: isolation.env,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
-      });
-      await Promise.race([installBuilt.promise, installing.then((result) => {
-        throw new Error(`Install ended before owner publication: ${JSON.stringify(result)}`);
-      })]);
-      let mutationCompleted = false;
-      mutation = updateCatalogSourceCommand({
-        sourceId: 'team',
-        update: { type: 'path', path: replacementRoot },
-        cliVersion: '1.0.0',
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-      });
-      void mutation.then(
-        () => { mutationCompleted = true; },
-        () => { mutationCompleted = true; },
-      );
+      installing = installWriteCommand(['team/demo'], { cwd: isolation.layout.fixtureCwd, platform: 'opencode', scope: 'project' }, await nativeFixtureRuntime());
+      await Promise.race([built.promise, installing.then((value) => { throw new Error('Install ended before publication: '+JSON.stringify(value)); })]);
+      let complete = false;
+      mutation = updateCatalogSourceCommand({ sourceId: 'team', update: { type: 'path', path: replacementRoot }, cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env });
+      void mutation.finally(() => { complete = true; });
       await new Promise((resolve) => setImmediate(resolve));
-      expect(mutationCompleted).toBe(false);
-
-      resumeInstall.resolve();
+      expect(complete).toBe(false);
+      resume.resolve();
       await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(mutation).resolves.toMatchObject({
-        ok: true,
-        changed: true,
-        references: expect.arrayContaining([
-          expect.objectContaining({
-            category: 'installation', pluginId: 'team/demo', scope: 'project',
-          }),
-          expect.objectContaining({
-            category: 'lifecycle', pluginId: 'team/demo', scope: 'project',
-          }),
-        ]),
-      });
-      expect(mutationCompleted).toBe(true);
+      await expect(mutation).resolves.toMatchObject({ ok: true, changed: true, references: expect.arrayContaining([
+        expect.objectContaining({ category: 'installation', pluginId: 'team/demo', scope: 'project' }),
+      ]) });
       expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).not.toBe(configured.digest);
     } finally {
-      resumeInstall.resolve();
-      await Promise.allSettled([installing, mutation].filter((value) => value !== undefined));
+      resume.resolve(); await Promise.allSettled([installing, mutation].filter((value) => value !== undefined));
       setRebuildCommandTestHooksForTests(undefined);
     }
   });

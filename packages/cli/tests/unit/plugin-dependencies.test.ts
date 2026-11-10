@@ -13,6 +13,7 @@ function plugin(
   platforms?: PluginManifestSource['platforms'],
 ): PluginManifestSource {
   return {
+    schemaVersion: 4,
     name,
     version: '1.0.0',
     description: name,

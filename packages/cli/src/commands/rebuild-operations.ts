@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
 
 import type {
   GeneratedArtifact,
@@ -13,6 +14,8 @@ import type {
 } from '../types.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
 import type { OperationAction } from './operation-plan.js';
+import type { PreparedPlatformTarget } from './rebuild-platform-integration.js';
+import type { DeploymentReceipt } from '../platforms/contracts.js';
 import {
   cleanupOwnedComponents,
   inspectOwnedComponents,
@@ -41,6 +44,14 @@ export interface RebuildTargetIdentity {
 }
 
 export interface DesiredTarget {
+  nativeToolChanges?: import('../utils/native-tool-review.js').NativeToolChange[];
+  deploymentExclusions?: import('../platforms/contracts.js').DeploymentExclusion[];
+  /** Operation-local observations from the resolved physical deployments. */
+  platformObservations?: readonly {
+    binding: import('../platforms/contracts.js').DeploymentBinding;
+    observation: import('../platforms/contracts.js').DeploymentObservation;
+  }[];
+  platformDeployment?: PreparedPlatformTarget;
   plugin: PluginMeta;
   identity: RebuildTargetIdentity;
   ownedComponents: readonly OwnedComponent[];
@@ -72,6 +83,8 @@ export interface RebuildFailure {
 }
 
 interface RebuildResultBase {
+  deploymentExclusions?: import('../platforms/contracts.js').DeploymentExclusion[];
+  deploymentReceipts?: DeploymentReceipt[];
   command: RebuildCommand;
   target: RebuildTargetIdentity;
   actions: RebuildAction[];
@@ -105,6 +118,7 @@ export interface RebuildPreApplyInvocation {
 
 export interface RebuildTargetDriver {
   ownership: OwnedComponentExecutor;
+  applyManagedCommands?(target: DesiredTarget): Promise<void>;
   preflightMutation?(target: DesiredTarget): Promise<void>;
   beforeCleanupMutation?(component: OwnedComponent): Promise<void>;
   preflightMaterialize?(target: DesiredTarget): Promise<void>;
@@ -251,7 +265,8 @@ function succeeded(
   target: DesiredTarget,
   accumulator: ResultAccumulator,
 ): RebuildSucceededResult {
-  return { status: 'succeeded', command, target: target.identity, ...accumulator };
+  return { status: 'succeeded', command, target: target.identity, ...accumulator,
+    ...(target.deploymentExclusions?.length ? { deploymentExclusions: target.deploymentExclusions } : {}) };
 }
 
 function failed(
@@ -271,6 +286,7 @@ function failed(
     status: 'failed',
     command,
     target: target.identity,
+    ...(target.deploymentExclusions?.length ? { deploymentExclusions: target.deploymentExclusions } : {}),
     ...accumulator,
     error: { phase, message, ...(operationDiagnostic ? { operationDiagnostic } : {}) },
   };
@@ -359,7 +375,7 @@ function validateDesiredTarget(target: DesiredTarget): void {
   ) {
     throw new Error('Desired target plugin name/version does not match its preApply source and identity.');
   }
-  if (platform !== 'codex' && platform !== 'claude') {
+  if (!NATIVE_PLATFORM_TARGETS.includes(platform)) {
     throw new Error(`Desired target platform is invalid: ${String(platform)}`);
   }
   if (scope !== 'user' && scope !== 'project') {
@@ -369,25 +385,15 @@ function validateDesiredTarget(target: DesiredTarget): void {
   const identityKeys = new Set<string>();
   const componentPaths = new Set<string>();
   const desiredComponents = target.desiredOwnedComponents ?? target.ownedComponents;
-  const desiredComponentSet = new Set(desiredComponents);
-  const sharedNativeSkillKeys = new Set((target.plugin.manifest.artifacts?.targets ?? [])
-    .filter((artifactTarget) => artifactTarget.platform === 'codex'
-      && artifactTarget.target === 'codex.skill')
-    .map((artifactTarget) => artifactTarget.skillKey));
   let nativeCount = 0;
   for (const component of target.ownedComponents) {
     validateOwnerIdentity(component.identity);
-    const crossScopeLegacyNativeSkill = platform === 'codex'
-      && component.kind === 'skill-directory'
-      && !desiredComponentSet.has(component)
-      && sharedNativeSkillKeys.has(component.identity.artifactKey)
-      && component.identity.scope !== scope;
     if (
       component.identity.plugin !== pluginName
       || component.identity.sourceId !== sourceId
       || component.identity.pluginId !== pluginId
       || component.identity.platform !== platform
-      || (component.identity.scope !== scope && !crossScopeLegacyNativeSkill)
+      || component.identity.scope !== scope
     ) {
       throw new Error('Owned component identity does not match the desired target.');
     }
@@ -854,6 +860,11 @@ async function executeUninstall(options: {
   return succeeded('uninstall', target, accumulator);
 }
 
+function hasPlannedPreApply(target: DesiredTarget): boolean {
+  return !!target.preApplySource.manifest.scripts?.preApply
+    && (!target.platformDeployment || !target.operationActions || target.operationActions.some((action) => action.kind === 'runPreApply'));
+}
+
 export async function executeRebuildOperation(options: {
   command: RebuildCommand;
   target: DesiredTarget;
@@ -869,6 +880,39 @@ export async function executeRebuildOperation(options: {
     emit: options.onActionEvent,
     now: options.now ?? Date.now,
   };
+  if (options.target.platformDeployment) {
+    try {
+      if (options.preparation && (options.preparation.command !== options.command || options.preparation.target !== options.target)) {
+        throw new Error('Prepared rebuild operation does not match the requested target.');
+      }
+      accumulator.actions.push(...options.preparation?.actions ?? []);
+      await options.target.platformDeployment.verify();
+      if (!options.preparation && options.command !== 'cleanup' && options.command !== 'uninstall'
+        && hasPlannedPreApply(options.target)) {
+        await action(accumulator, 'preApply', () => options.driver.runPreApply({ target: options.target, plugin: options.target.preApplySource }), events);
+        await options.target.platformDeployment.verify();
+      }
+      await options.driver.applyManagedCommands?.(options.target);
+      const receipts = await options.target.platformDeployment.execute();
+      for (const cleanup of options.target.platformDeployment.cleanupResults) {
+        accumulator.cleanupAttempted = true;
+        mergeCleanup(accumulator, cleanup, 'cleanup.owned');
+        accumulator.actions.push({ name: 'cleanup.owned', status: cleanup.failures.length || cleanup.residual.length || cleanup.quarantined.length
+          ? 'failed' : 'succeeded' });
+      }
+      const failure = receipts.flatMap((receipt) => receipt.effects).find((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status));
+      const gaps = receipts.flatMap((receipt) => receipt.unmet);
+      const diagnostics = receipts.flatMap((receipt) => receipt.diagnostics).filter((item) => item.severity === 'error');
+      const result = failure || gaps.length || diagnostics.length
+        ? failed(options.command, options.target, accumulator, 'native.write', failure?.diagnostics.map((item) => `${item.code}: ${item.message}`).join('; ') || 'platformComponentsUnmet')
+        : succeeded(options.command, options.target, accumulator);
+      result.deploymentReceipts = receipts;
+      if (result.status === 'succeeded' && options.command !== 'cleanup' && options.command !== 'uninstall') {
+        options.driver.deferPostcheck?.(options.target, () => options.target.platformDeployment!.postcheck(receipts));
+      }
+      return result;
+    } catch (error) { return failed(options.command, options.target, accumulator, 'preflight', errorMessage(error)); }
+  }
   if (options.preparation) {
     if (options.preparation.command !== options.command
       || options.preparation.target !== options.target) {
@@ -1066,7 +1110,8 @@ export async function prepareRebuildOperation(options: {
     now: options.now ?? Date.now,
   };
   try {
-    validateDesiredTarget(options.target);
+    if (options.target.platformDeployment) await options.target.platformDeployment.verify();
+    else validateDesiredTarget(options.target);
   } catch (error) {
     return {
       status: 'failed',
@@ -1125,7 +1170,7 @@ export async function prepareRebuildOperation(options: {
     };
   }
 
-  if (!options.skipPreApply && options.target.preApplySource.manifest.scripts?.preApply) {
+  if (!options.skipPreApply && hasPlannedPreApply(options.target)) {
     try {
       await action(accumulator, 'preApply', () => options.driver.runPreApply({
         target: options.target,

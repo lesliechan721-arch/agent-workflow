@@ -70,9 +70,18 @@ export async function runPublicPluginShow(pluginId: string, options: PublicPlugi
     const plugin = await readPluginManifest(path.join(source.rootDir, 'plugins', parsed.pluginName), { mode: 'bundle' });
     const manifest = plugin.manifest;
     return commandResult(command, { ...item(parsed.sourceId, entry), targets: [...resolveSupportedPlatforms(manifest)],
-      components: { skills: Boolean(manifest.skills), slashCommands: Boolean(manifest.slashCommands), mcpServers: Object.keys(manifest.mcpServers ?? {}), apps: Object.keys(manifest.apps ?? {}),
-        instructions: manifest.extensions?.instructions?.length ?? 0, permissions: manifest.extensions?.permissions?.length ?? 0, agents: manifest.extensions?.agents?.length ?? 0,
-        artifacts: (manifest.artifacts?.targets ?? []).map(({ id, target, platform, scopes, states }) => ({ id, target, platform, scopes, states })) },
+      components: {
+        skill: { staticDeclared: Boolean(manifest.skills) },
+        mcp: { staticDeclared: Boolean(manifest.mcpServers) },
+        agent: { staticDeclarations: manifest.extensions?.agents?.length ?? 0 },
+        hook: { staticDeclarations: manifest.extensions?.hooks?.length ?? 0,
+          nativeDeclarations: Object.fromEntries(Object.entries(manifest.extensions?.nativeHooks ?? {}).map(([platform, entries]) => [platform, entries.length])) },
+        instruction: { staticDeclarations: manifest.extensions?.instructions?.length ?? 0 },
+      },
+      dynamicComponents: { declared: Boolean(manifest.artifacts), state: manifest.artifacts ? 'unprepared' : 'not-declared',
+        kinds: manifest.artifacts ? null : [], names: manifest.artifacts ? null : [], count: manifest.artifacts ? null : 0,
+        configKeys: manifest.artifacts?.configKeys ?? [], scopes: manifest.artifacts ? manifest.artifacts.scopes ?? ['user', 'project'] : [] },
+      invocationPolicy: { declarations: manifest.extensions?.permissions?.length ?? 0 },
       config: { available: Boolean(manifest.config), schemaCommand: ['aw', 'plugin', 'config', 'schema', pluginId] } });
   } catch { return queryFailure(command, 'pluginManifestUnavailable'); }
 }

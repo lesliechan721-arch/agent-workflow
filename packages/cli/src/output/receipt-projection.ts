@@ -94,7 +94,7 @@ function versionReport(value: RecordValue): RecordValue {
   return data;
 }
 function producer(value: RecordValue): RecordValue {
-  return pick(value, ['sourceId', 'sourceIdentity', 'pluginName', 'kind', 'key', 'scope', 'projectRoot', 'platform']);
+  return pick(value, ['sourceId', 'sourceIdentity', 'pluginName', 'kind', 'key', 'scope', 'projectRoot', 'platform', 'placementKey']);
 }
 function commandResults(values: CommandProducerResult[] | undefined, diagnostics: Diagnostic[]): unknown {
   return values?.map((entry) => {
@@ -218,6 +218,11 @@ function projectData(command: string, r: RecordValue, diagnostics: Diagnostic[])
       const recovery = r as unknown as RecoveryReceipt;
       const data: RecordValue = pick(r, ['scope', 'policy', 'preferencesChanged', 'allSatisfied', 'inSync', 'outputsMayHaveChanged']);
       if (r.policy) data.policy = pick(record(r.policy), ['schemaVersion', 'targets', 'exclusions']);
+      if (Array.isArray(r.availability)) data.availability = list(r.availability).map((entry) => ({
+        ...pick(entry, ['id', 'platform', 'displayName', 'selected', 'availability', 'recovery']),
+        installations: list(entry.installations).map((product) => pick(product, ['id', 'product', 'version', 'availability', 'reasonCodes', 'entry'])),
+        diagnostics: list(entry.diagnostics).map((item) => diagnostic(item, 'warning')),
+      }));
       if (r.selection) data.selection = { targets: record(r.selection).agents, ...pick(record(r.selection), ['origin', 'preferences']) };
       if (r.intent) data.requirements = pick(record(r.intent), ['state', 'digest', 'roots']);
       if (recovery.targetResults) data.targetResults = recovery.targetResults.map((entry) => {
@@ -457,6 +462,8 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
     }
   }
   const result = commandResult(command, data, { status, diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
+  if (command === 'target.set' && Array.isArray(r.forceRetry)) result.nextActions.push({ kind: 'command',
+    argv: r.forceRetry as string[], reason: 'Save the requested unavailable targets explicitly. Installation requirements still apply.', requiresConfirmation: false });
   if (status === 'success' && command === 'dev.catalog.publish.plan' && r.state === 'prepared') {
     const action = publicationApplyAction(r, 'Apply this exact prepared publication after reviewing its target and digest.');
     if (action) result.nextActions.push(action);

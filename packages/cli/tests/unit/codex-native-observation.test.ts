@@ -354,4 +354,42 @@ describe('Codex native observation session', () => {
       await session.dispose();
     }
   });
+
+  it('keeps pending product reads bound to their manager when another product starts', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const calls: NativeCliInvocation[] = [];
+    let releaseSystem!: () => void;
+    let releaseApp!: () => void;
+    const systemGate = new Promise<void>((resolve) => { releaseSystem = resolve; });
+    const appGate = new Promise<void>((resolve) => { releaseApp = resolve; });
+    const systemManager = { kind: 'system' as const, version: '0.200.0', command: 'codex-system', argsPrefix: [] };
+    const appManager = { kind: 'app' as const, version: '0.200.0', command: 'codex-app', argsPrefix: [] };
+    const session = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd, env: isolation.env, manager: systemManager,
+      runner: async (invocation) => {
+        calls.push(invocation);
+        await (invocation.command === systemManager.command ? systemGate : appGate);
+        return listResult([invocation.command === systemManager.command ? 'system@aw' : 'app@aw']);
+      },
+    });
+    try {
+      const systemRead = session.inspectPlugin({ pluginId: 'system@aw' });
+      await vi.waitFor(() => expect(calls).toHaveLength(2));
+      session.setManager(appManager);
+      const appRead = session.inspectPlugin({ pluginId: 'app@aw' });
+      await vi.waitFor(() => expect(calls).toHaveLength(4));
+      releaseApp();
+      expect((await appRead).observation).toMatchObject({ state: 'observed', value: 'installed' });
+      releaseSystem();
+      expect((await systemRead).observation).toMatchObject({ state: 'observed', value: 'installed' });
+      expect((await session.inspectPlugin({ pluginId: 'system@aw' })).observation)
+        .toEqual({ state: 'observed', value: 'absent' });
+      expect(calls.filter((call) => call.command === systemManager.command)).toHaveLength(2);
+      expect(calls.filter((call) => call.command === appManager.command)).toHaveLength(2);
+    } finally {
+      releaseSystem();
+      releaseApp();
+      await session.dispose();
+    }
+  });
 });

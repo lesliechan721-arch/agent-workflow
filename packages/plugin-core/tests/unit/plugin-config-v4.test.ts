@@ -41,7 +41,7 @@ const config = () => ({ schemaVersion: 4, definitions: { args, env, model: strin
     native: { properties: { model: ref('model', true), effort: ref('effort', true) } },
   }, otherwise: { properties: { model: ref('model'), effort: ref('effort') } } } },
 } })
-const manifest = (config: unknown) => ({ schemaVersion: 3, name: 'config-v4', version: '1.0.0', description: 'Example',
+const manifest = (config: unknown) => ({ schemaVersion: 4, name: 'config-v4', version: '1.0.0', description: 'Example',
   marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, config })
 const backend = (adapter = 'codex') => ({ key: 'remote', title: 'Remote', adapter })
 

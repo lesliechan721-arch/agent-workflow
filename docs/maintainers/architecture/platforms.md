@@ -1,135 +1,117 @@
-# 平台边界与平台策略架构说明
+# 平台边界与平台策略
 
-本文件面向仓库维护者，定义目标客户端环境解析、Codex 原生 Marketplace 投影与 Project Activation、Claude Code 边界与未绑定记录保护、Portable 跨平台技能分发、以及 Windows 原生辅助工具的内部架构与安全策略。面向插件作者的运行时与命令合同参见[插件运行时合同](../../reference/plugin-runtime.md)、[托管命令合同](../../reference/managed-commands.md)与[原生工具合同](../../reference/native-tools.md)。
+本主题定义客户端发现、固定原生路由、物理部署、能力依据和平台安全边界。作者字段见[Manifest](../../reference/manifest-and-config.md)，动态组件见[运行时](../../reference/plugin-runtime.md)，维护编排见[生命周期](lifecycle.md)。Windows 辅助工具的执行与交付规则在本主题后半部分。
 
----
+## 1. 客户端与可用性
 
-## 1. 宿主目录与环境边界
+target 为 codex、claude、antigravity、cursor、opencode、pi、gemini、copilot、grok、generic。具体 Agent 使用原生包或原生扩展，必要宿主资源由 AW 明确托管；generic 仅管理通用 Skills。Native 失败不改走散文件安装。
 
-<a id="11-生产-agent-目录解析"></a>
-### 1.1 生产 Agent 目录与家目录解析
+CLI/TUI 共用只读发现与 adapter 注册表。可用性分为 available、missing、unsupported、unknown、notApplicable（仅 generic）。它与用户选择、插件能力、实际安装、登录和模型可用性分开。同名可执行文件或配置目录不能证明身份；probe 有时限、输出限制和安全诊断，不下载、不登录、不调用模型。
 
-生产环境只使用以下权威环境变量定位客户端目录，严禁硬编码或跨平台猜测：
-- **Codex**：使用 `CODEX_HOME`；缺省时回退至用户家目录下的 `.codex`。
-- **Claude Code**：使用 `CLAUDE_CONFIG_DIR`；缺省时回退至用户家目录下的 `.claude`。
-- **家目录解析**：依据 Node `os.homedir()` 合同：Windows 使用 `USERPROFILE`，POSIX 使用 `HOME`，缺失时回退系统用户目录。
-- **Windows 环境变量特性**：Windows 环境变量名不区分大小写，重复键按 Node 子进程的排序选择规则解析。
-- **非法安装路径拒绝**：空值、相对路径及 Windows 缺少 drive 的根相对路径直接拒绝，不能成为安装目标。
-- **测试隔离保证**：`AW_CODEX_HOME` 与 `AW_CLAUDE_HOME` 仅为测试资产，**绝对不参与生产路径解析**。
-- **输入隔离与 OS 沙箱区别**：在执行 renderer、Review 物化和插件脚本时，显式使用临时正式 Agent homes、HOME/USERPROFILE 与 XDG，不继承真实路径。该输入隔离是路径与配置层面的上下文隔离，**不是操作系统级别的强制沙箱（OS sandbox）**。
-- **命名空间市场根路径检查（isSafeCodexMarketplaceRoot）**：
-  - 规范 Marketplace root 必须严格为 `<AW_HOME>/marketplaces/<sourceId>`（`packages/cli/src/utils/codex-marketplace-path.ts`），读写两端统一复用该检查；
-  - `awHome` 必须已存在且为无符号链接的普通目录（`lstat.isDirectory() && !lstat.isSymbolicLink()`）；
-  - `marketplacesRoot`（`<AW_HOME>/marketplaces`）与目标 `expectedRoot` 允许尚不存在（初次物化或未投影时不要求用户预建）；存在时须为无符号链接的普通目录；存在的 `marketplacesRoot` 的 `realpath` 须等于规范物理 `canonicalAwHome` 下的 `marketplaces`，存在的 `expectedRoot` 的 `realpath` 须等于该 `canonicalMarketplacesRoot` 下的 `sourceId`；
-  - 严禁任何路径逃逸、重解析点或符号链接欺骗；若安全检查未通过，立即触发 `marketplacePathUnsafe` 阻断（fail closed）。
+一个 target 包含本机已识别且受支持的 CLI/App；Claude 与 Copilot 只识别 CLI。未安装的另一产品面不自动成为要求。某产品面可用即可选择 target，其他已发现面仍保留限制；没有基础可用路径时依事实报告 missing/unsupported/unknown。App 已存在但缺少可用入口不能报 missing。发现覆盖不足也不能报 missing。
 
-### 1.2 Project Home Alias 例外
+### 1.1 宿主根与固定版本条件
 
-当 Codex project config 的规范路径与 Codex user home 相同时（即用户直接在自己家目录作为项目工作区）：
-- `status` 不重复读取或投影 project activation；未发现 project owner 的默认 status 不生成 project placement；显式 project status 报告路径别名（path alias）。
-- `install`、`sync` 和 `reinstall` 不向这个 project placement 写入，用户必须进入独立项目目录。
-- `cleanup` 和 `uninstall` 仍可正常处理已有的 project owner。
+Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR，缺省用户 .claude。家目录遵循 Node os.homedir 与当前 OS 规则，Windows 环境名不区分大小写。空、相对或 Windows 缺 drive 的路径拒绝。AW_CODEX_HOME/AW_CLAUDE_HOME 不参与生产解析。其余平台只采用该路由公开根，不推测私有 cache。
 
----
+| 平台 | 接口最低条件 | 产品面与发现边界 |
+| --- | --- | --- |
+| Codex | CLI 及 App 内置 CLI 均 >=0.155.0 | PATH 与已确认 App 入口，macOS bundle ID com.openai.codex；Windows 已注册 Codex package；Linux 仅 CLI |
+| Claude Code | CLI >=2.1.292 | 仅 CLI |
+| Cursor | Desktop 3.29 发布线；CLI build >=2026.11.05-86047df | CLI 与 Desktop，分别按各自版本序列；workspaceOpen 路径 |
+| Antigravity | CLI >=1.3.4；App 目录路由不套 CLI 数字门槛 | CLI 与已确认 App 的公开发现目录 |
+| OpenCode | 实际本地 runtime >=2.0.0，V2 API | CLI 与 Desktop 本地 server；远程连接不代表本机包可加载 |
+| Pi | 核心 >=1.0.0 | CLI；Agents 消费者身份/版本另验 |
+| Gemini CLI | >=0.63.0 | CLI，preview/许可按组件判断 |
+| Copilot CLI | >=1.0.95 | 仅 CLI，保留 managed/repo overlay |
+| Grok Build | install/list JSON/enable/disable/update/uninstall 与 trust 接口合同 | CLI；没有已证明数字最低版本 |
+| generic | 无客户端条件 | notApplicable，手动选择，不默认勾选 |
 
-<a id="2-codex-原生-marketplace-投影"></a>
-## 2. Codex 原生集成、Rollout 门禁与 Project Activation
+数字门槛是必要接口条件，不是完整运行资格。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。
 
-### 2.1 Codex 最低版本门禁与发现规则
+Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
-- **最低版本要求**：Codex 最低版本必须满足 `>=0.151.0`。低于该版本直接返回稳定错误，**绝不把其它版本的行为外推到 rollout allowlist**。
-- **PATH 遍历与 App 发现算法**：
-  1. 遍历 PATH 的各目录，再发现 App 内置 CLI；合并所有候选并按真实入口去重。
-  2. 对每个可执行文件执行带超时和输出上限的 `--version`，沿用 strict SemVer 解析与版本比较。
-  3. 选择版本最高者；版本相同时 PATH 优先，再按稳定发现次序选择；Windows 查询结果先做规范排序。
-  4. **安全启动入口**：保留 POSIX 可执行入口和 Windows 官方 npm launcher 的安全解析边界，严禁执行 shell alias 或 shell function。
-  5. **macOS 校验**：检查 `~/Applications` 与 `/Applications` 中的 `Codex.app`、`ChatGPT.app`，要求 bundle ID 必须为 `com.openai.codex`，且 `Contents/Resources/codex` 的真实物理路径仍位于 bundle 内部。
-  6. **Windows 校验**：从已注册 `OpenAI.Codex_*` 的当前架构或 Neutral 主包发现 `codex.exe`，严格检查 reparse/symlink 与包内边界，遍历深度最多 16、检查项最多 50000。
-  7. **Linux 规则**：仅使用 PATH 发现。
-  8. **产品版本解耦**：App 界面产品版本不参与 CLI 版本比较。
+### 1.2 身份与物理实例
 
-### 2.2 Native Kind Rollout Allowlist 与真实资格验证
+逻辑需求、产品安装、包位置、render scope 和 activation scope 分开。产品 ID 绑定平台、产品面、规范入口和配置根；版本是可变证据。部署绑定 sourceIdentity/pluginId、平台、需求 scope 与真实 route/位置。
 
-- **显式资格验证门禁**：每种 native kind 必须先通过显式真实资格验证（Rollout Qualification）才能进入 rollout allowlist。未被实际行为证据证明的 kind 必须返回 `unsupported`，**严禁从帮助文本、源码字符串或相邻 kind 猜测推断支持**。
-- **当前资格状态**：在当前 `0.151.0` qualification 证据下，证明支持：`Skill`、`MCP`、`Hook` 和 `App`；而 `slash command` 因缺少可用的离线运行时证据，继续保持 `unsupported`。
-- **资格验证工具（Qualification Scripts）**：
-  - `pnpm qualification:codex-project-native`：专用于 `0.151.0` rollout qualification。
-  - `pnpm qualification:codex-native-performance`：按 `CODEX_QUALIFICATION_VERSION` 和 `CODEX_QUALIFICATION_CLI` 显式验证 `0.151.0` 或 `0.153.0`。两个版本都必须接受 `plugin list --marketplace <name> --json`；`0.153.0` 的本地 marketplace scoped list 还必须在阻断 proxy 的隔离环境中成功，不得依赖远程 Catalog。代表性本地 native plugin 安装运行五次，安装耗时中位数必须严格低于 15 秒（`INSTALL_MEDIAN_BUDGET_MS = 15000`），无任何相对改善替代分支；具体执行与门禁要求参见[测试指南](../testing.md#coverage-and-smoke-commands)。精确 binary 缺失时报告 `missing`，绝不自动下载或把 fixture 结果作为真实性能证据。
-  - 资格验证环境完全基于临时目录，不修改真实用户配置，不作为安装账本或运行中 App 自动刷新的证明。
+physicalKey 为 sha256: 加下列对象的规范序列化完整 SHA-256 小写 hex，规范序列化复用[命令身份](../../reference/managed-commands.md#a4-稳定-id-与物理实例)：
 
-### 2.3 Project Activation 最低行为合同
+~~~ts
+interface PhysicalIdentity {
+  sourceIdentity: string;
+  pluginId: string;
+  platform: PlatformId;
+  route: InstallRoute;
+  namespaceRoot: string;
+  resourceKey: string;
+}
+~~~
 
-Codex 项目激活行为严格遵守以下最低合同：
-- `native add` 默认创建 user enabled。
-- `user=false, project=true`：仅在受信任的精确 project cwd 加载。
-- neutral cwd 不加载 project activation。
-- `user=true, project=true`：在用户和项目两处加载同一 shared native plugin。
-- project trust 未生效时，project-only activation 绝不加载。
+namespaceRoot 是稳定公开安装命名空间：CLI 注册使用实际配置根，目录路由使用公开发现根，补足使用 scope 的受管入口根，generic 使用通用输出根。已有路径 realpath；缺失目标从已存在祖先解析再拼接验证过的相对路径。Windows 不将全路径小写。resourceKey 是稳定原生包逻辑键，补足包含固定类别槽。版本化 cache、staging、Skill resourceRoot 和配置值不进入身份。
 
-<a id="23-状态观测与私有缓存保护"></a>
-### 2.4 静态与动态 Shared Package 区分与维护
+共享真实位置的 CLI/App 与多个 activation 复用同一 key，不同配置根/发现根分别生成。含不同 placement 命令记录的包必须分开物化，不能只分 key 却覆盖同一目录。AW 来源目录按固定平台和 namespace 分组，writer 对计算出的精确 AW 根验证，不接收作者路径。源别名重绑定不能认领旧 sourceIdentity 的包。
 
-- **Static Package（静态包）**：
-  - 静态包由整个插件统一物化，**没有逐 Skill 的 AW-owned 独立组件**；
-  - 不按逐 Skill 独立执行预检、写入或清理，缺失逐 Skill marker **绝不阻断重建或清理流程**；用户手动修改文件可能导致覆盖。
-- **Dynamic Receipt 与平台诊断**：
-  - 动态包由 AW 生成 `.agents-plugin/aw-codex-native-render.json` 记录规范化 identity 和 digest，该 receipt 仅作为可重建的现场诊断证据，不是持久 ledger。
-- **五态判定唯一收敛**：
-  - 共享 Native 的五态分类（`usable` / `missing` / `replaceable: outdated | damaged | renderDrift` / `blocked: foreign | unreadable` / `unobserved`）与完整判定规则统一收敛于[状态与配置架构说明 §2.2.2 共享 Native 五态与诊断判定](config-and-status.md#shared-native-classification)。
-- **Native 安装与移除的精确 Postcheck**：在执行原生安装或移除（install / remove）后，必须通过官方 scoped list（`codex plugin list --marketplace <name> --json`）执行精确后置检查，确认插件处于预期的 `installed`（且版本匹配）或 `absent` 状态，后置校验失败如实报告阻断，不伪造成功。
-- **私有缓存保护**：Codex private cache 不驱动 replace 或 remove，AW 绝不主动删除或修改其私有缓存。
-- **旧环境清理**：旧 Codex direct MCP/Hook residue 不由新 CLI 扫描、重建或删除；保留旧环境时需使用旧 CLI 执行 cleanup。
+activationKey 另含启用位置与需求 scope。身份字符串、路径存在或需求记录本身均不授予删除权；归属和共享检查仍由现有公共管线执行。
 
----
+### 1.3 固定 render scope
 
-## 3. 原生分组物化、Claude 边界与 Portable 跨平台技能
+| 路由/输出 | render scope |
+| --- | --- |
+| Codex 原生包（Skills/MCP/Hooks/Instructions） | user |
+| Codex Agent 角色补足 | 角色真实 user/project 位置 |
+| Claude、Gemini、Copilot 共享包 | user；项目需求只改变 activation |
+| Cursor 独占包 | 对应 user/project，同 scope 产品面共享 |
+| Antigravity CLI | user |
+| Antigravity directory、OpenCode、Pi | 真实 user/project 包位置 |
+| Grok | CLI 为 user，项目目录为 project；包与规则分单元但同 scope |
+| generic | 真实通用输出位置，只含 skill |
 
-<a id="21-分组物化与原子更新"></a>
-### 3.1 原生 Marketplace 物化分组与提交顺序
+同物理单元只计算一次，使用全部已知实际消费者共同能力和 canonical 配置。project-only 后新增 user 或只同步一 scope 都不能改变共享包配置来源。artifacts.scopes 按 render scope 判断，不能借项目 activation 改写 user 包。若同 physicalKey 的 scope、类别布局、来源或最终集合冲突，返回 shared-projection-conflict，保留旧包，其他独立分组继续。
 
-一次写操作按 `sourceId + sourceIdentity + marketplaceName + normalized marketplaceRoot + platform` 分组执行原生 Marketplace 物化：
-1. 汇总全部涉及 target 的动态 native overlay。
-2. 仅执行一次目录复制、staging 完整验证、原子切换（atomic swap）与提交。
-3. **同源根与依赖单轮生成**：同 source 的 root plugin 和所有依赖只执行一轮 Catalog copy、staging generation、atomic swap 和 commit，不受插件数量影响。
+## 2. 原生包、正文与 lifecycle 路由
 
-### 3.2 底层生命周期清理与 Native Remove 的显式顺序例外
+| 平台/route | 包与能力投影 | ensure/refresh 与撤销 |
+| --- | --- | --- |
+| Codex / codex-marketplace | .codex-plugin；包内 Skills/MCP/Hooks，Instructions 用 SessionStart/SubagentStart 直接 additionalContext；Agent 角色为对应 scope 的 agents TOML | Marketplace/add 与 scope activation；刷新按审核 remove/add；撤销先 activation，无引用才 native remove 与精确补足清理 |
+| Claude / claude-marketplace | .claude-plugin；五类包内，Instructions 合并主/子代理 Hook 直接正文 | Marketplace install/update，user 或项目 local scope；卸载后清理无引用 AW 来源 |
+| Cursor / cursor-workspace-hook | .cursor-plugin，rules 为 alwaysApply，宿主 workspaceOpen 返回 pluginPaths | 完整包发布后精确合并对应 scope Hook；撤销 Hook 贡献再清包 |
+| Antigravity / antigravity-cli | .antigravity-plugin，Skills/MCP/Agents/Hooks/Rules | 本地 install/list JSON；更新先准备，再审核 uninstall/reinstall；disable/uninstall 后观测 |
+| Antigravity / antigravity-directory | 同一格式，公开 App 用户目录或项目 .agents/plugins | 精确独占目录发布/更新/撤销，不修改 CLI 私有状态 |
+| OpenCode / opencode-directory | V2 Plugin.define，skill/mcp/agent transform、tool/session hook；context hook 直接追加 system 正文 | 公开本地插件目录；更新后 reload/新会话，移除独占包；不写远程 server |
+| Pi / pi-package | pi package Skills；MCP 与 Hook/Instructions extension；Agents 仅 Markdown 加 pi.subagents.agents 声明 | pi install 本地来源，项目 --local；对应 scope remove 后清理包，不安装/移除 Agents 消费者 |
+| Gemini / gemini-extension | extension Skills/MCP/preview Agents/Hooks/contextFileName；AW Agent 组合自身 Instructions | 本地 install/update 与 user/workspace activation；先停用需求，无引用再 uninstall |
+| Copilot / copilot-marketplace | 标准1.0包及 com.github.copilot Agents/Hooks/Rules；AW Agent 组合正文 | 本地 Marketplace/install；user 与 repo enabledPlugins 分开；目录更新由新会话/restart读取 |
+| Grok / grok-cli、grok-directory | .grok-plugin 的四类包及同 scope AW rules，AW Agent 组合正文 | user 本地原生命令；project .grok/plugins 独占目录；启用/trust/实际来源单独观测 |
+| generic / generic-skills | 通用 Skills writer | 精确 owner/digest 写入与清理，无原生注册/激活/加载承诺 |
 
-通常情况下，共享投影提交必须早于针对该分组的 plugin add/remove/activation。然而，**实际需要原生移除（native remove）的底层生命周期清理存在显式例外，不进入普通重建顺序**：
-- 在实际执行 native remove 时，必须**保留目标插件的 marketplace 投影与归属证据，先完成原生卸载及 absent 后置检查，再移除该插件投影并保持其他插件有效**；
-- 若原生卸载或后置检查失败，必须**完整保留重试所需的 marketplace 与 ownership 证据**，如实报告失败或部分完成；
-- 其他常规 native materialization 的共享投影 commit 必须先于该组的 plugin add/remove/activation；
-- 分组 materialization 失败时，该组不启动 native mutation；commit 后逐 target 执行平台 mutation；单 target 失败不回滚共享投影，也不回滚其它 target 已成功的物理结果。
+所有路径按已核验 profile 开放，表格描述固定适配方式，不是各版本/OS 的全能力资格表。未知能力须在组件缺口中列明，不能复制资源后报告完整成功。
 
-<a id="22-市场命名规则"></a>
-### 3.3 市场命名与冲突 Fail Closed
+Codex Instructions 不写顶层 developer_instructions 或共享 AGENTS；角色本身的 prompt 仍属于 Agent。直接注入覆盖受支持的 Startup/Fork，接受子代理压缩后不再注入的限制。Hook 禁用、trust 或管理策略受限时保持未满足，不回退其他载体。Claude 主会话和子代理分别核验，不能用一条事件推定另一条。
 
-- primary 来源默认使用 `aw` marketplace。
-- 若用户级 Codex 或 Claude 的 `aw` 名称已被旧版或外部（foreign）来源占用，首次安装自动切换为带来源绑定的 `aw-<sourceId>`；两个平台使用同一名称。
-- 已有 canonical 注册决定命名；若候选名称被 foreign 来源占用，立即安全失败（fail closed）。
+Cursor Hook 必须在宿主，不在等待加载的包中。读取 workspace_roots 与现有 AW 需求、偏好和精确 owned 包证据，返回当前工作区有效绝对 pluginPaths，不建立另一启用表。用户/项目分别限定 scope；无工作区窗口、Cloud 不在路径承诺内，Remote/WSL 单独取证。不会切换到 local 插件目录或单次 --plugin-dir 作为普通安装。
 
-<a id="3-claude-code-边界与未绑定记录保护"></a>
-### 3.4 Claude Code 边界与未绑定记录保护
+Pi 核心存在不证明 Agents 消费者存在。inspect 只读返回候选身份、版本、有效 scope、enabled、trust、packageAccess、promptMode/loadExtensions 和配置 evidence。complete+空列表是缺失，unknown 是覆盖不足；停用不是缺失。多个消费者的实际共存规则未验证时保持 unverified，不代用户选执行器。声明文件使用带插件身份的角色名并拒绝覆盖冲突；AW 不注册子代理工具或生成进程管理代码。
 
-- **未绑定裸记录（Bare-key Records）保护**：
-  Claude 合法的未绑定默认安装记录不属于任何 marketplace。来源 inventory 必须完整保留并忽略它们，**严禁将其推断为 canonical 或 foreign**。
-- **重名安全门禁**：在执行原生安装前，若任意 scope 存在与目标原生插件名称相同的未绑定 bare-key 记录，写命令必须在任何清理、镜像或 native CLI 调用前安全失败（fail closed）；不同名记录继续保留并忽略。
-- **清理与卸载限制**：`cleanup` 和 `uninstall` 绝不删除、迁移或重命名未绑定记录。
-- **沙箱排除语法**：通过在 permissions 中输出带 ` *` 结尾的前缀与 `Bash(...)` 包装，精确适配 Claude 沙箱排除规则。
+Pi 1.5.0 的事实来自公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者公开的 subagents.json。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。配置摘要进入 capability 和锁内 stale 检查。
 
-<a id="4-portable-跨平台技能分发与进程收尾"></a><a id="41-跨平台适配器skills-adapter"></a><a id="42-有限进程收尾与-cwd-释放"></a>
-### 3.5 Portable 跨平台技能分发与有限进程收尾
+Gemini/Copilot/Grok 的 Agent 正文组合只涉及同插件本次生成角色，不能修改用户或其他插件的 Agent。Grok project 接收同 binding、同 render scope 的完整组件集合；Instructions 单独改变也使相关 Agent 包重新投影、Review 和冻结。组合输入失败不得发布缺正文的包。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
 
-- **不受实测架构限制**：Portable 跨平台技能从统一 skills 来源生成，支持不受实测 OS/架构范围限制。
-- **当前 AW Portable Writer 架构**：
-  - 当前实现（`packages/cli/src/portable/recovery.ts:365–370`、`recovery-layout.ts`、`writer.ts`）由 AW 直接拥有并执行，CLI 展示标识为明确的 `AW Portable writer`（`portable/commands.ts:20`）；
-  - 通过 `publishPortableSkill` 与 `removePortableSkill` 直接向受支持 Agent 的固定物理消费目录（`portableRecoveryLayout`，如 Antigravity 的 `.gemini/config/skills`、Cursor 的 `.cursor/skills`、通用 Agent 的 `.agents/skills` 等）物化或清理 Skill 目录；
-  - 写入与清理前执行严格的目录、归属（`identity: target.ownerIdentity`，`ownership: 'aw'`）与内容哈希校验（`expectedDigest`、`configDigest`），完整归属与恢复合同参见[插件运行时合同](../../reference/plugin-runtime.md)与[插件生命周期](lifecycle.md#ownership-与删除权限)；
-  - 真实验证按实际平台分别记录，未实跑平台明确为待验证。
-- **历史 Skills Adapter 范围限定**：
-  - 早期通过第三方 Skills CLI adapter 解析 provider 源码路径、在 Windows 上核验 npm/pnpm shim 与 package bin、以及 `portableSkillsCliCleanupFailed` 错误码的执行逻辑，**已明确限定为历史 provider 范围**；
-  - 现有产品与运行时已全面改由 AW Portable writer 负责，不再维护该外部 adapter；测试套件中的 `qualification:project-skills-provider` 仅作为历史 provider 资格记录，不代表当前 AW writer 的运行证明。
-- **禁止降级**：原生失败绝不自动降级为 Portable。
-- **资格报告边界**：Qualification 报告不作为安装账本或运行中 App 重新加载的证明。
+Grok 1.0.77 的 list 只证明可解析的登记，inspect.enabled 不能单独证明生效或加载。配置激活、信任、组件来源及兼容来源重叠分别报告；这些事实不扩大 ownership。已证实不能刷新的本地 update 在发布替换包前受阻，保留旧输出及恢复说明。
+
+## 3. 适配器职责与执行证据
+
+AgentPluginAdapter 提供 discover、resolve、inspect、capabilities、project 和 lifecycle.prepare/execute。discover/resolve/inspect 只读；capabilities 与 prepare 是纯函数；project 只写私有 staging。公共管线拥有 renderer、命令闭包、冻结、Review、写锁、owner/共享检查和结果汇总。execute 使用同一冻结字节、route、位置与动作，不重新渲染、换路由或运行未审核的卸载重装。
+
+效果分类为 publish-package、register、refresh、activate、deactivate、unregister、write-supplement、remove-owned，用于 Review/回执关联，不是通用 shell 动作语言。每个回执效果对应审核 ID；未执行项显式 skipped。原生命令超时或异常后先有限只读观测，未知写入保留 unknown/possible，不盲目重试。安装成功但激活失败、卸载成功但补足清理失败分别保留事实。
+
+后置观察确认登记成功，不能消除后续必需激活被跳过的事实；因失败跳过的必需 effect 仍使目标未完成。同一命令按真实物理范围复用共享 register/refresh 的结果，各 scope 分别激活；Claude 按 scope 独立的安装不合并。
+
+包、注册、owner、各产品面的 activation/trust/load 和组件 presence 分开。load=observed 只表示取得宿主加载证据，不证明模型行为。status 不为补证调用模型。没有客户端时仍允许证据充分的 AW 独占补足清理，原生卸载受阻则保留来源与精确恢复入口，不猜注册已消失。
+
+所有原生来源先准备完整新包、校验并冻结，再按路由执行。单平台或物理分组失败不回滚其他成功；共享配置只修改自身 entry，foreign/shared/unknown 继续保护。preApply 每逻辑 target 每命令最多一次，授权后与 preflight 通过后运行，失败不清旧输出。
+
+真实资格分别固定版本、OS、产品面、scope 和格式，验证安装、列出、激活、更新、移除、新会话加载、冲突与所声称组件。确定性 fake 只验证编排和失败边界。现有资格脚本及证据范围见[测试指南](../testing.md)，不能把相邻版本、help、静态源码或文件写入当完整资格。
 
 ---
 

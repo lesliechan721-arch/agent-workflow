@@ -1,179 +1,53 @@
 import os from 'node:os';
 import path from 'node:path';
-
 import fs from 'fs-extra';
-import type { PluginConfigReferenceContext } from '@lesliechan721/aw-plugin-core/manifest';
-import { selectPluginConfigProfile, type PlatformTarget, type PluginConfigCompiledDefinition } from '@lesliechan721/aw-plugin-core/manifest';
-
-import type {
-  ArtifactPlan,
-  ArtifactSurface,
-  ArtifactRenderSurfaceName,
-  DistributionName,
-  PluginArtifactRenderScriptEntry,
-  PluginConfigSchema,
-  PluginConfigSchemaField,
-  NormalizedPluginManifest,
-  PluginMeta,
-  Scope,
-} from '../types.js';
-import type {
-  PluginConfigIssue,
-  PluginConfigSource,
-  PluginConfigStore,
-  PluginConfigValue,
-} from './plugin-config.js';
 import {
-  assertReadyPluginConfigStore,
-  readPluginConfigStore,
-  resolveEffectivePluginConfig,
-} from './plugin-config.js';
+  normalizeStaticPluginComponents,
+  assertPlatformRenderContext,
+  selectPluginConfigProfile,
+  type ComponentKind,
+  type ExpectedComponentSet,
+  type PlatformCapabilitiesV1,
+  type PlatformRenderContextV1,
+  assertNoDuplicateHookHandlers,
+  type PlatformTarget,
+  type PluginConfigCompiledDefinition,
+  type PluginConfigReferenceContext,
+  type RuntimeConfigSnapshot,
+} from '@lesliechan721/aw-plugin-core/manifest';
+import type { NormalizedPluginManifest, PluginArtifactRenderScriptEntry, PluginConfigSchema, PluginMeta, Scope } from '../types.js';
+import type { PluginConfigIssue, PluginConfigSource, PluginConfigStore, PluginConfigValue } from './plugin-config.js';
+import { assertReadyPluginConfigStore, readPluginConfigStore, resolveEffectivePluginConfig } from './plugin-config.js';
 import {
-  assertNoSensitiveConfigValues,
-  buildNodeScriptInvocation,
-  buildPluginScriptSpawnEnv,
-  calculateFileDigest,
-  collectSensitivePluginConfigValues,
-  defaultPluginProcessRunner,
-  preparePluginScriptDirectories,
-  redactPluginScriptOutput,
-  resolveBundledPluginFilePath,
-  resolvePluginScriptTimeoutMs,
-  summarizePluginScriptOutput,
-  type PluginProcessRunner,
-  type PluginProcessResult,
-  type PluginScriptInvocation,
+  assertNoSensitiveConfigValues, buildNodeScriptInvocation, buildPluginScriptSpawnEnv,
+  calculateFileDigest, collectSensitivePluginConfigValues, defaultPluginProcessRunner,
+  preparePluginScriptDirectories, redactPluginScriptOutput, resolveBundledPluginFilePath,
+  resolvePluginScriptTimeoutMs, summarizePluginScriptOutput,
+  type PluginProcessRunner, type PluginProcessResult,
 } from './plugin-scripts.js';
-import { getArtifactSourceBundleRelativePath, resolveCommandSourceDirectory } from './artifact-sources.js';
-import { resolveArtifactRequest } from './artifact-request.js';
-import { validateArtifactPlan } from './artifact-plan.js';
+import { resolveArtifactRequest, resolvePlatformComponentBatches, selectPlatformRenderConfig, selectPlatformRenderConfigKeys } from './artifact-request.js';
+import { artifactValueDigest, mergeExpectedComponentSets, validateArtifactPlan, validatePlatformComponentPlan, type ValidatedArtifactPlan } from './artifact-plan.js';
+import { resolveCommandSourceDirectory } from './artifact-sources.js';
+import { resolvePlatformComponentResources, verifyPlatformComponentResources, type VerifiedResourceClosure } from './component-resources.js';
 import { createArtifactRuntimeConfigSnapshots } from './runtime-config.js';
-import type { RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
+import { prepareWindowsJobHelper } from './process-tree.js';
 import { attachSafeOperationError, readSafeOperationError } from './safe-operation-diagnostic.js';
 
 export type ArtifactRenderEvent = 'install' | 'refresh' | 'materialize';
-
 export interface ResolvedArtifactRenderConfig {
-  mode: 'artifact-render';
-  targetScope: Scope;
-  schema?: PluginConfigSchema['fields'];
-  values: Record<string, PluginConfigValue>;
-  sources: Record<string, PluginConfigSource>;
-  issues: PluginConfigIssue[];
-  stores: Partial<Record<Scope, PluginConfigStore>>;
-  definition?: PluginConfigCompiledDefinition;
-  referenceContext?: PluginConfigReferenceContext;
+  mode: 'artifact-render'; targetScope: Scope; schema?: PluginConfigSchema['fields'];
+  values: Record<string, PluginConfigValue>; sources: Record<string, PluginConfigSource>;
+  issues: PluginConfigIssue[]; stores: Partial<Record<Scope, PluginConfigStore>>;
+  definition?: PluginConfigCompiledDefinition; referenceContext?: PluginConfigReferenceContext;
 }
-
-export interface ArtifactRendererContext {
-  event: ArtifactRenderEvent;
-  surface: ArtifactSurface;
-  platform?: PlatformTarget;
-  distribution?: DistributionName;
-  scope: Scope;
-  plugin: {
-    name: string;
-    version: string;
-    rootDir: string;
-  };
-  config: {
-    mode: 'artifact-render';
-    targetScope: Scope;
-    schema?: PluginConfigSchema['fields'];
-    values: Record<string, PluginConfigValue>;
-    sources: Record<string, PluginConfigSource>;
-    issues: PluginConfigIssue[];
-  };
-  changedConfigKeys: string[];
-  requestedArtifactIds: string[];
-  previousArtifacts: unknown[];
-  artifactSources: Array<{
-    id: string;
-    target: string;
-    sourceDirs: string[];
-  }>;
-  commandSources: Array<{ packageKey: string; sourceDir: string }>;
-  runtimeImports: Array<{
-    artifactId: string;
-    name: string;
-    providerPluginId: string;
-    exportName: string;
-    path: string;
-    digest: string;
-  }>;
-  paths: {
-    awHome: string;
-    codexHome: string;
-    claudeHome: string;
-    manifestPath: string;
-  };
-  renderer: {
-    runner: PluginArtifactRenderScriptEntry['runner'];
-    path: string;
-    args: string[];
-    manifestDigest: string;
-    rendererDigest: string;
-  };
-}
-
 export interface ArtifactRendererTarget {
-  noOp: boolean;
-  entry?: PluginArtifactRenderScriptEntry;
-  entryPath?: string;
-  bundleRoot?: string;
-  sourceManifest?: NormalizedPluginManifest;
-  manifestPath?: string;
-  manifestDigest?: string;
-  rendererDigest?: string;
+  noOp: boolean; entry?: PluginArtifactRenderScriptEntry; entryPath?: string; bundleRoot?: string;
+  sourceManifest?: NormalizedPluginManifest; manifestPath?: string; manifestDigest?: string; rendererDigest?: string;
 }
-
-export interface WrittenArtifactRendererContext {
-  context: ArtifactRendererContext;
-  contextPath: string;
-  tempDir: string;
-  sensitiveValues: string[];
-  runtimeConfigSnapshots: Record<string, RuntimeConfigSnapshot>;
-  cleanup: () => Promise<void>;
-}
-
-export interface RunArtifactRendererResult {
-  plan: ArtifactPlan;
-  target: ArtifactRendererTarget;
-  context: ArtifactRendererContext;
-  runtimeConfigSnapshots: Record<string, RuntimeConfigSnapshot>;
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-}
-
-const SUPPORTED_ARTIFACT_RENDER_EVENTS = new Set<ArtifactRenderEvent>([
-  'install',
-  'refresh',
-  'materialize',
-]);
+export const ARTIFACT_RENDERER_MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function assertArtifactRenderEvent(value: string): ArtifactRenderEvent {
-  if (!SUPPORTED_ARTIFACT_RENDER_EVENTS.has(value as ArtifactRenderEvent)) {
-    throw new Error(
-      `Artifact renderer only supports install, refresh, and materialize events; received "${value}".`,
-    );
-  }
-  return value as ArtifactRenderEvent;
-}
-
-function selectConfigKeys<Value>(
-  values: Record<string, Value>,
-  selectedKeys: ReadonlySet<string>,
-): Record<string, Value> {
-  return Object.fromEntries(
-    Object.entries(values).filter(([key]) => selectedKeys.has(key)),
-  );
 }
 
 export async function resolveArtifactRenderConfig(options: {
@@ -276,464 +150,238 @@ export async function resolveArtifactRendererTarget(
   };
 }
 
-export async function writeArtifactRendererContext(options: {
-  referencePlugins?: readonly PluginMeta[];
-  sourceId?: string;
-  sourceIdentity?: string;
-  logicalIdentity?: string;
+export interface PreparedArtifactRendererResult {
+  value: unknown;
   target: ArtifactRendererTarget;
-  event: ArtifactRenderEvent;
-  platform: ArtifactRenderSurfaceName;
-  scope: Scope;
-  configScope?: Scope;
-  cwd: string;
-  commandEnv: NodeJS.ProcessEnv;
-  changedConfigKeys?: string[];
-  previousArtifacts?: unknown[];
-  requestedArtifactIds: readonly string[];
-}): Promise<WrittenArtifactRendererContext> {
-  const event = assertArtifactRenderEvent(options.event);
-  if (
-    options.target.noOp ||
-    !options.target.entry ||
-    !options.target.entryPath ||
-    !options.target.bundleRoot ||
-    !options.target.sourceManifest ||
-    !options.target.manifestPath ||
-    !options.target.manifestDigest ||
-    !options.target.rendererDigest
-  ) {
-    throw new Error('Cannot write artifact renderer context for a no-op target.');
-  }
-
-  if (options.platform === 'agent-skills') {
-    throw new Error('artifactTargetRequired: Portable Skill rendering requires a concrete platform target.');
-  }
-  const awSurface = options.platform === 'managed-commands';
-  const platform = options.platform === 'managed-commands' ? undefined : options.platform;
-  const distribution = platform && platform !== 'codex' && platform !== 'claude' ? 'agent-skills' : undefined;
-  const request = resolveArtifactRequest({
-    manifest: options.target.sourceManifest,
-    platform: options.platform,
-    scope: options.scope,
-    requestedArtifactIds: options.requestedArtifactIds,
-  });
-  const requestedConfigKeys = new Set(
-    request.declarations.flatMap((target) => target.refreshKeys),
-  );
-  const config = await resolveArtifactRenderConfig({
-    sourceId: options.sourceId,
-    sourceIdentity: options.sourceIdentity,
-    logicalIdentity: options.logicalIdentity,
-    pluginName: options.target.sourceManifest.name,
-    manifest: options.target.sourceManifest,
-    platform,
-    referencePlugins: options.referencePlugins,
-    scope: options.configScope ?? options.scope,
-    cwd: options.cwd,
-    env: options.commandEnv,
-  });
-  const rendererConfig = {
-    mode: config.mode,
-    targetScope: config.targetScope,
-    schema: config.schema === undefined
-      ? undefined
-      : selectConfigKeys<PluginConfigSchemaField>(config.schema, requestedConfigKeys),
-    values: selectConfigKeys(config.values, requestedConfigKeys),
-    sources: selectConfigKeys(config.sources, requestedConfigKeys),
-    issues: config.issues.filter((issue) => requestedConfigKeys.has(issue.key)),
-  };
-  const runtimeConfigSnapshots = platform === 'codex' || platform === 'claude' ? createArtifactRuntimeConfigSnapshots({
-    sourceId: options.sourceId,
-    sourceIdentity: options.sourceIdentity,
-    logicalIdentity: options.logicalIdentity,
-    manifest: options.target.sourceManifest,
-    platform,
-    scope: options.scope,
-    config,
-    requestedArtifactIds: request.requestedArtifactIds,
-  }) : {};
-
-  const artifactSources = await Promise.all(
-    (options.target.sourceManifest.artifacts?.targets ?? [])
-      .filter((target) =>
-        (target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill')
-        && target.platform === platform
-        && target.distribution === distribution
-        && ((target.target === 'codex.skill' || target.target === 'claude.skill')
-          || target.scopes.includes(options.scope)))
-      .map(async (target) => ({
-        id: target.id,
-        target: target.target,
-        sourceDirs: await Promise.all(
-          (target.sourceDirs ?? []).map((_, index) =>
-            resolveBundledPluginFilePath({
-              bundleRoot: options.target.bundleRoot!,
-              pluginRelativePath: `./${getArtifactSourceBundleRelativePath({
-                platform: target.platform,
-                distribution: target.distribution,
-                artifactId: target.id,
-                index,
-              })}`,
-              fieldName: `Artifact source ${target.id}[${index}]`,
-            }),
-          ),
-        ),
-      })),
-  );
-  const packageKeys = new Set(request.declarations.flatMap((declaration) =>
-    'producer' in declaration && declaration.producer.kind === 'package' ? [declaration.producer.packageKey] : []));
-  const commandSources = await Promise.all((options.target.sourceManifest.managedCommands?.packages ?? [])
-    .filter((entry) => packageKeys.has(entry.key))
-    .map(async (entry) => ({
-      packageKey: entry.key,
-      sourceDir: await resolveCommandSourceDirectory({ bundleRoot: options.target.bundleRoot!, pluginRelativePath: entry.sourceDir }),
-    })));
-
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-artifact-render-'));
-  try {
-    const context: ArtifactRendererContext = {
-      event,
-      surface: awSurface ? { kind: 'aw', name: 'managed-commands' } : distribution
-        ? { kind: 'distribution', name: distribution }
-        : { kind: 'platform', name: platform! },
-      platform,
-      distribution,
-      scope: options.scope,
-      plugin: {
-        name: options.target.sourceManifest.name,
-        version: options.target.sourceManifest.version,
-        rootDir: options.target.bundleRoot,
-      },
-      config: rendererConfig,
-      changedConfigKeys: (options.changedConfigKeys ?? [])
-        .filter((key) => requestedConfigKeys.has(key)),
-      requestedArtifactIds: request.requestedArtifactIds,
-      previousArtifacts: options.previousArtifacts ?? [],
-      artifactSources,
-      commandSources,
-      runtimeImports: request.declarations
-        .flatMap((target) => (target.runtimeImports ?? []).map((runtimeImport) => {
-          if (!runtimeImport.resolved) {
-            throw new Error(`Artifact runtime import "${target.id}/${runtimeImport.name}" is not resolved in the bundle.`);
-          }
-          return {
-            artifactId: target.id,
-            name: runtimeImport.name,
-            providerPluginId: runtimeImport.resolved.providerPluginId,
-            exportName: runtimeImport.export,
-            path: path.join(options.target.bundleRoot!, runtimeImport.resolved.path.replace(/^\.\//u, '')),
-            digest: runtimeImport.resolved.digest,
-          };
-        })),
-      paths: {
-        awHome: path.join(tempDir, 'aw-home'),
-        codexHome: path.join(tempDir, 'codex-home'),
-        claudeHome: path.join(tempDir, 'claude-home'),
-        manifestPath: options.target.manifestPath,
-      },
-      renderer: {
-        runner: options.target.entry.runner,
-        path: options.target.entryPath,
-        args: options.target.entry.args ?? [],
-        manifestDigest: options.target.manifestDigest,
-        rendererDigest: options.target.rendererDigest,
-      },
-    };
-
-    const contextPath = path.join(tempDir, 'context.json');
-    await fs.writeJson(contextPath, context, { spaces: 2 });
-    try {
-      await fs.chmod(contextPath, 0o600);
-    } catch {
-      // Best effort on non-POSIX filesystems.
-    }
-
-    return {
-      context,
-      contextPath,
-      tempDir,
-      sensitiveValues: collectSensitivePluginConfigValues(
-        options.target.sourceManifest,
-        config.values,
-        platform,
-      ),
-      runtimeConfigSnapshots,
-      cleanup: async () => {
-        await fs.remove(tempDir);
-      },
-    };
-  } catch (error) {
-    await fs.remove(tempDir).catch(() => undefined);
-    throw error;
-  }
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
 }
 
-function summarizeRenderOutput(value: string, sensitiveValues: readonly string[]): string {
-  const summary = summarizePluginScriptOutput(value, sensitiveValues);
-  return summary === '' ? '<empty>' : summary;
-}
-
-export const ARTIFACT_RENDERER_MAX_STDOUT_BYTES = 16 * 1024 * 1024;
-
-function assertArtifactPlanEnvelope(
-  value: unknown,
-  output: { stdoutSummary: string; stderrSummary: string },
-): ArtifactPlan {
-  if (!isRecord(value)) {
-    throw new Error(
-      `Artifact renderer must write a JSON object to stdout. stdout: ${output.stdoutSummary}. stderr: ${output.stderrSummary}`,
-    );
-  }
-  if (value.version !== 2) {
-    const migrationHint = value.version === 1
-      ? ' ArtifactPlan V1 is not supported by AW 1.0.0-beta.30; upgrade or reinstall the plugin.'
-      : '';
-    throw new Error(
-      `Artifact renderer returned unsupported plan version "${String(value.version)}".${migrationHint} stderr: ${output.stderrSummary}`,
-    );
-  }
-  if (!Array.isArray(value.artifacts)) {
-    throw new Error(
-      `Artifact renderer returned an invalid plan: "artifacts" must be an array. stdout: ${output.stdoutSummary}. stderr: ${output.stderrSummary}`,
-    );
-  }
-  return value as unknown as ArtifactPlan;
-}
-
-function buildArtifactRendererInvocation(options: {
-  entry: PluginArtifactRenderScriptEntry;
-  entryPath: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-}): PluginScriptInvocation {
-  return buildNodeScriptInvocation({
-    entryPath: options.entryPath,
-    cwd: options.cwd,
-    env: options.env,
-    args: options.entry.args,
-  });
-}
-
-function assertRefreshKeysForEvent(
-  event: string,
-  changedConfigKeys: readonly string[] | undefined,
-): string[] {
-  assertArtifactRenderEvent(event);
-  const keys = changedConfigKeys ? [...changedConfigKeys] : [];
-  if (event === 'refresh' && keys.length === 0) {
-    throw new Error('Artifact renderer refresh requires changedConfigKeys.');
-  }
-  return keys;
-}
-
-async function runArtifactRendererProcess(options: {
-  invocation: PluginScriptInvocation;
-  timeoutMs: number;
-  sensitiveValues: readonly string[];
-  signal?: AbortSignal;
-  runner?: PluginProcessRunner;
-}): Promise<PluginProcessResult> {
-  const runOptions = {
-    timeoutMs: options.timeoutMs,
-    maxStdoutBytes: ARTIFACT_RENDERER_MAX_STDOUT_BYTES,
-    ...(options.signal ? { signal: options.signal } : {}),
-  };
-  return options.runner
-    ? options.runner.run(options.invocation, runOptions)
-    : defaultPluginProcessRunner.run(options.invocation, {
-        ...runOptions,
-        sensitiveValues: options.sensitiveValues,
-      });
-}
-
-export async function runArtifactRenderer(options: {
-  referencePlugins?: readonly PluginMeta[];
-  event: ArtifactRenderEvent;
-  plugin: PluginMeta;
-  platform: ArtifactRenderSurfaceName;
-  scope: Scope;
-  configScope?: Scope;
-  cwd: string;
-  commandEnv?: NodeJS.ProcessEnv;
-  changedConfigKeys?: string[];
-  previousArtifacts?: unknown[];
-  requestedArtifactIds: readonly string[];
-  scriptTimeoutMs?: number;
-  signal?: AbortSignal;
-  runner?: PluginProcessRunner;
-  /** Validated process output owned by one operation, including its rechecks. */
-  preparedResults?: Map<string, PluginProcessResult>;
-}): Promise<RunArtifactRendererResult> {
+/** One process boundary for all surfaces. Surface owners validate their response schema. */
+export async function runPreparedArtifactRenderer(options: {
+  plugin: PluginMeta; context: unknown; sensitiveValues: readonly string[]; cwd: string;
+  event?: ArtifactRenderEvent; commandEnv?: NodeJS.ProcessEnv; scriptTimeoutMs?: number;
+  signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
+}): Promise<PreparedArtifactRendererResult> {
   options.signal?.throwIfAborted();
-  const event = assertArtifactRenderEvent(options.event);
-  const commandEnv = options.commandEnv ?? process.env;
-  const changedConfigKeys = assertRefreshKeysForEvent(
-    event,
-    options.changedConfigKeys,
-  );
-  const target = await resolveArtifactRendererTarget(options.plugin);
-  if (target.noOp) {
-    throw new Error(`Plugin "${options.plugin.manifest.name}" does not declare scripts.artifacts.render.`);
+  if (!isRecord(options.context) || (options.context.scope !== 'user' && options.context.scope !== 'project')) {
+    throw new Error('artifactRendererContextInvalid: A prepared context must contain its render scope.');
   }
-
-  const writtenContext = await writeArtifactRendererContext({
-    sourceId: options.plugin.sourceId,
-    sourceIdentity: options.plugin.sourceIdentity,
-    logicalIdentity: options.plugin.catalogLogicalIdentity,
-    target,
-    referencePlugins: options.referencePlugins,
-    event,
-    platform: options.platform,
-    scope: options.scope,
-    ...(options.configScope ? { configScope: options.configScope } : {}),
-    cwd: options.cwd,
-    commandEnv,
-    changedConfigKeys,
-    previousArtifacts: options.previousArtifacts,
-    requestedArtifactIds: options.requestedArtifactIds,
-  });
-
+  const target = await resolveArtifactRendererTarget(options.plugin);
+  if (target.noOp) throw new Error(`Plugin "${options.plugin.manifest.name}" does not declare scripts.artifacts.render.`);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-artifact-render-'));
+  const isolatedHomes = { awHome: path.join(tempDir, 'aw-home'), codexHome: path.join(tempDir, 'codex-home'), claudeHome: path.join(tempDir, 'claude-home') };
   try {
-    if (writtenContext.context.config.issues.length > 0) {
-      throw new Error(
-        `Invalid AW config for ${writtenContext.context.plugin.name}: ${writtenContext.context.config.issues.map((issue) => `${issue.key} (${issue.type})`).join(', ')}.`,
-      );
-    }
-    await Promise.all([
-      preparePluginScriptDirectories(writtenContext.tempDir),
-      fs.ensureDir(writtenContext.context.paths.awHome),
-      fs.ensureDir(writtenContext.context.paths.codexHome),
-      fs.ensureDir(writtenContext.context.paths.claudeHome),
-    ]);
-    const timeoutMs = resolvePluginScriptTimeoutMs({
-      cliTimeoutMs: options.scriptTimeoutMs,
-      manifestTimeoutMs: undefined,
-    });
-    const spawnEnv = buildPluginScriptSpawnEnv({
-      commandEnv,
-      isolatedHomes: writtenContext.context.paths,
-      contextPath: writtenContext.contextPath,
-      tempDir: writtenContext.tempDir,
-      plugin: writtenContext.context.plugin,
-      event,
-      ...(options.platform === 'managed-commands'
-        ? {}
-        : { platform: writtenContext.context.platform,
-          ...(writtenContext.context.distribution ? { distribution: writtenContext.context.distribution } : {}) }),
-      scope: options.scope,
-      bundleRoot: writtenContext.context.plugin.rootDir,
-    });
-    if (options.platform === 'managed-commands') spawnEnv.AW_PLUGIN_SURFACE = 'managed-commands';
-    const invocation = buildArtifactRendererInvocation({
-      entry: target.entry!,
-      entryPath: target.entryPath!,
-      cwd: options.cwd,
-      env: spawnEnv,
-    });
-
-    // Temporary homes change on every preparation. The remaining context binds
-    // the renderer, exact request, config, sources and previous artifacts.
-    const preparationKey = options.preparedResults ? JSON.stringify({
-      ...writtenContext.context,
-      paths: { manifestPath: writtenContext.context.paths.manifestPath },
-      cwd: options.cwd,
-      commandEnv,
-      scriptTimeoutMs: options.scriptTimeoutMs,
-    }) : undefined;
+    const contextPath = path.join(tempDir, 'context.json');
+    await fs.writeJson(contextPath, options.context, { spaces: 2 });
+    await fs.chmod(contextPath, 0o600).catch(() => undefined);
+    await preparePluginScriptDirectories(tempDir);
+    if (process.platform === 'win32') await prepareWindowsJobHelper();
+    for (const location of Object.values(isolatedHomes)) await fs.ensureDir(location);
+    const commandEnv = options.commandEnv ?? process.env;
+    const surface = options.context.surface;
+    const platform = typeof options.context.platform === 'string' ? options.context.platform as PlatformTarget : undefined;
+    const env = buildPluginScriptSpawnEnv({ commandEnv, contextPath, tempDir, isolatedHomes,
+      plugin: options.plugin.manifest, event: options.event ?? 'materialize',
+      platform, scope: options.context.scope, bundleRoot: target.bundleRoot! });
+    env.AW_PLUGIN_SURFACE = typeof surface === 'string' ? surface : 'managed-commands';
+    const invocation = buildNodeScriptInvocation({ entryPath: target.entryPath!, cwd: options.cwd, env, args: target.entry!.args });
+    const timeoutMs = resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs });
+    const preparationKey = options.preparedResults ? artifactValueDigest({ context: options.context,
+      manifestDigest: target.manifestDigest, rendererDigest: target.rendererDigest, cwd: options.cwd,
+      commandEnv, scriptTimeoutMs: options.scriptTimeoutMs }) : undefined;
+    const runOptions = { timeoutMs, maxStdoutBytes: ARTIFACT_RENDERER_MAX_STDOUT_BYTES, ...(options.signal ? { signal: options.signal } : {}) };
     const result = (preparationKey ? options.preparedResults?.get(preparationKey) : undefined)
-      ?? await runArtifactRendererProcess({
-        invocation,
-        timeoutMs,
-        sensitiveValues: writtenContext.sensitiveValues,
-        signal: options.signal,
-        runner: options.runner,
-      });
-    const stdoutSummary = summarizeRenderOutput(
-      result.stdout,
-      writtenContext.sensitiveValues,
-    );
-    const stderrSummary = summarizeRenderOutput(
-      result.stderr,
-      writtenContext.sensitiveValues,
-    );
-
-    if (result.stdoutTruncated || Buffer.byteLength(result.stdout, 'utf8') > ARTIFACT_RENDERER_MAX_STDOUT_BYTES) {
-      throw new Error('artifactRendererOutputTooLarge: Artifact renderer JSON exceeds the 16 MiB limit.');
-    }
-
-    if (result.timedOut) {
-      throw new Error(
-        `Artifact renderer timed out after ${timeoutMs} ms. stderr: ${stderrSummary}`,
-      );
-    }
-    if (result.exitCode !== 0) {
-      throw new Error(
-        `Artifact renderer failed with exit code ${result.exitCode}. stderr: ${stderrSummary}`,
-      );
-    }
-
-    const rawStdout = result.stdout.trim();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawStdout);
-    } catch {
-      throw new Error(
-        `Artifact renderer must write JSON to stdout. stdout: ${stdoutSummary}. stderr: ${stderrSummary}`,
-      );
-    }
-
-    let plan: ArtifactPlan;
-    try {
-      assertNoSensitiveConfigValues(
-        parsed,
-        writtenContext.sensitiveValues,
-        'artifactRendererSensitiveConfigExposed: Artifact renderer output contains sensitive config.',
-      );
-      plan = assertArtifactPlanEnvelope(parsed, {
-        stdoutSummary,
-        stderrSummary,
-      });
-      validateArtifactPlan({
-        manifest: options.plugin.manifest,
-        plan,
-        platform: options.platform,
-        scope: options.scope,
-        requestedArtifactIds: writtenContext.context.requestedArtifactIds,
-        renderConfig: writtenContext.context.config,
-        rendererDigest: target.rendererDigest,
-        manifestDigest: target.manifestDigest,
-      });
-    } catch (error) {
-      throw new Error(redactPluginScriptOutput(
-        error instanceof Error ? error.message : String(error),
-        writtenContext.sensitiveValues,
-      ));
-    }
-
-    // Cache only validated success. Reused output still passes the current
-    // sensitive-value and artifact checks above.
+      ?? await (options.runner ? options.runner.run(invocation, runOptions)
+        : defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues: options.sensitiveValues }));
+    const summary = (text: string): string => summarizePluginScriptOutput(text, options.sensitiveValues) || '<empty>';
+    const stdout = summary(result.stdout);
+    const stderr = summary(result.stderr);
+    if (result.stdoutTruncated || Buffer.byteLength(result.stdout, 'utf8') > ARTIFACT_RENDERER_MAX_STDOUT_BYTES) throw new Error('artifactRendererOutputTooLarge: Artifact renderer JSON exceeds the 16 MiB limit.');
+    if (result.timedOut) throw new Error(`Artifact renderer timed out after ${timeoutMs} ms. stderr: ${stderr}`);
+    if (result.exitCode !== 0 || result.signal !== null) throw new Error(`Artifact renderer failed with exit code ${result.exitCode}. stderr: ${stderr}`);
+    let value: unknown;
+    try { value = JSON.parse(result.stdout.trim()); }
+    catch { throw new Error(`Artifact renderer must write JSON to stdout. stdout: ${stdout}. stderr: ${stderr}`); }
+    assertNoSensitiveConfigValues(value, options.sensitiveValues,
+      'artifactRendererSensitiveConfigExposed: Artifact renderer output contains sensitive config.');
+    // This cache is scoped to one operation. Every consumer still validates its surface and resources.
     if (preparationKey) options.preparedResults!.set(preparationKey, result);
-    return {
-      plan,
-      target,
-      context: writtenContext.context,
-      runtimeConfigSnapshots: writtenContext.runtimeConfigSnapshots,
-      exitCode: result.exitCode,
-      signal: result.signal,
-      stdout: stdoutSummary,
-      stderr: stderrSummary,
-      timedOut: result.timedOut,
-    };
+    return { value, target, exitCode: result.exitCode, signal: result.signal, stdout, stderr, timedOut: result.timedOut };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const redacted = redactPluginScriptOutput(message, writtenContext.sensitiveValues);
+    const redacted = redactPluginScriptOutput(message, options.sensitiveValues);
     if (redacted === message) throw error;
     const failure = new Error(redacted, { cause: error });
     if (error instanceof Error) failure.name = error.name;
     const diagnostic = readSafeOperationError(error);
     throw diagnostic ? attachSafeOperationError(failure, diagnostic) : failure;
-  } finally {
-    await writtenContext.cleanup();
+  } finally { await fs.remove(tempDir); }
+}
+
+export interface PlatformComponentPreparationEvidence {
+  manifestDigest: string;
+  rendererDigest?: string;
+  configDigest: string;
+  capabilitiesDigest: string;
+  resourceDigest: string;
+  renderInputDigest: string;
+}
+export interface PreparedPlatformComponents {
+  expected: ExpectedComponentSet;
+  resources: VerifiedResourceClosure;
+  evidence: PlatformComponentPreparationEvidence;
+  runtimeConfigSnapshots: Record<string, RuntimeConfigSnapshot>;
+  empty: 'intentional' | 'unmet' | null;
+}
+
+export async function preparePlatformComponents(options: {
+  plugin: PluginMeta; platform: PlatformTarget; renderScope: Scope; kinds: readonly ComponentKind[];
+  capabilities: PlatformCapabilitiesV1; config: ResolvedArtifactRenderConfig; cwd: string;
+  staticExpected?: ExpectedComponentSet; staticResourceRoot?: string; previousComponents?: PlatformRenderContextV1['previousComponents'];
+  changedConfigKeys?: string[]; commandEnv?: NodeJS.ProcessEnv; scriptTimeoutMs?: number;
+  signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
+}): Promise<PreparedPlatformComponents> {
+  options.signal?.throwIfAborted();
+  if (options.capabilities.platform !== options.platform || options.capabilities.scope !== options.renderScope
+    || options.config.targetScope !== options.renderScope) throw new Error('componentRenderUnitMismatch: Config and capability scope must match the render unit.');
+  const target = await resolveArtifactRendererTarget(options.plugin);
+  const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, options.config.values, options.platform);
+  try {
+    const resources = await resolvePlatformComponentResources(options.plugin);
+    const sets: ExpectedComponentSet[] = [options.staticExpected ?? await normalizeStaticPluginComponents({
+      pluginRoot: options.plugin.rootDir, staticResourceRoot: options.staticResourceRoot, manifest: options.plugin.manifest, platform: options.platform,
+      capabilities: options.capabilities, allowedOutputKinds: options.kinds,
+    })];
+    const contexts: PlatformRenderContextV1[] = [];
+    for (const allowedOutputKinds of resolvePlatformComponentBatches({ ...options, manifest: options.plugin.manifest })) {
+      const nonSensitive = allowedOutputKinds.includes('skill');
+      const keys = options.plugin.manifest.artifacts!.configKeys;
+      const config = selectPlatformRenderConfig({ resolved: options.config, keys, nonSensitive });
+      if (config.issues.length) throw new Error(`Invalid AW config for ${options.plugin.manifest.name}: ${config.issues.map((issue) => issue.path.field).join(', ')}.`);
+      const context: PlatformRenderContextV1 = {
+        schemaVersion: 1, surface: 'agent-plugin', platform: options.platform, scope: options.renderScope,
+        plugin: { pluginId: options.plugin.pluginId ?? `${options.plugin.sourceId ?? 'authoring'}/${options.plugin.manifest.name}`,
+          name: options.plugin.manifest.name, version: options.plugin.manifest.version },
+        config, changedConfigKeys: (options.changedConfigKeys ?? []).filter((key) => Object.hasOwn(config.sources, key)),
+        allowedOutputKinds, platformCapabilities: options.capabilities, resources,
+        previousComponents: (options.previousComponents ?? []).filter((entry) => allowedOutputKinds.includes(entry.kind))
+          .map(({ id, kind, name }) => ({ id, kind, name })),
+      };
+      assertPlatformRenderContext(context);
+      contexts.push(context);
+      const rendered = await runPreparedArtifactRenderer({ ...options, context, sensitiveValues });
+      const plan = validatePlatformComponentPlan({ plan: rendered.value, platform: options.platform, scope: options.renderScope,
+        allowedOutputKinds, platformCapabilities: options.capabilities, configKeys: keys,
+        nonSensitiveConfigKeys: selectPlatformRenderConfigKeys({ resolved: options.config, keys, nonSensitive: true }),
+        resources, sourceDirs: options.plugin.manifest.artifacts?.sourceDirs,
+        requiredAwCapabilities: options.plugin.manifest.requires?.aw.capabilities });
+      sets.push({ components: plan.components, omitted: plan.omitted, unmet: plan.unmet,
+        sources: Object.fromEntries([...plan.components, ...plan.omitted, ...plan.unmet].map((entry) => [entry.id, 'dynamic' as const])) });
+    }
+    const expected = mergeExpectedComponentSets(sets);
+    assertNoDuplicateHookHandlers(expected.components, options.platform);
+    const closure = await verifyPlatformComponentResources({ plugin: options.plugin, expected, resources,
+      capabilities: options.capabilities, sensitiveValues, staticResourceRoot: options.staticResourceRoot });
+    // Only the exact static receipt, already matched to the verified manifest above, is metadata rather than plugin text.
+    const scannedComponents = expected.components.map((component) => component.kind === 'skill' && expected.sources[component.id] === 'static'
+      ? { ...component, content: { files: Object.fromEntries(Object.entries(component.content.files).filter(([file]) => file !== 'aw-plugin-requirements.json')) } }
+      : component);
+    assertNoSensitiveConfigValues({ ...expected, components: scannedComponents }, sensitiveValues,
+      'componentSensitiveConfigExposed: Components contain sensitive config.');
+    const runtimeConfigSnapshots = createArtifactRuntimeConfigSnapshots({
+      sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
+      logicalIdentity: options.plugin.catalogLogicalIdentity, manifest: options.plugin.manifest,
+      platform: options.platform, scope: options.renderScope, config: options.config, components: expected.components,
+    });
+    const evidence: PlatformComponentPreparationEvidence = {
+      manifestDigest: target.manifestDigest!, ...(target.rendererDigest ? { rendererDigest: target.rendererDigest } : {}),
+      configDigest: artifactValueDigest(selectPlatformRenderConfig({ resolved: options.config,
+        keys: options.plugin.manifest.artifacts?.configKeys ?? [], nonSensitive: false })),
+      capabilitiesDigest: artifactValueDigest(options.capabilities), resourceDigest: closure.digest,
+      renderInputDigest: artifactValueDigest({ contexts, static: sets[0], manifestDigest: target.manifestDigest,
+        rendererDigest: target.rendererDigest, resources: closure.digest }),
+    };
+    return { expected, resources: closure, evidence, runtimeConfigSnapshots,
+      empty: expected.components.length ? null : expected.unmet.length ? 'unmet' : 'intentional' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const redacted = redactPluginScriptOutput(message, sensitiveValues);
+    if (message === redacted) throw error;
+    const failure = new Error(redacted);
+    const diagnostic = readSafeOperationError(error);
+    throw diagnostic ? attachSafeOperationError(failure, diagnostic) : failure;
   }
+}
+
+/** The independent command-package surface retains its v2 protocol. */
+export async function runArtifactRenderer(options: {
+  referencePlugins?: readonly PluginMeta[]; event: ArtifactRenderEvent; plugin: PluginMeta;
+  platform: 'managed-commands'; scope: Scope; configScope?: Scope; cwd: string;
+  commandEnv?: NodeJS.ProcessEnv; changedConfigKeys?: string[]; previousArtifacts?: unknown[];
+  requestedArtifactIds: readonly string[]; scriptTimeoutMs?: number; signal?: AbortSignal;
+  runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
+}): Promise<{ plan: ValidatedArtifactPlan; target: ArtifactRendererTarget; context: ManagedCommandRendererContext;
+  runtimeConfigSnapshots: Record<string, RuntimeConfigSnapshot>; exitCode: number | null;
+  signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }> {
+  const written = await createManagedCommandRendererContext({ ...options, target: await resolveArtifactRendererTarget(options.plugin),
+    sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity, commandEnv: options.commandEnv ?? process.env });
+  try {
+    const rendered = await runPreparedArtifactRenderer({ ...options, context: written.context, sensitiveValues: written.sensitiveValues });
+    const plan = validateArtifactPlan({ ...options, manifest: options.plugin.manifest, plan: rendered.value,
+      renderConfig: written.renderConfig, manifestDigest: rendered.target.manifestDigest, rendererDigest: rendered.target.rendererDigest });
+    return { ...rendered, plan, context: written.context, runtimeConfigSnapshots: {} };
+  } finally { await written.cleanup(); }
+}
+
+export interface ManagedCommandRendererContext {
+  event: ArtifactRenderEvent;
+  surface: { kind: 'aw'; name: 'managed-commands' };
+  scope: Scope;
+  plugin: { name: string; version: string; rootDir: string };
+  config: { mode: 'artifact-render'; targetScope: Scope; schema?: PluginConfigSchema['fields'];
+    values: Record<string, PluginConfigValue>; sources: Record<string, PluginConfigSource>; issues: PluginConfigIssue[] };
+  changedConfigKeys: string[];
+  requestedArtifactIds: string[];
+  previousArtifacts: unknown[];
+  artifactSources: never[];
+  commandSources: Array<{ packageKey: string; sourceDir: string }>;
+  runtimeImports: never[];
+}
+async function createManagedCommandRendererContext(options: {
+  referencePlugins?: readonly PluginMeta[]; sourceId?: string; sourceIdentity?: string; logicalIdentity?: string;
+  target: ArtifactRendererTarget; event: ArtifactRenderEvent; platform: 'managed-commands'; scope: Scope;
+  configScope?: Scope; cwd: string; commandEnv: NodeJS.ProcessEnv; changedConfigKeys?: string[];
+  previousArtifacts?: unknown[]; requestedArtifactIds: readonly string[];
+}): Promise<{ context: ManagedCommandRendererContext; renderConfig: ResolvedArtifactRenderConfig;
+  sensitiveValues: string[]; cleanup(): Promise<void> }> {
+  if (options.platform !== 'managed-commands') throw new Error('Platform components require preparePlatformComponents and the v3 component protocol.');
+  if (!options.target.sourceManifest || !options.target.bundleRoot) throw new Error('Cannot write a command context for an unresolved target.');
+  const manifest = options.target.sourceManifest;
+  const request = resolveArtifactRequest({ manifest, platform: 'managed-commands', scope: options.scope, requestedArtifactIds: options.requestedArtifactIds });
+  const resolved = await resolveArtifactRenderConfig({ ...options, manifest, platform: undefined, scope: options.configScope ?? options.scope, env: options.commandEnv });
+  const requestedKeys = request.declarations.flatMap((entry) => entry.refreshKeys);
+  const selected = selectPlatformRenderConfig({ resolved, keys: requestedKeys, nonSensitive: true });
+  if (requestedKeys.some((key) => !Object.hasOwn(selected.sources, key))) throw new Error('managedCommandSensitiveConfigDenied: Command inputs must be non-sensitive.');
+  const keySet = new Set(Object.keys(selected.sources));
+  const renderConfig = { ...resolved, schema: selected.schema.fields,
+    values: selected.values, sources: selected.sources, issues: resolved.issues.filter((issue) => keySet.has(issue.key)) };
+  if (renderConfig.issues.length) throw new Error('Invalid AW config for managed commands.');
+  const packageKeys = new Set(request.declarations.flatMap((entry) => entry.producer.kind === 'package' ? [entry.producer.packageKey] : []));
+  const commandSources = await Promise.all((manifest.managedCommands?.packages ?? []).filter((entry) => packageKeys.has(entry.key))
+    .map(async (entry) => ({ packageKey: entry.key, sourceDir: await resolveCommandSourceDirectory({ bundleRoot: options.target.bundleRoot!, pluginRelativePath: entry.sourceDir }) })));
+  return { context: { event: options.event, surface: { kind: 'aw', name: 'managed-commands' }, scope: options.scope,
+    plugin: { name: manifest.name, version: manifest.version, rootDir: options.target.bundleRoot },
+    config: { mode: 'artifact-render', targetScope: resolved.targetScope, schema: renderConfig.schema,
+      values: renderConfig.values, sources: renderConfig.sources, issues: renderConfig.issues },
+    changedConfigKeys: (options.changedConfigKeys ?? []).filter((key) => keySet.has(key)),
+    requestedArtifactIds: request.requestedArtifactIds,
+    previousArtifacts: (options.previousArtifacts ?? []).filter((value) => isRecord(value)
+      && request.requestedArtifactIds.includes(String(value.id)) && (value.kind === 'commandSet' || value.kind === 'commandPackage')),
+    commandSources, artifactSources: [], runtimeImports: [] }, renderConfig,
+    sensitiveValues: collectSensitivePluginConfigValues(manifest, resolved.values), cleanup: async () => undefined };
 }
