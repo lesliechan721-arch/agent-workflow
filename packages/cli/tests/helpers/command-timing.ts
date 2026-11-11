@@ -14,6 +14,7 @@ export function createCommandTestTiming(test: TestContext) {
   const active = new Map<number, { stage: string; name: string; startedAt: number }>();
   const emit = (event: Record<string, unknown>) => {
     console.log('AW_TEST_TIMING', JSON.stringify({
+      pid: process.pid,
       test: test.task.name,
       testId: test.task.id,
       elapsedMs: Math.round(performance.now() - startedAt),

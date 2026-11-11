@@ -6,6 +6,10 @@ import { once } from 'node:events';
 // The outer runner still enforces marker, identity and group membership. This
 // only waits for the owned group to drain; it never signals group members.
 export async function waitForRpcGroupExit(deadline, onDiagnostic = () => {}, inspect = execFile) {
+  const inspectionFailed = (reason, details = {}) => {
+    onDiagnostic({ atMs: performance.now(), event: 'group-inspection-failed', reason, ...details });
+    return new Error('rpc-group-inspection-failed');
+  };
   onDiagnostic({ atMs: performance.now(), event: 'group-wait-start' });
   while (true) {
     const remaining = deadline - performance.now();
@@ -18,11 +22,18 @@ export async function waitForRpcGroupExit(deadline, onDiagnostic = () => {}, ins
         encoding: 'utf8', windowsHide: true, timeout: Math.min(1000, Math.ceil(remaining)),
         maxBuffer: 2 * 1024 * 1024, killSignal: 'SIGKILL',
       }, (error, stdout) => capture({ error, stdout }));
-    } catch { throw new Error('rpc-group-inspection-failed'); }
+    } catch { throw inspectionFailed('query-start-failed'); }
     const closed = new Promise(resolve => inspector.once('close', resolve));
     const { error, stdout } = await captured;
     await closed;
-    if (error || typeof stdout !== 'string') throw new Error('rpc-group-inspection-failed');
+    if (error) throw inspectionFailed('query-failed', {
+      queryKilled: error.killed === true,
+      exitCode: Number.isInteger(error.code) && error.code >= 0 && error.code <= 255 ? error.code : null,
+      errorCode: ['ENOENT', 'EACCES', 'EPERM', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(error.code)
+        ? error.code : typeof error.code === 'string' ? 'other' : null,
+      signal: ['SIGKILL', 'SIGTERM'].includes(error.signal) ? error.signal : null,
+    });
+    if (typeof stdout !== 'string') throw inspectionFailed('query-output-invalid');
     if (performance.now() >= deadline) throw new Error('rpc-descendants-timeout');
     let selfFound = false;
     let liveMembers = false;
@@ -30,22 +41,25 @@ export async function waitForRpcGroupExit(deadline, onDiagnostic = () => {}, ins
     for (const line of stdout.split('\n')) {
       if (!line.trim()) continue;
       const row = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/u.exec(line);
-      if (!row) throw new Error('rpc-group-inspection-failed');
+      if (!row) throw inspectionFailed('row-format-invalid');
       const pid = Number(row[1]);
       const pgid = Number(row[2]);
       if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(pgid) || seen.has(pid)) {
-        throw new Error('rpc-group-inspection-failed');
+        throw inspectionFailed('pid-invalid-or-duplicate');
       }
       seen.add(pid);
       if (pid === process.pid) {
-        if (pgid !== process.pid) throw new Error('rpc-group-inspection-failed');
+        if (pgid !== process.pid) throw inspectionFailed('helper-group-changed', { helperPid: process.pid, pgid });
         selfFound = true;
       }
       if (pgid !== process.pid) continue;
-      if (!/^[A-Z][A-Za-z0-9+<>=-]*$/u.test(row[3])) throw new Error('rpc-group-inspection-failed');
+      if (!/^[A-Z][A-Za-z0-9+<>=-]*$/u.test(row[3])) throw inspectionFailed('group-state-unknown', {
+        pid, pgid, role: pid === process.pid ? 'helper' : pid === inspector.pid ? 'inspector' : 'member',
+        stateCategory: row[3].startsWith('?') ? 'unknown' : 'unsupported',
+      });
       if (pid !== process.pid && pid !== inspector.pid && !row[3].startsWith('Z')) liveMembers = true;
     }
-    if (!selfFound) throw new Error('rpc-group-inspection-failed');
+    if (!selfFound) throw inspectionFailed('helper-row-missing', { helperPid: process.pid, rows: seen.size });
     if (!liveMembers) {
       onDiagnostic({ atMs: performance.now(), event: 'group-wait-complete' });
       return;

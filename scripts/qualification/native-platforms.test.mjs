@@ -262,22 +262,57 @@ test('RPC group queries require inspector close, valid snapshots and the origina
   await pending;
   assert.equal(completed, true);
 
-  for (const output of ['', 'unknown', `${process.pid} 0 S\n`, `${process.pid} ${process.pid} ?\n`,
-    self + `${process.pid} ${process.pid} S\n`]) {
-    await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, () => {}, (_command, _args, _options, done) => {
+  // Test Value Gate: one safe classification must distinguish host query,
+  // parse and group failures without exposing the original process output.
+  const cases = [
+    { output: '', reason: 'helper-row-missing', fields: { helperPid: process.pid, rows: 0 } },
+    { output: 'private-inspection-output', reason: 'row-format-invalid' },
+    { output: undefined, reason: 'query-output-invalid' },
+    { output: `${process.pid} 0 S\n`, reason: 'helper-group-changed', fields: { helperPid: process.pid, pgid: 0 } },
+    { output: self + `${process.pid} ${process.pid} S\n`, reason: 'pid-invalid-or-duplicate' },
+    { output: self + `9007199254740992 1 S\n`, reason: 'pid-invalid-or-duplicate' },
+    ...['helper', 'inspector', 'member'].map((role, index) => ({
+      output: (index ? self : '') + `${process.pid + index} ${process.pid} ?\n`,
+      reason: 'group-state-unknown', fields: { pid: process.pid + index, pgid: process.pid, role, stateCategory: 'unknown' },
+    })),
+    { output: self + `${process.pid + 2} ${process.pid} private-inspection-output\n`,
+      reason: 'group-state-unknown', fields: { pid: process.pid + 2, pgid: process.pid, role: 'member', stateCategory: 'unsupported' } },
+  ];
+  for (const { output, reason, fields } of cases) {
+    const events = [];
+    await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, event => events.push(event), (_command, _args, _options, done) => {
       const child = new EventEmitter(); child.pid = process.pid + 1;
       setImmediate(() => { done(null, output); child.emit('close', 0); });
       return child;
     }), /rpc-group-inspection-failed/);
+    const failure = events.find(event => event.event === 'group-inspection-failed');
+    assert(failure, `Missing inspection classification: ${reason}`);
+    assert(Number.isFinite(failure.atMs));
+    assert.deepEqual(failure, { atMs: failure.atMs, event: 'group-inspection-failed', reason, ...fields });
+    assert.equal(JSON.stringify(events).includes('private-inspection-output'), false);
   }
-  await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, () => {}, () => {
+  const syncEvents = [];
+  await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, event => syncEvents.push(event), () => {
     throw new Error('private-inspection-error');
   }), /^Error: rpc-group-inspection-failed$/);
-  await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, () => {}, (_command, _args, _options, done) => {
-    const child = new EventEmitter(); child.pid = process.pid + 1;
-    setImmediate(() => { done(new Error('private-inspection-error'), self); child.emit('close', 1); });
-    return child;
-  }), /^Error: rpc-group-inspection-failed$/);
+  assert.equal(syncEvents.at(-1).reason, 'query-start-failed');
+  assert.equal(JSON.stringify(syncEvents).includes('private-inspection-error'), false);
+  for (const [details, fields] of [
+    [{ code: 'EPERM' }, { exitCode: null, errorCode: 'EPERM', signal: null, queryKilled: false }],
+    [{ code: 124, signal: 'SIGKILL', killed: true }, { exitCode: 124, errorCode: null, signal: 'SIGKILL', queryKilled: true }],
+    [{ code: 'private-inspection-error', signal: 'private-signal', killed: true },
+      { exitCode: null, errorCode: 'other', signal: null, queryKilled: true }],
+  ]) {
+    const events = [];
+    await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, event => events.push(event), (_command, _args, _options, done) => {
+      const child = new EventEmitter(); child.pid = process.pid + 1;
+      setImmediate(() => { done(Object.assign(new Error('private-inspection-error'), details), self); child.emit('close', 1); });
+      return child;
+    }), /^Error: rpc-group-inspection-failed$/);
+    const failure = events.at(-1);
+    assert.deepEqual(failure, { atMs: failure.atMs, event: 'group-inspection-failed', reason: 'query-failed', ...fields });
+    assert.equal(JSON.stringify(events).includes('private-'), false);
+  }
   await assert.rejects(waitForRpcGroupExit(performance.now() + 20, () => {}, (_command, _args, settings, done) => {
     assert(settings.timeout <= 20);
     const child = new EventEmitter(); child.pid = process.pid + 1;

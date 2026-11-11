@@ -586,6 +586,8 @@ export async function runIntentRoundTripCliChild(
   expectedExitCode = 0,
 ): Promise<string> {
   const packageRoot = getSourceTestRepositoryCwd();
+  const startedAt = performance.now();
+  let output = '';
   const child = spawn(process.execPath, [
     path.join(packageRoot, 'node_modules', 'vitest', 'vitest.mjs'),
     'run',
@@ -602,12 +604,55 @@ export async function runIntentRoundTripCliChild(
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let output = '';
-  child.stdout.on('data', (chunk) => { output += String(chunk); });
-  child.stderr.on('data', (chunk) => { output += String(chunk); });
+  const emit = (event: string, fields: Record<string, unknown> = {}) => {
+    console.log('AW_TEST_CHILD_TIMING', JSON.stringify({
+      parentPid: process.pid, childPid: child.pid,
+      elapsedMs: Math.round(performance.now() - startedAt), event, ...fields,
+    }));
+  };
+  emit('spawn-requested');
+  child.once('spawn', () => emit('spawn'));
+  child.once('exit', (exitCode, signal) => emit('exit', { exitCode, signal }));
+  const buffers = { stdout: '', stderr: '' };
+  let forwarded = 0;
+  // Forward only bounded timing metadata. Receipts, paths and error bodies stay
+  // in the original captured output and are not copied into timing records.
+  const capture = (chunk: Buffer, stream: 'stdout' | 'stderr'): void => {
+    const text = String(chunk);
+    output += text;
+    buffers[stream] += text;
+    let index: number;
+    while ((index = buffers[stream].indexOf('\n')) >= 0) {
+      const line = buffers[stream].slice(0, index);
+      buffers[stream] = buffers[stream].slice(index + 1);
+      if (forwarded >= 64 || line.length > 4096) continue;
+      const marker = 'AW_TEST_TIMING ';
+      const position = line.indexOf(marker);
+      if (position < 0) continue;
+      try {
+        const data = JSON.parse(line.slice(position + marker.length).replace(/\u001b\[[0-9;]*m/gu, ''));
+        if (!['fixture', 'command', 'renderer'].includes(data?.stage)
+          || !['start', 'finish', 'unfinished'].includes(data?.event)
+          || !Number.isSafeInteger(data?.pid) || data.pid <= 0
+          || !Number.isFinite(data?.elapsedMs) || data.elapsedMs < 0) continue;
+        const fields: Record<string, unknown> = {
+          sourcePid: data.pid, childElapsedMs: data.elapsedMs, stage: data.stage, phase: data.event,
+        };
+        for (const key of ['durationMs', 'sequence']) {
+          if (Number.isFinite(data[key]) && data[key] >= 0) fields[key] = data[key];
+        }
+        if (['succeeded', 'failed'].includes(data.outcome)) fields.outcome = data.outcome;
+        emit('child-stage', fields);
+        forwarded += 1;
+      } catch { /* Other child output is not a timing record. */ }
+    }
+    buffers[stream] = buffers[stream].slice(-8192);
+  };
+  child.stdout.on('data', (chunk: Buffer) => capture(chunk, 'stdout'));
+  child.stderr.on('data', (chunk: Buffer) => capture(chunk, 'stderr'));
   const code = await new Promise<number | null>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', resolve);
+    child.on('error', (error) => { emit('spawn-error'); reject(error); });
+    child.on('close', (exitCode, signal) => { emit('close', { exitCode, signal }); resolve(exitCode); });
   });
   expect(code, `aw ${argv.join(' ')} child failed:\n${output}`).toBe(0);
   return output;
