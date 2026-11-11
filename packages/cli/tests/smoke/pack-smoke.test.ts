@@ -1138,6 +1138,12 @@ describe('pack smoke', () => {
           managedBy: expect.objectContaining({ kind: 'catalog-workspace' }),
         })]),
       });
+    // Independent command packages do not require a qualified Native component.
+    const nativePackageSync = await execAw([
+      'command', 'package', 'sync', `${developmentSourceId}/packed-build`, 'native-tool',
+      '--scope', 'user', '--yes', '--json',
+    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    expect(readCommandResult(nativePackageSync.stdout, 'command.package.sync')).toMatchObject({ status: 'success' });
     const commandList = await execAw(['command', 'list', '--json'], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     const managedCommands = readCommandResult(commandList.stdout, 'command.list');
     const nativeCommand = managedCommands.data.commands.find((command: { name: string }) => command.name === 'native-tools/run/default');
@@ -1261,17 +1267,34 @@ describe('pack smoke', () => {
       data: { request: { scope: 'user', mode: 'requirements-only' }, requirements: { roots: ['packed/packed-build'] }, targetResults: [] },
     });
     expect(await fs.readFile(projectIntentPath, 'utf8')).toBe(projectIntentBeforeUserRecovery);
+    let consumedStatusStdout = '';
+    let consumedStatusStderr = '';
     const consumedStatus = await execAw([
       'plugin', 'status', '--context', 'user', '--json',
-    ], { cwd: tempRoot, env: packedConsumerEnv });
-    expect(readCommandResult(consumedStatus.stdout, 'plugin.status')).toMatchObject({
-      status: 'success',
+    ], { cwd: tempRoot, env: packedConsumerEnv,
+      onStdout: (chunk) => { consumedStatusStdout += chunk; },
+      onStderr: (chunk) => { consumedStatusStderr += chunk; } }).then(
+      (value) => ({ ...value, exitCode: 0 }),
+      (error: unknown) => {
+        const failure = error as { code?: unknown };
+        if (typeof failure.code !== 'number' || !consumedStatusStdout) throw error;
+        return { exitCode: failure.code, stdout: consumedStatusStdout, stderr: consumedStatusStderr };
+      },
+    );
+    expect(consumedStatus.exitCode).toBe(codexSkillQualified ? 0 : 3);
+    const consumedStatusReceipt = readCommandResult(consumedStatus.stdout, 'plugin.status');
+    expect(consumedStatusReceipt).toMatchObject({
+      status: codexSkillQualified ? 'success' : 'blocked',
       data: {
         context: 'user', requirements: { state: 'valid' },
         inventory: expect.arrayContaining([expect.objectContaining({ pluginId: 'packed/packed-build' })]),
       },
     });
-    expect(consumedStatus.stderr).toBe('');
+    if (!codexSkillQualified) {
+      expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
+    }
+    expect(consumedStatus.stderr).toBe(codexSkillQualified ? ''
+      : 'capability-unverified: The operation could not complete (capability-unverified).\n');
     const packedRemoval = await execAw([
       'dev', 'plugin', 'remove', 'packed-build',
       '--workspace-root', standaloneWorkspace, '--yes', '--json',

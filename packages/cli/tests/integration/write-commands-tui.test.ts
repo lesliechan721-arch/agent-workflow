@@ -17,6 +17,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { sanitizeTestDiagnostic } from '../helpers/test-command-diagnostics.js';
+import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
@@ -790,6 +791,7 @@ describe('five namespaced write commands', () => {
   });
 
   it('executes a real dual-platform TUI write under one complete locked review', async (test) => {
+    const timing = createCommandTestTiming(test);
     const isolation = getCurrentSourceTestIsolation();
     await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
       ...createEmptyPreferences(), targets: ['codex', 'claude'],
@@ -829,7 +831,7 @@ describe('five namespaced write commands', () => {
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      nativeCliRunner: (invocation) => invocation.command === 'claude'
+      nativeCliRunner: (invocation) => claude.isClaudeInvocation(invocation)
         ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation),
       interactive: false,
     }));
@@ -837,14 +839,15 @@ describe('five namespaced write commands', () => {
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const request = { kind: 'recovery' as const, command: 'install' as const,
       scope: 'project' as const, selectors: ['team/demo'] };
-    const installPlan = await dependencies.prepareScopedTask!(request, new AbortController().signal);
+    const installPlan = await timing.measure('review', 'prepare install', () =>
+      dependencies.prepareScopedTask!(request, new AbortController().signal));
     expect(installPlan).toMatchObject({ kind: 'recovery', scope: 'project' });
     if (installPlan.kind !== 'recovery') throw new Error('Expected recovery plan.');
     expect(installPlan.plan.receipt.requestedTargets.map((target) => target.agent))
       .toEqual(['claude', 'codex']);
-    const installed = await dependencies.executeScopedTask!(installPlan);
+    const installed = await timing.measure('command', 'install', () => dependencies.executeScopedTask!(installPlan));
     expect(installed).toMatchObject({ kind: 'recovery',
-      receipt: { scope: 'project', command: 'install' } });
+      receipt: { scope: 'project', command: 'install', ok: true } });
     if (installed.kind !== 'recovery') throw new Error('Expected recovery receipt.');
     expect(installed.receipt.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({ pluginId: 'team/demo', agent: 'codex', scope: 'project' }),
@@ -854,15 +857,16 @@ describe('five namespaced write commands', () => {
       target.blockers.map((blocker) => blocker.code))).not.toContain('operationReviewStale');
 
     const reinstallRequest = { ...request, command: 'reinstall' as const };
-    const failedPlan = await dependencies.prepareScopedTask!(
-      reinstallRequest, new AbortController().signal);
+    const failedPlan = await timing.measure('review', 'prepare cleanup failure', () =>
+      dependencies.prepareScopedTask!(reinstallRequest, new AbortController().signal));
     setRebuildCommandTestHooksForTests({
       async afterTargetBuilt() {
         throw new Error('durableCleanupFailed: retained backup cleanup failed');
       },
     });
     try {
-      const outcome = await dependencies.executeScopedTask!(failedPlan);
+      const outcome = await timing.measure('command', 'injected cleanup failure', () =>
+        dependencies.executeScopedTask!(failedPlan));
       expect(outcome).toMatchObject({ kind: 'recovery',
         receipt: { scope: 'project', command: 'reinstall', ok: false } });
       if (outcome.kind !== 'recovery') throw new Error('Expected recovery receipt.');
@@ -875,19 +879,21 @@ describe('five namespaced write commands', () => {
       kind: 'configSave', pluginId: 'team/demo', scope: 'user', context: 'project',
       updates: { mode: 'strict' },
     } as const;
-    const reinstallPlan = await dependencies.prepareScopedTask!(
-      reinstallRequest, new AbortController().signal);
+    const reinstallPlan = await timing.measure('review', 'prepare concurrent reinstall', () =>
+      dependencies.prepareScopedTask!(reinstallRequest, new AbortController().signal));
     const configController = new TuiController(dependencies);
-    await configController.load();
-    const configReview = await configController.buildOperationReview(configIntent);
-    const concurrentResults = await Promise.race([
+    test.onTestFinished(() => configController.dispose());
+    await timing.measure('review', 'load config controller', () => configController.load());
+    const configReview = await timing.measure('review', 'prepare config', () =>
+      configController.buildOperationReview(configIntent));
+    const concurrentResults = await timing.measure('command', 'concurrent reinstall and config', () => Promise.race([
       Promise.allSettled([
         dependencies.executeScopedTask!(reinstallPlan),
         configController.executeOperation(configReview.reviewToken),
       ]),
       new Promise<never>((_resolve, reject) => setTimeout(() =>
         reject(new Error('ABBA operation lock timeout')), 5_000)),
-    ]);
+    ]));
     const safeMessage = (message: string) => sanitizeTestDiagnostic(message, isolation.env).slice(0, 1000);
     const rejection = (result: PromiseSettledResult<unknown>) => result.status === 'rejected' ? {
       code: typeof result.reason?.code === 'string' ? safeMessage(result.reason.code) : undefined,
@@ -940,8 +946,8 @@ describe('five namespaced write commands', () => {
         })).resolves.toMatchObject({ values: { mode: 'strict' } });
       }
     }
-    configController.dispose();
-  });
+    // This includes install, failure recovery and concurrent writes; the 5s lock guard stays independent.
+  }, process.platform === 'win32' ? 30_000 : 15_000);
 
   it('rejects a reviewed User install after concurrent Project demand changes without touching output', async () => {
     const isolation = getCurrentSourceTestIsolation();

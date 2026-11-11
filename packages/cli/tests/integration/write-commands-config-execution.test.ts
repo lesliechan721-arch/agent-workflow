@@ -846,7 +846,8 @@ describe('five namespaced write commands', () => {
     )).resolves.toBe('ran');
   }, 30_000);
 
-  it('runs a shared dependency preApply once per config command across user and project roots', async () => {
+  it('runs a shared dependency preApply once per config command across user and project roots', async (test) => {
+    const timing = createCommandTestTiming(test);
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-shared-pre-apply-source');
     const controlPath = path.join(isolation.env.AW_HOME!, 'config-shared-pre-apply-control.txt');
@@ -883,15 +884,16 @@ describe('five namespaced write commands', () => {
       ...createEmptyPreferences(), targets: ['codex'],
     });
     for (const scope of ['user', 'project'] as const) {
-      const installed = await installFixturePlugin(['team/root'], {
+      const installed = await timing.measure('command', `fixture install ${scope}`, () => installFixturePlugin(['team/root'], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
         scope,
-      }, runtime);
+      }, runtime));
       expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
     }
-    const visible = await readRecoveryStatus({ cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      cliVersion: '1.0.0', context: 'project', targets: ['codex'], nativeCliRunner });
+    const visible = await timing.measure('command', 'status', () => readRecoveryStatus({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      cliVersion: '1.0.0', context: 'project', targets: ['codex'], nativeCliRunner }));
     expect(visible.inventory?.filter((entry) => entry.pluginId === 'team/root')
       .flatMap((entry) => entry.targetResults).map((target) => target.scope).sort())
       .toEqual(['project', 'user']);
@@ -915,13 +917,13 @@ describe('five namespaced write commands', () => {
       ].join('\n'),
     );
     await createNativeDependencyCatalog(sourceRoot, definitions);
-    await syncCatalogSourceGeneration({
+    await timing.measure('catalog', 'source sync', () => syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
-    });
+    }));
 
     const applyMode = async (mode: string) => {
       const output = createCapturedCliIo();
-      const exitCode = await runCli([
+      const exitCode = await timing.measure('command', 'plugin config set --apply', () => runCli([
         'plugin', 'config', 'set', 'team/root', 'mode', '--value-json', JSON.stringify(mode),
         '--context', 'project', '--platform', 'codex', '--apply', '--yes', '--json',
       ], {
@@ -930,7 +932,7 @@ describe('five namespaced write commands', () => {
         io: output.io,
         interactive: false,
         nativeCliRunner,
-      });
+      }));
       return {
         exitCode,
         receipt: JSON.parse(output.readStdout()) as {
@@ -993,7 +995,8 @@ describe('five namespaced write commands', () => {
       expect((await readIntentFixture({ scope, cwd: isolation.layout.fixtureCwd, env: isolation.env })).roots)
         .toEqual([expect.objectContaining({ pluginId: 'team/root' })]);
     }
-  }, 30_000);
+    // Two installs and three real preApply attempts need a wider Windows runner window.
+  }, process.platform === 'win32' ? 60_000 : 30_000);
 
   it('keeps a dual-platform dependency on the platform required by a Codex-only root', async () => {
     const isolation = getCurrentSourceTestIsolation();
