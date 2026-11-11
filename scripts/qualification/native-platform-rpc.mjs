@@ -1,7 +1,58 @@
 // Read-only RPC subprocess. The caller's verified process-tree runner owns this
 // process and its client, including abnormal exits and timeout cleanup.
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
+
+// The outer runner still enforces marker, identity and group membership. This
+// only waits for the owned group to drain; it never signals group members.
+export async function waitForRpcGroupExit(deadline, onDiagnostic = () => {}, inspect = execFile) {
+  onDiagnostic({ atMs: performance.now(), event: 'group-wait-start' });
+  while (true) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error('rpc-descendants-timeout');
+    let inspector;
+    let capture;
+    const captured = new Promise(resolve => { capture = resolve; });
+    try {
+      inspector = inspect('/bin/ps', ['-A', '-o', 'pid=,pgid=,state='], {
+        encoding: 'utf8', windowsHide: true, timeout: Math.min(1000, Math.ceil(remaining)),
+        maxBuffer: 2 * 1024 * 1024, killSignal: 'SIGKILL',
+      }, (error, stdout) => capture({ error, stdout }));
+    } catch { throw new Error('rpc-group-inspection-failed'); }
+    const closed = new Promise(resolve => inspector.once('close', resolve));
+    const { error, stdout } = await captured;
+    await closed;
+    if (error || typeof stdout !== 'string') throw new Error('rpc-group-inspection-failed');
+    if (performance.now() >= deadline) throw new Error('rpc-descendants-timeout');
+    let selfFound = false;
+    let liveMembers = false;
+    const seen = new Set();
+    for (const line of stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const row = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/u.exec(line);
+      if (!row) throw new Error('rpc-group-inspection-failed');
+      const pid = Number(row[1]);
+      const pgid = Number(row[2]);
+      if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(pgid) || seen.has(pid)) {
+        throw new Error('rpc-group-inspection-failed');
+      }
+      seen.add(pid);
+      if (pid === process.pid) {
+        if (pgid !== process.pid) throw new Error('rpc-group-inspection-failed');
+        selfFound = true;
+      }
+      if (pgid !== process.pid) continue;
+      if (!/^[A-Z][A-Za-z0-9+<>=-]*$/u.test(row[3])) throw new Error('rpc-group-inspection-failed');
+      if (pid !== process.pid && pid !== inspector.pid && !row[3].startsWith('Z')) liveMembers = true;
+    }
+    if (!selfFound) throw new Error('rpc-group-inspection-failed');
+    if (!liveMembers) {
+      onDiagnostic({ atMs: performance.now(), event: 'group-wait-complete' });
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, Math.max(0, deadline - performance.now()))));
+  }
+}
 
 export async function readClientRpc({ platform, launcher, cwd }, env = process.env, onDiagnostic = () => {}) {
   if (!['codex', 'pi'].includes(platform)) throw new Error('rpc-platform-unsupported');
@@ -82,14 +133,18 @@ export async function readClientRpc({ platform, launcher, cwd }, env = process.e
 
 if (process.argv[1]?.endsWith('native-platform-rpc.mjs')) {
   const events = [];
+  // Keep the existing 25s outer deadline, including room for failure cleanup.
+  const deadline = performance.now() + 22_000;
+  const record = event => { if (events.length < 32) events.push(event); };
   try {
     let input = '';
     for await (const chunk of process.stdin) {
       input += chunk;
       if (input.length > 16 * 1024) throw new Error('rpc-input-limit');
     }
-    process.stdout.write(JSON.stringify(await readClientRpc(JSON.parse(input), process.env,
-      event => { if (events.length < 32) events.push(event); })) + '\n');
+    const result = await readClientRpc(JSON.parse(input), process.env, record);
+    if (process.platform !== 'win32') await waitForRpcGroupExit(deadline, record);
+    process.stdout.write(JSON.stringify(result) + '\n');
   } catch (error) {
     process.stderr.write(`${/^rpc-[a-z-]+$/u.test(error?.message) ? error.message : 'rpc-failed'}\n`);
     process.exitCode = 1;

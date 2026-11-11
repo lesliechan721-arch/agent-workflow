@@ -4,10 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { parseArgs, runScope, versionFrom, redact } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
+import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 
 // Test Value Gate: qualification must not turn missing prerequisites into a
 // passing report, inherit user credentials, or leave an isolated client home.
@@ -160,6 +161,130 @@ async function publicProcessFixture(action) {
 }
 const posixOnly = { skip: process.platform === 'win32', timeout: 30_000 };
 const nodeLauncher = { executable: process.execPath, prefix: [] };
+
+async function rpcDescendantFixture(options, source) {
+  const finished = path.join(options.cwd, 'descendant-finished');
+  const descendant = path.join(options.cwd, 'descendant.cjs');
+  const client = path.join(options.cwd, 'rpc-client.cjs');
+  await fs.writeFile(descendant, source);
+  await fs.writeFile(client, `
+    const {spawn}=require('node:child_process');
+    spawn(process.execPath,[process.argv[2],process.argv[3]],{stdio:'ignore'}).unref();
+    setTimeout(()=>process.exit(2),10000).unref();
+    require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+      const request=JSON.parse(line);
+      if(request.id===1)process.stdout.write(JSON.stringify({id:1,result:{}})+'\\n');
+      if(request.id===2)setTimeout(()=>process.stdout.write(JSON.stringify({id:2,result:{data:[]}})+'\\n'),700);
+    });
+  `);
+  return { finished, input: JSON.stringify({ platform: 'codex', cwd: options.cwd,
+    launcher: { executable: process.execPath, prefix: [client, descendant, finished] } }) };
+}
+
+// Test Value Gate: a successful RPC response and direct child close must not
+// let the helper complete while inherited, stdio-independent descendants live.
+test('RPC waits for same-group descendants born during shutdown before returning JSON', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    const { finished, input } = await rpcDescendantFixture(options, `
+      const {spawn}=require('node:child_process');
+      setTimeout(()=>{
+        spawn(process.execPath,['-e',
+          'setTimeout(()=>{require("node:fs").writeFileSync(process.argv[1],String(Date.now()));},1800)',
+          process.argv[2]],{stdio:'ignore'}).unref();
+      },1000);
+      setTimeout(()=>process.exit(0),1300);
+    `);
+    const observed = path.join(options.cwd, 'stdout-observed');
+    const observer = path.join(options.cwd, 'observe-stdout.mjs');
+    await fs.writeFile(observer, `
+      import fs from 'node:fs';
+      const write=process.stdout.write.bind(process.stdout);
+      process.stdout.write=(...args)=>{
+        fs.writeFileSync(${JSON.stringify(observed)},String(Date.now()));
+        return write(...args);
+      };
+    `);
+    const result = await execute({ executable: process.execPath,
+      prefix: ['--import', observer, path.resolve('scripts/qualification/native-platform-rpc.mjs')] }, [], {
+      ...options, stdin: input,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(JSON.parse(result.stdout), { data: [] });
+    assert(Number(await fs.readFile(finished, 'utf8')) <= Number(await fs.readFile(observed, 'utf8')));
+  });
+});
+
+test('RPC waiting remains bounded and produces no JSON when descendants outlive the deadline', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    const { input } = await rpcDescendantFixture(options, 'setTimeout(()=>process.exit(0),10000);');
+    const result = await execute({ executable: process.execPath,
+      prefix: [path.resolve('scripts/qualification/native-platform-rpc.mjs')] }, [], {
+      ...options, timeoutMs: 2400, stdin: input,
+    });
+    assert.equal(result.timedOut, true);
+    assert.equal(result.stdout, '');
+    assert.throws(() => assertCommand(result), /command-timeout/);
+  });
+});
+
+test('RPC group waiting does not permit an escaped descendant', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    const { input } = await rpcDescendantFixture(options, `
+      setTimeout(()=>{
+        require('node:child_process').spawn(process.execPath,
+          ['-e','setTimeout(()=>process.exit(0),5000)'],{detached:true,stdio:'ignore'}).unref();
+      },1000);
+      setTimeout(()=>process.exit(0),1300);
+    `);
+    await assert.rejects(execute({ executable: process.execPath,
+      prefix: [path.resolve('scripts/qualification/native-platform-rpc.mjs')] }, [], {
+      ...options, stdin: input,
+    }), /left its initial process group/);
+  });
+});
+
+// Test Value Gate: only a valid owned-group snapshot after inspector close can
+// permit JSON; failed or incomplete process queries cannot mean an empty group.
+test('RPC group queries require inspector close, valid snapshots and the original deadline', async () => {
+  const self = `${process.pid} ${process.pid} S\n`;
+  const inspector = new EventEmitter();
+  inspector.pid = process.pid + 1;
+  let callback;
+  let completed = false;
+  const pending = waitForRpcGroupExit(performance.now() + 1000, () => {}, (_command, _args, _options, done) => {
+    callback = done;
+    return inspector;
+  }).then(() => { completed = true; });
+  callback(null, self + `${inspector.pid} ${process.pid} R\n`);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(completed, false);
+  inspector.emit('close', 0);
+  await pending;
+  assert.equal(completed, true);
+
+  for (const output of ['', 'unknown', `${process.pid} 0 S\n`, `${process.pid} ${process.pid} ?\n`,
+    self + `${process.pid} ${process.pid} S\n`]) {
+    await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, () => {}, (_command, _args, _options, done) => {
+      const child = new EventEmitter(); child.pid = process.pid + 1;
+      setImmediate(() => { done(null, output); child.emit('close', 0); });
+      return child;
+    }), /rpc-group-inspection-failed/);
+  }
+  await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, () => {}, () => {
+    throw new Error('private-inspection-error');
+  }), /^Error: rpc-group-inspection-failed$/);
+  await assert.rejects(waitForRpcGroupExit(performance.now() + 1000, () => {}, (_command, _args, _options, done) => {
+    const child = new EventEmitter(); child.pid = process.pid + 1;
+    setImmediate(() => { done(new Error('private-inspection-error'), self); child.emit('close', 1); });
+    return child;
+  }), /^Error: rpc-group-inspection-failed$/);
+  await assert.rejects(waitForRpcGroupExit(performance.now() + 20, () => {}, (_command, _args, settings, done) => {
+    assert(settings.timeout <= 20);
+    const child = new EventEmitter(); child.pid = process.pid + 1;
+    setTimeout(() => { done(null, self); child.emit('close', 0); }, 40);
+    return child;
+  }), /rpc-descendants-timeout/);
+});
 
 // Test Value Gate: public AW owns detached native-command groups; observation
 // must accept clean completion while retaining marker and cleanup failures.
