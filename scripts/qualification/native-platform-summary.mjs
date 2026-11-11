@@ -4,13 +4,14 @@ try {
   const report = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
   const cell = (value) => String(value ?? '').replace(/[|\r\n<>]/gu, ' ').slice(0, 500);
   const lines = ['## Native qualification', '', `Result: **${cell(report.status)}**`, '',
-    '| Client | Scope | Result | Checks passed | Reason |', '| --- | --- | --- | --- | --- |'];
+    '| Client | Input | Scope | Result | Checks passed | Reason |', '| --- | --- | --- | --- | --- | --- |'];
   for (const client of report.clients) {
-    for (const scope of client.scopes.length ? client.scopes : [{ scope: 'not run', status: client.status, checks: [], reason: client.reason }]) {
-      lines.push(`| ${cell(client.platform)} | ${cell(scope.scope)} | ${cell(scope.status)} | ${scope.checks.filter((check) => check.status === 'passed').length}/${scope.checks.length} | ${cell(scope.reason)} |`);
+    const scopes = [...client.scopes, ...(client.publicAw ?? [])];
+    for (const scope of scopes.length ? scopes : [{ scope: 'not run', status: client.status, checks: [], reason: client.reason }]) {
+      lines.push(`| ${cell(client.platform)} | ${cell(scope.input ?? 'aw-projection-candidate')} | ${cell(scope.scope)} | ${cell(scope.status)} | ${scope.checks.filter((check) => check.status === 'passed').length}/${scope.checks.length} | ${cell(scope.reason)} |`);
     }
   }
-  lines.push('', 'This verifies AW projection candidates with real CLI clients. It does not qualify model behavior, Desktop, all five component kinds, or the complete public AW install pipeline.', '');
+  lines.push('', 'Candidate projection and optional public AW CLI scenarios are reported separately. Public AW uses production profiles; missing qualification remains unverified. Neither scenario qualifies model behavior, Desktop, all five component kinds, or the complete public AW install pipeline.', '');
   const text = lines.join('\n');
   if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, text);
   else process.stdout.write(text);

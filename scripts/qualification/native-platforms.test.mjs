@@ -15,6 +15,9 @@ test('requires an explicit client acquisition mode and rejects ambiguous inputs'
   assert.throws(() => parseArgs([...base, '--install', '--client', 'pi']), /invalid-arguments/);
   assert.throws(() => parseArgs(['--write-candidate', 'file', '--source-sha', 'abc', '--install']), /invalid-arguments/);
   assert.equal(parseArgs([...base, '--install']).install, true);
+  assert.equal(parseArgs([...base, '--install', '--public-aw'])['public-aw'], true);
+  assert.throws(() => parseArgs([...base, '--install', '--public-aw', '--public-aw']), /invalid-arguments/);
+  assert.throws(() => parseArgs(['--write-candidate', 'file', '--source-sha', 'abc', '--public-aw']), /invalid-arguments/);
   assert.equal(versionFrom('codex-cli 0.167.0\n'), '0.167.0');
   assert.equal(versionFrom('2.1.317 (Claude Code)'), '2.1.317');
   assert.equal(versionFrom('GitHub Copilot CLI 1.0.95.\nRun copilot update'), '1.0.95');
@@ -67,15 +70,16 @@ test('uses actual AW projection bytes for both candidate revisions', async () =>
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('a real child version mismatch fails before installation and cleans its temporary home', async () => {
+test('a real child version mismatch fails before public AW installation and cleans its temporary home', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-process-test-'));
   const observed = path.join(root, 'observed.json');
   const child = path.join(root, 'client.mjs');
   try {
     await fs.writeFile(child, `import fs from 'node:fs'; fs.writeFileSync(process.argv[2], JSON.stringify({home:process.env.HOME,token:process.env.GITHUB_TOKEN,args:process.argv.slice(3)})); console.log('codex-cli 0.1.0');`);
-    const report = await runScope('codex', 'project', { executable: process.execPath, prefix: [child, observed] });
+    const report = await runScope('codex', 'project', { executable: process.execPath, prefix: [child, observed] }, { publicAw: true });
     assert.equal(report.status, 'failed');
     assert.equal(report.reason, 'client-version-mismatch');
+    assert.equal(report.input, 'public-aw-cli');
     assert.equal(report.checks.length, 1);
     assert.equal(report.checks[0].status, 'failed');
     assert.equal(report.cleanup, 'completed');

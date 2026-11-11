@@ -21,7 +21,7 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 | Cursor | Desktop 3.29 发布线；CLI build >=2026.11.05-86047df | CLI 与 Desktop，分别按各自版本序列；workspaceOpen 路径 |
 | Antigravity | CLI >=1.3.4；App 目录路由不套 CLI 数字门槛 | CLI 与已确认 App 的公开发现目录 |
 | OpenCode | 实际本地 runtime >=2.0.0，V2 API | CLI 与 Desktop 本地 server；远程连接不代表本机包可加载 |
-| Pi | 核心 >=1.0.0 | CLI；Agents 消费者身份/版本另验 |
+| Pi | 核心 >=1.0.0 | CLI；无产品名的版本输出须由官方帮助身份补证，Windows npm 入口验证 `@earendil-works/pi-coding-agent`；Agents 消费者身份/版本另验 |
 | Gemini CLI | >=0.63.0 | CLI，preview/许可按组件判断 |
 | Copilot CLI | >=1.0.95 | 仅 CLI，保留 managed/repo overlay |
 | Grok Build | install/list JSON/enable/disable/update/uninstall 与 trust 接口合同 | CLI；没有已证明数字最低版本 |
@@ -94,6 +94,8 @@ Cursor Hook 必须在宿主，不在等待加载的包中。读取 workspace_roo
 Pi 核心存在不证明 Agents 消费者存在。inspect 只读返回候选身份、版本、有效 scope、enabled、trust、packageAccess、promptMode/loadExtensions 和配置 evidence。complete+空列表是缺失，unknown 是覆盖不足；停用不是缺失。多个消费者的实际共存规则未验证时保持 unverified，不代用户选执行器。声明文件使用带插件身份的角色名并拒绝覆盖冲突；AW 不注册子代理工具或生成进程管理代码。
 
 Pi 1.5.0 的事实来自公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者公开的 subagents.json。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。配置摘要进入 capability 和锁内 stale 检查。
+
+Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`，不保证带 `./` 前缀。登记观察和消费者输入检查采用同一 AW 本地路径解释；npm、Git 与无法解析的来源保持独立，不能仅凭名称认领 AW 包。
 
 Gemini/Copilot/Grok 的 Agent 正文组合只涉及同插件本次生成角色，不能修改用户或其他插件的 Agent。Grok project 接收同 binding、同 render scope 的完整组件集合；Instructions 单独改变也使相关 Agent 包重新投影、Review 和冻结。组合输入失败不得发布缺正文的包。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
 

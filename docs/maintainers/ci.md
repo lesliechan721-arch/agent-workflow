@@ -166,7 +166,9 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 报告区分 Skill 发现、组件 inventory 和 activation inventory；Claude details 只证明组件清单。Copilot 的 live 来源先通过 uninstall 验证停用，再注销本测试独占的 marketplace，最后验证插件和 Skill 消失；project 管理查询未观察到配置生效时保留失败，不能直接推断宿主无 project 支持。每个 scope 记录断言、退出码、有限脱敏命令输出及清理结果。断言失败终止该 scope 的后续步骤，另一 scope 和客户端仍继续。Grok 项目目录仅观察 inventory，没有已验证的公开启用/信任流程；Gemini 项目 neutral 隔离和 Grok 本地更新必须按实际行为判定，不因为是已知问题而算通过。失败和未验证均返回非零，报告通过 `always()` 上传并生成 job summary，保留14天；需要长期引用的通过证据另按固定资格归档规则保存。
 
-本入口不覆盖完整公开 AW install 编排、模型/调用控制、MCP/Hooks/Agents/Instructions 执行、Desktop、最低版本矩阵，以及尚未接入的 Antigravity/Cursor/OpenCode。OpenCode 2.2.6 standalone 在 Unix 分离进程组，不满足当前收尾合同，其冷启动清单也未等待插件激活，因此该探针未纳入可执行矩阵；这些观察不能据以判定生产能力不支持。Cursor 目标 Hook 已观察到需要登录；Antigravity 固定版本分发与无认证管理入口仍缺少验证。它不申请 Secrets，也不使用自托管 runner。取得报告后仍需核对具体资格范围，不能自动将 production profile 提升为 supported。
+托管入口另启用 `--public-aw`，为 Codex/Pi 添加独立的公开 CLI 场景，结果位于各客户端的 `publicAw`，与候选投影的 `scopes` 分开。它只在临时前缀暴露本次固定入口，使用公开 `target set` 验证身份；Windows npm 入口仍经过正常包身份、bin、路径及 shim 校验。生产普通 Skill profile 尚未开放时，该 scope 返回 unverified，不用候选 profile 或 force 绕过。已开放时，通过公开 Catalog/plugin 创建、构建及 path source 准备，执行 plugin install、来源及插件更新、status、remove，再用每次新启动的只读 RPC 检查正文 revision、作用域及移除后消失。项目 trust 是显式临时宿主配置，独立于 AW `--yes`。发现的其他产品面仍保留限制，status 受阻也不能算通过。其余四个 CLI 尚无该公开场景，明确返回 unverified；原 Native 场景仍照常运行。客户端及整体状态同时计入两个场景，任一失败或未验证不会被另一场景的通过覆盖。
+
+本入口仍不覆盖全部平台的完整公开 AW install 编排、独立 tarball 到真实模型消费、模型/调用控制、MCP/Hooks/Agents/Instructions 执行、普通对话会话、Desktop、最低版本矩阵，以及尚未接入的 Antigravity/Cursor/OpenCode。OpenCode 2.2.6 standalone 在 Unix 分离进程组，不满足当前收尾合同，其冷启动清单也未等待插件激活，因此该探针未纳入可执行矩阵；这些观察不能据以判定生产能力不支持。Cursor 目标 Hook 已观察到需要登录；Antigravity 固定版本分发与无认证管理入口仍缺少验证。它不申请 Secrets，也不使用自托管 runner。取得报告后仍需核对具体资格范围，不能自动将 production profile 提升为 supported。
 
 本地复现先运行 `pnpm build` 和 `pnpm test:qualification:native-platforms:harness`，再创建候选清单并显式选择已安装入口或临时下载：
 
@@ -174,6 +176,7 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 node scripts/qualification/native-platforms.mjs --write-candidate /tmp/aw-native-candidate.json --source-sha "$(git rev-parse HEAD)"
 pnpm qualification:native-platforms --candidate /tmp/aw-native-candidate.json --client codex --executable /absolute/path/to/codex --report /tmp/aw-native-report.json
 # --install 替代 --executable：明确允许在临时目录下载固定公共 npm 包。
+# --public-aw：另外验证公开 AW CLI，未取得生产资格的 scope 保持 unverified。
 ```
 
 本地未提交源码的 SHA 仅标识 checkout 基线，实际候选字节由清单摘要标识；不能把本地报告称为该 Git commit 的干净构建。Actions 报告另绑定 run ID、attempt、runner image 和操作系统版本。远端执行要求工作流及对应源码已经存在于 GitHub。`workflow_dispatch` 入口要求工作流先存在于默认分支（[GitHub 事件规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)）；显式 PR 标签入口允许合并前验证，并绑定该次 PR 合并候选 SHA。不通过该入口提交源码、发布产品或修改真实用户配置。

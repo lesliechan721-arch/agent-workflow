@@ -109,7 +109,7 @@ jobs:
       - name: Verify real clients in credential-free temporary environments
         shell: bash
         run: |
-          node scripts/qualification/native-platforms.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --report "$RUNNER_TEMP/native-results/report.json"
+          node scripts/qualification/native-platforms.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --public-aw --report "$RUNNER_TEMP/native-results/report.json"
       - name: Summarize observed scope results
         if: always()
         shell: bash

@@ -56,6 +56,9 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
   function localSource(source: string, root: string): string | null {
     if (source.startsWith('~/')) return path.resolve(ctx.env?.HOME ?? path.dirname(path.dirname(agentRoot)), source.slice(2));
     if (path.isAbsolute(source) || source.startsWith('./') || source.startsWith('../')) return path.resolve(root, source);
+    // Pi persists packages below its settings root as bare relative paths.
+    // Recognize the AW namespace without treating remote/unknown sources as local.
+    if (/^aw-packages[/\\]/u.test(source)) return path.resolve(root, source);
     return null;
   }
   result.registration = packages.some((entry) => {

@@ -152,7 +152,7 @@ export async function acquireClient(platform, root) {
   const bytes = await fs.readFile(entry);
   const node = /(?:^#!.*\bnode\b)|(?:\.[cm]?js$)/u.test(bytes.subarray(0, 160).toString('utf8')) || /\.[cm]?js$/u.test(entry);
   const lock = JSON.parse(await fs.readFile(path.join(prefix, 'package-lock.json'), 'utf8'));
-  return { launcher: { executable: node ? process.execPath : entry, prefix: node ? [entry] : [] },
+  return { launcher: { executable: node ? process.execPath : entry, prefix: node ? [entry] : [] }, binDirectory: prefix,
     acquisition: { package: client.package, version: client.version, source: client.source,
       integrity: lock.packages?.[`node_modules/${client.package}`]?.integrity ?? null,
       executablePackage, executablePackageVersion: metadata.version,

@@ -8,6 +8,7 @@ import { targetsList, targetsSet } from '../../src/commands/targets-command.js';
 import { createEmptyPreferences, observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { projectReceipt } from '../../src/output/receipt-projection.js';
 import { publicExitCode, renderPublicResult } from '../../src/output/public-result.js';
+import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(): Promise<ReadContext> {
@@ -171,6 +172,47 @@ describe('read-only target discovery and production selection', () => {
       expect(resolvePlatformConfigRoot('pi', { ...windows, env: { ...windows.env, PI_CODING_AGENT_DIR: override } })).toBe('D:\\pi-agent');
     }
     expect(resolvePlatformConfigRoot('pi', { ...windows, env: { ...windows.env, PI_CODING_AGENT_DIR: '~\\pi-agent' } })).toBe('C:\\Users\\reader\\pi-agent');
+  });
+
+  // Test Value Gate: the official Pi CLI prints only a version; discovery must confirm its help identity without accepting an unrelated pi executable.
+  it('identifies the official Pi version and help output through its validated npm launcher', async () => {
+    const ctx = await fixture();
+    const packageRoot = path.join(ctx.env!.PATH!, 'node_modules', '@earendil-works', 'pi-coding-agent');
+    const entry = path.join(packageRoot, 'dist', 'bundle', 'cli.js');
+    await fs.outputFile(entry, 'controlled official entry');
+    await fs.writeJson(path.join(packageRoot, 'package.json'), {
+      name: '@earendil-works/pi-coding-agent', bin: { pi: 'dist/bundle/cli.js' },
+    });
+    await fs.writeFile(path.join(ctx.env!.PATH!, 'pi.cmd'),
+      renderNpmCmdShim('node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js'));
+    const env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', PI_CODING_AGENT_DIR: 'C:\\qualification\\pi' };
+    const found = await discoverPlatform('pi', { ...ctx, env, platform: 'win32', runner: async ({ command, args }) => {
+      expect(command).toBe(process.execPath);
+      expect(args[0]).toBe(entry);
+      return { exitCode: 0, stderr: '', stdout: args.at(-1) === '--version' ? '1.5.0\n'
+        : 'pi - AI coding assistant with read, bash, edit, write tools\n\nUsage:\n  pi [options]\n' };
+    } });
+    expect(found.availability).toBe('available');
+    expect(found.installations[0]).toMatchObject({ version: '1.5.0', availability: 'available' });
+
+    await fs.writeJson(path.join(packageRoot, 'package.json'), { name: 'unrelated-package', bin: { pi: 'dist/bundle/cli.js' } });
+    let foreignCalls = 0;
+    const foreign = await discoverPlatform('pi', { ...ctx, env, platform: 'win32', runner: async () => {
+      foreignCalls += 1;
+      return { exitCode: 0, stderr: '', stdout: 'pi coding agent 1.5.0' };
+    } });
+    expect(foreign.availability).toBe('unknown');
+    expect(foreignCalls).toBe(0);
+  });
+
+  // Test Value Gate: a plausible Pi version and command name alone must not establish client identity.
+  it('rejects an unrelated Pi executable with a plausible version', async () => {
+    const ctx = await fixture(); await executable(ctx, 'pi');
+    const found = await discoverPlatform('pi', { ...ctx, runner: async ({ args }) => ({
+      exitCode: 0, stderr: '', stdout: args.at(-1) === '--version' ? '1.5.0' : 'pi - unrelated utility',
+    }) });
+    expect(found.availability).toBe('unknown');
+    expect(found.installations[0]?.reasonCodes).toContain('clientIdentityUnconfirmed');
   });
 
   // Test Value Gate: Grok uses its verified CLI interface and configured home, without an invented numeric minimum.

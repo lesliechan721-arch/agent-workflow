@@ -157,7 +157,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 | Codex shared native/project activation qualification | 独立 qualification | `pnpm test:qualification:codex-project-native:harness`，并在支持的本机运行 `pnpm qualification:codex-project-native`；Windows 未实跑时必须报告证据缺口 |
-| 无认证 Native 托管资格 | 独立 qualification | build 后运行 `pnpm test:qualification:native-platforms:harness`，有精确 binary 时运行 `pnpm qualification:native-platforms`；远端矩阵、边界及报告见 [CI 无认证资格](ci.md#6-无认证-native-客户端资格)。Harness 不能替代真实客户端结果 |
+| 无认证 Native 托管资格 | 独立 qualification | build 后运行 `pnpm test:qualification:native-platforms:harness`，有精确 binary 时运行 `pnpm qualification:native-platforms`；`--public-aw` 另验证 Codex/Pi 公开 CLI 链路并保留生产 profile 门禁。远端矩阵、边界及报告见 [CI 无认证资格](ci.md#6-无认证-native-客户端资格)。Harness 不能替代真实客户端结果 |
 | Codex native 性能与版本合同 | Unit + Integration + 独立 qualification | Codex observation/native CLI 定向 unit、grouped write 与 Git batch integration、`pnpm test:qualification:codex-native-performance:harness`；有精确 binary 时分别运行两个版本的 `pnpm qualification:codex-native-performance`，缺失版本必须报告证据缺口 |
 | User/Project Portable provider 行为 | 独立 qualification + Unit/Integration | 定向恢复测试与 `pnpm test:qualification:project-skills-provider:harness`；支持的本机运行 `pnpm qualification:project-skills-provider`，记录固定版本、OS、scope、Agent、lock、内容和失败证据，其他平台实测待补，不以实测范围建立 OS/架构门禁 |
 

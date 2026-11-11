@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
   acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
+import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 
-const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok> --report <file> (--install | --executable <absolute-path>)';
+const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok> --report <file> (--install | --executable <absolute-path>) [--public-aw]';
 class Unverified extends Error {}
 
 export function parseArgs(args) {
@@ -16,7 +17,7 @@ export function parseArgs(args) {
   for (let index = 0; index < args.length; index++) {
     const key = args[index].replace(/^--/u, '');
     if (!args[index].startsWith('--') || Object.hasOwn(options, key)) throw new Error('invalid-arguments');
-    if (key === 'install') { options.install = true; continue; }
+    if (key === 'install' || key === 'public-aw') { options[key] = true; continue; }
     if (!names.has(key) || !args[index + 1] || args[index + 1].startsWith('--')) throw new Error('invalid-arguments');
     options[key] = args[++index];
   }
@@ -31,9 +32,10 @@ export function parseArgs(args) {
   return options;
 }
 
-function redact(value, root) {
+function redact(value, root, clientBin) {
   const replace = (text) => {
-    for (const [directory, label] of [[root, '<TEMP_ROOT>'], [os.homedir(), '<HOST_HOME>']]) {
+    for (const [directory, label] of [[root, '<TEMP_ROOT>'], [clientBin, '<CLIENT_BIN>'], [os.homedir(), '<HOST_HOME>']]) {
+      if (!directory) continue;
       for (const spelling of [directory, directory.replaceAll('\\', '/'), JSON.stringify(directory).slice(1, -1)]) {
         text = text.replaceAll(spelling, label);
       }
@@ -41,8 +43,8 @@ function redact(value, root) {
     return text;
   };
   if (typeof value === 'string') return replace(value).slice(0, 4000);
-  if (Array.isArray(value)) return value.map((item) => redact(item, root));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redact(item, root)]));
+  if (Array.isArray(value)) return value.map((item) => redact(item, root, clientBin));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redact(item, root, clientBin)]));
   return value;
 }
 
@@ -50,9 +52,9 @@ export function versionFrom(output) {
   return /(?:^|\s)v?(\d+\.\d+\.\d+)(?=$|\s|\(|\.(?:\s|$))/u.exec(output.trim())?.[1] ?? null;
 }
 
-export async function runScope(platform, scope, launcher) {
+export async function runScope(platform, scope, launcher, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
-  const report = { scope, status: 'failed', checks: [], commands: [], cleanup: 'pending' };
+  const report = { scope, input: options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate', status: 'failed', checks: [], commands: [], cleanup: 'pending' };
   try {
     const env = await prepareEnvironment(root);
     const project = path.join(root, 'project');
@@ -62,13 +64,13 @@ export async function runScope(platform, scope, launcher) {
     assertCommand(await execute({ executable: 'git', prefix: [] },
       ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env }));
     await fs.mkdir(neutral);
-    const ctx = { platform, scope, root, env, project, neutral, marketplace,
+    const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
       pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
       bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
       async command(args, cwd = project, options = {}) {
         const result = await execute(launcher, args, { cwd, env, stdin: options.input });
         report.commands.push(redact({ args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
-          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr }, root));
+          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr }, root, options.clientBin));
         if (!options.allowFailure) assertCommand(result);
         return result;
       },
@@ -77,14 +79,24 @@ export async function runScope(platform, scope, launcher) {
           cwd, env, timeoutMs: 25_000, stdin: JSON.stringify({ platform, launcher, cwd }),
         });
         report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
-          cwd, exitCode: result.exitCode, timedOut: result.timedOut, stderr: result.stderr }, root));
+          cwd, exitCode: result.exitCode, timedOut: result.timedOut, stderr: result.stderr }, root, options.clientBin));
         assertCommand(result);
         return JSON.parse(result.stdout);
       },
+      async aw(args, cwd = project) {
+        const result = await execute({ executable: process.execPath, prefix: [path.join(repoRoot, 'packages/cli/dist/index.js')] },
+          [...args, '--json'], { cwd, env, timeoutMs: 60_000 });
+        report.commands.push(redact({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr }, root, options.clientBin));
+        assertCommand(result);
+        const value = JSON.parse(result.stdout);
+        if (value.schemaVersion !== 1 || value.status !== 'success') throw new Error('public-aw-command-not-successful');
+        return value;
+      },
       async check(id, action) {
         const check = { id, status: 'failed' }; report.checks.push(check);
-        try { check.evidence = redact(await action() ?? {}, root); check.status = 'passed'; }
-        catch (error) { check.reason = redact(error?.message ?? 'check-failed', root); throw error; }
+        try { check.evidence = redact(await action() ?? {}, root, options.clientBin); check.status = 'passed'; }
+        catch (error) { check.reason = redact(error?.message ?? 'check-failed', root, options.clientBin); throw error; }
       },
       async defer(reason) { throw new Unverified(reason); },
       async render(revision) { return renderPackage(ctx, revision); },
@@ -95,12 +107,15 @@ export async function runScope(platform, scope, launcher) {
       if (actual !== clients[platform].version) throw new Error('client-version-mismatch');
       return { version: actual };
     });
-    await ctx.check('aw-candidate-projection', () => ctx.render(1));
-    await qualifyClient(ctx);
+    if (options.publicAw) await qualifyPublicAw(ctx);
+    else {
+      await ctx.check('aw-candidate-projection', () => ctx.render(1));
+      await qualifyClient(ctx);
+    }
     report.status = 'passed';
   } catch (error) {
     report.status = error instanceof Unverified ? 'unverified' : 'failed';
-    report.reason = redact(error?.message ?? 'qualification-failed', root);
+    report.reason = redact(error?.message ?? 'qualification-failed', root, options.clientBin);
     report.remaining = 'not-run-after-incomplete-scenario';
   } finally {
     try { await fs.rm(root, { recursive: true, force: true }); report.cleanup = 'completed'; }
@@ -115,6 +130,7 @@ export async function run(options) {
     run: { id: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
     boundary: { credentials: 'not-provided', modelRequests: 'none', clients: 'real',
       input: 'current-aw-projection-candidate', productionQualificationChanged: false,
+      publicAwRequested: Boolean(options['public-aw']),
       runtimeNetwork: 'blocked-proxy-not-os-firewall', installNetwork: options.install ? 'public-npm' : 'none',
       processManagement: process.platform === 'win32'
         ? 'client-windows-job-download-bounded-child'
@@ -140,18 +156,24 @@ export async function run(options) {
       let installRoot;
       try {
         let launcher;
+        let clientBin;
         if (options.install) {
           installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
           const acquired = await acquireClient(platform, installRoot);
-          launcher = acquired.launcher; result.acquisition = acquired.acquisition;
+          launcher = acquired.launcher; clientBin = acquired.binDirectory; result.acquisition = acquired.acquisition;
         } else {
           const entry = await fs.realpath(options.executable);
           launcher = { executable: entry, prefix: [] };
           result.acquisition = { method: 'provided-executable', entrySha256: sha256(await fs.readFile(entry)) };
         }
         for (const scope of ['user', 'project']) result.scopes.push(await runScope(platform, scope, launcher));
-        result.status = result.scopes.every((scope) => scope.status === 'passed') ? 'passed'
-          : result.scopes.some((scope) => scope.status === 'failed') ? 'failed' : 'unverified';
+        if (options['public-aw']) {
+          result.publicAw = [];
+          for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin }));
+        }
+        const scopes = [...result.scopes, ...(result.publicAw ?? [])];
+        result.status = scopes.every((scope) => scope.status === 'passed') ? 'passed'
+          : scopes.some((scope) => scope.status === 'failed') ? 'failed' : 'unverified';
       } catch (error) {
         result.reason = /^[a-z][a-z-]+$/u.test(error?.message ?? '') ? error.message : 'client-acquisition-or-execution-failed';
         if (error.evidence && installRoot) result.evidence = redact(error.evidence, installRoot);

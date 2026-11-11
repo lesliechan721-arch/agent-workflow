@@ -37,6 +37,23 @@ async function consumer(root: string, version = '0.22.0') {
 }
 
 describe('public native consumer observation', () => {
+  // Test Value Gate: Pi's persisted relative AW source must remain registered in
+  // both scopes and must not change the prepared Agent consumer inputs.
+  it.each([false, true])('recognizes Pi relative AW registration with project=%s', async (project) => {
+    const item = await fixture('pi', project);
+    const before = await inspectDeployment(item.ctx, item.binding);
+    await fs.outputJson(path.join(item.layout.packageRoot, 'package.json'), {
+      name: item.layout.nativeIdentity.packageId, version: '1.0.0', pi: { skills: ['./skills'] },
+    });
+    const source = path.relative(path.dirname(item.layout.activationPath), item.layout.packageRoot);
+    await fs.outputJson(item.layout.activationPath, { packages: [source] });
+    const installed = await inspectDeployment(item.ctx, item.binding);
+    expect(installed.registration).toBe('present');
+    expect(installed.prerequisites).toEqual(before.prerequisites);
+    await fs.outputJson(item.layout.activationPath, { packages: [`npm:${source}`] });
+    expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe('absent');
+  });
+
   // Test Value Gate: publishing/registering AW output must not change prepared
   // consumer inputs; real consumer registration and filter changes still do.
   it('keeps Pi consumer inputs stable across AW package publication and registration', async () => {
