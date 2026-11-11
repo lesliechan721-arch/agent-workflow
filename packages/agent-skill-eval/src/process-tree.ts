@@ -381,12 +381,13 @@ async function readPosixProcessTable(
 
 function readPosixIdentityTable(
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
+  timeoutMs = POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
 ): Promise<ProcessCommandResult> {
   return runCommandWithDiagnostics(
     'ps',
     ['-A', '-o', 'pid=,ppid=,pgid=,state=,lstart='],
     execFileImpl,
-    POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
+    timeoutMs,
   );
 }
 
@@ -782,6 +783,7 @@ async function acceptPosixSnapshot(
   state: ObservationState,
   snapshot: PosixProcessSnapshot,
   stage: string,
+  deadline?: number,
 ): Promise<boolean> {
   const fail = (error: Error, reason: string, affectedPids: number[] = []): void => {
     if (state.failure) return;
@@ -799,8 +801,10 @@ async function acceptPosixSnapshot(
   };
   const unreadablePids = [...snapshot.unreadableMarkerPids].filter(needsConfirmation);
   if (state.marker !== undefined && unreadablePids.length > 0) {
-    const remaining = POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS -
-      (Date.now() - (snapshot.markerScanStartedAt ?? Date.now()));
+    const remaining = Math.min(
+      (snapshot.markerScanStartedAt ?? Date.now()) + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
+      deadline ?? Number.POSITIVE_INFINITY,
+    ) - Date.now();
     snapshot.markerLookupAttempts += 1;
     const confirmation = remaining > 0
       ? await readPosixMarkerOutput(state.dependencies.execFile ?? defaultExecFile, remaining)
@@ -1175,16 +1179,36 @@ function stopObservingPosixState(state: ObservationState): void {
 async function readImmediatePosixSnapshot(
   state: ObservationState,
   stage: string,
+  pendingObservations: readonly Promise<unknown>[] = [],
 ): Promise<PosixProcessSnapshot | undefined> {
-  const sampler = state.sampler ?? getPosixProcessSampler(
-    state.dependencies.execFile ?? defaultExecFile,
-  );
-  if (state.marker === undefined) await scanSamplerIdentity(sampler, true);
-  else await scanSamplerMarkers(sampler, true);
-  if (state.marker === undefined && sampler.identityFailure) {
+  const startedAt = Date.now();
+  const deadline = startedAt + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS;
+  const execFileImpl = state.dependencies.execFile ?? defaultExecFile;
+  // A shared query may have captured processes before this termination stage.
+  // Start this stage's own atomic query immediately; retain earlier deliveries
+  // as observation evidence without using them as completion or cleanup facts.
+  const remaining = deadline - Date.now();
+  const lookup = state.marker === undefined
+    ? readPosixIdentityTable(execFileImpl, Math.max(1, remaining))
+    : readPosixMarkerOutput(execFileImpl, Math.max(1, remaining));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let result: ProcessCommandResult;
+  try {
+    result = await Promise.race([
+      Promise.all([lookup, Promise.all(pendingObservations)]).then(([current]) => current),
+      new Promise<ProcessCommandResult>((resolve) => {
+        timer = setTimeout(() => resolve({ output: null, failure: commandFailure('deadline-exceeded') }),
+          Math.max(0, deadline - Date.now()));
+      }),
+    ]);
+    if (Date.now() >= deadline) result = { output: null, failure: commandFailure('deadline-exceeded') };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  if (result.output === null && state.marker === undefined) {
     const diagnostic = {
       ...posixDiagnostic(state, undefined, stage, 'identity-lookup-failed'),
-      lookupFailure: sampler.identityFailure,
+      lookupFailure: result.failure,
     };
     latchObservationFailure(
       state,
@@ -1194,17 +1218,21 @@ async function readImmediatePosixSnapshot(
     state.diagnostics[1] = diagnostic;
     return undefined;
   }
-  if (state.marker !== undefined && sampler.markerFailure) {
+  if (result.output === null) {
     const failedSnapshot: PosixProcessSnapshot = {
-      table: sampler.identityTable ?? new Map(),
+      table: new Map(),
       markerPids: new Set(),
       unreadableMarkerPids: new Set(),
       markerLookupSucceeded: false,
       markerLookupAttempts: 1,
-      markerLookupFailure: sampler.markerFailure,
+      markerLookupFailure: result.failure,
       confirmedUnmarkedPids: new Set(),
     };
-    const diagnostic = posixDiagnostic(state, failedSnapshot, stage, 'marker-lookup-failed');
+    const diagnostic = {
+      ...posixDiagnostic(state, undefined, stage, 'marker-lookup-failed'),
+      markerLookupSucceeded: false,
+      lookupFailure: result.failure,
+    };
     latchObservationFailure(
       state,
       posixMarkerLookupFailure(failedSnapshot, stage),
@@ -1213,9 +1241,28 @@ async function readImmediatePosixSnapshot(
     state.diagnostics[1] = diagnostic;
     return undefined;
   }
-  const snapshot = snapshotFromSampler(state, sampler);
-  if (!snapshot) return undefined;
-  await acceptPosixSnapshot(state, snapshot, stage);
+  const markerScan = state.marker === undefined ? undefined : parsePosixMarkerScan(result.output);
+  const snapshot: PosixProcessSnapshot = {
+    table: markerScan?.table ?? parsePosixProcessTable(result.output),
+    markerPids: markerScan && state.marker !== undefined
+      ? parseMarkerProcessIds(markerScan, state.markerEnvironmentVariable, state.marker)
+      : new Set(),
+    unreadableMarkerPids: markerScan?.unreadablePids ?? new Set(),
+    markerLookupSucceeded: true,
+    markerLookupAttempts: state.marker === undefined ? 0 : 1,
+    markerScanStartedAt: startedAt,
+    confirmedUnmarkedPids: new Set(),
+  };
+  await acceptPosixSnapshot(state, snapshot, stage, deadline);
+  if (Date.now() >= deadline) {
+    const diagnostic = {
+      ...posixDiagnostic(state, snapshot, stage, 'inspection-deadline-exceeded'),
+      lookupFailure: commandFailure('deadline-exceeded'),
+    };
+    latchObservationFailure(state, cleanupUnconfirmed('POSIX process inspection deadline exceeded.'), diagnostic);
+    state.diagnostics[1] = diagnostic;
+    return undefined;
+  }
   // Keep only the first failure and the latest cleanup scan, even if inspection recovers.
   if (state.failure) state.diagnostics[1] = posixDiagnostic(state, snapshot, stage, 'cleanup-snapshot');
   return snapshot;
@@ -1537,11 +1584,19 @@ async function terminatePosixProcessTree(
   allowInspectionUnavailable: boolean,
   requireDescendantsExitedBeforeCompletion: boolean,
 ): Promise<void> {
-  await state.initialLookup;
-  state.disposed = true;
-  stopObservingPosixState(state);
+  const pendingObservations = [
+    state.initialLookup,
+    ...(state.sampler?.identityInFlight ? [state.sampler.identityInFlight] : []),
+    ...(state.sampler?.markerInFlight ? [state.sampler.markerInFlight] : []),
+  ];
   const kill = state.dependencies.kill ?? process.kill.bind(process);
-  let snapshot = await readImmediatePosixSnapshot(state, 'termination-start');
+  let snapshot: PosixProcessSnapshot | undefined;
+  try {
+    snapshot = await readImmediatePosixSnapshot(state, 'termination-start', pendingObservations);
+  } finally {
+    state.disposed = true;
+    stopObservingPosixState(state);
+  }
   if (!snapshot) {
     if (!requireConfirmedCleanup && allowInspectionUnavailable) return;
     throw state.failure ?? cleanupUnconfirmed('POSIX process identity lookup failed.');

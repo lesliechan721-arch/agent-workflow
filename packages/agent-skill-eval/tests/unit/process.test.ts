@@ -606,6 +606,194 @@ describe('shared provider process behavior', () => {
     expect(processes.has(200)).toBe(true)
   })
 
+  // Test Value Gate: a pre-completion query can finish after close; its live
+  // rows must not become completion facts or authorize signals to exited PIDs.
+  it.each([true, false])('uses a new completion scan after an in-flight query with marker=%s', async (marked) => {
+    vi.useFakeTimers()
+    const marker = 'private-process-marker'
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, state: 'S', startTime: 'root-start', marked: true }],
+      [101, { ppid: 100, pgid: 100, state: 'S', startTime: 'child-start', marked: true }],
+      [200, { ppid: 1, pgid: 200, state: 'S', startTime: 'foreign-start', marked: false }],
+    ])
+    let scans = 0
+    let deliverOld: (() => void) | undefined
+    const signals = vi.fn()
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: marked,
+      enforceProcessMarker: true,
+      execFile: (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        const markerScan = args.some(arg => arg.includes('command='))
+        const output = markerScan ? renderMarkerScan(processes, marker) : [...processes]
+          .map(([pid, entry]) => `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`).join('\n')
+        if (markerScan === marked && ++scans === 2) {
+          deliverOld = () => callback(null, output)
+          return
+        }
+        callback(null, output)
+      },
+      kill: signals,
+    }
+    const observation = observeProcessTree(100, marked ? marker : undefined, dependencies)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(marked ? 1000 : 250)
+      expect(deliverOld).toBeTypeOf('function')
+      processes.delete(100)
+      processes.delete(101)
+      const completion = terminateProcessTree(100, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: marked, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => null, (error: Error) => error)
+      await vi.advanceTimersByTimeAsync(0)
+      deliverOld!()
+      await vi.runAllTimersAsync()
+      expect(await completion).toBeNull()
+      expect(signals).not.toHaveBeenCalled()
+      expect(processes.has(200)).toBe(true)
+      expect(JSON.stringify(observation.diagnostics)).not.toContain(marker)
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['identity-group', 'marker-loss'] as const)('retains an in-flight %s violation before a new empty completion scan', async (violation) => {
+    vi.useFakeTimers()
+    const marker = 'private-process-marker'
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, state: 'S', startTime: 'root-start', marked: true }],
+      [101, { ppid: 100, pgid: 100, state: 'S', startTime: 'child-start', marked: true }],
+      [200, { ppid: 1, pgid: 200, state: 'S', startTime: 'foreign-start', marked: false }],
+    ])
+    let scans = 0
+    let deliverOld: (() => void) | undefined
+    const signals = vi.fn()
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        const markerScan = args.some(arg => arg.includes('command='))
+        const output = markerScan ? renderMarkerScan(processes, marker) : [...processes]
+          .map(([pid, entry]) => `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`).join('\n')
+        if (markerScan === (violation === 'marker-loss') && ++scans === 2) {
+          deliverOld = () => callback(null, output)
+          return
+        }
+        callback(null, output)
+      },
+      kill: signals,
+    }
+    const observation = observeProcessTree(100, marker, dependencies)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      processes.set(101, { ...processes.get(101)!, ...(violation === 'identity-group' ? { pgid: 101 } : { marked: false }) })
+      await vi.advanceTimersByTimeAsync(violation === 'identity-group' ? 250 : 1000)
+      expect(deliverOld).toBeTypeOf('function')
+      processes.delete(100)
+      processes.delete(101)
+      const completion = terminateProcessTree(100, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => null, (error: Error) => error)
+      await vi.advanceTimersByTimeAsync(0)
+      deliverOld!()
+      await vi.runAllTimersAsync()
+      const failure = await completion
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure?.message).toContain(violation === 'identity-group'
+        ? 'left its initial process group' : 'lost its process marker')
+      expect(observation.diagnostics[0]?.reason).toBe(violation === 'identity-group'
+        ? 'marked-process-group-changed' : 'known-process-marker-missing')
+      expect(signals).not.toHaveBeenCalled()
+      expect(processes.has(200)).toBe(true)
+      expect(JSON.stringify(observation.diagnostics)).not.toContain(marker)
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('shares one termination budget with old deliveries and marker confirmation without poisoning another observer', async () => {
+    vi.useFakeTimers()
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, marker: 'marker-a' }],
+      [101, { ppid: 100, pgid: 100, marker: 'marker-a' }],
+      [200, { ppid: 1, pgid: 200, marker: 'marker-b' }],
+    ])
+    let markerScans = 0
+    let deliverOld: (() => void) | undefined
+    const confirmationTimeouts: number[] = []
+    const dependencies = {
+      platform: 'darwin' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (
+        _command: string,
+        args: string[],
+        options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        const markerScan = args.some(arg => arg.includes('command='))
+        if (markerScan && options.timeout < 2000) {
+          confirmationTimeouts.push(options.timeout)
+          return
+        }
+        if (markerScan) markerScans += 1
+        const output = [...processes].map(([pid, entry]) => {
+          const command = markerScan && markerScans === 3 && pid === 101
+            ? '(node)' : `node ${PROVIDER_PROCESS_MARKER_ENV}=${entry.marker}`
+          return `${pid} ${entry.ppid} ${entry.pgid} S start-${pid}${markerScan ? ` ${command}` : ''}`
+        }).join('\n')
+        if (markerScan && markerScans === 2) {
+          deliverOld = () => callback(null, output)
+          return
+        }
+        Promise.resolve().then(() => callback(null, output))
+      },
+      kill: vi.fn(),
+    }
+    const first = observeProcessTree(100, 'marker-a', dependencies)
+    const second = observeProcessTree(200, 'marker-b', dependencies)
+    const secondFailure = vi.fn()
+    second.onFailure(secondFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(deliverOld).toBeTypeOf('function')
+      processes.delete(100)
+      const startedAt = Date.now()
+      const completion = terminateProcessTree(100, () => undefined, dependencies, {
+        observation: first, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: true,
+      }).then(() => null, (error: Error) => error)
+      setTimeout(() => deliverOld!(), 1500)
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(await completion).toBeInstanceOf(Error)
+      expect(Date.now() - startedAt).toBe(2000)
+      expect(confirmationTimeouts).toHaveLength(1)
+      expect(confirmationTimeouts[0]).toBeGreaterThan(0)
+      expect(confirmationTimeouts[0]).toBeLessThanOrEqual(500)
+      expect(first.diagnostics[0]?.reason).toBe('marker-lookup-failed')
+      expect(secondFailure).not.toHaveBeenCalled()
+      expect(second.diagnostics).toEqual([])
+      expect(dependencies.kill).not.toHaveBeenCalled()
+    } finally {
+      first.dispose()
+      second.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it.each([true, false])('rejects completion with a live marked child with cooperative groups=%s', async (cooperative) => {
     const marker = 'marker-value'
     const processes = new Map([
