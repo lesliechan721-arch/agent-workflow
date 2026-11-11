@@ -1372,7 +1372,6 @@ function latchLiveDescendantCompletionFailure(
   state: ObservationState,
   snapshot: PosixProcessSnapshot,
 ): void {
-  if (state.dependencies.enforceCooperativeProcessGroup !== true) return;
   const liveDescendant = [...state.descendants.values()].some((identity) =>
     identity.pid !== state.pid &&
     identity.pid !== state.lease?.sentinel.pid &&

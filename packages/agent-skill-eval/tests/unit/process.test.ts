@@ -606,16 +606,17 @@ describe('shared provider process behavior', () => {
     expect(processes.has(200)).toBe(true)
   })
 
-  it('rejects completion with a live marked child after cleaning it and preserving foreign state', async () => {
+  it.each([true, false])('rejects completion with a live marked child with cooperative groups=%s', async (cooperative) => {
     const marker = 'marker-value'
     const processes = new Map([
-      [101, { ppid: 1, pgid: 100, state: 'S', startTime: 'child-start', marked: true }],
+      [101, { ppid: 1, pgid: cooperative ? 100 : 101, state: 'S', startTime: 'child-start', marked: true }],
       [200, { ppid: 1, pgid: 200, state: 'S', startTime: 'foreign-start', marked: false }],
     ])
     const dependencies = {
       platform: 'linux' as const,
       markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
-      enforceCooperativeProcessGroup: true,
+      enforceCooperativeProcessGroup: cooperative,
+      enforceProcessMarker: true,
       execFile: (
         _command: string,
         args: string[],

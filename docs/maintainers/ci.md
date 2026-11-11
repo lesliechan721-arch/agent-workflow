@@ -168,6 +168,8 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 托管入口另启用 `--public-aw`，为 Codex/Pi 添加独立的公开 CLI 场景，结果位于各客户端的 `publicAw`，与候选投影的 `scopes` 分开。它只在临时前缀暴露本次固定入口，使用公开 `target set` 验证身份；Windows npm 入口仍经过正常包身份、bin、路径及 shim 校验。生产普通 Skill profile 尚未开放时，该 scope 返回 unverified，不用候选 profile 或 force 绕过。已开放时，通过公开 Catalog/plugin 创建、构建及 path source 准备，执行 plugin install、来源及插件更新、status、remove，再用每次新启动的只读 RPC 检查正文 revision、作用域及移除后消失。项目 trust 是显式临时宿主配置，独立于 AW `--yes`。发现的其他产品面仍保留限制，status 受阻也不能算通过。其余四个 CLI 尚无该公开场景，明确返回 unverified；原 Native 场景仍照常运行。客户端及整体状态同时计入两个场景，任一失败或未验证不会被另一场景的通过覆盖。
 
+POSIX 公开 AW 命令会管理独立的原生命令进程组，不套用 custom provider 必须共享初始进程组的合同。该包装复用现有 lease、持续 marker/启动身份观察及收尾：检查失败立即中止，正常完成时必须已无活后代，marker 丢失、检查失败、清理或 lease 释放失败都不能变为成功；取消、超时和输出超限也失败。它明确报告 `observed`、`gradingEvidenceAccepted:false`、`descendantCleanupGuaranteed:false`，不是 provider grading 或 OS 强隔离资格。失败时保留首次和最后一次 observer 的有界进程元数据，不保存命令文本、环境变量或 marker；子命令已有输出仍只按原规则限量脱敏，不能由其退出码覆盖审计失败。Windows 公开 AW 保持原 Job 路径；直接客户端与 RPC 保持原 verified-observed 合同。公开入口比较先解析文件系统规范路径，不把 Windows 扩展名大小写差异当作另一个入口，也不将全路径小写。报告同时替换普通和 JSON 嵌套身份中的转义路径。
+
 本入口仍不覆盖全部平台的完整公开 AW install 编排、独立 tarball 到真实模型消费、模型/调用控制、MCP/Hooks/Agents/Instructions 执行、普通对话会话、Desktop、最低版本矩阵，以及尚未接入的 Antigravity/Cursor/OpenCode。OpenCode 2.2.6 standalone 在 Unix 分离进程组，不满足当前收尾合同，其冷启动清单也未等待插件激活，因此该探针未纳入可执行矩阵；这些观察不能据以判定生产能力不支持。Cursor 目标 Hook 已观察到需要登录；Antigravity 固定版本分发与无认证管理入口仍缺少验证。它不申请 Secrets，也不使用自托管 runner。取得报告后仍需核对具体资格范围，不能自动将 production profile 提升为 supported。
 
 本地复现先运行 `pnpm build` 和 `pnpm test:qualification:native-platforms:harness`，再创建候选清单并显式选择已安装入口或临时下载：

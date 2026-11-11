@@ -3,7 +3,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { parseArgs, runScope, versionFrom } from './native-platforms.mjs';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { parseArgs, runScope, versionFrom, redact } from './native-platforms.mjs';
+import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 
 // Test Value Gate: qualification must not turn missing prerequisites into a
@@ -99,4 +102,108 @@ test('a stalled client is bounded and cannot count as a successful command', asy
     assert.equal(result.timedOut, true);
     assert.throws(() => assertCommand(result), /command-timeout/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('redacts Windows paths nested inside public JSON identity strings', () => {
+  const root = 'C:\\qualification';
+  const client = 'C:\\download\\tool';
+  const stdout = JSON.stringify({ id: JSON.stringify(['pi', `${client}\\pi.cmd`, `${root}\\pi`]) });
+  const result = JSON.parse(redact({ stdout }, root, client).stdout);
+  assert.deepEqual(JSON.parse(result.id), ['pi', '<CLIENT_BIN>\\pi.cmd', '<TEMP_ROOT>\\pi']);
+});
+
+async function publicProcessFixture(action) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-process-test-'));
+  try { await action({ cwd: root, env: await prepareEnvironment(root), timeoutMs: 8_000 }); }
+  finally { await fs.rm(root, { recursive: true, force: true }); }
+}
+const posixOnly = { skip: process.platform === 'win32', timeout: 30_000 };
+const nodeLauncher = { executable: process.execPath, prefix: [] };
+
+// Test Value Gate: public AW owns detached native-command groups; observation
+// must accept clean completion while retaining marker and cleanup failures.
+test('public AW accepts independently grouped children only after their exit', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    const result = await executePublicAw(nodeLauncher, ['-e', `
+      const {spawn}=require('node:child_process');
+      const child=spawn(process.execPath,['-e','setTimeout(()=>{},1400)'],{detached:true,stdio:'ignore'});
+      child.on('exit',()=>{console.log('completed');});
+    `], options);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.trim(), 'completed');
+    assert.equal(result.containmentMode, 'observed');
+    assert.equal(result.gradingEvidenceAccepted, false);
+    assert.equal(result.descendantCleanupGuaranteed, false);
+  });
+});
+
+test('public AW rejects a zero-exit root that leaves an independently grouped child', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    await assert.rejects(executePublicAw(nodeLauncher, ['-e', `
+      const {spawn}=require('node:child_process');
+      spawn(process.execPath,['-e','setTimeout(()=>{},5000)'],{detached:true,stdio:'ignore'}).unref();
+      setTimeout(()=>process.exit(0),1400);
+    `], options), /all provider descendants must exit before completion/);
+  });
+});
+
+test('public AW rejects timeout, output limit and cancellation despite a zero exit', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    await assert.rejects(executePublicAw(nodeLauncher, ['-e', 'setTimeout(()=>{},10000)'],
+      { ...options, timeoutMs: 500 }), /public-aw-process-timeout/);
+    await assert.rejects(executePublicAw(nodeLauncher, ['-e', 'process.stdout.write("x".repeat(3*1024*1024));setTimeout(()=>{},10000)'],
+      options), /public-aw-process-max-buffer/);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('test-cancelled')), 1500);
+    try {
+      await assert.rejects(executePublicAw(nodeLauncher, ['-e',
+        'process.on("SIGTERM",()=>process.exit(0));setTimeout(()=>{},10000)'],
+      { ...options, signal: controller.signal }), /public-aw-process-abort/);
+    } finally { clearTimeout(timer); }
+  });
+});
+
+test('public AW inspection preflight failure prevents command launch', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    const marker = path.join(options.cwd, 'launched');
+    await assert.rejects(executePublicAw(nodeLauncher, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'yes')`],
+      options, { execFile(_command, _args, _options, callback) { callback(new Error('inspection unavailable'), ''); } }),
+    /process identity lookup failed|process marker lookup failed/);
+    await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+  });
+});
+
+test('public AW observation failure aborts and remains failed after cleanup', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    const marker = path.join(options.cwd, 'launched');
+    let injected = false;
+    await assert.rejects(executePublicAw(nodeLauncher, ['-e',
+      `require('node:fs').writeFileSync(${JSON.stringify(marker)},'yes');setTimeout(()=>{},10000)`], options, {
+      execFile(command, args, settings, callback) {
+        fs.stat(marker).then(() => {
+          if (!injected) { injected = true; callback(new Error('inspection lost'), ''); }
+          else execFile(command, args, settings, callback);
+        }, () => execFile(command, args, settings, callback));
+      },
+    }), (error) => {
+      assert.equal(injected, true);
+      assert.equal(error.result?.cancelled, true);
+      assert(error.publicAwProcessDiagnostics.length > 0);
+      assert.equal(typeof error.publicAwProcessDiagnostics[0].rootPid, 'number');
+      return true;
+    });
+  });
+});
+
+test('public AW lease release failure cannot become success', posixOnly, async () => {
+  await publicProcessFixture(async (options) => {
+    await assert.rejects(executePublicAw(nodeLauncher, ['-e', 'console.log("ok")'], options, {
+      async createSentinel(name, marker) {
+        const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},10000)'],
+          { env: { PATH: process.env.PATH, [name]: marker }, stdio: 'ignore' });
+        const closed = once(child, 'close');
+        return { pid: child.pid, async stop() { child.kill('SIGTERM'); await closed; throw new Error('release failed'); } };
+      },
+    }), /public-aw-inspection-lease-release-failed/);
+  });
 });

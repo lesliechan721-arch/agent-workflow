@@ -76,9 +76,12 @@ export async function qualifyPublicAw(ctx) {
     const result = await ctx.aw(['target', 'set', ctx.platform]);
     const target = result.data.availability.find((item) => item.id === ctx.platform);
     assert.equal(target.availability, 'available');
-    assert(target.installations.some((product) => product.product === 'cli' && product.version === clients[ctx.platform].version
-      && product.entry?.kind === 'cli' && path.resolve(product.entry.executable) === path.resolve(expectedEntry)),
-    'Public AW must discover the acquired fixed-version client.');
+    let found = false;
+    for (const product of target.installations) {
+      if (product.product === 'cli' && product.version === clients[ctx.platform].version && product.entry?.kind === 'cli'
+        && await fs.realpath(product.entry.executable) === expectedEntry) found = true;
+    }
+    assert(found, 'Public AW must discover the acquired fixed-version client.');
     return { platform: ctx.platform, version: clients[ctx.platform].version, availability: target.availability };
   });
   // Production qualification remains authoritative. Never inject a candidate

@@ -7,6 +7,7 @@ import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
   acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
 import { qualifyPublicAw } from './native-platform-public-aw.mjs';
+import { executePublicAw } from './native-platform-public-process.mjs';
 
 const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok> --report <file> (--install | --executable <absolute-path>) [--public-aw]';
 class Unverified extends Error {}
@@ -32,11 +33,12 @@ export function parseArgs(args) {
   return options;
 }
 
-function redact(value, root, clientBin) {
+export function redact(value, root, clientBin) {
   const replace = (text) => {
     for (const [directory, label] of [[root, '<TEMP_ROOT>'], [clientBin, '<CLIENT_BIN>'], [os.homedir(), '<HOST_HOME>']]) {
       if (!directory) continue;
-      for (const spelling of [directory, directory.replaceAll('\\', '/'), JSON.stringify(directory).slice(1, -1)]) {
+      const escaped = JSON.stringify(directory).slice(1, -1);
+      for (const spelling of [directory, directory.replaceAll('\\', '/'), escaped, JSON.stringify(escaped).slice(1, -1)]) {
         text = text.replaceAll(spelling, label);
       }
     }
@@ -84,10 +86,21 @@ export async function runScope(platform, scope, launcher, options = {}) {
         return JSON.parse(result.stdout);
       },
       async aw(args, cwd = project) {
-        const result = await execute({ executable: process.execPath, prefix: [path.join(repoRoot, 'packages/cli/dist/index.js')] },
-          [...args, '--json'], { cwd, env, timeoutMs: 60_000 });
+        let result;
+        try {
+          result = await executePublicAw({ executable: process.execPath, prefix: [path.join(repoRoot, 'packages/cli/dist/index.js')] },
+            [...args, '--json'], { cwd, env, timeoutMs: 60_000 });
+        } catch (error) {
+          report.commands.push(redact({ aw: args, cwd, processFailure: error?.message,
+            processDiagnostics: error?.publicAwProcessDiagnostics ?? [],
+            ...(error?.result ? { exitCode: error.result.exitCode, terminationReason: error.result.terminationReason,
+              stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
+          throw error;
+        }
         report.commands.push(redact({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
-          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr }, root, options.clientBin));
+          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
+          processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
+            descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
         assertCommand(result);
         const value = JSON.parse(result.stdout);
         if (value.schemaVersion !== 1 || value.status !== 'success') throw new Error('public-aw-command-not-successful');
@@ -131,6 +144,8 @@ export async function run(options) {
     boundary: { credentials: 'not-provided', modelRequests: 'none', clients: 'real',
       input: 'current-aw-projection-candidate', productionQualificationChanged: false,
       publicAwRequested: Boolean(options['public-aw']),
+      publicAwProcessManagement: process.platform === 'win32' ? 'windows-job'
+        : 'observed-marker-and-identity-audit-not-provider-grading-or-os-containment',
       runtimeNetwork: 'blocked-proxy-not-os-firewall', installNetwork: options.install ? 'public-npm' : 'none',
       processManagement: process.platform === 'win32'
         ? 'client-windows-job-download-bounded-child'
