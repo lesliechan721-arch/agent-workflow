@@ -1349,6 +1349,14 @@ describe('shared provider process behavior', () => {
         name: 'ProviderProcessCleanupError',
         message: expect.stringContaining('lost its process marker'),
         result: { gradingEvidenceAccepted: false },
+        processTreeDiagnostics: expect.arrayContaining([
+          expect.objectContaining({
+            rootPid: expect.any(Number),
+            processes: expect.arrayContaining([
+              expect.objectContaining({ pid: expect.any(Number), markerMatches: false }),
+            ]),
+          }),
+        ]),
       })
       await expectProcessDead(providerPid)
     } finally {

@@ -69,17 +69,37 @@ export async function runScope(platform, scope, launcher, options = {}) {
     const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
       pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
       bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
-      async command(args, cwd = project, options = {}) {
-        const result = await execute(launcher, args, { cwd, env, stdin: options.input });
+      async command(args, cwd = project, commandOptions = {}) {
+        let result;
+        try {
+          result = await execute(launcher, args, { cwd, env, stdin: commandOptions.input });
+        } catch (error) {
+          report.commands.push(redact({ args, cwd, processFailure: error?.message,
+            processDiagnostics: error?.processTreeDiagnostics ?? [],
+            ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
+              terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
+              cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
+          throw error;
+        }
         report.commands.push(redact({ args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
           maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr }, root, options.clientBin));
-        if (!options.allowFailure) assertCommand(result);
+        if (!commandOptions.allowFailure) assertCommand(result);
         return result;
       },
       async rpc(cwd = project) {
-        const result = await execute({ executable: process.execPath, prefix: [path.join(repoRoot, 'scripts/qualification/native-platform-rpc.mjs')] }, [], {
-          cwd, env, timeoutMs: 25_000, stdin: JSON.stringify({ platform, launcher, cwd }),
-        });
+        let result;
+        try {
+          result = await execute({ executable: process.execPath, prefix: [path.join(repoRoot, 'scripts/qualification/native-platform-rpc.mjs')] }, [], {
+            cwd, env, timeoutMs: 25_000, stdin: JSON.stringify({ platform, launcher, cwd }),
+          });
+        } catch (error) {
+          report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
+            cwd, processFailure: error?.message, processDiagnostics: error?.processTreeDiagnostics ?? [],
+            ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
+              terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
+              cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
+          throw error;
+        }
         report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
           cwd, exitCode: result.exitCode, timedOut: result.timedOut, stderr: result.stderr }, root, options.clientBin));
         assertCommand(result);
@@ -108,11 +128,19 @@ export async function runScope(platform, scope, launcher, options = {}) {
       },
       async check(id, action) {
         const check = { id, status: 'failed' }; report.checks.push(check);
-        try { check.evidence = redact(await action() ?? {}, root, options.clientBin); check.status = 'passed'; }
+        try {
+          const evidence = await action() ?? {};
+          check.evidence = redact(evidence, root, options.clientBin);
+          check.status = 'passed';
+          return evidence;
+        }
         catch (error) { check.reason = redact(error?.message ?? 'check-failed', root, options.clientBin); throw error; }
       },
       async defer(reason) { throw new Unverified(reason); },
-      async render(revision) { return renderPackage(ctx, revision); },
+      async render(revision) {
+        return revision === 1 ? renderPackage(ctx, revision)
+          : ctx.check('aw-candidate-refresh-projection', () => renderPackage(ctx, revision));
+      },
     };
     await ctx.check('client-version', async () => {
       const result = await ctx.command(['--version']);

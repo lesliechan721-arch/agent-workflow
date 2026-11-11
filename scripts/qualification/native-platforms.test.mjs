@@ -48,6 +48,47 @@ test('isolates configuration and does not pass arbitrary credentials or startup 
   }
 });
 
+// Test Value Gate: RPC cleanup failures must retain response/exit ordering
+// without placing response bodies or client environment values in diagnostics.
+test('retains bounded RPC events for successful and rejected read-only responses', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-rpc-events-'));
+  try {
+    for (const rejected of [false, true]) {
+      const fixture = path.join(root, `client-${rejected}.cjs`);
+      await fs.writeFile(fixture, `
+const readline = require('node:readline');
+setTimeout(() => process.exit(2), 10000).unref();
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.id === 1) process.stdout.write(JSON.stringify({ id: 1, result: {} }) + '\\n');
+  if (request.id === 2) process.stdout.write(JSON.stringify(${rejected
+    ? "{ id: 2, error: { code: -32000, message: 'private-rpc-body' } }"
+    : "{ id: 2, result: { data: [], privateBody: 'private-rpc-body' } }"}) + '\\n');
+});
+`);
+      const result = await execute({ executable: process.execPath,
+        prefix: [path.resolve('scripts/qualification/native-platform-rpc.mjs')] }, [], {
+        cwd: root, env: await prepareEnvironment(root), timeoutMs: 10_000,
+        stdin: JSON.stringify({ platform: 'codex', cwd: root,
+          launcher: { executable: process.execPath, prefix: [fixture] } }),
+      });
+      assert.equal(result.exitCode, rejected ? 1 : 0);
+      if (!rejected) assert.deepEqual(JSON.parse(result.stdout), { data: [], privateBody: 'private-rpc-body' });
+      const diagnostics = result.stderr.split('\n').filter(Boolean).map(line => {
+        try { return JSON.parse(line); } catch { return null; }
+      }).find(item => item?.kind === 'aw-native-rpc-diagnostics');
+      assert(diagnostics, 'RPC response and termination events must survive the subprocess boundary.');
+      assert(diagnostics.events.length > 0 && diagnostics.events.length <= 32);
+      const response = diagnostics.events.findIndex(event => event.event === 'response' && event.id === 2);
+      const signal = diagnostics.events.findIndex(event => event.event === 'signal' && event.signal === 'SIGTERM');
+      const closed = diagnostics.events.findIndex(event => event.event === 'child-close');
+      assert(response >= 0 && signal > response && closed > signal);
+      assert(diagnostics.events.every(event => Number.isFinite(event.atMs)));
+      assert.equal(JSON.stringify(diagnostics).includes('private-rpc-body'), false);
+    }
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test('uses actual AW projection bytes for both candidate revisions', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-projection-test-'));
   try {

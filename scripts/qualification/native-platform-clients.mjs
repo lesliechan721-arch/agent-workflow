@@ -404,6 +404,13 @@ async function copilotSkills(ctx, cwd, revision, present) {
 async function qualifyCopilot(ctx) {
   let activationId
   let nativeName
+  if (ctx.scope === 'project') await ctx.check('fixture-trust', async () => {
+    // Fixed 1.0.95 documents this explicit trust opt-in. These isolated
+    // fixtures contain only a Skill; no chat, model or tool request is sent.
+    ctx.env.COPILOT_ALLOW_ALL = 'true'
+    return { level: 'fixture-environment', interface: 'COPILOT_ALLOW_ALL=true',
+      directories: 'isolated project and neutral', sessionRequests: 'none' }
+  })
   await ctx.check('marketplace-register', async () => {
     await ctx.command(['plugin', 'marketplace', 'add', ctx.marketplace])
     const items = array(await jsonCommand(ctx, ['plugin', 'marketplace', 'list', '--json']), 'Copilot marketplaces')
