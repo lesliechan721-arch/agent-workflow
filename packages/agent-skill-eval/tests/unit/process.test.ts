@@ -647,8 +647,91 @@ describe('shared provider process behavior', () => {
       },
     )).rejects.toThrow('all provider descendants must exit before completion')
 
+    expect(observation.diagnostics[0]).toMatchObject({
+      stage: 'termination-start',
+      reason: 'live-descendants-before-completion',
+      affectedPids: [101],
+      markerLookupSucceeded: true,
+      processes: expect.arrayContaining([
+        expect.objectContaining({
+          pid: 101, present: true, ppid: 1, pgid: cooperative ? 100 : 101,
+          startTime: 'child-start', state: 'S', markerMatches: true,
+        }),
+      ]),
+    })
+    expect(observation.diagnostics.at(-1)?.processes).toContainEqual(
+      expect.objectContaining({ pid: 101, present: false }),
+    )
+    expect(JSON.stringify(observation.diagnostics)).not.toContain(marker)
     expect(processes.has(101)).toBe(false)
     expect(processes.has(200)).toBe(true)
+  })
+
+  it('retains the triggering identity scan when a marked child leaves its group', async () => {
+    vi.useFakeTimers()
+    const marker = 'private-process-marker'
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, state: 'S', startTime: 'root-start', marked: true }],
+      [101, { ppid: 100, pgid: 100, state: 'S', startTime: 'child-start', marked: true }],
+      [200, { ppid: 1, pgid: 200, state: 'S', startTime: 'foreign-start', marked: false }],
+    ])
+    const initialMarkerOutput = renderMarkerScan(processes, marker)
+    let cleanup = false
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => callback(null, args.some((arg) => arg.includes('command='))
+        ? cleanup ? renderMarkerScan(processes, marker) : initialMarkerOutput
+        : [...processes].map(([pid, entry]) =>
+            `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`,
+          ).join('\n')),
+      kill: (pid: number, signal: string): void => {
+        if (signal !== 'SIGKILL') return
+        for (const [candidate, entry] of processes) {
+          if (candidate === pid || pid < 0 && entry.pgid === -pid) processes.delete(candidate)
+        }
+      },
+    }
+    const observation = observeProcessTree(100, marker, dependencies)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      processes.set(101, { ...processes.get(101)!, pgid: 101, state: 'R' })
+      await vi.advanceTimersByTimeAsync(250)
+      expect(observation.diagnostics[0]).toMatchObject({
+        stage: 'identity-observation',
+        reason: 'marked-process-group-changed',
+        affectedPids: [101],
+        markerLookupSucceeded: null,
+        processes: expect.arrayContaining([
+          expect.objectContaining({
+            pid: 101, present: true, ppid: 100, pgid: 101, state: 'R',
+            startTime: 'child-start', markerMatches: null,
+          }),
+        ]),
+      })
+      cleanup = true
+      const termination = terminateProcessTree(100, () => undefined, dependencies,
+        { observation, requireConfirmedCleanup: true }).then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      expect((await termination)?.message).toContain('left its initial process group')
+      expect(observation.diagnostics[0]?.processes).toContainEqual(
+        expect.objectContaining({ pid: 101, present: true, pgid: 101, markerMatches: null }),
+      )
+      expect(observation.diagnostics.at(-1)?.processes).toContainEqual(
+        expect.objectContaining({ pid: 101, present: false }),
+      )
+      expect(JSON.stringify(observation.diagnostics)).not.toContain(marker)
+      expect(processes.has(200)).toBe(true)
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
   })
 
   it('does not treat the provider root or a zombie child as a live completion descendant', async () => {

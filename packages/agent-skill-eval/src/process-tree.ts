@@ -739,6 +739,25 @@ function posixDiagnostic(
   };
 }
 
+function posixIdentityDiagnostic(
+  state: ObservationState,
+  table: ReadonlyMap<number, ProcessEntry>,
+  reason: string,
+  affectedPids: number[],
+): ProcessTreeDiagnostic {
+  // A separate marker scan cannot establish marker state for this identity table.
+  const diagnostic = posixDiagnostic(state, undefined, 'identity-observation', reason, affectedPids);
+  diagnostic.processes = diagnostic.processes.map((process) => {
+    const entry = table.get(process.pid);
+    return {
+      ...process,
+      present: entry !== undefined,
+      ...(entry ? { ppid: entry.ppid, pgid: entry.pgid, startTime: entry.startTime, state: entry.state } : {}),
+    };
+  });
+  return diagnostic;
+}
+
 function latchObservationFailure(
   state: ObservationState,
   error: Error,
@@ -1024,22 +1043,24 @@ function deliverSamplerIdentity(sampler: PosixProcessSampler): void {
         : state.rootPgidMode === 'missing'
           ? state.pid
           : undefined;
-      if (
-        state.dependencies.enforceCooperativeProcessGroup === true &&
-        expectedPgid !== undefined &&
-        [state.root, ...state.descendants.values()].some((identity) => {
-          if (!identity || !sampler.identityTable) return false;
-          const entry = sampler.identityTable.get(identity.pid);
+      const identityTable = sampler.identityTable;
+      if (state.dependencies.enforceCooperativeProcessGroup === true &&
+        expectedPgid !== undefined && identityTable) {
+        const changedPids = [state.root, ...state.descendants.values()].flatMap((identity) => {
+          if (!identity) return [];
+          const entry = identityTable.get(identity.pid);
           return entry?.startTime === identity.startTime &&
-            entry.pgid !== undefined && entry.pgid !== expectedPgid;
-        })
-      ) {
-        latchObservationFailure(
-          state,
-          cleanupUnconfirmed(
-            'custom process contract violation: a marked process left its initial process group.',
-          ),
-        );
+            entry.pgid !== undefined && entry.pgid !== expectedPgid ? [identity.pid] : [];
+        });
+        if (changedPids.length > 0) {
+          latchObservationFailure(
+            state,
+            cleanupUnconfirmed(
+              'custom process contract violation: a marked process left its initial process group.',
+            ),
+            posixIdentityDiagnostic(state, identityTable, 'marked-process-group-changed', changedPids),
+          );
+        }
       }
       continue;
     }
@@ -1372,18 +1393,19 @@ function latchLiveDescendantCompletionFailure(
   state: ObservationState,
   snapshot: PosixProcessSnapshot,
 ): void {
-  const liveDescendant = [...state.descendants.values()].some((identity) =>
+  const liveDescendantPids = [...state.descendants.values()].filter((identity) =>
     identity.pid !== state.pid &&
     identity.pid !== state.lease?.sentinel.pid &&
     posixIdentityMatches(identity, snapshot) &&
     !snapshot.table.get(identity.pid)?.state?.startsWith('Z')
-  );
-  if (!liveDescendant) return;
+  ).map((identity) => identity.pid);
+  if (liveDescendantPids.length === 0) return;
   latchObservationFailure(
     state,
     cleanupUnconfirmed(
       'custom process contract violation: all provider descendants must exit before completion.',
     ),
+    posixDiagnostic(state, snapshot, 'termination-start', 'live-descendants-before-completion', liveDescendantPids),
   );
 }
 

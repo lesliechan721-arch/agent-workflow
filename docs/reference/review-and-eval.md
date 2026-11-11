@@ -362,7 +362,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
 
 ### 6.4 失败证据保留与 `outputDir` 安全清理
 
-- **失败诊断证据**：运行或清理失败时仍保存脱敏的 `provider-evidence.json` 与 `provider-trace.json`，但不产生成功 grade。POSIX 进程检查失败时附带首次失败和最后清理检查的进程元数据与 PID，**不保存命令文本、环境变量或 marker 字符串**。
+- **失败诊断证据**：运行或清理失败时仍保存脱敏的 `provider-evidence.json` 与 `provider-trace.json`，但不产生成功 grade。POSIX 进程检查失败时附带首次失败和最后清理检查的进程元数据与 PID，**不保存命令文本、环境变量或 marker 字符串**。身份扫描未同时验证 marker 时，诊断中的 marker 字段为 `null`；这不表示已确认标记缺失或查询失败，也不能由较早扫描的匹配结果补成 `true`。
 - **凭据清理边界**：凭据清理仅扫描本次 provider 的 `outputDir`，其中的符号链接一律只 unlink 绝不跟随。subject workspace、Eval fixture 和其它输入**绝不扫描、不改权限、也不删除**。
 
 ---

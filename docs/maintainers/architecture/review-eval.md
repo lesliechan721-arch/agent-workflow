@@ -125,6 +125,7 @@ Eval 引擎通过内部 Provider 注册表调度不同的执行后端：
   面向外部 Provider 与运行期的完整协议规范（包含原生 Codex 进程树监控、`custom-process` 协作式协议硬约束、Marker 检查三值语义、单次复查、僵尸豁免、Fail-closed 保护、以及 `--allow-unmanaged-processes` 直接子进程收尾与 `descendantCleanupGuaranteed: false` 边界）统一收敛于[Review 取证与 Eval 评估合同 §7.1 内置 Provider 与 custom-process 外部协议](../../reference/review-and-eval.md#provider-process-contract)。
 - **失败证据保留实现**：
   `ProviderProcessCleanupError.processTreeDiagnostics` 保留 verified-observed 首次与末次观察器诊断，最多两项；只含既有 PID、启动身份、进程状态和 marker 匹配元数据，不含命令、环境或 marker 值。清理错误重包装及随后 lease 释放失败时仍保留这些诊断，不能由其存在推定清理成功。
+  完成前活后代失败使用触发时的 `termination-start` 快照，并列出实际匹配的活后代 PID。离组失败若由身份扫描触发，保存该次身份表中的 PID、PPID、PGID、启动时间和状态；该表未同时验证 marker，因此 `markerMatches` 和 `markerLookupSucceeded` 保持 `null`，不补用较早的 marker 扫描。随后空清理快照不能覆盖首次失败。
   运行或清理失败时在 `outputDir` 中安全持久化脱敏证据（`provider-evidence.json` 与 `provider-trace.json`）并清理符号链接的具体实现与脱敏边界，统一收敛于[Review 取证与 Eval 评估合同 §6.4 失败证据保留与 outputDir 安全清理](../../reference/review-and-eval.md#64-失败证据保留与-outputdir-安全清理)。
 
 <a id="32-windows-原生-job-隔离"></a>
