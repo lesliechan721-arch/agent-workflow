@@ -19,6 +19,7 @@ import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { createCommandTestTiming } from '../helpers/command-timing.js';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
@@ -1240,21 +1241,23 @@ describe('five namespaced write commands', () => {
     // Keep a bounded orchestration deadline; product timeouts and perf budgets stay separate.
   }, process.platform === 'win32' ? 120_000 : 60_000);
 
-  it('derives user dependency placement through independent CLI processes without saved overrides', async () => {
-    const { isolation, childEnv } = await createIntentRoundTripFixture();
-    const installedUser = await runRecovery('install', ['team/b'], {
+  it('derives user dependency placement through independent CLI processes without saved overrides', async (test) => {
+    const timing = createCommandTestTiming(test);
+    const { isolation, childEnv } = await timing.measure('fixture', 'prepare independent CLI', () =>
+      createIntentRoundTripFixture());
+    const installedUser = await timing.measure('command', 'install user provider', () => runRecovery('install', ['team/b'], {
       cwd: isolation.layout.fixtureCwd, env: childEnv, scope: 'user', context: 'user',
       cliVersion: '1.0.0', targets: ['codex'], yes: true,
-    }, { nativeCliRunner: execFileNativeCliRunner });
+    }, { nativeCliRunner: execFileNativeCliRunner }));
     expect(installedUser.ok, JSON.stringify(installedUser)).toBe(true);
-    await runIntentRoundTripCliChild([
+    await timing.measure('command', 'child install project consumer', () => runIntentRoundTripCliChild([
       'plugin', 'install',
       'team/a',
       '--scope',
       'project',
       '--json',
       '--yes',
-    ], isolation.layout.fixtureCwd, childEnv);
+    ], isolation.layout.fixtureCwd, childEnv));
     const intentLocation = {
       scope: 'project' as const,
       cwd: isolation.layout.fixtureCwd,
@@ -1280,7 +1283,7 @@ describe('five namespaced write commands', () => {
       expect(delivered).toContain('Use this role.');
       await fs.writeFile(rolePath, delivered.replace('Use this role.', 'Stale provider output.'));
     }
-    await runIntentRoundTripCliChild([
+    await timing.measure('command', 'child sync project consumer', () => runIntentRoundTripCliChild([
       'plugin', 'sync',
       'team/a',
       '--context',
@@ -1289,7 +1292,7 @@ describe('five namespaced write commands', () => {
       'codex',
       '--json',
       '--yes',
-    ], isolation.layout.fixtureCwd, childEnv);
+    ], isolation.layout.fixtureCwd, childEnv));
     for (const name of roleNames) {
       await expect(fs.readFile(path.join(userRoleRoot, name), 'utf8')).resolves.toContain('Use this role.');
       await expect(fs.pathExists(path.join(projectRoleRoot, name))).resolves.toBe(false);
@@ -1301,9 +1304,9 @@ describe('five namespaced write commands', () => {
       roots: [{ pluginId: 'team/a', platforms: ['codex'] }], dependencyScopeOverrides: [],
     });
 
-    // A related Windows hosted child CLI scenario passes in nearly 60s.
+    // Hosted macOS and Windows need room for the install and two independent CLI processes.
     // Keep a bounded orchestration deadline; product timeouts and perf budgets stay separate.
-  }, process.platform === 'win32' ? 120_000 : 60_000);
+  }, process.platform === 'win32' || process.platform === 'darwin' ? 120_000 : 60_000);
 
   // Test Value Gate: an independent remove process must retain the User providers' real owned outputs.
   it('preserves User providers when an independent CLI process removes its Project consumer', async () => {
