@@ -1,8 +1,9 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 
-import { installNativeTestQualification } from '../../helpers/native-execution-fixture.js';
+import { installNativeTestQualification, isolateCodexAppDiscoveryQueries } from '../../helpers/native-execution-fixture.js';
 
 import { setCodexDiscoveryOverridesForTests } from '../../../src/utils/codex-executable-discovery.js';
+import { discoverPlatform } from '../../../src/platforms/discovery.js';
 
 import { runCli } from '../../../src/index.js';
 import { createCommandTestTiming } from '../../helpers/command-timing.js';
@@ -23,8 +24,15 @@ it('runs one public write command from argv in an isolated process', async (test
     };
     // This isolated child is a test process. Parent spies do not cross this boundary.
     installNativeTestQualification({ platforms: ['codex'], trust: true });
-    setCodexDiscoveryOverridesForTests({ macApplicationsDirectories: [],
-      queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }) });
+    setCodexDiscoveryOverridesForTests({ macApplicationsDirectories: [] });
+    const appQuery = isolateCodexAppDiscoveryQueries();
+    // Test Value Gate: the public adapter must keep OS App inventory isolated
+    // even when the CLI supplies an explicit runner. This probe starts no process.
+    const externalQuery = vi.fn(async () => ({ exitCode: 0, stdout: '[]', stderr: '' }));
+    await discoverPlatform('codex', { platform: 'win32', cwd,
+      env: { ...process.env, PATH: '', SystemRoot: cwd }, runner: externalQuery });
+    expect(externalQuery).not.toHaveBeenCalled();
+    expect(appQuery).toHaveBeenCalled();
     process.chdir(cwd);
     return argv;
   });

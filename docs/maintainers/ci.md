@@ -154,6 +154,7 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 - **时序诊断（`AW_TEST_TIMING`）**：
   CI 通过 `AW_TEST_TIMING` 记录 `commandSequence` 时序诊断。注意：嵌套 stage 的耗时不可直接简单相加（因为包含等待与并发阶段，累计值不等于实际 wall-clock 耗时）。
   独立 CLI 子用例另外记录 `AW_TEST_CHILD_TIMING` 的 spawn、进入子用例、CLI/renderer 阶段和 exit/close。父进程最多转发64条选定阶段元数据，标记父、子及实际执行进程 PID；不复制参数、路径、receipt 正文或错误正文。父级 `elapsedMs` 与子级 `childElapsedMs` 分别使用各自进程的单调时钟起点，不能直接相减；使用接收顺序和阶段耗时区分加载、执行及退出收尾。原 receipt 捕获、行为断言和测试截止保持。
+  独立 CLI 夹具在 discovery 调用边界隔离宿主 App 查询，保留真实 PATH CLI 身份、版本探测、管理命令和进程审计。仅设置后备 query runner 不足以隔离该查询，因为 CLI 会显式传入 runner；child 的受控预检覆盖这个边界，不启动宿主系统查询。
 - 双平台 TUI 并发用例在断言前输出 `AW_TEST_RESULT`，包含重新安装与配置保存双方的结果、错误码和脱敏诊断摘要，不输出原始 receipt 或完整异常。
 - 精确依赖移除与配置运行时同步用例使用 `AW_TEST_TIMING` 分别记录 fixture、命令、renderer 及恢复阶段；测试结束时报告尚未完成的已跟踪阶段。精确移除及 provider 切换用例在 Windows 使用 60 秒预算，配置运行时同步用例使用 30 秒预算，其它平台分别保留 30 秒与 15 秒。预算覆盖用例中的完整准备与执行，不替代阶段计时或性能门禁。
 
