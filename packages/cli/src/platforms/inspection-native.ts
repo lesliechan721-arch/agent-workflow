@@ -11,6 +11,7 @@ import type { DeploymentBinding, DeploymentObservation, ReadContext } from './co
 import type { DeploymentLayout } from './layout.js';
 import { inspectPiDeployment } from './inspection-pi.js';
 import { inspectGrokDeployment } from './inspection-grok.js';
+import { getQualifiedPlatformProfile } from './capabilities.js';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('nativeObservationInvalid');
@@ -119,6 +120,17 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
         // A concurrent product can invalidate the cache, not change these reads.
         session.setManager(manager);
         const observed = await session.inspectPlugin({ pluginId: nativeId, scope: binding.scope.kind });
+        if (ctx.observeNative && binding.scope.kind === 'project' && product.product === 'cli'
+          && product.version === '0.167.0' && getQualifiedPlatformProfile('codex', ctx).qualifiedConsumers?.skill?.some((qualified) =>
+            qualified.product === product.product && qualified.version === product.version)) {
+          session.setManager(manager);
+          const trust = await session.inspectProjectTrust(binding.scope.projectRoot);
+          for (const consumer of result.consumers) if (consumer.productId === product.id && consumer.trust === 'unknown'
+            && trust.state === 'observed') consumer.trust = trust.trust === 'trusted' ? 'trusted' : 'blocked';
+          if (trust.state === 'failed') result.diagnostics.push({ code: 'nativeObservationFailed', severity: 'warning',
+            message: 'The native client could not complete its effective project trust observation.',
+            subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } });
+        }
         if (observed.observation.state !== 'observed') {
           result.registration = 'unknown';
           setActivation(result, 'unknown');

@@ -585,28 +585,37 @@ describe('Codex provider app-server process boundary', () => {
     const signals: Array<[number, string]> = []
     const monitor = createPosixProcessTreeMonitor(100, {
       treeId: marker,
-      execFile: (_command, args, _options, callback) => callback(
-        inspectionFailed && args.some((arg) => arg.includes('command='))
-          ? new Error('inspection unavailable')
-          : null,
-        args.some((arg) => arg.includes('command='))
-          ? [...processes]
-              .map(([pid, entry]) => [
-                pid,
-                entry.ppid,
-                entry.pgid,
-                entry.state,
-                entry.startTime,
-                'node',
-                '--token=private-command API_KEY=private-environment',
-                ...(entry.marked ? [`AW_CODEX_EVAL_PROCESS_TREE_ID=${marker}`] : []),
-              ].join(' '))
-              .join('\n')
-          : [...processes]
-              .map(([pid, entry]) =>
-                `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`)
-              .join('\n'),
-      ),
+      execFile: (_command, args, _options, callback) => {
+        if (_command === '/usr/bin/osascript') {
+          const request = JSON.parse(args.at(-1)!) as { pids: number[] }
+          callback(null, JSON.stringify(request.pids.map(pid => ({
+            pid, marker: processes.get(pid)?.marked === true, errno: 0,
+          }))))
+          return
+        }
+        callback(
+          inspectionFailed && args.some((arg) => arg.includes('command='))
+            ? new Error('inspection unavailable')
+            : null,
+          args.some((arg) => arg.includes('command='))
+            ? [...processes]
+                .map(([pid, entry]) => [
+                  pid,
+                  entry.ppid,
+                  entry.pgid,
+                  entry.state,
+                  entry.startTime,
+                  'node',
+                  '--token=private-command API_KEY=private-environment',
+                  ...(entry.marked ? [`AW_CODEX_EVAL_PROCESS_TREE_ID=${marker}`] : []),
+                ].join(' '))
+                .join('\n')
+            : [...processes]
+                .map(([pid, entry]) =>
+                  `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`)
+                .join('\n') + (processes.has(process.pid) ? '' : `\n${process.pid} 1 0 S observer-start`),
+        )
+      },
       kill: (pid, signal) => {
         signals.push([pid, String(signal)])
         if (pid === -100 && signal === 'SIGTERM') {

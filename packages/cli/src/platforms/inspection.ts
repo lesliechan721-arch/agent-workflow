@@ -91,7 +91,7 @@ async function inspectPackageVersion(ctx: ReadContext, binding: DeploymentBindin
   } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); return undefined; }
 }
 
-/** Read-only inspection. It never renders, changes trust, or starts a host session. */
+/** Inspection never renders or changes trust. Explicit native observation can start app-server. */
 export async function inspectDeployment(ctx: ReadContext, binding: DeploymentBinding): Promise<DeploymentObservation> {
   let layout: DeploymentLayout;
   try { layout = await getDeploymentLayout(ctx, binding); }

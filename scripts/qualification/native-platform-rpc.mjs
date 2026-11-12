@@ -11,6 +11,7 @@ export async function waitForRpcGroupExit(deadline, onDiagnostic = () => {}, ins
     return new Error('rpc-group-inspection-failed');
   };
   onDiagnostic({ atMs: performance.now(), event: 'group-wait-start' });
+  let unknownStateConfirmationUsed = false;
   while (true) {
     const remaining = deadline - performance.now();
     if (remaining <= 0) throw new Error('rpc-descendants-timeout');
@@ -37,6 +38,7 @@ export async function waitForRpcGroupExit(deadline, onDiagnostic = () => {}, ins
     if (performance.now() >= deadline) throw new Error('rpc-descendants-timeout');
     let selfFound = false;
     let liveMembers = false;
+    let unknownState;
     const seen = new Set();
     for (const line of stdout.split('\n')) {
       if (!line.trim()) continue;
@@ -53,13 +55,25 @@ export async function waitForRpcGroupExit(deadline, onDiagnostic = () => {}, ins
         selfFound = true;
       }
       if (pgid !== process.pid) continue;
-      if (!/^[A-Z][A-Za-z0-9+<>=-]*$/u.test(row[3])) throw inspectionFailed('group-state-unknown', {
-        pid, pgid, role: pid === process.pid ? 'helper' : pid === inspector.pid ? 'inspector' : 'member',
-        stateCategory: row[3].startsWith('?') ? 'unknown' : 'unsupported',
-      });
+      if (!/^[A-Z][A-Za-z0-9+<>=-]*$/u.test(row[3])) {
+        const details = {
+          pid, pgid, role: pid === process.pid ? 'helper' : pid === inspector.pid ? 'inspector' : 'member',
+          stateCategory: row[3].startsWith('?') ? 'unknown' : 'unsupported',
+        };
+        if (details.stateCategory === 'unsupported') throw inspectionFailed('group-state-unknown', details);
+        unknownState ??= details;
+      }
       if (pid !== process.pid && pid !== inspector.pid && !row[3].startsWith('Z')) liveMembers = true;
     }
     if (!selfFound) throw inspectionFailed('helper-row-missing', { helperPid: process.pid, rows: seen.size });
+    if (unknownState) {
+      if (unknownStateConfirmationUsed) throw inspectionFailed('group-state-unknown', unknownState);
+      unknownStateConfirmationUsed = true;
+      onDiagnostic({ atMs: performance.now(), event: 'group-state-confirmation', ...unknownState });
+      // An unknown row is never an empty group. One fresh query can prove that
+      // a departing process is gone, using the same absolute deadline.
+      liveMembers = true;
+    }
     if (!liveMembers) {
       onDiagnostic({ atMs: performance.now(), event: 'group-wait-complete' });
       return;

@@ -42,6 +42,8 @@ export interface ReadContext {
   /** Replaces only external process probes, including OS identity queries. */
   runner?: NativeCliRunner;
   codexObservationSession?: import('../utils/codex-native-observation.js').CodexNativeObservationSession;
+  /** Explicit status observation may start the supported native app-server. */
+  observeNative?: boolean;
   /** Isolated filesystem boundary for App discovery tests. */
   macApplicationsDirectories?: readonly string[];
   windowsApplicationsDirectories?: readonly string[];

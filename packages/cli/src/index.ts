@@ -2795,6 +2795,7 @@ function configurePublicCommands(program: Command, options: CliRuntimeOptions, i
     .action(async (selector: string) => { io.result?.(await runPublicPluginShow(selector, { cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.show'))); });
   plugin.command('status').description('Inspect requirements, outputs, and coverage').argument('[plugins...]')
     .addOption(strictValueOption('--context <context>', 'Observation context', ['user', 'project']))
+    .option('--observe-native', 'Start a supported native client to observe effective project trust')
     .action(async (plugins: string[], raw: Record<string, unknown>) => { io.result?.(await runPublicPluginStatus(plugins, { ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.status', raw))); });
 
   devPlugin.command('remove').description('Delete one owned plugin source tree').argument('<plugin>')

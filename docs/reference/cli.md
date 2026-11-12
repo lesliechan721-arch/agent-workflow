@@ -25,6 +25,8 @@
 
 首次 install 只获取所选来源确实缺少的 Active，以及同来源必要依赖；已有 Active 不隐式升级，损坏 Active 不当作首次安装。`sync --refresh` 显式刷新来源。查询不取源、不运行 renderer/preApply、不创建工作区或配置。`source status --remote` 只允许临时获取并清理材料，不写 store、Active、lastSync。作者缺少工作区时使用 `dev catalog create` 显式建立。
 
+`aw plugin status [plugins...] --observe-native` 显式允许启动已合格的 Codex CLI 0.167.0 `app-server`，观察当前项目的有效信任。该进程临时使用 `features.plugins=false`，避免观察期间触发原生插件同步或升级；返回值只作为信任层证据，不代表用户原来的有效 feature 状态。原生启动仍可能创建 installation ID、日志、SQLite 状态和 cache，读取已有认证，并按现有配置访问云端服务或远程环境；人类输出和 JSON diagnostics 均保留 `nativeObservationSideEffects`。只观察 User 时不启动 app-server。普通 status 不启动 app-server，也没有这些启动副作用。观察不修改信任、AW ledger 或生产资格；支持的精确路径与配置层证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
+
 普通需求、平台策略和配置保存由命令表达写入意图。删除输出、配置重置、共享替换、重要来源变化、作者源码删除、远端发布及安装附带 preApply 要求 `--yes`。显式 run/build/test 与准备/导出所必需的构建渲染不重复要求执行确认。缺少确认不先提交需求或配置；必要来源候选可临时准备，确认前不启用。TUI 保留其 Review 确认。
 
 `--yes` 不绕过 ownership、依赖、scope、stale、发布 digest 或宿主审批。执行开始后出现新影响不得扩大原授权；按真实变化报告 blocked 或 partial。cache prune preview 和 publication plan 分别保持 preview/prepared，不表示已经删除或发布。
@@ -176,7 +178,7 @@ type LifecycleData = {
 
 平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、trust、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
 
-status 的 `trust: "not-applicable"` 表示当前完整组件集合不需要额外信任门槛，不表示项目已受信任或宿主已加载。Codex 的有限用户级普通 Skill 判定及仍未知的项目信任边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。`nativeTrustUnconfirmed` warning 说明信任观测不足，保留 unknown 及原退出码。
+status 的 `trust: "not-applicable"` 表示当前完整组件集合不需要额外信任门槛，不表示项目已受信任或宿主已加载。Codex 的有限用户级普通 Skill 判定及显式项目信任观察边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。`nativeTrustUnconfirmed` warning 说明信任观测不足，保留 unknown 及原退出码；显式观察取得拒信证据时报告 `trust: "blocked"` 和 `nativeTrustRequired`，不会因登记或 activation 已启用而改成 trusted。
 
 remainingTargets 只列本次请求选择中未完成的目标，不能把过滤掉的平台或未检查的其它项目加入自动重试。所有长期需求是否满足由已有 allSatisfied 与 coverage 事实表达，不能从本次 status=success 推断整个机器已同步。
 

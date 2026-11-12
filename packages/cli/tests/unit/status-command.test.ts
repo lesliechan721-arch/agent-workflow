@@ -24,6 +24,7 @@ import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture } 
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import * as platformCapabilities from '../../src/platforms/capabilities.js';
 import { isolateCodexAppDiscoveryQueries } from '../helpers/native-execution-fixture.js';
+import { configReadResponse } from '../helpers/codex-config-observation-fixture.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -164,6 +165,47 @@ async function materializeCodexSkill(value: Awaited<ReturnType<typeof fixture>>)
 }
 
 describe('public status through platform adapters', () => {
+  // Test Value Gate: the public flag must affect only project trust and preserve package, activation, and ownership checks.
+  it.each([
+    { mode: 'ordinary', enabled: false, trust: 'trusted' as const, expected: 'unknown', exit: 3 },
+    { mode: 'trusted', enabled: true, trust: 'trusted' as const, expected: 'satisfied', exit: 0 },
+    { mode: 'denied', enabled: true, trust: 'untrusted' as const, expected: 'drifted', exit: 3 },
+    { mode: 'parent-only', enabled: true, trust: 'trusted' as const, expected: 'unknown', exit: 3 },
+  ])('projects $mode native trust through the real CLI status path', async ({ mode, enabled, trust, expected, exit }) => {
+    vi.spyOn(platformCapabilities, 'getQualifiedPlatformProfile').mockReturnValue(
+      getQualifiedPlatformProfile('codex', { platform: 'darwin', arch: 'arm64' }));
+    isolateCodexAppDiscoveryQueries();
+    const value = await fixture('codex', { available: true, scope: 'project' });
+    await materializeCodexSkill(value);
+    const probe = value.runner.getMockImplementation()!;
+    value.runner.mockImplementation(async (invocation) => {
+      if (!invocation.args.includes('app-server')) return probe(invocation);
+      const cwd = invocation.cwd!;
+      const initialized = `${JSON.stringify({ id: 1, result: { userAgent: 'aw/0.167.0' } })}\n`;
+      const response = `${JSON.stringify({ id: 2, result: configReadResponse(cwd, value.env.CODEX_HOME!, trust,
+        mode === 'parent-only' ? path.dirname(cwd) : cwd) })}\n`;
+      invocation.input!.onStdout(initialized);
+      invocation.input!.onStdout(response);
+      return { exitCode: 0, stdout: initialized + response, stderr: '' };
+    });
+    const before = await snapshot(value.isolation.layout.rootDir);
+    const captured = createCapturedCliIo();
+    const code = await runCli(['plugin', 'status', 'local/demo', '--context', 'project', ...(enabled ? ['--observe-native'] : []), '--json'], {
+      cwd: value.cwd, env: value.env, io: captured.io, nativeCliRunner: value.runner,
+    });
+    const result = JSON.parse(captured.readStdout());
+    expect(code, JSON.stringify(result)).toBe(exit);
+    const observed = result.data.inventory[0].targetResults[0];
+    expect(observed.content).toBe(expected);
+    expect(observed.deploymentObservations[0].after.consumers[0]).toMatchObject({
+      activation: 'enabled', trust: mode === 'trusted' ? 'trusted' : mode === 'denied' ? 'blocked' : 'unknown', load: 'unknown',
+    });
+    expect(value.runner.mock.calls.filter(([invocation]) => invocation.args.includes('app-server'))).toHaveLength(enabled ? 1 : 0);
+    expect(result.diagnostics.some((entry: { code: string }) => entry.code === 'nativeObservationSideEffects')).toBe(enabled);
+    expect(result.diagnostics.some((entry: { code: string }) => entry.code === 'nativeTrustRequired')).toBe(mode === 'denied');
+    expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
+  });
+
   // Test Value Gate: qualified static user Skills need no independent Hook/project trust;
   // status must verify materialization without claiming a host session loaded it or writing state.
   it('confirms qualified static Codex user Skills without claiming project trust or host load', async () => {

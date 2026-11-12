@@ -67,7 +67,11 @@ DeploymentObservation 分开保存 package、registration、ownership、各产�
 
 Codex CLI 0.167.0 的用户级普通 Skill 没有独立的 Hook 或项目配置信任门槛。status 仅在以下事实全部成立时，将当前组件集合的未知 trust 标为 `not-applicable`：完整静态集合非空且只含 Skill，无动态 artifacts、unmet 或补足；当前平台的精确 CLI/版本已合格；包为 AW 所有，完整投影输入与内容字节匹配，原生登记存在且 neutral 用户激活已确认。明确的拒信或阻断事实保持。此判定不标记 `trusted`，不改变 load，不启动宿主会话或创建持久状态；项目级、其他版本/产品面、混合或动态集合不适用。
 
-Codex 的项目 activation 仍受宿主有效配置信任门槛控制。单个用户 TOML 中的声明、原生登记或 activation 不能代替合并配置及路径规则的证据。无法只读确认时，content/trust 保持 unknown；公开 status 通过 `nativeTrustUnconfirmed` warning 说明该缺口，保留原计数和非成功结果。
+Codex 的项目 activation 仍受宿主有效配置信任门槛控制。单个用户 TOML 中的声明、原生登记或 activation 不能代替合并配置及路径规则的证据。普通 status 不启动 app-server，无法确认时 content/trust 保持 unknown；公开 status 通过 `nativeTrustUnconfirmed` warning 说明该缺口，保留原计数和非成功结果。
+
+`aw plugin status --observe-native` 只对当前项目 binding 显式观察有效信任。它限定为当前平台已合格的 Codex CLI 0.167.0，App、其他版本或无项目 binding 均不启动 app-server。会话沿原环境和原 CODEX_HOME 运行，不替换宿主配置根；仅在该进程临时覆盖 `features.plugins=false`，避免原生插件同步或自动升级。这保留所观察的 trust/project 层语义，但返回的 features 不是用户原来的有效 feature 配置，不用于任何状态判断。只发送 `initialize`（experimentalApi）、`initialized` 和带精确项目 cwd 的 `config/read`（includeLayers）。必须先收到 initialize 成功响应，再发送后两条消息，收到 config 响应后关闭 stdin，并等待正式 runner 的客户端退出和进程清理；已有响应不能覆盖超时、输入错误或清理未确认。规范通知不提供信任证据；重复、无效或不完整响应保持失败。
+
+信任提取仅支持与 realpath 相同的精确项目路径。`config.projects[projectRoot].trust_level` 必须明确为 trusted/untrusted，其 origin 必须对应当前 CODEX_HOME 的有效 user 层与同一版本，且存在唯一的精确 `projectRoot/.codex` project 层。只有明确 trusted 且该 project 层没有 disabledReason 时才标记 trusted；明确 untrusted 且该层被禁用时标记 blocked。只有父仓库 trust、别名路径、托管或云端来源、缺层、重复层或矛盾证据均保留 unknown，不重建 Codex 的完整路径或配置加载规则。信任结果仅保存在本次内存会话中，不写 AW ledger、不提升生产 profile；包、摘要、归属、registration、activation 和组件能力仍分别检查，load 不变。
 
 包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。输入摘要包括 renderer 的 configKeys，以及当前平台、实际渲染 scope 下 Skill producer 动态命令集的 refreshKeys 和非敏感校验依赖；命令配置单独变化也必须显示漂移。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
@@ -80,6 +84,8 @@ generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有
 ### 3.1 只读观察
 
 状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。目录存在、同名 executable 或版本通过都不足以证明原生注册或组件可用。原生 registration、activation 与 trust 按对应路由的公开命令或配置观察；Codex private cache 不进入删除授权。
+
+显式 `--observe-native` 允许原生 app-server 启动，因此可能创建 installation ID、日志、SQLite 状态和 cache，读取既有认证，并按宿主现有配置连接云端或远程环境。公开结果通过 `nativeObservationSideEffects` 同时向人类和 JSON 消费者披露；该选项不要求也不执行登录、模型或账号 RPC。普通 status、TUI 和复用观察 session 的其他消费者默认不启用此模式。
 
 同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。跨调用不缓存弱现场结论。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
 

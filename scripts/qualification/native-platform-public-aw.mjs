@@ -139,8 +139,13 @@ export async function qualifyPublicAw(ctx) {
   await ctx.check('public-update-skill-discovery', () => readSkills(ctx, ctx.project, 2, true));
   await ctx.check('public-update-neutral-scope', () => readSkills(ctx, ctx.neutral, 2, ctx.scope === 'user'));
   await ctx.check('public-status', async () => {
-    const result = await ctx.aw(['plugin', 'status', pluginId, '--context', ctx.scope]);
-    return { command: result.command, status: result.status, data: result.data };
+    const observeNative = ctx.platform === 'codex' && ctx.scope === 'project';
+    const result = await ctx.aw(['plugin', 'status', pluginId, '--context', ctx.scope,
+      ...(observeNative ? ['--observe-native'] : [])]);
+    if (observeNative) assert(result.diagnostics.some(item => item.code === 'nativeObservationSideEffects'
+      && item.severity === 'warning'), 'Explicit native observation must disclose client startup side effects.');
+    return { command: result.command, status: result.status, data: result.data,
+      ...(observeNative ? { observation: 'explicit-native-startup', credentials: 'isolated-none', modelRequests: 'none' } : {}) };
   });
   await ctx.check('public-remove', async () => {
     const result = await ctx.aw(['plugin', 'remove', pluginId, '--scope', ctx.scope, '--yes']);

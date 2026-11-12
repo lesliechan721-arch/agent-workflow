@@ -438,6 +438,139 @@ describe('shared provider process behavior', () => {
     expect(stopped).toBe(true)
   })
 
+  // Test Value Gate: recover macOS title visibility only for the same process
+  // identity; unreadable evidence and either sampled group departure still fail.
+  it.each([
+    { outcome: 'title', beforeFirst: true },
+    { outcome: 'title', beforeFirst: false },
+    { outcome: 'sentinel-title' },
+    { outcome: 'root-first-exit-same-group', beforeFirst: true },
+    { outcome: 'root-fresh-exit-same-group', beforeFirst: true },
+    { outcome: 'root-first-exit-new-group', beforeFirst: true, failure: 'left its initial process group' },
+    { outcome: 'root-fresh-exit-new-group', beforeFirst: true, failure: 'left its initial process group' },
+    { outcome: 'missing', failure: 'lost its process marker' },
+    { outcome: 'permission', failure: 'process marker could not be read' },
+    { outcome: 'invalid', failure: 'marker lookup failed' },
+    { outcome: 'identity-blind', failure: 'marker lookup failed' },
+    { outcome: 'errno-mismatch', failure: 'marker lookup failed' },
+    { outcome: 'helper-timeout', failure: 'marker lookup failed' },
+    { outcome: 'identity-timeout', failure: 'marker lookup failed' },
+    { outcome: 'reused' },
+    { outcome: 'old-group', failure: 'left its initial process group' },
+    { outcome: 'old-group-exit', failure: 'left its initial process group' },
+    { outcome: 'new-group', failure: 'left its initial process group' },
+  ])('confirms Darwin startup markers: $outcome (first=$beforeFirst)', async ({ outcome, beforeFirst, failure }) => {
+    vi.useFakeTimers()
+    const marker = 'darwin-marker'
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, state: 'S', startTime: 'Fri Sep  4 21:06:32 2026', marked: !beforeFirst }],
+      [101, { ppid: 100, pgid: 100, state: 'S', startTime: 'Fri Sep  4 21:06:33 2026', marked: !beforeFirst }],
+      [200, { ppid: 1, pgid: 200, state: 'S', startTime: 'foreign-start', marked: false }],
+    ])
+    if (outcome === 'sentinel-title') processes.set(300, { ppid: 1, pgid: 300, state: 'S', startTime: 'sentinel-start', marked: false })
+    if (outcome.startsWith('root-first-exit')) processes.delete(100)
+    let dropChildAfterFreshIdentity = false
+    let rawCalls = 0
+    let delayIdentity = false
+    const signals: number[] = []
+    const dependencies = {
+      platform: 'darwin' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceCooperativeProcessGroup: true,
+      execFile: (command: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string) => void): void => {
+        if (command === '/usr/bin/osascript') {
+          rawCalls += 1
+          const request = JSON.parse(args.at(-1)!) as { pids: number[] }
+          expect(request.pids).not.toContain(200)
+          if (outcome === 'invalid') { callback(null, '{}'); return }
+          const rawResult = JSON.stringify(request.pids.map(pid => ({ pid,
+            marker: outcome === 'permission' ? null : outcome !== 'missing', errno: ['permission', 'errno-mismatch'].includes(outcome) ? 1 : 0,
+          })))
+          if (outcome === 'helper-timeout') { setTimeout(() => callback(null, rawResult), 3000); return }
+          if (outcome === 'identity-timeout') {
+            setTimeout(() => { delayIdentity = true; callback(null, rawResult) }, 1750)
+            return
+          }
+          callback(null, rawResult)
+          const child = processes.get(101)
+          if (child && outcome === 'reused') processes.set(101, { ...child, ppid: 1, pgid: 201, startTime: 'replacement-start' })
+          if (child && outcome === 'old-group') child.pgid = 100
+          if (outcome === 'old-group-exit') processes.delete(101)
+          if (child && (outcome === 'new-group' || outcome.startsWith('root-') && outcome.endsWith('new-group'))) child.pgid = 201
+          if (outcome.startsWith('root-fresh-exit')) processes.delete(100)
+          if (outcome.startsWith('root-')) dropChildAfterFreshIdentity = true
+          return
+        }
+        let output = args.some(arg => arg.includes('command='))
+          ? renderMarkerScan(processes, marker)
+          : [...processes].map(([pid, entry]) => `${pid} ${entry.ppid} ${outcome.startsWith('old-group') && pid === 101 ? 100 : entry.pgid} ${entry.state} ${entry.startTime}`).join('\n')
+        if (!args.some(arg => arg.includes('command=')) && !processes.has(process.pid) && outcome !== 'identity-blind') {
+          output += `\n${process.pid} 1 0 S observer-start`
+        }
+        if (delayIdentity && !args.some(arg => arg.includes('command='))) {
+          delayIdentity = false
+          expect((_options as { timeout: number }).timeout).toBeLessThanOrEqual(250)
+          setTimeout(() => callback(null, output), 500)
+        } else {
+          callback(null, output)
+          if (dropChildAfterFreshIdentity && !args.some(arg => arg.includes('command='))) {
+            dropChildAfterFreshIdentity = false
+            processes.delete(101)
+          }
+        }
+      },
+      kill: (pid: number, signal: string): void => {
+        signals.push(pid)
+        if (signal !== 'SIGKILL') return
+        for (const [candidate, entry] of processes) if (candidate === pid || pid < 0 && entry.pgid === -pid) processes.delete(candidate)
+      },
+    }
+    const observation = observeProcessTree(100, marker, dependencies, outcome === 'sentinel-title' ? {
+      marker, sentinel: { pid: 300, startTime: 'sentinel-start' }, release: async () => {},
+    } : undefined)
+    const onFailure = vi.fn()
+    observation.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      if (!beforeFirst) {
+        processes.get(100)!.marked = false
+        processes.get(101)!.marked = false
+        if (outcome.startsWith('old-group')) processes.get(101)!.pgid = 201
+        await vi.advanceTimersByTimeAsync(outcome.endsWith('timeout') ? 3000 : 1000)
+      }
+      expect(rawCalls).toBeGreaterThan(0)
+      if (failure) expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining(failure) }))
+      else expect(onFailure).not.toHaveBeenCalled()
+      if (outcome.startsWith('root-') && outcome.endsWith('new-group')) {
+        expect(observation.diagnostics[0]).toMatchObject({
+          stage: 'identity-observation', reason: 'marked-process-group-changed', affectedPids: [101],
+          processes: expect.arrayContaining([expect.objectContaining({ pid: 101, pgid: 201, state: 'S' })]),
+        })
+        expect(processes.has(101)).toBe(false)
+      }
+      if (outcome.startsWith('root-')) expect(processes.has(101)).toBe(false)
+      // Subsequent readable data cannot erase a failure already confirmed.
+      for (const [pid, entry] of processes) {
+        if (pid === 100 || pid === 101 && entry.startTime !== 'replacement-start') entry.marked = true
+      }
+      const pending = terminateProcessTree(100, () => undefined, dependencies, { observation, requireConfirmedCleanup: true,
+        requireDescendantsExitedBeforeCompletion: outcome.startsWith('root-') })
+        .then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      const error = await pending
+      if (failure) expect(error?.message).toContain(failure)
+      else expect(error).toBeNull()
+      expect(signals).not.toContain(200)
+      expect(signals).not.toContain(-200)
+      if (outcome === 'sentinel-title') { expect(signals).not.toContain(300); expect(signals).not.toContain(-300) }
+      if (outcome === 'reused') {
+        expect(signals).not.toContain(101)
+        expect(signals).not.toContain(-201)
+        expect(processes.get(101)?.startTime).toBe('replacement-start')
+      }
+    } finally { observation.dispose(); vi.useRealTimers() }
+  })
+
   it('keeps the provider exit and stderr when inspection lease release fails', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-release-'))
     let marker = ''
@@ -1085,6 +1218,13 @@ describe('shared provider process behavior', () => {
         _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
         callback: (error: Error | null, stdout: string) => void,
       ): void => {
+        if (_command === '/usr/bin/osascript') {
+          const request = JSON.parse(args.at(-1)!) as { pids: number[] }
+          callback(null, JSON.stringify(request.pids.map(pid => ({ pid,
+            marker: outcome === 'unreadable' ? null : false, errno: 0,
+          }))))
+          return
+        }
         const markerScan = args.some((arg) => arg.includes('command='))
         if (markerScan && phase === 'unreadable') {
           processes.set(101, { ...child, command: '(git)' })
@@ -1103,9 +1243,11 @@ describe('shared provider process behavior', () => {
             ppid: 1, pgid: 200, state: 'S', startTime: 'replacement-start', command: '(unrelated)',
           })
         }
-        callback(null, [...processes].map(([pid, entry]) =>
+        let output = [...processes].map(([pid, entry]) =>
           `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}${markerScan ? ` ${entry.command}` : ''}`,
-        ).join('\n'))
+        ).join('\n')
+        if (!markerScan && !processes.has(process.pid)) output += `\n${process.pid} 1 0 S observer-start`
+        callback(null, output)
       },
       kill: (pid: number, signal: string): void => {
         signals.push(pid)

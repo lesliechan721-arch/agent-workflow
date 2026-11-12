@@ -6,7 +6,7 @@
 
 target 为 codex、claude、antigravity、cursor、opencode、pi、gemini、copilot、grok、generic。具体 Agent 使用原生包或原生扩展，必要宿主资源由 AW 明确托管；generic 仅管理通用 Skills。Native 失败不改走散文件安装。
 
-CLI/TUI 共用只读发现与 adapter 注册表。可用性分为 available、missing、unsupported、unknown、notApplicable（仅 generic）。它与用户选择、插件能力、实际安装、登录和模型可用性分开。同名可执行文件或配置目录不能证明身份；probe 有时限、输出限制和安全诊断，不下载、不登录、不调用模型。
+CLI/TUI 共用只读发现与 adapter 注册表。可用性分为 available、missing、unsupported、unknown、notApplicable（仅 generic）。它与用户选择、插件能力、实际安装、登录和模型可用性分开。同名可执行文件或配置目录不能证明身份；probe 有时限、输出限制和安全诊断，不下载、不登录、不调用模型。显式 status `--observe-native` 的 app-server 启动、副作用与精确 Codex 项目信任证据边界见[状态与配置](config-and-status.md#22-平台产品面与组件事实)；默认发现与观察不启用它。
 
 一个 target 包含本机已识别且受支持的 CLI/App；Claude 与 Copilot 只识别 CLI。未安装的另一产品面不自动成为要求。某产品面可用即可选择 target，其他已发现面仍保留限制；没有基础可用路径时依事实报告 missing/unsupported/unknown。App 已存在但缺少可用入口不能报 missing。发现覆盖不足也不能报 missing。
 
@@ -93,7 +93,7 @@ Cursor Hook 必须在宿主，不在等待加载的包中。读取 workspace_roo
 
 Pi 核心存在不证明 Agents 消费者存在。inspect 只读返回候选身份、版本、有效 scope、enabled、trust、packageAccess、promptMode/loadExtensions 和配置 evidence。complete+空列表是缺失，unknown 是覆盖不足；停用不是缺失。多个消费者的实际共存规则未验证时保持 unverified，不代用户选执行器。声明文件使用带插件身份的角色名并拒绝覆盖冲突；AW 不注册子代理工具或生成进程管理代码。
 
-Pi 1.5.0 的事实来自公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者公开的 subagents.json。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。配置摘要进入 capability 和锁内 stale 检查。
+Pi 1.5.0 的事实来自公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者公开的 subagents.json。User binding 只读取用户 settings/subagents；执行所用 neutral cwd 的项目配置不参与观察或摘要。Project binding 读取用户和项目配置，项目 subagents 覆盖同名用户配置，也适用于安装在 User scope 的消费者。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。配置摘要进入 capability 和锁内 stale 检查。
 
 Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`，不保证带 `./` 前缀。登记观察和消费者输入检查采用同一 AW 本地路径解释；npm、Git 与无法解析的来源保持独立，不能仅凭名称认领 AW 包。
 
@@ -103,7 +103,7 @@ Grok 1.0.77 的 list 只证明可解析的登记，inspect.enabled 不能单独�
 
 ## 3. 适配器职责与执行证据
 
-AgentPluginAdapter 提供 discover、resolve、inspect、capabilities、project 和 lifecycle.prepare/execute。discover/resolve/inspect 只读；capabilities 与 prepare 是纯函数；project 只写私有 staging。公共管线拥有 renderer、命令闭包、冻结、Review、写锁、owner/共享检查和结果汇总。execute 使用同一冻结字节、route、位置与动作，不重新渲染、换路由或运行未审核的卸载重装。
+AgentPluginAdapter 提供 discover、resolve、inspect、capabilities、project 和 lifecycle.prepare/execute。discover/resolve/inspect 不修改部署或信任；显式 status 原生观察可启动客户端并产生其运行状态。capabilities 与 prepare 是纯函数；project 只写私有 staging。公共管线拥有 renderer、命令闭包、冻结、Review、写锁、owner/共享检查和结果汇总。execute 使用同一冻结字节、route、位置与动作，不重新渲染、换路由或运行未审核的卸载重装。
 
 效果分类为 publish-package、register、refresh、activate、deactivate、unregister、write-supplement、remove-owned，用于 Review/回执关联，不是通用 shell 动作语言。每个回执效果对应审核 ID；未执行项显式 skipped。原生命令超时或异常后先有限只读观测，未知写入保留 unknown/possible，不盲目重试。安装成功但激活失败、卸载成功但补足清理失败分别保留事实。
 

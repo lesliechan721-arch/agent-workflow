@@ -77,6 +77,7 @@ export interface ReadRecoveryStatusOptions {
   signal?: AbortSignal;
   targets?: readonly string[];
   nativeObservations?: NativeObservation[];
+  observeNative?: boolean;
 }
 
 const NATIVE_READ_ERRORS = new Set(['nativeStateUnreadable', 'stateInventoryFailed', 'configReadFailed',
@@ -96,7 +97,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
       .filter((agent): agent is PlatformName => agent !== 'generic');
   } catch { return { observations, existing, owned }; }
   const ctx: ReadContext = { cwd: context.executionCwd, env: context.env, signal: options.signal, runner: options.nativeCliRunner,
-    codexObservationSession: options.codexObservationSession };
+    codexObservationSession: options.codexObservationSession, observeNative: options.observeNative };
   for (const platform of selected) {
     options.signal?.throwIfAborted();
     const roots = (demand.roots ?? []).filter((root) => root.plugin

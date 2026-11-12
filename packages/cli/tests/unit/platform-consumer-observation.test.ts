@@ -11,6 +11,7 @@ import { createRebuildIntegration, type RebuildExecutionContext } from '../../sr
 import { executeRebuildOperation } from '../../src/commands/rebuild-operations.js';
 import { createNoopReporter } from '../../src/output/reporter.js';
 import { createNoopDebugLogger } from '../../src/output/debug-log.js';
+import { createScopeContext } from '../../src/intent/scope-context.js';
 
 async function fixture(platform: 'pi' | 'grok', project = false) {
   const isolated = getCurrentSourceTestIsolation();
@@ -37,6 +38,50 @@ async function consumer(root: string, version = '0.22.0') {
 }
 
 describe('public native consumer observation', () => {
+  // Test Value Gate: public User status uses a fresh neutral cwd. It must
+  // compare the same consumer inputs as the writer, regardless of cwd files.
+  it('keeps Pi User consumer evidence independent of neutral execution directories', async () => {
+    const item = await fixture('pi');
+    const root = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
+    await consumer(root);
+    await fs.outputJson(item.layout.activationPath, { packages: ['npm:@tintinweb/pi-subagents@0.22.0'] });
+    await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: true });
+    const writer = await createScopeContext({ scope: 'user', cwd: item.ctx.cwd, env: item.ctx.env });
+    const reader = await createScopeContext({ scope: 'user', cwd: item.ctx.cwd, env: item.ctx.env, readOnly: true });
+    try {
+      expect(writer.executionCwd).not.toBe(reader.executionCwd);
+      const observe = (cwd: string) => inspectDeployment({ ...item.ctx, cwd }, item.binding);
+      const prepared = await observe(writer.executionCwd);
+      expect((await observe(reader.executionCwd)).prerequisites).toEqual(prepared.prerequisites);
+      await fs.outputJson(path.join(reader.executionCwd, '.pi/settings.json'), { extensions: ['unresolved-project-extension'] });
+      await fs.outputJson(path.join(reader.executionCwd, '.pi/subagents.json'), { packageAgents: false });
+      expect((await observe(reader.executionCwd)).prerequisites).toEqual(prepared.prerequisites);
+      await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: false });
+      const changed = await observe(reader.executionCwd);
+      expect(changed.prerequisites.agentConsumers.candidates[0]?.packageAccess).toBe('denied');
+      expect(changed.prerequisites).not.toEqual(prepared.prerequisites);
+    } finally {
+      await reader.dispose();
+      await writer.dispose();
+    }
+  });
+
+  // Test Value Gate: Project policy also applies to consumers installed in User
+  // scope; fixing User evidence must preserve this cross-scope override.
+  it('applies Pi Project package policy to User consumers', async () => {
+    const item = await fixture('pi', true);
+    const root = path.join(item.host, 'npm/node_modules/@tintinweb/pi-subagents');
+    await consumer(root);
+    await fs.outputJson(path.join(item.host, 'settings.json'), { packages: ['npm:@tintinweb/pi-subagents@0.22.0'] });
+    await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: true });
+    const before = await inspectDeployment(item.ctx, item.binding);
+    expect(before.prerequisites.agentConsumers.candidates[0]).toMatchObject({ scope: { kind: 'user' }, packageAccess: 'allowed' });
+    await fs.outputJson(path.join(item.ctx.cwd, '.pi/subagents.json'), { packageAgents: false });
+    const after = await inspectDeployment(item.ctx, item.binding);
+    expect(after.prerequisites.agentConsumers.candidates[0]).toMatchObject({ scope: { kind: 'user' }, packageAccess: 'denied' });
+    expect(after.prerequisites).not.toEqual(before.prerequisites);
+  });
+
   // Test Value Gate: Pi's persisted relative AW source must remain registered in
   // both scopes and must not change the prepared Agent consumer inputs.
   it.each([false, true])('recognizes Pi relative AW registration with project=%s', async (project) => {
@@ -172,8 +217,9 @@ describe('public native consumer observation', () => {
 
   // Test Value Gate: consumer settings changed after preparation must invalidate
   // the real rebuild execution before it can mutate any native package.
-  it('rejects a prepared Pi operation when actual consumer settings change', async () => {
-    const item = await fixture('pi');
+  it.each(['user', 'project'] as const)('rejects a prepared Pi %s operation when actual consumer settings change', async (scope) => {
+    const item = await fixture('pi', scope === 'project');
+    if (scope === 'project') await fs.ensureDir(path.join(item.ctx.cwd, '.git'));
     const bin = path.join(item.ctx.cwd, 'bin'); await fs.outputFile(path.join(bin, 'pi'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     const env = { ...item.ctx.env, PATH: bin };
     const root = path.join(item.ctx.cwd, 'empty-pi');
@@ -185,10 +231,10 @@ describe('public native consumer observation', () => {
       reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
     const integration = createRebuildIntegration({ context });
     try {
-      const target = await integration.buildTarget({ plugin, platform: 'pi', scope: 'user', cwd: item.ctx.cwd, command: 'sync',
+      const target = await integration.buildTarget({ plugin, platform: 'pi', scope, cwd: item.ctx.cwd, command: 'sync',
         catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0' } });
       expect(target.platformDeployment?.plans).toHaveLength(1);
-      await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: false });
+      await fs.outputJson(path.join(scope === 'user' ? item.host : path.join(item.ctx.cwd, '.pi'), 'subagents.json'), { packageAgents: false });
       const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
       expect(result).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('operationPlanStale') } });
       expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);

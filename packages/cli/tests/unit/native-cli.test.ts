@@ -101,6 +101,64 @@ async function writeWindowsAgentNpmFixture(root: string, agent: 'claude' | 'code
 }
 
 describe('native-cli', () => {
+  // Test Value Gate: streaming input must preserve UTF-8 chunks and close stdin only after the exchange requests EOF.
+  it('runs a bounded input exchange through the formal process runner', async () => {
+    const stdout = new PassThrough();
+    const stdin = Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() });
+    const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: 0, signalCode: null,
+      kill: vi.fn(() => true), stdout, stdin });
+    const chunks: string[] = [];
+    const runner = createExecFileNativeCliRunner({ platform: 'darwin',
+      killProcess: (_pid, signal) => {
+        if (signal === 0) throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+        return true;
+      },
+      execFile: (_command, _args, _options, callback) => {
+        queueMicrotask(() => {
+          const output = Buffer.from('项目\n');
+          stdout.write(output.subarray(0, 1));
+          stdout.write(output.subarray(1));
+          callback(null, '项目\n', '');
+        });
+        return child;
+      } });
+    const result = await runner({ command: 'codex', args: ['app-server', '--stdio'], input: {
+      initial: 'initialize\n', onStdout: (chunk) => {
+        chunks.push(chunk);
+        return chunk.includes('\n') ? { write: 'config/read\n', end: true } : {};
+      },
+    } });
+    expect(result).toEqual({ exitCode: 0, stdout: '项目\n', stderr: '' });
+    expect(chunks.join('')).toBe('项目\n');
+    expect(stdin.write.mock.calls).toEqual([['initialize\n'], ['config/read\n']]);
+    expect(stdin.end).toHaveBeenCalledTimes(1);
+  });
+
+  // Test Value Gate: input errors must wait for the existing process cleanup instead of rejecting while descendants remain.
+  it.each(['callback', 'stdin'] as const)('waits for cleanup after a streaming %s failure', async (origin) => {
+    const stdout = new PassThrough();
+    const stdin = Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() });
+    const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: null,
+      kill: vi.fn(() => true), stdout, stdin });
+    let finishCleanup: (() => void) | undefined;
+    const terminate = vi.fn(() => new Promise<void>((resolve) => { finishCleanup = resolve; }));
+    const runner = createExecFileNativeCliRunner({ platform: 'win32', terminateProcessTree: terminate,
+      execFile: () => child });
+    const cause = new Error('exchange failed');
+    const pending = runner({ command: 'controlled-helper', args: [], input: {
+      initial: 'initialize\n', onStdout: () => { throw cause; },
+    } });
+    const rejected = expect(pending).rejects.toMatchObject({ reason: 'exit', cause });
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    if (origin === 'callback') stdout.write('reply');
+    else stdin.emit('error', cause);
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf('function'));
+    expect(settled).toBe(false);
+    finishCleanup!();
+    await rejected;
+  });
+
   // Test Value Gate: cancellation must preserve the production runner's unconfirmed-cleanup evidence and original cause.
   it('preserves NativeCliError cleanup evidence when a bound read is cancelled', async () => {
     const abort = new AbortController();

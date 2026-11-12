@@ -31,18 +31,22 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
   const entry = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
   const agentRoot = entry?.kind === 'cli' ? entry.configRoot : await resolvePlatformConfigRoot('pi', ctx);
   const user = await read(path.join(agentRoot, 'settings.json'), false);
-  const projectRoot = binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd;
-  const project = await read(path.join(projectRoot, '.pi', 'settings.json'), false);
+  const projectRoot = binding.scope.kind === 'project' ? binding.scope.projectRoot : undefined;
+  const project = projectRoot ? await read(path.join(projectRoot, '.pi', 'settings.json'), false) : {};
   // Package registrations are outputs of installation. Record actual consumer
   // manifests and filters below, not unrelated package registration text.
-  for (const [root, config] of [[agentRoot, user], [path.join(projectRoot, '.pi'), project]] as const) {
+  // User execution uses operation-owned neutral directories. Their paths and
+  // project files are not inputs to a User binding.
+  const settingsRoots: Array<readonly [string, ObjectValue]> = [[agentRoot, user]];
+  if (projectRoot) settingsRoots.push([path.join(projectRoot, '.pi'), project]);
+  for (const [root, config] of settingsRoots) {
     const { packages: _packages, ...consumerSettings } = config;
     evidence.push([path.join(root, 'settings.json'), consumerSettings]);
   }
   const trustFile = await read(path.join(agentRoot, 'trust.json'));
   let projectTrust: AgentConsumerObservation['trust'] = 'required';
-  let cursor = await fs.realpath(projectRoot).catch(() => path.resolve(projectRoot));
-  while (true) {
+  let cursor = projectRoot ? await fs.realpath(projectRoot).catch(() => path.resolve(projectRoot)) : undefined;
+  while (cursor) {
     if (typeof trustFile[cursor] === 'boolean') { projectTrust = trustFile[cursor] ? 'trusted' : 'blocked'; break; }
     const parent = path.dirname(cursor); if (parent === cursor) break; cursor = parent;
   }
@@ -74,7 +78,7 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
   if (binding.consumers.some((consumer) => consumer.version !== '1.5.0')) complete = false;
   const candidates: AgentConsumerObservation[] = [];
   const userSubagents = await read(path.join(agentRoot, 'subagents.json'));
-  const projectSubagents = await read(path.join(projectRoot, '.pi', 'subagents.json'));
+  const projectSubagents = projectRoot ? await read(path.join(projectRoot, '.pi', 'subagents.json')) : {};
   // The target package name is fixed by the same layout used by projection;
   // it does not depend on whether this operation has published the package yet.
   const packageNames = [layout.nativeIdentity.packageId, layout.nativeIdentity.packageId.split('/').pop()!]
@@ -113,7 +117,7 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
   const scopes: Array<{ root: string; scope: ScopeRef; settings: ObjectValue; trust: AgentConsumerObservation['trust'] }> = [
     { root: agentRoot, scope: { kind: 'user' }, settings: user, trust: 'trusted' },
   ];
-  if (binding.scope.kind === 'project') scopes.push({ root: path.join(projectRoot, '.pi'), scope: binding.scope, settings: project, trust: projectTrust });
+  if (binding.scope.kind === 'project') scopes.push({ root: path.join(binding.scope.projectRoot, '.pi'), scope: binding.scope, settings: project, trust: projectTrust });
   for (const entry of scopes) {
     const sources = entry.settings.packages ?? [];
     const explicit = entry.settings.extensions ?? [];

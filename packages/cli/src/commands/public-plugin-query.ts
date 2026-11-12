@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { Scope, CatalogManifestV7Entry } from '../types.js';
-import { commandResult, type CommandResult } from '../output/public-result.js';
+import { commandResult, type CommandResult, type Diagnostic } from '../output/public-result.js';
 import { publicDiagnostic, projectTarget } from './public-lifecycle-result.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
 import { observeIntent } from '../intent/intent-store.js';
@@ -15,6 +15,7 @@ import { readRecoveryStatus } from '../recovery/status.js';
 export interface PublicPluginQueryOptions {
   cwd: string; env?: NodeJS.ProcessEnv; cliVersion?: string; scope?: string; context?: string;
   requested?: boolean; target?: string[]; targets?: string[];
+  observeNative?: boolean;
 }
 function invalid(command: string, field: string, message: string): CommandResult {
   return commandResult(command, {}, { status: 'failed', diagnostics: [{ code: 'invalidOptionValue', severity: 'error', message, subject: { field } }] });
@@ -92,12 +93,16 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
   let filters: string[] | undefined;
   try { if (options.targets ?? options.target) filters = normalizeAgents((options.targets ?? options.target)!); for (const plugin of plugins) parsePluginId(plugin); }
   catch { return invalid(command, 'target', 'Invalid plugin selector or target.'); }
+  const observationDiagnostics: Diagnostic[] = options.observeNative ? [{ code: 'nativeObservationSideEffects', severity: 'warning',
+    message: 'Native observation can start Codex app-server. It can create an installation ID, logs, SQLite state, and cache, read existing authentication, and access configured cloud services or remote environments.',
+    subject: { target: 'codex' } }] : [];
   const context = createCommandExecutionContext({ ...input, env: options.env ?? input.env, interactive: false });
   try {
     const work = await resolveWorkContext({ cwd: options.cwd, context: options.context as Scope | undefined });
     const location = { cwd: work.projectRoot ?? options.cwd, env: context.env };
     const [status, preferences, declarations] = await Promise.all([
-      readRecoveryStatus({ ...location, context: work.context, cliVersion: options.cliVersion, nativeCliRunner: context.nativeCliRunner }),
+      readRecoveryStatus({ ...location, context: work.context, cliVersion: options.cliVersion, nativeCliRunner: context.nativeCliRunner,
+        observeNative: options.observeNative }),
       observePreferences({ ...location, scope: 'user' }),
       Promise.all(work.scopes.map(async (scope) => { const observation = await observeIntent({ ...location, scope }); return { scope, state: observation.state,
         roots: observation.state === 'valid' ? observation.value.roots.map((root) => root.pluginId) : observation.state === 'absent' ? [] : null }; })),
@@ -106,7 +111,7 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
     const selectedTarget = (target: string | null) => !filters || target !== null && filters.includes(target);
     const inventory = status.inventory?.filter((entry) => selectedPlugin(entry.pluginId)).map((entry) => ({ pluginId: entry.pluginId, sourceId: entry.source, sourceState: entry.sourceState,
       blockerCodes: entry.blockers.map((blocker) => blocker.code), targetResults: entry.targetResults.filter((target) => selectedTarget(target.agent)).map(projectTarget) })) ?? null;
-    const diagnostics = status.errors.map((error) => publicDiagnostic(error));
+    const diagnostics = [...observationDiagnostics, ...status.errors.map((error) => publicDiagnostic(error))];
     for (const entry of status.inventory ?? []) if (selectedPlugin(entry.pluginId)) {
       diagnostics.push(...entry.blockers.map((error) => publicDiagnostic(error, { pluginId: entry.pluginId })));
       for (const target of entry.targetResults.filter((target) => selectedTarget(target.agent))) {
@@ -142,5 +147,9 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
         unconfirmed: targets.filter((target) => target.content === 'unknown').length, ready: targets.filter((target) => target.content === 'satisfied').length },
       allSatisfied: status.allSatisfied, inSync: status.inSync },
     { status: configurationBlocked ? 'blocked' : incomplete || hasBlockers ? validPartialResults ? 'partial' : 'blocked' : 'success', diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
-  } catch (error) { return queryFailure(command, failureCode(error, 'statusUnavailable')); }
+  } catch (error) {
+    const result = queryFailure(command, failureCode(error, 'statusUnavailable'));
+    result.diagnostics.unshift(...observationDiagnostics);
+    return result;
+  }
 }

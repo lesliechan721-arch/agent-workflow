@@ -41,6 +41,8 @@ test('isolates configuration and does not pass arbitrary credentials or startup 
     assert.equal(env.GITHUB_TOKEN, undefined);
     assert.equal(env.HOME, path.join(root, 'home'));
     assert.equal(env.COPILOT_HOME, path.join(root, 'copilot'));
+    assert.equal(env.COPILOT_OFFLINE, 'true');
+    assert.equal(env.COPILOT_AUTO_UPDATE, 'false');
     assert.equal(env.HTTPS_PROXY, 'http://127.0.0.1:1');
     assert.equal(isolatedEnvironment(root, true).GITHUB_TOKEN, undefined);
   } finally {
@@ -243,6 +245,26 @@ test('RPC group waiting does not permit an escaped descendant', posixOnly, async
   });
 });
 
+// Test Value Gate: macOS can report a departing group member as unknown. A
+// second, closed snapshot must prove absence; unknown itself never permits JSON.
+test('RPC group waiting confirms one transient unknown state within its deadline', async () => {
+  const self = `${process.pid} ${process.pid} S\n`;
+  const events = [];
+  let calls = 0;
+  await waitForRpcGroupExit(performance.now() + 1000, event => events.push(event), (_command, _args, settings, done) => {
+    const child = new EventEmitter(); child.pid = process.pid + 1;
+    calls += 1;
+    assert(settings.timeout <= 1000);
+    setImmediate(() => {
+      done(null, calls === 1 ? self + `${process.pid + 2} ${process.pid} ?\n` : self);
+      child.emit('close', 0);
+    });
+    return child;
+  });
+  assert.equal(calls, 2);
+  assert.equal(events.at(-1).event, 'group-wait-complete');
+});
+
 // Test Value Gate: only a valid owned-group snapshot after inspector close can
 // permit JSON; failed or incomplete process queries cannot mean an empty group.
 test('RPC group queries require inspector close, valid snapshots and the original deadline', async () => {
@@ -323,6 +345,31 @@ test('RPC group queries require inspector close, valid snapshots and the origina
 
 // Test Value Gate: public AW owns detached native-command groups; observation
 // must accept clean completion while retaining marker and cleanup failures.
+// Test Value Gate: process.title must not hide a retained startup marker from
+// the actual macOS observer. Both a first-scan root and a later child rename.
+test('macOS observes startup markers after root and child title changes', {
+  skip: process.platform !== 'darwin', timeout: 30_000,
+}, async () => {
+  await publicProcessFixture(async (options) => {
+    const child = path.join(options.cwd, 'title-child.cjs');
+    const root = path.join(options.cwd, 'title-root.cjs');
+    await fs.writeFile(child, `setTimeout(()=>{process.title='aw-title-child';},600);setTimeout(()=>process.exit(0),2400);`);
+    await fs.writeFile(root, `
+      process.title='aw-title-root';
+      const {spawn}=require('node:child_process');
+      const child=spawn(process.execPath,[${JSON.stringify(child)}],{stdio:'ignore'});
+      child.on('exit',()=>console.log('title-child-completed'));
+      setTimeout(()=>process.exit(2),6000).unref();
+    `);
+    const result = await executePublicAw({ executable: process.execPath, prefix: [root] }, [], options);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.trim(), 'title-child-completed');
+    assert.equal(result.containmentMode, 'observed');
+    assert.equal(result.gradingEvidenceAccepted, false);
+    assert.equal(result.descendantCleanupGuaranteed, false);
+  });
+});
+
 test('public AW accepts independently grouped children only after their exit', posixOnly, async () => {
   await publicProcessFixture(async (options) => {
     const result = await executePublicAw(nodeLauncher, ['-e', `

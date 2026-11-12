@@ -28,6 +28,7 @@ export function isolatedEnvironment(root, network = false) {
     CLAUDE_CONFIG_DIR: path.join(root, 'claude'), PI_CODING_AGENT_DIR: path.join(root, 'pi'),
     GEMINI_CLI_HOME: path.join(root, 'gemini'), GROK_HOME: path.join(root, 'grok'),
     COPILOT_HOME: path.join(root, 'copilot'),
+    COPILOT_OFFLINE: 'true', COPILOT_AUTO_UPDATE: 'false',
     XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME: path.join(root, 'data'),
     XDG_CACHE_HOME: path.join(root, 'cache'), XDG_STATE_HOME: path.join(root, 'state'),
     APPDATA: path.join(root, 'appdata'), LOCALAPPDATA: path.join(root, 'localappdata'),
@@ -100,8 +101,8 @@ export async function acquireClient(platform, root) {
   const npm = await resolveNpm();
   await prepareEnvironment(root);
   const prefix = path.join(root, 'tool');
-  // npm changes process.title, which prevents marker inspection on macOS. This
-  // download-only child has scripts disabled; client execution still uses execute.
+  // Downloads use bounded direct-child handling with installation scripts disabled.
+  // Client commands use execute and its process-tree contract.
   try {
     await promisify(execFile)(npm.executable, [...npm.prefix, 'install', '--prefix', prefix, '--no-audit', '--no-fund',
     '--ignore-scripts', '--package-lock=true', `${client.package}@${client.version}`], {

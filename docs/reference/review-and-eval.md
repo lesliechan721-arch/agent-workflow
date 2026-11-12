@@ -387,12 +387,14 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
       - 严禁调用 `setsid`、`setpgid`、detached、daemonize 或 double-fork；
       - 严禁遗留后台任务，必须在输出最终 JSON 和退出前等待全部后代退出；
   - **Marker 检查、三值语义与僵尸豁免**：
-    - 采样器扫描系统进程表与环境变量，严格区分以下三种 `markerMatches` 状态：
+    - 采样器扫描系统进程表与启动标记证据，严格区分以下三种 `markerMatches` 状态：
       - `markerMatches: true`：标记匹配且可读；
-      - `markerMatches: false`：进程环境可读，但标记缺失或不匹配（诊断原因包含 `root-marker-missing`、`known-process-marker-missing` 或 `initial-group-marker-missing`）；
-      - `markerMatches: null`：无法取得可用匹配证据（包含：存活相关进程环境经单次复查后仍不可读，诊断原因为 `process-marker-unreadable`；或整次 marker 查询失败/复查超时命令失败，诊断原因为 `marker-lookup-failed`）；
+      - `markerMatches: false`：标记查询可用，但没有匹配的启动标记（诊断原因包含 `root-marker-missing`、`known-process-marker-missing` 或 `initial-group-marker-missing`）；
+      - `markerMatches: null`：无法取得可用匹配证据（包含：存活相关进程经复查与补证后仍无可用标记证据，诊断原因为 `process-marker-unreadable`；或整次 marker 查询失败/复查超时命令失败，诊断原因为 `marker-lookup-failed`）；
     - **单次复查与僵尸豁免**：遇到 marker 暂时不可读时，在同一次命令预算（`POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS`）内**允许执行一次复查**；已退出进程及僵尸进程（zombie，状态以 `Z` 开头）免于复查；
-    - 若复查后仍存活且无 marker（`false`）或无法取得可用证据（`null`），立即判定失败；
+    - **macOS 标题改写补证**：`process.title` 的 NUL 填充可能使 `ps` 提前停止，漏掉仍保留的启动标记。对相关存活且缺失或不可读的 PID，使用系统 JXA 调用 `KERN_PROCARGS2`，只在内核实际返回的启动字符串区中匹配完整 NUL 边界的精确随机标记，再立即核对新的 PID/启动时间。该区包含 argv、启动环境与 Apple 附加字符串，不能完整证明 token 来自环境区，也不检测运行时环境变量修改；此采样路径不是强隔离。只补读 `ps` 的负例或不可读行，原有正匹配歧义保持。
+    - 补证批量读取本次候选，不缓存跨次成功；权限或无法读取保持 `null`，辅助程序失败或无效结果保持查询失败。已退出、zombie 或身份替换必须由新身份表证明，不能只凭 sysctl 错误推断退出。原行与新身份表中的进程组违规均保留，已锁存失败不被补证清除。
+    - 原始读取、新身份查询、已有复查与阶段等待共用原2秒绝对预算，不重置截止、不改变外层清理时限。若补证后仍存活且无 marker（`false`）或无法取得可用证据（`null`），立即判定失败；
   - **检查失效保护**：Engine 在运行期观察该合同，发现违规或检查失效时，Engine 立即 fail closed：**丢弃 grade 并停止 batch，绝不盲杀 foreign 进程**。
   - **Unmanaged 模式与收尾边界**：
     - POSIX managed 模式仅代表引擎具备进程检查能力并尝试追踪协作式后代，**绝不是 OS 内核级别的强制 containment**；
