@@ -10,6 +10,7 @@ import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary } from
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
+import { observeNativeWorkingDirectory } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
@@ -271,12 +272,52 @@ test('loads a managed trace before a real native command on supported Hosted sys
     }, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr })));
     assert.equal(result.stdout.trim(), 'native failure preserved');
     const rows = (await fs.readFile(traceFile, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(rows.map((row) => row.phase), ['start', 'finish']);
-    assert.equal(rows[0].publicMarkerProvided, true);
-    assert.equal(rows[1].exitCode, 7);
-    assert.equal(rows[1].stderr, '');
+    assert.deepEqual(rows.filter((row) => row.phase === 'installation').map((row) => row.state), ['loading-runner', 'installed']);
+    const operations = rows.filter((row) => row.phase !== 'installation');
+    assert.deepEqual(operations.map((row) => row.phase), ['start', 'finish']);
+    assert.equal(operations[0].publicMarkerProvided, true);
+    assert.equal(operations[1].exitCode, 7);
+    assert.equal(operations[1].stderr, '');
     assert(!JSON.stringify(rows).includes('managed-trace-public-marker'));
     assert(rows.every((row) => !('childPid' in row)));
+  });
+});
+
+// Test Value Gate: report the cwd seen by an actual child of the default Native
+// backend, rather than inferring it from the requested cwd or a fake runner.
+test('observes the native child working directory in an isolated environment', { timeout: 15_000 }, async () => {
+  await publicProcessFixture(async (options) => {
+    const observation = await observeNativeWorkingDirectory({ project: options.cwd, env: options.env });
+    assert.equal(observation.requestedCwd, options.cwd);
+    const expected = await fs.stat(options.cwd, { bigint: true });
+    for (const actual of [observation.cwd, observation.realpath]) {
+      const identity = await fs.stat(actual, { bigint: true });
+      assert(identity.isDirectory());
+      assert.equal(identity.dev, expected.dev); assert.equal(identity.ino, expected.ino);
+    }
+  });
+});
+
+// Test Value Gate: a rejected trace configuration must leave AW running and
+// produce only a fixed status; a disabled Hosted guard must create no file.
+test('reports a rejected preload configuration only behind Hosted guards', {
+  skip: !['linux', 'win32'].includes(process.platform), timeout: 15_000,
+}, async () => {
+  await publicProcessFixture(async (options) => {
+    const module = pathToFileURL(path.resolve('scripts/qualification/native-platform-managed-trace.mjs')).href;
+    for (const enabled of [true, false]) {
+      const file = path.join(options.cwd, `rejected-${enabled}.jsonl`);
+      const result = await new Promise((resolve, reject) => execFile(process.execPath,
+        ['--import', module, '-e', 'console.log("continued")'], { cwd: options.cwd,
+          env: { ...options.env, GITHUB_ACTIONS: enabled ? 'true' : 'false', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
+            AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'codex', AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: file,
+            AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: 'invalid-private-entry' }, timeout: 5000, maxBuffer: 8192,
+        }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+      assert.equal(result.trim(), 'continued');
+      if (enabled) assert.deepEqual(JSON.parse((await fs.readFile(file, 'utf8')).trim()),
+        { phase: 'installation', state: 'configuration-rejected' });
+      else await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+    }
   });
 });
 

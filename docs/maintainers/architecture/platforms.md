@@ -24,7 +24,7 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 | Pi | 核心 >=1.0.0 | CLI；无产品名的版本输出须由官方帮助身份补证，Windows npm 入口验证 `@earendil-works/pi-coding-agent`；Agents 消费者身份/版本另验 |
 | Gemini CLI | >=0.63.0 | CLI，preview/许可按组件判断 |
 | Copilot CLI | >=1.0.95 | 仅 CLI，保留 managed/repo overlay |
-| Grok Build | install/list JSON/enable/disable/uninstall 与 trust 接口合同 | CLI；没有已证明数字最低版本 |
+| Grok Build | install/list JSON/enable/disable/uninstall 与 trust 接口合同 | CLI；Windows npm 入口验证 `@xai-official/grok`，没有已证明数字最低版本 |
 | generic | 无客户端条件 | notApplicable，手动选择，不默认勾选 |
 
 数字门槛是必要接口条件，不是完整运行资格。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。

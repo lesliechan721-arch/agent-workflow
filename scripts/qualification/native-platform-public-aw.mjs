@@ -4,6 +4,21 @@ import path from 'node:path';
 import { constants } from 'node:fs';
 import { clients, sha256 } from './native-platform-runtime.mjs';
 
+// One fixed Node child, using AW's real default native backend and the same
+// isolated cwd/env as Pi. This observes path spelling without granting trust.
+export async function observeNativeWorkingDirectory(ctx) {
+  const { runNativeCli } = await import('../../packages/cli/dist/src/utils/native-cli.js');
+  const result = await runNativeCli({ command: process.execPath, args: ['-e',
+    'const cwd=process.cwd(); process.stdout.write(JSON.stringify({cwd,realpath:require("node:fs").realpathSync(cwd)}));'],
+    cwd: ctx.project, env: ctx.env, timeoutMs: 5000 });
+  assert.equal(result.exitCode, 0, 'The isolated native cwd probe must succeed.');
+  assert(result.stdout.length < 16 * 1024, 'The native cwd probe output must be bounded.');
+  const value = JSON.parse(result.stdout);
+  for (const key of ['cwd', 'realpath']) assert(typeof value[key] === 'string' && path.isAbsolute(value[key])
+    && value[key].length <= 4096, 'The native cwd probe must return absolute paths.');
+  return { requestedCwd: ctx.project, cwd: value.cwd, realpath: value.realpath };
+}
+
 // Expose the acquired client to public AW discovery. Only the temporary npm
 // prefix or this scope's private bin is writable; no user launcher is changed.
 export async function preparePublicClientPath(ctx) {
@@ -259,7 +274,10 @@ export async function qualifyPublicAw(ctx) {
       `[projects.${JSON.stringify(ctx.project)}]\ntrust_level = "trusted"\n`);
     else await fs.writeFile(path.join(ctx.env.PI_CODING_AGENT_DIR, 'trust.json'),
       JSON.stringify({ [ctx.project]: true, [ctx.neutral]: true }) + '\n');
-    return { level: 'fixture-config', scope: 'project', trusted: true };
+    const cwdObservation = ctx.platform === 'pi' && process.platform === 'win32'
+      && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
+      ? await observeNativeWorkingDirectory(ctx) : undefined;
+    return { level: 'fixture-config', scope: 'project', trusted: true, ...(cwdObservation ? { cwdObservation } : {}) };
   });
   const pluginId = `qualification/${ctx.pluginName}`;
   if (ctx.platform === 'grok') {

@@ -93,8 +93,30 @@ test('matches only exact real whitelist files in command or args[0] and directly
     const returned = wrapped(invocation);
     if (!matched) assert.equal(returned, pending);
     assert.equal(await returned, result); assert.equal(received, invocation);
-    assert.equal(records.length - count, matched ? 2 : 0);
+    assert.equal(records.length - count, matched ? 2 : 1);
+    if (!matched) {
+      assert.equal(records.at(-1).phase, 'unmatched');
+      assert(Object.entries(records.at(-1)).every(([key, value]) => key === 'phase' || typeof value === 'boolean'));
+    }
   }
+});
+
+// Test Value Gate: missed selection must be distinguishable from an unused
+// runner, without recording nonselected invocation data or changing promises.
+test('bounds unmatched diagnostics to eight fixed metadata records', async (t) => {
+  const { entry, other } = await fixture(t);
+  const records = [];
+  const pending = Promise.resolve({ exitCode: 0, stdout: '', stderr: '' });
+  const wrapped = createManagedTraceRunner(() => pending,
+    { entries: [entry], client: 'codex', env: {}, emit: (record) => records.push(record) });
+  for (let index = 0; index < 20; index += 1) {
+    assert.equal(wrapped({ command: other, args: ['private-argument'], env: { TOKEN: 'secret' } }), pending);
+  }
+  assert.equal(records.length, 8);
+  assert.deepEqual(records[0], { phase: 'unmatched', commandAbsolute: true, commandResolved: true,
+    firstArgumentAbsolute: false, firstArgumentResolved: false, commandCaseInsensitiveMatch: false,
+    argumentCaseInsensitiveMatch: false, argumentsAreStrings: true });
+  assert(!JSON.stringify(records).includes(other)); assert(!JSON.stringify(records).includes('secret'));
 });
 
 // Test Value Gate: retained logical argv and failure details must not expose

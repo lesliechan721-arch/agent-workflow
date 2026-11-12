@@ -64,13 +64,17 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
   const preloadMarker = env[PUBLIC_MARKER];
   const preloadMarkers = markerValues(process.env, env);
   let operationId = 0;
+  let unmatchedCount = 0;
   return function managedTraceRunner(invocation) {
     let details;
     let registryList;
     let markers;
     try {
-      const direct = targets.has(canonicalFile(invocation.command));
-      const prefixed = !direct && Array.isArray(invocation.args) && targets.has(canonicalFile(invocation.args[0]));
+      const commandFile = canonicalFile(invocation.command);
+      const firstArgument = Array.isArray(invocation.args) ? invocation.args[0] : undefined;
+      const argumentFile = canonicalFile(firstArgument);
+      const direct = targets.has(commandFile);
+      const prefixed = !direct && targets.has(argumentFile);
       if ((direct || prefixed) && Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string')) {
         markers = [...new Set([...preloadMarkers, ...markerValues(process.env, env, invocation.env)])];
         const args = prefixed ? invocation.args.slice(1) : invocation.args;
@@ -80,6 +84,16 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
           command: invocation.command, args: invocation.args.slice(0, 16),
           publicMarkerProvided: typeof preloadMarker === 'string' && preloadMarker.length > 0
             && invocation.env?.[PUBLIC_MARKER] === preloadMarker };
+      } else if (unmatchedCount < 8) {
+        unmatchedCount += 1;
+        // Fixed facts only: unmatched calls must not expose paths, argv or env.
+        const absolute = (value) => typeof value === 'string' && path.isAbsolute(value);
+        const insensitiveMatch = (file) => process.platform === 'win32' && typeof file === 'string'
+          && [...targets].some((target) => target.toLowerCase() === file.toLowerCase());
+        emit({ phase: 'unmatched', commandAbsolute: absolute(invocation.command), commandResolved: Boolean(commandFile),
+          firstArgumentAbsolute: absolute(firstArgument), firstArgumentResolved: Boolean(argumentFile),
+          commandCaseInsensitiveMatch: insensitiveMatch(commandFile), argumentCaseInsensitiveMatch: insensitiveMatch(argumentFile),
+          argumentsAreStrings: Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string') });
       }
     } catch { /* Invalid diagnostic input leaves the real runner unchanged. */ }
     if (!details) return base(invocation);
@@ -107,11 +121,17 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
   };
 }
 
+function traceRequested(env, platform) {
+  return env.GITHUB_ACTIONS === 'true' && env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
+    && ['linux', 'win32'].includes(platform)
+    && ['codex', 'pi'].includes(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT)
+    && typeof env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE === 'string'
+    && path.isAbsolute(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE);
+}
+
 export function managedTraceConfiguration(env = process.env, platform = process.platform) {
   try {
-    if (env.GITHUB_ACTIONS !== 'true' || env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE !== '1'
-      || !['linux', 'win32'].includes(platform)
-      || !['codex', 'pi'].includes(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT)) return undefined;
+    if (!traceRequested(env, platform)) return undefined;
     const entries = JSON.parse(env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES);
     const file = env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE;
     if (!Array.isArray(entries) || !entries.length || !entries.every((entry) => canonicalFile(entry))
@@ -121,17 +141,22 @@ export function managedTraceConfiguration(env = process.env, platform = process.
 }
 
 async function installFromEnvironment() {
+  if (!traceRequested(process.env, process.platform)) return false;
+  const writer = createManagedTraceWriter(process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE);
   const configuration = managedTraceConfiguration();
-  if (!configuration) return false;
-  const writer = createManagedTraceWriter(configuration.file);
+  if (!configuration) {
+    writer.emit({ phase: 'installation', state: 'configuration-rejected' }); writer.close(); return false;
+  }
+  writer.emit({ phase: 'installation', state: 'loading-runner' });
   try {
     const native = await import('../../packages/cli/dist/src/utils/native-cli.js');
     const base = native.getDefaultNativeCliRunner();
     const wrapper = createManagedTraceRunner(base, { ...configuration, env: process.env, emit: writer.emit });
     native.setNativeCliRunnerOverrideForTests(native.retainNativeCliRunnerBackend(wrapper, base));
+    writer.emit({ phase: 'installation', state: 'installed' });
     process.once('exit', writer.close);
     return true;
-  } catch { writer.close(); return false; }
+  } catch { writer.emit({ phase: 'installation', state: 'runner-install-failed' }); writer.close(); return false; }
 }
 
 // --import applies only to outer AW. The real default backend and its deadlines

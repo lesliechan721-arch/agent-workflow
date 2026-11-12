@@ -215,6 +215,40 @@ describe('read-only target discovery and production selection', () => {
     expect(found.installations[0]?.reasonCodes).toContain('clientIdentityUnconfirmed');
   });
 
+  // Test Value Gate: Windows Grok must resolve its official npm shim while a
+  // same-name shim from another package must not be executed.
+  it('identifies Grok through its validated Windows npm launcher', async () => {
+    const ctx = await fixture();
+    const packageRoot = path.join(ctx.env!.PATH!, 'node_modules', '@xai-official', 'grok');
+    const entry = path.join(packageRoot, 'dist', 'cli.js');
+    await fs.outputFile(entry, 'controlled official entry');
+    await fs.writeJson(path.join(packageRoot, 'package.json'), {
+      name: '@xai-official/grok', bin: { grok: 'dist/cli.js' },
+    });
+    await fs.writeFile(path.join(ctx.env!.PATH!, 'grok.cmd'),
+      renderNpmCmdShim('node_modules\\@xai-official\\grok\\dist\\cli.js'));
+    const env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', GROK_HOME: path.join(ctx.cwd, 'grok-home') };
+    let probes = 0;
+    const found = await discoverPlatform('grok', { ...ctx, env, platform: 'win32', runner: async ({ command, args }) => {
+      probes += 1;
+      expect(command).toBe(process.execPath); expect(args[0]).toBe(entry);
+      return { exitCode: 0, stderr: '', stdout: args.at(-1) === '--version' ? 'grok 1.0.77\n'
+        : args.includes('list') ? 'Usage: grok plugin list --json'
+        : 'Usage: grok plugin install uninstall enable disable' };
+    } });
+    expect(found.availability).toBe('available');
+    expect(found.installations[0]?.version).toBe('1.0.77'); expect(probes).toBeGreaterThan(0);
+    await fs.writeJson(path.join(packageRoot, 'package.json'), { name: 'unrelated-package', bin: { grok: 'dist/cli.js' } });
+    let foreignCalls = 0;
+    const foreign = await discoverPlatform('grok', { ...ctx, env, platform: 'win32', runner: async () => {
+      foreignCalls += 1;
+      throw new Error('An unverified package must not be executed');
+    } });
+    expect(foreign.availability).toBe('unknown');
+    expect(foreign.installations[0]?.reasonCodes).toContain('clientProbeFailed');
+    expect(foreignCalls).toBe(0);
+  });
+
   // Test Value Gate: Grok uses its verified CLI interface and configured home, without an invented numeric minimum.
   it('accepts a confirmed Grok interface when its optional version is unavailable', async () => {
     const ctx = await fixture(); await executable(ctx, 'grok');

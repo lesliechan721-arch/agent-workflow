@@ -70,7 +70,7 @@ const cliProfiles = {
     packageName: '@earendil-works/pi-coding-agent' },
   gemini: { names: ['gemini'], minimum: '0.63.0', identity: /Gemini(?: CLI)?/iu, packageName: '@google/gemini-cli' },
   copilot: { names: ['copilot'], minimum: '1.0.95', identity: /(?:GitHub Copilot|Copilot CLI)/iu, packageName: '@github/copilot' },
-  grok: { names: ['grok'], identity: /\bgrok\b/iu },
+  grok: { names: ['grok'], identity: /\bgrok\b/iu, packageName: '@xai-official/grok' },
 } as const;
 const MAX_PROBE_OUTPUT_BYTES = 1024 * 1024;
 
