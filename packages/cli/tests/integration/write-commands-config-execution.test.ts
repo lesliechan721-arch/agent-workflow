@@ -1208,6 +1208,7 @@ describe('five namespaced write commands', () => {
     expect(nativeWriteCalls).toEqual([]);
   });
 
+  // Windows needs a completion window for seven sequential public commands.
   it.for(['user', 'project'] as const)('refreshes an installed %s Codex role after removing its Intent root', async (scope, test) => {
     const timing = createCommandTestTiming(test);
     const machine = getCurrentSourceTestIsolation();
@@ -1367,7 +1368,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(otherIntentPath)).resolves.toEqual(otherIntentBefore);
     await expect(fs.readFile(otherRolePath)).resolves.toEqual(otherRoleBefore);
     expect([...runtime.installed].some((id) => id.startsWith('demo@'))).toBe(true);
-  }, 30_000);
+  }, process.platform === 'win32' ? 60_000 : 30_000);
 
   it('sets and unsets whole platform arrays, rejects v5 bytes, and recreates v6 after reset', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1564,6 +1565,7 @@ describe('five namespaced write commands', () => {
     }
 
     // Test Value Gate: config writes refresh existing output; missing output remains absent until explicit sync.
+    // Keep the eight-command state chain intact with a Windows completion window.
     it('replays presets, unset and reset while requiring sync for missing output', async (test) => {
       const { isolation, nativeCliRunner, runPublic, readStore, configPath, store } = await createFixture(test);
       expect(await runPublic([
@@ -1648,7 +1650,7 @@ describe('five namespaced write commands', () => {
       });
       expect((await readStore()).exists).toBe(false);
       expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
-    }, 30_000);
+    }, process.platform === 'win32' ? 60_000 : 30_000);
 
     // Test Value Gate: CLI save notices and atomic failure receipts must agree with the stored values.
     it('saves without apply and preserves the previous store on atomic failure', async (test) => {

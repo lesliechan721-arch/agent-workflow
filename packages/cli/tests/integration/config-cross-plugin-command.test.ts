@@ -10,6 +10,7 @@ import { resolvePluginConfigStorePath, writePluginConfigStore } from '../../src/
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { createCommandTestTiming } from '../helpers/command-timing.js';
 import { runSafeCli } from '../helpers/cli-runtime.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
@@ -361,56 +362,63 @@ describe('cross-plugin public config apply', () => {
 
   // Test Value Gate: real intent discovery, source binding, script authorization and dependency plans
   // must preserve committed config after one platform fails and allow a later consumer sync to recover.
-  it('discovers visible consumers, keeps independent targets running, and recovers through consumer sync', async () => {
+  // Windows gets a finite completion window for this sequential multi-command flow.
+  it('discovers visible consumers, keeps independent targets running, and recovers through consumer sync', async (test) => {
+    const timing = createCommandTestTiming(test);
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const env = isolation.env;
     const sourceRoot = path.join(cwd, 'cross-config-source');
     const trace = path.join(cwd, 'pre-apply.jsonl');
-    for (const name of ['provider', 'consumer']) {
-      const pluginRoot = path.join(sourceRoot, 'plugins', name);
-      await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
-        "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
-        `const name=${JSON.stringify(name)};`,
-        "const files={'SKILL.md':`---\\nname: ${name}\\ndescription: Config reference integration fixture.\\n---\\n# Reference fixture\\n`,'README.md':'# Reference fixture\\n','agents/openai.yaml':'policy:\\n  allow_implicit_invocation: true\\n'};",
-        `console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name,runtimeConfig:{keys:${JSON.stringify(name === 'provider' ? ['registry'] : ['selected'])}},content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));`,
-      ].join('\n'));
-      if (name === 'provider') await fs.outputFile(path.join(pluginRoot, 'pre-apply.mjs'), [
-        "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(0,'utf8'));",
-        `fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({plugin:c.plugin.name,platform:c.target.platform})+'\\n');`,
-      ].join('\n'));
-    }
-    await createDependencyCatalogSnapshotFixture(sourceRoot, [
-      { name: 'provider', requiredCapabilities: ['aw.installed-runtime-config.v2'], configureManifest(manifest) {
-        manifest.platforms = ['codex', 'claude'];
-        manifest.config = { schemaVersion: 5, fields: { registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
-          type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
-        } } } };
-        manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } }, preApply: { path: './pre-apply.mjs' } };
-        manifest.artifacts = { configKeys: ['registry'], scopes: ['user', 'project'] };
-        } },
-      { name: 'consumer', dependencies: ['provider'], requiredCapabilities: ['aw.installed-runtime-config.v2'], configureManifest(manifest) {
-        manifest.platforms = ['codex'];
-        manifest.config = { schemaVersion: 5, fields: { selected: { type: 'string', default: 'native', valueRef: {
-          plugin: 'provider', field: 'registry', key: 'key', include: ['native'],
-        } } } };
-        manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
-        manifest.artifacts = { configKeys: ['selected'], scopes: ['user', 'project'] };
-        } },
-    ]);
-    const snapshot = await readCatalogSourcesConfigSnapshot(env);
-    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
-    const native = await createClaudeNativeTestRuntime(isolation);
     let failProvider = false;
-    const codex = await createCodexNativeTestRuntime(isolation, { rejectAdd: (id) => failProvider && id.startsWith('provider@') });
+    const { native, codex } = await timing.measure('fixture', 'catalog-and-clients', async () => {
+      for (const name of ['provider', 'consumer']) {
+        const pluginRoot = path.join(sourceRoot, 'plugins', name);
+        await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+          "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
+          `const name=${JSON.stringify(name)};`,
+          "const files={'SKILL.md':`---\\nname: ${name}\\ndescription: Config reference integration fixture.\\n---\\n# Reference fixture\\n`,'README.md':'# Reference fixture\\n','agents/openai.yaml':'policy:\\n  allow_implicit_invocation: true\\n'};",
+          `console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name,runtimeConfig:{keys:${JSON.stringify(name === 'provider' ? ['registry'] : ['selected'])}},content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));`,
+        ].join('\n'));
+        if (name === 'provider') await fs.outputFile(path.join(pluginRoot, 'pre-apply.mjs'), [
+          "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(0,'utf8'));",
+          `fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({plugin:c.plugin.name,platform:c.target.platform})+'\\n');`,
+        ].join('\n'));
+      }
+      await createDependencyCatalogSnapshotFixture(sourceRoot, [
+        { name: 'provider', requiredCapabilities: ['aw.installed-runtime-config.v2'], configureManifest(manifest) {
+          manifest.platforms = ['codex', 'claude'];
+          manifest.config = { schemaVersion: 5, fields: { registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
+            type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
+          } } } };
+          manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } }, preApply: { path: './pre-apply.mjs' } };
+          manifest.artifacts = { configKeys: ['registry'], scopes: ['user', 'project'] };
+          } },
+        { name: 'consumer', dependencies: ['provider'], requiredCapabilities: ['aw.installed-runtime-config.v2'], configureManifest(manifest) {
+          manifest.platforms = ['codex'];
+          manifest.config = { schemaVersion: 5, fields: { selected: { type: 'string', default: 'native', valueRef: {
+            plugin: 'provider', field: 'registry', key: 'key', include: ['native'],
+          } } } };
+          manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+          manifest.artifacts = { configKeys: ['selected'], scopes: ['user', 'project'] };
+          } },
+      ]);
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
+      await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+      const native = await createClaudeNativeTestRuntime(isolation);
+      const codex = await createCodexNativeTestRuntime(isolation, { rejectAdd: (id) => failProvider && id.startsWith('provider@') });
+      return { native, codex };
+    });
     const runner = vi.fn(async (invocation: NativeCliInvocation) => isClaudeInvocation(invocation)
-    ? native.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation));
-    const run = async (args: string[]) => {
-    const output = createCapturedCliIo();
-    const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner });
-    return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
-  };
+      ? native.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation));
+    const run = (args: string[]) => timing.measure('command',
+      args.slice(0, args[0] === 'plugin' && args[1] === 'config' ? 3 : 2).join(' '), async (sequence) => {
+        const output = createCapturedCliIo();
+        const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false,
+          nativeCliRunner: runner, onEvent: (event) => timing.commandEvent(sequence, event) });
+        return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
+      });
     expect(await run(['target', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
     const initial = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
     expect(initial, JSON.stringify(initial)).toMatchObject({
@@ -482,7 +490,7 @@ describe('cross-plugin public config apply', () => {
     });
     expect((await fs.readJson(consumerBinding)).effectiveValues).toEqual({ selected: 'remote' });
     expect((await fs.readJson(providerBinding)).effectiveValues.registry).toEqual([{ key: 'remote' }]);
-  }, 30_000);
+  }, process.platform === 'win32' ? 60_000 : 30_000);
   // Test Value Gate: missing CLI confirmation preserves config and shared output; TUI retry uses independently saved values.
   it('requires CLI confirmation before saving shared native changes and retains TUI project apply', async () => {
     const { cwd, env, runner, run, store, binding } = await createNativeReferenceFixture();
