@@ -11,6 +11,57 @@ import type { DeploymentObservation } from '../../src/platforms/contracts.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('native intentional empty currentness', () => {
+  // Test Value Gate: Grok's installation/load inventory must not make its own
+  // package stale; actual config, capabilities and other prerequisites still do.
+  it('separates Grok observation outputs from real package inputs without changing the observation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const rootDir = path.join(isolation.layout.fixtureCwd, 'grok-input');
+    const manifestPath = path.join(rootDir, '.agents-plugin/plugin.json');
+    const plugin: PluginMeta = { rootDir, manifestPath, pluginId: 'local/input', sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`,
+      manifest: { schemaVersion: 4, name: 'input', version: '1.0.0', description: 'Input', platforms: ['grok'],
+        marketplace: { category: 'development', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+        artifacts: { configKeys: ['enabled'], scopes: ['user'] },
+        config: { schemaVersion: 5, fields: { enabled: { type: 'boolean', default: false } }, platforms: {} },
+        scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } } } };
+    await fs.outputJson(manifestPath, plugin.manifest);
+    await fs.outputFile(path.join(rootDir, 'render.mjs'), 'throw new Error("must not execute");\n');
+    const adapter = getAgentPluginAdapter('grok');
+    const ctx = { cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const resolution = await adapter.resolve(ctx, { plugin: { sourceId: 'local', sourceIdentity: plugin.sourceIdentity!,
+      pluginId: plugin.pluginId!, version: '1.0.0' }, scope: { kind: 'user' }, operation: 'ensure', recoveryCandidates: [],
+      discovery: { platform: 'grok', availability: 'available', diagnostics: [], installations: [{ id: 'grok', product: 'cli',
+        availability: 'available', version: '1.0.77', reasonCodes: [], entry: { kind: 'cli', executable: path.join(ctx.cwd, 'grok'),
+          configRoot: path.join(isolation.env.HOME!, '.grok') } }] } });
+    const binding = resolution.bindings[0]!;
+    const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent', ownership: 'absent',
+      consumers: [], components: [], nativeIdentity: null, diagnostics: [], prerequisites: {
+        agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] },
+        nativeSources: { observation: 'complete', sources: [], overlaps: [], configurationEvidence: 'before-install' },
+      } };
+    const units = await Promise.all(resolution.renderUnits.map(async (renderUnit) => ({ renderUnit,
+      prerequisites: observation.prerequisites,
+      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('grok') }),
+      config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'input', sourceId: 'local',
+        sourceIdentity: plugin.sourceIdentity, platform: 'grok', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
+    })));
+    const digest = async () => platformPackageInputDigest(await createPlatformInputEvidence({ plugin, binding, units }));
+    const before = await digest();
+    observation.prerequisites.nativeSources = { observation: 'complete', overlaps: [], configurationEvidence: 'new-native-copy-and-cwd',
+      sources: [{ name: 'input', version: '1.0.1', path: path.join(ctx.cwd, 'native'), scope: 'user', origin: 'native', enabled: true,
+        effectiveComponents: ['skills:input'] }] };
+    const fullObservation = structuredClone(observation);
+    expect(await digest()).toBe(before);
+    expect(observation).toEqual(fullObservation);
+    for (const unit of units) unit.config.values.enabled = true;
+    expect(await digest()).not.toBe(before);
+    for (const unit of units) unit.config.values.enabled = false;
+    units[0]!.capabilities.profileId += ':changed';
+    expect(await digest()).not.toBe(before);
+    units[0]!.capabilities.profileId = getQualifiedPlatformProfile('grok').id;
+    observation.prerequisites.agentConsumers.configurationEvidence = 'real-prerequisite-change';
+    expect(await digest()).not.toBe(before);
+  });
+
   // Test Value Gate: empty state is reusable only for the complete current source/config/capability/scope inputs, including multiple render units.
   it('matches only the exact binding and input bytes, without running a renderer', async () => {
     const isolation = getCurrentSourceTestIsolation();

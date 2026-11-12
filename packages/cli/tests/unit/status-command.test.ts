@@ -165,6 +165,61 @@ async function materializeCodexSkill(value: Awaited<ReturnType<typeof fixture>>)
 }
 
 describe('public status through platform adapters', () => {
+  // Test Value Gate: a current AW source is insufficient when Grok still has
+  // an old or unreadable installation; only matching native bytes are current.
+  it.each(['current', 'old', 'missing'] as const)('checks Grok native copy bytes with a %s installation', async (state) => {
+    const value = await fixture('grok', { available: true });
+    qualifySkill('grok');
+    const { binding, layout, renderUnits, component } = await placement(value, 'grok');
+    if (component.kind !== 'owned-directory') throw new Error('Expected native package.');
+    const entry = binding.consumers[0]!.entry;
+    if (entry?.kind !== 'cli') throw new Error('Expected CLI entry.');
+    const name = layout.nativeIdentity.packageId;
+    const nativeRoot = path.join(entry.configRoot, 'installed-plugins', 'native-demo');
+    const config = path.join(entry.configRoot, 'config.toml');
+    const skill = 'skills/example/SKILL.md';
+    await fs.outputJson(path.join(layout.packageRoot, '.grok-plugin/plugin.json'), { name, version: '1.0.0' });
+    await fs.outputFile(path.join(layout.packageRoot, skill), '---\nname: example\ndescription: Example.\n---\nLatest.\n');
+    await fs.copy(layout.packageRoot, nativeRoot);
+    await fs.outputFile(config, `[plugins]\nenabled=[${JSON.stringify(name)}]\n`);
+    const probe = value.runner.getMockImplementation()!;
+    value.runner.mockImplementation(async (invocation) => invocation.args[0] === 'inspect'
+      ? { exitCode: 0, stderr: '', stdout: JSON.stringify({ grokVersion: '1.0.77', cwd: invocation.cwd,
+        projectRoot: invocation.cwd, projectTrusted: true, configSources: { layers: [{ role: 'user', path: config }] },
+        plugins: [{ name, scope: 'user', path: nativeRoot, enabled: true }],
+        skills: [{ name: 'example', source: { type: 'plugin', plugin_name: name, path: path.join(nativeRoot, skill) } }],
+        agents: [], mcpServers: [], hooks: [] }) }
+      : invocation.args[0] === 'plugin' && invocation.args.includes('list') && invocation.args.includes('--json')
+        ? { exitCode: 0, stderr: '', stdout: JSON.stringify([{ name, status: 'installed', repo_key: 'native-demo',
+          version: '1.0.0', path: nativeRoot, source: layout.packageRoot }]) } : probe(invocation));
+    const contentDigest = (await readPlatformPackageContentDigest(layout.packageRoot))!;
+    const projection = { physicalIdentity: layout.physicalIdentity, preparation: 'complete' as const,
+      components: [{ id: 'skill:example', nativeName: 'example', relativeOutputs: [skill] }],
+      inputDigest: `sha256:${'0'.repeat(64)}`, contentDigest };
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
+      nativeProjection: projection });
+    const adapter = getAgentPluginAdapter('grok');
+    const observation = await adapter.inspect({ cwd: value.cwd, env: value.env, runner: value.runner }, binding);
+    const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
+    const plugin = demand.roots![0]!.plugin!;
+    const input = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
+      renderUnit, prerequisites: observation.prerequisites,
+      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('grok') }),
+      config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
+        sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'grok',
+        scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
+    }))) });
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
+      nativeProjection: { ...projection, inputDigest: platformPackageInputDigest(input) } });
+    if (state === 'old') await fs.outputFile(path.join(nativeRoot, skill), 'Old installed content.\n');
+    if (state === 'missing') await fs.remove(nativeRoot);
+    const result = target(await value.read());
+    expect(result.content).toBe(state === 'current' ? 'satisfied' : state === 'old' ? 'drifted' : 'unknown');
+    if (state !== 'current') expect(result.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: state === 'old' ? 'nativePackageContentDrift' : 'nativePackageContentUnconfirmed' }),
+    ]));
+  });
+
   // Test Value Gate: the public flag must affect only project trust and preserve package, activation, and ownership checks.
   it.each([
     { mode: 'ordinary', enabled: false, trust: 'trusted' as const, expected: 'unknown', exit: 3 },

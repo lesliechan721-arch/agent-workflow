@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
 import { getPlatformCapabilities, getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
-import { inspectDeployment } from '../../src/platforms/inspection.js';
+import { deploymentPackageComponent, inspectDeployment } from '../../src/platforms/inspection.js';
+import { SKILL_OWNER_MARKER, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { createRebuildIntegration, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
@@ -35,6 +37,17 @@ async function fixture(platform: 'pi' | 'grok', project = false) {
 async function consumer(root: string, version = '0.22.0') {
   await fs.outputJson(path.join(root, 'package.json'), { name: '@tintinweb/pi-subagents', version, pi: { extensions: ['./index.ts'] } });
   await fs.outputFile(path.join(root, 'index.ts'), 'export default function () {}');
+}
+
+async function grokPackage(item: Awaited<ReturnType<typeof fixture>>, body: string): Promise<string> {
+  const root = item.layout.packageRoot;
+  await fs.outputJson(path.join(root, '.grok-plugin/plugin.json'), { name: item.layout.nativeIdentity.packageId, version: '1.0.0', skills: './skills/' });
+  await fs.outputFile(path.join(root, 'skills/demo/SKILL.md'), `---\nname: demo\ndescription: Grok fixture\n---\n${body}\n`);
+  const digest = (await readPlatformPackageContentDigest(root))!;
+  await writeSkillOwnerMarker({ skillRoot: root, allowedRoot: path.dirname(root), identity: deploymentPackageComponent(item.binding, item.layout).identity,
+    nativeProjection: { physicalIdentity: item.layout.physicalIdentity, preparation: 'complete', inputDigest: `sha256:${'c'.repeat(64)}`, contentDigest: digest,
+      components: [{ id: 'skill', nativeName: 'demo', relativeOutputs: ['skills/demo/SKILL.md'] }] } });
+  return digest;
 }
 
 describe('public native consumer observation', () => {
@@ -215,6 +228,54 @@ describe('public native consumer observation', () => {
     expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'required', load: 'not-observed' });
   });
 
+  // Test Value Gate: a same-version configuration update can change the AW
+  // source while Grok's copied marker and discovery still claim current content.
+  it('compares actual Grok copy bytes and observes recovery without relying on a copied owner marker or version', async () => {
+    const item = await fixture('grok');
+    const name = item.layout.nativeIdentity.packageId;
+    const installed = path.join(item.host, 'installed-plugins/local-123');
+    const oldDigest = await grokPackage(item, 'old body');
+    await fs.copy(item.layout.packageRoot, installed);
+    const currentDigest = await grokPackage(item, 'new body from configuration');
+    await fs.copyFile(path.join(item.layout.packageRoot, SKILL_OWNER_MARKER), path.join(installed, SKILL_OWNER_MARKER));
+    const config = path.join(item.host, 'config.toml');
+    await fs.outputFile(config, `[plugins]\nenabled=["${name}"]\ndisabled=[]\n`);
+    item.ctx.runner = async ({ args }) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'plugin'
+      ? [{ status: 'installed', name, repo_key: 'local-123', version: '1.0.0', path: installed, source: item.layout.packageRoot }]
+      : { grokVersion: '1.0.77', projectTrusted: true, configSources: { layers: [{ role: 'user', path: config }] },
+        plugins: [{ name, scope: 'user', path: installed, enabled: true }],
+        skills: [{ name: 'demo', description: 'new body from configuration', source: { type: 'plugin', plugin_name: name, path: path.join(installed, 'skills/demo/SKILL.md') } }],
+        agents: [], mcpServers: [] }) });
+    const stale = await inspectDeployment(item.ctx, item.binding);
+    expect(stale).toMatchObject({ ownership: 'aw', registration: 'present', nativePackageContentDigest: oldDigest,
+      nativeIdentity: { packageId: name, registrationId: 'local-123', sourceLocation: item.layout.packageRoot },
+      components: [{ id: 'skill', presence: 'unknown', reasonCodes: ['nativePackageContentDrift'] }] });
+    expect(stale.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativePackageContentDrift' }));
+    await fs.copy(item.layout.packageRoot, installed);
+    const restored = await inspectDeployment(item.ctx, item.binding);
+    expect(restored.nativePackageContentDigest).toBe(currentDigest);
+    expect(restored.components).toEqual([{ id: 'skill', presence: 'present', reasonCodes: [] }]);
+    expect(restored.diagnostics).not.toContainEqual(expect.objectContaining({ code: 'nativePackageContentDrift' }));
+  });
+
+  it.each(['foreign-source', 'shared-repository', 'outside-store'] as const)('does not claim an exact Grok installation for %s', async (boundary) => {
+    const item = await fixture('grok');
+    const name = item.layout.nativeIdentity.packageId;
+    await grokPackage(item, 'managed body');
+    const installed = path.join(item.host, boundary === 'outside-store' ? 'outside/local-123' : 'installed-plugins/local-123');
+    await fs.copy(item.layout.packageRoot, installed);
+    const row = { status: 'installed', name, repo_key: 'local-123', version: '1.0.0', path: installed,
+      source: boundary === 'foreign-source' ? path.join(item.ctx.cwd, 'foreign-source') : item.layout.packageRoot };
+    item.ctx.runner = async ({ args }) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'plugin'
+      ? [row, ...(boundary === 'shared-repository' ? [{ ...row, name: 'other-plugin' }] : [])]
+      : { grokVersion: '1.0.77', projectTrusted: true, configSources: { layers: [] },
+        plugins: [{ name, scope: 'user', path: installed, enabled: true }], skills: [], agents: [], mcpServers: [] }) });
+    const observed = await inspectDeployment(item.ctx, item.binding);
+    expect(observed.nativePackageContentDigest).toBeUndefined();
+    if (boundary === 'outside-store') expect(observed.registration).toBe('unknown');
+    else expect(observed).toMatchObject({ registration: 'present', ownership: boundary === 'foreign-source' ? 'foreign' : 'shared' });
+  });
+
   // Test Value Gate: consumer settings changed after preparation must invalidate
   // the real rebuild execution before it can mutate any native package.
   it.each(['user', 'project'] as const)('rejects a prepared Pi %s operation when actual consumer settings change', async (scope) => {
@@ -237,6 +298,51 @@ describe('public native consumer observation', () => {
       await fs.outputJson(path.join(scope === 'user' ? item.host : path.join(item.ctx.cwd, '.pi'), 'subagents.json'), { packageAgents: false });
       const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
       expect(result).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('operationPlanStale') } });
+      expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);
+    } finally { await context.platformRebuildSession?.dispose(); }
+  });
+
+  // Test Value Gate: excluding Grok display facts from package inputs must keep
+  // the complete raw policy evidence in the locked rebuild stale check.
+  it('rejects a prepared Grok operation when only raw native policy evidence changes', async () => {
+    const item = await fixture('grok');
+    const bin = path.join(item.ctx.cwd, 'bin');
+    await fs.outputFile(path.join(bin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const env = { ...item.ctx.env, PATH: bin };
+    const root = path.join(item.ctx.cwd, 'empty-grok');
+    await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 4, name: 'example', version: '1.0.0', description: 'Empty Grok package.',
+      platforms: ['grok'], marketplace: { category: 'development', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } } });
+    const plugin = await readPluginManifest(root, { mode: 'bundle' });
+    Object.assign(plugin, { sourceId: 'team', pluginId: 'team/example', sourceIdentity: item.binding.plugin.sourceIdentity });
+    let policy = 'off';
+    const nativeWrites: string[][] = [];
+    const runner: NonNullable<RebuildExecutionContext['nativeCliRunner']> = async ({ args }) => {
+      let stdout: string;
+      if (args.includes('--version')) stdout = 'grok 1.0.77';
+      else if (args.includes('--help')) stdout = 'Grok Build plugin install uninstall update enable disable --json';
+      else if (args[0] === 'plugin' && args[1] === 'list') stdout = '[]';
+      else if (args[0] === 'inspect') stdout = JSON.stringify({ grokVersion: '1.0.77', configSources: { layers: [] },
+        plugins: [], skills: [], agents: [], mcpServers: [], permissions: { mcpManagedServersOnly: policy } });
+      else { nativeWrites.push([...args]); stdout = ''; }
+      return { exitCode: 0, stdout, stderr: '' };
+    };
+    const context: RebuildExecutionContext = { env, nativeCliRunner: runner,
+      reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
+    const integration = createRebuildIntegration({ context });
+    try {
+      const target = await integration.buildTarget({ plugin, platform: 'grok', scope: 'user', cwd: item.ctx.cwd, command: 'sync',
+        catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0' } });
+      expect(target.platformDeployment?.plans).toHaveLength(1);
+      const read = () => inspectDeployment({ ...item.ctx, env, runner }, item.binding);
+      const before = await read();
+      policy = 'on';
+      const after = await read();
+      expect(after).toEqual({ ...before, prerequisites: { ...before.prerequisites,
+        nativeSources: { ...before.prerequisites.nativeSources!, configurationEvidence: expect.any(String) } } });
+      expect(after.prerequisites.nativeSources?.configurationEvidence).not.toBe(before.prerequisites.nativeSources?.configurationEvidence);
+      const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
+      expect(result).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('operationPlanStale') } });
+      expect(nativeWrites).toEqual([]);
       expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);
     } finally { await context.platformRebuildSession?.dispose(); }
   });

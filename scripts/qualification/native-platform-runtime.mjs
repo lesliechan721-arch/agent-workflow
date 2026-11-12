@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createProcessNameDiagnostic } from './native-platform-process-names.mjs';
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -67,12 +68,24 @@ export async function execute(launcher, args, options) {
   const windowsJobHelperPath = process.platform === 'win32'
     ? await (await import('../../packages/agent-skill-eval/dist/windows-job.js')).prepareWindowsJobHelper()
     : undefined;
-  return runProviderProcess({ executable: launcher.executable, args: [...launcher.prefix, ...args],
-    cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs ?? 30_000,
-    maxBufferBytes: 2 * 1024 * 1024, ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
-  }, {}, { containment: 'verified-observed',
-    ...(windowsJobHelperPath ? { processTree: { windowsJobHelperPath } } : {}),
-  });
+  const names = options.captureProcessNames && process.platform === 'darwin'
+    && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
+    ? createProcessNameDiagnostic() : undefined;
+  try {
+    return await runProviderProcess({ executable: launcher.executable, args: [...launcher.prefix, ...args],
+      cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs ?? 30_000,
+      maxBufferBytes: 2 * 1024 * 1024, ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
+    }, names ? { onSpawn: names.onSpawn } : {}, { containment: 'verified-observed',
+      ...(windowsJobHelperPath ? { processTree: { windowsJobHelperPath } } : {}),
+      ...(names ? { processTree: { execFile: names.execFile } } : {}),
+    });
+  } catch (error) {
+    try {
+      const observed = names?.snapshot(error?.processTreeDiagnostics);
+      if (observed?.length) error.qualificationProcessNames = observed;
+    } catch { /* Private diagnostic data must not replace the original failure. */ }
+    throw error;
+  } finally { names?.stop(); }
 }
 
 export async function processManagementInfo() {

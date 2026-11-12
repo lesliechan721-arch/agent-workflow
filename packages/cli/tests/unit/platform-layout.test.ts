@@ -62,23 +62,40 @@ it('uses separate immutable source roots when one AW home serves different nativ
   expect(firstLayout.packageRoot).not.toBe(secondLayout.packageRoot);
   expect(firstLayout.marketplaceName).not.toBe(secondLayout.marketplaceName);
 });
-it('limits a qualified capability to the exact product, version, and operating system', async () => {
-  const { ctx, request } = await fixture('codex');
-  request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '0.167.0' }];
+// Test Value Gate: only the approved exact CLI/version/host cells gain ordinary
+// Skill delivery; neighbouring versions, product surfaces and features stay gated.
+it.each(['codex', 'pi'] as const)('limits the finite %s Skill profile to its recorded cells', async (platform) => {
+  const { ctx, request } = await fixture(platform);
+  const version = platform === 'codex' ? '0.167.0' : '1.5.0';
+  request.discovery.installations = [{ ...request.discovery.installations[0]!, version }];
   const resolved = await resolveDeployments(ctx, request);
   const binding = resolved.bindings[0]!;
   const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent', ownership: 'absent', consumers: [], components: [], nativeIdentity: null,
     prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
-  const input = { binding, renderUnit: resolved.renderUnits[0]!, observation,
-    profile: getQualifiedPlatformProfile('codex', { platform: 'darwin', arch: 'arm64' }) };
-  expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
-  expect(getPlatformCapabilities(input).kinds.hook.status).toBe('unverified');
-  expect(getPlatformCapabilities(input).features['skill.invocation.manual']!.status).toBe('unverified');
-  expect(getPlatformCapabilities({ ...input, profile: getQualifiedPlatformProfile('codex', { platform: 'linux', arch: 'arm64' }) }).kinds.skill.status).toBe('unverified');
-  binding.consumers[0]!.product = 'app';
-  expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
-  binding.consumers[0]!.product = 'cli'; binding.consumers[0]!.version = '0.166.0';
-  expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+  const input = { binding, renderUnit: resolved.renderUnits[0]!, observation };
+  const hosts: Array<{ platform: NodeJS.Platform; arch: NodeJS.Architecture }> = [
+    { platform: 'linux', arch: 'x64' }, { platform: 'linux', arch: 'arm64' },
+    { platform: 'darwin', arch: 'x64' }, { platform: 'darwin', arch: 'arm64' },
+    { platform: 'win32', arch: 'x64' }, { platform: 'win32', arch: 'arm64' },
+  ];
+  for (const host of hosts) {
+    const profile = getQualifiedPlatformProfile(platform, host);
+    const capabilities = getPlatformCapabilities({ ...input, profile });
+    expect(capabilities.kinds.skill.status).toBe('supported');
+    for (const kind of ['hook', 'mcp', 'instruction'] as const) expect(capabilities.kinds[kind].status).toBe('unverified');
+    expect(capabilities.kinds.agent.status).not.toBe('supported');
+    expect(capabilities.features['skill.invocation.manual']!.status).toBe('unverified');
+    expect(profile.qualificationEvidence?.[0]).toMatchObject({ platform: host.platform, arch: host.arch,
+      product: 'cli', version, kinds: ['skill'], features: [], scopes: ['user', 'project'] });
+    binding.consumers[0]!.product = 'app';
+    expect(getPlatformCapabilities({ ...input, profile }).kinds.skill.status).toBe('unverified');
+    binding.consumers[0]!.product = 'cli'; binding.consumers[0]!.version = platform === 'codex' ? '0.168.0' : '1.5.1';
+    expect(getPlatformCapabilities({ ...input, profile }).kinds.skill.status).toBe('unverified');
+    binding.consumers[0]!.version = version;
+  }
+  for (const host of [{ platform: 'freebsd', arch: 'x64' }, { platform: 'linux', arch: 's390x' }] as const) {
+    expect(getPlatformCapabilities({ ...input, profile: getQualifiedPlatformProfile(platform, host) }).kinds.skill.status).toBe('unverified');
+  }
 });
 
 it('blocks project writes that alias Codex user configuration but retains cleanup resolution', async () => {

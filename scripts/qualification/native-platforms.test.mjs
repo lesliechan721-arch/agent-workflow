@@ -9,6 +9,7 @@ import { parseArgs, runScope, versionFrom, redact } from './native-platforms.mjs
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
+import './native-platform-process-names.test.mjs';
 
 // Test Value Gate: qualification must not turn missing prerequisites into a
 // passing report, inherit user credentials, or leave an isolated client home.

@@ -1,8 +1,9 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { NativeCliError, runNativeCliChecked } from '../utils/native-cli.js';
 import { installationInvocation } from './discovery.js';
-import type { DeploymentBinding, DeploymentReceipt, InstallRoute, MutationContext, MutationOutcome, PlannedEffect, PreparedDeployment } from './contracts.js';
+import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
 import type { PlatformDriverState } from './lifecycle.js';
+import { inspectDeployment } from './inspection.js';
 
 export function nativeRoute(route: InstallRoute): boolean {
   return ['codex-marketplace', 'claude-marketplace', 'antigravity-cli', 'pi-package',
@@ -15,6 +16,18 @@ export function routeReload(route: InstallRoute): DeploymentReceipt['reload'] {
 }
 function blocked(code: string): never {
   throw Object.assign(new Error(code), { code, mutation: 'none' });
+}
+
+/** Grok uninstall can remove a whole repository, so the exact registration must be exclusive. */
+export function grokRegistrationOwned(binding: DeploymentBinding, evidence: PreparationEvidence,
+  before: DeploymentObservation, identity: NativeIdentity | null): boolean {
+  return binding.route === 'grok-cli' && binding.scope.kind === 'user' && before.registration === 'present'
+    && before.physicalKey === binding.physicalKey
+    && before.ownership === 'aw' && evidence.sharedReferences === 'none' && identity?.route === binding.route
+    && identity.sourceLocation === evidence.layout.packageRoot && !!identity.registrationId
+    && before.nativeIdentity?.packageId === identity.packageId
+    && before.nativeIdentity.registrationId === identity.registrationId
+    && before.nativeIdentity.sourceLocation === identity.sourceLocation;
 }
 
 /** Claude registrations are scoped; the other native registration routes are physical-package scoped. */
@@ -124,11 +137,14 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       // --trust is host authorization and is never inferred from AW --yes.
       if (effect.kind !== 'unregister' && (!before.consumers.length
         || binding.consumers.some((product) => !before.consumers.some((consumer) => consumer.productId === product.id && consumer.trust === 'trusted')))) blocked('nativeTrustRequired');
-      await run(['plugin', effect.kind === 'unregister' ? 'uninstall' : effect.kind === 'refresh' ? 'update' : 'install',
-        effect.kind === 'register' ? evidence.layout.packageRoot : identity.packageId,
-        // This flag is allowed only after exact host trust was observed above.
-        // AW --yes does not establish that trust.
-        ...(effect.kind === 'register' ? ['--trust'] : [])]);
+      if (effect.kind === 'unregister' || effect.kind === 'refresh') {
+        const current = await (ctx.inspect ? ctx.inspect(binding) : inspectDeployment(ctx, binding));
+        if (!grokRegistrationOwned(binding, evidence, current, identity)) blocked('nativeIdentityUnconfirmed');
+        await run(['plugin', 'uninstall', identity.packageId, '--confirm']);
+      }
+      // Local update can leave an old copy while claiming it is a live symlink.
+      // The reviewed refresh uses native uninstall/install and retains the AW source on failure.
+      if (effect.kind !== 'unregister') await run(['plugin', 'install', evidence.layout.packageRoot, '--trust']);
       break;
     default: blocked('nativeRouteUnsupported');
   }

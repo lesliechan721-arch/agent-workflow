@@ -39,6 +39,20 @@ function prepared(input: LifecyclePrepareInput): PreparedDeployment<PlatformDriv
   if (result.status !== 'ready') throw new Error(JSON.stringify(result.diagnostics));
   return result.prepared;
 }
+function grokRefreshFixture(): LifecyclePrepareInput {
+  const input = fixture('grok-cli');
+  input.binding.consumers[0]!.version = '1.0.77';
+  input.evidence.nativeIdentity!.registrationId = 'local-123';
+  input.observation = { ...input.observation, package: 'present', registration: 'present', ownership: 'aw',
+    nativeIdentity: { ...input.evidence.nativeIdentity! }, components: [{ id: 'skill', presence: 'present', reasonCodes: [] }] };
+  input.evidence.ownership[0]!.state = 'present';
+  return input;
+}
+function grokCurrentObservation(input: LifecyclePrepareInput): DeploymentObservation {
+  return { ...input.observation, package: 'present', registration: 'present', ownership: 'aw', nativePackageContentDigest: 'bundle',
+    components: [{ id: 'skill', presence: 'present', reasonCodes: [] }],
+    consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'enabled' })) };
+}
 function supplementOnlyFixture(): LifecyclePrepareInput {
   const input = fixture('codex-marketplace');
   const agentsRoot = path.join(root, 'agents');
@@ -89,7 +103,7 @@ describe('native platform lifecycle', () => {
   ] as const)('uses the fixed native lifecycle contract for %s', async (route, argv) => {
     const input = fixture(route);
     if (route.endsWith('-marketplace')) input.evidence.nativeIdentity!.registrationId = 'demo@marketplace';
-    const ctx = context(input.observation);
+    const ctx = context(route === 'grok-cli' ? grokCurrentObservation(input) : input.observation);
     await executePlatformLifecycle(ctx, prepared(input));
     expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual(argv);
   });
@@ -154,12 +168,91 @@ describe('native platform lifecycle', () => {
     if (result.status === 'blocked') expect(result.diagnostics[0]?.code).toBe('nativeScopeIsolationUnverified');
   });
 
-  it('blocks the verified broken Grok local update before replacing the current package', () => {
-    const input = fixture('grok-cli');
-    input.binding.consumers[0]!.version = '1.0.77';
-    input.observation.package = 'present'; input.observation.registration = 'present'; input.observation.ownership = 'aw';
-    input.evidence.ownership[0]!.state = 'present';
-    expect(preparePlatformLifecycle(input)).toMatchObject({ status: 'blocked', diagnostics: [expect.objectContaining({ code: 'nativeLocalUpdateUnverified' })] });
+  // Test Value Gate: Grok's update exits zero with an old copy. The reviewed
+  // replacement must use uninstall/install and confirm this attempt's bytes.
+  it('replaces an exclusive Grok registration with the frozen package through native uninstall and install', async () => {
+    const input = grokRefreshFixture();
+    const plan = prepared(input);
+    expect(plan.plan.effects).toMatchObject([{ kind: 'publish-package' }, { kind: 'refresh', destructive: true }, { kind: 'activate' }]);
+    const ctx = context(grokCurrentObservation(input));
+    const receipt = await executePlatformLifecycle(ctx, plan);
+    expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual([
+      ['plugin', 'uninstall', 'demo', '--confirm'], ['plugin', 'install', path.join(root, 'demo'), '--trust'], ['plugin', 'enable', 'demo'],
+    ]);
+    expect(receipt.effects.every((effect) => effect.status === 'applied')).toBe(true);
+    expect(receipt.unmet).toEqual([]);
+  });
+
+  it('retries a stale Grok copy when the AW source already has the current bytes', async () => {
+    const input = grokRefreshFixture();
+    input.evidence.contentMatches = true;
+    input.observation.components[0] = { id: 'skill', presence: 'unknown', reasonCodes: ['nativePackageContentDrift'] };
+    const plan = prepared(input);
+    expect(plan.plan.effects.map((effect) => effect.kind)).toEqual(['refresh', 'activate']);
+    const ctx = context(grokCurrentObservation(input));
+    const receipt = await executePlatformLifecycle(ctx, plan);
+    expect(ctx.services.publishPackage).not.toHaveBeenCalled();
+    expect(ctx.services.removeOwned).not.toHaveBeenCalled();
+    expect(receipt.effects.every((effect) => effect.status === 'applied')).toBe(true);
+  });
+
+  it.each(['foreign', 'shared', 'shared-reference', 'other-registration'] as const)('protects Grok %s content from native replacement', (boundary) => {
+    const input = grokRefreshFixture();
+    if (boundary === 'foreign' || boundary === 'shared') input.observation.ownership = boundary;
+    if (boundary === 'shared-reference') input.evidence.sharedReferences = 'present';
+    if (boundary === 'other-registration') input.observation.nativeIdentity!.registrationId = 'other-local-source';
+    expect(preparePlatformLifecycle(input).status).toBe('blocked');
+  });
+
+  it('rechecks the exact Grok registration before native uninstall', async () => {
+    const input = grokRefreshFixture();
+    const ctx = context({ ...grokCurrentObservation(input), ownership: 'foreign' });
+    const receipt = await executePlatformLifecycle(ctx, prepared(input));
+    expect(ctx.runner).not.toHaveBeenCalled();
+    expect(receipt.effects[0]).toMatchObject({ status: 'applied', mutation: 'confirmed' });
+    expect(receipt.effects[1]).toMatchObject({ status: 'blocked', mutation: 'none' });
+    expect(receipt.effects[1]!.diagnostics).not.toContainEqual(expect.objectContaining({ code: 'grokNativeInstallRecovery' }));
+    expect(receipt.effects[2]?.status).toBe('skipped');
+    expect(ctx.services.removeOwned).not.toHaveBeenCalled();
+  });
+
+  it('keeps the new Grok source and explicit host recovery when install fails after uninstall', async () => {
+    const input = grokRefreshFixture();
+    const absent: DeploymentObservation = { ...input.observation, registration: 'absent',
+      nativeIdentity: { ...input.evidence.nativeIdentity!, registrationId: undefined },
+      consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'disabled', trust: 'unknown' })) };
+    const ctx = context(absent);
+    vi.mocked(ctx.inspect!).mockResolvedValueOnce(input.observation);
+    vi.mocked(ctx.runner!).mockImplementation(async (call) => ({ exitCode: call.args[1] === 'install' ? 1 : 0, stdout: '', stderr: '' }));
+    const receipt = await executePlatformLifecycle(ctx, prepared(input));
+    expect(receipt.effects).toMatchObject([{ status: 'applied', mutation: 'confirmed' }, { status: 'unknown', mutation: 'possible' }, { status: 'skipped' }]);
+    expect(receipt.after.registration).toBe('absent');
+    expect(receipt.unmet).toContainEqual(expect.objectContaining({ componentId: 'skill', reasonCode: 'platformMutationUnknown' }));
+    expect(receipt.effects[1]!.diagnostics).toContainEqual(expect.objectContaining({ code: 'grokNativeInstallRecovery',
+      message: expect.stringContaining(JSON.stringify(['plugin', 'install', path.join(root, 'demo'), '--trust'])) }));
+    expect(ctx.services.removeOwned).not.toHaveBeenCalled();
+    input.evidence.contentMatches = true;
+    input.observation = absent;
+    const retry = context(absent);
+    const retried = await executePlatformLifecycle(retry, prepared(input));
+    expect(retry.runner).not.toHaveBeenCalled();
+    expect(retried.effects[0]).toMatchObject({ status: 'blocked', mutation: 'none' });
+    expect(retried.effects[0]!.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeTrustRequired' }));
+  });
+
+  it.each(['old-copy', 'unconfirmed'] as const)('does not activate or confirm a Grok %s after zero exit', async (state) => {
+    const input = grokRefreshFixture();
+    const after = grokCurrentObservation(input);
+    after.nativePackageContentDigest = state === 'old-copy' ? 'old-bytes' : undefined;
+    after.components[0] = { id: 'skill', presence: 'unknown', reasonCodes: [state === 'old-copy' ? 'nativePackageContentDrift' : 'nativePackageContentUnconfirmed'] };
+    const ctx = context(after);
+    vi.mocked(ctx.inspect!).mockResolvedValueOnce(input.observation);
+    const receipt = await executePlatformLifecycle(ctx, prepared(input));
+    expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args[1])).toEqual(['uninstall', 'install']);
+    expect(receipt.effects[1]).toMatchObject({ status: 'unknown', mutation: 'possible' });
+    expect(receipt.effects[2]?.status).toBe('skipped');
+    expect(receipt.unmet.length).toBeGreaterThan(0);
+    expect(ctx.services.removeOwned).not.toHaveBeenCalled();
   });
 
   it('retains registration facts but reports unmet host trust for a Pi Skill package', async () => {

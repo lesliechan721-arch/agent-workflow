@@ -25,16 +25,20 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
   }]));
   if (platform === 'codex') features['instruction.after-compaction'] = { status: 'unsupported', reasonCodes: ['interface-unsupported'] };
   const profile: QualifiedPlatformProfile = { id: `${platform}:${PROFILE_BASELINES[platform]}`, platform, kinds, features, agentConsumers: [] };
-  // Finite native qualification: Codex CLI 0.167.0 and Pi CLI 1.5.0 on macOS arm64.
+  // Finite native qualification: exact CLI versions in the six recorded hosts.
   // It does not qualify invocation metadata, Hooks, MCP execution, or model behavior.
   const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : null;
-  if (skillVersion && (host.platform ?? process.platform) === 'darwin' && (host.arch ?? process.arch) === 'arm64') {
-    profile.id += `:darwin-arm64-cli-${skillVersion}-skills`;
+  const hostPlatform = host.platform ?? process.platform;
+  const hostArch = host.arch ?? process.arch;
+  const qualifiedSkillHost = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64']
+    .includes(`${hostPlatform}-${hostArch}`);
+  if (skillVersion && qualifiedSkillHost) {
+    profile.id += `:${hostPlatform}-${hostArch}-cli-${skillVersion}-skills`;
     kinds.skill = { ...kinds.skill, status: 'supported', reasonCodes: [] };
     profile.qualifiedConsumers = { skill: [{ product: 'cli', version: skillVersion }] };
-    profile.qualificationEvidence = [{ reference: 'scripts/qualification/evidence/native-skills-2026-11-10.json',
-      product: 'cli', version: skillVersion, platform: 'darwin', arch: 'arm64', scopes: ['user', 'project'], kinds: ['skill'], features: [],
-      limitations: ['host-discovery-and-lifecycle-only', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-unverified'] }];
+    profile.qualificationEvidence = [{ reference: 'scripts/qualification/evidence/native-skills-2026-11-12.json',
+      product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: ['user', 'project'], kinds: ['skill'], features: [],
+      limitations: ['host-discovery-and-lifecycle-only', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'] }];
   }
   return profile;
 }

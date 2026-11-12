@@ -7,7 +7,7 @@ import type {
   ProjectionResult,
 } from './contracts.js';
 import { inspectDeployment } from './inspection.js';
-import { executeNativeLifecycle, nativeLifecycleEffectKey, nativeRoute, routeReload } from './lifecycle-native.js';
+import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, routeReload } from './lifecycle-native.js';
 
 interface PreparedContribution {
   effectId: string;
@@ -170,9 +170,12 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     }
   } else {
     const packageChanged = operation === 'reinstall' || !evidence.contentMatches || observation.package !== 'present';
-    if (!retainPackage && state.bundle && packageChanged && binding.route === 'grok-cli'
-      && state.product?.version === '1.0.77' && observation.registration === 'present') {
-      return blocked('nativeLocalUpdateUnverified', 'This client version cannot reliably refresh a local plugin. Keep the current package and complete the update in the host before retrying.');
+    const nativeCopyChanged = binding.route === 'grok-cli' && !!state.bundle
+      && (observation.nativePackageContentDigest !== state.bundle.contentDigest || ids.some((id) => !observation.components.some((component) =>
+        component.id === id && component.presence === 'present' && !component.reasonCodes.length)));
+    if (!retainPackage && state.bundle && (packageChanged || nativeCopyChanged) && binding.route === 'grok-cli'
+      && observation.registration === 'present' && !grokRegistrationOwned(binding, evidence, observation, identity)) {
+      return blocked('nativeIdentityUnconfirmed', 'The Grok registration is not an exclusive installation from this AW source. Check its identity and shared references before replacement.');
     }
     if (!retainPackage && state.bundle && packageChanged) {
       if (!packageSlot || !['present', 'partial', 'absent'].includes(packageSlot.state)) {
@@ -183,10 +186,10 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     if (!retainPackage && nativeRoute(binding.route) && state.bundle) {
       if (observation.registration === 'unknown') return blocked('nativeObservationUnknown', 'The native registration could not be observed. Check the client and retry.');
       if (observation.registration === 'absent') add('register', identity!.sourceLocation, ids);
-      else if (packageChanged && binding.route !== 'pi-package' && binding.route !== 'copilot-marketplace') {
-        add('refresh', identity!.sourceLocation, ids, binding.route === 'codex-marketplace' || binding.route === 'antigravity-cli');
+      else if ((packageChanged || nativeCopyChanged) && binding.route !== 'pi-package' && binding.route !== 'copilot-marketplace') {
+        add('refresh', identity!.sourceLocation, ids, ['codex-marketplace', 'antigravity-cli', 'grok-cli'].includes(binding.route));
       }
-      if (binding.route !== 'pi-package' && (operation === 'reinstall' || packageChanged || observation.consumers.some((consumer) => consumer.activation !== 'enabled'))) {
+      if (binding.route !== 'pi-package' && (operation === 'reinstall' || packageChanged || nativeCopyChanged || observation.consumers.some((consumer) => consumer.activation !== 'enabled'))) {
         add('activate', evidence.layout.activationPath, ids);
       }
     } else if (!retainPackage && nativeRoute(binding.route) && identity && observation.registration === 'present'
@@ -292,6 +295,13 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       result.mutation = outcome.mutation;
       result.status = outcome.mutation === 'possible' ? 'unknown' : outcome.changed ? 'applied' : 'unchanged';
       if (outcome.mutation === 'possible') throw Object.assign(new Error('nativeMutationUnknown'), { mutation: 'possible' });
+      if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')) {
+        const checked = await observe();
+        if (checked.physicalKey !== binding.physicalKey || checked.registration !== 'present' || checked.ownership !== 'aw'
+          || !state.bundle || checked.nativePackageContentDigest !== state.bundle.contentDigest) {
+          throw Object.assign(new Error('nativeInstallContentPostcheckFailed'), { mutation: 'possible' });
+        }
+      }
       if (effect.kind === 'unregister') {
         if (binding.platform === 'codex') ctx.codexObservationSession?.invalidate(plan.evidence.layout.marketplaceName ?? undefined);
         const checked = await observe();
@@ -309,6 +319,11 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       result.status = definite ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
       result.diagnostics.push(lifecycleDiagnostic(binding, definite ? code : 'platformMutationFailed',
         definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.' : 'A platform action did not complete. Check status and retry the remaining actions.'));
+      if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
+        && (!definite || code === 'nativeTrustRequired')) {
+        result.diagnostics.push(lifecycleDiagnostic(binding, 'grokNativeInstallRecovery',
+          `The Grok installation may be missing or stale. The AW source package is kept. With the same Grok client and configuration root, use arguments ${JSON.stringify(['plugin', 'install', plan.evidence.layout.packageRoot, '--trust'])}; --trust grants Grok plugin trust. Then run aw plugin sync ${binding.plugin.pluginId} --context user --target grok.`));
+      }
       if (effect.kind === 'publish-package') packageReady = false;
       if (effect.kind === 'register' || effect.kind === 'refresh') nativeReady = false;
       if (effect.kind === 'deactivate') activationRemoved = false;
@@ -324,13 +339,18 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     ctx.codexObservationSession?.invalidate(plan.evidence.layout.marketplaceName ?? undefined);
   }
   receipt.after = await observe();
+  const grokContentReady = binding.route !== 'grok-cli' || receipt.after.ownership === 'aw'
+    && !!state.bundle && receipt.after.nativePackageContentDigest === state.bundle.contentDigest
+    && plan.projections.filter((projection) => projection.bundle).flatMap((projection) => projection.components).every((component) =>
+      receipt.after.components.some((observed) => observed.id === component.id && observed.presence === 'present' && !observed.reasonCodes.length));
   for (const result of receipt.effects) {
     if (result.status !== 'applied') continue;
     const effect = plan.effects.find((item) => item.id === result.id)!;
-    const incomplete = (effect.kind === 'register' || effect.kind === 'refresh') && receipt.after.registration !== 'present'
+    const incomplete = (effect.kind === 'register' || effect.kind === 'refresh') && (receipt.after.registration !== 'present' || !grokContentReady)
       || effect.kind === 'activate' && receipt.after.consumers.some((item) => item.activation !== 'enabled');
     if (incomplete) {
-      result.status = receipt.after.registration === 'unknown' || receipt.after.consumers.some((item) => item.activation === 'unknown') ? 'unknown' : 'failed';
+      result.status = receipt.after.registration === 'unknown' || receipt.after.consumers.some((item) => item.activation === 'unknown')
+        || binding.route === 'grok-cli' && receipt.after.components.some((component) => component.presence === 'unknown') ? 'unknown' : 'failed';
       result.diagnostics.push(lifecycleDiagnostic(binding, 'nativeMutationPostcheckFailed', 'The native command completed, but the final state does not confirm the requested result. Check status before retrying.'));
       for (const componentId of effect.componentIds) {
         const component = plan.expected.components.find((item) => item.id === componentId);
@@ -346,9 +366,9 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     const effect = plan.effects.find((item) => item.id === result.id)!;
     const exactIdentity = state.identity && receipt.after.nativeIdentity
       && state.identity.packageId === receipt.after.nativeIdentity.packageId
-      && state.identity.registrationId === receipt.after.nativeIdentity.registrationId
+      && (state.identity.registrationId === receipt.after.nativeIdentity.registrationId || binding.route === 'grok-cli')
       && state.identity.sourceLocation === receipt.after.nativeIdentity.sourceLocation;
-    const verified = exactIdentity && (effect.kind === 'register' && state.before.registration === 'absent' && receipt.after.registration === 'present'
+    const verified = exactIdentity && (effect.kind === 'register' && state.before.registration === 'absent' && receipt.after.registration === 'present' && grokContentReady
       || effect.kind === 'unregister' && state.before.registration === 'present' && receipt.after.registration === 'absent'
       || effect.kind === 'activate' && state.before.consumers.some((item) => item.activation === 'disabled')
         && receipt.after.consumers.length > 0 && receipt.after.consumers.every((item) => item.activation === 'enabled')

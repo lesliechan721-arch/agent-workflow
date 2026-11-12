@@ -24,10 +24,12 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 | Pi | 核心 >=1.0.0 | CLI；无产品名的版本输出须由官方帮助身份补证，Windows npm 入口验证 `@earendil-works/pi-coding-agent`；Agents 消费者身份/版本另验 |
 | Gemini CLI | >=0.63.0 | CLI，preview/许可按组件判断 |
 | Copilot CLI | >=1.0.95 | 仅 CLI，保留 managed/repo overlay |
-| Grok Build | install/list JSON/enable/disable/update/uninstall 与 trust 接口合同 | CLI；没有已证明数字最低版本 |
+| Grok Build | install/list JSON/enable/disable/uninstall 与 trust 接口合同 | CLI；没有已证明数字最低版本 |
 | generic | 无客户端条件 | notApplicable，手动选择，不默认勾选 |
 
 数字门槛是必要接口条件，不是完整运行资格。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。
+
+普通 Skill 的有限 profile 仅对 Codex CLI `0.167.0`、Pi CLI `1.5.0` 在 Linux/macOS/Windows 的 x64/arm64 开放，依据[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)。它只确认原生管理、发现和 user/project 隔离；App、相邻版本、调用控制、模型采用及其他组件不继承该资格。公开 AW 完整编排仍须单独验证。
 
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
@@ -82,7 +84,7 @@ activationKey 另含启用位置与需求 scope。身份字符串、路径存在
 | Pi / pi-package | pi package Skills；MCP 与 Hook/Instructions extension；Agents 仅 Markdown 加 pi.subagents.agents 声明 | pi install 本地来源，项目 --local；对应 scope remove 后清理包，不安装/移除 Agents 消费者 |
 | Gemini / gemini-extension | extension Skills/MCP/preview Agents/Hooks/contextFileName；AW Agent 组合自身 Instructions | 本地 install/update 与 user/workspace activation；先停用需求，无引用再 uninstall |
 | Copilot / copilot-marketplace | 标准1.0包及 com.github.copilot Agents/Hooks/Rules；AW Agent 组合正文 | 本地 Marketplace/install；user 与 repo enabledPlugins 分开；目录更新由新会话/restart读取 |
-| Grok / grok-cli、grok-directory | .grok-plugin 的四类包及同 scope AW rules，AW Agent 组合正文 | user 本地原生命令；project .grok/plugins 独占目录；启用/trust/实际来源单独观测 |
+| Grok / grok-cli、grok-directory | .grok-plugin 的四类包及同 scope AW rules，AW Agent 组合正文 | user 完整新包发布后按审核计划卸载重装；project .grok/plugins 独占目录；启用/trust/实际来源单独观测 |
 | generic / generic-skills | 通用 Skills writer | 精确 owner/digest 写入与清理，无原生注册/激活/加载承诺 |
 
 所有路径按已核验 profile 开放，表格描述固定适配方式，不是各版本/OS 的全能力资格表。未知能力须在组件缺口中列明，不能复制资源后报告完整成功。
@@ -99,7 +101,7 @@ Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`
 
 Gemini/Copilot/Grok 的 Agent 正文组合只涉及同插件本次生成角色，不能修改用户或其他插件的 Agent。Grok project 接收同 binding、同 render scope 的完整组件集合；Instructions 单独改变也使相关 Agent 包重新投影、Review 和冻结。组合输入失败不得发布缺正文的包。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
 
-Grok 1.0.77 的 list 只证明可解析的登记，inspect.enabled 不能单独证明生效或加载。配置激活、信任、组件来源及兼容来源重叠分别报告；这些事实不扩大 ownership。已证实不能刷新的本地 update 在发布替换包前受阻，保留旧输出及恢复说明。
+Grok 1.0.77 的 list 只证明可解析的登记，inspect.enabled 不能单独证明生效或加载。配置激活、信任、组件来源及兼容来源重叠分别报告；这些事实不扩大 ownership。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，仅对精确同源、独占的登记执行已审核的 `uninstall --confirm` 和 `install --trust`。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
 
 ## 3. 适配器职责与执行证据
 

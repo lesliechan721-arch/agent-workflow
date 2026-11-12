@@ -72,10 +72,12 @@ export async function runScope(platform, scope, launcher, options = {}) {
       async command(args, cwd = project, commandOptions = {}) {
         let result;
         try {
-          result = await execute(launcher, args, { cwd, env, stdin: commandOptions.input });
+          result = await execute(launcher, args, { cwd, env, stdin: commandOptions.input,
+            captureProcessNames: platform === 'copilot' });
         } catch (error) {
           report.commands.push(redact({ args, cwd, processFailure: error?.message,
             processDiagnostics: error?.processTreeDiagnostics ?? [],
+            ...(error?.qualificationProcessNames?.length ? { processNames: error.qualificationProcessNames } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
               terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
               cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));

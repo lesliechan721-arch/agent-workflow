@@ -338,6 +338,13 @@ async function grokInventory(ctx, revision) {
   assert.equal(item.status, 'installed')
   assert.equal(item.version, version(revision))
   samePath(item.source, ctx.bundle, 'Grok local source')
+  assert.equal(typeof item.repo_key, 'string', 'Grok must identify the installed repository.')
+  assert(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(item.repo_key), 'Grok must identify one repository directory.')
+  samePath(item.path, path.join(ctx.env.GROK_HOME, 'installed-plugins', item.repo_key), 'Grok installed copy')
+  for (const relative of ['.grok-plugin/plugin.json', `skills/${ctx.skillName}/SKILL.md`]) {
+    assert.equal(await readFile(path.join(item.path, relative), 'utf8'), await readFile(path.join(ctx.bundle, relative), 'utf8'),
+      'Grok must install the current source bytes.')
+  }
   return { level: 'plugin-inventory', name: item.name, version: item.version }
 }
 
@@ -376,13 +383,20 @@ async function qualifyGrok(ctx) {
   await ctx.check('neutral-scope', async () => assertGrokSkill(ctx, await grokInspect(ctx, ctx.neutral), 1))
   await ctx.render(2)
   await ctx.check('refresh', async () => {
-    await ctx.command(['plugin', 'update', ctx.pluginName])
+    const before = array(await jsonCommand(ctx, ['plugin', 'list', '--json']), 'Grok plugin list')
+    const previous = one(before, entry => entry.name === ctx.pluginName, 'Grok installed fixture')
+    samePath(previous.source, ctx.bundle, 'Grok replacement source')
+    assert(!before.some(item => item !== previous && (item.repo_key === previous.repo_key || item.path === previous.path || item.source === previous.source)),
+      'Grok replacement must not uninstall a shared repository.')
+    await ctx.command(['plugin', 'uninstall', ctx.pluginName, '--confirm'])
+    const removed = array(await jsonCommand(ctx, ['plugin', 'list', '--json']), 'Grok plugin list')
+    assert(!removed.some(item => item.name === ctx.pluginName), 'Grok uninstall must clear the old registration before reinstall.')
+    await ctx.command(['plugin', 'install', ctx.bundle, '--trust'])
+    await grokInventory(ctx, 2)
     const observation = await grokInspect(ctx)
-    // A successful native update message is insufficient: 1.0.77 retained revision 1.
     const skill = assertGrokSkill(ctx, observation, 2)
-    const items = array(await jsonCommand(ctx, ['plugin', 'list', '--json']), 'Grok plugin list')
-    const item = one(items, entry => entry.name === ctx.pluginName, 'Grok installed fixture')
-    return { ...skill, registryVersion: item.version }
+    assertGrokSkill(ctx, await grokInspect(ctx, ctx.neutral), 2)
+    return { ...skill, registryVersion: version(2), strategy: 'native-uninstall-install' }
   })
   await ctx.check('remove', async () => {
     await ctx.command(['plugin', 'uninstall', ctx.pluginName, '--confirm'])

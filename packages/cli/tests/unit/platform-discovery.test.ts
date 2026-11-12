@@ -220,7 +220,7 @@ describe('read-only target discovery and production selection', () => {
     const ctx = await fixture(); await executable(ctx, 'grok');
     const root = path.join(ctx.cwd, 'grok-home');
     const result = await discoverPlatform('grok', { ...ctx, env: { ...ctx.env, GROK_HOME: root }, runner: async ({ args }) => ({ exitCode: 0, stderr: '',
-      stdout: args.includes('--version') ? 'grok build' : args.includes('list') ? 'Usage: grok plugin list --json' : 'Usage: grok plugin install uninstall update enable disable' }) });
+      stdout: args.includes('--version') ? 'grok build' : args.includes('list') ? 'Usage: grok plugin list --json' : 'Usage: grok plugin install uninstall enable disable' }) });
     expect(result.availability).toBe('available');
     expect(result.installations[0]).toMatchObject({ version: null, reasonCodes: ['clientVersionUnknown'], entry: { configRoot: root } });
   });

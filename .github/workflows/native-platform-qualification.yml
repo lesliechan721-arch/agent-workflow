@@ -67,6 +67,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       QUALIFICATION_CLIENT: ${{ inputs.client || 'all' }}
+      AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
     steps:
       - uses: actions/checkout@v6
         with:

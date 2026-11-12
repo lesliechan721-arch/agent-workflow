@@ -62,9 +62,13 @@ export async function createPlatformInputEvidence(input: PlatformInputEvidenceOp
           || plugin.manifest.artifacts.scopes.includes(renderScope.kind)) ? set.refreshKeys : []))].sort() : [];
     const commandConfig = commandKeys.length ? selectPlatformRenderConfig({ resolved: config, keys: commandKeys, nonSensitive: true }) : undefined;
     if (selectedConfig.issues.length || commandConfig?.issues.length) throw new Error('platformEmptyStateConfigInvalid');
+    // Grok source inventories are observation outputs, not renderer or capability
+    // inputs. The complete observation remains part of the lock-held stale check.
+    const { nativeSources: _nativeSources, ...grokRenderPrerequisites } = prerequisites;
+    const renderPrerequisites = binding.platform === 'grok' ? grokRenderPrerequisites : prerequisites;
     return { id, physicalKey, renderScope, output, kinds: [...kinds],
       inputDigest: artifactValueDigest({ sourceDigest, manifest: plugin.manifest, config: selectedConfig,
-        ...(commandConfig ? { commandConfig } : {}), capabilities, resources, prerequisites }) };
+        ...(commandConfig ? { commandConfig } : {}), capabilities, resources, prerequisites: renderPrerequisites }) };
   }).sort((left, right) => left.id.localeCompare(right.id));
   return { schemaVersion: 1, kind: 'aw-platform-input', plugin: { ...binding.plugin }, platform: binding.platform,
     binding: { id: binding.id, physicalKey: binding.physicalKey, scope: binding.scope }, units };

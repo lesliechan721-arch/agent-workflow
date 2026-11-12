@@ -5,6 +5,7 @@ import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
 import { resolvePlatformConfigRoot } from './discovery.js';
+import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('grokObservationInvalid');
@@ -31,13 +32,42 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
   const matches = list.filter((row) => row.name === name);
   if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
   const installed = matches[0];
-  if (installed && (typeof installed.repo_key !== 'string' || typeof installed.version !== 'string'
-    || typeof installed.path !== 'string' || !path.isAbsolute(installed.path) || typeof installed.source !== 'string')) throw new Error('grokRegistrationInvalid');
+  if (installed && (installed.status !== 'installed' || typeof installed.repo_key !== 'string'
+    || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(installed.repo_key)
+    || typeof installed.version !== 'string' || typeof installed.path !== 'string' || !path.isAbsolute(installed.path)
+    || typeof installed.source !== 'string' || !path.isAbsolute(installed.source))) throw new Error('grokRegistrationInvalid');
   result.registration = binding.route === 'grok-directory' ? 'not-applicable' : installed ? 'present' : 'absent';
-  if (installed && path.resolve(String(installed.source)) !== layout.packageRoot) result.ownership = 'foreign';
   const nativeRoot = binding.route === 'grok-directory' ? layout.packageRoot : installed?.path as string | undefined;
   const entry = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
   const hostRoot = entry?.kind === 'cli' ? entry.configRoot : await resolvePlatformConfigRoot('grok', ctx);
+  if (binding.route === 'grok-cli' && installed) {
+    const installedRoot = path.join(hostRoot, 'installed-plugins');
+    if (path.normalize(installed.path as string) !== path.join(installedRoot, installed.repo_key as string)) throw new Error('grokRegistrationPathUnconfirmed');
+    for (const directory of [hostRoot, installedRoot, installed.path as string]) {
+      const stat = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error('grokRegistrationPathUnconfirmed');
+    }
+    result.nativeIdentity = { ...layout.nativeIdentity, registrationId: installed.repo_key as string, sourceLocation: installed.source as string };
+    if (path.normalize(installed.source as string) !== layout.packageRoot) result.ownership = 'foreign';
+    else if (list.some((row) => row !== installed && (row.repo_key === installed.repo_key || row.path === installed.path || row.source === installed.source))) result.ownership = 'shared';
+    else if (result.ownership === 'aw') {
+      const [sourceDigest, installedDigest] = await Promise.all([
+        readPlatformPackageContentDigest(layout.packageRoot), readPlatformPackageContentDigest(installed.path as string),
+      ]);
+      result.nativePackageContentDigest = installedDigest;
+      const reason = !sourceDigest || !installedDigest ? 'nativePackageContentUnconfirmed'
+        : sourceDigest !== installedDigest ? 'nativePackageContentDrift' : null;
+      if (reason) {
+        result.components = result.components.map((component) => ({ ...component, presence: 'unknown', reasonCodes: [...component.reasonCodes, reason] }));
+        result.diagnostics.push({ code: reason, severity: 'warning',
+          message: 'The Grok installation does not confirm the current AW package bytes. Run sync to replace the native copy.',
+          subject: { target: 'grok', pluginId: binding.plugin.pluginId, scope: binding.scope.kind } });
+      }
+    }
+  }
   const projectRoot = binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd;
   const allowedConfigs = new Set([path.join(hostRoot, 'config.toml'), path.join(projectRoot, '.grok', 'config.toml')]);
   const evidence: unknown[] = [list, inspect];

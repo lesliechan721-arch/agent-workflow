@@ -215,7 +215,7 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
         const baseArgs = invocation.args.slice(0, -1);
         const help = await probe(ctx, invocation.command, [...baseArgs, 'plugin', '--help']);
         const list = await probe(ctx, invocation.command, [...baseArgs, 'plugin', 'list', '--help']);
-        if (!['install', 'uninstall', 'update', 'enable', 'disable'].every((name) => new RegExp(`\\b${name}\\b`, 'u').test(help))
+        if (!['install', 'uninstall', 'enable', 'disable'].every((name) => new RegExp(`\\b${name}\\b`, 'u').test(help))
           || !list.includes('--json')) {
           product.availability = 'unsupported'; product.reasonCodes = ['clientInstallInterfaceUnsupported'];
         }

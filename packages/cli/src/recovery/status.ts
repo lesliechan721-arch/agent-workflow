@@ -214,12 +214,21 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             let inputDrift = false;
             let currentProjection = false;
             let projectionUnconfirmed = false;
+            let nativeContentDrift = false;
+            let nativeContentUnconfirmed = false;
             if (live.package === 'present' && live.ownership === 'aw') {
               const layout = await getDeploymentLayout(ctx, binding);
               const marker = await readSkillOwnerMarker({ skillRoot: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot),
                 expectedIdentity: deploymentPackageComponent(binding, layout).identity });
               const projection = marker?.nativeProjection;
               const contentDigest = projection ? await readPlatformPackageContentDigest(layout.packageRoot) : undefined;
+              if (binding.route === 'grok-cli' && live.registration === 'present') {
+                nativeContentUnconfirmed = !contentDigest || !live.nativePackageContentDigest;
+                nativeContentDrift = Boolean(contentDigest && live.nativePackageContentDigest
+                  && contentDigest !== live.nativePackageContentDigest);
+                if (nativeContentUnconfirmed) observation.blockers.push(diagnostic('nativePackageContentUnconfirmed'));
+                else if (nativeContentDrift) observation.blockers.push(diagnostic('nativePackageContentDrift'));
+              }
               projectionUnconfirmed = !projection || projection.preparation !== 'complete';
               const packageInputDigest = platformPackageInputDigest(inputEvidence);
               inputDrift = Boolean(projection && (projection.inputDigest !== packageInputDigest
@@ -231,7 +240,8 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               currentProjection = Boolean(projection && !inputDrift && projection.preparation === 'complete'
                 && projection.components.length > 0 && projection.components.every((component) =>
                   live.components.some((observed) => observed.id === component.id && observed.presence === 'present'))
-                && !supplementConflict && !supplementDrift && !supplementUnknown && !dynamicSupplementsUnconfirmed);
+                && !supplementConflict && !supplementDrift && !supplementUnknown && !dynamicSupplementsUnconfirmed
+                && !nativeContentDrift && !nativeContentUnconfirmed);
               if (currentProjection) expectedCount = Math.max(expectedCount, projection!.components.length);
             }
             // Codex CLI 0.167.0 loads user plugin Skills without the independent
@@ -251,7 +261,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               for (const consumer of live.consumers) if (consumer.trust === 'unknown') consumer.trust = 'not-applicable';
             }
             live.components.push(...supplements.components);
-            observation.inputDrift ||= inputDrift || supplementDrift;
+            observation.inputDrift ||= inputDrift || supplementDrift || nativeContentDrift;
             currentMatches.push(confirmedEmpty || currentProjection);
             emptyMatches.push(confirmedEmpty);
             observation.blockers.push(...unmet.map((entry) => diagnostic(entry.reasonCode)));
@@ -272,7 +282,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               states.push(live.ownership === 'foreign' ? 'conflict' : live.package === 'unknown' || live.registration === 'unknown'
                 || live.diagnostics.length || !inactiveScope ? 'unknown'
                 : live.package === 'absent' || shared ? 'satisfied' : 'drifted');
-            } else states.push(live.ownership === 'foreign' || supplementConflict ? 'conflict' : projectionUnconfirmed || supplementUnknown ? 'unknown' : inputDrift || supplementDrift ? 'drifted' : unmet.length || dynamicSupplementsUnconfirmed ? 'unknown'
+            } else states.push(live.ownership === 'foreign' || supplementConflict ? 'conflict' : projectionUnconfirmed || supplementUnknown || nativeContentUnconfirmed ? 'unknown' : inputDrift || supplementDrift || nativeContentDrift ? 'drifted' : unmet.length || dynamicSupplementsUnconfirmed ? 'unknown'
               : !expectedCount ? absent ? 'satisfied' : unknown ? 'unknown' : 'drifted'
                 : absent ? 'absent' : unknown ? 'unknown' : inactive ? 'drifted' : supplementOnly || live.package === 'present' ? 'satisfied' : 'unknown');
           }

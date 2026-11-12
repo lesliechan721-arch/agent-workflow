@@ -158,6 +158,8 @@ export type Activation = 'enabled' | 'disabled' | 'blocked' | 'unknown' | 'not-a
 export interface DeploymentObservation {
   /** Version read from the verified owned package descriptor; absence means unknown. */
   packageVersion?: string;
+  /** Observed native installation bytes; absence does not confirm the installed content. */
+  nativePackageContentDigest?: string;
   physicalKey: string;
   package: Presence;
   registration: Presence;
