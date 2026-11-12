@@ -300,6 +300,22 @@ function parsePosixMarkerScan(stdout: string): PosixMarkerScan {
   return { table, commands, unreadablePids };
 }
 
+function unreadableMarkerPids(
+  scan: PosixMarkerScan | undefined,
+  platform: NodeJS.Platform,
+  markerPids: ReadonlySet<number>,
+): Set<number> {
+  if (!scan) return new Set();
+  if (platform !== 'linux') return scan.unreadablePids;
+  const unreadable = new Set(scan.unreadablePids);
+  // procps uses [comm] when command arguments cannot be read. A stale live
+  // state does not make that fallback complete environment evidence.
+  for (const [pid, command] of scan.commands) {
+    if (!markerPids.has(pid) && /^\[[^\]]*\](?:\s+<defunct>)?$/u.test(command.trim())) unreadable.add(pid);
+  }
+  return unreadable;
+}
+
 function parseMarkerProcessIds(
   scan: PosixMarkerScan,
   markerEnvironmentVariable: string,
@@ -314,6 +330,7 @@ function parseMarkerProcessIds(
 }
 
 async function readPosixProcessTable(
+  platform: NodeJS.Platform,
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
   markerEnvironmentVariable: string,
   marker?: string,
@@ -372,7 +389,7 @@ async function readPosixProcessTable(
   return {
     table,
     markerPids,
-    unreadableMarkerPids: markerScan?.unreadablePids ?? new Set(),
+    unreadableMarkerPids: unreadableMarkerPids(markerScan, platform, markerPids),
     markerLookupSucceeded: marker === undefined || markerOutput !== null,
     markerLookupAttempts,
     markerScanStartedAt: lookupStartedAt,
@@ -565,6 +582,7 @@ export async function acquireProcessTreeInspectionLease(
   );
   try {
     const snapshot = await readPosixProcessTable(
+      platform,
       dependencies.execFile ?? defaultExecFile,
       markerEnvironmentVariable,
       marker,
@@ -878,7 +896,7 @@ async function acceptPosixSnapshot(
     fail(posixMarkerLookupFailure(snapshot, stage), 'marker-lookup-failed');
     return false;
   }
-  if (state.platform === 'darwin' && state.dependencies.enforceCooperativeProcessGroup === true) {
+  if (state.dependencies.enforceCooperativeProcessGroup === true) {
     const expectedPgid = state.rootPgidMode === 'owned' ? state.rootPgid
       : state.rootPgidMode === 'missing' ? state.pid : undefined;
     const changed = expectedPgid === undefined ? [] : [state.root, ...state.descendants.values()].flatMap((known) => {
@@ -897,7 +915,9 @@ async function acceptPosixSnapshot(
   }
   const needsConfirmation = (pid: number): boolean => {
     const entry = snapshot.table.get(pid);
-    return entry !== undefined && !entry.state?.startsWith('Z') && isRelevantPosixProcess(state, pid, entry);
+    if (pid === state.pid && state.root && entry?.startTime !== state.root.startTime) return false;
+    return entry !== undefined && !entry.state?.startsWith('Z')
+      && (isRelevantPosixProcess(state, pid, entry) || snapshot.confirmedUnmarkedPids.has(pid));
   };
   const unreadablePids = [...snapshot.unreadableMarkerPids].filter(needsConfirmation);
   if (state.marker !== undefined && unreadablePids.length > 0) {
@@ -917,18 +937,26 @@ async function acceptPosixSnapshot(
     }
     const confirmed = parsePosixMarkerScan(confirmation.output);
     const confirmedMarkers = parseMarkerProcessIds(confirmed, state.markerEnvironmentVariable, state.marker);
+    const confirmedUnreadable = unreadableMarkerPids(confirmed, state.platform, confirmedMarkers);
     // Each observer confirms its own suspect PIDs, even when the initial scan is shared.
     // Keep other evidence unchanged and retain start times to protect against PID reuse.
     snapshot.table = new Map(snapshot.table);
     snapshot.unreadableMarkerPids = new Set(snapshot.unreadableMarkerPids);
     for (const pid of unreadablePids) {
+      const previousEntry = snapshot.table.get(pid);
       const entry = confirmed.table.get(pid);
       if (entry) snapshot.table.set(pid, entry);
       else snapshot.table.delete(pid);
       if (confirmedMarkers.has(pid)) snapshot.markerPids.add(pid);
       else snapshot.markerPids.delete(pid);
-      if (confirmed.unreadablePids.has(pid)) snapshot.unreadableMarkerPids.add(pid);
+      if (confirmedUnreadable.has(pid)) snapshot.unreadableMarkerPids.add(pid);
       else snapshot.unreadableMarkerPids.delete(pid);
+      // Keep a confirmed negative relevant even if this same identity moved
+      // groups. It does not grant ownership of a replacement process.
+      if (state.platform === 'linux' && entry?.startTime === previousEntry?.startTime
+        && entry && !entry.state?.startsWith('Z') && !confirmedMarkers.has(pid)) {
+        snapshot.confirmedUnmarkedPids.add(pid);
+      }
     }
   }
   if (state.platform === 'darwin' && state.marker !== undefined) {
@@ -1090,6 +1118,10 @@ async function acceptPosixSnapshot(
     const markerlessKnownPids = liveKnownIdentities
       .filter((identity) => !snapshot.markerPids.has(identity.pid))
       .map((identity) => identity.pid);
+    const markerlessConfirmedPids = [...snapshot.confirmedUnmarkedPids].filter((pid) => {
+      const entry = snapshot.table.get(pid);
+      return entry && !entry.state?.startsWith('Z') && !snapshot.markerPids.has(pid);
+    });
     const markerlessInitialGroupPids: number[] = [];
     const groupLeader = state.rootPgid === undefined
       ? undefined
@@ -1108,14 +1140,14 @@ async function acceptPosixSnapshot(
     }
     if (
       enforceProcessMarker &&
-      (markerlessKnownPids.length > 0 || markerlessInitialGroupPids.length > 0)
+      (markerlessKnownPids.length > 0 || markerlessInitialGroupPids.length > 0 || markerlessConfirmedPids.length > 0)
     ) {
       fail(
         cleanupUnconfirmed(
           'custom process contract violation: a live provider process lost its process marker.',
         ),
         markerlessKnownPids.length > 0 ? 'known-process-marker-missing' : 'initial-group-marker-missing',
-        [...new Set([...markerlessKnownPids, ...markerlessInitialGroupPids])],
+        [...new Set([...markerlessKnownPids, ...markerlessInitialGroupPids, ...markerlessConfirmedPids])],
       );
     }
   }
@@ -1157,7 +1189,7 @@ function snapshotFromSampler(
   return {
     table,
     markerPids,
-    unreadableMarkerPids: sampler.markerScan?.unreadablePids ?? new Set(),
+    unreadableMarkerPids: unreadableMarkerPids(sampler.markerScan, state.platform, markerPids),
     markerLookupSucceeded,
     markerLookupAttempts: state.marker === undefined ? 0 : 1,
     markerScanStartedAt: sampler.markerScannedAt,
@@ -1384,12 +1416,13 @@ async function readImmediatePosixSnapshot(
     return undefined;
   }
   const markerScan = state.marker === undefined ? undefined : parsePosixMarkerScan(result.output);
+  const markerPids = markerScan && state.marker !== undefined
+    ? parseMarkerProcessIds(markerScan, state.markerEnvironmentVariable, state.marker)
+    : new Set<number>();
   const snapshot: PosixProcessSnapshot = {
     table: markerScan?.table ?? parsePosixProcessTable(result.output),
-    markerPids: markerScan && state.marker !== undefined
-      ? parseMarkerProcessIds(markerScan, state.markerEnvironmentVariable, state.marker)
-      : new Set(),
-    unreadableMarkerPids: markerScan?.unreadablePids ?? new Set(),
+    markerPids,
+    unreadableMarkerPids: unreadableMarkerPids(markerScan, state.platform, markerPids),
     markerLookupSucceeded: true,
     markerLookupAttempts: state.marker === undefined ? 0 : 1,
     markerScanStartedAt: startedAt,

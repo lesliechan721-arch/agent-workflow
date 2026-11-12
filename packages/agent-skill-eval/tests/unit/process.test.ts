@@ -438,6 +438,102 @@ describe('shared provider process behavior', () => {
     expect(stopped).toBe(true)
   })
 
+  // Test Value Gate: an exiting Linux root can retain a live state while ps
+  // falls back to [comm]. Recheck readability without forgiving real violations.
+  it.each([
+    { outcome: 'exited' },
+    { outcome: 'marked' },
+    { outcome: 'unreadable', failure: 'process marker could not be read' },
+    { outcome: 'unmarked', failure: 'lost its process marker' },
+    { outcome: 'regular', failure: 'lost its process marker' },
+    { outcome: 'scan-error', failure: 'marker lookup failed' },
+    { outcome: 'deadline', failure: 'marker lookup failed' },
+    { outcome: 'reused' },
+    { outcome: 'left-exited', failure: 'left its initial process group' },
+    { outcome: 'left-returned', failure: 'left its initial process group' },
+    { outcome: 'defunct-form-exited' },
+    { outcome: 'marked-bracket-arguments' },
+    { outcome: 'bracket-prefix-arguments', failure: 'lost its process marker' },
+  ])('confirms a Linux bracketed root: $outcome', async ({ outcome, failure }) => {
+    vi.useFakeTimers()
+    const marker = 'linux-root-marker'
+    const root = { ppid: 1, pgid: 100, state: 'R', startTime: 'Thu Nov 12 14:03:22 2026',
+      command: `node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}` }
+    const processes = new Map([[100, { ...root }],
+      [200, { ...root, pgid: 200, startTime: 'foreign-start', command: '[foreign]' }]])
+    let phase: 'normal' | 'negative' | 'confirmation' | 'settled' = 'normal'
+    let confirmations = 0
+    const signals: number[] = []
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceProcessMarker: true,
+      enforceCooperativeProcessGroup: true,
+      execFile: (_command: string, args: string[], options: { timeout: number },
+        callback: (error: Error | null, stdout: string) => void): void => {
+        const markerScan = args.some(arg => arg.includes('command='))
+        if (markerScan && phase === 'negative') {
+          phase = 'confirmation'
+          callback(null, `100 1 ${outcome.startsWith('left-') ? 300 : 100} R ${root.startTime} `
+            + (outcome === 'regular' ? 'node PATH=/usr/bin'
+              : outcome === 'marked-bracket-arguments' ? `[node ${PROVIDER_PROCESS_MARKER_ENV}=${marker} title]`
+                : outcome === 'bracket-prefix-arguments' ? '[MainThread] ordinary-argument PATH=/usr/bin'
+                  : outcome === 'defunct-form-exited' ? '[MainThread] <defunct>' : '[MainThread]'))
+          return
+        }
+        if (markerScan && phase === 'confirmation') {
+          phase = 'settled'
+          confirmations += 1
+          expect(options.timeout).toBeGreaterThan(0)
+          expect(options.timeout).toBeLessThanOrEqual(2_000)
+          if (outcome === 'deadline') return
+          if (outcome === 'scan-error') { callback(new Error('synthetic ps failure'), ''); return }
+          if (outcome === 'exited' || outcome === 'left-exited' || outcome === 'defunct-form-exited') processes.delete(100)
+          if (outcome === 'unreadable') processes.set(100, { ...root, command: '[MainThread]' })
+          if (outcome === 'unmarked') processes.set(100, { ...root, command: 'node PATH=/usr/bin' })
+          if (outcome === 'reused') processes.set(100, { ...root, pgid: 300, startTime: 'replacement-start', command: '[foreign-root]' })
+        }
+        callback(null, [...processes].map(([pid, entry]) =>
+          `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}${markerScan ? ` ${entry.command}` : ''}`,
+        ).join('\n'))
+      },
+      kill: (pid: number, signal: string): void => {
+        signals.push(pid)
+        if (signal === 'SIGKILL') processes.delete(pid)
+      },
+    }
+    const observation = observeProcessTree(100, marker, dependencies)
+    const onFailure = vi.fn()
+    observation.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      phase = 'negative'
+      await vi.advanceTimersByTimeAsync(outcome === 'deadline' ? 3_000 : 1_000)
+      if (failure) expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining(failure) }))
+      else expect(onFailure).not.toHaveBeenCalled()
+      if (['regular', 'marked-bracket-arguments', 'bracket-prefix-arguments'].includes(outcome)) expect(confirmations).toBe(0)
+      else expect(confirmations).toBe(1)
+      phase = 'settled'
+      const termination = terminateProcessTree(100, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: true,
+      }).then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      const error = await termination
+      if (failure) expect(error?.message).toContain(failure)
+      else expect(error).toBeNull()
+      expect(signals).not.toContain(200)
+      expect(signals).not.toContain(-200)
+      expect(signals).not.toContain(-300)
+      if (outcome === 'reused') {
+        expect(signals).not.toContain(100)
+        expect(processes.get(100)?.startTime).toBe('replacement-start')
+      }
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   // Test Value Gate: recover macOS title visibility only for the same process
   // identity; unreadable evidence and either sampled group departure still fail.
   it.each([
@@ -1196,7 +1292,15 @@ describe('shared provider process behavior', () => {
     { outcome: 'scan-error', known: false, failure: 'marker lookup failed' },
     { outcome: 'exited', known: false, duringCleanup: true },
     { outcome: 'unreadable', known: false, duringCleanup: true, failure: 'process marker could not be read' },
-  ])('confirms unreadable ps data: $outcome (known=$known, cleanup=$duringCleanup)', async ({ outcome, known, failure, duringCleanup }) => {
+    { outcome: 'exited', known: false, platform: 'linux' as const, unreadableCommand: '[git]' },
+    { outcome: 'unreadable', known: false, platform: 'linux' as const, unreadableCommand: '[git]', failure: 'process marker could not be read' },
+    { outcome: 'unmarked', known: false, platform: 'linux' as const, unreadableCommand: '[git]', failure: 'lost its process marker' },
+    { outcome: 'reused', known: true, platform: 'linux' as const, unreadableCommand: '[git]' },
+    { outcome: 'exited', known: false, duringCleanup: true, platform: 'linux' as const, unreadableCommand: '[git]' },
+    { outcome: 'unreadable', known: false, duringCleanup: true, platform: 'linux' as const, unreadableCommand: '[git]', failure: 'process marker could not be read' },
+    { outcome: 'moved-unmarked', known: false, platform: 'linux' as const, unreadableCommand: '[git]', failure: 'lost its process marker' },
+    { outcome: 'moved-unreadable', known: false, platform: 'linux' as const, unreadableCommand: '[git]', failure: 'process marker could not be read' },
+  ])('confirms unreadable ps data: $outcome (known=$known, cleanup=$duringCleanup, platform=$platform)', async ({ outcome, known, failure, duringCleanup, platform, unreadableCommand }) => {
     vi.useFakeTimers()
     const marker = 'marker-value'
     const processes = new Map([
@@ -1209,7 +1313,7 @@ describe('shared provider process behavior', () => {
     let confirmed = false
     const signals: number[] = []
     const dependencies = {
-      platform: 'darwin' as const,
+      platform: platform ?? 'darwin' as const,
       markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
       enforceProcessMarker: true,
       execFile: (
@@ -1227,7 +1331,7 @@ describe('shared provider process behavior', () => {
         }
         const markerScan = args.some((arg) => arg.includes('command='))
         if (markerScan && phase === 'unreadable') {
-          processes.set(101, { ...child, command: '(git)' })
+          processes.set(101, { ...child, command: unreadableCommand ?? '(git)' })
           phase = 'confirmation'
         } else if (markerScan && phase === 'confirmation') {
           confirmed = true
@@ -1239,6 +1343,8 @@ describe('shared provider process behavior', () => {
           if (outcome === 'zombie') processes.set(101, { ...child, state: 'Z', command: '<defunct>' })
           if (outcome === 'marked') processes.set(101, { ...child })
           if (outcome === 'unmarked') processes.set(101, { ...child, command: 'git PATH=/usr/bin' })
+          if (outcome === 'moved-unmarked') processes.set(101, { ...child, pgid: 200, command: 'git PATH=/usr/bin' })
+          if (outcome === 'moved-unreadable') processes.set(101, { ...child, pgid: 200, command: '[git]' })
           if (outcome === 'reused') processes.set(101, {
             ppid: 1, pgid: 200, state: 'S', startTime: 'replacement-start', command: '(unrelated)',
           })
@@ -1280,7 +1386,7 @@ describe('shared provider process behavior', () => {
       expect(confirmed).toBe(true)
       if (failure) expect(error?.message).toContain(failure)
       else expect(error).toBeNull()
-      if (outcome === 'unreadable') expect(observation.diagnostics[0]?.processes).toContainEqual(
+      if (outcome === 'unreadable' || outcome === 'moved-unreadable') expect(observation.diagnostics[0]?.processes).toContainEqual(
         expect.objectContaining({ pid: 101, markerMatches: null }),
       )
       expect(signals).not.toContain(200)

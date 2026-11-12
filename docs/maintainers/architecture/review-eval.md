@@ -118,7 +118,7 @@ Eval 引擎通过内部 Provider 注册表调度不同的执行后端：
 
 - **实现职责分工**：
   - `eval-process-management.ts`：负责执行运行前置预检（Codex permission profile、macOS keychain、进程树检查可用性与 Windows Job helper 准备），并返回受管元数据（`processManagement`）；
-  - `process-tree.ts`：负责扫描系统进程表、验证 PPID 链与启动 marker、在单次预算内执行复查并判定三值语义（`markerMatches: true | false | null`）；
+  - `process-tree.ts`：负责扫描系统进程表、验证 PPID 链与启动 marker、按平台识别不可读形式、在单次预算内执行复查并判定三值语义（`markerMatches: true | false | null`）；
   - 进程生命周期、信号分发与直接子进程收尾的实际执行入口由各 Provider 运行时组件（`process.ts`、`custom-process.ts`、`codex-eval-process-tree.ts`）负责。
 - **内部显式收尾条件**：`requireDescendantsExitedBeforeCompletion` 独立于共享进程组要求。显式请求该条件时，即使后代最后已被清理，正常完成时仍存活的已归属后代也使请求失败；root 和 zombie 不算活后代。此内部选项不改变 custom-process 必须共享初始组的公开协议。公开 AW 兼容性探针使用独立组观察的边界见 [CI 无认证资格](../ci.md#6-无认证-native-客户端资格)。
   终止开始、升级信号及最终核验均立即发起本阶段的新查询，不复用边界前启动的共享查询作为完成或清理事实。marker 模式的身份表、匹配和不可读集合来自同一次查询。终止开始时，已在途的 identity/marker delivery 与新查询并行完成；在阶段预算内，观察器保持活动以保留旧 delivery 中的运行期违规，完成或超时后停止。旧活表仅能用于运行期观察，不能单独证明完成时后代仍活。等待、新查询、一次 marker 复查及 macOS 启动字符串补证共用本阶段2秒绝对预算，超时不退回旧表、不取消或缩短其他观察器的共享查询；外层清理截止保持不变。
