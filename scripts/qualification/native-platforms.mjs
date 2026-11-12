@@ -94,6 +94,30 @@ async function readManagedTrace(file) {
   } catch (error) { return { state: error.code === 'ENOENT' ? 'not-created' : 'unavailable', records }; }
 }
 
+// Observe only this isolated fixture's generated marketplace entries, using
+// the same parser as ownership inspection. Never retain the complete config.
+export async function readQualificationCodexSources(home) {
+  const sources = [];
+  if (typeof home !== 'string' || !path.isAbsolute(home)) return { state: 'invalid-path', sources };
+  try {
+    const file = path.join(home, 'config.toml');
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) return { state: 'unavailable', sources };
+    if (stat.size > 1024 * 1024) return { state: 'over-limit', sources };
+    const { readCodexConfigFile } = await import('../../packages/cli/dist/src/utils/codex-config.js');
+    const { snapshot } = await readCodexConfigFile(file);
+    const selected = Object.entries(snapshot.marketplaces).filter(([name]) => /^aw-qualification-[a-f0-9]{12}$/u.test(name));
+    for (const [name, value] of selected.slice(0, 4)) {
+      const absolute = typeof value.source === 'string' && path.isAbsolute(value.source);
+      sources.push({ name, source: absolute ? value.source.slice(0, 2048) : null,
+        sourceFormat: absolute ? 'absolute' : typeof value.source === 'string' ? 'other' : 'absent',
+        sourceType: typeof value.sourceType === 'string' ? value.sourceType.slice(0, 64) : null,
+        sourcePointsToManifest: value.sourcePointsToManifest });
+    }
+    return { state: 'captured-parser-projection', sources, omitted: Math.max(0, selected.length - 4) };
+  } catch (error) { return { state: error.code === 'ENOENT' ? 'missing' : 'unavailable', sources }; }
+}
+
 export async function runScope(platform, scope, launcher, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
   const report = { scope, input: options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate', status: 'failed', checks: [], commands: [], cleanup: 'pending' };
@@ -163,6 +187,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         const trace = ['linux', 'win32'].includes(process.platform) && ['codex', 'pi'].includes(platform)
           && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
         const traceFile = trace ? path.join(root, `managed-native-${report.commands.length}.jsonl`) : undefined;
+        const sourceDiagnostic = trace && platform === 'codex' && process.platform === 'win32';
         const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
           AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform,
           AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
@@ -175,6 +200,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         } catch (error) {
           report.commands.push(redact({ aw: args, cwd, processFailure: error?.message,
             ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
+            ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}),
             processDiagnostics: error?.publicAwProcessDiagnostics ?? [],
             ...(error?.publicAwProcessNames ? { processNames: error.publicAwProcessNames } : {}),
             ...(error?.publicAwMarkerRows ? { markerRows: error.publicAwMarkerRows } : {}),
@@ -188,7 +214,8 @@ export async function runScope(platform, scope, launcher, options = {}) {
           cancelled: result.cancelled, terminationReason: result.terminationReason,
           maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
           ...(result.exitCode !== 0 || result.timedOut || result.maxBufferExceeded
-            ? { failureSummary: publicAwFailureSummary(result.stdout) } : {}),
+            ? { failureSummary: publicAwFailureSummary(result.stdout),
+              ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}) } : {}),
           processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
             descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
         if (trustBootstrap) {

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { open } from 'node:fs/promises';
 
 import fs from 'fs-extra';
 
@@ -107,7 +108,6 @@ async function resolveNpmShim(
       || typeof launcherEntry !== 'string'
       || launcherParts.length === 0
       || launcherParts.some((part) => part.length === 0 || part === '.' || part === '..')
-      || !/\.(?:[cm]?js)$/u.test(launcherParts.at(-1) ?? '')
     ) {
       throw new Error('the package identity or launcher contract is invalid');
     }
@@ -134,6 +134,19 @@ async function resolveNpmShim(
     ).replaceAll('/', '\\');
     if (shimContent.replaceAll('\r\n', '\n') !== renderNpmCmdShim(shimTarget)) {
       throw new Error('the shim is not the supported npm launcher');
+    }
+    if (!/\.(?:[cm]?js)$/u.test(canonicalLauncher)) {
+      if (path.extname(canonicalLauncher) !== '') throw new Error('the launcher is not a Node script');
+      // Official extensionless npm entries must explicitly select Node. Read
+      // only the first line prefix after package, path and shim validation.
+      const file = await open(canonicalLauncher, 'r');
+      try {
+        const prefix = Buffer.alloc(128);
+        const { bytesRead } = await file.read(prefix, 0, prefix.length, 0);
+        if (!/^#!\/usr\/bin\/env node(?:\r?\n|$)/u.test(prefix.subarray(0, bytesRead).toString('utf8'))) {
+          throw new Error('the extensionless launcher does not declare Node');
+        }
+      } finally { await file.close(); }
     }
     return { command: process.execPath, argsPrefix: [canonicalLauncher] };
   } catch (error) {

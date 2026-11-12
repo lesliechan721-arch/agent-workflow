@@ -995,8 +995,8 @@ describe('five namespaced write commands', () => {
       expect((await readIntentFixture({ scope, cwd: isolation.layout.fixtureCwd, env: isolation.env })).roots)
         .toEqual([expect.objectContaining({ pluginId: 'team/root' })]);
     }
-    // Two installs and three real preApply attempts need a wider Windows runner window.
-  }, process.platform === 'win32' ? 60_000 : 30_000);
+    // Two installs and three real preApply attempts need a wider cross-platform runner window.
+  }, 60_000);
 
   it('keeps a dual-platform dependency on the platform required by a Codex-only root', async () => {
     const isolation = getCurrentSourceTestIsolation();

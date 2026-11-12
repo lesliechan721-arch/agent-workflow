@@ -6,7 +6,7 @@ import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary } from './native-platforms.mjs';
+import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readQualificationCodexSources } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
@@ -14,6 +14,35 @@ import { observeNativeWorkingDirectory } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
+
+// Test Value Gate: diagnose only generated fixture marketplace sources, with
+// production parsing and bounded output; credentials and other config stay out.
+test('captures only bounded fixture Codex source configuration', async () => {
+  await publicProcessFixture(async (options) => {
+    const home = path.join(options.cwd, 'codex-sources'); await fs.mkdir(home);
+    assert.equal((await readQualificationCodexSources(home)).state, 'missing');
+    assert.equal((await readQualificationCodexSources('relative-home')).state, 'invalid-path');
+    const source = path.join(options.cwd, 'marketplace');
+    const name = 'aw-qualification-abcdef123456';
+    await fs.writeFile(path.join(home, 'config.toml'), [
+      'api_key = "credential-must-not-appear"',
+      '[marketplaces.foreign]', 'source = "https://user:password@example.com/repository"',
+      `[marketplaces.${name}]`, `source = ${JSON.stringify(source)}`, 'source_type = "local"',
+    ].join('\n'));
+    const captured = await readQualificationCodexSources(home);
+    assert.deepEqual(captured, { state: 'captured-parser-projection', sources: [{ name, source,
+      sourceFormat: 'absolute', sourceType: 'local', sourcePointsToManifest: false }], omitted: 0 });
+    assert(!JSON.stringify(captured).includes('credential')); assert(!JSON.stringify(captured).includes('password'));
+    await fs.writeFile(path.join(home, 'config.toml'), Array.from({ length: 6 }, (_, index) =>
+      `[marketplaces.aw-qualification-${String(index).padStart(12, '0')}]\nsource = "https://user:password@example.com/private"\n`).join('\n'));
+    const bounded = await readQualificationCodexSources(home);
+    assert.equal(bounded.sources.length, 4); assert.equal(bounded.omitted, 2);
+    assert(bounded.sources.every((entry) => entry.source === null && entry.sourceFormat === 'other'));
+    assert(!JSON.stringify(bounded).includes('password'));
+    await fs.writeFile(path.join(home, 'config.toml'), 'x'.repeat(1024 * 1024 + 1));
+    assert.equal((await readQualificationCodexSources(home)).state, 'over-limit');
+  });
+});
 
 // Test Value Gate: failed public AW receipts must retain the error after a long
 // plan while the existing preview cap and path redaction remain effective.
@@ -248,6 +277,7 @@ test('loads a managed trace before a real native command on supported Hosted sys
 }, async () => {
   await publicProcessFixture(async (options) => {
     const nativeFile = path.join(options.cwd, 'selected-native.cjs');
+    const nativeArgument = process.platform === 'win32' ? nativeFile.toUpperCase() : nativeFile;
     const invocationFile = path.join(options.cwd, 'invoke-native.mjs');
     const traceFile = path.join(options.cwd, 'managed.jsonl');
     const module = path.resolve('scripts/qualification/native-platform-managed-trace.mjs');
@@ -263,7 +293,7 @@ test('loads a managed trace before a real native command on supported Hosted sys
       catch(error) { code=error.exitCode; }
       assert.equal(code,7); console.log('native failure preserved');
     `);
-    const result = await new Promise((resolve, reject) => execFile(process.execPath, ['--import', pathToFileURL(module).href, invocationFile, nativeFile], {
+    const result = await new Promise((resolve, reject) => execFile(process.execPath, ['--import', pathToFileURL(module).href, invocationFile, nativeArgument], {
       cwd: options.cwd, env: { ...options.env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'pi', AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([nativeFile]),
@@ -287,13 +317,41 @@ test('loads a managed trace before a real native command on supported Hosted sys
 // backend, rather than inferring it from the requested cwd or a fake runner.
 test('observes the native child working directory in an isolated environment', { timeout: 15_000 }, async () => {
   await publicProcessFixture(async (options) => {
-    const observation = await observeNativeWorkingDirectory({ project: options.cwd, env: options.env });
-    assert.equal(observation.requestedCwd, options.cwd);
-    const expected = await fs.stat(options.cwd, { bigint: true });
+    const unicode = path.join(options.cwd, 'cwd space 项目'); await fs.mkdir(unicode);
+    for (const project of [options.cwd, unicode]) {
+      const observation = await observeNativeWorkingDirectory({ project, env: options.env });
+      assert.equal(observation.requestedCwd, project);
+      assert.equal(observation.requestedUtf16Length, project.length);
+      const expected = await fs.stat(project, { bigint: true });
+      for (const actual of [observation.cwd, observation.realpath]) {
+        const identity = await fs.stat(actual, { bigint: true });
+        assert(identity.isDirectory());
+        assert.equal(identity.dev, expected.dev); assert.equal(identity.ino, expected.ino);
+      }
+      if (process.platform === 'win32') {
+        assert(observation.requestedUtf16Length < 260, 'The fixture must exercise an ordinary short cwd.');
+        assert.equal(observation.requestedNamespaced, false);
+        assert.equal(observation.cwdNamespaced, false); assert.equal(observation.realpathNamespaced, false);
+      }
+    }
+  });
+});
+
+// Test Value Gate: changing short cwd handling must preserve actual long cwd
+// execution through the default Windows helper, not only a mocked path value.
+test('retains a long native working directory on Windows', {
+  skip: process.platform !== 'win32', timeout: 15_000,
+}, async () => {
+  await publicProcessFixture(async (options) => {
+    const project = path.join(options.cwd, 'cwd space 项目', ...Array(12).fill('long-project-directory'));
+    assert(project.length >= 260);
+    await fs.mkdir(project, { recursive: true });
+    const observation = await observeNativeWorkingDirectory({ project, env: options.env });
+    assert.equal(observation.requestedUtf16Length, project.length);
+    const expected = await fs.stat(project, { bigint: true });
     for (const actual of [observation.cwd, observation.realpath]) {
       const identity = await fs.stat(actual, { bigint: true });
-      assert(identity.isDirectory());
-      assert.equal(identity.dev, expected.dev); assert.equal(identity.ino, expected.ino);
+      assert(identity.isDirectory()); assert.equal(identity.dev, expected.dev); assert.equal(identity.ino, expected.ino);
     }
   });
 });

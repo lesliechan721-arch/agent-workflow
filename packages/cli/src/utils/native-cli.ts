@@ -845,7 +845,10 @@ export function createExecFileNativeCliRunner(
         windowsJobInvocation?.command ?? executableCommand,
         windowsJobInvocation?.args ?? executableArgs,
         {
+          // Ordinary cwd strings also identify native trust scopes. Preserve
+          // them while retaining the existing libuv handling for long paths.
           cwd: platform === 'win32' && invocation.cwd !== undefined
+            && path.win32.resolve(invocation.cwd).length >= 260
             ? path.win32.toNamespacedPath(invocation.cwd)
             : invocation.cwd,
           env: {

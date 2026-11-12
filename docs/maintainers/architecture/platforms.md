@@ -169,6 +169,7 @@ AgentPluginAdapter 提供 discover、resolve、inspect、capabilities、project 
   - 当父进程退出、超时中断、主动取消或 root 正常退出后，Windows 内核自动清理并终止 Job 内所有后代进程。
   - 停止后必须通过 Job accounting 确认 Job 内进程计数已归零。
 - **环境与模块路径继承**：插件后端完整继承原环境、工作目录和 stdio，包括 PowerShell 模块路径（`PSModulePath`）的有值和缺失状态。
+- **Native CLI 工作目录**：普通 Windows 短路径保留调用方写法，避免改变客户端项目信任键。解析后达到 260 个 UTF-16 code unit 的路径保留既有 namespace 转换；调用方显式的 namespace 不被删除。这不证明所有客户端的长项目或 UNC 信任语义已通过资格。
 
 <a id="51-架构与产品包交付"></a>
 ### 5.2 原生工具构建与交付边界

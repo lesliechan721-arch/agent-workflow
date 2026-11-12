@@ -101,6 +101,33 @@ async function writeWindowsAgentNpmFixture(root: string, agent: 'claude' | 'code
 }
 
 describe('native-cli', () => {
+  // Test Value Gate: namespacing an ordinary cwd changes native trust keys;
+  // long cwd values must retain the existing Windows compatibility handling.
+  it.each([
+    ['short drive', 'C:\\work\\project', 'C:\\work\\project'],
+    ['relative', 'relative-project', 'relative-project'],
+    ['short UNC', '\\\\server\\share\\project', '\\\\server\\share\\project'],
+    ['259 code units', `C:\\${'a\\'.repeat(125)}abcdef`, `C:\\${'a\\'.repeat(125)}abcdef`],
+    ['260 code units', `C:\\${'a\\'.repeat(125)}abcdefg`, `\\\\?\\C:\\${'a\\'.repeat(125)}abcdefg`],
+    ['Unicode 259 code units', `C:\\${'😀\\'.repeat(85)}x`, `C:\\${'😀\\'.repeat(85)}x`],
+    ['Unicode 260 code units', `C:\\${'😀\\'.repeat(85)}xx`, `\\\\?\\C:\\${'😀\\'.repeat(85)}xx`],
+    ['explicit namespace', '\\\\?\\C:\\work\\project', '\\\\?\\C:\\work\\project'],
+    ['long UNC', `\\\\server\\share\\${'a\\'.repeat(130)}project`, `\\\\?\\UNC\\server\\share\\${'a\\'.repeat(130)}project`],
+  ])('preserves the Windows cwd contract for %s', async (_name, cwd, expected) => {
+    let observedCwd: string | undefined;
+    const runner = createExecFileNativeCliRunner({ platform: 'win32',
+      createWindowsJobInvocation: (executable, args) => ({ command: 'fixture-job-helper',
+        args: ['--config', 'fixed'], config: { schemaVersion: 1, executable, args: [...args], parentPid: 42 } }),
+      execFile: (_command, _args, options, callback) => {
+        observedCwd = options.cwd;
+        const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: 0, signalCode: null, kill: vi.fn(() => true) });
+        queueMicrotask(() => callback(null, 'cwd fixture', ''));
+        return child;
+      } });
+    await expect(runner({ command: 'controlled-client', args: [], cwd })).resolves.toMatchObject({ exitCode: 0 });
+    expect(observedCwd).toBe(expected);
+  });
+
   // Test Value Gate: streaming input must preserve UTF-8 chunks and close stdin only after the exchange requests EOF.
   it('runs a bounded input exchange through the formal process runner', async () => {
     const stdout = new PassThrough();

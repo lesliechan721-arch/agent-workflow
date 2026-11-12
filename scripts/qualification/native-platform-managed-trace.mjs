@@ -61,6 +61,20 @@ export function createManagedTraceWriter(file) {
 
 export function createManagedTraceRunner(base, { entries, client, env = process.env, emit }) {
   const targets = new Set(entries.map(canonicalFile).filter(Boolean));
+  function matchesTarget(file) {
+    if (targets.has(file)) return true;
+    if (process.platform !== 'win32' || typeof file !== 'string') return false;
+    // Windows realpath can retain requested case. Require a case alias and
+    // the same file identity before recording the selected client.
+    try {
+      const actual = statSync(file, { bigint: true });
+      return actual.isFile() && actual.ino !== 0n && [...targets].some((target) => {
+        if (target.toLowerCase() !== file.toLowerCase()) return false;
+        const expected = statSync(target, { bigint: true });
+        return expected.isFile() && expected.dev === actual.dev && expected.ino === actual.ino;
+      });
+    } catch { return false; }
+  }
   const preloadMarker = env[PUBLIC_MARKER];
   const preloadMarkers = markerValues(process.env, env);
   let operationId = 0;
@@ -73,8 +87,8 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
       const commandFile = canonicalFile(invocation.command);
       const firstArgument = Array.isArray(invocation.args) ? invocation.args[0] : undefined;
       const argumentFile = canonicalFile(firstArgument);
-      const direct = targets.has(commandFile);
-      const prefixed = !direct && targets.has(argumentFile);
+      const direct = matchesTarget(commandFile);
+      const prefixed = !direct && matchesTarget(argumentFile);
       if ((direct || prefixed) && Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string')) {
         markers = [...new Set([...preloadMarkers, ...markerValues(process.env, env, invocation.env)])];
         const args = prefixed ? invocation.args.slice(1) : invocation.args;

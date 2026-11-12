@@ -220,13 +220,13 @@ describe('read-only target discovery and production selection', () => {
   it('identifies Grok through its validated Windows npm launcher', async () => {
     const ctx = await fixture();
     const packageRoot = path.join(ctx.env!.PATH!, 'node_modules', '@xai-official', 'grok');
-    const entry = path.join(packageRoot, 'dist', 'cli.js');
-    await fs.outputFile(entry, 'controlled official entry');
+    const entry = path.join(packageRoot, 'bin', 'grok');
+    await fs.outputFile(entry, '#!/usr/bin/env node\n// controlled official Node entry\n');
     await fs.writeJson(path.join(packageRoot, 'package.json'), {
-      name: '@xai-official/grok', bin: { grok: 'dist/cli.js' },
+      name: '@xai-official/grok', bin: { grok: 'bin/grok' },
     });
     await fs.writeFile(path.join(ctx.env!.PATH!, 'grok.cmd'),
-      renderNpmCmdShim('node_modules\\@xai-official\\grok\\dist\\cli.js'));
+      renderNpmCmdShim('node_modules\\@xai-official\\grok\\bin\\grok'));
     const env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', GROK_HOME: path.join(ctx.cwd, 'grok-home') };
     let probes = 0;
     const found = await discoverPlatform('grok', { ...ctx, env, platform: 'win32', runner: async ({ command, args }) => {
@@ -238,7 +238,7 @@ describe('read-only target discovery and production selection', () => {
     } });
     expect(found.availability).toBe('available');
     expect(found.installations[0]?.version).toBe('1.0.77'); expect(probes).toBeGreaterThan(0);
-    await fs.writeJson(path.join(packageRoot, 'package.json'), { name: 'unrelated-package', bin: { grok: 'dist/cli.js' } });
+    await fs.writeJson(path.join(packageRoot, 'package.json'), { name: 'unrelated-package', bin: { grok: 'bin/grok' } });
     let foreignCalls = 0;
     const foreign = await discoverPlatform('grok', { ...ctx, env, platform: 'win32', runner: async () => {
       foreignCalls += 1;

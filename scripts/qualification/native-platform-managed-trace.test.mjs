@@ -72,7 +72,7 @@ test('throws the original error and captures safe exit, timeout, and cleanup met
   }
 });
 
-test('matches only exact real whitelist files in command or args[0] and directly delegates other promises', async (t) => {
+test('matches only real whitelist files in command or args[0] and directly delegates other promises', async (t) => {
   const { entry, other, alias } = await fixture(t);
   const records = [];
   const result = { exitCode: 0, stdout: '', stderr: '' };
@@ -88,6 +88,7 @@ test('matches only exact real whitelist files in command or args[0] and directly
     { invocation: { command: process.execPath, args: ['unrelated', entry] }, matched: false },
     { invocation: { command: entry, args: [1] }, matched: false },
     { invocation: { command: entry }, matched: false },
+    ...(process.platform === 'win32' ? [{ invocation: { command: entry.toUpperCase(), args: [] }, matched: true }] : []),
   ]) {
     const count = records.length;
     const returned = wrapped(invocation);

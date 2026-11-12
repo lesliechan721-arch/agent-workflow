@@ -16,7 +16,10 @@ export async function observeNativeWorkingDirectory(ctx) {
   const value = JSON.parse(result.stdout);
   for (const key of ['cwd', 'realpath']) assert(typeof value[key] === 'string' && path.isAbsolute(value[key])
     && value[key].length <= 4096, 'The native cwd probe must return absolute paths.');
-  return { requestedCwd: ctx.project, cwd: value.cwd, realpath: value.realpath };
+  const namespaced = (value) => value.startsWith('\\\\?\\') || value.startsWith('\\\\.\\');
+  return { requestedCwd: ctx.project, cwd: value.cwd, realpath: value.realpath,
+    requestedUtf16Length: ctx.project.length, cwdUtf16Length: value.cwd.length, realpathUtf16Length: value.realpath.length,
+    requestedNamespaced: namespaced(ctx.project), cwdNamespaced: namespaced(value.cwd), realpathNamespaced: namespaced(value.realpath) };
 }
 
 // Expose the acquired client to public AW discovery. Only the temporary npm
