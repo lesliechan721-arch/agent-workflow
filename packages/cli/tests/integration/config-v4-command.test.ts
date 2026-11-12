@@ -25,62 +25,68 @@ import { nativeToolFixture } from '../helpers/native-tools.js';
 describe('public config command', () => {
   beforeEach(() => { installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true, trust: true }); });
   // Test Value Gate: the shared native payload uses user config even when its only native installation is project scoped.
-  it('applies user config to shared Claude static commands without changing native installation scope', async () => {
+  it('applies user config to shared Claude static commands without changing native installation scope', async (test) => {
+    const timing = createCommandTestTiming(test);
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
-    execFileSync('git', ['init', '-q'], { cwd });
+    await timing.measure('fixture', 'git init', async () => { execFileSync('git', ['init', '-q'], { cwd }); });
     const env = isolation.env;
     const authoringRoot = path.join(cwd, 'claude-static-authoring');
     const pluginRoot = path.join(authoringRoot, 'plugins/demo');
     const capture = path.join(cwd, 'claude-static-run.json');
-    await fs.outputFile(path.join(pluginRoot, 'skills/provider/SKILL.md'), '---\nname: provider\ndescription: Shared Claude fixture.\n---\n{{aw.command:tools/run}} check\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills/provider/README.md'), '# Provider\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills/provider/tool.mjs'), 'import fs from "node:fs"; fs.writeFileSync(process.env.CAPTURE_FILE,JSON.stringify(process.argv.slice(2)));\n');
-    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
-      "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
-      "console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,target:'aw.command-set',kind:'commandSet',platform:'claude',state:'present',refreshKeys:['mode'],entries:[{key:'run',runner:'node',entry:'tool.mjs',args:[c.config.values.mode]}]}))}));",
-    ].join('\n'));
-    await createCatalogSnapshotFixture(authoringRoot, 'demo', [], 'Shared native config fixture\n', (manifest) => {
-      manifest.platforms = ['claude'];
-      manifest.skills = './skills';
-      manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', default: 'default' } } };
-      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
-      manifest.managedCommands = { packages: [], sets: [{ set: 'tools', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'provider' }, mode: 'dynamic', refreshKeys: ['mode'] }] };
-      manifest.extensions = { permissions: [{ name: 'run', allow: [{ command: { set: 'tools', key: 'run', variant: 'default' }, argsPrefix: ['check'] }] }] };
+    await timing.measure('fixture', 'create Claude catalog', async () => {
+      await fs.outputFile(path.join(pluginRoot, 'skills/provider/SKILL.md'), '---\nname: provider\ndescription: Shared Claude fixture.\n---\n{{aw.command:tools/run}} check\n');
+      await fs.outputFile(path.join(pluginRoot, 'skills/provider/README.md'), '# Provider\n');
+      await fs.outputFile(path.join(pluginRoot, 'skills/provider/tool.mjs'), 'import fs from "node:fs"; fs.writeFileSync(process.env.CAPTURE_FILE,JSON.stringify(process.argv.slice(2)));\n');
+      await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+        "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
+        "console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,target:'aw.command-set',kind:'commandSet',platform:'claude',state:'present',refreshKeys:['mode'],entries:[{key:'run',runner:'node',entry:'tool.mjs',args:[c.config.values.mode]}]}))}));",
+      ].join('\n'));
+      await createCatalogSnapshotFixture(authoringRoot, 'demo', [], 'Shared native config fixture\n', (manifest) => {
+        manifest.platforms = ['claude'];
+        manifest.skills = './skills';
+        manifest.config = { schemaVersion: 5, fields: { mode: { type: 'string', default: 'default' } } };
+        manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+        manifest.managedCommands = { packages: [], sets: [{ set: 'tools', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'provider' }, mode: 'dynamic', refreshKeys: ['mode'] }] };
+        manifest.extensions = { permissions: [{ name: 'run', allow: [{ command: { set: 'tools', key: 'run', variant: 'default' }, argsPrefix: ['check'] }] }] };
+      });
+      await fs.copy(path.resolve(import.meta.dirname, '../../../../plugins/marketplace-source.json'), path.join(authoringRoot, 'plugins/marketplace-source.json'));
     });
-    await fs.copy(path.resolve(import.meta.dirname, '../../../../plugins/marketplace-source.json'), path.join(authoringRoot, 'plugins/marketplace-source.json'));
-    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
+    const sourceRoot = await timing.measure('fixture', 'materialize embedded catalog', () => createSyntheticEmbeddedRoot(authoringRoot));
     try {
-      await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), { schemaVersion: 1, kind: 'catalog',
-        workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
-        sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}` });
-      const snapshot = await readCatalogSourcesConfigSnapshot(env);
-      await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
-      await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
-      const native = await createClaudeNativeTestRuntime(isolation);
-      const run = async (args: string[]) => {
+      await timing.measure('fixture', 'register source', async () => {
+        await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), { schemaVersion: 1, kind: 'catalog',
+          workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
+          sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}` });
+        const snapshot = await readCatalogSourcesConfigSnapshot(env);
+        await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: snapshot.digest, env });
+      });
+      await timing.measure('fixture', 'activate catalog', () => syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env }));
+      const native = await timing.measure('fixture', 'prepare Claude boundary', () => createClaudeNativeTestRuntime(isolation));
+      const run = (name: string, args: string[]) => timing.measure('command', name, async (sequence) => {
         const output = createCapturedCliIo();
-        const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: native.nativeCliRunner });
+        const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: native.nativeCliRunner,
+          debugLogger: { log: (event) => timing.commandEvent(sequence, event) } });
         return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
-      };
-      const set = (profile: 'common' | 'claude', mode: string, apply = false) => run(['plugin', 'config', 'set', 'team/demo', 'mode',
+      });
+      const set = (name: string, profile: 'common' | 'claude', mode: string, apply = false) => run(name, ['plugin', 'config', 'set', 'team/demo', 'mode',
         ...(profile === 'common' ? [] : ['--platform', profile]), '--context', 'project',
         '--value-json', JSON.stringify(mode), ...(apply ? ['--apply', '--yes'] : [])]);
-      expect(await set('common', 'personal')).toMatchObject({ exitCode: 0 });
-      expect(await set('claude', 'platform')).toMatchObject({ exitCode: 0 });
-      expect(await run(['target', 'set', 'claude'])).toMatchObject({ exitCode: 0 });
-      const installed = await run(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes']);
+      expect(await set('common initial config', 'common', 'personal')).toMatchObject({ exitCode: 0 });
+      expect(await set('Claude initial config', 'claude', 'platform')).toMatchObject({ exitCode: 0 });
+      expect(await run('target set', ['target', 'set', 'claude'])).toMatchObject({ exitCode: 0 });
+      const installed = await run('plugin install', ['plugin', 'install', 'team/demo', '--scope', 'project', '--yes']);
       expect(installed, JSON.stringify(installed)).toMatchObject({
         exitCode: 0, payload: {
           schemaVersion: 1,
           status: 'success'
         }
       });
-      const command = (await listManagedCommands(env)).commands[0]!;
+      const command = (await timing.measure('inspect', 'list installed commands', () => listManagedCommands(env))).commands[0]!;
       expect(command.owner).toMatchObject({ kind: 'plugin', producer: { platform: 'claude', scope: 'user', projectRoot: null } });
-      expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['platform']);
-      const producerBefore = await readInstalledCommandProducer(command.resourceRoot!);
-      expect(await set('common', 'shadowed-next', true)).toMatchObject({
+      expect((await timing.measure('inspect', 'resolve initial command', () => resolveManagedCommand(command.id, env))).launch.args).toEqual(['platform']);
+      const producerBefore = await timing.measure('inspect', 'read initial producer', () => readInstalledCommandProducer(command.resourceRoot!));
+      expect(await set('shadowed common apply', 'common', 'shadowed-next', true)).toMatchObject({
         exitCode: 0, payload: {
           schemaVersion: 1,
           data: {
@@ -89,36 +95,40 @@ describe('public config command', () => {
           }
         }
       });
-      expect(await readInstalledCommandProducer(command.resourceRoot!)).toEqual(producerBefore);
-      expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['platform']);
-      expect(await set('claude', 'saved')).toMatchObject({
+      expect(await timing.measure('inspect', 'read shadowed producer', () => readInstalledCommandProducer(command.resourceRoot!))).toEqual(producerBefore);
+      expect((await timing.measure('inspect', 'resolve shadowed command', () => resolveManagedCommand(command.id, env))).launch.args).toEqual(['platform']);
+      expect(await set('Claude save only', 'claude', 'saved')).toMatchObject({
         exitCode: 0, payload: {
           schemaVersion: 1,
           data: { apply: { reason: 'notRequested' } }
         }
       });
-      expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['platform']);
-      const applied = await set('claude', 'applied', true);
+      expect((await timing.measure('inspect', 'resolve saved command', () => resolveManagedCommand(command.id, env))).launch.args).toEqual(['platform']);
+      const applied = await set('Claude effective apply', 'claude', 'applied', true);
       expect(applied, JSON.stringify(applied)).toMatchObject({
         exitCode: 0, payload: {
           schemaVersion: 1,
           data: { apply: { state: 'succeeded', targetResults: [{ target: { platform: 'claude', scope: 'project' }, state: 'completed' }] } }
         }
       });
-      expect((await listManagedCommands(env)).commands.map((entry) => entry.id)).toEqual([command.id]);
-      expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['applied']);
-      expect(await fs.readFile(path.join(command.resourceRoot!, 'SKILL.md'), 'utf8')).toContain(`aw command run ${command.id} -- check`);
-      const settings = await fs.readJson(path.join(cwd, '.claude/settings.local.json'));
-      expect(settings.permissions.allow).toContain(`Bash(aw command run ${command.id} -- check *)`);
-      const installs = native.nativeCliRunner.mock.calls.filter(([invocation]) => native.isClaudeInvocation(invocation))
-        .map(([invocation]) => invocation.args.slice(invocation.args.indexOf('plugin')))
-        .filter((args) => args[0] === 'plugin' && args[1] === 'install');
-      expect(installs.length).toBeGreaterThan(0);
-      expect(installs.every((args) => args[args.indexOf('--scope') + 1] === 'local')).toBe(true);
+      await timing.measure('inspect', 'verify applied command and permissions', async () => {
+        expect((await listManagedCommands(env)).commands.map((entry) => entry.id)).toEqual([command.id]);
+        expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['applied']);
+        expect(await fs.readFile(path.join(command.resourceRoot!, 'SKILL.md'), 'utf8')).toContain(`aw command run ${command.id} -- check`);
+        const settings = await fs.readJson(path.join(cwd, '.claude/settings.local.json'));
+        expect(settings.permissions.allow).toContain(`Bash(aw command run ${command.id} -- check *)`);
+        const installs = native.nativeCliRunner.mock.calls.filter(([invocation]) => native.isClaudeInvocation(invocation))
+          .map(([invocation]) => invocation.args.slice(invocation.args.indexOf('plugin')))
+          .filter((args) => args[0] === 'plugin' && args[1] === 'install');
+        expect(installs.length).toBeGreaterThan(0);
+        expect(installs.every((args) => args[args.indexOf('--scope') + 1] === 'local')).toBe(true);
+      });
       const output = createCapturedCliIo();
-      expect(await runSafeCli(['command', 'run', command.id, '--', 'check'], { cwd, env: { ...env, CAPTURE_FILE: capture }, io: output.io, interactive: false, nativeCliRunner: native.nativeCliRunner })).toBe(0);
-      expect(await fs.readJson(capture)).toEqual(['applied', 'check']);
-    } finally { await fs.remove(sourceRoot); }
+      expect(await timing.measure('command', 'managed command run', (sequence) => runSafeCli(['command', 'run', command.id, '--', 'check'], {
+        cwd, env: { ...env, CAPTURE_FILE: capture }, io: output.io, interactive: false, nativeCliRunner: native.nativeCliRunner,
+        debugLogger: { log: (event) => timing.commandEvent(sequence, event) } }))).toBe(0);
+      expect(await timing.measure('inspect', 'read managed command capture', () => fs.readJson(capture))).toEqual(['applied', 'check']);
+    } finally { await timing.measure('fixture', 'remove embedded catalog', () => fs.remove(sourceRoot)); }
   });
   // Test Value Gate: only public config apply may change installed command launch values; Skill and permission consumers must retain the same ID.
   it('refreshes an artifact command set when only its own refreshKeys depend on the changed config', async () => {
