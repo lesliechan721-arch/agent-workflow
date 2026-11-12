@@ -80,6 +80,7 @@ const messages: Record<string, string> = {
   operationReviewStale: 'The operation evidence changed. Review the current state and repeat the request.',
   pluginSelectorAmbiguous: 'The plugin name is ambiguous. Use a source-qualified plugin ID.',
   pluginUnavailable: 'The plugin is not available in the selected Active Catalog.',
+  nativeTrustUnconfirmed: 'The native client effective trust state could not be observed. Registration and activation do not establish trust.',
   outputsRetainedRequirements: 'Requirements were retained. A later sync can deploy these outputs again.',
 };
 

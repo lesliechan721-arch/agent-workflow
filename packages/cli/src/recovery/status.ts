@@ -169,16 +169,19 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               existing.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope });
             }
             const unmet = [];
+            const staticComponents: PluginComponent[] = [];
             const staticSupplements: PluginComponent[] = [];
             const inputUnits: Parameters<typeof createPlatformInputEvidence>[0]['units'] = [];
+            const profile = getQualifiedPlatformProfile(platform);
             let expectedCount = 0;
             let packageExpectedCount = 0;
             for (const unit of resolution.renderUnits.filter((unit) => binding.renderUnitIds.includes(unit.id))) {
               const capabilities = adapter.capabilities({ binding, renderUnit: unit, observation: live,
-                profile: getQualifiedPlatformProfile(platform) });
+                profile });
               const expected = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir,
                 manifest: plugin.manifest, platform, capabilities, allowedOutputKinds: unit.kinds });
               expectedCount += expected.components.length;
+              staticComponents.push(...expected.components);
               if (unit.output === 'supplement') staticSupplements.push(...expected.components);
               else packageExpectedCount += expected.components.length;
               unmet.push(...expected.unmet);
@@ -229,6 +232,22 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                   live.components.some((observed) => observed.id === component.id && observed.presence === 'present'))
                 && !supplementConflict && !supplementDrift && !supplementUnknown && !dynamicSupplementsUnconfirmed);
               if (currentProjection) expectedCount = Math.max(expectedCount, projection!.components.length);
+            }
+            // Codex CLI 0.167.0 loads user plugin Skills without the independent
+            // Hook/project trust gate. This is component applicability, not trust
+            // inferred from activation, and requires complete current evidence.
+            if (binding.route === 'codex-marketplace' && binding.scope.kind === 'user'
+              && !plugin.manifest.artifacts && staticComponents.length > 0
+              && staticComponents.every((component) => component.kind === 'skill')
+              && unmet.length === 0 && staticSupplements.length === 0 && currentProjection
+              && live.registration === 'present' && profile.kinds.skill.status === 'supported'
+              && binding.consumers.length > 0 && live.consumers.length === binding.consumers.length
+              && binding.consumers.every((product) => product.product === 'cli' && product.availability === 'available'
+                && product.version === '0.167.0' && profile.qualifiedConsumers?.skill?.some((qualified) =>
+                  qualified.product === product.product && qualified.version === product.version)
+                && live.consumers.filter((consumer) => consumer.productId === product.id
+                  && consumer.activation === 'enabled' && ['unknown', 'trusted', 'not-applicable'].includes(consumer.trust)).length === 1)) {
+              for (const consumer of live.consumers) if (consumer.trust === 'unknown') consumer.trust = 'not-applicable';
             }
             live.components.push(...supplements.components);
             observation.inputDrift ||= inputDrift || supplementDrift;

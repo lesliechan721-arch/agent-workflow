@@ -109,9 +109,15 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
     const diagnostics = status.errors.map((error) => publicDiagnostic(error));
     for (const entry of status.inventory ?? []) if (selectedPlugin(entry.pluginId)) {
       diagnostics.push(...entry.blockers.map((error) => publicDiagnostic(error, { pluginId: entry.pluginId })));
-      for (const target of entry.targetResults.filter((target) => selectedTarget(target.agent))) diagnostics.push(...target.blockers.map((error) => publicDiagnostic(error,
-        { pluginId: target.pluginId, target: target.agent, scope: target.scope },
-        error.code === 'needs-preparation' && ['absent', 'drifted'].includes(target.content ?? '') ? 'warning' : 'error')));
+      for (const target of entry.targetResults.filter((target) => selectedTarget(target.agent))) {
+        const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
+        diagnostics.push(...target.blockers.map((error) => publicDiagnostic(error, subject,
+          error.code === 'needs-preparation' && ['absent', 'drifted'].includes(target.content ?? '') ? 'warning' : 'error')));
+        if (target.agent === 'codex' && target.content === 'unknown' && target.deploymentObservations?.some((deployment) =>
+          deployment.after.consumers.some((consumer) => consumer.trust === 'unknown'))) {
+          diagnostics.push(publicDiagnostic('nativeTrustUnconfirmed', subject, 'warning'));
+        }
+      }
     }
     const targets = inventory?.flatMap((entry) => entry.targetResults) ?? [];
     const incomplete = !status.coverage.native || !status.coverage.portable || inventory === null || declarations.some((entry) => entry.roots === null)

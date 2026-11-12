@@ -65,6 +65,10 @@ recovery/status 复用固定 adapter 的 discover/resolve/inspect；generic 复�
 
 DeploymentObservation 分开保存 package、registration、ownership、各产品面的 activation/trust/load 和组件 presence。已知缺失与无法观察不同；load=observed 仅表示宿主加载证据，不证明模型采用正文。平台缺失、接口不支持、权限或信任受限分别保留原因，不把它们折叠成未安装。
 
+Codex CLI 0.167.0 的用户级普通 Skill 没有独立的 Hook 或项目配置信任门槛。status 仅在以下事实全部成立时，将当前组件集合的未知 trust 标为 `not-applicable`：完整静态集合非空且只含 Skill，无动态 artifacts、unmet 或补足；当前平台的精确 CLI/版本已合格；包为 AW 所有，完整投影输入与内容字节匹配，原生登记存在且 neutral 用户激活已确认。明确的拒信或阻断事实保持。此判定不标记 `trusted`，不改变 load，不启动宿主会话或创建持久状态；项目级、其他版本/产品面、混合或动态集合不适用。
+
+Codex 的项目 activation 仍受宿主有效配置信任门槛控制。单个用户 TOML 中的声明、原生登记或 activation 不能代替合并配置及路径规则的证据。无法只读确认时，content/trust 保持 unknown；公开 status 通过 `nativeTrustUnconfirmed` warning 说明该缺口，保留原计数和非成功结果。
+
 包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。输入摘要包括 renderer 的 configKeys，以及当前平台、实际渲染 scope 下 Skill producer 动态命令集的 refreshKeys 和非敏感校验依赖；命令配置单独变化也必须显示漂移。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
 成功有意空集合使用既有 platforms 命名空间内可重建的空结果 receipt。它绑定精确 binding/scope、全部 render units 与可只读复算的来源、资源、配置、能力和消费者输入摘要；不是安装或删除凭证。缺失、损坏或过期时提示重新准备。匹配 receipt 后仍检查实际包、注册、激活与补足，不能掩盖撤销失败或 foreign 残留。它不使用包含 staging 或旧现场的操作 fingerprint。

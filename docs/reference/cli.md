@@ -176,6 +176,8 @@ type LifecycleData = {
 
 平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、trust、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
 
+status 的 `trust: "not-applicable"` 表示当前完整组件集合不需要额外信任门槛，不表示项目已受信任或宿主已加载。Codex 的有限用户级普通 Skill 判定及仍未知的项目信任边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。`nativeTrustUnconfirmed` warning 说明信任观测不足，保留 unknown 及原退出码。
+
 remainingTargets 只列本次请求选择中未完成的目标，不能把过滤掉的平台或未检查的其它项目加入自动重试。所有长期需求是否满足由已有 allSatisfied 与 coverage 事实表达，不能从本次 status=success 推断整个机器已同步。
 
 `changes.outputs` 无法证明具体结果时为 unknown，不能从“执行器返回了”推断已改变或未改变。来源准备已经启用、需求已保存但部署受阻时，必须分别列出这些变化。没有物理操作的 requirements-only 返回空 targetResults，不伪造各平台安装成功。
