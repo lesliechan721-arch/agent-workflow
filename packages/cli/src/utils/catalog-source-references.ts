@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { codexMarketplacePathKey, isCanonicalCodexMarketplaceRegistration } from './codex-shared-native.js';
 import { readIntentReferences } from '../recovery/demand.js';
 import { resolveIntentPath } from '../intent/intent-store.js';
 import type { Dirent } from 'node:fs';
@@ -1017,9 +1018,7 @@ async function oldMarketplaceReferences(
     location: codexPath, kind: 'nativeStateRead', env, cwd,
   });
   const codexAw = codex?.snapshot.marketplaces.aw;
-  const codexAwIsNamespaced = codexAw?.sourceType === 'local'
-    && !codexAw.sourcePointsToManifest
-    && namespacedPrimaryRoots.has(path.normalize(codexAw.source ?? ''));
+  const codexAwIsNamespaced = [...namespacedPrimaryRoots].some((root) => isCanonicalCodexMarketplaceRegistration(codexAw, root));
   if (codex && (Object.hasOwn(codex.snapshot.marketplaces, 'aw') || Object.keys(codex.snapshot.plugins).some(isAwPluginConsumerKey))
     && !codexAwIsNamespaced) {
     output.push({ kind: 'legacyMarketplace', location: codexPath });
@@ -1530,9 +1529,11 @@ export async function inventoryCatalogSourceReferences(options: {
   }
   for (const [location, registrations] of [
     [codexConfigPath, Object.entries(codexConfig?.snapshot.marketplaces ?? {}).flatMap(([marketplaceName, marketplace]) => {
+      const source = codexMarketplacePathKey(marketplace.source);
+      const root = codexMarketplacePathKey(marketplacesRoot);
       const sourceId = marketplace.sourceType === 'local' && !marketplace.sourcePointsToManifest
-        && marketplace.source
-        ? sourceIdFromCanonicalMarketplacePath(marketplace.source, marketplacesRoot)
+        && source !== undefined && root !== undefined
+        ? sourceIdFromCanonicalMarketplacePath(source, root)
         : null;
       return sourceId ? [{ marketplaceName, sourceId }] : [];
     })],
@@ -1597,9 +1598,7 @@ export async function inventoryCatalogSourceReferences(options: {
       }
     }
     for (const [name, marketplace] of Object.entries(codexConfig?.snapshot.marketplaces ?? {})) {
-      if (marketplace.sourceType === 'local'
-        && !marketplace.sourcePointsToManifest
-        && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot)) {
+      if (isCanonicalCodexMarketplaceRegistration(marketplace, marketplaceRoot)) {
         candidateMarketplaceNames.add(name);
       }
     }
@@ -1618,9 +1617,7 @@ export async function inventoryCatalogSourceReferences(options: {
     const codexMarketplace = marketplaceName
       ? codexConfig?.snapshot.marketplaces[marketplaceName]
       : undefined;
-    const codexMarketplaceIsCanonical = codexMarketplace?.sourceType === 'local'
-      && !codexMarketplace.sourcePointsToManifest
-      && path.normalize(codexMarketplace.source ?? '') === path.normalize(marketplaceRoot);
+    const codexMarketplaceIsCanonical = isCanonicalCodexMarketplaceRegistration(codexMarketplace, marketplaceRoot);
     const consumers: NativeMarketplaceConsumer[] = [];
     if (marketplaceName !== null && (strictRoot !== null || codexMarketplaceIsCanonical)) {
       for (const pluginId of Object.keys(codexConfig?.snapshot.plugins ?? {})) {

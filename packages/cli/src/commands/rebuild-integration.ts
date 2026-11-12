@@ -47,7 +47,8 @@ import {
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
 import {
   inspectCodexSharedNative,
-  type CodexSharedNativeInspection
+  isCanonicalCodexMarketplaceRegistration,
+  type CodexSharedNativeInspection,
 } from '../utils/codex-shared-native.js';
 import {
   validateSkillDirectory
@@ -1408,9 +1409,7 @@ export async function inspectNativeMarketplaceRegistrations(options: {
   const codexMarketplace = codexConfig.snapshot.marketplaces[options.marketplaceName];
   const codexRegistration = codexMarketplace === undefined
     ? 'absent'
-    : codexMarketplace.sourceType === 'local'
-      && !codexMarketplace.sourcePointsToManifest
-      && path.normalize(codexMarketplace.source ?? '') === path.normalize(options.marketplaceRoot)
+    : isCanonicalCodexMarketplaceRegistration(codexMarketplace, options.marketplaceRoot)
       ? 'canonical'
       : 'foreign';
   const codexConsumerSuffix = `@${options.marketplaceName}`;
@@ -1578,9 +1577,7 @@ function createNativeDriver(options: {
     const marketplace = config.snapshot.marketplaces[component.locator.marketplaceName];
     const canonical = !marketplace
       ? 'absent' as const
-      : marketplace.sourceType === 'local'
-        && !marketplace.sourcePointsToManifest
-        && path.normalize(marketplace.source ?? '') === path.normalize(component.locator.marketplaceRoot)
+      : isCanonicalCodexMarketplaceRegistration(marketplace, component.locator.marketplaceRoot)
         ? 'present' as const
         : 'foreign' as const;
     if (component.locator.desired) {
@@ -2475,9 +2472,7 @@ export async function discoverRebuildTargetNames(options: {
       const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
       const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
       const marketplace = config.snapshot.marketplaces[marketplaceName];
-      const canonicalMarketplace = marketplace?.sourceType === 'local'
-        && !marketplace.sourcePointsToManifest
-        && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot);
+      const canonicalMarketplace = isCanonicalCodexMarketplaceRegistration(marketplace, marketplaceRoot);
       const suffix = `@${marketplaceName}`;
       const configuredPluginIds = Object.keys(config.snapshot.plugins)
         .filter((pluginId) => pluginId.endsWith(suffix));

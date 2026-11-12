@@ -23,6 +23,50 @@ async function fixture(t) {
   return { root, entry, other, alias: `${root}${path.sep}sub${path.sep}..${path.sep}client-entry` };
 }
 
+// Test Value Gate: time only the selected system executable while retaining the
+// original Promise, errors, budget and nonselected-call privacy boundary.
+test('samples completed Windows Codex PowerShell queries in the eight unmatched rows', async (t) => {
+  const { root, entry, other } = await fixture(t);
+  const system = path.join(root, 'system');
+  const query = path.join(system, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  await fs.mkdir(path.dirname(query), { recursive: true }); await fs.writeFile(query, 'query-fixture');
+  const invocation = Object.freeze({ command: query, args: ['private-encoded-command'], env: { private: 'not-recorded' }, timeoutMs: 1234 });
+  for (const outcome of ['success', 'nonzero', 'reject', 'sync-throw']) {
+    const records = []; const result = { exitCode: outcome === 'nonzero' ? 3 : 0, stdout: 'not-recorded', stderr: 'not-recorded' };
+    const error = new Error('not-recorded');
+    let settle; let reject;
+    const original = new Promise((resolve, fail) => { settle = resolve; reject = fail; });
+    let calls = 0;
+    const wrapped = createManagedTraceRunner((received) => {
+      calls += 1; assert.equal(received, invocation);
+      if (outcome === 'sync-throw') throw error;
+      return original;
+    }, { entries: [entry], client: 'codex', platform: 'win32', env: { SystemRoot: system }, emit: record => records.push(record) });
+    if (outcome === 'sync-throw') assert.throws(() => wrapped(invocation), received => received === error);
+    else {
+      const returned = wrapped(invocation); assert.equal(returned, original); assert.equal(records.length, 0);
+      if (outcome === 'reject') { reject(error); await assert.rejects(returned, received => received === error); }
+      else { settle(result); assert.equal(await returned, result); }
+    }
+    assert.equal(calls, 1); assert.equal(records.length, 1);
+    const record = records[0]; assert.equal(record.phase, 'unmatched'); assert.equal(record.commandRole, 'windows-system-powershell');
+    assert.equal(record.threw, ['reject','sync-throw'].includes(outcome));
+    assert.equal(record.exitCode, ['reject','sync-throw'].includes(outcome) ? null : result.exitCode);
+    assert(record.elapsedMs >= 0); assert.match(record.startTime, /^\d{4}-/u); assert.match(record.finishTime, /^\d{4}-/u);
+    assert(!JSON.stringify(record).includes('not-recorded')); assert(!JSON.stringify(record).includes('private-encoded-command'));
+  }
+  for (const [client, platform, systemRoot, command, selected] of [
+    ['codex','win32',system,query,true], ['pi','win32',system,query,false], ['codex','linux',system,query,false],
+    ['codex','win32',path.join(root,'missing'),query,false], ['codex','win32',system,other,false],
+  ]) {
+    const records=[]; const original=Promise.resolve({exitCode:0});
+    const wrapped=createManagedTraceRunner(() => original, { entries:[entry],client,platform,env:{SystemRoot:systemRoot},emit:record=>records.push(record) });
+    for(let i=0;i<12;i++) { assert.equal(wrapped({command,args:[]}),original); await original; }
+    assert.equal(records.length,8); assert.equal(records.every(record=>record.commandRole==='windows-system-powershell'),selected);
+    if(!selected) assert(records.every(record=>Object.entries(record).every(([key,value])=>key==='phase'||typeof value==='boolean')));
+  }
+});
+
 // Test Value Gate: private diagnostics retain the exact invocation, including
 // stdin exchange and cancellation, and return/reject the original native objects.
 test('passes one original invocation and returns the same successful or nonzero result', async (t) => {

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 
+import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import { runNativeCli, runNativeCliChecked } from '../utils/native-cli.js';
@@ -93,8 +94,7 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
         const host = await readCodexConfigFile(path.join(layout.physicalIdentity.namespaceRoot, 'config.toml'));
         for (const snapshot of [host.snapshot, config.snapshot]) {
           const marketplace = snapshot.marketplaces[layout.marketplaceName!];
-          if (marketplace && (marketplace.sourceType !== 'local' || marketplace.sourcePointsToManifest
-            || !nativeSourceMatches(marketplace.source, layout.marketplaceRoot!))) result.ownership = 'foreign';
+          if (marketplace && !isCanonicalCodexMarketplaceRegistration(marketplace, layout.marketplaceRoot!)) result.ownership = 'foreign';
         }
         const activation = config.snapshot.plugins[nativeId];
         result.registration = 'unknown';
@@ -156,8 +156,7 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       const marketplace = config.snapshot.marketplaces[layout.marketplaceName!];
       // A cached installed plugin cannot replace the missing source registration.
       if (!marketplace) result.registration = 'absent';
-      else if (marketplace.sourceType !== 'local' || marketplace.sourcePointsToManifest
-        || !nativeSourceMatches(marketplace.source, layout.marketplaceRoot!)) result.ownership = 'foreign';
+      else if (!isCanonicalCodexMarketplaceRegistration(marketplace, layout.marketplaceRoot!)) result.ownership = 'foreign';
       break;
     }
     case 'claude-marketplace': {

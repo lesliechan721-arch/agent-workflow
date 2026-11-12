@@ -1,3 +1,4 @@
+import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
 import { selectAgents } from '../intent/deployment-preferences.js';
 import { readDemand, demandNativeProjection, type DemandSnapshot } from '../recovery/demand.js';
 import type { NativeObservation } from '../recovery/status.js';
@@ -2610,9 +2611,7 @@ async function statusCommandV8InSession(options: {
       }
       const registration = userCodexConfig?.snapshot.marketplaces[root.config.marketplaceName];
       if (platforms.includes('codex')
-        && registration?.sourceType === 'local'
-        && !registration.sourcePointsToManifest
-        && path.resolve(registration.source ?? '') === path.resolve(root.rootDir)
+        && isCanonicalCodexMarketplaceRegistration(registration, root.rootDir)
         && (await inspectCodexSystemConsumer(options.scope === 'project' ? 'project' : 'user')).state === 'compatible') {
         const observed = await options.codexObservationSession.snapshot(
           root.config.marketplaceName, options.scope === 'user' ? 'user' : 'both',

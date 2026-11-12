@@ -70,18 +70,49 @@ export interface CodexSharedNativeEvidence {
   };
 }
 
-function samePath(left: string, right: string): boolean {
-  return path.resolve(left) === path.resolve(right);
+/** Lexical local-directory identity only; this never resolves filesystem aliases. */
+export function codexMarketplacePathKey(value: unknown, platform: NodeJS.Platform = process.platform): string | undefined {
+  if (typeof value !== 'string' || value.includes('\0')) return undefined;
+  if (platform !== 'win32') return path.posix.isAbsolute(value) ? path.posix.resolve(value) : undefined;
+
+  let local = value;
+  if (local.startsWith('\\\\?\\')) {
+    local = local.slice(4);
+    if (local.startsWith('UNC\\')) local = `\\\\${local.slice(4)}`;
+    // Verbatim paths do not interpret slash or dot components as DOS paths do.
+    if (local.includes('/')) return undefined;
+  } else local = local.replaceAll('/', '\\');
+
+  let root: string;
+  let components: string[];
+  if (/^[A-Za-z]:\\/u.test(local)) {
+    root = `${local[0]!.toUpperCase()}:\\`;
+    components = local.slice(3).split('\\');
+  } else if (local.startsWith('\\\\')) {
+    const parts = local.slice(2).split('\\');
+    if (parts.length < 2) return undefined;
+    root = `\\\\${parts[0]}\\${parts[1]}`;
+    components = parts.slice(2);
+    if (parts.slice(0, 2).some((part) => !part || /[\u0000-\u001f<>:"/\\|?*]/u.test(part)
+      || part === '.' || part === '..' || /[. ]$/u.test(part))) return undefined;
+  } else return undefined;
+  if (components.at(-1) === '') components.pop();
+  if (components.some((part) => !part || part === '.' || part === '..'
+    || /[\u0000-\u001f<>:"/\\|?*]/u.test(part) || /[. ]$/u.test(part)
+    || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(part))) return undefined;
+  return components.length ? `${root}${root.endsWith('\\') ? '' : '\\'}${components.join('\\')}` : root;
 }
 
 export function isCanonicalCodexMarketplaceRegistration(
   registration: CodexMarketplaceSnapshot | undefined,
   canonicalMarketplaceRoot: string,
+  platform: NodeJS.Platform = process.platform,
 ): boolean {
+  const expected = codexMarketplacePathKey(canonicalMarketplaceRoot, platform);
   return registration?.sourceType === 'local'
     && registration.sourcePointsToManifest === false
-    && typeof registration.source === 'string'
-    && samePath(registration.source, canonicalMarketplaceRoot);
+    && expected !== undefined
+    && codexMarketplacePathKey(registration.source, platform) === expected;
 }
 
 function blocked(

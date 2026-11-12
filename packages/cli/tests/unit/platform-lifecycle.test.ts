@@ -676,6 +676,17 @@ describe('platform inspection and native activation', () => {
     await expect(fs.pathExists(configPath)).resolves.toBe(false);
     await upsertCodexMarketplaceFile(configPath, layout.marketplaceName!, { source: layout.marketplaceRoot!, sourceType: 'local' });
     expect(await inspectDeployment({ ...ctx, runner }, binding)).toMatchObject({ package: 'present', registration: 'present', ownership: 'aw' });
+    // Real Windows Codex persists its canonical directory with a namespace.
+    // Exercise parser -> inspect -> register without another registration write.
+    await upsertCodexMarketplaceFile(configPath, layout.marketplaceName!, { source: path.toNamespacedPath(layout.marketplaceRoot!), sourceType: 'local' });
+    expect(await inspectDeployment({ ...ctx, runner }, binding)).toMatchObject({ package: 'present', registration: 'present', ownership: 'aw' });
+    const services = createNativeLifecycleServices({ ...ctx, runner }, fixture('codex-marketplace').evidence);
+    const previousCalls = runner.mock.calls.length;
+    await expect(services.registerMarketplace(binding, layout.nativeIdentity)).resolves.toMatchObject({ changed: false, mutation: 'none' });
+    expect(runner).toHaveBeenCalledTimes(previousCalls);
+    const offline = { ...binding, consumers: [{ ...binding.consumers[0]!, availability: 'missing' as const,
+      entry: { kind: 'directory' as const, configRoot: ctx.env.CODEX_HOME! } }] };
+    expect(await inspectDeployment(ctx, offline)).toMatchObject({ package: 'present', registration: 'unknown', ownership: 'aw' });
     const foreign = path.join(ctx.cwd, 'foreign');
     await upsertCodexMarketplaceFile(configPath, layout.marketplaceName!, { source: foreign, sourceType: 'local' });
     expect(await inspectDeployment({ ...ctx, runner }, binding)).toMatchObject({ ownership: 'foreign' });

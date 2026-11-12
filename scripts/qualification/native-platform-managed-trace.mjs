@@ -59,22 +59,25 @@ export function createManagedTraceWriter(file) {
   } };
 }
 
-export function createManagedTraceRunner(base, { entries, client, env = process.env, emit }) {
+export function createManagedTraceRunner(base, { entries, client, env = process.env, emit, platform = process.platform }) {
   const targets = new Set(entries.map(canonicalFile).filter(Boolean));
-  function matchesTarget(file) {
-    if (targets.has(file)) return true;
-    if (process.platform !== 'win32' || typeof file !== 'string') return false;
+  function sameFile(file, target) {
+    if (file === target && typeof file === 'string') return true;
+    if (platform !== 'win32' || typeof file !== 'string' || typeof target !== 'string'
+      || target.toLowerCase() !== file.toLowerCase()) return false;
     // Windows realpath can retain requested case. Require a case alias and
     // the same file identity before recording the selected client.
     try {
       const actual = statSync(file, { bigint: true });
-      return actual.isFile() && actual.ino !== 0n && [...targets].some((target) => {
-        if (target.toLowerCase() !== file.toLowerCase()) return false;
-        const expected = statSync(target, { bigint: true });
-        return expected.isFile() && expected.dev === actual.dev && expected.ino === actual.ino;
-      });
+      const expected = statSync(target, { bigint: true });
+      return actual.isFile() && expected.isFile() && actual.ino !== 0n
+        && expected.dev === actual.dev && expected.ino === actual.ino;
     } catch { return false; }
   }
+  const matchesTarget = (file) => [...targets].some((target) => sameFile(file, target));
+  const systemRoot = Object.entries(env).find(([name]) => name.toLowerCase() === 'systemroot')?.[1];
+  const queryEntry = client === 'codex' && platform === 'win32' && typeof systemRoot === 'string' && path.isAbsolute(systemRoot)
+    ? canonicalFile(path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')) : undefined;
   const preloadMarker = env[PUBLIC_MARKER];
   const preloadMarkers = markerValues(process.env, env);
   let operationId = 0;
@@ -83,6 +86,7 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
     let details;
     let registryList;
     let markers;
+    let querySample;
     try {
       const commandFile = canonicalFile(invocation.command);
       const firstArgument = Array.isArray(invocation.args) ? invocation.args[0] : undefined;
@@ -104,13 +108,33 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
         const absolute = (value) => typeof value === 'string' && path.isAbsolute(value);
         const insensitiveMatch = (file) => process.platform === 'win32' && typeof file === 'string'
           && [...targets].some((target) => target.toLowerCase() === file.toLowerCase());
-        emit({ phase: 'unmatched', commandAbsolute: absolute(invocation.command), commandResolved: Boolean(commandFile),
+        const unmatched = { phase: 'unmatched', commandAbsolute: absolute(invocation.command), commandResolved: Boolean(commandFile),
           firstArgumentAbsolute: absolute(firstArgument), firstArgumentResolved: Boolean(argumentFile),
           commandCaseInsensitiveMatch: insensitiveMatch(commandFile), argumentCaseInsensitiveMatch: insensitiveMatch(argumentFile),
-          argumentsAreStrings: Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string') });
+          argumentsAreStrings: Array.isArray(invocation.args) && invocation.args.every((argument) => typeof argument === 'string') };
+        if (queryEntry && sameFile(commandFile, queryEntry)) querySample = {
+          unmatched, startTime: new Date().toISOString(), startedAt: performance.now(),
+        };
+        else emit(unmatched);
       }
     } catch { /* Invalid diagnostic input leaves the real runner unchanged. */ }
-    if (!details) return base(invocation);
+    if (!details) {
+      if (!querySample) return base(invocation);
+      // One completed sample replaces its unmatched row. No argv, environment
+      // or output is recorded; an unfinished query supplies no completion fact.
+      const finish = (value, threw) => {
+        try { emit({ ...querySample.unmatched, commandRole: 'windows-system-powershell', startTime: querySample.startTime,
+          finishTime: new Date().toISOString(), elapsedMs: performance.now() - querySample.startedAt,
+          threw, exitCode: typeof value?.exitCode === 'number' ? value.exitCode : null }); }
+        catch { /* Diagnostics cannot replace the original result or error. */ }
+      };
+      let pending;
+      try { pending = base(invocation); }
+      catch (error) { finish(error, true); throw error; }
+      try { Promise.prototype.then.call(pending, (result) => finish(result, false), (error) => finish(error, true)); }
+      catch { /* Keep the original Promise even if completion cannot be observed. */ }
+      return pending;
+    }
     function record(phase, value, threw = false) {
       try {
         const allMarkers = [...new Set([...markers, ...markerValues(process.env, env, invocation.env)])];

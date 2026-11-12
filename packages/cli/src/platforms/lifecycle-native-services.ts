@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 
+import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../utils/codex-config.js';
 import { atomicReplaceSafeFile } from '../utils/safe-fs.js';
 import { runNativeCliChecked } from '../utils/native-cli.js';
@@ -38,7 +39,7 @@ export function createNativeLifecycleServices(ctx: ReadContext, evidence: Prepar
         const { snapshot } = await readCodexConfigFile(path.join(product.entry.configRoot, 'config.toml'));
         const old = snapshot.marketplaces[layout.marketplaceName];
         if (old) {
-          if (old.sourceType !== 'local' || old.sourcePointsToManifest || path.normalize(old.source ?? '') !== path.normalize(layout.marketplaceRoot)) fail('marketplaceRegistrationForeign');
+          if (!isCanonicalCodexMarketplaceRegistration(old, layout.marketplaceRoot)) fail('marketplaceRegistrationForeign');
           return { changed: false, mutation: 'none' };
         }
         await run(binding, ['plugin', 'marketplace', 'add', layout.marketplaceRoot]);

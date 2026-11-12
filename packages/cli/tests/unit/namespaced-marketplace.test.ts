@@ -35,6 +35,35 @@ async function createMarketplaceRoot(rootDir: string): Promise<void> {
 }
 
 describe('namespaced marketplace root', () => {
+  it('retains Codex source and plugin references for the native directory spelling', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    await createMarketplaceRoot(root);
+    await fs.outputFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
+      '[marketplaces.aw]', `source = ${JSON.stringify(path.toNamespacedPath(root))}`, 'source_type = "local"',
+      '[plugins."retained@aw"]', 'enabled = true', '',
+    ].join('\n'));
+    await fs.outputJson(path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json'), {
+      extraKnownMarketplaces: {
+        'ordinary-claude': { source: { source: 'directory', path: root } },
+        'namespace-claude': { source: { source: 'directory', path: path.toNamespacedPath(root) } },
+      },
+    });
+    const inventory = await inventoryCatalogSourceReferences({ cwd: isolation.layout.fixtureCwd, env: isolation.env });
+    expect(inventory.errors).toEqual([]);
+    expect(inventory.references).toContainEqual(expect.objectContaining({ kind: 'namespacedMarketplace',
+      sourceId: 'official', marketplaceName: 'aw' }));
+    expect(inventory.references).toContainEqual(expect.objectContaining({ kind: 'namespacedMarketplace',
+      sourceId: 'official', marketplaceName: 'aw', pluginName: 'retained', platform: 'codex', scope: 'user' }));
+    expect(inventory.references).toContainEqual(expect.objectContaining({ kind: 'namespacedMarketplace',
+      sourceId: 'official', marketplaceName: 'ordinary-claude' }));
+    if (process.platform === 'win32') expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      kind: 'namespacedMarketplace', sourceId: 'official', marketplaceName: 'namespace-claude' }));
+    await expect(cleanupOrphanNamespacedMarketplaceRoot({ sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env })).resolves.toBe(false);
+    await expect(fs.pathExists(root)).resolves.toBe(true);
+  });
+
   it('projects marketplace entries and product enums to one native platform', () => {
     const manifest: MarketplaceManifest = {
       name: 'aw',
