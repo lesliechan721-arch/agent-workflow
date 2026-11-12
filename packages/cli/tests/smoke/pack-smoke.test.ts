@@ -1292,9 +1292,14 @@ describe('pack smoke', () => {
     });
     if (!codexSkillQualified) {
       expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
+      expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({
+        code: 'nativeTrustUnconfirmed', severity: 'warning',
+        subject: { pluginId: 'packed/packed-build', target: 'codex', scope: 'user' },
+      }));
     }
     expect(consumedStatus.stderr).toBe(codexSkillQualified ? ''
-      : 'capability-unverified: The operation could not complete (capability-unverified).\n');
+      : 'capability-unverified: The operation could not complete (capability-unverified).\n'
+        + 'nativeTrustUnconfirmed: The native client effective trust state could not be observed. Registration and activation do not establish trust.\n');
     const packedRemoval = await execAw([
       'dev', 'plugin', 'remove', 'packed-build',
       '--workspace-root', standaloneWorkspace, '--yes', '--json',
