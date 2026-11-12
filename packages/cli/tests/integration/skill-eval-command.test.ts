@@ -662,7 +662,7 @@ describe('aw dev eval commands', () => {
       status: 'success',
       // Validation runs in a child process with the production profile; the
       // parent-only Eval fixture qualification does not apply to this command.
-      diagnostics: process.platform === 'darwin' && process.arch === 'arm64' ? [] : [{
+      diagnostics: ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch) ? [] : [{
         code: 'commandWarning',
         severity: 'warning',
         message: 'component unmet (codex/user): skill:owner-skill [capability-unverified] [{"feature":"component.kind.skill"}]',

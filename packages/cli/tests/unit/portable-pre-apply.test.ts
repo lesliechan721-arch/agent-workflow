@@ -181,7 +181,7 @@ describe('Native and generic preApply execution', () => {
       target: { platform, scope: 'project', projectRoot: f.cwd }, config: { values: { value: `stored-${platform}` } },
     })]);
     const status = await f.run(['status', '--context', 'project']);
-    const qualifiedPi = platform === 'pi' && process.platform === 'darwin' && process.arch === 'arm64';
+    const qualifiedPi = platform === 'pi' && ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch);
     if (platform === 'generic' || qualifiedPi) {
       expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
       if (qualifiedPi) {

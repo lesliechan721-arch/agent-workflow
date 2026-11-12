@@ -976,8 +976,8 @@ describe('pack smoke', () => {
     await execAw(['target', 'set', 'codex', '--json'], {
       cwd: standaloneWorkspace, env: externalAuthoringEnv,
     });
-    // The fixed production qualification covers plain Codex Skills on macOS arm64.
-    const codexSkillQualified = process.platform === 'darwin' && process.arch === 'arm64';
+    // The fixed Codex fixture has plain Skill qualification on the six supported hosts.
+    const codexSkillQualified = ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch);
     const privateCacheFile = path.join(externalAuthoringEnv.CODEX_HOME, 'plugins', 'cache', 'foreign', 'keep.txt');
     await fs.outputFile(privateCacheFile, 'Keep private client content.\n');
     const installNative = async () => {

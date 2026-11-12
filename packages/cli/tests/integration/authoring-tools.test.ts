@@ -3456,7 +3456,7 @@ describe('authoring tools', () => {
     expect(unavailable).toMatchObject({ok:true,errors:[]});
     // The public validator uses the production profile. On unqualified hosts,
     // the capability gate precedes managed command dependency resolution.
-    const expectedGap = process.platform === 'darwin' && process.arch === 'arm64'
+    const expectedGap = ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch)
       ? '[dependency-unmet] []'
       : '[capability-unverified] [{"feature":"component.kind.skill"}]';
     expect(unavailable.warnings).toContain(`component unmet (codex/user): skill:helper ${expectedGap}`);
