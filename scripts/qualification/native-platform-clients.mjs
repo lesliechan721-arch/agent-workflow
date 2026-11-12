@@ -266,11 +266,27 @@ async function qualifyGemini(ctx) {
   await ctx.check('install', async () => {
     await ctx.command(['extensions', 'install', ctx.bundle, '--consent', '--skip-settings'])
     if (ctx.scope === 'project') {
-      // The scope values are case-sensitive. Lowercase workspace selects the home.
       await ctx.command(['extensions', 'disable', ctx.pluginName, '--scope', 'User'])
       await ctx.command(['extensions', 'enable', ctx.pluginName, '--scope', 'Workspace'])
     }
     return geminiInventory(ctx, ctx.project, 1)
+  })
+  if (ctx.scope === 'project') await ctx.check('fixture-project-activation', async () => {
+    // User disable covers the home only. The fixed client's native rule makes
+    // this extension disabled by default; its later Workspace rule stays intact.
+    const filename = fixturePath(ctx, path.join(ctx.env.GEMINI_CLI_HOME, '.gemini', 'extensions', 'extension-enablement.json'))
+    const config = JSON.parse(await readFile(filename, 'utf8'))
+    assert(config && typeof config === 'object' && !Array.isArray(config), 'Gemini activation config must be an object.')
+    const entry = config[ctx.pluginName]
+    assert(entry && typeof entry === 'object' && !Array.isArray(entry), 'Gemini did not create the expected activation entry.')
+    const overrides = array(entry.overrides, 'Gemini activation overrides')
+    assert(overrides.length > 0 && overrides.every(rule => typeof rule === 'string'), 'Gemini activation rules must be nonempty strings.')
+    const before = [...overrides]
+    assert(!overrides.includes('!*') || overrides[0] === '!*' && overrides.filter(rule => rule === '!*').length === 1,
+      'Gemini has an unexpected global activation rule. Check the fixed client configuration.')
+    if (overrides[0] !== '!*') overrides.unshift('!*')
+    await writeFixture(ctx, filename, `${JSON.stringify(config, null, 2)}\n`)
+    return { level: 'fixture-native-extension-enablement', name: ctx.pluginName, before, overrides: [...overrides] }
   })
   await ctx.check('skill-discovery', async () => geminiSkills(ctx, ctx.project, 1, true))
   await ctx.check('neutral-scope', async () => {
@@ -285,7 +301,10 @@ async function qualifyGemini(ctx) {
   await ctx.check('refresh', async () => {
     await ctx.command(['extensions', 'update', ctx.pluginName], ctx.project, { input: 'y\n' })
     await geminiInventory(ctx, ctx.project, 2)
-    return geminiSkills(ctx, ctx.project, 2, true)
+    const discovery = await geminiSkills(ctx, ctx.project, 2, true)
+    await geminiInventory(ctx, ctx.neutral, 2)
+    await geminiSkills(ctx, ctx.neutral, 2, ctx.scope === 'user')
+    return discovery
   })
   await ctx.check('remove', async () => {
     await ctx.command(['extensions', 'uninstall', ctx.pluginName])

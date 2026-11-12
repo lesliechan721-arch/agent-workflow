@@ -168,6 +168,8 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 报告区分 Skill 发现、组件 inventory 和 activation inventory；Claude details 只证明组件清单。Copilot 项目 fixture 按固定版公开帮助显式设置 `COPILOT_ALLOW_ALL=true`，让宿主信任临时 project 与 neutral 目录；该变量还授予工具自动批准，但本 fixture 只有普通 Skill，不创建会话、发送 prompt 或请求工具，且不传给真实用户环境。project 与 neutral 仍分别要求启用/发现和禁用/不可见，不能靠用户级全局启用代替项目隔离。Copilot 的 live 来源先通过 uninstall 验证停用，再注销本测试独占的 marketplace，最后验证插件和 Skill 消失；project 管理查询未观察到配置生效时保留失败，不能直接推断宿主无 project 支持。
 
+Gemini `0.67.0` 的项目 fixture 在原生 User disable/Workspace enable 后，只给目标扩展的 `extension-enablement.json` 条目前置一次 `!*`，保留后续项目规则及其他扩展条目。该固定格式按最后匹配规则决定启用；默认禁用使有效 HOME 外的 neutral 也不加载该扩展的 Skill。报告单独记录激活配置前后像，安装后和更新后均检查两处库存仍存在、Skill 仅在项目中发现，移除后两处均消失。结果覆盖显式原生配置前提下的生命周期；AW 项目生命周期保护、生产 profile 和跨版本承诺保持原状态。
+
 每个 scope 记录断言、退出码、有限脱敏命令输出及清理结果，更新前另记录候选 revision 与投影摘要。直接客户端和 RPC 的进程审计失败也保留命令回执、已有输出及首次/末次 observer 元数据，不因 await 抛错而丢掉该命令。RPC 的 stderr 另包含最多32个单调时钟事件，记录请求/响应类型、是否收到结果、子进程 PID、信号、exit/close 及进程组等待顺序，不记录响应正文、命令文本、环境或 marker。组检查失败另给出有限分类：查询启动/返回、输出格式、PID、自身组/缺行或组内未知状态。仅保留允许的系统错误字段、数字 PID/PGID、行数及 helper/inspector/member 角色；不记录原始进程表或状态文本。事件仅用于归因，不改变原失败退出、RPC 响应、15秒请求截止、500ms SIGKILL 后备或完成前后代退出门槛。
 
 POSIX RPC helper 在直接客户端关闭后、输出 JSON 前，等待初始进程组内的其他活进程自然退出，不向这些后代发送新信号。每次串行查询必须成功并已关闭，包含 helper 自身且确认其 PID 等于 PGID；只排除自身、该次查询进程及明确 zombie。缺失或无效快照、未知状态及查询失败都不能视为空组。等待使用 helper 本次执行起22秒的绝对截止，保留原25秒外层时限和失败清理空间；到期不输出成功 JSON。此等待只处理 helper 内部收尾，外层仍持续核对 marker、启动身份和初始进程组，离组、已锁存的观察失败及最终清理失败均不能被空组覆盖。Windows 保持原 Job 路径。它证明的是 helper 管理下的会话完成，不证明客户端独立运行时自行等待后台任务，也不提供额外 OS containment。
