@@ -79,6 +79,21 @@ export function publicAwFailureSummary(stdout) {
   };
 }
 
+async function readManagedTrace(file) {
+  if (!file) return undefined;
+  const records = [];
+  try {
+    if ((await fs.stat(file)).size > 256 * 1024) return { state: 'over-limit', records };
+    const lines = (await fs.readFile(file, 'utf8')).split('\n').filter((line) => line.trim());
+    if (lines.length > 96) return { state: 'over-limit', records };
+    for (const line of lines) {
+      try { records.push(JSON.parse(line)); }
+      catch { return { state: 'partial-or-invalid-jsonl', records }; }
+    }
+    return { state: 'captured', records };
+  } catch (error) { return { state: error.code === 'ENOENT' ? 'not-created' : 'unavailable', records }; }
+}
+
 export async function runScope(platform, scope, launcher, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
   const report = { scope, input: options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate', status: 'failed', checks: [], commands: [], cleanup: 'pending' };
@@ -98,18 +113,21 @@ export async function runScope(platform, scope, launcher, options = {}) {
         let result;
         try {
           result = await execute(launcher, args, { cwd, env, stdin: commandOptions.input,
-            captureProcessNames: platform === 'copilot' });
+            nativeClient: platform, captureProcessNames: platform === 'copilot' });
         } catch (error) {
           report.commands.push(redact({ args, cwd, processFailure: error?.message,
-            processDiagnostics: error?.processTreeDiagnostics ?? [],
-            ...(error?.qualificationProcessNames?.length ? { processNames: error.qualificationProcessNames } : {}),
+            processDiagnostics: error?.processTreeDiagnostics ?? error?.publicAwProcessDiagnostics ?? [],
+            ...(error?.qualificationProcessNames?.length || error?.publicAwProcessNames?.length
+              ? { processNames: error.qualificationProcessNames ?? error.publicAwProcessNames } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
               terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
               cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
           throw error;
         }
         report.commands.push(redact({ args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
-          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr }, root, options.clientBin));
+          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
+          processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
+            descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
         if (!commandOptions.allowFailure) assertCommand(result);
         return result;
       },
@@ -132,13 +150,31 @@ export async function runScope(platform, scope, launcher, options = {}) {
         assertCommand(result);
         return JSON.parse(result.stdout);
       },
-      async aw(args, cwd = project) {
+      async aw(args, cwd = project, commandOptions = {}) {
+        const expectedExitCode = commandOptions.expectedExitCode ?? 0;
+        const expectedStatus = commandOptions.expectedStatus ?? 'success';
+        const bootstrapArgs = ['plugin', 'install', `qualification/${ctx.pluginName}`, '--scope', 'user', '--target', 'grok', '--yes'];
+        const trustBootstrap = options.publicAw && platform === 'grok' && scope === 'user'
+          && expectedExitCode === 4 && expectedStatus === 'partial'
+          && args.length === bootstrapArgs.length && args.every((arg, index) => arg === bootstrapArgs[index]);
+        if ((expectedExitCode !== 0 || expectedStatus !== 'success') && !trustBootstrap) {
+          throw new Error('public-aw-unexpected-command-expectation');
+        }
+        const trace = ['linux', 'win32'].includes(process.platform) && ['codex', 'pi'].includes(platform)
+          && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
+        const traceFile = trace ? path.join(root, `managed-native-${report.commands.length}.jsonl`) : undefined;
+        const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
+          AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform,
+          AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
+          AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([launcher.prefix[0] ?? launcher.executable, ctx.publicClientEntry].filter(Boolean)) } : env;
         let result;
         try {
-          result = await executePublicAw({ executable: process.execPath, prefix: [path.join(repoRoot, 'packages/cli/dist/index.js')] },
-            [...args, '--json'], { cwd, env, timeoutMs: 60_000 });
+          result = await executePublicAw({ executable: process.execPath, prefix: [
+            ...(trace ? ['--import', path.join(repoRoot, 'scripts/qualification/native-platform-managed-trace.mjs')] : []),
+            path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 60_000 });
         } catch (error) {
           report.commands.push(redact({ aw: args, cwd, processFailure: error?.message,
+            ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
             processDiagnostics: error?.publicAwProcessDiagnostics ?? [],
             ...(error?.publicAwProcessNames ? { processNames: error.publicAwProcessNames } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, terminationReason: error.result.terminationReason,
@@ -147,14 +183,21 @@ export async function runScope(platform, scope, launcher, options = {}) {
           throw error;
         }
         report.commands.push(redact({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
+          cancelled: result.cancelled, terminationReason: result.terminationReason,
           maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
           ...(result.exitCode !== 0 || result.timedOut || result.maxBufferExceeded
             ? { failureSummary: publicAwFailureSummary(result.stdout) } : {}),
           processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
             descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
-        assertCommand(result);
+        if (trustBootstrap) {
+          if (result.timedOut) throw new Error('command-timeout');
+          if (result.maxBufferExceeded) throw new Error('command-output-limit');
+          if (result.exitCode !== expectedExitCode) throw new Error('public-aw-unexpected-exit-code');
+        } else assertCommand(result);
+        if (result.cancelled || result.terminationReason !== 'complete') throw new Error('public-aw-command-incomplete');
         const value = JSON.parse(result.stdout);
-        if (value.schemaVersion !== 1 || value.status !== 'success') throw new Error('public-aw-command-not-successful');
+        if (value.schemaVersion !== 1 || value.status !== expectedStatus) throw new Error('public-aw-command-not-successful');
         return value;
       },
       async check(id, action) {
@@ -208,6 +251,11 @@ export async function run(options) {
       publicAwRequested: Boolean(options['public-aw']),
       processNameDiagnostics: ['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
         && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1' ? 'hosted-private-identity-ucomm' : 'disabled',
+      nativeCopilotDarwinObservation: process.platform === 'darwin'
+        ? 'observed-marker-and-identity-audit-not-provider-grading-or-os-containment' : 'not-applicable',
+      publicAwNativeTrace: ['linux', 'win32'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
+        && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
+        ? 'node-import-trace-of-selected-codex-pi-entries-not-uninstrumented-performance-evidence' : 'disabled',
       publicAwProcessManagement: process.platform === 'win32' ? 'windows-job'
         : 'observed-marker-and-identity-audit-not-provider-grading-or-os-containment',
       runtimeNetwork: 'blocked-proxy-not-os-firewall', installNetwork: options.install ? 'public-npm' : 'none',

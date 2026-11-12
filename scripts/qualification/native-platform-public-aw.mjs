@@ -41,7 +41,48 @@ export async function preparePublicClientPath(ctx) {
   return fs.realpath(destination);
 }
 
+async function readGrokSkills(ctx, cwd, revision, present) {
+  // inspect is a new, read-only client process. It starts no RPC or model session.
+  const native = await ctx.command(['inspect', '--json'], cwd);
+  assert(!native.cancelled && native.terminationReason === 'complete', 'Grok inspect must complete normally.');
+  const result = JSON.parse(native.stdout);
+  assert.equal(result.grokVersion, clients.grok.version);
+  assert.equal(path.resolve(result.cwd), path.resolve(cwd));
+  assert(Array.isArray(result.plugins) && Array.isArray(result.skills));
+  const plugins = result.plugins.filter((plugin) => plugin.name === ctx.pluginName);
+  const skills = result.skills.filter((skill) => skill.name === ctx.skillName || skill.source?.plugin_name === ctx.pluginName);
+  assert.equal(plugins.length, present ? 1 : 0, 'Grok must observe the requested fixture registration.');
+  assert.equal(skills.length, present ? 1 : 0, 'Grok must discover the requested fixture Skill.');
+  if (present) {
+    const plugin = plugins[0];
+    const skill = skills[0];
+    assert.equal(plugin.scope, 'user');
+    assert.equal(plugin.enabled, true);
+    const installedRoot = await fs.realpath(path.join(ctx.env.GROK_HOME, 'installed-plugins'));
+    const installed = await fs.realpath(plugin.path);
+    const relative = path.relative(installedRoot, installed);
+    assert(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+    assert.equal(skill.name, ctx.skillName);
+    assert.equal(skill.description, `AW public acceptance revision ${revision}`);
+    assert.equal(skill.source?.type, 'plugin');
+    assert.equal(skill.source.plugin_name, ctx.pluginName);
+    const installedSkill = path.join(installed, 'skills', ctx.skillName, 'SKILL.md');
+    assert.equal(await fs.realpath(skill.source.path), await fs.realpath(installedSkill));
+    const manifestBytes = await fs.readFile(path.join(installed, '.grok-plugin/plugin.json'));
+    assert.deepEqual(manifestBytes, await fs.readFile(path.join(ctx.grokPublicSource, '.grok-plugin/plugin.json')));
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    assert.equal(manifest.name, ctx.pluginName);
+    assert.equal(manifest.version, `0.1.${revision - 1}`);
+    const expectedSkill = await fs.readFile(ctx.publicSkillFile);
+    assert.deepEqual(await fs.readFile(path.join(ctx.grokPublicSource, 'skills', ctx.skillName, 'SKILL.md')), expectedSkill);
+    assert.deepEqual(await fs.readFile(installedSkill), expectedSkill, 'Grok must load the current Skill body bytes.');
+    ctx.grokInstalledPackage = installed;
+  }
+  return { level: 'fresh-process-skill-discovery', present, scope: 'user', plugins, skills };
+}
+
 async function readSkills(ctx, cwd, revision, present) {
+  if (ctx.platform === 'grok') return readGrokSkills(ctx, cwd, revision, present);
   const result = await ctx.rpc(cwd);
   let skills;
   if (ctx.platform === 'codex') {
@@ -69,9 +110,107 @@ async function readSkills(ctx, cwd, revision, present) {
   return { level: 'fresh-process-skill-discovery', present, skills };
 }
 
+export async function grokBootstrapSource(ctx, result, pluginId) {
+  assert.equal(result.command, 'plugin.install');
+  assert.equal(result.status, 'partial');
+  assert.equal(result.data.changes.requirements, 'changed', 'The public install must save the User requirement.');
+  assert.equal(result.data.requirements.state, 'valid');
+  assert.deepEqual(result.data.requirements.roots, [pluginId]);
+  assert.deepEqual(result.data.request.plugins, [pluginId]);
+  assert.equal(result.data.request.scope, 'user');
+  assert.deepEqual(result.data.request.targets, ['grok']);
+  assert.equal(result.data.targetResults.length, 1);
+  const target = result.data.targetResults[0];
+  assert.equal(target.pluginId, pluginId);
+  assert.equal(target.target, 'grok');
+  assert.equal(target.scope, 'user');
+  assert.deepEqual(target.blockerCodes, ['nativeTrustRequired']);
+  assert(result.diagnostics.every((item) => ['nativeTrustRequired', 'grokNativeInstallRecovery'].includes(item.code)),
+    'A partial with another failure must not grant host trust.');
+  assert.equal(target.deploymentPlans.length, 1);
+  assert.equal(target.deploymentReceipts.length, 1);
+  const plan = target.deploymentPlans[0];
+  const receipt = target.deploymentReceipts[0];
+  assert.equal(plan.sharedReferences, 'none');
+  assert.equal(plan.products.length, 1);
+  assert.equal(plan.products[0].product, 'cli');
+  assert.equal(plan.products[0].version, clients.grok.version);
+  assert.deepEqual(plan.expected.components, [{ id: `skill:${ctx.skillName}`, kind: 'skill', name: ctx.skillName }]);
+  assert.deepEqual(plan.expected.omitted, []);
+  assert.deepEqual(plan.expected.unmet, []);
+  assert.equal(receipt.bindingId, plan.bindingId);
+  assert.equal(receipt.after.ownership, 'aw');
+  assert.equal(receipt.after.package, 'present');
+  assert.equal(receipt.after.registration, 'absent');
+  assert.equal(receipt.after.nativeIdentity?.route, 'grok-cli');
+  assert.equal(receipt.after.nativeIdentity.packageId, ctx.pluginName);
+  const publishes = plan.effects.filter((effect) => effect.kind === 'publish-package');
+  const registers = plan.effects.filter((effect) => effect.kind === 'register');
+  const activates = plan.effects.filter((effect) => effect.kind === 'activate');
+  assert.equal(publishes.length, 1);
+  assert.equal(registers.length, 1);
+  assert.equal(activates.length, 1);
+  assert.equal(plan.effects.length, 3);
+  const source = publishes[0].destination;
+  assert.equal(typeof source, 'string');
+  assert(path.isAbsolute(source));
+  const actualSource = await fs.realpath(source);
+  assert.equal(actualSource, path.resolve(source), 'The self-created source must not use a symlink.');
+  const parts = path.relative(await fs.realpath(ctx.env.AW_HOME), actualSource).split(path.sep);
+  assert.equal(parts.length, 6);
+  assert.deepEqual([parts[0], parts[1], parts[3], parts[4], parts[5]],
+    ['platforms', 'grok', 'packages', 'qualification', ctx.pluginName]);
+  assert.match(parts[2], /^[a-f0-9]{64}$/u);
+  assert.equal(registers[0].destination, source);
+  assert.equal(receipt.after.nativeIdentity.sourceLocation, source);
+  const effectResult = (effect) => {
+    const matches = receipt.effects.filter((item) => item.id === effect.id);
+    assert.equal(matches.length, 1);
+    return matches[0];
+  };
+  assert.equal(receipt.effects.length, plan.effects.length);
+  const published = effectResult(publishes[0]);
+  assert.equal(published.status, 'applied');
+  assert.equal(published.mutation, 'confirmed');
+  assert.deepEqual(published.diagnostics, []);
+  const blocked = effectResult(registers[0]);
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.mutation, 'none');
+  assert(blocked.diagnostics.some((item) => item.code === 'nativeTrustRequired'
+    && item.subject?.pluginId === pluginId && item.subject.target === 'grok' && item.subject.scope === 'user'));
+  assert(blocked.diagnostics.every((item) => ['nativeTrustRequired', 'grokNativeInstallRecovery'].includes(item.code)),
+    'Only the known first-install trust boundary may be accepted as bootstrap.');
+  const skipped = effectResult(activates[0]);
+  assert.equal(skipped.status, 'skipped');
+  assert.equal(skipped.mutation, 'none');
+  assert(skipped.diagnostics.every((item) => item.code === 'deploymentDependencyFailed'));
+  assert.deepEqual(receipt.diagnostics, []);
+  const manifest = JSON.parse(await fs.readFile(path.join(actualSource, '.grok-plugin/plugin.json'), 'utf8'));
+  assert.equal(manifest.name, ctx.pluginName);
+  assert.equal(manifest.version, '0.1.0');
+  assert.deepEqual(await fs.readFile(path.join(actualSource, 'skills', ctx.skillName, 'SKILL.md')),
+    await fs.readFile(ctx.publicSkillFile), 'The retained source must contain the complete fixture Skill bytes.');
+  return actualSource;
+}
+
+async function grokStatusFiles(ctx) {
+  const { SKILL_OWNER_MARKER } = await import('../../packages/cli/dist/src/utils/ownership.js');
+  const files = ['plugin-intents.json', 'deployment-preferences.json'].map((file) => path.join(ctx.env.AW_HOME, file));
+  files.push(path.join(ctx.env.GROK_HOME, 'config.toml'), path.join(ctx.grokPublicSource, SKILL_OWNER_MARKER));
+  for (const directory of [ctx.grokPublicSource, ctx.grokInstalledPackage]) {
+    files.push(path.join(directory, '.grok-plugin/plugin.json'), path.join(directory, 'skills', ctx.skillName, 'SKILL.md'));
+  }
+  return Promise.all(files.map(async (file) => [file, await fs.readFile(file).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  })]));
+}
+
 export async function qualifyPublicAw(ctx) {
-  if (!['codex', 'pi'].includes(ctx.platform)) await ctx.defer('public-aw-read-only-skill-observer-not-implemented');
+  if (!['codex', 'pi', 'grok'].includes(ctx.platform)) await ctx.defer('public-aw-read-only-skill-observer-not-implemented');
+  if (ctx.platform === 'grok' && ctx.scope !== 'user') await ctx.defer('public-aw-grok-project-skill-unverified');
   const expectedEntry = await preparePublicClientPath(ctx);
+  ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => {
     const result = await ctx.aw(['target', 'set', ctx.platform]);
     const target = result.data.availability.find((item) => item.id === ctx.platform);
@@ -97,12 +236,13 @@ export async function qualifyPublicAw(ctx) {
   const plugin = path.join(workspace, 'plugins', ctx.pluginName);
   const manifestPath = path.join(plugin, '.agents-plugin', 'plugin.json');
   const skillPath = path.join(plugin, 'skills', ctx.skillName);
+  if (ctx.platform === 'grok') ctx.publicSkillFile = path.join(skillPath, 'SKILL.md');
   const writeRevision = async (revision) => {
     const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
     manifest.platforms = [ctx.platform]; manifest.skills = './skills'; manifest.version = `0.1.${revision - 1}`;
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
     await fs.mkdir(skillPath, { recursive: true });
-    await fs.writeFile(path.join(skillPath, 'SKILL.md'), `---\nname: ${ctx.skillName}\ndescription: AW public acceptance revision ${revision}\n---\nThis is an installation fixture. No model request is required.\n`);
+    await fs.writeFile(path.join(skillPath, 'SKILL.md'), `---\nname: ${ctx.skillName}\ndescription: AW public acceptance revision ${revision}\n---\nThis is an installation fixture. No model request is required.\n${ctx.platform === 'grok' ? `Fixture body revision ${revision}.\n` : ''}`);
     await fs.writeFile(path.join(skillPath, 'README.md'), '# Public acceptance fixture\n\nTests installation and discovery without a model request.\n');
   };
   await ctx.check('public-authoring-and-source', async () => {
@@ -122,8 +262,25 @@ export async function qualifyPublicAw(ctx) {
     return { level: 'fixture-config', scope: 'project', trusted: true };
   });
   const pluginId = `qualification/${ctx.pluginName}`;
+  if (ctx.platform === 'grok') {
+    await ctx.check('public-install-host-trust-boundary', async () => {
+      const result = await ctx.aw(['plugin', 'install', pluginId, '--scope', 'user', '--target', 'grok', '--yes'],
+        ctx.project, { expectedExitCode: 4, expectedStatus: 'partial' });
+      ctx.grokPublicSource = await grokBootstrapSource(ctx, result, pluginId);
+      return { command: result.command, status: result.status, requirements: result.data.requirements,
+        source: ctx.grokPublicSource, sourceRetained: true, nativeTrustRequired: true };
+    });
+    await ctx.check('explicit-host-user-plugin-trust', async () => {
+      // This grants host trust only to the source just published for this fixture.
+      const native = await ctx.command(['plugin', 'install', ctx.grokPublicSource, '--trust']);
+      assert(!native.cancelled && native.terminationReason === 'complete', 'The explicit Grok trust install must complete normally.');
+      return { scope: 'user', source: ctx.grokPublicSource, trust: 'explicit-native-install-trust' };
+    });
+  }
   await ctx.check('public-install', async () => {
-    const result = await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
+    const result = ctx.platform === 'grok'
+      ? await ctx.aw(['plugin', 'sync', pluginId, '--context', 'user', '--target', 'grok', '--yes'])
+      : await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
     return { command: result.command, status: result.status };
   });
   await ctx.check('public-install-skill-discovery', () => readSkills(ctx, ctx.project, 1, true));
@@ -140,15 +297,40 @@ export async function qualifyPublicAw(ctx) {
   await ctx.check('public-update-neutral-scope', () => readSkills(ctx, ctx.neutral, 2, ctx.scope === 'user'));
   await ctx.check('public-status', async () => {
     const observeNative = ctx.platform === 'codex' && ctx.scope === 'project';
+    const before = ctx.platform === 'grok' ? await grokStatusFiles(ctx) : undefined;
     const result = await ctx.aw(['plugin', 'status', pluginId, '--context', ctx.scope,
       ...(observeNative ? ['--observe-native'] : [])]);
     if (observeNative) assert(result.diagnostics.some(item => item.code === 'nativeObservationSideEffects'
       && item.severity === 'warning'), 'Explicit native observation must disclose client startup side effects.');
+    if (ctx.platform === 'grok') {
+      assert.equal(result.data.allSatisfied, true);
+      assert.equal(result.data.inSync, true);
+      assert.deepEqual(result.data.counts, { blocked: 0, unconfirmed: 0, pending: 0, ready: 1 });
+      const inventory = result.data.inventory.filter((item) => item.pluginId === pluginId);
+      assert.equal(inventory.length, 1);
+      assert.equal(inventory[0].targetResults.length, 1);
+      const target = inventory[0].targetResults[0];
+      assert.equal(target.target, 'grok');
+      assert.equal(target.scope, 'user');
+      assert.equal(target.content, 'satisfied');
+      assert.equal(target.observation, 'verified');
+      assert.deepEqual(target.blockerCodes, []);
+      assert.equal(target.deploymentObservations.length, 1);
+      const observed = target.deploymentObservations[0].after;
+      assert.equal(observed.package, 'present');
+      assert.equal(observed.registration, 'present');
+      assert.equal(observed.ownership, 'aw');
+      assert.equal(observed.nativeIdentity?.route, 'grok-cli');
+      assert.equal(observed.nativeIdentity.sourceLocation, ctx.grokPublicSource);
+      assert.deepEqual(observed.components, [{ id: `skill:${ctx.skillName}`, presence: 'present', reasonCodes: [] }]);
+      assert.deepEqual(await grokStatusFiles(ctx), before, 'Public status must retain configuration and package bytes.');
+    }
     return { command: result.command, status: result.status, data: result.data,
       ...(observeNative ? { observation: 'explicit-native-startup', credentials: 'isolated-none', modelRequests: 'none' } : {}) };
   });
   await ctx.check('public-remove', async () => {
     const result = await ctx.aw(['plugin', 'remove', pluginId, '--scope', ctx.scope, '--yes']);
+    if (ctx.platform === 'grok') await assert.rejects(fs.stat(ctx.grokPublicSource), { code: 'ENOENT' });
     return { command: result.command, status: result.status };
   });
   await ctx.check('public-remove-skill-discovery', async () => {

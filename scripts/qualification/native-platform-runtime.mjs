@@ -64,6 +64,10 @@ export async function prepareEnvironment(root) {
 }
 
 export async function execute(launcher, args, options) {
+  if (options.nativeClient === 'copilot' && process.platform === 'darwin') {
+    const { executePublicAw } = await import('./native-platform-public-process.mjs');
+    return executePublicAw(launcher, args, { ...options, timeoutMs: options.timeoutMs ?? 30_000 });
+  }
   const { runProviderProcess } = await import('../../packages/agent-skill-eval/dist/process.js');
   const windowsJobHelperPath = process.platform === 'win32'
     ? await (await import('../../packages/agent-skill-eval/dist/windows-job.js')).prepareWindowsJobHelper()

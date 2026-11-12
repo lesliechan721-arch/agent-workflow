@@ -1,6 +1,6 @@
 import type { PlatformCapabilitiesV1, PlatformTarget, Scope } from '@lesliechan721/aw-plugin-core/manifest';
 
-import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
+import { getQualifiedPlatformProfile, getQualifiedKindsForScope } from '../platforms/capabilities.js';
 
 /** An explicit author profile describes an interface; it is never local discovery evidence. */
 export function getAuthoringPlatformCapabilities(platform: PlatformTarget, scope: Scope): PlatformCapabilitiesV1 {
@@ -12,7 +12,7 @@ export function getAuthoringPlatformCapabilities(platform: PlatformTarget, scope
     basis: 'profile',
     profileId: profile.id,
     consumers: [],
-    kinds: structuredClone(profile.kinds),
+    kinds: getQualifiedKindsForScope(profile, scope),
     features: structuredClone(profile.features),
   };
 }

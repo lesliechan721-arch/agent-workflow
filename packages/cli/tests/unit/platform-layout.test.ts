@@ -4,10 +4,11 @@ import fs from 'fs-extra';
 import { afterEach, expect, it } from 'vitest';
 import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/layout.js';
 import { getPlatformCapabilities, getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import type { DeploymentObservation, ResolveRequest } from '../../src/platforms/contracts.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
-async function fixture(platform: 'codex' | 'cursor' | 'pi') {
+async function fixture(platform: 'codex' | 'cursor' | 'pi' | 'grok') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-layout-')); roots.push(root);
   const ctx = { cwd: root, env: { HOME: root, USERPROFILE: root, AW_HOME: path.join(root, 'aw') } };
   const request: ResolveRequest = { plugin: { sourceId: 'test', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'test/example', version: '1.0.0' },
@@ -106,4 +107,52 @@ it('blocks project writes that alias Codex user configuration but retains cleanu
   expect(writing.exclusions.every((exclusion) => exclusion.reasonCode === 'codexScopePathAlias')).toBe(true);
   const cleanup = await resolveDeployments(ctx, { ...request, operation: 'cleanup' });
   expect(cleanup.bindings).toHaveLength(1);
+});
+
+// Test Value Gate: a user-only native record must never authorize project
+// deployment or author materialization, another version/product, or another host.
+it('limits Grok ordinary Skills to the four recorded CLI user environments', async () => {
+  const { root, ctx, request } = await fixture('grok');
+  request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '1.0.77' }];
+  const user = await resolveDeployments(ctx, request);
+  const project = await resolveDeployments(ctx, { ...request, scope: { kind: 'project', projectRoot: path.join(root, 'project') } });
+  const binding = user.bindings[0]!;
+  const renderUnit = user.renderUnits.find((unit) => unit.output === 'package')!;
+  const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent',
+    ownership: 'absent', consumers: [], components: [], nativeIdentity: null,
+    prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
+  const hosts: Array<{ platform: NodeJS.Platform; arch: NodeJS.Architecture }> = [
+    { platform: 'linux', arch: 'x64' }, { platform: 'linux', arch: 'arm64' },
+    { platform: 'darwin', arch: 'arm64' }, { platform: 'win32', arch: 'x64' },
+  ];
+  for (const host of hosts) {
+    const profile = getQualifiedPlatformProfile('grok', host);
+    const input = { binding, renderUnit, observation, profile };
+    const capability = getPlatformCapabilities(input);
+    expect(capability.kinds.skill.status).toBe('supported');
+    for (const kind of ['hook', 'mcp', 'instruction', 'agent'] as const) expect(capability.kinds[kind].status).toBe('unverified');
+    expect(capability.features['skill.invocation.manual']!.status).toBe('unverified');
+    expect(profile.qualificationEvidence?.[0]).toMatchObject({ product: 'cli', version: '1.0.77',
+      platform: host.platform, arch: host.arch, scopes: ['user'], kinds: ['skill'], features: [] });
+    const projectBinding = project.bindings[0]!;
+    const projectUnit = project.renderUnits.find((unit) => unit.output === 'package')!;
+    expect(getPlatformCapabilities({ binding: projectBinding, renderUnit: projectUnit,
+      observation: { ...observation, physicalKey: projectBinding.physicalKey }, profile }).kinds.skill.status).toBe('unverified');
+    for (const version of ['1.0.76', '1.0.78', '1.0.82', null]) {
+      binding.consumers[0]!.version = version;
+      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+    }
+    binding.consumers[0]!.version = '1.0.77';
+    binding.consumers[0]!.product = 'app';
+    expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+    binding.consumers[0]!.product = 'cli';
+  }
+  for (const host of [{ platform: 'darwin', arch: 'x64' }, { platform: 'win32', arch: 'arm64' },
+    { platform: 'freebsd', arch: 'x64' }, { platform: 'linux', arch: 's390x' }] as const) {
+    expect(getPlatformCapabilities({ binding, renderUnit, observation,
+      profile: getQualifiedPlatformProfile('grok', host) }).kinds.skill.status).toBe('unverified');
+  }
+  expect(getAuthoringPlatformCapabilities('grok', 'project').kinds.skill.status).toBe('unverified');
+  const hostQualified = ['linux-x64', 'linux-arm64', 'darwin-arm64', 'win32-x64'].includes(`${process.platform}-${process.arch}`);
+  expect(getAuthoringPlatformCapabilities('grok', 'user').kinds.skill.status).toBe(hostQualified ? 'supported' : 'unverified');
 });

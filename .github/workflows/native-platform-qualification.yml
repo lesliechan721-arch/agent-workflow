@@ -68,6 +68,7 @@ jobs:
     env:
       QUALIFICATION_CLIENT: ${{ inputs.client || 'all' }}
       AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
+      AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'
     steps:
       - uses: actions/checkout@v6
         with:

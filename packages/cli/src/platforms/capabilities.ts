@@ -1,4 +1,4 @@
-import { COMPONENT_KINDS, getPlatformFeatureRegistry, type PlatformCapabilitiesV1, type PlatformId } from '@lesliechan721/aw-plugin-core/manifest';
+import { COMPONENT_KINDS, getPlatformFeatureRegistry, type PlatformCapabilitiesV1, type PlatformId, type Scope } from '@lesliechan721/aw-plugin-core/manifest';
 import { compareStrictSemVer } from '../utils/manifest.js';
 import { identityDigest } from './identity.js';
 import type { CapabilityInput, QualifiedPlatformProfile } from './contracts.js';
@@ -27,25 +27,39 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
   const profile: QualifiedPlatformProfile = { id: `${platform}:${PROFILE_BASELINES[platform]}`, platform, kinds, features, agentConsumers: [] };
   // Finite native qualification: exact CLI versions in the six recorded hosts.
   // It does not qualify invocation metadata, Hooks, MCP execution, or model behavior.
-  const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : null;
+  const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : platform === 'grok' ? '1.0.77' : null;
   const hostPlatform = host.platform ?? process.platform;
   const hostArch = host.arch ?? process.arch;
-  const qualifiedSkillHost = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64']
-    .includes(`${hostPlatform}-${hostArch}`);
+  const qualifiedSkillHosts = platform === 'grok'
+    ? ['linux-x64', 'linux-arm64', 'darwin-arm64', 'win32-x64']
+    : ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'];
+  const qualifiedSkillHost = qualifiedSkillHosts.includes(`${hostPlatform}-${hostArch}`);
   if (skillVersion && qualifiedSkillHost) {
     profile.id += `:${hostPlatform}-${hostArch}-cli-${skillVersion}-skills`;
     kinds.skill = { ...kinds.skill, status: 'supported', reasonCodes: [] };
     profile.qualifiedConsumers = { skill: [{ product: 'cli', version: skillVersion }] };
-    profile.qualificationEvidence = [{ reference: 'scripts/qualification/evidence/native-skills-2026-11-12.json',
-      product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: ['user', 'project'], kinds: ['skill'], features: [],
+    profile.qualificationEvidence = [{ reference: platform === 'grok' ? 'scripts/qualification/evidence/native-grok-skills-2026-11-12.json'
+      : 'scripts/qualification/evidence/native-skills-2026-11-12.json',
+      product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: platform === 'grok' ? ['user'] : ['user', 'project'], kinds: ['skill'], features: [],
       limitations: ['host-discovery-and-lifecycle-only', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'] }];
   }
   return profile;
 }
+/** Apply recorded scope limits to both local and authoring capability views. */
+export function getQualifiedKindsForScope(profile: QualifiedPlatformProfile, scope: Scope): PlatformCapabilitiesV1['kinds'] {
+  const kinds = structuredClone(profile.kinds);
+  for (const kind of COMPONENT_KINDS) {
+    const records = profile.qualificationEvidence?.filter((record) => record.kinds.includes(kind));
+    if (records?.length && !records.some((record) => record.scopes.includes(scope))) {
+      kinds[kind] = { ...kinds[kind], status: 'unverified', reasonCodes: ['capability-unverified'] };
+    }
+  }
+  return kinds;
+}
 export function getPlatformCapabilities(input: CapabilityInput, basis: 'local' | 'profile' = 'local'): PlatformCapabilitiesV1 {
   const { binding, renderUnit, profile, observation } = input;
   if (profile.platform !== binding.platform) throw new Error('platformProfileMismatch');
-  const kinds = structuredClone(profile.kinds);
+  const kinds = getQualifiedKindsForScope(profile, renderUnit.renderScope.kind);
   const features = structuredClone(profile.features);
   const consumers = renderUnit.consumers;
   for (const kind of COMPONENT_KINDS) {

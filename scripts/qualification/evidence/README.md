@@ -4,6 +4,8 @@
 
 [native-skills-2026-11-12.json](native-skills-2026-11-12.json) 保存六个 Hosted 环境中 Codex CLI `0.167.0`、Pi CLI `1.5.0` 的普通 Skill 原生生命周期与 user/project 隔离证据：Linux、macOS、Windows 的 x64/arm64。记录来自同一次源码/候选的[资格运行](https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43177034163)；整体运行因其他客户端失败，只有摘录的 Native 通过单元构成有限 profile 依据。文件保留原报告 SHA-256、数组索引、候选绑定、精确包获取信息、原始检查回执及限量脱敏命令输出，省略 native stderr。RPC 通过原检查回执表示，不补造未归档的响应正文。
 
+[native-grok-skills-2026-11-12.json](native-grok-skills-2026-11-12.json) 保存 Grok CLI `1.0.77` 在 Linux x64/arm64、macOS arm64、Windows x64 的 User 普通 Skill 原生安装、当前正文发现、`uninstall --keep-data`/install 刷新、中立目录发现及移除记录。四个通过单元来自[同次候选运行](https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43202542989)，均保留原报告摘要、索引、获取信息与命令回执。Project、其他环境/版本及其他组件不继承资格；四环境执行过保留数据参数，不等于已在四环境完成持久数据哨兵对照。该正反对照只在单独的 macOS arm64 探针完成。
+
 这些记录不证明模型采用、调用控制、其他组件执行、Desktop 或未列出的版本/环境。当前 AW 投影候选的 Native 观察与公开 AW 编排分别验收；不得将本记录的通过扩写为所有公开链路已通过。新 Hosted 取证流程以 CI 主题为准，历史报告保持原始版本绑定。
 
 历史本机记录 [native-skills-2026-11-10.json](native-skills-2026-11-10.json) 保存一次真实客户端观察的必要摘录。范围为 macOS 26.3.1、arm64 上的 Codex CLI `0.167.0` 和 Pi CLI `1.5.0`，只覆盖 Skills 的宿主发现、原生生命周期及 user/project scope 隔离。

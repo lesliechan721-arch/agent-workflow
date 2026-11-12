@@ -243,6 +243,7 @@ export interface QualifiedPlatformProfile {
   kinds: PlatformCapabilitiesV1['kinds'];
   features: PlatformCapabilitiesV1['features'];
   qualifiedConsumers?: Partial<Record<ComponentKind, Array<{ product: ProductInstallation['product']; version: string }>>>;
+  /** Recorded scope limits apply to both runtime and authoring kind views. */
   qualificationEvidence?: Array<{ reference: string; product: ProductInstallation['product']; version: string;
     platform: NodeJS.Platform; arch: NodeJS.Architecture; scopes: Array<ScopeRef['kind']>; kinds: ComponentKind[]; features: string[]; limitations: string[] }>;
   agentConsumers: Array<{

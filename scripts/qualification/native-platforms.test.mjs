@@ -5,11 +5,14 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import './native-platform-process-names.test.mjs';
+import './native-platform-grok-bootstrap.test.mjs';
+import './native-platform-managed-trace.test.mjs';
 
 // Test Value Gate: failed public AW receipts must retain the error after a long
 // plan while the existing preview cap and path redaction remain effective.
@@ -194,6 +197,61 @@ async function publicProcessFixture(action) {
 }
 const posixOnly = { skip: process.platform === 'win32', timeout: 30_000 };
 const nodeLauncher = { executable: process.execPath, prefix: [] };
+
+// Test Value Gate: the approved ordinary-client contract is limited to Copilot
+// Darwin; other native clients retain their existing qualification contract.
+test('selects ordinary observation only for Copilot Darwin native commands', { timeout: 30_000 }, async () => {
+  await publicProcessFixture(async (options) => {
+    for (const nativeClient of ['copilot', 'pi']) {
+      const result = await execute(nodeLauncher, ['-e', 'console.log("native observation fixture")'], { ...options, nativeClient });
+      assertCommand(result);
+      const ordinary = nativeClient === 'copilot' && process.platform === 'darwin';
+      assert.equal(result.containmentMode, ordinary ? 'observed' : 'verified-observed');
+      assert.equal(result.gradingEvidenceAccepted, !ordinary);
+      if (ordinary) assert.equal(result.descendantCleanupGuaranteed, false);
+    }
+  });
+});
+
+// Test Value Gate: the private preload must retain the real CLI backend, including
+// Windows helper admission, while recording a selected native failure safely.
+test('loads a managed trace before a real native command on supported Hosted systems', {
+  skip: !['linux', 'win32'].includes(process.platform), timeout: 30_000,
+}, async () => {
+  await publicProcessFixture(async (options) => {
+    const nativeFile = path.join(options.cwd, 'selected-native.cjs');
+    const invocationFile = path.join(options.cwd, 'invoke-native.mjs');
+    const traceFile = path.join(options.cwd, 'managed.jsonl');
+    const module = path.resolve('scripts/qualification/native-platform-managed-trace.mjs');
+    const nativeCli = path.resolve('packages/cli/dist/src/utils/native-cli.js');
+    await fs.writeFile(nativeFile, 'process.stderr.write(process.env.AW_NATIVE_CLI_PROCESS_MARKER); process.exitCode=7;');
+    await fs.writeFile(invocationFile, `
+      import assert from 'node:assert/strict';
+      import { managedTraceInstalled } from ${JSON.stringify(pathToFileURL(module).href)};
+      import { runNativeCli } from ${JSON.stringify(pathToFileURL(nativeCli).href)};
+      assert.equal(managedTraceInstalled,true);
+      let code;
+      try { code=(await runNativeCli({command:process.execPath,args:[process.argv[2]],cwd:process.cwd(),env:process.env,timeoutMs:5000})).exitCode; }
+      catch(error) { code=error.exitCode; }
+      assert.equal(code,7); console.log('native failure preserved');
+    `);
+    const result = await new Promise((resolve, reject) => execFile(process.execPath, ['--import', module, invocationFile, nativeFile], {
+      cwd: options.cwd, env: { ...options.env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
+        AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'pi', AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
+        AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([nativeFile]),
+        AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER: 'managed-trace-public-marker' },
+      timeout: 12_000, maxBuffer: 64 * 1024,
+    }, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr })));
+    assert.equal(result.stdout.trim(), 'native failure preserved');
+    const rows = (await fs.readFile(traceFile, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(rows.map((row) => row.phase), ['start', 'finish']);
+    assert.equal(rows[0].publicMarkerProvided, true);
+    assert.equal(rows[1].exitCode, 7);
+    assert.equal(rows[1].stderr, '');
+    assert(!JSON.stringify(rows).includes('managed-trace-public-marker'));
+    assert(rows.every((row) => !('childPid' in row)));
+  });
+});
 
 async function rpcDescendantFixture(options, source) {
   const finished = path.join(options.cwd, 'descendant-finished');
