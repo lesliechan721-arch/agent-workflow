@@ -2,77 +2,68 @@ import { execFile } from 'node:child_process';
 
 const IDENTITY_COLUMNS = 'pid=,ppid=,pgid=,state=,lstart=';
 const START = '(\\w{3}\\s+\\w{3}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2}\\s+\\d{4})';
-const identityRow = new RegExp(`^\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+\\S+\\s+${START}\\s*$`, 'u');
-const nameRow = new RegExp(`^\\s*(\\d+)\\s+${START}\\s+(.+?)\\s*$`, 'u');
+const identityAndName = new RegExp(`^(\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+\\S+\\s+${START})(?:[ \\t]+(.*))?$`, 'u');
 const normalizeStart = (value) => value.trim().replace(/\s+/gu, ' ');
+const nameFailureReasons = new Set(['marked-process-group-changed', 'root-marker-missing',
+  'known-process-marker-missing', 'initial-group-marker-missing', 'process-marker-unreadable']);
 
-// Private Hosted qualification evidence only. ucomm is a limited kernel process
-// name, not argv, a full path, or proof of executable identity. Never use it to
-// authorize a signal, accept cleanup, or replace the observer's original error.
+// Hosted qualification diagnostics only. The extra column changes this query's
+// output size and failure surface. Project every row back to the identity schema;
+// names never authorize a signal, establish ownership, or clear an original error.
 export function createProcessNameDiagnostic(runCommand = execFile) {
   let rootPid;
-  let queried = false;
   let closed = false;
-  let query;
-  let rows = [];
-  function inspect(stdout) {
-    if (!rootPid || queried || closed || typeof stdout !== 'string' || stdout.length > 1024 * 1024) return;
+  const recent = new Map();
+  function project(stdout) {
+    if (typeof stdout !== 'string') throw new Error('qualification-identity-projection-failed');
     const table = new Map();
-    for (const line of stdout.split('\n')) {
-      const match = identityRow.exec(line);
-      if (match) table.set(Number(match[1]), { pid: Number(match[1]), ppid: Number(match[2]),
-        pgid: Number(match[3]), startTime: normalizeStart(match[4]) });
-    }
-    if (!table.has(rootPid)) return;
-    const targets = [...table.values()].filter((row) => {
-      if (row.pid === rootPid || row.pgid === rootPid) return false;
-      let current = row;
-      const seen = new Set();
-      while (current && !seen.has(current.pid)) {
-        if (current.ppid === rootPid) return true;
-        seen.add(current.pid); current = table.get(current.ppid);
-      }
-      return false;
-    }).slice(0, 8);
-    if (!targets.length) return;
-    queried = true;
-    rows = targets.map(({ pid, startTime }) => ({ pid, startTime, source: 'ps-ucomm', unavailable: 'query-pending' }));
-    try { query = runCommand('ps', ['-p', targets.map((row) => row.pid).join(','), '-o', 'pid=,lstart=,ucomm='],
-      { timeout: 100, windowsHide: true, maxBuffer: 4096 }, (error, output) => {
-        if (closed) return;
-        for (const row of rows) row.unavailable = error ? 'query-failed' : 'identity-not-returned';
-        if (error || typeof output !== 'string' || output.length > 4096) return;
-        for (const line of output.split('\n')) {
-          const match = nameRow.exec(line);
-          if (!match) continue;
-          const row = rows.find((item) => item.pid === Number(match[1]) && item.startTime === normalizeStart(match[2]));
-          if (!row) continue;
-          if (!/^[A-Za-z0-9_.+-]{1,32}$/u.test(match[3])) { row.unavailable = 'name-rejected'; continue; }
-          row.processName = match[3]; delete row.unavailable;
+    const lines = stdout.split('\n').map((line) => {
+      if (!line.trim()) return line;
+      const match = identityAndName.exec(line);
+      if (!match || table.has(Number(match[2]))) throw new Error('qualification-identity-projection-failed');
+      const name = (match[6] ?? '').trim();
+      table.set(Number(match[2]), { pid: Number(match[2]), ppid: Number(match[3]),
+        startTime: normalizeStart(match[5]), ...(name && /^[A-Za-z0-9_.+-]{1,32}$/u.test(name)
+          ? { processName: name } : { unavailable: name ? 'name-rejected' : 'name-not-returned' }) });
+      return match[1];
+    });
+    if (!closed && table.has(rootPid)) {
+      for (const row of table.values()) {
+        let current = row;
+        const seen = new Set();
+        while (current && current.pid !== rootPid && !seen.has(current.pid)) {
+          seen.add(current.pid); current = table.get(current.ppid);
         }
-      }); } catch { for (const row of rows) row.unavailable = 'query-failed'; }
+        if (current?.pid !== rootPid) continue;
+        const { ppid: _ppid, ...hint } = row;
+        const key = `${row.pid}:${row.startTime}`;
+        recent.delete(key);
+        recent.set(key, { ...hint, source: 'identity-ps-ucomm' });
+        if (recent.size > 32) recent.delete(recent.keys().next().value);
+      }
+    }
+    return lines.join('\n');
   }
   return {
     onSpawn({ pid }) { rootPid = pid; },
     execFile(command, args, options, callback) {
-      return runCommand(command, args, options, (error, stdout, ...rest) => {
-        try {
-          if (!error && command === 'ps' && args.length === 3 && args[0] === '-A'
-            && args[1] === '-o' && args[2] === IDENTITY_COLUMNS) inspect(stdout);
-        } catch { /* Diagnostic failures do not enter the original observer. */ }
-        return callback(error, stdout, ...rest);
+      if (command !== 'ps' || args.length !== 3 || args[0] !== '-A'
+        || args[1] !== '-o' || args[2] !== IDENTITY_COLUMNS) return runCommand(command, args, options, callback);
+      return runCommand(command, ['-A', '-o', `${IDENTITY_COLUMNS},ucomm=`], options, (error, stdout, ...rest) => {
+        if (error) return callback(error, '', ...rest);
+        let projected;
+        try { projected = project(stdout); }
+        catch { return callback(new Error('qualification-identity-projection-failed'), '', ...rest); }
+        return callback(error, projected, ...rest);
       });
     },
     snapshot(diagnostics = []) {
-      const first = diagnostics.find((item) => item.reason === 'marked-process-group-changed');
+      const first = diagnostics.find((item) => nameFailureReasons.has(item.reason));
       if (!first) return [];
-      return rows.filter((row) => first.affectedPids.includes(row.pid) && first.processes.some((item) =>
+      return [...recent.values()].filter((row) => first.affectedPids.includes(row.pid) && first.processes.some((item) =>
         item.pid === row.pid && normalizeStart(item.startTime ?? item.knownStartTime ?? '') === row.startTime))
-        .map((row) => ({ ...row }));
+        .slice(0, 8).map((row) => ({ ...row }));
     },
-    stop() {
-      closed = true;
-      try { query?.kill('SIGKILL'); } catch { /* The bounded ps query can already have exited. */ }
-    },
+    stop() { closed = true; },
   };
 }

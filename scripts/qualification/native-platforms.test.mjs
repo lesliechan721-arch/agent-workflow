@@ -5,11 +5,41 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { parseArgs, runScope, versionFrom, redact } from './native-platforms.mjs';
+import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import './native-platform-process-names.test.mjs';
+
+// Test Value Gate: failed public AW receipts must retain the error after a long
+// plan while the existing preview cap and path redaction remain effective.
+test('retains bounded public failure facts beyond the stdout preview', () => {
+  const root = '/tmp/aw-private-fixture';
+  const identity = { route: 'codex-marketplace', packageId: 'demo', sourceLocation: `${root}/native-source` };
+  const receipt = { after: { ownership: 'foreign', registration: 'present', nativeIdentity: identity,
+    prerequisites: { privateConfiguration: 'must-not-appear' } },
+    effects: [{ id: 'register', status: 'unknown', mutation: 'possible', diagnostics: [{ code: 'nativeFailure',
+      severity: 'error', message: `Expected ${root}/owned-source` }] }] };
+  const stdout = JSON.stringify({ schemaVersion: 1, command: 'plugin.install', status: 'partial',
+    data: { longPlan: 'x'.repeat(5000), targetResults: [{ target: 'codex', scope: 'user',
+      blockerCodes: ['deploymentPostcheckFailed'], deploymentReceipts: [receipt] }] }, diagnostics: [] });
+  const report = redact({ stdout, failureSummary: publicAwFailureSummary(stdout) }, root);
+  assert.equal(report.stdout.length, 4000);
+  assert.equal(report.failureSummary.targets[0].receipts[0].after.ownership, 'foreign');
+  assert.equal(report.failureSummary.targets[0].receipts[0].after.nativeIdentity.sourceLocation, '<TEMP_ROOT>/native-source');
+  assert.equal(report.failureSummary.targets[0].receipts[0].effects[0].diagnostics[0].message, 'Expected <TEMP_ROOT>/owned-source');
+  assert(!JSON.stringify(report.failureSummary).includes('must-not-appear'));
+  assert.equal(publicAwFailureSummary(stdout.slice(0, 4000)).state, 'invalid-json');
+  assert.equal(publicAwFailureSummary('null').state, 'invalid-json');
+  assert.doesNotThrow(() => publicAwFailureSummary(JSON.stringify({ data: { targetResults: [null,
+    { deploymentReceipts: [null, { effects: [null], diagnostics: [null] }] }] }, diagnostics: [null] })));
+  const many = publicAwFailureSummary(JSON.stringify({ data: { targetResults: Array(10).fill({
+    deploymentReceipts: Array(10).fill({ effects: Array(10).fill({ diagnostics: Array(10).fill({ code: 'bounded' }) }) }),
+  }) } }));
+  assert.equal(many.targets.length, 4); assert.equal(many.targets[0].receipts.length, 4);
+  assert.equal(many.targets[0].receipts[0].effects.length, 8);
+  assert.equal(many.targets[0].receipts[0].effects[0].diagnostics.length, 8);
+});
 
 // Test Value Gate: qualification must not turn missing prerequisites into a
 // passing report, inherit user credentials, or leave an isolated client home.

@@ -1,4 +1,5 @@
 import { execute } from './native-platform-runtime.mjs';
+import { createProcessNameDiagnostic } from './native-platform-process-names.mjs';
 
 const MARKER_ENV = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 
@@ -10,8 +11,12 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   const { acquireProcessTreeInspectionLease, observeProcessTree, terminateProcessTree } =
     await import('../../packages/agent-skill-eval/dist/process-tree.js');
   if (options.signal?.aborted) throw options.signal.reason ?? new Error('public-aw-cancelled');
+  const names = ['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
+    && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
+    ? createProcessNameDiagnostic(processTree.execFile) : undefined;
   const dependencies = { ...processTree, markerEnvironmentVariable: MARKER_ENV,
-    enforceProcessMarker: true, enforceCooperativeProcessGroup: false };
+    enforceProcessMarker: true, enforceCooperativeProcessGroup: false,
+    ...(names ? { execFile: names.execFile } : {}) };
   const controller = new AbortController();
   const abort = () => controller.abort(options.signal.reason);
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -28,6 +33,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
       ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
     }, {
       onSpawn({ pid }) {
+        names?.onSpawn({ pid });
         observation = observeProcessTree(pid, lease.marker, dependencies, lease);
         stopFailureListener = observation.onFailure((error) => controller.abort(error));
       },
@@ -51,6 +57,10 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     if (error && typeof error === 'object') {
       const diagnostics = observation?.diagnostics ?? [];
       error.publicAwProcessDiagnostics = diagnostics.length > 1 ? [diagnostics[0], diagnostics.at(-1)] : diagnostics;
+      try {
+        const hints = names?.snapshot(error.publicAwProcessDiagnostics);
+        if (hints?.length) error.publicAwProcessNames = hints;
+      } catch { /* Name hints cannot replace the original process failure. */ }
       if (lease && error.result) {
         error.result.stdout = error.result.stdout.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>');
         error.result.stderr = error.result.stderr.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>');
@@ -59,6 +69,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     throw error;
   } finally {
     options.signal?.removeEventListener('abort', abort);
+    names?.stop();
     stopFailureListener?.();
     observation?.dispose();
     try { await lease?.release(); }
@@ -66,6 +77,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
       const releaseFailure = new Error(`${failure?.message ? `${failure.message}; ` : ''}public-aw-inspection-lease-release-failed`,
         { cause: new AggregateError([failure, error].filter(Boolean)) });
       releaseFailure.publicAwProcessDiagnostics = failure?.publicAwProcessDiagnostics ?? [];
+      if (failure?.publicAwProcessNames) releaseFailure.publicAwProcessNames = failure.publicAwProcessNames;
       if (failure?.result) releaseFailure.result = failure.result;
       throw releaseFailure;
     }
