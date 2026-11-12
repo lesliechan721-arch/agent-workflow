@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { CodexSharedNativeEvidence } from '../../src/utils/codex-shared-native.js';
@@ -8,6 +9,7 @@ import {
 } from '../../src/utils/codex-native-observation.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
+const marketplaceRoot = path.resolve('/aw/marketplaces/aw-team');
 
 // Ownership must accept Codex's Windows canonical spelling without granting
 // an alias to another directory or interpreting verbatim device path syntax.
@@ -61,12 +63,12 @@ function evidence(
     pluginName: 'demo',
     pluginId: 'demo@aw-team',
     marketplaceName: 'aw-team',
-    canonicalMarketplaceRoot: '/aw/marketplaces/aw-team',
+    canonicalMarketplaceRoot: marketplaceRoot,
     desiredVersion: '2.0.0',
     expectedPayloadDigest: digest,
     marketplaceRegistration: {
       name: 'aw-team',
-      source: '/aw/marketplaces/aw-team',
+      source: marketplaceRoot,
       sourceType: 'local',
       sourcePointsToManifest: false,
     },
