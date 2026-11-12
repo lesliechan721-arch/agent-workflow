@@ -140,10 +140,10 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       if (effect.kind === 'unregister' || effect.kind === 'refresh') {
         const current = await (ctx.inspect ? ctx.inspect(binding) : inspectDeployment(ctx, binding));
         if (!grokRegistrationOwned(binding, evidence, current, identity)) blocked('nativeIdentityUnconfirmed');
-        await run(['plugin', 'uninstall', identity.packageId, '--confirm']);
+        await run(['plugin', 'uninstall', identity.packageId, '--confirm', ...(effect.kind === 'refresh' ? ['--keep-data'] : [])]);
       }
       // Local update can leave an old copy while claiming it is a live symlink.
-      // The reviewed refresh uses native uninstall/install and retains the AW source on failure.
+      // Refresh preserves native plugin data and retains the AW source on failure.
       if (effect.kind !== 'unregister') await run(['plugin', 'install', evidence.layout.packageRoot, '--trust']);
       break;
     default: blocked('nativeRouteUnsupported');

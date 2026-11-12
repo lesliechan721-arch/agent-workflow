@@ -388,7 +388,7 @@ async function qualifyGrok(ctx) {
     samePath(previous.source, ctx.bundle, 'Grok replacement source')
     assert(!before.some(item => item !== previous && (item.repo_key === previous.repo_key || item.path === previous.path || item.source === previous.source)),
       'Grok replacement must not uninstall a shared repository.')
-    await ctx.command(['plugin', 'uninstall', ctx.pluginName, '--confirm'])
+    await ctx.command(['plugin', 'uninstall', ctx.pluginName, '--confirm', '--keep-data'])
     const removed = array(await jsonCommand(ctx, ['plugin', 'list', '--json']), 'Grok plugin list')
     assert(!removed.some(item => item.name === ctx.pluginName), 'Grok uninstall must clear the old registration before reinstall.')
     await ctx.command(['plugin', 'install', ctx.bundle, '--trust'])

@@ -101,7 +101,7 @@ Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`
 
 Gemini/Copilot/Grok 的 Agent 正文组合只涉及同插件本次生成角色，不能修改用户或其他插件的 Agent。Grok project 接收同 binding、同 render scope 的完整组件集合；Instructions 单独改变也使相关 Agent 包重新投影、Review 和冻结。组合输入失败不得发布缺正文的包。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
 
-Grok 1.0.77 的 list 只证明可解析的登记，inspect.enabled 不能单独证明生效或加载。配置激活、信任、组件来源及兼容来源重叠分别报告；这些事实不扩大 ownership。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，仅对精确同源、独占的登记执行已审核的 `uninstall --confirm` 和 `install --trust`。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
+Grok 1.0.77 的 list 只证明可解析的登记，inspect.enabled 不能单独证明生效或加载。配置激活、信任、组件来源及兼容来源重叠分别报告；这些事实不扩大 ownership。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，仅对精确同源、独占的登记执行已审核的 `uninstall --confirm --keep-data` 和 `install --trust`。刷新保留插件持久数据；最终移除仍使用默认卸载。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
 
 ## 3. 适配器职责与执行证据
 

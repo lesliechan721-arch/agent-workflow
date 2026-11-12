@@ -169,15 +169,15 @@ describe('native platform lifecycle', () => {
   });
 
   // Test Value Gate: Grok's update exits zero with an old copy. The reviewed
-  // replacement must use uninstall/install and confirm this attempt's bytes.
-  it('replaces an exclusive Grok registration with the frozen package through native uninstall and install', async () => {
+  // replacement must preserve persistent data and confirm this attempt's bytes.
+  it('replaces an exclusive Grok registration while preserving native plugin data', async () => {
     const input = grokRefreshFixture();
     const plan = prepared(input);
     expect(plan.plan.effects).toMatchObject([{ kind: 'publish-package' }, { kind: 'refresh', destructive: true }, { kind: 'activate' }]);
     const ctx = context(grokCurrentObservation(input));
     const receipt = await executePlatformLifecycle(ctx, plan);
     expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual([
-      ['plugin', 'uninstall', 'demo', '--confirm'], ['plugin', 'install', path.join(root, 'demo'), '--trust'], ['plugin', 'enable', 'demo'],
+      ['plugin', 'uninstall', 'demo', '--confirm', '--keep-data'], ['plugin', 'install', path.join(root, 'demo'), '--trust'], ['plugin', 'enable', 'demo'],
     ]);
     expect(receipt.effects.every((effect) => effect.status === 'applied')).toBe(true);
     expect(receipt.unmet).toEqual([]);
