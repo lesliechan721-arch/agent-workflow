@@ -1,5 +1,5 @@
 import { execute } from './native-platform-runtime.mjs';
-import { createProcessNameDiagnostic } from './native-platform-process-names.mjs';
+import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic } from './native-platform-process-names.mjs';
 
 const MARKER_ENV = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 
@@ -14,9 +14,11 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   const names = ['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
     && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
     ? createProcessNameDiagnostic(processTree.execFile) : undefined;
+  const markerRows = names && process.platform === 'linux'
+    ? createProcessMarkerRowDiagnostic(names.execFile) : undefined;
   const dependencies = { ...processTree, markerEnvironmentVariable: MARKER_ENV,
     enforceProcessMarker: true, enforceCooperativeProcessGroup: false,
-    ...(names ? { execFile: names.execFile } : {}) };
+    ...(names ? { execFile: markerRows?.execFile ?? names.execFile } : {}) };
   const controller = new AbortController();
   const abort = () => controller.abort(options.signal.reason);
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -26,6 +28,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   let failure;
   try {
     lease = await acquireProcessTreeInspectionLease(dependencies);
+    markerRows?.setMarker(MARKER_ENV, lease.marker);
     const result = await runProviderProcess({
       executable: launcher.executable, args: [...launcher.prefix, ...args], cwd: options.cwd,
       env: { ...options.env, [MARKER_ENV]: lease.marker }, signal: controller.signal,
@@ -34,6 +37,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     }, {
       onSpawn({ pid }) {
         names?.onSpawn({ pid });
+        markerRows?.onSpawn({ pid });
         observation = observeProcessTree(pid, lease.marker, dependencies, lease);
         stopFailureListener = observation.onFailure((error) => controller.abort(error));
       },
@@ -60,6 +64,8 @@ export async function executePublicAw(launcher, args, options, processTree = {})
       try {
         const hints = names?.snapshot(error.publicAwProcessDiagnostics);
         if (hints?.length) error.publicAwProcessNames = hints;
+        const rows = markerRows?.snapshot(error.publicAwProcessDiagnostics);
+        if (rows?.length) error.publicAwMarkerRows = rows;
       } catch { /* Name hints cannot replace the original process failure. */ }
       if (lease && error.result) {
         error.result.stdout = error.result.stdout.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>');
@@ -70,6 +76,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   } finally {
     options.signal?.removeEventListener('abort', abort);
     names?.stop();
+    markerRows?.stop();
     stopFailureListener?.();
     observation?.dispose();
     try { await lease?.release(); }
@@ -78,6 +85,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
         { cause: new AggregateError([failure, error].filter(Boolean)) });
       releaseFailure.publicAwProcessDiagnostics = failure?.publicAwProcessDiagnostics ?? [];
       if (failure?.publicAwProcessNames) releaseFailure.publicAwProcessNames = failure.publicAwProcessNames;
+      if (failure?.publicAwMarkerRows) releaseFailure.publicAwMarkerRows = failure.publicAwMarkerRows;
       if (failure?.result) releaseFailure.result = failure.result;
       throw releaseFailure;
     }

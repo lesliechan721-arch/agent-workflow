@@ -177,6 +177,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
             ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
             processDiagnostics: error?.publicAwProcessDiagnostics ?? [],
             ...(error?.publicAwProcessNames ? { processNames: error.publicAwProcessNames } : {}),
+            ...(error?.publicAwMarkerRows ? { markerRows: error.publicAwMarkerRows } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, terminationReason: error.result.terminationReason,
               stdout: error.result.stdout, stderr: error.result.stderr,
               failureSummary: publicAwFailureSummary(error.result.stdout) } : {}) }, root, options.clientBin));

@@ -198,6 +198,33 @@ async function publicProcessFixture(action) {
 const posixOnly = { skip: process.platform === 'win32', timeout: 30_000 };
 const nodeLauncher = { executable: process.execPath, prefix: [] };
 
+// Test Value Gate: the Hosted-only shape wrapper must be wired to the original
+// marker query while a deliberately incorrect child marker remains a failure.
+test('Linux private marker row evidence preserves a real missing-marker failure', {
+  skip: process.platform !== 'linux', timeout: 30_000,
+}, async () => {
+  const saved = [process.env.GITHUB_ACTIONS, process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES];
+  process.env.GITHUB_ACTIONS = 'true'; process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES = '1';
+  try {
+    await publicProcessFixture(async (options) => {
+      const script = "require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),1000)'],"
+        + "{env:{...process.env,AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER:'deliberately-incorrect-marker'},stdio:'ignore'});"
+        + 'setTimeout(()=>process.exit(0),1500);';
+      await assert.rejects(executePublicAw(nodeLauncher, ['-e', script], options), (error) => {
+        assert.match(error.message, /lost its process marker/);
+        assert(error.publicAwMarkerRows?.length > 0);
+        assert(error.publicAwMarkerRows.every((row) => row.markerMatches === false && row.commandForm));
+        assert(!JSON.stringify(error.publicAwMarkerRows).includes('deliberately-incorrect-marker'));
+        return true;
+      });
+    });
+  } finally {
+    for (const [index, key] of ['GITHUB_ACTIONS', 'AW_NATIVE_QUALIFICATION_PROCESS_NAMES'].entries()) {
+      if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index];
+    }
+  }
+});
+
 // Test Value Gate: the approved ordinary-client contract is limited to Copilot
 // Darwin; other native clients retain their existing qualification contract.
 test('selects ordinary observation only for Copilot Darwin native commands', { timeout: 30_000 }, async () => {
