@@ -143,6 +143,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
             processDiagnostics: error?.processTreeDiagnostics ?? error?.publicAwProcessDiagnostics ?? [],
             ...(error?.qualificationProcessNames?.length || error?.publicAwProcessNames?.length
               ? { processNames: error.qualificationProcessNames ?? error.publicAwProcessNames } : {}),
+            ...(error?.qualificationMarkerRows?.length ? { markerRows: error.qualificationMarkerRows } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
               terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
               cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));

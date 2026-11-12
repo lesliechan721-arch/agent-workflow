@@ -1,10 +1,91 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic } from './native-platform-process-names.mjs';
+import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
 
 const start = 'Thu Nov 12 08:00:49 2026';
 const columns = ['-A', '-o', 'pid=,ppid=,pgid=,state=,lstart='];
 const failure = (pid, reason = 'marked-process-group-changed') => [{ reason, affectedPids: [pid], processes: [{ pid, startTime: start }] }];
+
+// Diagnostic reads require the root's unique UUID assignment and repeated
+// unreadable rows; unrelated processes and ordinary missing markers cannot opt in.
+test('does not probe without a valid root marker or repeated unreadable shape', async () => {
+  const name = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
+  const marker = 'b99cad21-9df4-4bc8-af11-e3cb2377de5f';
+  for (const [rootCommand, childCommand, extra] of [
+    ['node', '[node]', `200 1 200 S ${start} node ${name}=${marker}\n`],
+    [`node ${name}=invalid`, '[node]', ''],
+    [`node ${name}=${marker} ${name}=a99cad21-9df4-4bc8-af11-e3cb2377de5f`, '[node]', ''],
+    [`node ${name}=${marker}`, 'node ordinary-missing-marker', ''],
+  ]) {
+    const requests = [];
+    const probe = createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + 1000,
+      read: request => { requests.push(request); return {}; } });
+    const table = `100 1 100 S ${start} ${rootCommand}\n101 100 100 S ${start} ${childCommand}\n${extra}`;
+    const diagnostic = createProcessMarkerRowDiagnostic((_command, _args, _options, callback) => callback(null, table),
+      { learnMarkerEnvironmentVariable: name, environmentProbe: probe });
+    diagnostic.onSpawn({ pid: 100 });
+    for (let index = 0; index < 3; index++) diagnostic.execFile('ps',
+      ['eww', '-A', '-o', 'pid=,ppid=,pgid=,state=,lstart=,command='], { timeout: 100 }, () => {});
+    await Promise.resolve();
+    assert.equal(requests.length, 0);
+    diagnostic.stop();
+  }
+});
+
+// The native observer owns its random marker. Learn only its root row; reads
+// must never delay or replace the original ps callback or its failure decision.
+test('learns the native root marker and records repeated unreadable rows without awaiting diagnostics', async () => {
+  const marker = 'b99cad21-9df4-4bc8-af11-e3cb2377de5f';
+  const name = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
+  const table = `100 1 100 S ${start} node ${name}=${marker}\n101 100 100 R ${start} [node]\n`;
+  let settle; const pending = new Promise(resolve => { settle = resolve; });
+  const reads = [];
+  const probe = createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + 1000, read: request => { reads.push(request); return pending; } });
+  const handle = {}; const queryOptions = { timeout: 500, windowsHide: true, maxBuffer: 1024 };
+  const diagnostic = createProcessMarkerRowDiagnostic((_command, _args, received, callback) => {
+    assert.equal(received, queryOptions); callback(null, table, 'unchanged-stderr'); return handle;
+  }, { learnMarkerEnvironmentVariable: name, environmentProbe: probe });
+  diagnostic.onSpawn({ pid: 100 });
+  const args = ['eww','-A','-o','pid=,ppid=,pgid=,state=,lstart=,command='];
+  let callbacks = 0;
+  for (let i = 0; i < 3; i++) assert.equal(diagnostic.execFile('ps', args, queryOptions, (error, output, stderr) => {
+    callbacks++; assert.equal(error,null); assert.equal(output,table); assert.equal(stderr,'unchanged-stderr');
+  }),handle);
+  assert.equal(callbacks,3); assert.equal(reads.length,0);
+  await Promise.resolve(); assert.equal(reads.length,1); assert.equal(reads[0].pid,101);
+  assert.equal(reads[0].marker,marker); assert.equal(reads[0].markerEnvironmentVariable,name);
+  assert(reads[0].deadlineAt <= Date.now()+500);
+  settle({ status:'complete',markerMatches:true,environmentBytes:123,identity:'same',
+    startedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),rawEnvironment:marker,markerHash:marker });
+  await new Promise(resolve=>setImmediate(resolve));
+  const rows=diagnostic.snapshot([{...failure(101,'process-marker-unreadable')[0],rootPid:100,capturedAt:new Date().toISOString()}]);
+  assert.equal(rows.length,3); assert.equal(rows[0].startupEnvironment,undefined);
+  const evidence=rows[1].startupEnvironment; assert.equal(evidence.markerMatches,true); assert.equal(evidence.identity,'same');
+  assert.equal(evidence.sourceQueryId,2); assert.equal(rows[1].markerMatches,false);
+  assert(!JSON.stringify(rows).includes(marker)); assert(!('rawEnvironment' in evidence)); assert(!('markerHash' in evidence));
+  diagnostic.stop();
+});
+
+test('bounds raw environment candidates, preserves original exceptions, and ignores late results after stop', async () => {
+  const requests=[]; const resolvers=[];
+  const probe=createLinuxEnvironmentDiagnostic({deadlineAt:Date.now()+1000,read:request=>{
+    requests.push(request); return new Promise(resolve=>resolvers.push(resolve));
+  }});
+  const values=[];
+  for(let pid=1;pid<=12;pid++) values.push(probe.schedule({pid,startTime:start,queryId:pid,queryDeadlineAt:Date.now()+500},'MARKER','value'));
+  await Promise.resolve(); assert.equal(requests.length,8); assert(values.slice(8).every(value=>value===undefined));
+  assert.equal(probe.schedule({pid:1,startTime:start,queryId:99,queryDeadlineAt:Date.now()+500},'MARKER','value'),values[0]);
+  const before=JSON.stringify(values);probe.stop(); assert(requests.every(request=>request.signal.aborted));
+  for(const resolve of resolvers) resolve({status:'complete',markerMatches:true,environmentBytes:5,identity:'same'});
+  await new Promise(resolve=>setImmediate(resolve)); assert.equal(JSON.stringify(values),before);
+  const error=new Error('original'); const handle={};let called=0;
+  const diagnostic=createProcessMarkerRowDiagnostic((_command,_args,_options,callback)=>{callback(error,'partial','stderr');return handle;},
+    {learnMarkerEnvironmentVariable:'MARKER',environmentProbe:{schedule(){throw new Error('must not run');},stop(){}}});
+  diagnostic.onSpawn({pid:100});
+  assert.equal(diagnostic.execFile('ps',['eww','-A','-o','pid=,ppid=,pgid=,state=,lstart=,command='],{timeout:100},(received,output,stderr)=>{
+    called++;assert.equal(received,error);assert.equal(output,'partial');assert.equal(stderr,'stderr');
+  }),handle);assert.equal(called,1);diagnostic.stop();
+});
 
 // Test Value Gate: private names must not become identity text, drop process
 // rows, weaken errors, or retain argv/path data in the qualification report.

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createProcessNameDiagnostic } from './native-platform-process-names.mjs';
+import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -75,21 +75,30 @@ export async function execute(launcher, args, options) {
   const names = options.captureProcessNames && process.platform === 'darwin'
     && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
     ? createProcessNameDiagnostic() : undefined;
+  const nativeLinux = options.nativeClient === 'gemini' && process.platform === 'linux'
+    && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1';
+  const markerRows = nativeLinux ? createProcessMarkerRowDiagnostic(undefined, {
+    learnMarkerEnvironmentVariable: 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER',
+    environmentProbe: createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + (options.timeoutMs ?? 30_000) }),
+  }) : undefined;
   try {
     return await runProviderProcess({ executable: launcher.executable, args: [...launcher.prefix, ...args],
       cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs ?? 30_000,
       maxBufferBytes: 2 * 1024 * 1024, ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
-    }, names ? { onSpawn: names.onSpawn } : {}, { containment: 'verified-observed',
+    }, names || markerRows ? { onSpawn(handle) { names?.onSpawn(handle); markerRows?.onSpawn(handle); } } : {}, { containment: 'verified-observed',
       ...(windowsJobHelperPath ? { processTree: { windowsJobHelperPath } } : {}),
       ...(names ? { processTree: { execFile: names.execFile } } : {}),
+      ...(markerRows ? { processTree: { execFile: markerRows.execFile } } : {}),
     });
   } catch (error) {
     try {
       const observed = names?.snapshot(error?.processTreeDiagnostics);
       if (observed?.length) error.qualificationProcessNames = observed;
+      const rows = markerRows?.snapshot(error?.processTreeDiagnostics);
+      if (rows?.length) error.qualificationMarkerRows = rows;
     } catch { /* Private diagnostic data must not replace the original failure. */ }
     throw error;
-  } finally { names?.stop(); }
+  } finally { names?.stop(); markerRows?.stop(); }
 }
 
 export async function processManagementInfo() {

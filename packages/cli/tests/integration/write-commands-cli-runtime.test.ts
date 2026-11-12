@@ -237,6 +237,40 @@ describe('five namespaced write commands', () => {
     expect(report).toHaveBeenCalled();
   });
 
+  // The adapter must produce and execute the reviewed static Skill deployment
+  // without an unrelated legacy discovery before each recovery preparation.
+  it('installs a static Codex Skill through the adapter without eager legacy manager discovery', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'adapter-owned-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: snapshot.digest, env: isolation.env });
+    await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env },
+      { ...createEmptyPreferences(), targets: ['codex'] });
+    const native = await createCodexNativeTestRuntime(isolation, '0.167.0');
+    const unusedDiscovery = vi.fn(async () => { throw new Error('Unexpected eager legacy manager discovery.'); });
+    const runtime = { ...native, codexManagerResolver: unusedDiscovery, codexManagerPreviewer: unusedDiscovery,
+      codexOperationConsumerResolver: unusedDiscovery };
+    const reviewed = await prepareRecovery('install', ['team/demo'], { cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      scope: 'user', targets: ['codex'], cliVersion: '1.0.0', yes: true }, runtime);
+    const plans = (reviewed.joint?.children ?? [reviewed]).flatMap(child => child.nativeGroups)
+      .flatMap(group => group.preview.operationPlan?.deploymentPlans ?? []);
+    expect(plans).toHaveLength(1);
+    expect(plans[0]?.binding).toMatchObject({ platform: 'codex', scope: { kind: 'user' },
+      consumers: [expect.objectContaining({ product: 'cli', version: '0.167.0', availability: 'available' })] });
+    const installed = await executeRecovery(reviewed);
+    expect(installed, JSON.stringify(installed)).toMatchObject({ ok: true });
+    const layout = await getNativeTestLayout({ platform: 'codex', pluginId: 'team/demo', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, sourceIdentity: await calculateCatalogSourceIdentity(source) });
+    expect(native.installed.has(layout.nativeIdentity.registrationId!)).toBe(true);
+    const skills = await fs.readdir(path.join(layout.packageRoot, 'skills'));
+    expect(skills).toHaveLength(1);
+    expect(await fs.readFile(path.join(layout.packageRoot, 'skills', skills[0]!, 'SKILL.md'), 'utf8')).toContain('description: demo skill.');
+    expect(unusedDiscovery).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['secondary installation after becoming primary', false, 'cleanup'],
     ['primary installation after another source becomes primary', true, 'uninstall'],

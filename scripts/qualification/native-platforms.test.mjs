@@ -12,6 +12,7 @@ import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assert
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { observeNativeWorkingDirectory } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
+import './native-platform-linux-environment.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
 
@@ -250,6 +251,34 @@ test('Linux private marker row evidence preserves a real missing-marker failure'
     });
   } finally {
     for (const [index, key] of ['GITHUB_ACTIONS', 'AW_NATIVE_QUALIFICATION_PROCESS_NAMES'].entries()) {
+      if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index];
+    }
+  }
+});
+
+// Native Gemini uses the same strict observer. Diagnostic wiring must retain
+// an actual wrong-marker failure and must not expose the startup marker.
+test('Linux native Gemini diagnostics retain a strict missing-marker failure', {
+  skip: process.platform !== 'linux', timeout: 30_000,
+}, async () => {
+  const keys = ['GITHUB_ACTIONS', 'AW_NATIVE_QUALIFICATION_PROCESS_NAMES'];
+  const saved = keys.map(key => process.env[key]);
+  process.env.GITHUB_ACTIONS = 'true'; process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES = '1';
+  try {
+    await publicProcessFixture(async (options) => {
+      const script = "require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),1000)'],"
+        + "{env:{...process.env,AW_AGENT_SKILL_EVAL_PROCESS_MARKER:'deliberately-incorrect-marker'},stdio:'ignore'});"
+        + 'setTimeout(()=>process.exit(0),1500);';
+      await assert.rejects(execute(nodeLauncher, ['-e', script], { ...options, nativeClient: 'gemini' }), error => {
+        assert.match(error.message, /lost its process marker/);
+        assert(error.qualificationMarkerRows?.length > 0);
+        assert(error.qualificationMarkerRows.every(row => row.markerMatches === false && row.commandForm));
+        assert(!JSON.stringify(error.qualificationMarkerRows).includes('deliberately-incorrect-marker'));
+        return true;
+      });
+    });
+  } finally {
+    for (const [index, key] of keys.entries()) {
       if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index];
     }
   }

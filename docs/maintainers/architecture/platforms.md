@@ -109,6 +109,8 @@ Grok 1.0.77 的 list 只证明可解析的登记，inspect.enabled 不能单独�
 
 AgentPluginAdapter 提供 discover、resolve、inspect、capabilities、project 和 lifecycle.prepare/execute。discover/resolve/inspect 不修改部署或信任；显式 status 原生观察可启动客户端并产生其运行状态。capabilities 与 prepare 是纯函数；project 只写私有 staging。公共管线拥有 renderer、命令闭包、冻结、Review、写锁、owner/共享检查和结果汇总。execute 使用同一冻结字节、route、位置与动作，不重新渲染、换路由或运行未审核的卸载重装。
 
+Codex 的平台安装从 adapter 的冻结 product binding 构造管理入口，平台观察在读取前绑定同一产品；重建入口不再提前调用没有有效计划消费者的旧 manager 发现。adapter 发现、版本探测、锁内重新准备、执行前及 preApply 后指纹校验仍重新读取现场，客户端入口、版本或 App 集合变化使旧 Review 失效。此处不引入跨检查边界的发现缓存；普通 status 的独立 manager 发现保持自身职责。
+
 效果分类为 publish-package、register、refresh、activate、deactivate、unregister、write-supplement、remove-owned，用于 Review/回执关联，不是通用 shell 动作语言。每个回执效果对应审核 ID；未执行项显式 skipped。原生命令超时或异常后先有限只读观测，未知写入保留 unknown/possible，不盲目重试。安装成功但激活失败、卸载成功但补足清理失败分别保留事实。
 
 后置观察确认登记成功，不能消除后续必需激活被跳过的事实；因失败跳过的必需 effect 仍使目标未完成。同一命令按真实物理范围复用共享 register/refresh 的结果，各 scope 分别激活；Claude 按 scope 独立的安装不合并。

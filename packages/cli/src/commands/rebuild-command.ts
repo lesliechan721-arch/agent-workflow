@@ -51,7 +51,6 @@ import {
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
-  CodexManagerError,
   previewCodexManager,
   resolveCodexManager,
   resolveCodexOperationConsumer,
@@ -3528,40 +3527,6 @@ async function runRebuildCommandInSession(
         nativeActivationOnlyTargets: options.runtime?.nativeActivationOnlyTargets,
         commandResults: options.runtime?.commandResults,
       };
-      let planningManagerPreview: CodexManagerPreview | undefined;
-      let planningManagerError: unknown;
-      const needsCodexObservation = executionSelections.some(({ entry, platform }) =>
-        platform === 'codex' && analyzeCodexSurface(entry.plugin.manifest).nativeKinds.length > 0);
-      if (needsCodexObservation && !executionContext.codexManager) {
-        const managerOptions = {
-          cwd: options.commandOptions.cwd,
-          env: runtimeEnv,
-          runner: executionContext.nativeCliRunner,
-          signal: options.runtime?.signal,
-          operationRequirement: getCodexOperationRequirement(options.commandOptions.scope),
-        };
-        try {
-          const useExecutionResolver = !options.runtime?.previewOperationPlan
-            && ['install', 'sync', 'reinstall'].includes(options.command);
-          if (useExecutionResolver && options.runtime?.codexManagerResolver) {
-            executionContext.codexManager = await options.runtime.codexManagerResolver(managerOptions);
-          } else if (useExecutionResolver && options.runtime?.codexOperationConsumerResolver) {
-            executionContext.codexManager = (await options.runtime.codexOperationConsumerResolver(managerOptions)).manager;
-          } else {
-            planningManagerPreview = await (options.runtime?.codexManagerPreviewer ?? previewCodexManager)(managerOptions);
-            if (planningManagerPreview.state === 'system') {
-              executionContext.codexManager = planningManagerPreview.manager;
-            } else {
-              planningManagerError = new CodexManagerError(planningManagerPreview.code, planningManagerPreview.diagnostic);
-            }
-          }
-        } catch (error) {
-          if (readSafeOperationError(error) || error instanceof Error && error.name === 'AbortError') throw error;
-          planningManagerError = error;
-        }
-        // Never let an unselected PATH entry decide native state or target readiness.
-        executionContext.codexObservationSession?.setManager(executionContext.codexManager);
-      }
       const inspection = createRebuildIntegration({
         context: executionContext,
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
@@ -4438,7 +4403,7 @@ async function runRebuildCommandInSession(
         if (initialCodexPlans.some((plan) => plan.sharedNativeActions.some((action) =>
           action.action === 'install' || action.action === 'replace' || action.action === 'repair')
           || plan.postcheck.plugins.length > 0)) {
-          preview.codexManagerPreview = planningManagerPreview ?? await (
+          preview.codexManagerPreview = await (
             options.runtime.codexManagerPreviewer ?? previewCodexManager
           )({
             cwd: options.commandOptions.cwd,
@@ -4716,7 +4681,6 @@ async function runRebuildCommandInSession(
           if (executionContext.codexManager === undefined
             && nativePreparationKeys.size > 0) {
             try {
-              if (planningManagerError) throw planningManagerError;
               if (options.runtime?.codexManagerResolver) {
                 executionContext.codexManager = await options.runtime.codexManagerResolver({
                   cwd: options.commandOptions.cwd,
@@ -4751,7 +4715,6 @@ async function runRebuildCommandInSession(
           } else if (executionContext.codexManager === undefined
             && activationPreparationKeys.size > 0) {
             try {
-              if (planningManagerError) throw planningManagerError;
               const consumer = await (
                 options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
               )({
