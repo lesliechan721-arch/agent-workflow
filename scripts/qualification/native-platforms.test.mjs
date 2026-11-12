@@ -10,11 +10,33 @@ import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readQ
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
-import { observeNativeWorkingDirectory } from './native-platform-public-aw.mjs';
+import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
+import './native-platform-copilot-skills.test.mjs';
 import './native-platform-linux-environment.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
+
+// Test Value Gate: public observation must use the public revision and a fresh
+// local command; disabled inventory cannot satisfy complete removal.
+test('public Copilot reads use current Skill metadata and require absence after removal', async () => {
+  const calls = [];
+  let rows = [{ name: 'plugin/skill', description: 'AW public acceptance revision 2', enabled: true, path: '/fixture/SKILL.md' }];
+  const ctx = { platform: 'copilot', pluginName: 'plugin', skillName: 'skill',
+    async command(...args) { calls.push(args); return { stdout: JSON.stringify(rows) }; },
+    async rpc() { assert.fail('Copilot Skill discovery must not open an RPC session.'); } };
+  assert.equal((await readPublicSkills(ctx, '/project', 2, true)).description, 'AW public acceptance revision 2');
+  await assert.rejects(readPublicSkills(ctx, '/project', 1, true), { code: 'ERR_ASSERTION' });
+  rows = [{ ...rows[0], enabled: false }];
+  assert.deepEqual(await readPublicSkills(ctx, '/neutral', 2, false),
+    { level: 'fresh-process-skill-discovery', present: true, enabled: false });
+  await assert.rejects(readPublicSkills(ctx, '/project', 2, false, { requireAbsent: true }), { code: 'ERR_ASSERTION' });
+  rows = [];
+  assert.deepEqual(await readPublicSkills(ctx, '/project', 2, false, { requireAbsent: true }),
+    { level: 'fresh-process-skill-discovery', present: false, enabled: false });
+  assert(calls.every(([args]) => JSON.stringify(args) === JSON.stringify(['skill', 'list', '--json'])));
+  assert.equal(calls[2][1], '/neutral');
+});
 
 // Test Value Gate: diagnose only generated fixture marketplace sources, with
 // production parsing and bounded output; credentials and other config stay out.

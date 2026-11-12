@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { readCopilotSkills } from './native-platform-copilot-skills.mjs'
 
 const version = revision => `1.0.${revision}`
 const description = revision => `AW qualification revision ${revision}`
@@ -422,16 +423,7 @@ async function copilotInventory(ctx, cwd, revision, enabled) {
 
 async function copilotSkills(ctx, cwd, revision, present) {
   // This public command opens no chat session and sends no prompt.
-  const items = array(await jsonCommand(ctx, ['skill', 'list', '--json'], cwd), 'Copilot skills')
-  const matches = items.filter(item => item.name === ctx.skillName || item.name === `${ctx.pluginName}/${ctx.skillName}`)
-  if (!present) {
-    assert(!matches.some(item => item.enabled === true), 'A project Copilot Skill must not be enabled in neutral cwd.')
-    return { level: 'skill-discovery', enabled: false, present: matches.length > 0 }
-  }
-  const skill = one(matches, item => item.enabled === true, 'Copilot enabled fixture Skill')
-  assert.equal(skill.description, description(revision))
-  assert.equal(typeof skill.path, 'string')
-  return { level: 'skill-discovery', name: skill.name, description: skill.description, enabled: skill.enabled }
+  return readCopilotSkills(ctx, cwd, description(revision), present)
 }
 
 async function qualifyCopilot(ctx) {

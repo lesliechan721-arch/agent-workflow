@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
 import { clients, sha256 } from './native-platform-runtime.mjs';
+import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
 
 // One fixed Node child, using AW's real default native backend and the same
 // isolated cwd/env as Pi. This observes path spelling without granting trust.
@@ -99,8 +100,13 @@ async function readGrokSkills(ctx, cwd, revision, present) {
   return { level: 'fresh-process-skill-discovery', present, scope: 'user', plugins, skills };
 }
 
-async function readSkills(ctx, cwd, revision, present) {
+export async function readSkills(ctx, cwd, revision, present, { requireAbsent = false } = {}) {
   if (ctx.platform === 'grok') return readGrokSkills(ctx, cwd, revision, present);
+  if (ctx.platform === 'copilot') {
+    const result = await readCopilotSkills(ctx, cwd, `AW public acceptance revision ${revision}`, present);
+    if (requireAbsent) assert.equal(result.present, false, 'Public remove must leave no fixture Skill in Copilot discovery.');
+    return { ...result, level: 'fresh-process-skill-discovery' };
+  }
   const result = await ctx.rpc(cwd);
   let skills;
   if (ctx.platform === 'codex') {
@@ -225,7 +231,7 @@ async function grokStatusFiles(ctx) {
 }
 
 export async function qualifyPublicAw(ctx) {
-  if (!['codex', 'pi', 'grok'].includes(ctx.platform)) await ctx.defer('public-aw-read-only-skill-observer-not-implemented');
+  if (!['codex', 'pi', 'grok', 'copilot'].includes(ctx.platform)) await ctx.defer('public-aw-read-only-skill-observer-not-implemented');
   if (ctx.platform === 'grok' && ctx.scope !== 'user') await ctx.defer('public-aw-grok-project-skill-unverified');
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
@@ -275,8 +281,16 @@ export async function qualifyPublicAw(ctx) {
     // Host trust is an explicit isolated fixture, separate from AW --yes.
     if (ctx.platform === 'codex') await fs.writeFile(path.join(ctx.env.CODEX_HOME, 'config.toml'),
       `[projects.${JSON.stringify(ctx.project)}]\ntrust_level = "trusted"\n`);
-    else await fs.writeFile(path.join(ctx.env.PI_CODING_AGENT_DIR, 'trust.json'),
+    else if (ctx.platform === 'pi') await fs.writeFile(path.join(ctx.env.PI_CODING_AGENT_DIR, 'trust.json'),
       JSON.stringify({ [ctx.project]: true, [ctx.neutral]: true }) + '\n');
+    else if (ctx.platform === 'copilot') {
+      // The same explicit Hosted fixture precondition as native management.
+      // It also approves tools; this fixture sends no tool or model requests.
+      assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Real Copilot qualification requires a credential-free Hosted environment.');
+      ctx.env.COPILOT_ALLOW_ALL = 'true';
+      return { level: 'fixture-environment', interface: 'COPILOT_ALLOW_ALL=true',
+        directories: 'isolated project and neutral', sessionRequests: 'none' };
+    }
     const cwdObservation = ctx.platform === 'pi' && process.platform === 'win32'
       && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
       ? await observeNativeWorkingDirectory(ctx) : undefined;
@@ -355,7 +369,7 @@ export async function qualifyPublicAw(ctx) {
     return { command: result.command, status: result.status };
   });
   await ctx.check('public-remove-skill-discovery', async () => {
-    await readSkills(ctx, ctx.project, 2, false);
-    return readSkills(ctx, ctx.neutral, 2, false);
+    await readSkills(ctx, ctx.project, 2, false, { requireAbsent: true });
+    return readSkills(ctx, ctx.neutral, 2, false, { requireAbsent: true });
   });
 }
