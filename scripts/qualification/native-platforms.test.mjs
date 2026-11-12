@@ -235,7 +235,7 @@ test('loads a managed trace before a real native command on supported Hosted sys
       catch(error) { code=error.exitCode; }
       assert.equal(code,7); console.log('native failure preserved');
     `);
-    const result = await new Promise((resolve, reject) => execFile(process.execPath, ['--import', module, invocationFile, nativeFile], {
+    const result = await new Promise((resolve, reject) => execFile(process.execPath, ['--import', pathToFileURL(module).href, invocationFile, nativeFile], {
       cwd: options.cwd, env: { ...options.env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: 'pi', AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
         AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([nativeFile]),

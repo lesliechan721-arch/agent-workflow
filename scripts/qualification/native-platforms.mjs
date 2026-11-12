@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
   acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
@@ -170,7 +170,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         let result;
         try {
           result = await executePublicAw({ executable: process.execPath, prefix: [
-            ...(trace ? ['--import', path.join(repoRoot, 'scripts/qualification/native-platform-managed-trace.mjs')] : []),
+            ...(trace ? ['--import', pathToFileURL(path.join(repoRoot, 'scripts/qualification/native-platform-managed-trace.mjs')).href] : []),
             path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 60_000 });
         } catch (error) {
           report.commands.push(redact({ aw: args, cwd, processFailure: error?.message,
