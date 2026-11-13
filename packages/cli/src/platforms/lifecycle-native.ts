@@ -4,8 +4,9 @@ import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
 import type { PlatformDriverState } from './lifecycle.js';
 import { inspectDeployment } from './inspection.js';
-import { assertGeminiNativeOwner, assertGeminiProjectRules, finishGeminiNativeMutation, geminiActivationEvidence, geminiActivationRules,
-  readGeminiActivationSnapshot } from './gemini-activation.js';
+import { assertGeminiNativeOwner, assertGeminiProjectRules, assertGeminiRefreshSource, assertGeminiReplacementContent,
+  finishGeminiNativeMutation, geminiActivationEvidence, geminiActivationRules, geminiRefreshNeedsReplacement,
+  readGeminiActivationSnapshot, restoreGeminiReplacementActivation } from './gemini-activation.js';
 import { geminiConsentInput } from './gemini-consent.js';
 
 export function nativeRoute(route: InstallRoute): boolean {
@@ -145,10 +146,39 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       const snapshot = await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
       await assertGeminiProjectRules(ctx, binding, geminiActivationRules(snapshot, identity.packageId));
       if (effect.kind !== 'register' && effect.kind !== 'refresh' && effect.kind !== 'unregister') blocked('nativeRouteUnsupported');
-      if (effect.kind !== 'register') await assertGeminiNativeOwner(ctx, binding, identity, evidence);
+      const replace = effect.kind === 'refresh'
+        ? await geminiRefreshNeedsReplacement(ctx, binding, identity, evidence, before) : false;
+      if (effect.kind === 'unregister') await assertGeminiNativeOwner(ctx, binding, identity, evidence);
       await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
       if (effect.kind === 'unregister') await run(['extensions', 'uninstall', identity.packageId]);
-      else if (effect.kind === 'refresh') await run(['extensions', 'update', identity.packageId],
+      else if (replace) {
+        await assertGeminiRefreshSource(prepared.plan);
+        const step = async (kind: 'register' | 'unregister', args: string[], input?: NativeCliInput): Promise<void> => {
+          let nativeError: unknown;
+          try { await run(args, input); } catch (error) { nativeError = error; }
+          // Keep all reviewed activations even if a fixed native step changed
+          // its config before failing. Unexpected changes remain stale.
+          try { await restoreGeminiReplacementActivation(ctx, identity, kind, snapshot, nativeError !== undefined); }
+          catch (error) {
+            throw Object.assign(error instanceof Error ? error : new Error('nativeActivationRestoreFailed'),
+              { mutation: confirmed ? 'confirmed' : (nativeError as { mutation?: string } | undefined)?.mutation === 'none' ? 'none' : 'possible' });
+          }
+          Object.assign(ctx.geminiActivationSnapshot!, geminiActivationEvidence(snapshot));
+          if (nativeError !== undefined) throw nativeError;
+        };
+        try {
+          await step('unregister', ['extensions', 'uninstall', identity.packageId]);
+          await assertGeminiRefreshSource(prepared.plan);
+          await step('register', ['extensions', 'install', evidence.layout.packageRoot, '--consent', '--skip-settings'],
+            geminiConsentInput('register', evidence.layout.packageRoot, cwd, identity.packageId));
+          await assertGeminiReplacementContent(ctx, prepared.plan, identity);
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error('nativeMutationFailed');
+          if (!('code' in failure)) Object.assign(failure, { code: 'nativeInstallContentPostcheckFailed' });
+          throw Object.assign(failure,
+            { mutation: confirmed ? 'confirmed' : (error as { mutation?: string })?.mutation === 'none' ? 'none' : 'possible' });
+        }
+      } else if (effect.kind === 'refresh') await run(['extensions', 'update', identity.packageId],
         geminiConsentInput('refresh', evidence.layout.packageRoot, cwd, identity.packageId));
       else await run(['extensions', 'install', evidence.layout.packageRoot, '--consent', '--skip-settings'],
         geminiConsentInput('register', evidence.layout.packageRoot, cwd, identity.packageId));

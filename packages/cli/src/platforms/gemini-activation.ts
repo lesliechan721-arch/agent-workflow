@@ -3,9 +3,17 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { atomicReplaceSafeFile, assertSafeFileMutationPath } from '../utils/safe-fs.js';
-import { readSkillOwnerMarker } from '../utils/ownership.js';
+import { readSkillOwnerMarker, type OwnerIdentity } from '../utils/ownership.js';
 import { readEnvironmentValue, resolveUserHome } from '../utils/state-paths.js';
-import type { DeploymentBinding, MutationContext, MutationOutcome, NativeIdentity, PreparationEvidence, ReadContext } from './contracts.js';
+import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
+import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
+import type { DeploymentBinding, DeploymentObservation, FrozenDeploymentPlan, MutationContext, MutationOutcome, NativeIdentity, PreparationEvidence, ReadContext } from './contracts.js';
+
+export const geminiReplacementMessages = {
+  nativeRefreshDataUnconfirmed: 'The installed Gemini copy has unconfirmed ownership or contains data outside its recorded AW package. No native replacement was started. Preserve any local settings or files before repairing the installation.',
+  nativeInstallContentPostcheckFailed: 'The Gemini native copy could not be confirmed against the frozen AW package. The AW source and reviewed activation rules were retained. Inspect the native installation before retrying.',
+};
+const installMetadataFile = '.gemini-extension-install.json';
 
 export interface GeminiActivationSnapshot {
   path: string;
@@ -132,6 +140,60 @@ export async function assertGeminiNativeOwner(ctx: ReadContext, binding: Deploym
   const manifest = object(await fs.readJson(path.join(directory, 'gemini-extension.json')));
   if (!['local', 'link'].includes(String(metadata.type)) || metadata.source !== identity.sourceLocation || manifest.name !== identity.packageId) fail('nativeIdentityUnconfirmed');
 }
+
+/** Unknown or locally modified copies never confirm current installed content. */
+export async function readGeminiNativeCopyContentDigest(ctx: ReadContext, identity: NativeIdentity,
+  expectedIdentity: OwnerIdentity): Promise<string | undefined> {
+  try {
+    const { home, root } = geminiExtensionPaths(ctx);
+    const directory = path.join(root, identity.packageId);
+    await assertSafeFileMutationPath({ filePath: path.join(directory, installMetadataFile), allowedRoot: home, label: 'Gemini extension identity' });
+    if (await fs.pathExists(path.join(directory, '.env'))) return undefined;
+    const marker = await readSkillOwnerMarker({ skillRoot: directory, allowedRoot: root, expectedIdentity });
+    if (!marker?.nativeProjection) return undefined;
+    const digest = await readPlatformPackageContentDigest(directory, { excludeRootFiles: [installMetadataFile] });
+    return digest === marker.nativeProjection.contentDigest ? digest : undefined;
+  } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); return undefined; }
+}
+
+/** A copied old marker proves only its own recorded bytes, never the new source bytes. */
+export async function geminiRefreshNeedsReplacement(ctx: ReadContext, binding: DeploymentBinding, identity: NativeIdentity,
+  evidence: PreparationEvidence, before: DeploymentObservation): Promise<boolean> {
+  await assertGeminiNativeOwner(ctx, binding, identity, evidence);
+  const directory = path.join(geminiExtensionPaths(ctx).root, identity.packageId);
+  const manifest = object(await fs.readJson(path.join(directory, 'gemini-extension.json')));
+  if (typeof manifest.version !== 'string') fail('nativeIdentityUnconfirmed');
+  if (manifest.version !== binding.plugin.version) return false;
+  if (before.ownership !== 'aw' || before.registration !== 'present'
+    || before.nativeIdentity?.packageId !== identity.packageId
+    || before.nativeIdentity.sourceLocation !== identity.sourceLocation) fail('nativeIdentityUnconfirmed');
+  try {
+    const component = evidence.ownership.find((slot) => slot.component.kind === 'owned-directory'
+      && slot.component.path === identity.sourceLocation)?.component;
+    if (component?.kind !== 'owned-directory') fail('nativeRefreshDataUnconfirmed');
+    if (!await readGeminiNativeCopyContentDigest(ctx, identity, component.identity)) fail('nativeRefreshDataUnconfirmed');
+  } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); fail('nativeRefreshDataUnconfirmed'); }
+  return true;
+}
+
+export async function assertGeminiRefreshSource(plan: FrozenDeploymentPlan): Promise<void> {
+  const bundles = plan.projections.flatMap((projection) => projection.bundle ? [projection.bundle] : []);
+  if (bundles.length !== 1 || await readPlatformPackageContentDigest(bundles[0]!.stagingRoot) !== bundles[0]!.contentDigest
+    || await readPlatformPackageContentDigest(plan.evidence.layout.packageRoot) !== bundles[0]!.contentDigest) fail('operationPlanStale');
+}
+
+/** Check the real native directory, including removed/extra files, after replacement. */
+export async function assertGeminiReplacementContent(ctx: ReadContext, plan: FrozenDeploymentPlan, identity: NativeIdentity): Promise<void> {
+  await assertGeminiRefreshSource(plan);
+  const bundle = plan.projections.find((projection) => projection.bundle)?.bundle;
+  const component = plan.evidence.ownership.find((slot) => slot.component.kind === 'owned-directory'
+    && slot.component.path === identity.sourceLocation)?.component;
+  try {
+    await assertGeminiNativeOwner(ctx, plan.binding, identity, plan.evidence);
+    if (!bundle || component?.kind !== 'owned-directory') fail('nativeInstallContentPostcheckFailed');
+    if (await readGeminiNativeCopyContentDigest(ctx, identity, component.identity) !== bundle.contentDigest) fail('nativeInstallContentPostcheckFailed');
+  } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); fail('nativeInstallContentPostcheckFailed'); }
+}
 async function writeConfig(ctx: ReadContext, baseline: GeminiActivationSnapshot, value: EnablementConfig): Promise<MutationOutcome> {
   const current = await readGeminiActivationSnapshot(ctx);
   if (current.path !== baseline.path || current.content !== baseline.content) fail('operationPlanStale');
@@ -173,11 +235,11 @@ export async function setGeminiActivation(ctx: ReadContext, evidence: Preparatio
     binding.scope.kind === 'user' ? enabled : evidence.userActivationEnabled, enabled));
 }
 
-/** Fixed 0.67.0 install performs User enable; same-name update preserves rules. */
-export async function finishGeminiNativeMutation(ctx: ReadContext, evidence: PreparationEvidence, binding: DeploymentBinding,
-  identity: NativeIdentity, kind: 'register' | 'refresh' | 'unregister', baseline: GeminiActivationSnapshot): Promise<void> {
+async function checkedGeminiNativeMutation(ctx: ReadContext, identity: NativeIdentity,
+  kind: 'register' | 'refresh' | 'unregister', baseline: GeminiActivationSnapshot, allowUnchanged = false): Promise<GeminiActivationSnapshot> {
   const previous = config(baseline);
   const current = await readGeminiActivationSnapshot(ctx);
+  if (allowUnchanged && current.content === baseline.content) return current;
   let expected: EnablementConfig;
   if (kind === 'refresh') {
     if (current.content !== baseline.content) fail('operationPlanStale');
@@ -196,6 +258,22 @@ export async function finishGeminiNativeMutation(ctx: ReadContext, evidence: Pre
     }
     if (current.content !== JSON.stringify(expected, null, 2)) fail('operationPlanStale');
   }
+  return current;
+}
+
+/** A refresh is not a final removal: keep every prior activation through each native step. */
+export async function restoreGeminiReplacementActivation(ctx: ReadContext, identity: NativeIdentity,
+  kind: 'register' | 'unregister', baseline: GeminiActivationSnapshot, allowUnchanged = false): Promise<void> {
+  const current = await checkedGeminiNativeMutation(ctx, identity, kind, baseline, allowUnchanged);
+  await writeConfig(ctx, current, config(baseline));
+  baseline.content = current.content;
+}
+
+/** Fixed 0.67.0 install performs User enable; same-name update preserves rules. */
+export async function finishGeminiNativeMutation(ctx: ReadContext, evidence: PreparationEvidence, binding: DeploymentBinding,
+  identity: NativeIdentity, kind: 'register' | 'refresh' | 'unregister', baseline: GeminiActivationSnapshot): Promise<void> {
+  const previous = config(baseline);
+  const current = await checkedGeminiNativeMutation(ctx, identity, kind, baseline);
   const desired = { ...previous };
   if (kind === 'unregister') delete desired[identity.packageId];
   else {

@@ -865,6 +865,11 @@ function hasPlannedPreApply(target: DesiredTarget): boolean {
     && (!target.platformDeployment || !target.operationActions || target.operationActions.some((action) => action.kind === 'runPreApply'));
 }
 
+function canVerifyPlatformAtExecution(command: RebuildCommand, target: DesiredTarget): boolean {
+  return (command === 'install' || command === 'sync') && !hasPlannedPreApply(target)
+    && target.platformDeployment?.canVerifyAtExecution() === true;
+}
+
 export async function executeRebuildOperation(options: {
   command: RebuildCommand;
   target: DesiredTarget;
@@ -886,14 +891,15 @@ export async function executeRebuildOperation(options: {
         throw new Error('Prepared rebuild operation does not match the requested target.');
       }
       accumulator.actions.push(...options.preparation?.actions ?? []);
-      await options.target.platformDeployment.verify();
+      const verifyAtExecution = canVerifyPlatformAtExecution(options.command, options.target);
+      if (!verifyAtExecution) await options.target.platformDeployment.verify();
       if (!options.preparation && options.command !== 'cleanup' && options.command !== 'uninstall'
         && hasPlannedPreApply(options.target)) {
         await action(accumulator, 'preApply', () => options.driver.runPreApply({ target: options.target, plugin: options.target.preApplySource }), events);
         await options.target.platformDeployment.verify();
       }
-      await options.driver.applyManagedCommands?.(options.target);
-      const receipts = await options.target.platformDeployment.execute();
+      if (!verifyAtExecution) await options.driver.applyManagedCommands?.(options.target);
+      const receipts = await options.target.platformDeployment.execute(verifyAtExecution ? { verifyBeforeExecution: true } : undefined);
       for (const cleanup of options.target.platformDeployment.cleanupResults) {
         accumulator.cleanupAttempted = true;
         mergeCleanup(accumulator, cleanup, 'cleanup.owned');
@@ -1110,8 +1116,9 @@ export async function prepareRebuildOperation(options: {
     now: options.now ?? Date.now,
   };
   try {
-    if (options.target.platformDeployment) await options.target.platformDeployment.verify();
-    else validateDesiredTarget(options.target);
+    if (options.target.platformDeployment) {
+      if (!canVerifyPlatformAtExecution(options.command, options.target)) await options.target.platformDeployment.verify();
+    } else validateDesiredTarget(options.target);
   } catch (error) {
     return {
       status: 'failed',

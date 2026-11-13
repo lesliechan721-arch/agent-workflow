@@ -222,7 +222,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 expectedIdentity: deploymentPackageComponent(binding, layout).identity });
               const projection = marker?.nativeProjection;
               const contentDigest = projection ? await readPlatformPackageContentDigest(layout.packageRoot) : undefined;
-              if (binding.route === 'grok-cli' && live.registration === 'present') {
+              if (['grok-cli', 'gemini-extension'].includes(binding.route) && live.registration === 'present') {
                 nativeContentUnconfirmed = !contentDigest || !live.nativePackageContentDigest;
                 nativeContentDrift = Boolean(contentDigest && live.nativePackageContentDigest
                   && contentDigest !== live.nativePackageContentDigest);

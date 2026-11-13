@@ -17,13 +17,13 @@ permissions:
 
 jobs:
   native-windows-job:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification'
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini'
     uses: ./.github/workflows/windows-job.yml
     with:
       source-ref: ${{ github.sha }}
 
   candidate:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification'
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -40,6 +40,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test:qualification:native-platforms:harness
+      - run: node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs
       - name: Bind the candidate to this source and exact bundle bytes
         shell: bash
         run: |
@@ -66,7 +67,7 @@ jobs:
         runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-2025, windows-11-arm]
     runs-on: ${{ matrix.runner }}
     env:
-      QUALIFICATION_CLIENT: ${{ inputs.client || 'all' }}
+      QUALIFICATION_CLIENT: ${{ inputs.client || (github.event.label.name == 'native-qualification-gemini' && 'gemini') || 'all' }}
       AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
       AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'
     steps:
@@ -112,6 +113,15 @@ jobs:
         shell: bash
         run: |
           node scripts/qualification/native-platforms.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --public-aw --report "$RUNNER_TEMP/native-results/report.json"
+      - name: Observe fixed Cursor and Antigravity interfaces without credentials
+        if: ${{ !cancelled() && matrix.runner == 'ubuntu-24.04' && env.QUALIFICATION_CLIENT == 'all' }}
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-interface-probes"
+          node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs | tee "$RUNNER_TEMP/native-interface-probes/harness.log"
+          node scripts/qualification/native-platform-interface-probes.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-interface-probes/report.json"
       - name: Summarize observed scope results
         if: always()
         shell: bash
@@ -121,5 +131,13 @@ jobs:
         with:
           name: native-qualification-${{ matrix.runner }}
           path: ${{ runner.temp }}/native-results/report.json
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.runner == 'ubuntu-24.04' && env.QUALIFICATION_CLIENT == 'all' }}
+        continue-on-error: true
+        with:
+          name: native-interface-probes-ubuntu-24.04
+          path: ${{ runner.temp }}/native-interface-probes/
           if-no-files-found: error
           retention-days: 14

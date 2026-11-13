@@ -9,6 +9,7 @@ import type {
 import { inspectDeployment } from './inspection.js';
 import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, routeReload } from './lifecycle-native.js';
 import { geminiConsentMessages } from './gemini-consent.js';
+import { geminiReplacementMessages } from './gemini-activation.js';
 
 interface PreparedContribution {
   effectId: string;
@@ -174,9 +175,10 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     }
   } else {
     const packageChanged = operation === 'reinstall' || !evidence.contentMatches || observation.package !== 'present';
-    const nativeCopyChanged = binding.route === 'grok-cli' && !!state.bundle
-      && (observation.nativePackageContentDigest !== state.bundle.contentDigest || ids.some((id) => !observation.components.some((component) =>
-        component.id === id && component.presence === 'present' && !component.reasonCodes.length)));
+    const nativeCopyChanged = ['gemini-extension', 'grok-cli'].includes(binding.route) && !!state.bundle
+      && (observation.nativePackageContentDigest !== state.bundle.contentDigest || binding.route === 'grok-cli'
+        && ids.some((id) => !observation.components.some((component) =>
+          component.id === id && component.presence === 'present' && !component.reasonCodes.length)));
     if (!retainPackage && state.bundle && (packageChanged || nativeCopyChanged) && binding.route === 'grok-cli'
       && observation.registration === 'present' && !grokRegistrationOwned(binding, evidence, observation, identity)) {
       return blocked('nativeIdentityUnconfirmed', 'The Grok registration is not an exclusive installation from this AW source. Check its identity and shared references before replacement.');
@@ -320,15 +322,19 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       const mutation = error && typeof error === 'object' && 'mutation' in error ? error.mutation : undefined;
       const consentCode = binding.route === 'gemini-extension' && Object.hasOwn(geminiConsentMessages, code)
         ? code as keyof typeof geminiConsentMessages : undefined;
+      const replacementCode = binding.route === 'gemini-extension' && Object.hasOwn(geminiReplacementMessages, code)
+        ? code as keyof typeof geminiReplacementMessages : undefined;
+      const geminiCode = consentCode ?? replacementCode;
       const definite = !(binding.route === 'gemini-extension' && mutation === 'confirmed')
         && (code === 'clientInstallEntryUnavailable' || code === 'nativeIdentityUnconfirmed' || code === 'nativeTrustRequired');
       result.mutation = mutation === 'none' || definite ? 'none' : mutation === 'confirmed' ? 'confirmed' : started ? 'possible' : 'none';
-      result.status = definite || (consentCode !== undefined && result.mutation === 'none') ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
-      const failureDiagnostic = lifecycleDiagnostic(binding, consentCode ?? (code === 'operationPlanStale' ? code : definite ? code : 'platformMutationFailed'),
-        consentCode ? `${geminiConsentMessages[consentCode]} In the same workspace, review and run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini --native-consent.`
+      result.status = definite || (geminiCode !== undefined && result.mutation === 'none') ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
+      const geminiMessage = consentCode ? geminiConsentMessages[consentCode] : replacementCode ? geminiReplacementMessages[replacementCode] : undefined;
+      const failureDiagnostic = lifecycleDiagnostic(binding, geminiCode ?? (code === 'operationPlanStale' ? code : definite ? code : 'platformMutationFailed'),
+        geminiMessage ? `${geminiMessage} In the same workspace, review and run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini --native-consent.`
           : definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.' : 'A platform action did not complete. Check status and retry the remaining actions.');
       result.diagnostics.push(failureDiagnostic);
-      if (consentCode) receipt.diagnostics.push(failureDiagnostic);
+      if (geminiCode) receipt.diagnostics.push(failureDiagnostic);
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
         && (!definite || code === 'nativeTrustRequired')) {
         result.diagnostics.push(lifecycleDiagnostic(binding, 'grokNativeInstallRecovery',
@@ -341,7 +347,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       for (const componentId of effect.componentIds) {
         const component = plan.expected.components.find((item) => item.id === componentId);
         if (component) receipt.unmet.push({ id: `execution:${effect.id}:${componentId}`, componentId, kind: component.kind,
-          reasonCode: consentCode ?? (result.status === 'unknown' ? 'platformMutationUnknown' : 'platformMutationFailed'), requiredFeatures: [], productIds: binding.consumers.map((item) => item.id) });
+          reasonCode: geminiCode ?? (result.status === 'unknown' ? 'platformMutationUnknown' : 'platformMutationFailed'), requiredFeatures: [], productIds: binding.consumers.map((item) => item.id) });
       }
     }
   }
@@ -353,19 +359,26 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     && !!state.bundle && receipt.after.nativePackageContentDigest === state.bundle.contentDigest
     && plan.projections.filter((projection) => projection.bundle).flatMap((projection) => projection.components).every((component) =>
       receipt.after.components.some((observed) => observed.id === component.id && observed.presence === 'present' && !observed.reasonCodes.length));
+  const nativeContentReady = grokContentReady && (binding.route !== 'gemini-extension'
+    || receipt.after.ownership === 'aw' && !!state.bundle && receipt.after.nativePackageContentDigest === state.bundle.contentDigest);
   for (const result of receipt.effects) {
     if (result.status !== 'applied') continue;
     const effect = plan.effects.find((item) => item.id === result.id)!;
-    const incomplete = (effect.kind === 'register' || effect.kind === 'refresh') && (receipt.after.registration !== 'present' || !grokContentReady)
+    const incomplete = (effect.kind === 'register' || effect.kind === 'refresh') && (receipt.after.registration !== 'present' || !nativeContentReady)
       || effect.kind === 'activate' && receipt.after.consumers.some((item) => item.activation !== 'enabled');
     if (incomplete) {
       result.status = receipt.after.registration === 'unknown' || receipt.after.consumers.some((item) => item.activation === 'unknown')
         || binding.route === 'grok-cli' && receipt.after.components.some((component) => component.presence === 'unknown') ? 'unknown' : 'failed';
-      result.diagnostics.push(lifecycleDiagnostic(binding, 'nativeMutationPostcheckFailed', 'The native command completed, but the final state does not confirm the requested result. Check status before retrying.'));
+      const code = binding.route === 'gemini-extension' && !nativeContentReady ? 'nativeInstallContentPostcheckFailed' : 'nativeMutationPostcheckFailed';
+      const diagnostic = lifecycleDiagnostic(binding, code, code === 'nativeInstallContentPostcheckFailed'
+        ? `${geminiReplacementMessages.nativeInstallContentPostcheckFailed} In the same workspace, review and run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini --native-consent.`
+        : 'The native command completed, but the final state does not confirm the requested result. Check status before retrying.');
+      result.diagnostics.push(diagnostic);
+      if (code === 'nativeInstallContentPostcheckFailed') receipt.diagnostics.push(diagnostic);
       for (const componentId of effect.componentIds) {
         const component = plan.expected.components.find((item) => item.id === componentId);
         if (component) receipt.unmet.push({ id: `execution:${effect.id}:${componentId}`, componentId, kind: component.kind,
-          reasonCode: 'nativeMutationPostcheckFailed', requiredFeatures: [], productIds: binding.consumers.map((item) => item.id) });
+          reasonCode: code, requiredFeatures: [], productIds: binding.consumers.map((item) => item.id) });
       }
     }
   }
@@ -378,7 +391,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       && state.identity.packageId === receipt.after.nativeIdentity.packageId
       && (state.identity.registrationId === receipt.after.nativeIdentity.registrationId || binding.route === 'grok-cli')
       && state.identity.sourceLocation === receipt.after.nativeIdentity.sourceLocation;
-    const verified = exactIdentity && (effect.kind === 'register' && state.before.registration === 'absent' && receipt.after.registration === 'present' && grokContentReady
+    const verified = exactIdentity && (effect.kind === 'register' && state.before.registration === 'absent' && receipt.after.registration === 'present' && nativeContentReady
       || effect.kind === 'unregister' && state.before.registration === 'present' && receipt.after.registration === 'absent'
       || effect.kind === 'activate' && state.before.consumers.some((item) => item.activation === 'disabled')
         && receipt.after.consumers.length > 0 && receipt.after.consumers.every((item) => item.activation === 'enabled')

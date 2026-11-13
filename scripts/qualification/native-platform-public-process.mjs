@@ -1,6 +1,7 @@
 import { execute } from './native-platform-runtime.mjs';
 import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
 import { createMarkerIdentityConfirmationCapture } from './native-platform-marker-confirmations.mjs';
+import { createProcessQueryTimingDiagnostic } from './native-platform-process-query-timings.mjs';
 
 const MARKER_ENV = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 
@@ -12,9 +13,11 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   const { acquireProcessTreeInspectionLease, observeProcessTree, terminateProcessTree } =
     await import('../../packages/agent-skill-eval/dist/process-tree.js');
   if (options.signal?.aborted) throw options.signal.reason ?? new Error('public-aw-cancelled');
-  const names = ['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
-    && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
-    ? createProcessNameDiagnostic(processTree.execFile) : undefined;
+  const hostedDiagnostics = process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1';
+  const queryTimings = hostedDiagnostics && process.platform === 'darwin'
+    ? createProcessQueryTimingDiagnostic(processTree.execFile) : undefined;
+  const names = hostedDiagnostics && ['linux', 'darwin'].includes(process.platform)
+    ? createProcessNameDiagnostic(queryTimings?.execFile ?? processTree.execFile) : undefined;
   const markerRows = names && process.platform === 'linux'
     ? createProcessMarkerRowDiagnostic(names.execFile, {
       environmentProbe: createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + (options.timeoutMs ?? 60_000) }),
@@ -31,6 +34,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
   let observation;
   let stopFailureListener;
   let failure;
+  let returned;
   try {
     lease = await acquireProcessTreeInspectionLease(dependencies);
     markerRows?.setMarker(MARKER_ENV, lease.marker);
@@ -59,9 +63,10 @@ export async function executePublicAw(launcher, args, options, processTree = {})
       throw Object.assign(new Error(`public-aw-process-${result.terminationReason}`), { result });
     }
     const markerIdentityConfirmations = confirmations?.snapshot();
-    return { ...result, ...(markerIdentityConfirmations ? { markerIdentityConfirmations } : {}),
+    returned = { ...result, ...(markerIdentityConfirmations ? { markerIdentityConfirmations } : {}),
       stdout: result.stdout.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>'),
       stderr: result.stderr.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>') };
+    return returned;
   } catch (error) {
     failure = error;
     if (lease && error instanceof Error) error.message = error.message.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>');
@@ -98,7 +103,17 @@ export async function executePublicAw(launcher, args, options, processTree = {})
       if (failure?.publicAwMarkerRows) releaseFailure.publicAwMarkerRows = failure.publicAwMarkerRows;
       if (failure?.qualificationMarkerIdentityConfirmations) releaseFailure.qualificationMarkerIdentityConfirmations = failure.qualificationMarkerIdentityConfirmations;
       if (failure?.result) releaseFailure.result = failure.result;
+      failure = releaseFailure;
       throw releaseFailure;
+    } finally {
+      try {
+        const timings = queryTimings?.snapshot();
+        if (timings) {
+          if (returned) returned.processQueryTimings = timings;
+          if (failure && typeof failure === 'object') failure.publicAwProcessQueryTimings = timings;
+        }
+      } catch { /* Query timing hints cannot change success, failure, or lease release. */ }
+      queryTimings?.stop();
     }
   }
 }

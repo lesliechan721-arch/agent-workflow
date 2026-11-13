@@ -266,7 +266,8 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
     if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
     else for (const target of data.remainingTargets) {
       const consent = target.target === 'gemini' && result.diagnostics.some((entry) =>
-        entry.code.startsWith('nativeConsent') && entry.subject?.pluginId === target.pluginId);
+        (entry.code.startsWith('nativeConsent') || entry.code === 'nativeRefreshDataUnconfirmed'
+          || entry.code === 'nativeInstallContentPostcheckFailed') && entry.subject?.pluginId === target.pluginId);
       result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', data.request.context, '--target', target.target,
         ...(consent ? ['--native-consent'] : [])], reason: consent
         ? 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.'

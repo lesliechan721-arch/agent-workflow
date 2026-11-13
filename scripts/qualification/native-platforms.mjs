@@ -180,6 +180,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
               ? { processNames: error.qualificationProcessNames ?? error.publicAwProcessNames } : {}),
             ...(error?.qualificationMarkerRows?.length ? { markerRows: error.qualificationMarkerRows } : {}),
             ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
+            ...(error?.publicAwProcessQueryTimings ? { processQueryTimings: error.publicAwProcessQueryTimings } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
               terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
               cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
@@ -187,6 +188,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         }
         report.commands.push(redact({ args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
           ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
+          ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
           cancelled: result.cancelled, terminationReason: result.terminationReason,
           maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
           processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
@@ -246,6 +248,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
             processDiagnostics: error?.publicAwProcessDiagnostics ?? [],
             ...(error?.publicAwProcessNames ? { processNames: error.publicAwProcessNames } : {}),
             ...(error?.publicAwMarkerRows ? { markerRows: error.publicAwMarkerRows } : {}),
+            ...(error?.publicAwProcessQueryTimings ? { processQueryTimings: error.publicAwProcessQueryTimings } : {}),
             ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, terminationReason: error.result.terminationReason,
               stdout: error.result.stdout, stderr: error.result.stderr,
@@ -253,6 +256,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           throw error;
         }
         report.commands.push(redact({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
           ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
           cancelled: result.cancelled, terminationReason: result.terminationReason,
@@ -295,7 +299,6 @@ export async function runScope(platform, scope, launcher, options = {}) {
       if (actual !== clients[platform].version) throw new Error('client-version-mismatch');
       return { version: actual };
     });
-    if (options.publicAw && platform === 'opencode') await ctx.defer('public-aw-opencode-profile-unverified');
     if (options.publicAw) await qualifyPublicAw(ctx);
     else {
       const initialProjection = await ctx.check('aw-candidate-projection', () => ctx.render(1));
@@ -345,9 +348,8 @@ export async function run(options) {
         : 'client-verified-observed-download-bounded-child-not-os-containment' },
     uncovered: ['public-aw-install-end-to-end', 'model-invocation', 'skill-invocation-controls', 'mcp-execution',
       'hook-execution', 'agents-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
-      'antigravity', 'cursor', 'opencode'], clients: [],
-    uncoveredReasons: { opencode: 'public-aw-production-profile-unverified; private-native-results-recorded-separately',
-      cursor: 'tested-workspace-hook-requires-authentication',
+      'antigravity', 'cursor'], clients: [],
+    uncoveredReasons: { cursor: 'tested-workspace-hook-requires-authentication',
       antigravity: 'fixed-distribution-and-unauthenticated-interface-not-verified' },
   };
   try {

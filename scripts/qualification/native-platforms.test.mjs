@@ -14,6 +14,7 @@ import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
 import './native-platform-marker-confirmations.test.mjs';
+import './native-platform-process-query-timings.test.mjs';
 import './native-platform-copilot-skills.test.mjs';
 import './native-platform-gemini-skills.test.mjs';
 import './native-platform-linux-environment.test.mjs';
@@ -21,6 +22,7 @@ import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
 import './native-platform-public-state.test.mjs';
 import './native-platform-opencode.test.mjs';
+import './native-platform-opencode-public.test.mjs';
 
 // Test Value Gate: local discovery can be observed or unavailable without
 // changing the result of required management and scope checks.
@@ -279,19 +281,21 @@ test('a real child version mismatch fails before public AW installation and clea
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-// Test Value Gate: a valid Native version does not authorize an unqualified
-// production OpenCode lifecycle. Public execution must defer before AW writes.
-test('OpenCode public AW remains unverified after a valid client version', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-opencode-public-defer-'));
+// Test Value Gate: public OpenCode execution must reject versions outside the
+// finite record before any AW installation or native observation can begin.
+test('OpenCode public AW rejects unqualified client versions before installation', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-opencode-public-version-'));
   const child = path.join(root, 'version.mjs');
   try {
-    await fs.writeFile(child, "console.log('opencode v2.0.0');\n");
-    const report = await runScope('opencode', 'user', { executable: process.execPath, prefix: [child] }, { publicAw: true });
-    assert.equal(report.status, 'unverified');
-    assert.equal(report.reason, 'public-aw-opencode-profile-unverified');
-    assert.equal(report.cleanup, 'completed');
-    assert.equal(report.checks.length, 1);
-    assert(report.commands.every(command => JSON.stringify(command.args) === JSON.stringify(['--version'])));
+    for (const version of ['1.9.9', '2.0.1', '2.0.0-preview']) {
+      await fs.writeFile(child, `console.log(${JSON.stringify(`opencode v${version}`)});\n`);
+      const report = await runScope('opencode', 'user', { executable: process.execPath, prefix: [child] }, { publicAw: true });
+      assert.equal(report.status, 'failed');
+      assert.equal(report.reason, 'client-version-mismatch');
+      assert.equal(report.cleanup, 'completed');
+      assert.deepEqual(report.checks.map(check => [check.id, check.status]), [['client-version', 'failed']]);
+      assert(report.commands.every(command => JSON.stringify(command.args) === JSON.stringify(['--version'])));
+    }
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 

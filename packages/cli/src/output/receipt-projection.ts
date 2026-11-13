@@ -492,7 +492,9 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
         const target = record(entry.target);
         if (entry.state !== 'completed' && (entry.state !== 'skipped' || entry.errorCode) && typeof target.pluginId === 'string' && typeof target.platform === 'string' && (target.scope === 'user' || target.scope === 'project')) {
           result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', target.scope, '--target', target.platform,
-            ...(target.platform === 'gemini' && String(entry.errorCode).startsWith('nativeConsent') ? ['--native-consent'] : [])], reason: 'Repair the affected deployment target after reviewing its diagnostics and any native trust permission.', requiresConfirmation: true });
+            ...(target.platform === 'gemini' && (String(entry.errorCode).startsWith('nativeConsent')
+              || ['nativeRefreshDataUnconfirmed', 'nativeInstallContentPostcheckFailed'].includes(String(entry.errorCode)))
+              ? ['--native-consent'] : [])], reason: 'Repair the affected deployment target after reviewing its diagnostics and any native trust permission.', requiresConfirmation: true });
         }
       }
     }

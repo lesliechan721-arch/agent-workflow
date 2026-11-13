@@ -14,7 +14,7 @@ import { inspectPiDeployment } from './inspection-pi.js';
 import { inspectGrokDeployment } from './inspection-grok.js';
 import { getQualifiedPlatformProfile } from './capabilities.js';
 import { geminiActivationRules, geminiExtensionPaths, geminiPathEnabled, geminiScopePattern, geminiUserActivation,
-  readGeminiActivationSnapshot } from './gemini-activation.js';
+  readGeminiActivationSnapshot, readGeminiNativeCopyContentDigest } from './gemini-activation.js';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('nativeObservationInvalid');
@@ -258,6 +258,13 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       result.registration = 'present';
       if (!['local', 'link'].includes(metadata.type) || !nativeSourceMatches(metadata.source, layout.packageRoot)
         || manifest.name !== layout.nativeIdentity.packageId) result.ownership = 'foreign';
+      if (result.ownership === 'aw') {
+        result.nativePackageContentDigest = await readGeminiNativeCopyContentDigest(ctx, layout.nativeIdentity, {
+          owner: 'agent-workflows', plugin: layout.nativeIdentity.packageId, pluginId: binding.plugin.pluginId,
+          sourceId: binding.plugin.sourceId, sourceIdentity: binding.plugin.sourceIdentity,
+          platform: binding.platform, scope: 'user', physicalKey: binding.physicalKey, artifactKey: path.basename(layout.packageRoot),
+        });
+      }
       const snapshot = await readGeminiActivationSnapshot(ctx);
       const rules = geminiActivationRules(snapshot, manifest.name);
       const userActivation = geminiUserActivation(snapshot, manifest.name, home);

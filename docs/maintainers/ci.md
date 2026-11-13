@@ -160,7 +160,9 @@ Linux Node 24 的 release verification 必须等待本次 Windows Job 候选及�
 
 ## 6. 无认证 Native 客户端资格
 
-[`native-platform-qualification.yml`](../../.github/workflows/native-platform-qualification.yml) 是独立手动工作流，不属于普通 PR 更新、自动 Beta 或发布通过门禁。可在 Actions 选择一个固定客户端或 `all`；首次工作流尚未进入默认分支时，也可手动给 PR 添加 `native-qualification` 标签运行全部客户端。只有本次添加该标签才触发，普通 PR 更新不触发；重跑使用 Actions 的 rerun 或重新添加标签。随后，使用 Linux、macOS、Windows 的 x64/arm64 托管 runner；矩阵失败互不取消，最多同时执行三个资格 job。只有实际运行成功的精确单元才构成证据，工作流文件存在不表示矩阵已通过。
+[`native-platform-qualification.yml`](../../.github/workflows/native-platform-qualification.yml) 是独立手动工作流，不属于普通 PR 更新、自动 Beta 或发布通过门禁。可在 Actions 选择一个固定客户端或 `all`；首次工作流尚未进入默认分支时，也可手动给 PR 添加 `native-qualification` 标签运行全部客户端。只有本次添加该标签才触发，普通 PR 更新不触发；`native-qualification-gemini` 标签可在相同六环境和并发上限内只验证 Gemini，用于定向修复验证，不代表其他客户端重验。重跑使用 Actions 的 rerun 或重新添加对应标签。随后，使用 Linux、macOS、Windows 的 x64/arm64 托管 runner；矩阵失败互不取消，最多同时执行三个资格 job。只有实际运行成功的精确单元才构成证据，工作流文件存在不表示矩阵已通过。
+
+原 Ubuntu x64 的 `all` 作业另运行 Cursor CLI `2026.11.05-86047df` 与 Antigravity CLI `1.3.4` 的无凭据接口初探，不新增 runner 或并发。固定官方归档经摘要核对后提取到临时目录，使用严格 `verified-observed` 执行帮助、版本及经帮助确认的 Antigravity 空清单；不登录、不发 prompt、不运行 Cursor 账户 marketplace 清单。报告单独保存为 `native-interface-probes-ubuntu-24.04` artifact，记录失败和清理。该非阻塞步骤的成功仅证明接口观察完成，不使 Native、内容更新或 scope 合格；进程审计失败仍在报告中保留为失败，不能归为认证未知。
 
 资格报告使用 schema 2 与 `acceptancePolicy: management-content-scope-v1`。核心检查验证 AW 的原生安装、更新与移除，以及目标/neutral 新客户端返回的有效 scope 状态；Project 外部必须禁用或不可见，User 在两处全局可见是预期。动态渲染额外验证平台已安装副本或原生发现指向的实际文件字节与渲染结果一致，不能只用版本或 AW 暂存内容证明。普通 Skill 加载和模型采用放入非阻塞 `observations`，不伪造通过；管理、scope、动态消费内容、进程审计及清理失败仍阻塞。AW 托管输出以生成和更新正确为准，平台是否采用能观察就记录，未知不阻塞。旧 schema 1 报告保留原判据与来源，不反向改绿。
 
@@ -176,6 +178,8 @@ Hosted 工作流显式设置 `AW_NATIVE_QUALIFICATION_MANAGED_TRACE=1` 时，仅
 
 公开 AW 命令的原 stdout/stderr 预览仍受原长度限制；失败时先从完整 JSON 提取有限 target、receipt effect、diagnostic 和实际 native identity 摘要，再做同一脱敏与长度限制。无效 JSON 明确标记，不从截断预览猜测结果；摘要不改变命令退出码或场景失败。
 
+在同一 Hosted 进程诊断开关下，Darwin 公开 AW 包装还记录既有 identity/marker `ps` 与内核启动参数补证的查询时序：只保留前8项和末16项、序号、固定查询类别、开始/回调时间、原 timeout、有限错误类别及有单位的封顶输出长度，附省略数。尚未回调保持 pending；不记录 argv、脚本、环境或 marker，不增加查询、重试、截止或宽限。成功和原异常均携带该独立字段，原首末失败诊断不被改写。这些插桩时序不是无插桩性能证明。
+
 报告区分 Skill 发现、组件 inventory 和 activation inventory；Claude details 只证明组件清单。Copilot 项目 fixture 按固定版公开帮助显式设置 `COPILOT_ALLOW_ALL=true`，让宿主信任临时 project 与 neutral 目录；该变量还授予工具自动批准，但本 fixture 只有普通 Skill，不创建会话、发送 prompt 或请求工具，且不传给真实用户环境。project 与 neutral 仍分别要求启用/发现和禁用/不可见，不能靠用户级全局启用代替项目隔离。Copilot 的 live 来源先通过 uninstall 验证停用，再注销本测试独占的 marketplace，最后验证插件和 Skill 消失；project 管理查询未观察到配置生效时保留失败，不能直接推断宿主无 project 支持。
 
 Gemini `0.67.0` 的项目 fixture 在原生 User disable/Workspace enable 后，只给目标扩展的 `extension-enablement.json` 条目前置一次 `!*`，保留后续项目规则及其他扩展条目。该固定格式按最后匹配规则决定启用；默认禁用使有效 HOME 外的 neutral 也不加载该扩展的 Skill。报告单独记录激活配置前后像，安装后和更新后均检查两处库存仍存在、Skill 仅在项目中发现，移除后两处均消失。结果覆盖显式原生配置前提下的生命周期；AW 项目生命周期保护、生产 profile 和跨版本承诺保持原状态。
@@ -186,15 +190,15 @@ POSIX RPC helper 在直接客户端关闭后、输出 JSON 前，等待初始进
 
 断言失败终止该 scope 的后续步骤，另一 scope 和客户端仍继续。Grok Project 候选夹具只在临时 GROK_HOME 写精确目录授信状态（固定1.0.77既有实测格式），安装/更新后以新的 inspect 启用状态、原生路径指向副本字节及 neutral 隔离判定；这是显式测试前提，不是产品自动授信或已验证的公开授信命令；Gemini 项目 neutral 隔离和 Grok 本地更新必须按实际行为判定，不因为是已知问题而算通过。核心失败和未验证均返回非零，非阻塞 observations 与 excluded 不使核心失败；报告通过 `always()` 上传并生成 job summary，保留14天；需要长期引用的通过证据另按固定资格归档规则保存。
 
-托管入口另启用 `--public-aw`，使用正式 production profile 验证公开创建、构建、来源、安装、更新、status 和移除。Codex CLI `0.167.0`、Pi CLI `1.5.0`、Copilot CLI `1.0.95`、Claude CLI `2.1.317` 为记录六环境的 User/Project 普通 Skill，Gemini CLI `0.67.0` 仅 User，Grok CLI `1.0.77` 仅四个有官方分发环境的 User；其他版本/产品面/组件不继承。缺资格或 scope 不可证明时仍 unverified，不注入候选 profile 或 force 绕过。Claude 依原生管理与有效启用状态记录开放有限资格，Skill 发现/加载仍未知，不能借此阻断已满足的新管理验收。Gemini Project 保留生产写入阻断；其 Native fixture 的手工默认禁用规则不授予公开项目资格。
+托管入口另启用 `--public-aw`，使用正式 production profile 验证公开创建、构建、来源、安装、更新、status 和移除。Codex CLI `0.167.0`、Pi CLI `1.5.0`、Copilot CLI `1.0.95`、Claude CLI `2.1.317`、Gemini CLI `0.67.0`、OpenCode CLI `2.0.0` 为记录六环境的 User/Project 普通 Skill，Grok CLI `1.0.77` 为四个有官方分发环境的 User/Project；各记录分别限定 scope，其他版本、产品面及组件不继承。缺资格或 scope 不可证明时仍 unverified，不注入候选 profile 或 force 绕过。Claude 依原生管理与有效启用状态记录开放有限资格，Skill 发现/加载仍未知，不能借此阻断已满足的新管理验收。Gemini Project 的有限 profile 记录包含直接 Native fixture 的默认禁用前提；公开链必须验证 AW 自己生成的项目激活与外部隔离，不能由 fixture 结果替代。
 
-公开场景先检查固定入口身份；Windows npm 入口仍经正常包、bin、路径及 shim 校验。安装及更新后，从目标和 neutral 的新客户端管理查询核对版本和有效启用状态。随后保留插件版本 `0.1.1`，将同一 Skill 改为真正 v3 renderer 输出，再同步并比较平台实际消费文件与预期渲染字节；User 两处消费位置均核对，Project 仍验证外部关闭。版本不变或仅 AW 输出变化都不足以证明动态更新。Skill 发现和描述读取在 `observations` 独立记录；Claude 没有已验证发现接口时记录未知，不冒充已加载。移除必须由新的管理状态证明登记消失。
+公开场景先检查固定入口身份；Windows npm 入口仍经正常包、bin、路径及 shim 校验。安装及更新后，从目标和 neutral 的新客户端管理查询核对版本和有效启用状态。随后保留插件版本 `0.1.1`，将同一 Skill 改为真正 v3 renderer 输出，再同步并比较平台实际消费文件与预期渲染字节；User 两处消费位置均核对，Project 仍验证外部关闭。版本不变或仅 AW 输出变化都不足以证明动态更新。Skill 发现和描述读取在 `observations` 独立记录；Claude 没有已验证发现接口时记录未知，不冒充已加载。移除必须由新的目标与 neutral 管理状态证明当前 scope 已关闭：独占登记消失；仅在精确成功回执确认共享保留时，允许保留已禁用登记和共享包。
 
-项目 trust 与 AW `--yes` 分开。Copilot Project 仅在无凭据 Hosted 临时环境显式使用 `COPILOT_ALLOW_ALL=true`，披露同时批准工具的副作用，但不请求工具或模型；Gemini User 显式信任自建 source workspace 与工作目录，不手工补 activation 或代答宿主许可。Codex Project 公开 status 用 `--observe-native` 并要求客户端启动副作用 warning；普通 status 保持只读默认。Grok User 首次公开 install 仍只接受精确自有 source 和 `nativeTrustRequired` 的预期 partial，验证完整来源字节后显式原生授信，再公开 sync；其他 partial 失败，Project 仍阻断。新公开链是否通过由对应新报告证明，原候选 Native 场景与 `publicAw` 分开保留。
+项目 trust 与 AW `--yes` 分开。Copilot Project 仅在无凭据 Hosted 临时环境显式使用 `COPILOT_ALLOW_ALL=true`，披露同时批准工具的副作用，但不请求工具或模型；Gemini User/Project 公开安装显式传入 `--native-consent`，仅由产品的本次许可交互处理自建来源与工作目录信任，不手工补 activation。Codex Project 公开 status 用 `--observe-native` 并要求客户端启动副作用 warning；普通 status 保持只读默认。Grok User 首次公开 install 仍只接受精确自有 source 和 `nativeTrustRequired` 的预期 partial，验证完整来源字节后显式原生授信，再公开 sync；其他 partial 失败；Grok Project 仅在临时环境使用已有固定版本目录信任前提，随后独立验证 AW 安装、更新和有效 scope。新公开链是否通过由对应新报告证明，原候选 Native 场景与 `publicAw` 分开保留。
 
-POSIX 公开 AW 命令会管理独立的原生命令进程组，不套用 custom provider 必须共享初始进程组的合同。该包装复用现有 lease、持续 marker/启动身份观察及收尾：检查失败立即中止，正常完成时必须已无活后代，marker 丢失、检查失败、清理或 lease 释放失败都不能变为成功；取消、超时和输出超限也失败。它明确报告 `observed`、`gradingEvidenceAccepted:false`、`descendantCleanupGuaranteed:false`，不是 provider grading 或 OS 强隔离资格。失败时保留首次和最后一次 observer 的有界进程元数据，不保存命令文本、环境变量或 marker；子命令已有输出仍只按原规则限量脱敏，不能由其退出码覆盖审计失败。Windows 公开 AW 保持原 Job 路径；直接客户端除上述 Copilot Darwin 例外外，与 RPC 保持原 verified-observed 合同。公开入口比较先解析文件系统规范路径，不把 Windows 扩展名大小写差异当作另一个入口，也不将全路径小写。报告同时替换普通和 JSON 嵌套身份中的转义路径。
+POSIX 公开 AW 命令会管理独立的原生命令进程组，不套用 custom provider 必须共享初始进程组的合同。该包装复用现有 lease、持续 marker/启动身份观察及收尾：检查失败立即中止，正常完成时必须已无活后代，marker 丢失、检查失败、清理或 lease 释放失败都不能变为成功；取消、超时和输出超限也失败。它明确报告 `observed`、`gradingEvidenceAccepted:false`、`descendantCleanupGuaranteed:false`，不是 provider grading 或 OS 强隔离资格。失败时保留首次和最后一次 observer 的有界进程元数据，不保存命令文本、环境变量或 marker；子命令已有输出仍只按原规则限量脱敏，不能由其退出码覆盖审计失败。Windows 公开 AW 保持原 Job 路径；直接客户端除上述 Copilot Darwin 和固定 OpenCode 本地管理/scope 查询的显式普通观察范围外，与 RPC 保持原 verified-observed 合同。公开入口比较先解析文件系统规范路径，不把 Windows 扩展名大小写差异当作另一个入口，也不将全路径小写。报告同时替换普通和 JSON 嵌套身份中的转义路径。
 
-本入口仍不覆盖全部平台的完整公开 AW install 编排、独立 tarball 到真实模型消费、模型/调用控制、MCP/Hooks/Agents/Instructions 执行、普通对话会话、Desktop、最低版本矩阵，以及尚未接入的 Antigravity/Cursor/OpenCode。OpenCode 2.2.6 standalone 在 Unix 分离进程组，不满足当前收尾合同，其冷启动清单也未等待插件激活，因此该探针未纳入可执行矩阵；这些观察不能据以判定生产能力不支持。Cursor 目标 Hook 已观察到需要登录；Antigravity 固定版本分发与无认证管理入口仍缺少验证。它不申请 Secrets，也不使用自托管 runner。取得报告后仍需核对具体资格范围，不能自动将 production profile 提升为 supported。
+本入口仍不覆盖全部平台的完整公开 AW install 编排、独立 tarball 到真实模型消费、模型/调用控制、MCP/Hooks/Agents/Instructions 执行、普通对话会话、Desktop、最低版本矩阵，以及 Antigravity/Cursor 的完整公开 AW 链。固定 OpenCode `2.0.0` 同时执行直接 Native 与公开 AW 链，按上述显式观察范围等待激活并检查实际安装字节与有效 scope；有限 profile 仅依据独立保存的六环境直接 Native 单元，公开链是否通过仍由该次报告判断，旧严格模式或冷启动失败记录保持原来源。Cursor 目标 Hook 已观察到需要登录，其他无认证有效 scope 接口仍待验证；Antigravity 固定版本分发与无认证管理入口仍缺少运行证据。它不申请 Secrets，也不使用自托管 runner。取得报告后仍需核对具体资格范围，不能自动将 production profile 提升为 supported。
 
 本地复现先运行 `pnpm build` 和 `pnpm test:qualification:native-platforms:harness`，再创建候选清单并显式选择已安装入口或临时下载：
 

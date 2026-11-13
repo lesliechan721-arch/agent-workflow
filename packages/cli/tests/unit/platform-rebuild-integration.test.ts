@@ -6,7 +6,7 @@ import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-inte
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { createRebuildIntegration, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
-import { executeRebuildOperation } from '../../src/commands/rebuild-operations.js';
+import { executeRebuildOperation, prepareRebuildOperation } from '../../src/commands/rebuild-operations.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
@@ -16,6 +16,7 @@ import { createNoopDebugLogger } from '../../src/output/debug-log.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import type { ProductInstallation } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 
 async function fixture() {
   const isolation = getCurrentSourceTestIsolation();
@@ -30,7 +31,7 @@ async function fixture() {
   const plugin = await readPluginManifest(root, { mode: 'bundle' });
   plugin.sourceId = 'team'; plugin.pluginId = 'team/empty-plugin'; plugin.sourceIdentity = `sha256:${'a'.repeat(64)}`;
   const env = { ...isolation.env, PATH: `${bin}${path.delimiter}${isolation.env.PATH ?? ''}` };
-  const runner = vi.fn(async () => ({ exitCode: 0, stdout: 'opencode 2.0.0', stderr: '' }));
+  const runner = vi.fn(async (_request: Parameters<RebuildExecutionContext['nativeCliRunner']>[0]) => ({ exitCode: 0, stdout: 'opencode 2.0.0', stderr: '' }));
   const context: RebuildExecutionContext = { env, nativeCliRunner: runner, reporter: createNoopReporter(),
     debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
   const ctx = { cwd: isolation.layout.fixtureCwd, env, runner };
@@ -48,7 +49,7 @@ async function fixture() {
   const integration = createRebuildIntegration({ context });
   const target = await integration.buildTarget({ plugin, platform: 'opencode', scope: 'user', cwd: ctx.cwd, command: 'sync',
     catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0', channel: 'latest' } });
-  return { root, context, integration, target, packageRoot: component.path };
+  return { root, context, integration, target, packageRoot: component.path, runner };
 }
 
 describe('frozen platform rebuild integration', () => {
@@ -58,7 +59,11 @@ describe('frozen platform rebuild integration', () => {
     try {
       expect(item.target.platformDeployment?.plans[0]?.expected).toMatchObject({ components: [], unmet: [] });
       expect(item.target.platformDeployment?.plans[0]?.effects.some((effect) => effect.kind === 'remove-owned')).toBe(true);
-      const result = await executeRebuildOperation({ command: 'sync', target: item.target, driver: item.integration.driver });
+      item.runner.mockClear();
+      const preparation = await prepareRebuildOperation({ command: 'sync', target: item.target, driver: item.integration.driver });
+      expect(item.runner.mock.calls.filter(([request]) => request.args.includes('--version')).length).toBeGreaterThan(0);
+      if (preparation.status !== 'ready') throw new Error('Expected ready owned cleanup.');
+      const result = await executeRebuildOperation({ command: 'sync', target: item.target, driver: item.integration.driver, preparation: preparation.preparation });
       expect(result.status).toBe('succeeded');
       expect(result.deploymentReceipts?.flatMap((receipt) => receipt.effects)).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'applied', mutation: 'confirmed' }),
@@ -87,47 +92,316 @@ function evidenceReadGate() {
   return gate;
 }
 
-async function nativeEvidenceFixture(platform: 'gemini' | 'copilot') {
+async function nativeEvidenceFixture(platform: 'gemini' | 'copilot', options: { state?: 'foreign' | 'unknown'; multiple?: boolean } = {}) {
   const isolated = getCurrentSourceTestIsolation();
   const root = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-source`);
   const executable = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-client`);
   await fs.outputFile(executable, 'controlled native entry');
   await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), {
     schemaVersion: 4, name: 'evidence-demo', version: '1.0.0', description: 'Native evidence boundary.',
+    skills: './skills',
     platforms: [platform], marketplace: { category: 'development', strict: true,
       policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
   });
+  await fs.outputFile(path.join(root, 'skills/check/SKILL.md'), '---\nname: check\ndescription: Check evidence.\n---\nCheck.\n');
   const plugin = await readPluginManifest(root, { mode: 'bundle' });
   Object.assign(plugin, { sourceId: 'team', pluginId: 'team/evidence-demo', sourceIdentity: `sha256:${'d'.repeat(64)}` });
-  const reads: { discovery?: () => Promise<void>; inspection?: () => Promise<void> } = {};
+  const reads: { discovery?: () => Promise<void>; inspection?: () => Promise<void>; mutation?: () => void | Promise<void>;
+    geminiInstallSource?: () => string } = {};
   const inventories = platform === 'gemini' ? ['extensions list'] : ['plugin marketplace list --json', 'plugin list --json'];
+  let layout: Awaited<ReturnType<typeof getDeploymentLayout>> | undefined;
+  let marketplaceAdded = false;
+  let installed = false;
+  let clientVersion = platform === 'gemini' ? '0.67.0' : '1.0.95';
   const runner = vi.fn(async (invocation: Parameters<RebuildExecutionContext['nativeCliRunner']>[0]) => {
-    if (!inventories.includes(invocation.args.join(' '))) throw new Error('Unexpected fixture native mutation.');
-    return { exitCode: 0, stdout: platform === 'copilot' ? '[]' : '', stderr: '' };
+    const args = invocation.args;
+    if (inventories.includes(args.join(' '))) {
+      if (options.state === 'unknown' && args[1] === 'marketplace') return { exitCode: 0, stdout: '{}', stderr: '' };
+      const rows = args[1] === 'marketplace' ? marketplaceAdded ? [{ name: layout!.marketplaceName, source: layout!.marketplaceRoot }] : []
+        : installed ? [{ name: layout!.nativeIdentity.packageId, marketplace: layout!.marketplaceName, source: layout!.marketplaceRoot }] : [];
+      return { exitCode: 0, stdout: platform === 'copilot' ? JSON.stringify(rows) : '', stderr: '' };
+    }
+    await reads.mutation?.();
+    if (platform === 'copilot' && args[1] === 'marketplace' && args[2] === 'add') marketplaceAdded = true;
+    else if (platform === 'copilot' && args[1] === 'install') installed = true;
+    else if (platform === 'gemini' && args[0] === 'extensions' && ['install', 'uninstall'].includes(args[1]!)) {
+      const { home, root, file } = geminiExtensionPaths({ cwd: isolated.layout.fixtureCwd, env: isolated.env });
+      const installedRoot = path.join(root, layout!.nativeIdentity.packageId);
+      const config: Record<string, { overrides: string[] }> = await fs.pathExists(file) ? await fs.readJson(file) : {};
+      if (args[1] === 'uninstall') {
+        await fs.remove(installedRoot);
+        delete config[layout!.nativeIdentity.packageId];
+        installed = false;
+      } else {
+        await fs.copy(reads.geminiInstallSource?.() ?? args[2]!, installedRoot);
+        await fs.outputJson(path.join(installedRoot, '.gemini-extension-install.json'), { type: 'local', source: args[2] });
+        // This fixture has only the global rule. Fixed 0.67.0 appends HOME
+        // and writes the enablement map without a trailing newline.
+        config[layout!.nativeIdentity.packageId] = { overrides: [...(config[layout!.nativeIdentity.packageId]?.overrides ?? []), geminiScopePattern(home)] };
+        installed = true;
+      }
+      await fs.outputFile(file, JSON.stringify(config, null, 2));
+    } else throw new Error('Unexpected fixture native mutation.');
+    return { exitCode: 0, stdout: '', stderr: '' };
   });
   const context: RebuildExecutionContext = { env: isolated.env, nativeCliRunner: runner,
-    reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
+    nativeConsent: true, reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
   const original = getAgentPluginAdapter(platform);
   const adapter: typeof original = { ...original,
     async discover(ctx) {
       await reads.discovery?.();
-      return { platform, availability: 'available', diagnostics: [], installations: [{
-        id: `${platform}-evidence-client`, product: 'cli', version: platform === 'gemini' ? '0.67.0' : '1.0.95', availability: 'available', reasonCodes: [],
-        entry: { kind: 'cli', executable, configRoot: resolvePlatformConfigRoot(platform, ctx) },
-      }] };
+      const configRoot = resolvePlatformConfigRoot(platform, ctx);
+      return { platform, availability: 'available', diagnostics: [], installations: (options.multiple ? [configRoot, `${configRoot}-second`] : [configRoot])
+        .map((root, index) => ({ id: `${platform}-evidence-client-${index}`, product: 'cli' as const,
+          version: clientVersion, availability: 'available' as const, reasonCodes: [],
+          entry: { kind: 'cli' as const, executable, configRoot: root } })) };
     },
     async inspect(ctx, binding) { await reads.inspection?.(); return original.inspect(ctx, binding); },
   };
+  if (options.state === 'foreign') {
+    const ctx = { cwd: isolated.layout.fixtureCwd, env: isolated.env, runner };
+    const resolved = await adapter.resolve(ctx, { plugin: { sourceId: plugin.sourceId!, sourceIdentity: plugin.sourceIdentity!,
+      pluginId: plugin.pluginId!, version: plugin.manifest.version }, scope: { kind: 'user' }, operation: 'ensure',
+      discovery: await adapter.discover(ctx), recoveryCandidates: [] });
+    const foreignLayout = await getDeploymentLayout(ctx, resolved.bindings[0]!);
+    await fs.outputFile(path.join(foreignLayout.packageRoot, 'foreign.txt'), 'Keep foreign content.');
+  }
   context.platformRebuildSession = new PlatformRebuildSession(context, () => adapter);
   const integration = createRebuildIntegration({ context });
-  const target = await integration.buildTarget({ plugin, platform, scope: 'user', cwd: isolated.layout.fixtureCwd,
-    command: 'sync', catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0', channel: 'latest' } });
-  expect(target.platformDeployment?.plans).toHaveLength(1);
+  const input = { plugin, platform, scope: 'user' as const, cwd: isolated.layout.fixtureCwd,
+    command: 'install' as const, catalog: { rootDir: root, source: 'local' as const, catalogVersion: '1.0.0', channel: 'latest' as const } };
+  const target = await integration.buildTarget(input);
+  expect(target.platformDeployment?.plans).toHaveLength(options.multiple ? 2 : 1);
+  layout = await getDeploymentLayout({ cwd: input.cwd, env: isolated.env }, target.platformDeployment!.plans[0]!.binding);
   await integration.sealMarketplaceGenerations([target]);
-  return { root, context, integration, target, reads, runner, inventories };
+  return { root, context, integration, target, reads, runner, inventories, adapter, input, layout,
+    changeRegistration: () => { installed = true; }, changeClient: () => { clientVersion = '1.0.96'; } };
 }
 
 describe('native evidence checks', () => {
+  // Test Value Gate: an already-published AW package cannot hide an old or
+  // unconfirmed native copy on the next ordinary prepare/execute cycle.
+  it.each(['legacy copy', 'data guard', 'native postcheck'] as const)('retries Gemini sync from %s using fresh installed bytes', async (scenario) => {
+    const item = await nativeEvidenceFixture('gemini');
+    const installed = path.join(geminiExtensionPaths({ cwd: item.input.cwd, env: item.context.env }).root, item.layout.nativeIdentity.packageId);
+    const previousCopy = path.join(item.input.cwd, 'previous-gemini-copy');
+    const run = async (integration: typeof item.integration, target: typeof item.target, command: 'install' | 'sync') => {
+      const preparation = await prepareRebuildOperation({ command, target, driver: integration.driver });
+      expect(preparation.status, JSON.stringify(preparation)).toBe('ready');
+      if (preparation.status !== 'ready') throw new Error('Expected a ready native deployment.');
+      return executeRebuildOperation({ command, target, driver: integration.driver, preparation: preparation.preparation });
+    };
+    const prepareSync = async () => {
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget({ ...item.input, command: 'sync' });
+      await integration.sealMarketplaceGenerations([target]);
+      return { integration, target };
+    };
+    try {
+      const initial = await run(item.integration, item.target, 'install');
+      expect(initial.status, JSON.stringify(initial)).toBe('succeeded');
+      await fs.copy(installed, previousCopy);
+      await fs.outputFile(path.join(item.root, 'skills/check/SKILL.md'), '---\nname: check\ndescription: Check evidence.\n---\nRevision 3.\n');
+      if (scenario === 'data guard') await fs.outputFile(path.join(installed, '.env'), 'PRIVATE_SETTING=retain\n');
+      if (scenario === 'native postcheck') item.reads.geminiInstallSource = () => previousCopy;
+      const changed = await prepareSync();
+      const changedResult = await run(changed.integration, changed.target, 'sync');
+      if (scenario === 'legacy copy') {
+        expect(changedResult.status, JSON.stringify(changedResult)).toBe('succeeded');
+        await fs.remove(installed);
+        await fs.copy(previousCopy, installed);
+      } else {
+        expect(changedResult.status, JSON.stringify(changedResult)).toBe('failed');
+        expect(changedResult.deploymentReceipts?.flatMap((receipt) => receipt.diagnostics)).toContainEqual(expect.objectContaining({
+          code: scenario === 'data guard' ? 'nativeRefreshDataUnconfirmed' : 'nativeInstallContentPostcheckFailed',
+        }));
+        if (scenario === 'data guard') {
+          const unchangedSource = await prepareSync();
+          expect(unchangedSource.target.platformDeployment!.plans[0]!.evidence.contentMatches).toBe(true);
+          expect(unchangedSource.target.platformDeployment!.deployments[0]!.driverState.before.nativePackageContentDigest).toBeUndefined();
+          expect(unchangedSource.target.platformDeployment!.plans[0]!.effects.map((effect) => effect.kind)).toEqual(['refresh', 'activate']);
+          item.runner.mockClear();
+          const blocked = await run(unchangedSource.integration, unchangedSource.target, 'sync');
+          expect(blocked.status, JSON.stringify(blocked)).toBe('failed');
+          expect(blocked.deploymentReceipts?.flatMap((receipt) => receipt.diagnostics)).toContainEqual(expect.objectContaining({ code: 'nativeRefreshDataUnconfirmed' }));
+          expect(item.runner).not.toHaveBeenCalled();
+          expect(await fs.readFile(path.join(installed, '.env'), 'utf8')).toBe('PRIVATE_SETTING=retain\n');
+          await fs.remove(path.join(installed, '.env'));
+        }
+        item.reads.geminiInstallSource = undefined;
+      }
+      const retry = await prepareSync();
+      const plan = retry.target.platformDeployment!.plans[0]!;
+      expect(plan.evidence.contentMatches).toBe(true);
+      expect(plan.effects.map((effect) => effect.kind)).toEqual(['refresh', 'activate']);
+      item.runner.mockClear();
+      const recovered = await run(retry.integration, retry.target, 'sync');
+      expect(recovered.status, JSON.stringify(recovered)).toBe('succeeded');
+      expect(item.runner.mock.calls.map(([invocation]) => invocation.args)).toEqual([
+        ['extensions', 'uninstall', item.layout.nativeIdentity.packageId],
+        ['extensions', 'install', item.layout.packageRoot, '--consent', '--skip-settings'],
+      ]);
+      const bundle = plan.projections.find((projection) => projection.bundle)!.bundle!;
+      expect(recovered.deploymentReceipts?.[0]?.after.nativePackageContentDigest).toBe(bundle.contentDigest);
+      const relativeOutput = plan.projections.flatMap((projection) => projection.components)[0]!.relativeOutputs[0]!;
+      expect(await fs.readFile(path.join(installed, relativeOutput), 'utf8')).toContain('Revision 3.');
+      await retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: first installs and installed syncs need one fresh execution
+  // check, while receipt observation, mutation rebase and postcheck stay fresh.
+  it.each(['gemini', 'copilot'] as const)('checks fresh %s evidence once before first install and installed sync', async (platform) => {
+    const item = await nativeEvidenceFixture(platform);
+    let discovery = 0;
+    let inspection = 0;
+    item.reads.discovery = async () => { discovery++; };
+    item.reads.inspection = async () => { inspection++; };
+    const mutationReads: number[] = [];
+    item.reads.mutation = () => { mutationReads.push(discovery); };
+    try {
+      expect(item.target.platformObservations?.[0]?.observation).toMatchObject({ package: 'absent', registration: 'absent', ownership: 'absent' });
+      expect(item.target.platformDeployment!.plans[0]!.expected.components).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'skill' })]));
+      const preparation = await prepareRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(preparation.status).toBe('ready');
+      if (preparation.status !== 'ready') throw new Error('Expected ready first install.');
+      expect([discovery, inspection]).toEqual([0, 0]);
+      const installed = await executeRebuildOperation({ command: 'install', target: item.target,
+        driver: item.integration.driver, preparation: preparation.preparation });
+      expect(installed.status, JSON.stringify(installed)).toBe('succeeded');
+      expect(mutationReads.length).toBeGreaterThan(0);
+      expect(mutationReads.every((count) => count === 1)).toBe(true);
+      expect([discovery, inspection]).toEqual([2, 3]);
+      expect(installed.deploymentReceipts?.[0]?.after).toMatchObject({ package: 'present', registration: 'present', ownership: 'aw' });
+      await item.target.platformDeployment!.postcheck(installed.deploymentReceipts!);
+      expect([discovery, inspection]).toEqual([2, 4]);
+      const changed = path.join(item.root, 'changed-after-execution');
+      await fs.outputFile(changed, 'Changed.');
+      const repeated = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(repeated).toMatchObject({ status: 'failed', error: { phase: 'preflight', message: expect.stringContaining('operationPlanStale') } });
+      expect(repeated.deploymentReceipts).toBeUndefined();
+      expect(discovery).toBe(3);
+      expect(mutationReads.every((count) => count === 1)).toBe(true);
+      await fs.remove(changed);
+      await item.context.platformRebuildSession!.dispose();
+
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget({ ...item.input, command: 'sync' });
+      await integration.sealMarketplaceGenerations([target]);
+      discovery = 0; inspection = 0; mutationReads.length = 0;
+      const syncPreparation = await prepareRebuildOperation({ command: 'sync', target, driver: integration.driver });
+      expect(syncPreparation.status).toBe('ready');
+      if (syncPreparation.status !== 'ready') throw new Error('Expected ready installed sync.');
+      expect([discovery, inspection]).toEqual([0, 0]);
+      const synced = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver, preparation: syncPreparation.preparation });
+      expect(synced.status, JSON.stringify(synced)).toBe('succeeded');
+      expect(mutationReads).toEqual([]);
+      expect([discovery, inspection]).toEqual([1, 2]);
+      expect(synced.deploymentReceipts?.[0]?.after).toMatchObject({ package: 'present', registration: 'present', ownership: 'aw' });
+      await target.platformDeployment!.postcheck(synced.deploymentReceipts!);
+      expect([discovery, inspection]).toEqual([1, 3]);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: multiple physical deployments and unsafe observations keep
+  // their full preparation checks instead of entering the single-plan path.
+  it.each(['multiple', 'foreign', 'unknown'] as const)('keeps preparation verification for %s Copilot deployments', async (boundary) => {
+    const item = await nativeEvidenceFixture('copilot', boundary === 'multiple' ? { multiple: true } : { state: boundary });
+    let discovery = 0;
+    item.reads.discovery = async () => { discovery++; };
+    try {
+      if (boundary === 'multiple') expect(item.target.platformDeployment!.deployments).toHaveLength(2);
+      else expect(item.target.platformDeployment!.blockedReceipts).toHaveLength(1);
+      const preparation = await prepareRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(discovery).toBe(boundary === 'multiple' ? 2 : 1);
+      if (boundary === 'foreign') expect(preparation.status).toBe('failed');
+      else expect(preparation.status).toBe('ready');
+      expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: the execution-entry check must still block changed source,
+  // client, owner, native registration and activation before any planned write.
+  it.each(['source', 'client', 'owner', 'registration', 'activation'] as const)('blocks changed %s evidence at the native execution entry', async (changed) => {
+    const item = await nativeEvidenceFixture('copilot');
+    const mutations: string[] = [];
+    item.reads.mutation = () => { mutations.push('native'); };
+    try {
+      const preparation = await prepareRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      if (preparation.status !== 'ready') throw new Error('Expected ready first install.');
+      if (changed === 'source') await fs.outputFile(path.join(item.root, 'changed'), 'Changed.');
+      else if (changed === 'client') item.changeClient();
+      else if (changed === 'owner') await fs.outputFile(path.join(item.layout.packageRoot, 'foreign'), 'Keep.');
+      else if (changed === 'registration') item.changeRegistration();
+      else await fs.outputJson(path.join(item.layout.activationPath, 'settings.json'), {
+        enabledPlugins: { [item.layout.nativeIdentity.registrationId!]: true },
+      });
+      const result = await executeRebuildOperation({ command: 'install', target: item.target,
+        driver: item.integration.driver, preparation: preparation.preparation });
+      expect(result).toMatchObject({ status: 'failed', error: { phase: 'preflight', message: expect.stringContaining('operationPlanStale') } });
+      expect(result.deploymentReceipts).toBeUndefined();
+      expect(mutations).toEqual([]);
+      expect(await fs.pathExists(path.join(item.layout.packageRoot, 'plugin.json'))).toBe(false);
+      if (changed === 'owner') expect(await fs.readFile(path.join(item.layout.packageRoot, 'foreign'), 'utf8')).toBe('Keep.');
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: a preApply source change must be detected after the script,
+  // before the native client or package writer can mutate the deployment.
+  it('retains fresh checks before and after a planned preApply', async () => {
+    const item = await nativeEvidenceFixture('copilot');
+    let discovery = 0;
+    item.reads.discovery = async () => { discovery++; };
+    item.target.preApplySource.manifest.scripts = { preApply: { path: './prepare.mjs' } };
+    item.target.operationActions = [{ kind: 'runPreApply', pluginId: 'team/evidence-demo', platform: 'copilot', scope: 'user',
+      script: './prepare.mjs', scriptDigest: 'sha256:script' }];
+    const driver = { ...item.integration.driver, runPreApply: async () => {
+      expect(discovery).toBe(1);
+      await fs.outputFile(path.join(item.root, 'changed-by-script'), 'Changed.');
+    } };
+    try {
+      const preparation = await prepareRebuildOperation({ command: 'install', target: item.target, driver });
+      expect(preparation.status).toBe('ready');
+      if (preparation.status !== 'ready') throw new Error('Expected prepared script.');
+      const result = await executeRebuildOperation({ command: 'install', target: item.target, driver, preparation: preparation.preparation });
+      expect(result).toMatchObject({ status: 'failed', error: { phase: 'preflight', message: expect.stringContaining('operationPlanStale') } });
+      expect(discovery).toBe(2);
+      expect(result.deploymentReceipts).toBeUndefined();
+      expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: managed writes and missing action evidence cannot reuse a
+  // pre-write success after the managed boundary changes a frozen input.
+  it.each(['managed write', 'missing actions'] as const)('keeps full checks across %s', async (boundary) => {
+    const item = await nativeEvidenceFixture('copilot');
+    let discovery = 0;
+    item.reads.discovery = async () => { discovery++; };
+    item.target.operationActions = boundary === 'missing actions' ? undefined : [{ kind: 'syncManagedCommandPackage',
+      pluginId: 'team/evidence-demo', scope: 'user', producer: { sourceId: 'team', sourceIdentity: item.input.plugin.sourceIdentity!,
+        pluginName: 'evidence-demo', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null },
+      sets: [], files: [], contentDigest: 'sha256:commands' }];
+    const driver = { ...item.integration.driver, applyManagedCommands: async () => {
+      expect(discovery).toBe(2);
+      await fs.outputFile(path.join(item.root, 'changed-by-command'), 'Changed.');
+    } };
+    try {
+      const preparation = await prepareRebuildOperation({ command: 'install', target: item.target, driver });
+      expect(preparation.status).toBe('ready');
+      if (preparation.status !== 'ready') throw new Error('Expected ready managed boundary.');
+      const result = await executeRebuildOperation({ command: 'install', target: item.target, driver, preparation: preparation.preparation });
+      expect(result).toMatchObject({ status: 'failed', error: { phase: 'native.write' },
+        deploymentReceipts: [expect.objectContaining({ diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'operationPlanStale' })]) })] });
+      expect(discovery).toBe(3);
+      expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
   // Test Value Gate: slow CLI identity and inventory reads may overlap only
   // within one check. Each verification must finish both fresh reads.
   it.each(['gemini', 'copilot'] as const)('overlaps fresh discovery and inspection at each %s verification boundary', async (platform) => {
@@ -200,6 +474,10 @@ describe('native evidence checks', () => {
       expect(settled).toBe(false);
       inspection.release();
       await expect(pending).rejects.toBe(immutableError);
+      const failedExecution = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(failedExecution).toMatchObject({ status: 'failed', error: { phase: 'preflight', message: immutableError.message } });
+      expect(failedExecution.deploymentReceipts).toBeUndefined();
+      expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
     } finally {
       discovery.release(); inspection.release();
       await pending?.catch(() => undefined);

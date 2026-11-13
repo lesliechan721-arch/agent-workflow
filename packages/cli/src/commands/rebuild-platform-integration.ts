@@ -45,7 +45,8 @@ export interface PreparedPlatformTarget {
   readonly cleanupResults: readonly CleanupResult[];
   captureNativeToolChanges(): Promise<NativeToolChange[]>;
   verify(): Promise<void>;
-  execute(): Promise<DeploymentReceipt[]>;
+  canVerifyAtExecution(): boolean;
+  execute(options?: { verifyBeforeExecution: true }): Promise<DeploymentReceipt[]>;
   postcheck(receipts: readonly DeploymentReceipt[]): Promise<void>;
 }
 interface UnitPreparation {
@@ -686,6 +687,7 @@ export class PlatformRebuildSession {
       const fingerprint = async (): Promise<string> => artifactValueDigest(await fingerprintParts());
       if (initialReads?.[1].status === 'rejected') throw initialReads[1].reason;
       let mutableBaseline = initialReads?.[1].status === 'fulfilled' ? initialReads[1].value : await currentMutable();
+      const preparationObservation = entry.binding.route === 'gemini-extension' ? mutableBaseline.observation : entry.observation;
       checks.set(entry.binding.id, async () => {
         if (!parallelNativeReads) return await fingerprint() === initial
           && artifactValueDigest(await currentMutable()) === artifactValueDigest(mutableBaseline);
@@ -737,8 +739,8 @@ export class PlatformRebuildSession {
         ownership: await Promise.all(inspected.components.map(async ({ component, state }) => ({ component, state,
           contentDigest: state === 'present' ? await ownedContentDigest(component) : undefined,
           physicalKey: component.identity.physicalKey ?? entry.binding.physicalKey }))),
-        sharedReferences: await sharedReferences(this.context, entry.binding, entry.observation, entry.layout),
-        nativeIdentity: entry.observation.nativeIdentity ?? entry.layout.nativeIdentity,
+        sharedReferences: await sharedReferences(this.context, entry.binding, preparationObservation, entry.layout),
+        nativeIdentity: preparationObservation.nativeIdentity ?? entry.layout.nativeIdentity,
         contentMatches: projections.some((projection) => projection.bundle !== null)
           && await readPlatformPackageContentDigest(entry.layout.packageRoot) === projections.find((projection) => projection.bundle !== null)?.bundle?.contentDigest };
       if (entry.binding.platform === 'codex') {
@@ -765,11 +767,11 @@ export class PlatformRebuildSession {
           const rules = geminiActivationRules(snapshot, entry.layout.nativeIdentity.packageId);
           await assertGeminiProjectRules(ctx, entry.binding, rules);
           const actual = geminiUserActivation(snapshot, entry.layout.nativeIdentity.packageId, geminiExtensionPaths(ctx).home);
-          if (actual !== 'unknown' && entry.observation.registration !== 'unknown'
+          if (actual !== 'unknown' && preparationObservation.registration !== 'unknown'
             && (entry.binding.scope.kind === 'user' || view?.desiredComplete && view.scopes.includes('user'))) {
             // Shared User renderScope does not establish User demand. A fresh
             // project starts disabled globally; an existing global intent stays.
-            evidence.userActivationEnabled = entry.observation.registration === 'present' ? actual : entry.binding.scope.kind === 'user'
+            evidence.userActivationEnabled = preparationObservation.registration === 'present' ? actual : entry.binding.scope.kind === 'user'
               || view?.desired.some((reference) => reference.scope === 'user' && reference.platform === 'gemini'
                 && reference.pluginId === entry.binding.plugin.pluginId && reference.sourceIdentity === entry.binding.plugin.sourceIdentity) === true;
           }
@@ -791,11 +793,11 @@ export class PlatformRebuildSession {
         emptyStates.set(entry.binding.id, await createPlatformEmptyState({ plugin: input.plugin, binding: entry.binding,
           units: units.map((unit) => unit.emptyInput) }));
       }
-      const result = adapter.lifecycle.prepare({ operation: operation(input), binding: entry.binding, observation: entry.observation,
+      const result = adapter.lifecycle.prepare({ operation: operation(input), binding: entry.binding, observation: preparationObservation,
         projections, expected, evidence });
       if (result.status === 'blocked') {
         plans.push({ operation: operation(input), binding: entry.binding, projections, expected, evidence, effects: [] });
-        blockedReceipts.push({ bindingId: entry.binding.id, effects: [], after: entry.observation,
+        blockedReceipts.push({ bindingId: entry.binding.id, effects: [], after: preparationObservation,
           unmet: expected.unmet.map((gap) => ({ ...gap, productIds: entry.binding.consumers.map((consumer) => consumer.id) })),
           reload: 'none', diagnostics: result.diagnostics });
       } else { deployments.push(result.prepared); plans.push(result.prepared.plan); }
@@ -803,7 +805,24 @@ export class PlatformRebuildSession {
     target.ownedComponents = plans.flatMap((plan) => plan.evidence.ownership.map((item) => item.component));
     target.desiredOwnedComponents = target.ownedComponents;
     let frozenNativeTools: { signature: string; changes: NativeToolChange[] } | undefined;
+    const verify = async (): Promise<void> => {
+      for (const check of checks.values()) if (!await check()) throw new Error('operationPlanStale: deployment evidence changed.');
+      for (const plan of plans) if (!await this.verifyMarketplace(plan)) throw new Error('operationPlanStale: marketplace evidence changed.');
+    };
+    const canVerifyAtExecution = (): boolean => {
+      const prepared = deployments[0];
+      if (!prepared || deployments.length !== 1 || plans.length !== 1 || plans[0] !== prepared.plan || blockedReceipts.length
+        || target.operationActions === undefined || target.operationActions.some((action) =>
+          action.kind === 'runPreApply' || action.kind === 'syncManagedCommandPackage')) return false;
+      const { plan, driverState } = prepared;
+      return plan.operation === 'ensure' && ['gemini-extension', 'copilot-marketplace'].includes(plan.binding.route)
+        && plan.binding.platform === target.identity.platform && plan.expected.components.length > 0 && !plan.expected.unmet.length
+        && driverState.before.package !== 'unknown' && driverState.before.registration !== 'unknown'
+        && ['absent', 'aw', 'shared'].includes(driverState.before.ownership)
+        && plan.effects.every((effect) => ['publish-package', 'register', 'refresh', 'activate'].includes(effect.kind));
+    };
     target.platformDeployment = { deployments, plans, blockedReceipts, cleanupResults,
+      canVerifyAtExecution,
       captureNativeToolChanges: async () => {
         const signature = artifactValueDigest(deployments.map(({ plan }) => ({ bindingId: plan.binding.id,
           retainPackage: plan.evidence.retainPackage, effects: plan.effects })));
@@ -824,10 +843,7 @@ export class PlatformRebuildSession {
         frozenNativeTools = { signature, changes };
         return changes;
       },
-      verify: async () => {
-        for (const check of checks.values()) if (!await check()) throw new Error('operationPlanStale: deployment evidence changed.');
-        for (const plan of plans) if (!await this.verifyMarketplace(plan)) throw new Error('operationPlanStale: marketplace evidence changed.');
-      },
+      verify,
       postcheck: async (receipts) => {
         let incomplete = false;
         for (const { plan } of deployments) {
@@ -845,7 +861,10 @@ export class PlatformRebuildSession {
           const packageIds = new Set(plan.projections.filter((projection) => projection.bundle)
             .flatMap((projection) => projection.components.map((component) => component.id)));
           const untrusted = after.consumers.some((consumer) => consumer.trust === 'required' || consumer.trust === 'blocked');
+          const nativeContentIncomplete = plan.binding.route === 'gemini-extension' && packageIds.size > 0
+            && (!after.nativePackageContentDigest || after.nativePackageContentDigest !== plan.projections.find((projection) => projection.bundle)?.bundle?.contentDigest);
           const packageIncomplete = packageIds.size > 0 && (after.package !== 'present' || !['aw', 'shared'].includes(after.ownership)
+            || nativeContentIncomplete
             || nativeRoute(plan.binding.route) && (after.registration !== 'present'
               || after.consumers.some((consumer) => consumer.activation !== 'enabled') || untrusted));
           const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id)
@@ -853,9 +872,11 @@ export class PlatformRebuildSession {
           receipt.diagnostics.push(...after.diagnostics);
           if (!gaps.length) continue;
           incomplete = true;
-          const code = untrusted ? 'nativeTrustRequired' : 'deploymentPostcheckFailed';
+          const code = untrusted ? 'nativeTrustRequired' : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
           receipt.diagnostics.push({ code, severity: 'error',
-            message: 'The final grouped observation does not confirm the requested deployment. Check status and sync the affected target.',
+            message: code === 'nativeInstallContentPostcheckFailed'
+              ? `The actual Gemini copy does not confirm the frozen package bytes. In the same workspace, review and run aw plugin sync ${plan.binding.plugin.pluginId} --context ${plan.binding.scope.kind} --target gemini --native-consent.`
+              : 'The final grouped observation does not confirm the requested deployment. Check status and sync the affected target.',
             subject: { target: plan.binding.platform, pluginId: plan.binding.plugin.pluginId, scope: plan.binding.scope.kind } });
           receipt.unmet.push(...gaps.map((component) => ({ id: `postcheck:${plan.binding.id}:${component.id}`,
             componentId: component.id, kind: component.kind, reasonCode: code, requiredFeatures: [],
@@ -863,7 +884,15 @@ export class PlatformRebuildSession {
         }
         if (incomplete) throw new Error('deploymentPostcheckFailed: the final grouped observation does not confirm the requested deployment.');
       },
-      execute: async () => {
+      execute: async (options) => {
+        let verifiedPlan: FrozenDeploymentPlan | undefined;
+        if (options?.verifyBeforeExecution) {
+          if (!canVerifyAtExecution()) throw new Error('deploymentExecutionVerificationUnsupported');
+          // Keep failures outside the lifecycle catch so the caller retains its
+          // preflight error classification. Only this call can consume success.
+          await verify();
+          verifiedPlan = deployments[0]!.plan;
+        }
         cleanupResults.length = 0;
         const receipts: DeploymentReceipt[] = [...blockedReceipts];
         for (const prepared of deployments) {
@@ -889,7 +918,11 @@ export class PlatformRebuildSession {
               }
               return outcome;
             },
-            verifyEvidence: async (plan) => await checks.get(plan.binding.id)!() && await this.verifyMarketplace(plan),
+            verifyEvidence: async (plan) => {
+              const verified = verifiedPlan === plan;
+              verifiedPlan = undefined;
+              return verified || await checks.get(plan.binding.id)!() && await this.verifyMarketplace(plan);
+            },
             publishPackage: async (_binding, bundle, _destination, component) => {
               if (!('path' in component) || component.path !== _destination) throw new Error('deploymentDestinationMismatch');
               await this.publishMarketplace(prepared.plan);

@@ -6,6 +6,7 @@ import { clients, sha256 } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
 import { readGeminiSkills } from './native-platform-gemini-skills.mjs';
 import { publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
+import { preparePublicOpenCodeObservation, capturePublicOpenCodePublication, readPublicOpenCodeSkills } from './native-platform-opencode-public.mjs';
 
 // One fixed Node child, using AW's real default native backend and the same
 // isolated cwd/env as Pi. This observes path spelling without granting trust.
@@ -104,6 +105,7 @@ async function readGrokSkills(ctx, cwd, revision, present) {
 }
 
 export async function readSkills(ctx, cwd, revision, present, { requireAbsent = false } = {}) {
+  if (ctx.platform === 'opencode') return readPublicOpenCodeSkills(ctx, cwd, revision, present);
   if (ctx.platform === 'claude') await ctx.defer('claude-skill-discovery-interface-unverified');
   if (ctx.platform === 'grok') return readGrokSkills(ctx, cwd, revision, present);
   if (ctx.platform === 'gemini') {
@@ -266,7 +268,7 @@ export async function writePublicFixtureRevision(ctx, plugin, revision) {
 }
 
 export async function qualifyPublicAw(ctx) {
-  if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
+  if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude', 'opencode'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => {
@@ -289,6 +291,7 @@ export async function qualifyPublicAw(ctx) {
     || !profile.qualifiedConsumers?.skill?.some((consumer) => consumer.product === 'cli' && consumer.version === clients[ctx.platform].version)) {
     await ctx.defer('public-aw-production-skill-profile-unverified');
   }
+  if (ctx.platform === 'opencode') await ctx.check('public-opencode-observation-environment', () => preparePublicOpenCodeObservation(ctx));
   const workspace = path.join(ctx.root, 'workspace');
   await fs.mkdir(workspace);
   const plugin = path.join(workspace, 'plugins', ctx.pluginName);
@@ -334,6 +337,8 @@ export async function qualifyPublicAw(ctx) {
       return { level: 'fixture-environment', interface: 'COPILOT_ALLOW_ALL=true',
         directories: 'isolated project and neutral', sessionRequests: 'none' };
     }
+    else if (ctx.platform === 'opencode') return { level: 'fixture-environment', scope: 'project', nativeTrustOverridesWritten: false,
+      consumerState: 'required-fresh-Native-scope-query; no-trust-state-inferred-from-AW-yes' };
     const cwdObservation = ctx.platform === 'pi' && process.platform === 'win32'
       && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
       ? await observeNativeWorkingDirectory(ctx) : undefined;
@@ -360,7 +365,8 @@ export async function qualifyPublicAw(ctx) {
       ? await ctx.aw(['plugin', 'sync', pluginId, '--context', 'user', '--target', 'grok', '--yes'])
       : await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes',
         ...(ctx.platform === 'gemini' ? ['--native-consent'] : [])]);
-    return { command: result.command, status: result.status };
+    return { command: result.command, status: result.status,
+      ...(ctx.platform === 'opencode' ? { publication: await capturePublicOpenCodePublication(ctx, result, 1, publicFixtureVersion(1)) } : {}) };
   });
   const nativeScope = async (revision) => ({
     target: await readPublicNativeState(ctx, ctx.project, revision, { active: true }),
@@ -376,7 +382,8 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['source', 'sync', 'qualification', '--yes']);
     const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes',
       ...(ctx.platform === 'gemini' ? ['--native-consent'] : [])]);
-    return { command: result.command, status: result.status };
+    return { command: result.command, status: result.status,
+      ...(ctx.platform === 'opencode' ? { publication: await capturePublicOpenCodePublication(ctx, result, 2, publicFixtureVersion(2)) } : {}) };
   });
   await ctx.check('public-update-native-scope', () => nativeScope(2));
   await ctx.observe('public-update-skill-discovery', () => readSkills(ctx, ctx.project, 2, true));
@@ -423,7 +430,8 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['source', 'sync', 'qualification', '--yes']);
     const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes',
       ...(ctx.platform === 'gemini' ? ['--native-consent'] : [])]);
-    return { command: result.command, status: result.status, version: publicFixtureVersion(3), revision: 3, samePluginVersion: true };
+    return { command: result.command, status: result.status, version: publicFixtureVersion(3), revision: 3, samePluginVersion: true,
+      ...(ctx.platform === 'opencode' ? { publication: await capturePublicOpenCodePublication(ctx, result, 3, publicFixtureVersion(3)) } : {}) };
   });
   await ctx.check('public-dynamic-native-scope', () => nativeScope(3));
   await ctx.check('public-dynamic-consumer-content', async () => ({

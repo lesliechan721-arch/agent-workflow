@@ -87,7 +87,7 @@ generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有
 
 显式 `--observe-native` 允许原生 app-server 启动，因此可能创建 installation ID、日志、SQLite 状态和 cache，读取既有认证，并按宿主现有配置连接云端或远程环境。公开结果通过 `nativeObservationSideEffects` 同时向人类和 JSON 消费者披露；该选项不要求也不执行登录、模型或账号 RPC。普通 status、TUI 和复用观察 session 的其他消费者默认不启用此模式。
 
-同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。Gemini 与 Copilot 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，仍逐次重新读取，并保留不可变输入失败与 stale 的优先级。跨调用不缓存弱现场结论。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
+同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。Gemini 与 Copilot 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，仍逐次重新读取，并保留不可变输入失败与 stale 的优先级。对 Gemini/Copilot 的单个正常非空部署，若完整动作明确没有 preApply、托管命令包写入或补足删除，可把纯准备和紧邻执行的重复完整核验合并到执行入口。入口核验失败仍走原 preflight 错误路径；只有同次调用、同一冻结计划的首个生命周期证据检查可消费该成功结果一次。每次执行仍重新核验，脚本、托管写入、多部署、blocked/unknown 现场及其他平台保持原检查，写后观察、rebase 和最终状态读取不复用该结果。跨调用不缓存弱现场结论。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
 
 ### 3.2 scope 与共享物理包
 
@@ -96,6 +96,8 @@ generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有
 Codex 显式 project false 覆盖 user true。撤销项目需求时移除 AW 自身项目 activation entry，让有效用户激活继续继承；不能写 false 代替删除。用户操作不读取或修改未授权项目，也不能把共享 payload 当作项目已启用。
 
 共享引用在本次内存中按 JointDemandSnapshot、实际 owner 和路由可证明的原生注册/activation 记录确定：明确仍有引用为 present，完整覆盖且无引用才为 none，其余为 unknown。两份 Intent 可读不证明全部历史项目无引用。unknown 时可撤本次精确 activation，但保留共享包与恢复说明。无 Intent 不自动新增依赖需求。
+
+Gemini 同版本动态 refresh 不是最终移除共享包：在精确 AW 所有权与来源、旧原生副本完整摘要及本次原生许可均成立时，可受限替换该物理副本，并保留全部已核验 activation。用户数据或弱证据阻止替换；新副本必须与冻结投影字节一致，不能从 AW source、版本或登记推断已应用配置。普通 sync 按新读取的原生摘要规划剩余动作，即使前次失败已经发布新 AW 源也会重试必要 refresh。只读 status 同样比较实际副本摘要：已确认旧副本为 drifted，缺失或无法核验的副本摘要为 unknown，不运行 renderer 或另启原生查询会话。完整边界与恢复见[Gemini 原生刷新](platforms.md#2-原生包正文与-lifecycle-路由)。
 
 依赖按完整身份和实际布局选择；提供者失败只阻断其真实消费者，独立平台和无依赖命令包继续。共享包损坏不改用另一条安装路由。foreign、不可读现场、配置损坏与能力缺口保持可见，不能由无需求豁免吞掉。
 

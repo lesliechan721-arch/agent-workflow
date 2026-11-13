@@ -8,7 +8,7 @@ import { getAuthoringPlatformCapabilities } from '../../src/review/platform-prof
 import type { DeploymentObservation, ResolveRequest } from '../../src/platforms/contracts.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
-async function fixture(platform: 'codex' | 'cursor' | 'pi' | 'grok' | 'copilot' | 'gemini' | 'claude') {
+async function fixture(platform: 'codex' | 'cursor' | 'pi' | 'grok' | 'copilot' | 'gemini' | 'claude' | 'opencode') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-layout-')); roots.push(root);
   const ctx = { cwd: root, env: { HOME: root, USERPROFILE: root, AW_HOME: path.join(root, 'aw') } };
   const request: ResolveRequest = { plugin: { sourceId: 'test', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'test/example', version: '1.0.0' },
@@ -112,9 +112,10 @@ it('blocks project writes that alias Codex user configuration but retains cleanu
 // Test Value Gate: the finite records authorize ordinary Skills for both scopes
 // on six exact CLI hosts, without authorizing other consumers or features.
 it.each([
-  { platform: 'copilot', exactVersion: '1.0.95', previousVersion: '1.0.94', nextVersion: '1.0.96' },
-  { platform: 'claude', exactVersion: '2.1.317', previousVersion: '2.1.316', nextVersion: '2.1.318' },
-] as const)('limits $platform ordinary Skills to the recorded CLI version, hosts and scopes', async ({ platform, exactVersion, previousVersion, nextVersion }) => {
+  { platform: 'copilot', exactVersion: '1.0.95', previousVersion: '1.0.94', nextVersion: '1.0.96', evidenceDate: '2026-11-12' },
+  { platform: 'claude', exactVersion: '2.1.317', previousVersion: '2.1.316', nextVersion: '2.1.318', evidenceDate: '2026-11-12' },
+  { platform: 'opencode', exactVersion: '2.0.0', previousVersion: '1.9.9', nextVersion: '2.0.1', evidenceDate: '2026-11-13' },
+] as const)('limits $platform ordinary Skills to the recorded CLI version, hosts and scopes', async ({ platform, exactVersion, previousVersion, nextVersion, evidenceDate }) => {
   const { root, ctx, request } = await fixture(platform);
   request.discovery.installations = [{ ...request.discovery.installations[0]!, version: exactVersion }];
   const hosts: Array<{ platform: NodeJS.Platform; arch: NodeJS.Architecture }> = [
@@ -138,7 +139,7 @@ it.each([
       for (const kind of ['hook', 'mcp', 'instruction', 'agent'] as const) expect(capabilities.kinds[kind].status).toBe('unverified');
       for (const feature of Object.values(capabilities.features)) expect(feature.status).toBe('unverified');
       expect(profile.qualificationEvidence?.[0]).toMatchObject({
-        reference: `scripts/qualification/evidence/native-${platform}-skills-2026-11-12.json`,
+        reference: `scripts/qualification/evidence/native-${platform}-skills-${evidenceDate}.json`,
         product: 'cli', version: exactVersion, platform: host.platform, arch: host.arch,
         scopes: ['user', 'project'], kinds: ['skill'], features: [],
       });

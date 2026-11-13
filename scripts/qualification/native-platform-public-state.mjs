@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { clients, sha256 } from './native-platform-runtime.mjs';
+import { readPublicOpenCodeState, capturePublicOpenCodeRemoval, readPublicOpenCodeDynamicContent } from './native-platform-opencode-public.mjs';
 
 export const publicFixtureVersion = revision => `0.1.${Math.min(revision, 2) - 1}`;
 
@@ -79,6 +80,7 @@ async function geminiExtensions(ctx, cwd) {
 
 export async function readPublicNativeState(ctx, cwd, revision, { active, absent = false }) {
   assert.equal(typeof active, 'boolean');
+  if (ctx.platform === 'opencode') return readPublicOpenCodeState(ctx, cwd, revision, { active, absent, version: publicFixtureVersion(revision) });
   let matches;
   if (ctx.platform === 'gemini') {
     matches = await geminiExtensions(ctx, cwd);
@@ -180,6 +182,7 @@ function retainedSharedRegistration(ctx, result, pluginId) {
 }
 
 export async function readPublicRemovedNativeScope(ctx, revision, result, pluginId) {
+  if (ctx.platform === 'opencode') capturePublicOpenCodeRemoval(ctx, result, pluginId);
   // A successful shared-retention receipt permits a disabled registration. The
   // new client processes still have to prove effective off in both directories.
   const retainedRegistration = retainedSharedRegistration(ctx, result, pluginId);
@@ -190,6 +193,7 @@ export async function readPublicRemovedNativeScope(ctx, revision, result, plugin
 }
 
 export async function readDynamicConsumerContent(ctx, cwd, revision) {
+  if (ctx.platform === 'opencode') return readPublicOpenCodeDynamicContent(ctx, cwd, revision, publicFixtureVersion(revision));
   let filename;
   if (['codex', 'pi'].includes(ctx.platform)) {
     const skill = single(await rpcSkills(ctx, cwd), 'dynamic-consumer-path-unverified');

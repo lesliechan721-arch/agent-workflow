@@ -35,6 +35,10 @@
 
 没有原生许可时，Gemini 安装或更新在启动该原生命令前返回 `nativeConsentRequired`，不会等待用户 stdin。已提交的需求、配置和 AW 源包保留，结果按实际变化为 blocked 或 partial，并给出 `aw plugin sync <source/plugin> --context <user|project> --target gemini --native-consent` 恢复命令；需先审阅副作用，同次其他 AW 重要影响仍须单独提供 `--yes`。TUI 当前没有原生许可入口，遇到此阻断时通过该 CLI 命令恢复。固定交互只支持 Gemini CLI `0.67.0`；未知版本返回 `nativeConsentVersionUnsupported`，未知或重复提示返回 `nativeConsentPromptUnsupported`，不扩展自动授权。卸载扩展不代表 Gemini 已撤销独立的持久信任条目。
 
+Gemini `0.67.0` 同版本动态刷新会在精确 AW 所有权、来源和旧副本完整摘要核验后，以原生卸载、重装更新实际副本，并保留原有全局及项目激活。原生目录中的 `.env`、额外或改写文件、弱 owner 会以 `nativeRefreshDataUnconfirmed` 阻断，原目录保留；先保存或处理这些本地数据，不能用 `--yes`、`--native-consent` 或 force 越过该保护。重装后的实际包体必须匹配冻结投影，无法确认时报告 `nativeInstallContentPostcheckFailed` 和部分结果，保留 AW 源包与已核验的激活规则。修复现场后，在同一工作区使用上述带 `--native-consent` 的 sync 恢复；已保存的配置和需求不会回滚。
+
+普通 Gemini sync 每次比较实际原生副本与本次冻结包体；AW 源包已更新，也不能省略落后副本的 refresh。副本 owner、包体或数据无法确认时保持未完成。处理阻断数据或修复安装现场后，普通许可 sync 会按新读取的副本状态重试，不要求重新发布源包；status 的旧副本显示 drifted，无法确认的副本显示 unknown。
+
 `aw dev plugin validate` 默认保留当前共同来源的合法 frontmatter，由能力准备报告目标缺口；显式 `--claude-skill-profile minimum` 仅对声明的 Claude 目标要求 2.1.88 字段，`--strict-agent-skills` 优先使用严格 Portable 字段集，模板与普通源码适用同一规则。
 
 ### 1.1 本机 target 选择

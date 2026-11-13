@@ -6,12 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DeploymentBinding, DeploymentObservation, MutationContext, PreparationEvidence, PreparedDeployment, ReadContext } from '../../src/platforms/contracts.js';
 import { createNativeLifecycleServices } from '../../src/platforms/lifecycle-native-services.js';
 import { executeNativeLifecycle } from '../../src/platforms/lifecycle-native.js';
-import type { PlatformDriverState } from '../../src/platforms/lifecycle.js';
+import { executePlatformLifecycle, type PlatformDriverState } from '../../src/platforms/lifecycle.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import { finishGeminiNativeMutation, geminiActivationEvidence, geminiExtensionPaths, geminiPathEnabled, geminiScopePattern,
   geminiUserActivation, readGeminiActivationSnapshot, setGeminiActivation } from '../../src/platforms/gemini-activation.js';
-import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { SKILL_OWNER_MARKER, readSkillOwnerMarker, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { geminiConsentInput } from '../../src/platforms/gemini-consent.js';
 
@@ -46,6 +47,106 @@ describe('Gemini shared extension activation', () => {
       sharedReferences: 'present', nativeIdentity: layout.nativeIdentity, contentMatches: true, userActivationEnabled: userEnabled };
     return { ctx, binding, evidence, identity: layout.nativeIdentity, file: geminiExtensionPaths(ctx).file, home, project, otherProject };
   }
+
+  async function replacementFixture(scope: 'user' | 'project' = 'project', failure?: 'install' | 'stale-copy') {
+    const item = await fixture(scope === 'user');
+    if (scope === 'user') item.binding.scope = { kind: 'user' };
+    const { ctx, binding, evidence, identity, file, home, project, otherProject } = item;
+    evidence.sharedReferences = scope === 'user' ? 'unknown' : 'present';
+    const component = evidence.ownership[0]!.component;
+    if (component.kind !== 'owned-directory') throw new Error('Expected a directory package.');
+    const installed = path.join(geminiExtensionPaths(ctx).root, identity.packageId);
+    await fs.outputJson(path.join(component.path, 'gemini-extension.json'), { name: 'demo', version: '1.0.0' });
+    await fs.outputFile(path.join(component.path, 'skills/demo/SKILL.md'), 'Revision 2.\n');
+    const oldDigest = (await readPlatformPackageContentDigest(component.path))!;
+    const layout = await getDeploymentLayout(ctx, binding);
+    const projection = (contentDigest: string) => ({ physicalIdentity: layout.physicalIdentity, contentDigest,
+      inputDigest: `sha256:${'c'.repeat(64)}`, components: [{ id: 'skill:demo', nativeName: 'demo', relativeOutputs: ['skills/demo/SKILL.md'] }] });
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
+      nativeProjection: projection(oldDigest) });
+    await fs.copy(component.path, installed);
+    const oldMarker = await readSkillOwnerMarker({ skillRoot: installed, allowedRoot: geminiExtensionPaths(ctx).root, expectedIdentity: component.identity });
+    expect(oldMarker?.nativeProjection?.contentDigest).toBe(oldDigest);
+    expect(await readPlatformPackageContentDigest(installed, { excludeRootFiles: ['.gemini-extension-install.json'] })).toBe(oldDigest);
+    await fs.outputFile(path.join(component.path, 'skills/demo/SKILL.md'), 'Revision 3.\n');
+    const newDigest = (await readPlatformPackageContentDigest(component.path))!;
+    expect(newDigest).not.toBe(oldDigest);
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
+      nativeProjection: projection(newDigest) });
+    const stagingRoot = path.join(home, 'frozen-new-package');
+    await fs.copy(component.path, stagingRoot);
+    const original = { demo: { overrides: [scope === 'user' ? '*' : '!*', geminiScopePattern(otherProject), geminiScopePattern(project)], retained: 'keep' },
+      sibling: { overrides: ['*'], retained: { setting: 1 } } };
+    await fs.outputJson(file, original);
+    const before: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'present', ownership: 'aw', registration: 'present',
+      nativeIdentity: identity, consumers: [], components: [], diagnostics: [], prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } };
+    const effect = { id: 'refresh', kind: 'refresh' as const, physicalKey: binding.physicalKey,
+      componentIds: [], destination: identity.sourceLocation, destructive: false };
+    const bundle = { stagingRoot, contentDigest: newDigest };
+    const prepared: PreparedDeployment<PlatformDriverState> = { plan: { binding, operation: 'ensure', expected: { components: [], omitted: [], unmet: [], sources: {} },
+      projections: [{ renderUnitId: binding.renderUnitIds[0]!, bundle, supplements: [], components: projection(newDigest).components, diagnostics: [] }], effects: [effect], evidence },
+    driverState: { before, identity, product: binding.consumers[0]!, packageComponent: component, bundle, contributions: [], removals: [] } };
+    const runner = vi.fn(async (invocation: NativeCliInvocation) => {
+      if (invocation.args[1] === 'uninstall') {
+        await fs.remove(installed);
+        await fs.writeFile(file, JSON.stringify({ sibling: { overrides: ['*'] } }, null, 2));
+      } else if (invocation.args[1] === 'install') {
+        if (failure === 'install') return { exitCode: 1, stdout: '', stderr: 'Controlled install failure.' };
+        await fs.copy(component.path, installed);
+        await fs.outputJson(path.join(installed, '.gemini-extension-install.json'), { type: 'local', source: component.path });
+        if (failure === 'stale-copy') await fs.outputFile(path.join(installed, 'skills/demo/SKILL.md'), 'Revision 2.\n');
+        await fs.writeFile(file, JSON.stringify({ demo: { overrides: [scope === 'user' ? '*' : '!*', geminiScopePattern(home)] }, sibling: { overrides: ['*'] } }, null, 2));
+      } else throw new Error('Unexpected native mutation.');
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    const noMutation = async () => ({ changed: false, mutation: 'none' as const });
+    const execution: MutationContext = { ...ctx, runner, geminiNativeConsent: prepared.plan,
+      geminiActivationSnapshot: geminiActivationEvidence(await readGeminiActivationSnapshot(ctx)), services: {
+        verifyEvidence: async () => true, publishPackage: noMutation, writeContribution: noMutation,
+        removeOwned: noMutation, setActivation: noMutation, registerMarketplace: noMutation,
+      } };
+    return { ...item, installed, original, oldDigest, newDigest, prepared, effect, execution, runner };
+  }
+
+  // Test Value Gate: same-version native update is a no-op. Replace only the
+  // exact owned copy, retain shared activations, and verify actual new bytes.
+  it.each(['user', 'project'] as const)('refreshes same-version %s bytes while retaining every reviewed activation', async (scope) => {
+    const item = await replacementFixture(scope);
+    expect(await executeNativeLifecycle(item.execution, item.prepared, item.effect)).toMatchObject({ mutation: 'confirmed' });
+    expect(item.runner.mock.calls.map(([invocation]) => invocation.args)).toEqual([
+      ['extensions', 'uninstall', 'demo'], ['extensions', 'install', item.identity.sourceLocation, '--consent', '--skip-settings'],
+    ]);
+    expect(await fs.readFile(path.join(item.installed, 'skills/demo/SKILL.md'), 'utf8')).toBe('Revision 3.\n');
+    expect(await readPlatformPackageContentDigest(item.installed, { excludeRootFiles: ['.gemini-extension-install.json'] })).toBe(item.newDigest);
+    expect(await fs.readJson(item.file)).toEqual(item.original);
+  });
+
+  it.each(['env', 'extra', 'modified', 'weak-marker', 'foreign-source', 'nested-metadata'] as const)(
+    'retains the native copy without replacement when %s evidence is unsafe', async (kind) => {
+      const item = await replacementFixture();
+      if (kind === 'env') await fs.outputFile(path.join(item.installed, '.env'), 'PRIVATE_SETTING=retain\n');
+      if (kind === 'extra') await fs.outputFile(path.join(item.installed, 'notes.txt'), 'Retain user notes.');
+      if (kind === 'modified') await fs.outputFile(path.join(item.installed, 'skills/demo/SKILL.md'), 'Local edit.');
+      if (kind === 'weak-marker') await fs.remove(path.join(item.installed, SKILL_OWNER_MARKER));
+      if (kind === 'foreign-source') await fs.outputJson(path.join(item.installed, '.gemini-extension-install.json'), { type: 'local', source: '/foreign' });
+      if (kind === 'nested-metadata') await fs.outputFile(path.join(item.installed, 'skills/demo/.gemini-extension-install.json'), 'Retain nested data.');
+      const receipt = await executePlatformLifecycle(item.execution, item.prepared);
+      expect(receipt.effects[0]).toMatchObject({ status: 'blocked', mutation: 'none' });
+      expect(receipt.effects[0]!.diagnostics[0]!.code).toBe(kind === 'foreign-source' ? 'nativeIdentityUnconfirmed' : 'nativeRefreshDataUnconfirmed');
+      expect(item.runner).not.toHaveBeenCalled();
+      expect(await fs.pathExists(item.installed)).toBe(true);
+      expect(await fs.readJson(item.file)).toEqual(item.original);
+    },
+  );
+
+  it.each(['install', 'stale-copy'] as const)('retains the source and activation after a replacement %s failure', async (failure) => {
+    const item = await replacementFixture('project', failure);
+    const receipt = await executePlatformLifecycle(item.execution, item.prepared);
+    expect(receipt.effects[0]).toMatchObject({ status: 'failed', mutation: 'confirmed' });
+    if (failure === 'stale-copy') expect(receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeInstallContentPostcheckFailed' }));
+    expect(await fs.readFile(path.join(item.identity.sourceLocation, 'skills/demo/SKILL.md'), 'utf8')).toBe('Revision 3.\n');
+    expect(await fs.readJson(item.file)).toEqual(item.original);
+  });
 
   // Test Value Gate: native User enable removes HOME child Workspace rules.
   // The checked installer result must restore both project references and fields.

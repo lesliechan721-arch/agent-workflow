@@ -86,7 +86,8 @@ export function platformPackageInputDigest(evidence: PlatformInputEvidence): str
     plugin: evidence.plugin, platform: evidence.platform, units });
 }
 
-export async function readPlatformPackageContentDigest(root: string): Promise<string | undefined> {
+export async function readPlatformPackageContentDigest(root: string,
+  options: { excludeRootFiles?: readonly string[] } = {}): Promise<string | undefined> {
   const stat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
     throw error;
@@ -98,6 +99,10 @@ export async function readPlatformPackageContentDigest(root: string): Promise<st
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (relative === SKILL_OWNER_MARKER) continue;
+      if (!prefix && options.excludeRootFiles?.includes(entry.name)) {
+        if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('platformContentInvalid');
+        continue;
+      }
       const file = path.join(directory, entry.name);
       if (entry.isSymbolicLink() || !entry.isFile() && !entry.isDirectory()) throw new Error('platformContentInvalid');
       if (entry.isDirectory()) await visit(file, relative);
