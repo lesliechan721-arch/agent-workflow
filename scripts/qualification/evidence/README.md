@@ -6,6 +6,8 @@
 
 [native-grok-skills-2026-11-12.json](native-grok-skills-2026-11-12.json) 保存 Grok CLI `1.0.77` 在 Linux x64/arm64、macOS arm64、Windows x64 的 User 普通 Skill 原生安装、当前正文发现、`uninstall --keep-data`/install 刷新、中立目录发现及移除记录。四个通过单元来自[同次候选运行](https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43202542989)，均保留原报告摘要、索引、获取信息与命令回执。Project、其他环境/版本及其他组件不继承资格；四环境执行过保留数据参数，不等于已在四环境完成持久数据哨兵对照。该正反对照只在单独的 macOS arm64 探针完成。
 
+[native-grok-project-skills-2026-11-13.json](native-grok-project-skills-2026-11-13.json) 保存 Grok CLI `1.0.77` 四环境 Project 的4个原生管理与有效 scope 通过单元、44条原命令，来自[运行43363001312](https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43363001312)。安装和刷新均核对实际包体字节，目标新客户端报告启用，中立目录不可见，移除及清理完成。夹具仅向精确规范化临时项目写入经验 `trusted_folders.toml`，不授予生产自动信任权限。Skill 发现/加载仍未知；公开 AW Project 安装、更新、同版本动态消费字节和 scope 尚须新 Hosted 实测，不声称公开通过。旧 User 记录保持独立原绑定；无官方分发的 macOS x64、Windows arm64 只排除，不记通过。
+
 这些记录不证明模型采用、调用控制、其他组件执行、Desktop 或未列出的版本/环境。当前 AW 投影候选的 Native 观察与公开 AW 编排分别验收；不得将本记录的通过扩写为所有公开链路已通过。新 Hosted 取证流程以 CI 主题为准，历史报告保持原始版本绑定。
 
 历史本机记录 [native-skills-2026-11-10.json](native-skills-2026-11-10.json) 保存一次真实客户端观察的必要摘录。范围为 macOS 26.3.1、arm64 上的 Codex CLI `0.167.0` 和 Pi CLI `1.5.0`，只覆盖 Skills 的宿主发现、原生生命周期及 user/project scope 隔离。

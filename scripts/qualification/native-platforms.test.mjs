@@ -703,8 +703,13 @@ test('public AW rejects a zero-exit root that leaves an independently grouped ch
 
 test('public AW rejects timeout, output limit and cancellation despite a zero exit', posixOnly, async () => {
   await publicProcessFixture(async (options) => {
-    await assert.rejects(executePublicAw(nodeLauncher, ['-e', 'setTimeout(()=>{},10000)'],
-      { ...options, timeoutMs: 500 }), /public-aw-process-timeout/);
+    await assert.rejects(executePublicAw(nodeLauncher, ['-e', 'process.stdout.write("started");setTimeout(()=>{},10000)'],
+      { ...options, timeoutMs: 500 }), (error) => {
+      assert.match(error.message, /public-aw-process-timeout/);
+      assert.equal(error.result.stdout, 'started');
+      assert.equal(error.result.terminationReason, 'timeout');
+      return true;
+    });
     await assert.rejects(executePublicAw(nodeLauncher, ['-e', 'process.stdout.write("x".repeat(3*1024*1024));setTimeout(()=>{},10000)'],
       options), /public-aw-process-max-buffer/);
     const controller = new AbortController();

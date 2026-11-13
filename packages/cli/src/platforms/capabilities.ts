@@ -46,6 +46,12 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
       product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: platform === 'grok' || platform === 'gemini' ? ['user'] : ['user', 'project'], kinds: ['skill'], features: [],
       limitations: [...(platform === 'claude' ? ['native-management-and-effective-activation-only', 'skill-discovery-unverified', 'skill-loading-unverified']
         : ['host-discovery-and-lifecycle-only']), 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'] }];
+    if (platform === 'grok') profile.qualificationEvidence.push({
+      reference: 'scripts/qualification/evidence/native-grok-project-skills-2026-11-13.json',
+      product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: ['project'], kinds: ['skill'], features: [],
+      limitations: ['native-management-and-effective-activation-only', 'fixture-project-trust-required', 'skill-discovery-unverified',
+        'skill-loading-unverified', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'],
+    });
   }
   return profile;
 }

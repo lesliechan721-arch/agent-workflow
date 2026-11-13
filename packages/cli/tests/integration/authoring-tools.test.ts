@@ -3517,7 +3517,7 @@ describe('authoring tools', () => {
         {set:'project-tools',producer:{kind:'package',packageKey:'project-tools'},mode:'static',entries:[{key:'run',runner:'node',entry:'run.mjs'}]},
       ]},extensions:{permissions:[{name:'shared-native',allow:[{command:{set:'native',key:'run',variant:'default'}}]}]},
     }),{
-      'skills/native-helper/SKILL.md':'---\nname: native-helper\ndescription: Shared native commands.\n---\n{{aw.command:native/run}}\n',
+      'skills/native-helper/SKILL.md':'---\nname: native-helper\ndescription: Shared native commands.\nmodel: controlled-unverified-model\n---\n{{aw.command:native/run}}\n',
       'skills/native-helper/scripts/run.mjs':'console.log("native");\n',
       'project-tools/run.mjs':'console.log("project");\n',
       'scripts/render.mjs':[
@@ -3525,7 +3525,7 @@ describe('authoring tools', () => {
         "const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
         `fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({surface:c.surface,scope:c.scope})+'\\n');`,
         'if(c.surface!=="agent-plugin" || c.scope!=="user") throw new Error("unavailable shared commands must not run");',
-        'console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:c.allowedOutputKinds.includes("skill")?[{id:"scoped-skill",kind:"skill",name:"scoped-helper",requiredFeatures:[{feature:"component.kind.skill"}],reasonCode:"capability-unverified"}]:[]}));',
+        'console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:c.allowedOutputKinds.includes("skill")?[{id:"scoped-skill",kind:"skill",name:"scoped-helper",requiredFeatures:[{feature:"skill.model"}],reasonCode:"capability-unverified"}]:[]}));',
       ].join('\n'),
     });
     const result=await runValidatePlugin(fixture.pluginDir).catch((cause:unknown)=>{

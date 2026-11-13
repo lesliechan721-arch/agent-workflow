@@ -8,6 +8,7 @@ import { runNativeCliChecked } from '../utils/native-cli.js';
 import { installationInvocation } from './discovery.js';
 import { getDeploymentLayout } from './layout.js';
 import { inspectClaudeMarketplaceSource, inspectCopilotMarketplaceSource } from './inspection-native.js';
+import { geminiActivationEvidence, readGeminiActivationSnapshot, setGeminiActivation } from './gemini-activation.js';
 import type { DeploymentBinding, MutationContext, NativeIdentity, PreparationEvidence, ReadContext } from './contracts.js';
 
 async function readObject(file: string): Promise<Record<string, unknown>> {
@@ -20,7 +21,7 @@ async function readObject(file: string): Promise<Record<string, unknown>> {
 function fail(code: string): never { throw Object.assign(new Error(code), { code, mutation: 'none' }); }
 
 /** Fixed host operations for the existing lock-owning execution pipeline. */
-export function createNativeLifecycleServices(ctx: ReadContext, evidence: PreparationEvidence):
+export function createNativeLifecycleServices(ctx: ReadContext & Pick<MutationContext, 'geminiActivationSnapshot'>, evidence: PreparationEvidence):
   Pick<MutationContext['services'], 'registerMarketplace' | 'setActivation'> {
   const run = async (binding: DeploymentBinding, args: string[]): Promise<void> => {
     const product = binding.consumers.find((item) => item.availability === 'available' && item.entry?.kind === 'cli');
@@ -62,11 +63,18 @@ export function createNativeLifecycleServices(ctx: ReadContext, evidence: Prepar
       return { changed: true, mutation: 'confirmed' };
     },
     async setActivation(binding: DeploymentBinding, identity: NativeIdentity, enabled: boolean) {
-      if (identity.route !== binding.route || !identity.registrationId) fail('nativeIdentityUnconfirmed');
+      if (identity.route !== binding.route || binding.route !== 'gemini-extension' && !identity.registrationId) fail('nativeIdentityUnconfirmed');
       const product = binding.consumers.find((item) => item.entry?.kind === 'cli'
         || !enabled && binding.route === 'codex-marketplace' && item.entry?.kind === 'directory');
       if (!product?.entry || product.entry.kind === 'generic') fail('clientInstallEntryUnavailable');
-      const id = identity.registrationId;
+      if (binding.route === 'gemini-extension') {
+        if (!ctx.geminiActivationSnapshot) fail('nativeActivationEvidenceUnknown');
+        const snapshot = await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
+        const outcome = await setGeminiActivation(ctx, evidence, binding, identity, enabled, snapshot);
+        Object.assign(ctx.geminiActivationSnapshot, geminiActivationEvidence(snapshot));
+        return outcome;
+      }
+      const id = identity.registrationId!;
       if (binding.route === 'codex-marketplace') {
         let changed = false;
         if (binding.scope.kind === 'project') {

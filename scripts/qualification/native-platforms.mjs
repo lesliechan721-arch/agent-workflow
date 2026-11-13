@@ -221,7 +221,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         if ((expectedExitCode !== 0 || expectedStatus !== 'success') && !trustBootstrap) {
           throw new Error('public-aw-unexpected-command-expectation');
         }
-        const trace = ['linux', 'win32'].includes(process.platform) && ['codex', 'pi'].includes(platform)
+        const trace = ['linux', 'darwin', 'win32'].includes(process.platform) && ['codex', 'pi', 'claude', 'gemini', 'copilot'].includes(platform)
           && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
         const traceFile = trace ? path.join(root, `managed-native-${report.commands.length}.jsonl`) : undefined;
         const sourceDiagnostic = trace && platform === 'codex' && process.platform === 'win32';
@@ -323,9 +323,9 @@ export async function run(options) {
         && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1' ? 'hosted-private-identity-ucomm' : 'disabled',
       nativeCopilotDarwinObservation: process.platform === 'darwin'
         ? 'observed-marker-and-identity-audit-not-provider-grading-or-os-containment' : 'not-applicable',
-      publicAwNativeTrace: ['linux', 'win32'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
+      publicAwNativeTrace: ['linux', 'darwin', 'win32'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
         && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
-        ? 'node-import-trace-of-selected-codex-pi-entries-not-uninstrumented-performance-evidence' : 'disabled',
+        ? 'node-import-trace-of-selected-client-entries-not-uninstrumented-performance-evidence' : 'disabled',
       publicAwProcessManagement: process.platform === 'win32' ? 'windows-job'
         : 'observed-marker-and-identity-audit-not-provider-grading-or-os-containment',
       runtimeNetwork: 'blocked-proxy-not-os-firewall', installNetwork: options.install ? 'public-npm' : 'none',

@@ -11,6 +11,7 @@ import { createSkillOwnerMarkerContent, SKILL_OWNER_MARKER, writeOwnedTextFile }
 import { deploymentPackageComponent, inspectDeployment, inspectStaticSupplements } from '../../src/platforms/inspection.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { createNativeLifecycleServices } from '../../src/platforms/lifecycle-native-services.js';
+import { geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import { readCodexConfigFile, upsertCodexMarketplaceFile } from '../../src/utils/codex-config.js';
 import type { OwnedComponent } from '../../src/utils/ownership.js';
 
@@ -97,7 +98,6 @@ describe('native platform lifecycle', () => {
     ['codex-marketplace', [['plugin', 'add', 'demo@marketplace']]],
     ['claude-marketplace', [['plugin', 'install', 'demo@marketplace', '--scope', 'user'], ['plugin', 'enable', 'demo@marketplace', '--scope', 'user']]],
     ['pi-package', [['install', path.join(root, 'demo')]]],
-    ['gemini-extension', [['extensions', 'install', path.join(root, 'demo')], ['extensions', 'enable', 'demo', '--scope', 'User']]],
     ['copilot-marketplace', [['plugin', 'install', 'demo@marketplace']]],
     ['grok-cli', [['plugin', 'install', path.join(root, 'demo'), '--trust'], ['plugin', 'enable', 'demo']]],
   ] as const)('uses the fixed native lifecycle contract for %s', async (route, argv) => {
@@ -106,6 +106,24 @@ describe('native platform lifecycle', () => {
     const ctx = context(route === 'grok-cli' ? grokCurrentObservation(input) : input.observation);
     await executePlatformLifecycle(ctx, prepared(input));
     expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual(argv);
+  });
+
+  // Test Value Gate: the real Claude installer enables the selected scope and
+  // rejects a repeated enable with exit 1. Reconcile its fresh owned state.
+  it.each(['user', 'project'] as const)('accepts Claude installation already enabled at %s scope', async (scope) => {
+    const input = fixture('claude-marketplace');
+    input.binding.scope = scope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot: root };
+    input.evidence.nativeIdentity!.registrationId = 'demo@marketplace';
+    const ctx = context({ ...input.observation, package: 'present', registration: 'present', ownership: 'aw',
+      nativeIdentity: input.evidence.nativeIdentity,
+      consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'enabled' })) });
+    vi.mocked(ctx.runner!).mockImplementation(async (call) => ({ exitCode: call.args[1] === 'enable' ? 1 : 0,
+      stdout: '', stderr: 'already enabled' }));
+    const receipt = await executePlatformLifecycle(ctx, prepared(input));
+    expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual([
+      ['plugin', 'install', 'demo@marketplace', '--scope', scope === 'user' ? 'user' : 'local'],
+    ]);
+    expect(receipt.effects.map((effect) => effect.status)).toEqual(['applied', 'applied', 'unchanged']);
   });
 
   it('does not turn an unmet empty set or a foreign package into a deletion', () => {
@@ -160,12 +178,14 @@ describe('native platform lifecycle', () => {
     expect(receipt.effects).toMatchObject([{ status: 'applied', mutation: 'confirmed' }]);
   });
 
-  it('blocks Gemini project installation when native activation cannot isolate that project', () => {
+  it('requires frozen global User intent before preparing Gemini project activation', () => {
     const input = fixture('gemini-extension');
     input.binding.scope = { kind: 'project', projectRoot: path.join(root, 'project') };
     const result = preparePlatformLifecycle(input);
     expect(result.status).toBe('blocked');
-    if (result.status === 'blocked') expect(result.diagnostics[0]?.code).toBe('nativeScopeIsolationUnverified');
+    if (result.status === 'blocked') expect(result.diagnostics[0]?.code).toBe('nativeActivationEvidenceUnknown');
+    input.evidence.userActivationEnabled = false;
+    expect(preparePlatformLifecycle(input).status).toBe('ready');
   });
 
   // Test Value Gate: Grok's update exits zero with an old copy. The reviewed
@@ -541,7 +561,7 @@ describe('platform inspection and native activation', () => {
   async function environment(): Promise<{ cwd: string; env: NodeJS.ProcessEnv }> {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-platform-inspection-'));
     temporary.push(cwd);
-    return { cwd, env: { HOME: cwd, AW_HOME: path.join(cwd, 'aw'), CODEX_HOME: path.join(cwd, 'codex') } };
+    return { cwd, env: { HOME: cwd, USERPROFILE: cwd, GEMINI_CLI_HOME: cwd, AW_HOME: path.join(cwd, 'aw'), CODEX_HOME: path.join(cwd, 'codex') } };
   }
 
   it('observes required static supplements as present, drifted, missing or foreign without modifying them', async () => {
@@ -693,12 +713,26 @@ describe('platform inspection and native activation', () => {
     expect((await readCodexConfigFile(configPath)).snapshot.marketplaces[layout.marketplaceName!]?.source).toBe(foreign);
   });
 
-  it('does not repoint a foreign Copilot marketplace', async () => {
+  // Test Value Gate: the real local-source display prefix must not turn an
+  // already registered AW marketplace into foreign content during update.
+  it.each(['', 'Local: '])('retains the canonical Copilot marketplace with source prefix %j', async (prefix) => {
     const ctx = await environment();
     const input = fixture('copilot-marketplace');
     input.binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/copilot', configRoot: path.join(ctx.cwd, '.copilot') };
     const layout = await getDeploymentLayout(ctx, input.binding);
-    const runner = vi.fn(async (_call: NativeCliInvocation) => ({ exitCode: 0, stdout: JSON.stringify([{ name: layout.marketplaceName, source: { source: 'directory', path: '/foreign' } }]), stderr: '' }));
+    const runner = vi.fn(async (_call: NativeCliInvocation) => ({ exitCode: 0,
+      stdout: JSON.stringify([{ name: layout.marketplaceName, source: `${prefix}${layout.marketplaceRoot}` }]), stderr: '' }));
+    const services = createNativeLifecycleServices({ ...ctx, runner }, input.evidence);
+    await expect(services.registerMarketplace(input.binding, layout.nativeIdentity)).resolves.toMatchObject({ changed: false, mutation: 'none' });
+    expect(runner.mock.calls.map(([call]) => call.args)).toEqual([['plugin', 'marketplace', 'list', '--json']]);
+  });
+
+  it.each([{ source: 'directory', path: '/foreign' }, 'Local: /foreign', 'Local: relative'])('does not repoint a foreign Copilot marketplace: %j', async (source) => {
+    const ctx = await environment();
+    const input = fixture('copilot-marketplace');
+    input.binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/copilot', configRoot: path.join(ctx.cwd, '.copilot') };
+    const layout = await getDeploymentLayout(ctx, input.binding);
+    const runner = vi.fn(async (_call: NativeCliInvocation) => ({ exitCode: 0, stdout: JSON.stringify([{ name: layout.marketplaceName, source }]), stderr: '' }));
     const services = createNativeLifecycleServices({ ...ctx, runner }, input.evidence);
     await expect(services.registerMarketplace(input.binding, layout.nativeIdentity)).rejects.toMatchObject({ code: 'marketplaceRegistrationForeign', mutation: 'none' });
     expect(runner.mock.calls.map(([call]) => call.args)).toEqual([['plugin', 'marketplace', 'list', '--json']]);
@@ -715,7 +749,7 @@ describe('platform inspection and native activation', () => {
     const metadataPath = path.join(installed, '.gemini-extension-install.json');
     await fs.outputJson(metadataPath, { type: 'local', source: layout.packageRoot });
     await fs.outputJson(path.join(installed, 'gemini-extension.json'), { name: 'demo', version: '1.0.0' });
-    await fs.outputJson(path.join(ctx.cwd, '.gemini/extensions/extension-enablement.json'), { demo: { overrides: [`!${ctx.cwd}/*`] } });
+    await fs.outputJson(path.join(ctx.cwd, '.gemini/extensions/extension-enablement.json'), { demo: { overrides: [`!${geminiScopePattern(ctx.cwd)}`] } });
     const runner = vi.fn(async () => ({ exitCode: 0, stdout: '✗ demo (1.0.0)', stderr: '' }));
     const observation = await inspectDeployment({ ...ctx, runner }, input.binding);
     expect(observation).toMatchObject({ registration: 'present', ownership: 'aw' });

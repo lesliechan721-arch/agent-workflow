@@ -120,8 +120,9 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     && typeof evidence.userActivationEnabled !== 'boolean') {
     return blocked('nativeActivationEvidenceUnknown', 'The user activation could not be confirmed. Prepare again before changing a project activation.');
   }
-  if (!removing && binding.scope.kind === 'project' && binding.route === 'gemini-extension') {
-    return blocked('nativeScopeIsolationUnverified', 'This extension route cannot establish project-only activation. Existing output was kept.');
+  if (binding.route === 'gemini-extension' && (bundles.length || observation.registration !== 'absent')
+    && typeof evidence.userActivationEnabled !== 'boolean') {
+    return blocked('nativeActivationEvidenceUnknown', 'The global user activation could not be confirmed. Check the extension rules and prepare again.');
   }
   const effects: PlannedEffect[] = [];
   const add = (kind: PlannedEffect['kind'], destination: string, componentIds: string[], destructive = false, slot = '', physicalKey = binding.physicalKey): string => {
@@ -145,13 +146,15 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       reasonCode: 'packageUpdateBlockedByUnmet', requiredFeatures: [],
     })));
   }
-  const active = observation.consumers.some((consumer) => consumer.activation === 'enabled' || consumer.activation === 'unknown');
+  // Gemini can retain an explicit rule that is currently disabled by a parent.
+  const revokeActivation = binding.route === 'gemini-extension'
+    || observation.consumers.some((consumer) => consumer.activation === 'enabled' || consumer.activation === 'unknown');
   const hasReferences = evidence.sharedReferences !== 'none';
   const empty = !expected.components.length && !expected.unmet.length;
   if (removing || empty) {
     // Scope-local entries are revoked before any package or native registration.
     if (nativeRoute(binding.route) && identity && observation.registration !== 'absent'
-      && (observation.ownership === 'aw' || observation.ownership === 'shared') && active) {
+      && (observation.ownership === 'aw' || observation.ownership === 'shared') && revokeActivation) {
       add('deactivate', evidence.layout.activationPath, [], true);
     }
     const removable = slots.filter((slot) => (slot.state === 'present' || slot.state === 'partial')
@@ -196,7 +199,7 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       && (observation.ownership === 'aw' || observation.ownership === 'shared')) {
       // A valid supplement-only set withdraws this binding's previous package.
       // It does not install or register an empty native source.
-      if (active) add('deactivate', evidence.layout.activationPath, [], true);
+      if (revokeActivation) add('deactivate', evidence.layout.activationPath, [], true);
       if (!hasReferences && observation.ownership === 'aw') add('unregister', identity.sourceLocation, [], true);
     }
     for (const contribution of allContributions) {
@@ -313,11 +316,12 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       if (effect.kind === 'deactivate') activationRemoved = true;
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
-      const definite = code === 'clientInstallEntryUnavailable' || code === 'nativeIdentityUnconfirmed' || code === 'nativeTrustRequired';
       const mutation = error && typeof error === 'object' && 'mutation' in error ? error.mutation : undefined;
+      const definite = !(binding.route === 'gemini-extension' && mutation === 'confirmed')
+        && (code === 'clientInstallEntryUnavailable' || code === 'nativeIdentityUnconfirmed' || code === 'nativeTrustRequired');
       result.mutation = mutation === 'none' || definite ? 'none' : mutation === 'confirmed' ? 'confirmed' : started ? 'possible' : 'none';
       result.status = definite ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
-      result.diagnostics.push(lifecycleDiagnostic(binding, definite ? code : 'platformMutationFailed',
+      result.diagnostics.push(lifecycleDiagnostic(binding, code === 'operationPlanStale' ? code : definite ? code : 'platformMutationFailed',
         definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.' : 'A platform action did not complete. Check status and retry the remaining actions.'));
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
         && (!definite || code === 'nativeTrustRequired')) {

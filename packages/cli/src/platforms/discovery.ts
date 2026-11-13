@@ -100,6 +100,11 @@ export function resolvePlatformConfigRoot(platform: PlatformTarget, ctx: ReadCon
     if (!path.isAbsolute(root) || root.includes('\0')) throw new Error('clientConfigRootInvalid');
     return root;
   }
+  if (platform === 'copilot') {
+    const root = readEnvironmentValue(env, 'COPILOT_HOME', ctx.platform) ?? path.join(home, '.copilot');
+    if (!path.isAbsolute(root) || root.includes('\0')) throw new Error('clientConfigRootInvalid');
+    return root;
+  }
   if (platform === 'pi') {
     // Pi 1.5 getAgentDir/normalizePath: use only the official override. Relative
     // paths have the same meaning as in the Native invocation's exact cwd.
@@ -122,8 +127,7 @@ export function resolvePlatformConfigRoot(platform: PlatformTarget, ctx: ReadCon
     if (!path.isAbsolute(root) || root.includes('\0')) throw new Error('clientConfigRootInvalid');
     return path.join(root, 'opencode');
   }
-  return path.join(home, platform === 'antigravity' ? '.gemini/config'
-    : platform === 'copilot' ? '.copilot' : `.${platform}`);
+  return path.join(home, platform === 'antigravity' ? '.gemini/config' : `.${platform}`);
 }
 async function probe(ctx: ReadContext, command: string, args: string[]): Promise<string> {
   ctx.signal?.throwIfAborted();

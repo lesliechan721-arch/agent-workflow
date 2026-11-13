@@ -166,9 +166,9 @@ it.each([
   }
 });
 
-// Test Value Gate: a user-only native record must never authorize project
-// deployment or author materialization, another version/product, or another host.
-it('limits Grok ordinary Skills to the four recorded CLI user environments', async () => {
+// Test Value Gate: scope-specific records authorize only the recorded
+// CLI version and hosts for deployment and author materialization.
+it('limits Grok ordinary Skills to the four recorded CLI User/Project environments', async () => {
   const { root, ctx, request } = await fixture('grok');
   request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '1.0.77' }];
   const user = await resolveDeployments(ctx, request);
@@ -194,7 +194,9 @@ it('limits Grok ordinary Skills to the four recorded CLI user environments', asy
     const projectBinding = project.bindings[0]!;
     const projectUnit = project.renderUnits.find((unit) => unit.output === 'package')!;
     expect(getPlatformCapabilities({ binding: projectBinding, renderUnit: projectUnit,
-      observation: { ...observation, physicalKey: projectBinding.physicalKey }, profile }).kinds.skill.status).toBe('unverified');
+      observation: { ...observation, physicalKey: projectBinding.physicalKey }, profile }).kinds.skill.status).toBe('supported');
+    expect(profile.qualificationEvidence?.[1]).toMatchObject({ product: 'cli', version: '1.0.77',
+      platform: host.platform, arch: host.arch, scopes: ['project'], kinds: ['skill'], features: [] });
     for (const version of ['1.0.76', '1.0.78', '1.0.82', null]) {
       binding.consumers[0]!.version = version;
       expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
@@ -209,8 +211,8 @@ it('limits Grok ordinary Skills to the four recorded CLI user environments', asy
     expect(getPlatformCapabilities({ binding, renderUnit, observation,
       profile: getQualifiedPlatformProfile('grok', host) }).kinds.skill.status).toBe('unverified');
   }
-  expect(getAuthoringPlatformCapabilities('grok', 'project').kinds.skill.status).toBe('unverified');
   const hostQualified = ['linux-x64', 'linux-arm64', 'darwin-arm64', 'win32-x64'].includes(`${process.platform}-${process.arch}`);
+  expect(getAuthoringPlatformCapabilities('grok', 'project').kinds.skill.status).toBe(hostQualified ? 'supported' : 'unverified');
   expect(getAuthoringPlatformCapabilities('grok', 'user').kinds.skill.status).toBe(hostQualified ? 'supported' : 'unverified');
 });
 

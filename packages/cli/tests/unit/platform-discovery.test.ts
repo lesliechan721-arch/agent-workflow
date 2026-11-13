@@ -192,6 +192,18 @@ describe('read-only target discovery and production selection', () => {
     expect((await discoverPlatform('gemini', { ...ctx, env: { ...ctx.env, GEMINI_CLI_HOME: 'relative-home' }, runner })).availability).toBe('unknown');
   });
 
+  // Test Value Gate: an override must select the actual host settings that
+  // control global activation, rather than a separate HOME/.copilot file.
+  it('discovers the Copilot settings root from its official home override', async () => {
+    const ctx = await fixture(); await executable(ctx, 'copilot');
+    const custom = path.join(ctx.cwd, 'copilot home');
+    const runner = async () => ({ exitCode: 0, stdout: 'GitHub Copilot CLI 1.0.95', stderr: '' });
+    const found = await discoverPlatform('copilot', { ...ctx, env: { ...ctx.env, COPILOT_HOME: custom }, runner });
+    expect(found.availability).toBe('available');
+    expect(found.installations[0]?.entry).toMatchObject({ configRoot: custom });
+    expect((await discoverPlatform('copilot', { ...ctx, env: { ...ctx.env, COPILOT_HOME: 'relative-home' }, runner })).availability).toBe('unknown');
+  });
+
   // Test Value Gate: Pi's Native settings/trust root and AW discovery must use the same official override normalization.
   it('uses the official Pi agent directory with Native path semantics', async () => {
     const ctx = await fixture(); await executable(ctx, 'pi');

@@ -29,7 +29,7 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 
 数字门槛是必要接口条件，不是完整运行资格。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。Copilot 官方版本句末的单个句点只在完整品牌行内规范化，随后仍走严格版本解析；其他客户端和非法版本不放宽。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。
 
-普通 Skill 的有限 profile 对 Codex CLI `0.167.0`、Pi CLI `1.5.0` 在 Linux/macOS/Windows 的 x64/arm64 开放，依据[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)。Copilot CLI `1.0.95` 同样仅在上述六环境开放 User/Project 普通 Skill，依据[Copilot 六环境原生记录](../../../scripts/qualification/evidence/native-copilot-skills-2026-11-12.json)；Project 证据有显式宿主信任前提，公开 AW 编排仍须另验。Claude CLI `2.1.317` 在六环境开放 User/Project 普通 Skill，依据[管理与有效启用状态记录](../../../scripts/qualification/evidence/native-claude-skills-2026-11-12.json)；Skill 发现/加载仍未知，不作为该有限管理资格的阻塞。Gemini CLI `0.67.0` 仅在六环境开放 User 普通 Skill，依据[Gemini 用户级原生记录](../../../scripts/qualification/evidence/native-gemini-skills-2026-11-12.json)；Project 的能力与生产写入继续阻断，共享 User 包体不扩大资格。Grok CLI `1.0.77` 仅在 Linux x64/arm64、macOS arm64、Windows x64 开放 User 普通 Skill，依据[四环境用户级原生记录](../../../scripts/qualification/evidence/native-grok-skills-2026-11-12.json)；Project 保持未验证。记录中的 scope 限制同时用于实际部署和作者能力视图。这些有限 profile 只确认已列范围的原生管理和有效作用域，已取得的 Skill 发现证据另列；App、相邻版本、调用控制、模型采用及其他组件不继承资格。公开 AW 完整编排仍须单独验证。 验收以 AW 管理的安装和更新正确、scope 有效状态可证为准；动态渲染须额外核对平台实际消费位置的字节，普通加载/模型采用未知单独记录，不作为该管理验收的阻塞。AW 托管输出仍验证生成与更新，平台采用未知不阻塞。
+普通 Skill 的有限 profile 对 Codex CLI `0.167.0`、Pi CLI `1.5.0` 在 Linux/macOS/Windows 的 x64/arm64 开放，依据[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)。Copilot CLI `1.0.95` 同样仅在上述六环境开放 User/Project 普通 Skill，依据[Copilot 六环境原生记录](../../../scripts/qualification/evidence/native-copilot-skills-2026-11-12.json)；Project 证据有显式宿主信任前提，公开 AW 编排仍须另验。Claude CLI `2.1.317` 在六环境开放 User/Project 普通 Skill，依据[管理与有效启用状态记录](../../../scripts/qualification/evidence/native-claude-skills-2026-11-12.json)；Skill 发现/加载仍未知，不作为该有限管理资格的阻塞。Gemini CLI `0.67.0` 仅在六环境开放 User 普通 Skill，依据[Gemini 用户级原生记录](../../../scripts/qualification/evidence/native-gemini-skills-2026-11-12.json)；Project 的能力与生产写入继续阻断，共享 User 包体不扩大资格。Grok CLI `1.0.77` 仅在 Linux x64/arm64、macOS arm64、Windows x64 开放 User/Project 普通 Skill；User 依据[四环境用户级原生记录](../../../scripts/qualification/evidence/native-grok-skills-2026-11-12.json)，Project 依据[四环境项目级管理与有效 scope 记录](../../../scripts/qualification/evidence/native-grok-project-skills-2026-11-13.json)，后者使用精确临时项目的固定版本经验信任状态，Skill 发现/加载仍未知，公开 AW Project 编排与动态消费字节仍须新 Hosted 实测。记录中的 scope 限制同时用于实际部署和作者能力视图。这些有限 profile 只确认已列范围的原生管理和有效作用域，已取得的 Skill 发现证据另列；App、相邻版本、调用控制、模型采用及其他组件不继承资格。公开 AW 完整编排仍须单独验证。 验收以 AW 管理的安装和更新正确、scope 有效状态可证为准；动态渲染须额外核对平台实际消费位置的字节，普通加载/模型采用未知单独记录，不作为该管理验收的阻塞。AW 托管输出仍验证生成与更新，平台采用未知不阻塞。
 
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
@@ -88,6 +88,12 @@ activationKey 另含启用位置与需求 scope。身份字符串、路径存在
 | generic / generic-skills | 通用 Skills writer | 精确 owner/digest 写入与清理，无原生注册/激活/加载承诺 |
 
 所有路径按已核验 profile 开放，表格描述固定适配方式，不是各版本/OS 的全能力资格表。未知能力须在组件缺口中列明，不能复制资源后报告完整成功。
+
+Claude 的安装可以直接启用所选 scope。后续激活先重新观察精确 AW 登记；已经达到目标状态时不重复执行会返回错误的 enable/disable。未知状态仍执行对应原生操作，并保留失败与恢复结果。动态内容按原生清单的 `readFromFolder` 核对原地加载目录；没有该字段时才读取 `installPath` 副本。
+
+Gemini `0.67.0` 的共享激活配置使用全局默认和 Workspace 路径规则。原生 User 安装可能删除 HOME 下的项目规则；AW 在操作内冻结配置摘要，核对原生动作只产生固定版本的预期变换，再原子恢复其他插件字段和项目规则。项目操作保留已证明的全局启用意图；无法确定规则或归属时阻断写入。该机制不扩大上文有限 profile 的 scope 资格。
+
+Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`；项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，但后续路径仍须为与本次 AW marketplace 精确一致的绝对路径，才能确认来源。
 
 Codex 本地 marketplace 登记在 Windows 上接受完整 drive/UNC 路径与对应 `\\?\` / `\\?\UNC\` 写法等价。仅统一 drive letter，目录组件及 UNC server/share 仍逐字比较；相对路径、其他设备路径、点组件、内部空组件、尾点/空格、ADS 和保留设备名均不匹配。不通过 realpath、symlink、8.3 或全串大小写折叠扩大来源归属。此比较不证明目录存在或 AW 所有，物理路径、owner、共享引用及锁内检查继续按[生命周期](lifecycle.md#ownership-与删除权限)执行。
 

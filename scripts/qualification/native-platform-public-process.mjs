@@ -51,7 +51,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
       },
     }, { containment: 'observed', processTree: dependencies });
     if (result.cancelled || result.terminationReason !== 'complete') {
-      throw new Error(`public-aw-process-${result.terminationReason}`);
+      throw Object.assign(new Error(`public-aw-process-${result.terminationReason}`), { result });
     }
     return { ...result, stdout: result.stdout.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>'),
       stderr: result.stderr.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>') };

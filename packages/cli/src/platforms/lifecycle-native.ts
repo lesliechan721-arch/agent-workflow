@@ -4,6 +4,8 @@ import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
 import type { PlatformDriverState } from './lifecycle.js';
 import { inspectDeployment } from './inspection.js';
+import { assertGeminiNativeOwner, assertGeminiProjectRules, finishGeminiNativeMutation, geminiActivationEvidence, geminiActivationRules,
+  readGeminiActivationSnapshot } from './gemini-activation.js';
 
 export function nativeRoute(route: InstallRoute): boolean {
   return ['codex-marketplace', 'claude-marketplace', 'antigravity-cli', 'pi-package',
@@ -83,8 +85,19 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       blocked('nativeTrustRequired');
     }
     if (binding.route === 'gemini-extension') {
-      await run(['extensions', enabled ? 'enable' : 'disable', identity.packageId, '--scope', binding.scope.kind === 'project' ? 'Workspace' : 'User']);
+      return ctx.services.setActivation(binding, identity, enabled);
     } else if (binding.route === 'claude-marketplace') {
+      // Install already enables this scope. Claude rejects a repeated enable,
+      // so confirm the current owned registration before invoking the verb.
+      const current = await (ctx.inspect ? ctx.inspect(binding) : inspectDeployment(ctx, binding));
+      if (current.physicalKey === binding.physicalKey && current.ownership === 'aw'
+        && current.registration === 'present' && current.nativeIdentity !== null && current.nativeIdentity.registrationId === identity.registrationId
+        && current.nativeIdentity.sourceLocation === identity.sourceLocation
+        && binding.consumers.length > 0 && current.consumers.length === binding.consumers.length
+        && binding.consumers.every((consumer) => current.consumers.filter((observed) => observed.productId === consumer.id
+          && observed.activation === (enabled ? 'enabled' : 'disabled')).length === 1)) {
+        return { mutation: 'none', changed: false };
+      }
       await run(['plugin', enabled ? 'enable' : 'disable', id, '--scope', scope]);
     } else {
       await run(['plugin', enabled ? 'enable' : 'disable', identity.packageId]);
@@ -118,14 +131,26 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
     case 'pi-package':
       await run([effect.kind === 'unregister' ? 'remove' : 'install', ...(binding.scope.kind === 'project' ? ['--local'] : []), identity.sourceLocation]);
       break;
-    case 'gemini-extension':
+    case 'gemini-extension': {
+      if (!ctx.geminiActivationSnapshot) blocked('nativeActivationEvidenceUnknown');
+      const snapshot = await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
+      await assertGeminiProjectRules(ctx, binding, geminiActivationRules(snapshot, identity.packageId));
+      if (effect.kind !== 'register' && effect.kind !== 'refresh' && effect.kind !== 'unregister') blocked('nativeRouteUnsupported');
+      if (effect.kind !== 'register') await assertGeminiNativeOwner(ctx, binding, identity, evidence);
+      await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
       if (effect.kind === 'unregister') await run(['extensions', 'uninstall', identity.packageId]);
       else if (effect.kind === 'refresh') await run(['extensions', 'update', identity.packageId]);
-      else {
-        if (binding.scope.kind === 'project') blocked('nativeScopeIsolationUnverified');
-        await run(['extensions', 'install', evidence.layout.packageRoot]);
+      else await run(['extensions', 'install', evidence.layout.packageRoot]);
+      try {
+        await finishGeminiNativeMutation(ctx, evidence, binding, identity, effect.kind, snapshot);
+        Object.assign(ctx.geminiActivationSnapshot, geminiActivationEvidence(snapshot));
+      } catch (error) {
+        // The host already changed its package. Keep extra configuration changes
+        // and report the partial action rather than overwriting a stale snapshot.
+        throw Object.assign(error instanceof Error ? error : new Error('nativeActivationRestoreFailed'), { mutation: 'confirmed' });
       }
       break;
+    }
     case 'copilot-marketplace':
       await run(['plugin', effect.kind === 'unregister' ? 'uninstall' : 'install', id]);
       if (effect.kind !== 'unregister') {

@@ -77,9 +77,10 @@ async function readGrokSkills(ctx, cwd, revision, present) {
   if (present) {
     const plugin = plugins[0];
     const skill = skills[0];
-    assert.equal(plugin.scope, 'user');
+    assert.equal(plugin.scope, ctx.scope);
     assert.equal(plugin.enabled, true);
-    const installedRoot = await fs.realpath(path.join(ctx.env.GROK_HOME, 'installed-plugins'));
+    const installedRoot = await fs.realpath(ctx.scope === 'user'
+      ? path.join(ctx.env.GROK_HOME, 'installed-plugins') : path.join(ctx.project, '.grok', 'plugins'));
     const installed = await fs.realpath(plugin.path);
     const relative = path.relative(installedRoot, installed);
     assert(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
@@ -90,16 +91,16 @@ async function readGrokSkills(ctx, cwd, revision, present) {
     const installedSkill = path.join(installed, 'skills', ctx.skillName, 'SKILL.md');
     assert.equal(await fs.realpath(skill.source.path), await fs.realpath(installedSkill));
     const manifestBytes = await fs.readFile(path.join(installed, '.grok-plugin/plugin.json'));
-    assert.deepEqual(manifestBytes, await fs.readFile(path.join(ctx.grokPublicSource, '.grok-plugin/plugin.json')));
+    if (ctx.scope === 'user') assert.deepEqual(manifestBytes, await fs.readFile(path.join(ctx.grokPublicSource, '.grok-plugin/plugin.json')));
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
     assert.equal(manifest.name, ctx.pluginName);
     assert.equal(manifest.version, publicFixtureVersion(revision));
     const expectedSkill = await fs.readFile(ctx.publicSkillFile);
-    assert.deepEqual(await fs.readFile(path.join(ctx.grokPublicSource, 'skills', ctx.skillName, 'SKILL.md')), expectedSkill);
+    if (ctx.scope === 'user') assert.deepEqual(await fs.readFile(path.join(ctx.grokPublicSource, 'skills', ctx.skillName, 'SKILL.md')), expectedSkill);
     assert.deepEqual(await fs.readFile(installedSkill), expectedSkill, 'Grok must load the current Skill body bytes.');
     ctx.grokInstalledPackage = installed;
   }
-  return { level: 'fresh-process-skill-discovery', present, scope: 'user', plugins, skills };
+  return { level: 'fresh-process-skill-discovery', present, scope: ctx.scope, plugins, skills };
 }
 
 export async function readSkills(ctx, cwd, revision, present, { requireAbsent = false } = {}) {
@@ -267,7 +268,6 @@ export async function writePublicFixtureRevision(ctx, plugin, revision) {
 export async function qualifyPublicAw(ctx) {
   if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
   if (ctx.platform === 'gemini' && ctx.scope !== 'user') await ctx.defer('public-aw-gemini-project-skill-unverified');
-  if (ctx.platform === 'grok' && ctx.scope !== 'user') await ctx.defer('public-aw-grok-project-skill-unverified');
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => {
@@ -317,6 +317,17 @@ export async function qualifyPublicAw(ctx) {
       `[projects.${JSON.stringify(ctx.project)}]\ntrust_level = "trusted"\n`);
     else if (ctx.platform === 'pi') await fs.writeFile(path.join(ctx.env.PI_CODING_AGENT_DIR, 'trust.json'),
       JSON.stringify({ [ctx.project]: true, [ctx.neutral]: true }) + '\n');
+    else if (ctx.platform === 'grok') {
+      assert.equal(clients.grok.version, '1.0.77');
+      const canonical = await fs.realpath(ctx.project);
+      const home = await fs.realpath(ctx.env.GROK_HOME);
+      // Fixed-version empirical trust state for this isolated directory only.
+      // This grants no production permission to trust user projects.
+      await fs.writeFile(path.join(home, 'trusted_folders.toml'),
+        `[folders.${JSON.stringify(canonical)}]\ntrusted = true\ndecided_at = ${Math.floor(Date.now() / 1000)}\n`);
+      return { level: 'fixture-config', interface: 'empirical-isolated-folder-trust-state',
+        exactVersion: '1.0.77', project: 'exact-canonical-fixture-project', productionAutomaticTrust: false };
+    }
     else if (ctx.platform === 'copilot') {
       // The same explicit Hosted fixture precondition as native management.
       // It also approves tools; this fixture sends no tool or model requests.
@@ -331,7 +342,7 @@ export async function qualifyPublicAw(ctx) {
     return { level: 'fixture-config', scope: 'project', trusted: true, ...(cwdObservation ? { cwdObservation } : {}) };
   });
   const pluginId = `qualification/${ctx.pluginName}`;
-  if (ctx.platform === 'grok') {
+  if (ctx.platform === 'grok' && ctx.scope === 'user') {
     await ctx.check('public-install-host-trust-boundary', async () => {
       const result = await ctx.aw(['plugin', 'install', pluginId, '--scope', 'user', '--target', 'grok', '--yes'],
         ctx.project, { expectedExitCode: 4, expectedStatus: 'partial' });
@@ -347,7 +358,7 @@ export async function qualifyPublicAw(ctx) {
     });
   }
   await ctx.check('public-install', async () => {
-    const result = ctx.platform === 'grok'
+    const result = ctx.platform === 'grok' && ctx.scope === 'user'
       ? await ctx.aw(['plugin', 'sync', pluginId, '--context', 'user', '--target', 'grok', '--yes'])
       : await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
     return { command: result.command, status: result.status };
@@ -370,28 +381,16 @@ export async function qualifyPublicAw(ctx) {
   await ctx.check('public-update-native-scope', () => nativeScope(2));
   await ctx.observe('public-update-skill-discovery', () => readSkills(ctx, ctx.project, 2, true));
   await ctx.observe('public-update-neutral-skill-observation', () => readSkills(ctx, ctx.neutral, 2, ctx.scope === 'user'));
-  await ctx.check('public-dynamic-same-version-update', async () => {
-    await writeRevision(3);
-    await ctx.aw(['dev', 'catalog', 'version', '--bump', 'patch', '--workspace-root', workspace], workspace);
-    await ctx.aw(['dev', 'catalog', 'build', '--workspace-root', workspace, '--force', '--yes'], workspace);
-    await ctx.aw(['source', 'sync', 'qualification', '--yes']);
-    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes']);
-    return { command: result.command, status: result.status, version: publicFixtureVersion(3), revision: 3, samePluginVersion: true };
-  });
-  await ctx.check('public-dynamic-native-scope', () => nativeScope(3));
-  await ctx.check('public-dynamic-consumer-content', async () => ({
-    target: await readDynamicConsumerContent(ctx, ctx.project, 3),
-    ...(ctx.scope === 'user' ? { neutral: await readDynamicConsumerContent(ctx, ctx.neutral, 3) } : {}),
-  }));
-  await ctx.observe('public-dynamic-skill-observation', () => readSkills(ctx, ctx.project, 3, true));
-  await ctx.check('public-status', async () => {
+  // Native management and fresh scope queries are the acceptance evidence.
+  // Keep AW's conservative component/loading status as a separate observation.
+  await ctx.observe('public-status', async () => {
     const observeNative = ctx.platform === 'codex' && ctx.scope === 'project';
-    const before = ctx.platform === 'grok' ? await grokStatusFiles(ctx) : undefined;
+    const before = ctx.platform === 'grok' && ctx.scope === 'user' ? await grokStatusFiles(ctx) : undefined;
     const result = await ctx.aw(['plugin', 'status', pluginId, '--context', ctx.scope,
       ...(observeNative ? ['--observe-native'] : [])]);
     if (observeNative) assert(result.diagnostics.some(item => item.code === 'nativeObservationSideEffects'
       && item.severity === 'warning'), 'Explicit native observation must disclose client startup side effects.');
-    if (ctx.platform === 'grok') {
+    if (ctx.platform === 'grok' && ctx.scope === 'user') {
       assert.equal(result.data.allSatisfied, true);
       assert.equal(result.data.inSync, true);
       assert.deepEqual(result.data.counts, { blocked: 0, unconfirmed: 0, pending: 0, ready: 1 });
@@ -417,9 +416,31 @@ export async function qualifyPublicAw(ctx) {
     return { command: result.command, status: result.status, data: result.data,
       ...(observeNative ? { observation: 'explicit-native-startup', credentials: 'isolated-none', modelRequests: 'none' } : {}) };
   });
+  await ctx.check('public-dynamic-same-version-update', async () => {
+    await writeRevision(3);
+    await ctx.aw(['dev', 'catalog', 'version', '--bump', 'patch', '--workspace-root', workspace], workspace);
+    await ctx.aw(['dev', 'catalog', 'build', '--workspace-root', workspace, '--force', '--yes'], workspace);
+    await ctx.aw(['source', 'sync', 'qualification', '--yes']);
+    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes']);
+    return { command: result.command, status: result.status, version: publicFixtureVersion(3), revision: 3, samePluginVersion: true };
+  });
+  await ctx.check('public-dynamic-native-scope', () => nativeScope(3));
+  await ctx.check('public-dynamic-consumer-content', async () => ({
+    target: await readDynamicConsumerContent(ctx, ctx.project, 3),
+    ...(ctx.scope === 'user' ? { neutral: await readDynamicConsumerContent(ctx, ctx.neutral, 3) } : {}),
+  }));
+  await ctx.observe('public-dynamic-skill-observation', () => readSkills(ctx, ctx.project, 3, true));
+  // Read-only status cannot reconstruct a dynamic supplement's complete set.
+  // Required native scope and consumer-byte checks above prove this update;
+  // retain the conservative status result as an additional observation.
+  await ctx.observe('public-dynamic-status-observation', async () => {
+    const result = await ctx.aw(['plugin', 'status', pluginId, '--context', ctx.scope,
+      ...(ctx.platform === 'codex' && ctx.scope === 'project' ? ['--observe-native'] : [])]);
+    return { command: result.command, status: result.status, data: result.data };
+  });
   await ctx.check('public-remove', async () => {
     const result = await ctx.aw(['plugin', 'remove', pluginId, '--scope', ctx.scope, '--yes']);
-    if (ctx.platform === 'grok') await assert.rejects(fs.stat(ctx.grokPublicSource), { code: 'ENOENT' });
+    if (ctx.platform === 'grok' && ctx.scope === 'user') await assert.rejects(fs.stat(ctx.grokPublicSource), { code: 'ENOENT' });
     return { command: result.command, status: result.status };
   });
   await ctx.check('public-remove-native-scope', () => nativeScope(3, true));

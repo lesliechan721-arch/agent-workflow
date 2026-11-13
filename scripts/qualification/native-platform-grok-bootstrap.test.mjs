@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { grokBootstrapSource, qualifyPublicAw } from './native-platform-public-aw.mjs';
+import { grokBootstrapSource } from './native-platform-public-aw.mjs';
 
 // Public DTO shape: commands/public-lifecycle-result.ts. The trust bootstrap
 // outcome also matches the fixed r33 staged Grok report; no client is started.
@@ -77,6 +77,10 @@ test('returns the exact retained AW source for the known first-install trust bou
 
 test('does not return a trust source for unsafe or unrelated partial results', async (t) => {
   const cases = [
+    ['Project request must not authorize a User trust install', async (fixture) => {
+      fixture.result.data.request.scope = 'project';
+      fixture.target.scope = 'project';
+    }],
     ['source outside this AW_HOME', async (fixture) => {
       fixture.ctx.env.AW_HOME = path.join(fixture.root, 'other-aw');
       await fs.mkdir(fixture.ctx.env.AW_HOME);
@@ -101,19 +105,4 @@ test('does not return a trust source for unsafe or unrelated partial results', a
     }, { code: 'ERR_ASSERTION' });
     assert.equal(approvedSource, undefined, 'A rejected partial must not yield a source for native --trust.');
   });
-});
-
-// Test Value Gate: a User-only qualification must not mutate preferences,
-// publish sources or launch a native client for an unqualified Project scope.
-test('defers Grok Project before any AW or native command', async () => {
-  const commands = [];
-  const deferred = new Error('fixture-deferred');
-  const ctx = { platform: 'grok', scope: 'project',
-    async aw() { commands.push('aw'); throw new Error('unexpected-aw-command'); },
-    async command() { commands.push('native'); throw new Error('unexpected-native-command'); },
-    async rpc() { commands.push('rpc'); throw new Error('unexpected-rpc-command'); },
-    async defer(reason) { assert.equal(reason, 'public-aw-grok-project-skill-unverified'); throw deferred; },
-  };
-  await assert.rejects(qualifyPublicAw(ctx), (error) => error === deferred);
-  assert.deepEqual(commands, []);
 });

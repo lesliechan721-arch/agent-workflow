@@ -287,6 +287,8 @@ export interface MutationOutcome {
 export interface MutationContext extends ReadContext {
   /** Operation-local receipts for native actions on a shared registration. */
   nativeEffects?: Map<string, Promise<MutationOutcome>>;
+  /** Checked Gemini configuration baseline, rebased only after this operation's writes. */
+  geminiActivationSnapshot?: { path: string; contentDigest: string | null };
   services: {
     verifyEvidence(plan: FrozenDeploymentPlan): Promise<boolean>;
     publishPackage(binding: DeploymentBinding, bundle: NonNullable<ProjectionResult['bundle']>, destination: string,

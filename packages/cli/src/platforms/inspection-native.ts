@@ -6,13 +6,15 @@ import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import { runNativeCli, runNativeCliChecked } from '../utils/native-cli.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
-import { getClaudeHome, readEnvironmentValue, resolveUserHome } from '../utils/state-paths.js';
+import { getClaudeHome } from '../utils/state-paths.js';
 import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
 import { inspectPiDeployment } from './inspection-pi.js';
 import { inspectGrokDeployment } from './inspection-grok.js';
 import { getQualifiedPlatformProfile } from './capabilities.js';
+import { geminiActivationRules, geminiExtensionPaths, geminiPathEnabled, geminiScopePattern, geminiUserActivation,
+  readGeminiActivationSnapshot } from './gemini-activation.js';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('nativeObservationInvalid');
@@ -76,7 +78,11 @@ export async function inspectCopilotMarketplaceSource(ctx: ReadContext, binding:
   if (!matching.length) return 'absent';
   if (matching.length !== 1) return 'unknown';
   const source = matching[0]!.source;
-  if (typeof source === 'string') return nativeSourceMatches(source, root) ? 'canonical' : 'foreign';
+  if (typeof source === 'string') {
+    // Copilot 1.0.95 renders directory sources with this display prefix.
+    const location = source.startsWith('Local: ') ? source.slice('Local: '.length) : source;
+    return nativeSourceMatches(location, root) ? 'canonical' : 'foreign';
+  }
   if (!source || typeof source !== 'object' || Array.isArray(source)) return 'unknown';
   const descriptor = source as Record<string, unknown>;
   if (descriptor.source !== 'directory') return typeof descriptor.source === 'string' ? 'foreign' : 'unknown';
@@ -216,12 +222,10 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       await inspectPiDeployment(ctx, binding, layout, result);
       break;
     case 'gemini-extension': {
-      // v0.63.0 stores exact local-source metadata separately from its human list.
+      // Gemini stores exact local-source metadata separately from its human list.
       // Read that metadata; never infer identity or absence by parsing list text.
       await probe(ctx, binding, ['extensions', 'list']);
-      const env = ctx.env ?? process.env;
-      const home = readEnvironmentValue(env, 'GEMINI_CLI_HOME', ctx.platform) || resolveUserHome(env, ctx.platform);
-      const root = path.join(home, '.gemini', 'extensions');
+      const { home, root } = geminiExtensionPaths(ctx);
       const directory = path.join(root, layout.nativeIdentity.packageId);
       try {
         const stats = await fs.lstat(directory);
@@ -242,21 +246,17 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       result.registration = 'present';
       if (!['local', 'link'].includes(metadata.type) || !nativeSourceMatches(metadata.source, layout.packageRoot)
         || manifest.name !== layout.nativeIdentity.packageId) result.ownership = 'foreign';
-      const enablement = await jsonFile(path.join(root, 'extension-enablement.json'));
-      const config = enablement[manifest.name];
-      const rules = config === undefined ? [] : object(config).overrides;
-      if (!Array.isArray(rules) || !rules.every((rule) => typeof rule === 'string')) throw new Error('nativeExtensionActivationUnknown');
-      const location = (binding.scope.kind === 'project' ? binding.scope.projectRoot : home).replaceAll('\\', '/');
-      const currentPath = `${location.startsWith('/') ? '' : '/'}${location.replace(/\/$/u, '')}/`;
-      let enabled = true;
-      for (const rule of rules as string[]) {
-        const disabled = rule.startsWith('!');
-        const pattern = disabled ? rule.slice(1) : rule;
-        const expression = pattern.replace(/[.+?^${}()|[\]\\]/gu, '\\$&').replace(/(\/?)\*/gu, '($1.*)?');
-        if (new RegExp(`^${expression}$`, 'u').test(currentPath)) enabled = !disabled;
-      }
-      setActivation(result, enabled ? 'enabled' : 'unknown');
-      if (!enabled) result.diagnostics.push({ code: 'nativeActivationScopeLimited', severity: 'warning', message: 'The extension is disabled at the user home. This does not prove it is disabled outside that home.', subject: { target: binding.platform } });
+      const snapshot = await readGeminiActivationSnapshot(ctx);
+      const rules = geminiActivationRules(snapshot, manifest.name);
+      const userActivation = geminiUserActivation(snapshot, manifest.name, home);
+      if (binding.scope.kind === 'project') {
+        const target = geminiScopePattern(binding.scope.projectRoot);
+        const explicit = rules.filter((rule) => rule === target || rule === `!${target}`).at(-1);
+        // Inherited global activation is not an independent project reference.
+        setActivation(result, explicit === target && geminiPathEnabled(rules, binding.scope.projectRoot) ? 'enabled' : 'disabled');
+      } else setActivation(result, userActivation === 'unknown' ? 'unknown' : userActivation ? 'enabled' : 'disabled');
+      if (userActivation === 'unknown') result.diagnostics.push({ code: 'nativeActivationScopeLimited', severity: 'warning',
+        message: 'The extension rules do not confirm a global user activation. Check the native configuration before changing its scope.', subject: { target: binding.platform } });
       break;
     }
     case 'grok-cli':

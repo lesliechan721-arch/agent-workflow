@@ -149,7 +149,8 @@ export async function readDynamicConsumerContent(ctx, cwd, revision) {
     const plugin = single(array(plugins).filter(item => typeof item.id === 'string'
       && item.id.startsWith(`${ctx.pluginName}@`)), 'dynamic-consumer-path-unverified');
     assert.equal(plugin.enabled, true, 'dynamic-consumer-path-unverified');
-    if (typeof plugin.installPath === 'string') filename = path.join(plugin.installPath, 'skills', ctx.skillName, 'SKILL.md');
+    const root = plugin.readFromFolder ?? plugin.installPath;
+    if (typeof root === 'string') filename = path.join(root, 'skills', ctx.skillName, 'SKILL.md');
   } else if (ctx.platform === 'copilot') {
     const skills = await jsonCommand(ctx, ['skill', 'list', '--json'], cwd);
     const skill = single(array(skills).filter(item => item.name === ctx.skillName

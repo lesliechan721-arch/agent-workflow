@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { createMarketplaceManifestEntry, normalizeStaticPluginComponents, resolveInvocationPolicy, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
-import type { DeploymentBinding, DeploymentExclusion, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationOutcome, PreparedDeployment,
+import type { DeploymentBinding, DeploymentExclusion, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationContext, MutationOutcome, PreparedDeployment,
   PreparationEvidence, ProjectionResult, ReadContext, RenderUnit, Resolution } from '../platforms/contracts.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
@@ -12,6 +12,8 @@ import { deploymentPackageComponent, inspectStaticSupplements } from '../platfor
 import type { PlatformDriverState } from '../platforms/lifecycle.js';
 import { nativeRoute } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
+import { assertGeminiProjectRules, geminiActivationEvidence, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
+  geminiUserActivation, readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
 import { cursorWorkspaceOpenCommand } from '../platforms/projection.js';
 import { ownedSupplementFile, staticSupplementFiles } from '../platforms/supplement-layout.js';
 import { projectPlatformMarketplace } from '../platforms/projection-marketplace.js';
@@ -222,6 +224,24 @@ async function sharedReferences(context: RebuildExecutionContext, binding: Deplo
   if (view && [...view.desired, ...view.observed].some((reference) => same(reference) && !current(reference))) return 'present';
   const host = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
   if (!host || host.kind !== 'cli' || observation.registration === 'unknown') return 'unknown';
+  if (binding.route === 'gemini-extension') {
+    try {
+      const ctx = readContext(context, binding.scope.kind === 'project' ? binding.scope.projectRoot : layout.packageRoot);
+      const snapshot = await readGeminiActivationSnapshot(ctx);
+      const rules = geminiActivationRules(snapshot, layout.nativeIdentity.packageId);
+      await assertGeminiProjectRules(ctx, binding, rules);
+      const home = geminiExtensionPaths(ctx).home;
+      const userActivation = geminiUserActivation(snapshot, layout.nativeIdentity.packageId, home);
+      if (userActivation === 'unknown') return 'unknown';
+      if (binding.scope.kind === 'project' && observation.registration === 'present' && userActivation) return 'present';
+      const currentPattern = binding.scope.kind === 'project' ? geminiScopePattern(binding.scope.projectRoot) : null;
+      if (rules.some((rule) => {
+        const pattern = rule.startsWith('!') ? rule.slice(1) : rule;
+        return pattern !== '*' && pattern !== geminiScopePattern(home) && pattern !== currentPattern;
+      })) return 'present';
+      return view?.desiredComplete && view.scopes.includes('user') ? 'none' : 'unknown';
+    } catch { return 'unknown'; }
+  }
   if (binding.route === 'claude-marketplace') {
     try {
       const installed = await jsonObject(path.join(host.configRoot, 'plugins', 'installed_plugins.json'));
@@ -273,7 +293,8 @@ export class PlatformRebuildSession {
   private readonly contexts = new Set<ReadContext>();
   private readonly mutableChecks = new Map<string, { physicalKey: string; marketplaceRoot: string | null;
     sourceId: string; sourceIdentity: string; assertStable(): Promise<void>;
-    acceptMarketplaceRegistration(): Promise<void>; rebase(): Promise<void> }>();
+    geminiActivationSnapshot?(): MutationContext['geminiActivationSnapshot'];
+    acceptMarketplaceRegistration(): Promise<void>; rebase(geminiExpected?: MutationContext['geminiActivationSnapshot']): Promise<void> }>();
   private readonly requestedOperations = new Map<string, TargetInput>();
   private readonly marketplaceTargets = new Set<DesiredTarget>();
   private marketplaceCandidatesFrozen = false;
@@ -634,6 +655,7 @@ export class PlatformRebuildSession {
       const currentMutable = async () => {
         const observation = await adapter.inspect(ctx, entry.binding);
         return { observation, references: await sharedReferences(this.context, entry.binding, observation, entry.layout),
+          geminiActivation: entry.binding.route === 'gemini-extension' ? geminiActivationEvidence(await readGeminiActivationSnapshot(ctx)) : undefined,
           paths: await Promise.all(components.map(async (component) => 'path' in component ? pathEvidence(component.path) : {
             ownership: await inspectOwnedComponents({ components: [component], executor: this.ownership }), contentDigest: await ownedContentDigest(component),
           })) };
@@ -662,6 +684,7 @@ export class PlatformRebuildSession {
       this.mutableChecks.set(entry.binding.id, { physicalKey: entry.binding.physicalKey,
         marketplaceRoot: entry.layout.marketplaceRoot, sourceId: entry.binding.plugin.sourceId,
         sourceIdentity: entry.binding.plugin.sourceIdentity,
+        ...(entry.binding.route === 'gemini-extension' ? { geminiActivationSnapshot: () => mutableBaseline.geminiActivation } : {}),
         assertStable: async () => {
           if (!await checks.get(entry.binding.id)!()) throw new Error('operationPlanStale: deployment evidence changed before source registration.');
         },
@@ -679,14 +702,18 @@ export class PlatformRebuildSession {
           // registration. The reviewed package, references and bytes stay frozen.
           mutableBaseline = current;
         },
-        rebase: async () => {
+        rebase: async (geminiExpected) => {
           const current = await fingerprintParts();
           if (artifactValueDigest(current) !== initial) {
             const changed = (Object.keys(initialParts) as Array<keyof typeof initialParts>)
               .filter((key) => artifactValueDigest(current[key]) !== artifactValueDigest(initialParts[key]));
             throw new Error(`operationPlanStale: immutable deployment input changed (${changed.join(', ')}).`);
           }
-          mutableBaseline = await currentMutable();
+          const mutable = await currentMutable();
+          if (artifactValueDigest(mutable.geminiActivation ?? null) !== artifactValueDigest(geminiExpected ?? mutableBaseline.geminiActivation ?? null)) {
+            throw new Error('operationPlanStale: Gemini activation changed outside the checked native mutation.');
+          }
+          mutableBaseline = mutable;
         } });
       const evidence: PreparationEvidence = { fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
         ownership: await Promise.all(inspected.components.map(async ({ component, state }) => ({ component, state,
@@ -712,11 +739,31 @@ export class PlatformRebuildSession {
             ? (enabled as Record<string, unknown>)[entry.layout.nativeIdentity.registrationId!] === true : 'unknown';
         }
       }
-      if (entry.binding.scope.kind === 'project' && ['codex', 'copilot'].includes(entry.binding.platform)) {
+      if (entry.binding.route === 'gemini-extension') {
+        evidence.userActivationEnabled = 'unknown';
+        const view = this.context.sharedReferenceView;
+        try {
+          const snapshot = await readGeminiActivationSnapshot(ctx, mutableBaseline.geminiActivation);
+          const rules = geminiActivationRules(snapshot, entry.layout.nativeIdentity.packageId);
+          await assertGeminiProjectRules(ctx, entry.binding, rules);
+          const actual = geminiUserActivation(snapshot, entry.layout.nativeIdentity.packageId, geminiExtensionPaths(ctx).home);
+          if (actual !== 'unknown' && entry.observation.registration !== 'unknown'
+            && (entry.binding.scope.kind === 'user' || view?.desiredComplete && view.scopes.includes('user'))) {
+            // Shared User renderScope does not establish User demand. A fresh
+            // project starts disabled globally; an existing global intent stays.
+            evidence.userActivationEnabled = entry.observation.registration === 'present' ? actual : entry.binding.scope.kind === 'user'
+              || view?.desired.some((reference) => reference.scope === 'user' && reference.platform === 'gemini'
+                && reference.pluginId === entry.binding.plugin.pluginId && reference.sourceIdentity === entry.binding.plugin.sourceIdentity) === true;
+          }
+        } catch { /* Invalid or ambiguous native configuration remains blocked. */ }
+      }
+      if (entry.binding.scope.kind === 'project' && ['codex', 'copilot', 'gemini'].includes(entry.binding.platform)) {
         const plannedUser = [...this.requestedOperations.values()].find((request) => request.scope === 'user'
           && request.platform === input.platform && sourceIdentity(request).sourceIdentity === entry.binding.plugin.sourceIdentity
           && sourceIdentity(request).pluginId === entry.binding.plugin.pluginId);
-        if (plannedUser) evidence.userActivationEnabled = !['remove', 'cleanup'].includes(operation(plannedUser));
+        if (plannedUser && (entry.binding.platform !== 'gemini' || typeof evidence.userActivationEnabled === 'boolean')) {
+          evidence.userActivationEnabled = !['remove', 'cleanup'].includes(operation(plannedUser));
+        }
       }
       const expected = mergeExpectedComponentSets(units.map((unit) => unit.prepared.expected));
       evidence.retainPackage = !removing && expected.unmet.length > 0 && inspected.components.some((slot) =>
@@ -805,8 +852,9 @@ export class PlatformRebuildSession {
           const commandPreparationFailed = prepared.plan.binding.renderUnitIds.some((unitId) => preparedUnits.get(unitId)?.finalized.producerResolutions
             .some((resolution) => resolution.state === 'failed' || resolution.state === 'unmet'));
           let receipt: DeploymentReceipt;
-          const nativeServices = createNativeLifecycleServices(ctx, prepared.plan.evidence);
-          try { receipt = await adapter.lifecycle.execute({ ...ctx, nativeEffects: this.nativeEffects, inspect: (binding) => adapter.inspect(ctx, binding), services: {
+          const executionContext = { ...ctx, geminiActivationSnapshot: structuredClone(this.mutableChecks.get(prepared.plan.binding.id)?.geminiActivationSnapshot?.()) };
+          const nativeServices = createNativeLifecycleServices(executionContext, prepared.plan.evidence);
+          try { receipt = await adapter.lifecycle.execute({ ...executionContext, nativeEffects: this.nativeEffects, inspect: (binding) => adapter.inspect(ctx, binding), services: {
             ...nativeServices,
             registerMarketplace: async (binding, identity) => {
               const peers = binding.route === 'codex-marketplace' ? [...this.mutableChecks.values()].filter((check) =>
@@ -892,7 +940,10 @@ export class PlatformRebuildSession {
           }
           try {
             if (receipt.effects.some((effect) => effect.mutation !== 'none')) {
-              for (const check of this.mutableChecks.values()) if (check.physicalKey === prepared.plan.binding.physicalKey) await check.rebase();
+              for (const check of this.mutableChecks.values()) if (check.physicalKey === prepared.plan.binding.physicalKey
+                || executionContext.geminiActivationSnapshot && check.geminiActivationSnapshot?.()?.path === executionContext.geminiActivationSnapshot.path) {
+                await check.rebase(executionContext.geminiActivationSnapshot);
+              }
             }
           } catch (error) {
             receipt.diagnostics.push({ code: 'operationPlanStale', severity: 'error', message: error instanceof Error ? error.message : String(error),
