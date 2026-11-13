@@ -1,10 +1,9 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import * as registry from '../../src/platforms/registry.js';
-import type { DiscoveryResult, ReadContext } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
 import { geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
@@ -21,8 +20,10 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 // Test Value Gate: the real CLI parser and recovery path must preserve a separate
 // per-request native grant, retain saved demand, and recover without reading stdin.
 describe('CLI Gemini native consent', () => {
-  it('blocks --yes alone and recovers through sync with explicit native consent', async () => {
-    const { env, layout } = getCurrentSourceTestIsolation();
+  it.each([false, true])('preserves native consent and bounded fresh discovery with initial grant=%s', async (initialGrant) => {
+    const { env: isolatedEnv, layout } = getCurrentSourceTestIsolation();
+    const bin = path.join(layout.fixtureCwd, 'gemini-bin');
+    const env = { ...isolatedEnv, PATH: bin };
     const cwd = path.join(layout.fixtureCwd, 'consent-work');
     const source = path.join(layout.fixtureCwd, 'consent-source');
     await fs.ensureDir(cwd);
@@ -34,28 +35,33 @@ describe('CLI Gemini native consent', () => {
     } }]);
     const configured = await readCatalogSourcesConfigSnapshot(env);
     await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: source }] }, expectedDigest: configured.digest, env });
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+    if (!initialGrant) await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
     await setTargets({ cwd, env, scope: 'user' }, ['gemini']);
     installNativeTestQualification({ platforms: ['gemini'] });
-    const getAdapter = registry.getAgentPluginAdapter;
-    const adapter = getAdapter('gemini');
-    const executable = path.join(cwd, 'controlled-client');
-    await fs.outputFile(executable, 'controlled native boundary');
-    const discovery = vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => platform === 'gemini' ? {
-      ...adapter,
-      async discover(ctx: ReadContext): Promise<DiscoveryResult> { return { platform: 'gemini', availability: 'available', diagnostics: [], installations: [{
-        id: 'controlled:gemini', product: 'cli', version: '0.67.0', availability: 'available', reasonCodes: [],
-        entry: { kind: 'cli', executable, configRoot: resolvePlatformConfigRoot('gemini', ctx) },
-      }] }; },
-    } : getAdapter(platform));
-    onTestFinished(() => discovery.mockRestore());
+    const packageRoot = path.join(bin, 'node_modules/@google/gemini-cli');
+    const entry = path.join(packageRoot, 'bundle/gemini.js');
+    await fs.outputFile(entry, '#!/usr/bin/env node\n', { mode: 0o755 });
+    await fs.outputJson(path.join(packageRoot, 'package.json'), {
+      name: '@google/gemini-cli', version: '0.67.0', bin: { gemini: 'bundle/gemini.js' },
+    });
+    if (process.platform === 'win32') await fs.outputFile(path.join(bin, 'gemini.cmd'),
+      renderNpmCmdShim('node_modules\\@google\\gemini-cli\\bundle\\gemini.js'));
+    else await fs.symlink(entry, path.join(bin, 'gemini'));
+    let versionProbes = 0;
+    let probesBeforeInstall = 0;
     const nativeInstalls: NativeCliInvocation[] = [];
     const runner = async (invocation: NativeCliInvocation) => {
-      if (invocation.args.join(' ') === 'extensions list') return { exitCode: 0, stdout: '', stderr: '' };
-      expect(invocation.args.slice(0, 2)).toEqual(['extensions', 'install']);
-      expect(invocation.args.slice(3)).toEqual(['--consent', '--skip-settings']);
+      const args = invocation.args[0] === await fs.realpath(entry) ? invocation.args.slice(1) : invocation.args;
+      if (args.length === 1 && args[0] === '--version') {
+        versionProbes++;
+        return { exitCode: 0, stdout: '0.67.0', stderr: '' };
+      }
+      if (args.join(' ') === 'extensions list') return { exitCode: 0, stdout: '', stderr: '' };
+      expect(args.slice(0, 2)).toEqual(['extensions', 'install']);
+      expect(args.slice(3)).toEqual(['--consent', '--skip-settings']);
       nativeInstalls.push(invocation);
-      const packageRoot = invocation.args[2]!;
+      probesBeforeInstall = versionProbes;
+      const packageRoot = args[2]!;
       expect(invocation.input?.initial).toBe('');
       expect(invocation.input?.onStdout(`Do you trust the files in this folder?\nThe extension source at "${packageRoot}" is not trusted.\nDo you want to trust this folder and continue with the installation? [y/N]: `))
         .toEqual({ write: 'y\n', end: true });
@@ -71,7 +77,19 @@ describe('CLI Gemini native consent', () => {
         JSON.stringify({ [manifest.name]: { overrides: [geminiScopePattern(path.dirname(configRoot))] } }, null, 2));
       return { exitCode: 0, stdout: 'Installed.', stderr: '' };
     };
-    const first = await runCliEntry(['plugin', 'install', 'team/demo', '--scope', 'user', '--context', 'user', '--yes', '--json'], { cwd, env, nativeCliRunner: runner });
+    const first = await runCliEntry(['plugin', 'install', 'team/demo', '--scope', 'user', '--context', 'user', '--yes', ...(initialGrant ? ['--native-consent'] : []), '--json'], { cwd, env, nativeCliRunner: runner });
+    if (initialGrant) {
+      expect(first.exitCode, first.stdout + first.stderr).toBe(0);
+      expect(first.parseJsonStdout()).toMatchObject({ status: 'success', data: { request: { nativeConsent: true } } });
+      expect(nativeInstalls).toHaveLength(1);
+      const installed = path.join(resolvePlatformConfigRoot('gemini', { cwd, env }), 'extensions/demo/skills/demo/SKILL.md');
+      expect(await fs.readFile(installed, 'utf8')).toBe('---\nname: demo\ndescription: Consent fixture\n---\nUse demo.\n');
+      // Keep expensive client startup bounded before a native mutation.
+      // Bound process requests through the public path, rather than private previews.
+      expect(probesBeforeInstall).toBeLessThanOrEqual(11);
+      expect(versionProbes).toBeLessThanOrEqual(14);
+      return;
+    }
     const blocked = first.parseJsonStdout<CommandResult<LifecycleData>>();
     expect(first.exitCode, first.stdout + first.stderr).toBe(4);
     expect(blocked).toMatchObject({ status: 'partial', data: { request: { nativeConsent: false }, changes: { requirements: 'changed' } } });
