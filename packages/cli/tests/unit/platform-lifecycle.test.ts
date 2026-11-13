@@ -49,8 +49,9 @@ function grokRefreshFixture(): LifecyclePrepareInput {
   input.evidence.ownership[0]!.state = 'present';
   return input;
 }
-function grokCurrentObservation(input: LifecyclePrepareInput): DeploymentObservation {
+function currentNativeObservation(input: LifecyclePrepareInput): DeploymentObservation {
   return { ...input.observation, package: 'present', registration: 'present', ownership: 'aw', nativePackageContentDigest: 'bundle',
+    nativeIdentity: input.evidence.nativeIdentity ?? input.observation.nativeIdentity,
     components: [{ id: 'skill', presence: 'present', reasonCodes: [] }],
     consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'enabled' })) };
 }
@@ -85,13 +86,63 @@ describe('native platform lifecycle', () => {
     const input = fixture();
     const plan = prepared(input);
     input.projections[0]!.bundle!.stagingRoot = '/changed-after-review';
-    const ctx = context({ ...input.observation, package: 'present', registration: 'present', consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'enabled' })) });
+    const ctx = context(currentNativeObservation(input));
     const receipt = await executePlatformLifecycle(ctx, plan);
     expect(ctx.services.publishPackage).toHaveBeenCalledWith(plan.plan.binding, { stagingRoot: path.join(root, 'staging'), contentDigest: 'bundle' }, path.join(root, 'demo'), plan.driverState.packageComponent);
     expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual([
       ['plugin', 'install', path.join(root, 'demo')], ['plugin', 'enable', 'demo'],
     ]);
     expect(receipt.effects.every((effect) => effect.status === 'applied')).toBe(true);
+  });
+
+  // Test Value Gate: ordinary ensure must repair an old actual copy even when
+  // the AW source already matches. Fixed Antigravity install refreshes in place.
+  it('refreshes a stale Antigravity copy without uninstalling the package', async () => {
+    const input = fixture();
+    input.observation = { ...currentNativeObservation(input), nativePackageContentDigest: 'previous-bundle' };
+    input.evidence.ownership[0]!.state = 'present';
+    input.evidence.contentMatches = true;
+    const plan = prepared(input);
+    expect(plan.plan.effects.map((effect) => effect.kind)).toEqual(['refresh', 'activate']);
+    const ctx = context(currentNativeObservation(input));
+    const receipt = await executePlatformLifecycle(ctx, plan);
+    expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual([
+      ['plugin', 'install', path.join(root, 'demo')], ['plugin', 'enable', 'demo'],
+    ]);
+    expect(receipt.effects.every((effect) => effect.status === 'applied')).toBe(true);
+    expect(ctx.services.publishPackage).not.toHaveBeenCalled();
+  });
+
+  it.each(['foreign', 'shared', 'unknown'] as const)('keeps %s Antigravity copies outside replacement', async (ownership) => {
+    const input = fixture();
+    input.observation = { ...currentNativeObservation(input), ownership };
+    input.evidence.contentMatches = true;
+    expect(preparePlatformLifecycle(input).status).toBe('blocked');
+  });
+
+  // Test Value Gate: changes after publication cannot authorize a native refresh
+  // or final uninstall against a foreign copy, even if initial evidence passed.
+  it.each(['ensure', 'remove'] as const)('rechecks Antigravity native ownership before %s', async (operation) => {
+    const input = fixture();
+    input.operation = operation;
+    input.observation = { ...currentNativeObservation(input), nativePackageContentDigest: 'previous-bundle' };
+    input.evidence.contentMatches = true;
+    input.evidence.ownership[0]!.state = 'present';
+    const ctx = context({ ...currentNativeObservation(input), ownership: 'foreign' });
+    await executePlatformLifecycle(ctx, prepared(input));
+    expect(vi.mocked(ctx.runner!).mock.calls.filter(([call]) => ['install', 'uninstall'].includes(call.args[1]!))).toEqual([]);
+    expect(ctx.services.removeOwned).not.toHaveBeenCalled();
+  });
+
+  it.each(['old-copy', 'unconfirmed'] as const)('does not activate Antigravity after a successful native command with %s bytes', async (state) => {
+    const input = fixture();
+    const after = { ...currentNativeObservation(input), nativePackageContentDigest: state === 'old-copy' ? 'previous-bundle' : undefined };
+    const ctx = context(after);
+    const receipt = await executePlatformLifecycle(ctx, prepared(input));
+    expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual([['plugin', 'install', path.join(root, 'demo')]]);
+    expect(receipt.effects.find((effect) => effect.id.includes(':register:'))?.status).toBe('unknown');
+    expect(receipt.effects.find((effect) => effect.id.includes(':activate:'))?.status).toBe('skipped');
+    expect(ctx.services.removeOwned).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -103,7 +154,7 @@ describe('native platform lifecycle', () => {
   ] as const)('uses the fixed native lifecycle contract for %s', async (route, argv) => {
     const input = fixture(route);
     if (route.endsWith('-marketplace')) input.evidence.nativeIdentity!.registrationId = 'demo@marketplace';
-    const ctx = context(route === 'grok-cli' ? grokCurrentObservation(input) : input.observation);
+    const ctx = context(route === 'grok-cli' ? currentNativeObservation(input) : input.observation);
     await executePlatformLifecycle(ctx, prepared(input));
     expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual(argv);
   });
@@ -194,7 +245,7 @@ describe('native platform lifecycle', () => {
     const input = grokRefreshFixture();
     const plan = prepared(input);
     expect(plan.plan.effects).toMatchObject([{ kind: 'publish-package' }, { kind: 'refresh', destructive: true }, { kind: 'activate' }]);
-    const ctx = context(grokCurrentObservation(input));
+    const ctx = context(currentNativeObservation(input));
     const receipt = await executePlatformLifecycle(ctx, plan);
     expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual([
       ['plugin', 'uninstall', 'demo', '--confirm', '--keep-data'], ['plugin', 'install', path.join(root, 'demo'), '--trust'], ['plugin', 'enable', 'demo'],
@@ -209,7 +260,7 @@ describe('native platform lifecycle', () => {
     input.observation.components[0] = { id: 'skill', presence: 'unknown', reasonCodes: ['nativePackageContentDrift'] };
     const plan = prepared(input);
     expect(plan.plan.effects.map((effect) => effect.kind)).toEqual(['refresh', 'activate']);
-    const ctx = context(grokCurrentObservation(input));
+    const ctx = context(currentNativeObservation(input));
     const receipt = await executePlatformLifecycle(ctx, plan);
     expect(ctx.services.publishPackage).not.toHaveBeenCalled();
     expect(ctx.services.removeOwned).not.toHaveBeenCalled();
@@ -226,7 +277,7 @@ describe('native platform lifecycle', () => {
 
   it('rechecks the exact Grok registration before native uninstall', async () => {
     const input = grokRefreshFixture();
-    const ctx = context({ ...grokCurrentObservation(input), ownership: 'foreign' });
+    const ctx = context({ ...currentNativeObservation(input), ownership: 'foreign' });
     const receipt = await executePlatformLifecycle(ctx, prepared(input));
     expect(ctx.runner).not.toHaveBeenCalled();
     expect(receipt.effects[0]).toMatchObject({ status: 'applied', mutation: 'confirmed' });
@@ -262,7 +313,7 @@ describe('native platform lifecycle', () => {
 
   it.each(['old-copy', 'unconfirmed'] as const)('does not activate or confirm a Grok %s after zero exit', async (state) => {
     const input = grokRefreshFixture();
-    const after = grokCurrentObservation(input);
+    const after = currentNativeObservation(input);
     after.nativePackageContentDigest = state === 'old-copy' ? 'old-bytes' : undefined;
     after.components[0] = { id: 'skill', presence: 'unknown', reasonCodes: [state === 'old-copy' ? 'nativePackageContentDrift' : 'nativePackageContentUnconfirmed'] };
     const ctx = context(after);
@@ -318,6 +369,8 @@ describe('native platform lifecycle', () => {
     const input = fixture();
     input.operation = 'remove';
     input.observation.package = 'present'; input.observation.registration = 'present'; input.observation.ownership = 'aw';
+    input.observation.nativePackageContentDigest = 'bundle';
+    input.observation.nativeIdentity = input.evidence.nativeIdentity!;
     input.evidence.ownership[0]!.state = 'present';
     const ctx = context(input.observation);
     const receipt = await executePlatformLifecycle(ctx, prepared(input));
@@ -329,7 +382,7 @@ describe('native platform lifecycle', () => {
 
   it('preserves successful registration when activation fails', async () => {
     const input = fixture();
-    const ctx = context({ ...input.observation, package: 'present', registration: 'present', ownership: 'aw' });
+    const ctx = context({ ...currentNativeObservation(input), consumers: input.observation.consumers });
     vi.mocked(ctx.runner!).mockImplementation(async (call) => ({ exitCode: call.args.includes('enable') ? 1 : 0, stdout: '', stderr: '' }));
     const receipt = await executePlatformLifecycle(ctx, prepared(input));
     expect(receipt.effects.find((effect) => effect.id.includes(':register:'))).toMatchObject({ status: 'applied', mutation: 'confirmed' });
@@ -362,7 +415,7 @@ describe('native platform lifecycle', () => {
 
   it('ensures a matching package and activation without writing again', async () => {
     const input = fixture();
-    input.observation = { ...input.observation, package: 'present', registration: 'present', ownership: 'aw', consumers: input.observation.consumers.map((item) => ({ ...item, activation: 'enabled' })) };
+    input.observation = currentNativeObservation(input);
     input.evidence.contentMatches = true;
     const plan = prepared(input);
     const ctx = context(input.observation);
@@ -456,8 +509,7 @@ describe('native platform lifecycle', () => {
       input.observation = { ...input.observation, package: 'present', registration: 'present', ownership: 'aw' };
     }
     const plan = prepared(input);
-    const ctx = context({ ...input.observation, package: 'present', registration: 'present',
-      consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'enabled' })) });
+    const ctx = context(currentNativeObservation(input));
     const receipt = await executePlatformLifecycle(ctx, plan);
     expect(plan.plan.projections[0]?.bundle).toEqual(input.projections[0]?.bundle);
     expect(ctx.services.publishPackage).toHaveBeenCalledTimes(existing ? 0 : 1);

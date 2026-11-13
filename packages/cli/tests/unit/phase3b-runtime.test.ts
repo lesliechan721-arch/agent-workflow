@@ -40,9 +40,12 @@ import {
   renderOwnedTextFile,
   writeSkillOwnerMarker,
   writeOwnedTextFile,
+  SKILL_OWNER_MARKER,
   type OwnerIdentity,
 } from '../../src/utils/ownership.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
+import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
+import { offlineCleanupEvidenceFromInventory } from '../../src/commands/offline-cleanup-evidence.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
@@ -1801,6 +1804,50 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
     expect(result.receiptTargets).toContainEqual(expect.objectContaining({ pluginId: 'team/demo', platform: 'opencode', scope: 'project' }));
     expect(await fs.pathExists(output)).toBe(false);
+  });
+
+  // Test Value Gate: Antigravity's copied CLI marker is not an App directory
+  // placement or direct cache deletion grant. It must survive loss of its source.
+  it.each([false, true])('records an exact Antigravity native recovery clue with missing source=%s', async (missingSource) => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    const native = await getNativeTestLayout({ platform: 'antigravity', sourceId: 'team', pluginId: 'team/demo',
+      sourceIdentity: SOURCE_IDENTITY, cwd, env, scope: 'user' });
+    const component = deploymentPackageComponent(native.binding, native);
+    if (component.kind !== 'owned-directory') throw new Error('Expected an Antigravity source package.');
+    await fs.outputFile(path.join(component.path, 'skills/check/SKILL.md'), 'Native recovery content.\n');
+    const contentDigest = (await readPlatformPackageContentDigest(component.path))!;
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
+      nativeProjection: { physicalIdentity: native.physicalIdentity, contentDigest, inputDigest: `sha256:${'c'.repeat(64)}`,
+        preparation: 'complete', components: [{ id: 'skill:check', nativeName: 'check', relativeOutputs: ['skills/check/SKILL.md'] }] } });
+    const copy = path.join(resolvePlatformConfigRoot('antigravity', { cwd, env }), 'plugins/demo');
+    await fs.copy(component.path, copy);
+    const foreign = path.join(path.dirname(copy), 'foreign/keep.txt');
+    await fs.outputFile(foreign, 'Foreign content.\n');
+    if (missingSource) await fs.remove(component.path);
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(inventory.errors).toEqual([]);
+    const reference = inventory.references.find((entry) => entry.location === path.join(copy, SKILL_OWNER_MARKER));
+    expect(reference).toMatchObject({ kind: 'namespacedMarketplace', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+      pluginName: 'demo', platform: 'antigravity', scope: 'user', pathEvidence: expect.stringMatching(/^sha256:/u),
+      recoveryCandidate: { evidence: 'verified', physicalIdentity: native.physicalIdentity,
+        binding: { route: 'antigravity-cli', physicalKey: native.binding.physicalKey, scope: { kind: 'user' } },
+        nativeIdentity: { sourceLocation: component.path, packageId: 'demo' } } });
+    expect(reference!.ownedComponent).toBeUndefined();
+    const evidence = offlineCleanupEvidenceFromInventory({ inventory, reason: 'bundleUnavailable', pluginId: 'team/demo',
+      pluginName: 'demo', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY, platform: 'antigravity', scope: 'user' });
+    const copyAction = evidence!.plan.actions.find((action) => action.target === reference!.location)!;
+    expect(copyAction.action).toBe('removeNativeRegistration');
+    expect(copyAction.component).toBeUndefined();
+    expect(copyAction.recoveryCandidate?.binding.route).toBe('antigravity-cli');
+    expect(inventory.references.filter((entry) => entry.ownedComponent && 'path' in entry.ownedComponent
+      && entry.ownedComponent.path === component.path)).toHaveLength(missingSource ? 0 : 1);
+    expect(await fs.readFile(foreign, 'utf8')).toBe('Foreign content.\n');
+    await fs.outputFile(path.join(copy, 'local-data.txt'), 'Keep local data.\n');
+    const changed = await inventoryCatalogSourceReferences({ cwd, env, scope: 'user' });
+    expect(changed.references.some((entry) => entry.location === reference!.location)).toBe(false);
+    expect(changed.errors).toContainEqual(expect.objectContaining({ kind: 'nativeOwnerRead', message: expect.stringContaining('nativeCopyContentUnconfirmed') }));
+    expect(await fs.readFile(path.join(copy, 'local-data.txt'), 'utf8')).toBe('Keep local data.\n');
   });
 
   it.each(['codex', 'claude'] as const)('records a %s project reference only after exact project activation exists', async (platform) => {

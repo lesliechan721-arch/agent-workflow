@@ -165,6 +165,51 @@ async function materializeCodexSkill(value: Awaited<ReturnType<typeof fixture>>)
 }
 
 describe('public status through platform adapters', () => {
+  // Test Value Gate: a valid old copied owner must expose actual Antigravity
+  // byte drift through public status without asserting unknown model adoption.
+  it.each(['current', 'old'] as const)('checks Antigravity actual copy freshness with %s bytes', async (state) => {
+    const value = await fixture('antigravity', { available: true });
+    qualifySkill('antigravity');
+    const { binding, layout, renderUnits, component } = await placement(value, 'antigravity');
+    if (component.kind !== 'owned-directory') throw new Error('Expected native package.');
+    const nativeRoot = path.join(layout.physicalIdentity.namespaceRoot, 'plugins', layout.nativeIdentity.packageId);
+    const relative = 'skills/example/SKILL.md';
+    await fs.outputJson(path.join(layout.packageRoot, '.antigravity-plugin/plugin.json'), { name: layout.nativeIdentity.packageId, version: '1.0.0' });
+    await fs.outputFile(path.join(layout.packageRoot, relative), 'Latest installed content.\n');
+    const contentDigest = (await readPlatformPackageContentDigest(layout.packageRoot))!;
+    const projection = { physicalIdentity: layout.physicalIdentity, preparation: 'complete' as const,
+      components: [{ id: 'skill:example', nativeName: 'example', relativeOutputs: [relative] }],
+      inputDigest: `sha256:${'0'.repeat(64)}`, contentDigest };
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity, nativeProjection: projection });
+    await fs.copy(component.path, nativeRoot);
+    const probe = value.runner.getMockImplementation()!;
+    value.runner.mockImplementation(async (invocation) => invocation.args[0] === 'plugin' && invocation.args[1] === 'list'
+      ? { exitCode: 0, stderr: '', stdout: JSON.stringify([{ name: layout.nativeIdentity.packageId, version: '1.0.0',
+        source: 'antigravity', path: nativeRoot, enabled: true }]) } : probe(invocation));
+    const adapter = getAgentPluginAdapter('antigravity');
+    const observation = await adapter.inspect({ cwd: value.cwd, env: value.env, runner: value.runner }, binding);
+    const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
+    const plugin = demand.roots![0]!.plugin!;
+    const input = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
+      renderUnit, prerequisites: observation.prerequisites,
+      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('antigravity') }),
+      config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
+        sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'antigravity',
+        scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
+    }))) });
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
+      nativeProjection: { ...projection, inputDigest: platformPackageInputDigest(input) } });
+    if (state === 'old') {
+      await fs.outputFile(path.join(nativeRoot, relative), 'Old copied content.\n');
+      await writeSkillOwnerMarker({ skillRoot: nativeRoot, allowedRoot: layout.physicalIdentity.namespaceRoot, identity: component.identity,
+        nativeProjection: { ...projection, contentDigest: (await readPlatformPackageContentDigest(nativeRoot))! } });
+    }
+    const result = target(await value.read());
+    expect(result.content).toBe(state === 'old' ? 'drifted' : 'unknown');
+    if (state === 'old') expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'nativePackageContentDrift' }));
+    else expect(result.blockers).not.toContainEqual(expect.objectContaining({ code: 'nativePackageContentDrift' }));
+  });
+
   // Test Value Gate: a current AW source is insufficient when Grok still has
   // an old or unreadable installation; only matching native bytes are current.
   it.each(['current', 'old', 'missing'] as const)('checks Grok native copy bytes with a %s installation', async (state) => {

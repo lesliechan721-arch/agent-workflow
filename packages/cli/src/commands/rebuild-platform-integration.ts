@@ -687,7 +687,8 @@ export class PlatformRebuildSession {
       const fingerprint = async (): Promise<string> => artifactValueDigest(await fingerprintParts());
       if (initialReads?.[1].status === 'rejected') throw initialReads[1].reason;
       let mutableBaseline = initialReads?.[1].status === 'fulfilled' ? initialReads[1].value : await currentMutable();
-      const preparationObservation = entry.binding.route === 'gemini-extension' ? mutableBaseline.observation : entry.observation;
+      const preparationObservation = entry.binding.route === 'gemini-extension' || entry.binding.route === 'antigravity-cli'
+        ? mutableBaseline.observation : entry.observation;
       checks.set(entry.binding.id, async () => {
         if (!parallelNativeReads) return await fingerprint() === initial
           && artifactValueDigest(await currentMutable()) === artifactValueDigest(mutableBaseline);
@@ -861,7 +862,7 @@ export class PlatformRebuildSession {
           const packageIds = new Set(plan.projections.filter((projection) => projection.bundle)
             .flatMap((projection) => projection.components.map((component) => component.id)));
           const untrusted = after.consumers.some((consumer) => consumer.trust === 'required' || consumer.trust === 'blocked');
-          const nativeContentIncomplete = plan.binding.route === 'gemini-extension' && packageIds.size > 0
+          const nativeContentIncomplete = ['gemini-extension', 'antigravity-cli'].includes(plan.binding.route) && packageIds.size > 0
             && (!after.nativePackageContentDigest || after.nativePackageContentDigest !== plan.projections.find((projection) => projection.bundle)?.bundle?.contentDigest);
           const packageIncomplete = packageIds.size > 0 && (after.package !== 'present' || !['aw', 'shared'].includes(after.ownership)
             || nativeContentIncomplete
@@ -874,9 +875,11 @@ export class PlatformRebuildSession {
           incomplete = true;
           const code = untrusted ? 'nativeTrustRequired' : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
           receipt.diagnostics.push({ code, severity: 'error',
-            message: code === 'nativeInstallContentPostcheckFailed'
+            message: code === 'nativeInstallContentPostcheckFailed' && plan.binding.route === 'gemini-extension'
               ? `The actual Gemini copy does not confirm the frozen package bytes. In the same workspace, review and run aw plugin sync ${plan.binding.plugin.pluginId} --context ${plan.binding.scope.kind} --target gemini --native-consent.`
-              : 'The final grouped observation does not confirm the requested deployment. Check status and sync the affected target.',
+              : code === 'nativeInstallContentPostcheckFailed'
+                ? 'The actual Antigravity copy does not confirm the frozen package bytes. Check status and sync the affected target.'
+                : 'The final grouped observation does not confirm the requested deployment. Check status and sync the affected target.',
             subject: { target: plan.binding.platform, pluginId: plan.binding.plugin.pluginId, scope: plan.binding.scope.kind } });
           receipt.unmet.push(...gaps.map((component) => ({ id: `postcheck:${plan.binding.id}:${component.id}`,
             componentId: component.id, kind: component.kind, reasonCode: code, requiredFeatures: [],

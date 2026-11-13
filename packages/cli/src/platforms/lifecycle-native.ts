@@ -130,10 +130,20 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
     case 'claude-marketplace':
       await run(['plugin', effect.kind === 'unregister' ? 'uninstall' : effect.kind === 'refresh' ? 'update' : 'install', id, '--scope', scope]);
       break;
-    case 'antigravity-cli':
-      if (effect.kind === 'unregister' || effect.kind === 'refresh') await run(['plugin', 'uninstall', identity.packageId]);
-      if (effect.kind !== 'unregister') await run(['plugin', 'install', evidence.layout.packageRoot]);
+    case 'antigravity-cli': {
+      if (effect.kind === 'unregister' || effect.kind === 'refresh') {
+        const current = await (ctx.inspect ? ctx.inspect(binding) : inspectDeployment(ctx, binding));
+        if (current.physicalKey !== binding.physicalKey || current.registration !== 'present' || current.ownership !== 'aw'
+          || !current.nativePackageContentDigest || evidence.sharedReferences !== 'none'
+          || current.nativeIdentity?.packageId !== identity.packageId || current.nativeIdentity.sourceLocation !== identity.sourceLocation) {
+          blocked('nativeIdentityUnconfirmed');
+        }
+      }
+      // Fixed 1.3.4 install refreshes both version changes and same-version bytes.
+      await run(effect.kind === 'unregister' ? ['plugin', 'uninstall', identity.packageId]
+        : ['plugin', 'install', evidence.layout.packageRoot]);
       break;
+    }
     case 'pi-package':
       await run([effect.kind === 'unregister' ? 'remove' : 'install', ...(binding.scope.kind === 'project' ? ['--local'] : []), identity.sourceLocation]);
       break;

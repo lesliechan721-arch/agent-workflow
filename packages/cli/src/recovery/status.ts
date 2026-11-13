@@ -222,7 +222,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 expectedIdentity: deploymentPackageComponent(binding, layout).identity });
               const projection = marker?.nativeProjection;
               const contentDigest = projection ? await readPlatformPackageContentDigest(layout.packageRoot) : undefined;
-              if (['grok-cli', 'gemini-extension'].includes(binding.route) && live.registration === 'present') {
+              if (['grok-cli', 'gemini-extension', 'antigravity-cli'].includes(binding.route) && live.registration === 'present') {
                 nativeContentUnconfirmed = !contentDigest || !live.nativePackageContentDigest;
                 nativeContentDrift = Boolean(contentDigest && live.nativePackageContentDigest
                   && contentDigest !== live.nativePackageContentDigest);
@@ -558,9 +558,16 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
         delivery: { kind: 'native', platform: entry.agent as PlatformName },
         observation: 'unknown', content: 'unknown', deploymentObservations: adapters.observations.find((observation) =>
           observation.pluginId === entry.pluginId && observation.platform === entry.agent)?.deploymentObservations }));
-    const inventoryOwned = candidates.flatMap((entry) => entry.ownedComponent
-      && !['codex', 'claude', 'gemini', 'copilot'].includes(entry.platform!)
-      ? [{ pluginId: `${entry.sourceId}/${entry.pluginName}`, agent: entry.platform as PlatformName, scope: options.scope }] : []);
+    const inventoryOwned = candidates.flatMap((entry) => {
+      // A verified Antigravity copy remains a native retirement candidate when
+      // its AW source is gone. Execution still verifies the live registration;
+      // the copy is not an owned filesystem output or AW source authority.
+      const nativeCopy = entry.platform === 'antigravity' && entry.scope === 'user'
+        && entry.kind === 'namespacedMarketplace' && entry.recoveryCandidate?.evidence === 'verified'
+        && entry.recoveryCandidate.binding.route === 'antigravity-cli';
+      return nativeCopy || entry.ownedComponent && !['codex', 'claude', 'gemini', 'copilot'].includes(entry.platform!)
+        ? [{ pluginId: `${entry.sourceId}/${entry.pluginName}`, agent: entry.platform as PlatformName, scope: options.scope }] : [];
+    });
     for (const entry of inventoryOwned) {
       if (!expected(entry.pluginId, entry.agent) && !nativeExtraObserved.some((target) => target.pluginId === entry.pluginId && target.agent === entry.agent)) {
         nativeExtraObserved.push({ ...entry, delivery: { kind: 'native', platform: entry.agent }, observation: 'unknown', content: 'unknown' });

@@ -33,6 +33,8 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 
 普通 Skill 的有限 profile 对 Codex CLI `0.167.0`、Pi CLI `1.5.0` 在 Linux/macOS/Windows 的 x64/arm64 开放，依据[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)。Copilot CLI `1.0.95` 同样仅在上述六环境开放 User/Project 普通 Skill，依据[Copilot 六环境原生记录](../../../scripts/qualification/evidence/native-copilot-skills-2026-11-12.json)；Project 证据有显式宿主信任前提，公开 AW 编排仍须另验。Claude CLI `2.1.317` 在六环境开放 User/Project 普通 Skill，依据[管理与有效启用状态记录](../../../scripts/qualification/evidence/native-claude-skills-2026-11-12.json)；Skill 发现/加载仍未知，不作为该有限管理资格的阻塞。Gemini CLI `0.67.0` 在六环境开放 User/Project 普通 Skill；User 依据[用户级原生记录](../../../scripts/qualification/evidence/native-gemini-skills-2026-11-12.json)，Project 依据[项目级管理与有效 scope 记录](../../../scripts/qualification/evidence/native-gemini-project-skills-2026-11-13.json)。Project 原生 fixture 有显式默认禁用规则与临时目录信任前提；AW 自动维护激活规则及动态消费字节的公开链仍须新 Hosted 实测。Grok CLI `1.0.77` 仅在 Linux x64/arm64、macOS arm64、Windows x64 开放 User/Project 普通 Skill；User 依据[四环境用户级原生记录](../../../scripts/qualification/evidence/native-grok-skills-2026-11-12.json)，Project 依据[四环境项目级管理与有效 scope 记录](../../../scripts/qualification/evidence/native-grok-project-skills-2026-11-13.json)，后者使用精确临时项目的固定版本经验信任状态，Skill 发现/加载仍未知，公开 AW Project 编排与动态消费字节仍须新 Hosted 实测。OpenCode CLI `2.0.0` 在上述六环境开放 User/Project 普通 Skill，依据[管理、实际消费字节与有效 scope 记录](../../../scripts/qualification/evidence/native-opencode-skills-2026-11-13.json)；POSIX 使用已批准的普通管理观察，Windows 保留实际 Job 结果，均不提升 Provider 或 OS 隔离声明。其公开 AW 全链仍由新的对应报告独立判断。记录中的 scope 限制同时用于实际部署和作者能力视图。这些有限 profile 只确认已列范围的原生管理和有效作用域，已取得的 Skill 发现证据另列；App、相邻版本、调用控制、模型采用及其他组件不继承资格。公开 AW 完整编排仍须单独验证。 验收以 AW 管理的安装和更新正确、scope 有效状态可证为准；动态渲染须额外核对平台实际消费位置的字节，普通加载/模型采用未知单独记录，不作为该管理验收的阻塞。AW 托管输出仍验证生成与更新，平台采用未知不阻塞。
 
+Antigravity CLI `1.3.4` 仅在 Linux x64 开放 User 普通 Skill，依据[精确 User 叶证据](../../../scripts/qualification/evidence/native-antigravity-user-skills-2026-11-14.json)。该叶证据包含安装、版本更新、同版本正文刷新、目标与 neutral 的有效启用状态、实际副本字节、owner 保留及移除后双侧缺席。原始整份报告和 Project 分支仍未通过；Project、其他 host、App、相邻版本、Agent 等其他组件保持 unverified。Skill 加载、模型采用及会话 trust 未知保持独立观察；该记录不证明公开 AW 完整编排，公开链仍由对应的新报告判断。
+
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
 ### 1.2 身份与物理实例
@@ -80,7 +82,7 @@ activationKey 另含启用位置与需求 scope。身份字符串、路径存在
 | Codex / codex-marketplace | .codex-plugin；包内 Skills/MCP/Hooks，Instructions 用 SessionStart/SubagentStart 直接 additionalContext；Agent 角色为对应 scope 的 agents TOML | Marketplace/add 与 scope activation；刷新按审核 remove/add；撤销先 activation，无引用才 native remove 与精确补足清理 |
 | Claude / claude-marketplace | .claude-plugin；五类包内，Instructions 合并主/子代理 Hook 直接正文 | Marketplace install/update，user 或项目 local scope；卸载后清理无引用 AW 来源 |
 | Cursor / cursor-workspace-hook | .cursor-plugin，rules 为 alwaysApply，宿主 workspaceOpen 返回 pluginPaths | 完整包发布后精确合并对应 scope Hook；撤销 Hook 贡献再清包 |
-| Antigravity / antigravity-cli | .antigravity-plugin，Skills/MCP/Agents/Hooks/Rules | 本地 install/list JSON；更新先准备，再审核 uninstall/reinstall；disable/uninstall 后观测 |
+| Antigravity / antigravity-cli | .antigravity-plugin，Skills/MCP/Agents/Hooks/Rules | 本地 install/list JSON；版本与同版本正文更新直接 install；disable/uninstall 后观测 |
 | Antigravity / antigravity-directory | 同一格式，公开 App 用户目录或项目 .agents/plugins | 精确独占目录发布/更新/撤销，不修改 CLI 私有状态 |
 | OpenCode / opencode-directory | V2 默认 `{id, setup}` 对象，无外部 SDK 运行时依赖；skill/mcp transform、tool/session hook；Skill 的 location 为绝对路径，context hook 直接追加 system 正文 | 公开本地插件目录；更新后 reload/新会话，移除独占包；不写远程 server |
 | Pi / pi-package | pi package Skills；MCP 与 Hook/Instructions extension；Agents 仅 Markdown 加 pi.subagents.agents 声明 | pi install 本地来源，项目 --local；对应 scope remove 后清理包，不安装/移除 Agents 消费者 |
@@ -92,6 +94,8 @@ activationKey 另含启用位置与需求 scope。身份字符串、路径存在
 所有路径按已核验 profile 开放，表格描述固定适配方式，不是各版本/OS 的全能力资格表。未知能力须在组件缺口中列明，不能复制资源后报告完整成功。
 
 Claude 的安装可以直接启用所选 scope。后续激活先重新观察精确 AW 登记；已经达到目标状态时不重复执行会返回错误的 enable/disable。未知状态仍执行对应原生操作，并保留失败与恢复结果。动态内容按原生清单的 `readFromFolder` 核对原地加载目录；没有该字段时才读取 `installPath` 副本。
+
+Antigravity CLI `1.3.4` 的 User 清单将 `source` 表示为 `antigravity` 类型，`path` 指向实际配置根下的 `plugins/<packageId>` 副本。该类型不证明 AW 归属。AW 核对精确路径、无 symlink 路径链、副本自己的完整 source/plugin/platform/scope/physical owner、物理身份及旧包完整摘要；仅 AW 来源目录的 owner 不足以授权原生更新或移除。foreign、共享、弱 owner、额外或改写的本地数据均保留。来源目录丢失时，精确原生副本证据仍可用于移除，不建立安装 ledger。普通 ensure 比较实际副本与本次冻结包的摘要，即使来源目录已是当前内容，也会为旧副本安排直接 `plugin install <packageRoot>` 刷新；版本变化与同版本正文变化共用该路径。执行前重验实际归属，执行后及最终 grouped postcheck 均核对实际副本字节；原生命令退出 0 或版本相同不能代替内容证据。
 
 Gemini `0.67.0` 的共享激活配置使用全局默认和 Workspace 路径规则。原生 User 安装可能删除 HOME 下的项目规则；AW 在操作内冻结配置摘要，核对原生动作只产生固定版本的预期变换，再原子恢复其他插件字段和项目规则。项目操作保留已证明的全局启用意图；无法确定规则或归属时阻断写入。该机制不扩大上文有限 profile 的 scope 资格。
 

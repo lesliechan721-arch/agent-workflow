@@ -32,8 +32,10 @@ import {
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import { getDeploymentLayout, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
+import { deploymentPackageComponent } from '../platforms/inspection.js';
 import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
 import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
+import { readPlatformPackageContentDigest } from './platform-empty-state.js';
 import { assertGeminiProjectRules, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
   readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
 import type { DeploymentBinding, InstallRoute, RecoveryCandidate } from '../platforms/contracts.js';
@@ -1289,19 +1291,30 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
         const { schemaVersion: _schema, nativeProjection: projection, ...identity } = marker;
         let configRoot = descriptor.hostRoot;
         const physical = projection?.physicalIdentity;
+        const antigravityCopy = !descriptor.managed && descriptor.platform === 'antigravity' && descriptor.scope === 'user'
+          && physical?.route === 'antigravity-cli';
+        const route = antigravityCopy ? 'antigravity-cli' : descriptor.route;
         if (descriptor.managed && physical && physical.platform === descriptor.platform && physical.route === descriptor.route
           && physical.sourceIdentity === marker.sourceIdentity && physical.pluginId === marker.pluginId
           && getPhysicalKey(physical) === marker.physicalKey) configRoot = physical.namespaceRoot;
         const binding: DeploymentBinding = { id: '', plugin: { sourceId: marker.sourceId, sourceIdentity: marker.sourceIdentity,
           pluginId: marker.pluginId, version: '0.0.0' }, platform: descriptor.platform,
-          scope: descriptor.scope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot }, route: descriptor.route,
-          consumers: [{ id: identityDigest({ platform: descriptor.platform, route: descriptor.route, configRoot }),
+          scope: descriptor.scope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot }, route,
+          consumers: [{ id: identityDigest({ platform: descriptor.platform, route, configRoot }),
             product: 'cli', version: null, availability: 'missing', reasonCodes: ['client-missing'],
             entry: { kind: 'directory', configRoot } }], physicalKey: marker.physicalKey,
           activationKey: '', renderUnitIds: [] };
         const layout = await getDeploymentLayout(ctx, binding);
-        if (canonicalizePathThroughExistingAncestorSync(layout.packageRoot) !== canonicalizePathThroughExistingAncestorSync(packageRoot)
+        const expectedPackageRoot = antigravityCopy
+          ? path.join(layout.physicalIdentity.namespaceRoot, 'plugins', layout.nativeIdentity.packageId) : layout.packageRoot;
+        if (canonicalizePathThroughExistingAncestorSync(expectedPackageRoot) !== canonicalizePathThroughExistingAncestorSync(packageRoot)
           || getPhysicalKey(layout.physicalIdentity) !== marker.physicalKey) throw new Error('nativeOwnerPlacementMismatch');
+        if (antigravityCopy) {
+          await readSkillOwnerMarker({ skillRoot: packageRoot, allowedRoot: root,
+            expectedIdentity: deploymentPackageComponent(binding, layout).identity });
+          if (!projection || getPhysicalKey(projection.physicalIdentity) !== marker.physicalKey
+            || await readPlatformPackageContentDigest(packageRoot) !== projection.contentDigest) throw new Error('nativeCopyContentUnconfirmed');
+        }
         const component: OwnedComponent = { kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity };
         const scopes: Scope[] = descriptor.scope === 'user' && options.scope !== 'user'
           && ['codex', 'claude', 'gemini', 'copilot'].includes(descriptor.platform) ? ['user', 'project'] : [descriptor.scope];
@@ -1319,9 +1332,11 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
           scopedBinding.renderUnitIds = scopedLayout.renderUnits.map((unit) => unit.id);
           const recoveryCandidate: RecoveryCandidate = { binding: scopedBinding, physicalIdentity: scopedLayout.physicalIdentity,
             nativeIdentity: scopedLayout.nativeIdentity, evidence: 'verified' };
-          references.push({ kind: 'namespacedOwner', location: markerPath, sourceId: marker.sourceId,
+          // A copied marker is a native recovery clue, never direct filesystem
+          // removal authority for the cache or ownership of the AW source path.
+          references.push({ kind: antigravityCopy ? 'namespacedMarketplace' : 'namespacedOwner', location: markerPath, sourceId: marker.sourceId,
             sourceIdentity: marker.sourceIdentity, pluginName: marker.plugin, platform: descriptor.platform, scope,
-            ownedComponent: component, recoveryCandidate, pathEvidence });
+            ...(!antigravityCopy ? { ownedComponent: component } : {}), recoveryCandidate, pathEvidence });
         }
       } catch (error) {
         errors.push(inventoryError(error, markerPath, 'nativeOwnerRead', options.env, options.cwd,

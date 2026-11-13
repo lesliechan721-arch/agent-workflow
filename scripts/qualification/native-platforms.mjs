@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
-  acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo } from './native-platform-runtime.mjs';
+  acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
 import { qualifyClient } from './native-platform-clients.mjs';
 import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
@@ -296,7 +296,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
     await ctx.check('client-version', async () => {
       const result = await ctx.command(['--version']);
       const actual = versionFrom(result.stdout);
-      if (actual !== clients[platform].version) throw new Error('client-version-mismatch');
+      if (actual !== fixedClientVersion(platform)) throw new Error('client-version-mismatch');
       return { version: actual };
     });
     if (options.publicAw) await qualifyPublicAw(ctx);

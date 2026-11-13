@@ -7,12 +7,15 @@ import { readCodexConfigFile } from '../utils/codex-config.js';
 import { runNativeCli, runNativeCliChecked } from '../utils/native-cli.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { getClaudeHome } from '../utils/state-paths.js';
+import { inspectOwnedComponents, readSkillOwnerMarker } from '../utils/ownership.js';
+import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
 import { inspectPiDeployment } from './inspection-pi.js';
 import { inspectGrokDeployment } from './inspection-grok.js';
 import { getQualifiedPlatformProfile } from './capabilities.js';
+import { getPhysicalKey } from './identity.js';
 import { geminiActivationRules, geminiExtensionPaths, geminiPathEnabled, geminiScopePattern, geminiUserActivation,
   readGeminiActivationSnapshot, readGeminiNativeCopyContentDigest } from './gemini-activation.js';
 
@@ -38,6 +41,55 @@ async function probe(ctx: ReadContext, binding: DeploymentBinding, args: string[
 }
 function nativeSourceMatches(source: unknown, expected: string): boolean {
   return typeof source === 'string' && path.isAbsolute(source) && path.normalize(source) === path.normalize(expected);
+}
+
+/** Antigravity lists a source type and a copied package path, not the AW source directory. */
+async function inspectAntigravityCopy(binding: DeploymentBinding, layout: DeploymentLayout,
+  result: DeploymentObservation, rows: Record<string, unknown>[]): Promise<void> {
+  const matches = rows.filter((row) => row.name === layout.nativeIdentity.packageId);
+  if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
+  result.registration = matches.length ? 'present' : 'absent';
+  const row = matches[0];
+  if (!row) { setActivation(result, 'disabled'); return; }
+  if (typeof row.enabled !== 'boolean') throw new Error('nativeActivationInvalid');
+  setActivation(result, row.enabled ? 'enabled' : 'disabled');
+  const root = layout.physicalIdentity.namespaceRoot;
+  const directory = path.join(root, 'plugins', layout.nativeIdentity.packageId);
+  if (row.source !== 'antigravity' || row.path !== directory) { result.ownership = 'foreign'; return; }
+  if (rows.some((other) => other !== row && nativeSourceMatches(other.path, directory))) {
+    result.ownership = 'shared'; return;
+  }
+  const component = { kind: 'owned-directory' as const, path: directory, allowedRoot: root,
+    identity: { owner: 'agent-workflows' as const, plugin: layout.nativeIdentity.packageId,
+      sourceId: binding.plugin.sourceId, sourceIdentity: binding.plugin.sourceIdentity, pluginId: binding.plugin.pluginId,
+      platform: binding.platform, scope: binding.scope.kind, physicalKey: binding.physicalKey, artifactKey: path.basename(layout.packageRoot) } };
+  const inspected = (await inspectOwnedComponents({ components: [component] })).components[0]!;
+  if (inspected.state !== 'present') {
+    result.ownership = inspected.state === 'foreign' ? 'foreign' : 'unknown';
+    return;
+  }
+  const marker = await readSkillOwnerMarker({ skillRoot: directory, allowedRoot: root, expectedIdentity: component.identity });
+  const digest = await readPlatformPackageContentDigest(directory);
+  if (!marker?.nativeProjection || getPhysicalKey(marker.nativeProjection.physicalIdentity) !== binding.physicalKey
+    || !digest || digest !== marker.nativeProjection.contentDigest) {
+    result.ownership = 'unknown';
+    result.diagnostics.push({ code: 'nativePackageContentUnconfirmed', severity: 'warning',
+      message: 'The Antigravity copy has unconfirmed content. Keep local data and check its ownership before retrying.',
+      subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } });
+    return;
+  }
+  // The copy's own exact owner remains usable for removal if the AW source is missing.
+  if (result.ownership === 'absent') result.ownership = 'aw';
+  if (result.ownership !== 'aw') return;
+  result.nativePackageContentDigest = digest;
+  const sourceDigest = await readPlatformPackageContentDigest(layout.packageRoot);
+  const reason = !sourceDigest ? 'nativePackageContentUnconfirmed' : sourceDigest !== digest ? 'nativePackageContentDrift' : null;
+  if (reason) {
+    result.components = result.components.map((component) => ({ ...component, presence: 'unknown', reasonCodes: [...component.reasonCodes, reason] }));
+    result.diagnostics.push({ code: reason, severity: 'warning',
+      message: 'The Antigravity copy does not confirm the current AW package bytes. Run sync to refresh the native copy.',
+      subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } });
+  }
 }
 
 /** Only documented local-directory marketplace sources can establish ownership. */
@@ -187,16 +239,8 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
     }
     case 'antigravity-cli': {
       const value: unknown = JSON.parse(await probe(ctx, binding, ['plugin', 'list', '--json']));
-      if (!Array.isArray(value)) throw new Error('nativeObservationInvalid');
-      const matches = value.map(object).filter((row) => row.name === layout.nativeIdentity.packageId);
-      if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
-      result.registration = matches.length ? 'present' : 'absent';
-      const row = matches[0];
-      if (row) {
-        if (!nativeSourceMatches(row.source, layout.packageRoot)) result.ownership = 'foreign';
-        if (typeof row.enabled !== 'boolean') throw new Error('nativeActivationInvalid');
-        setActivation(result, row.enabled ? 'enabled' : 'disabled');
-      } else setActivation(result, 'disabled');
+      if (!Array.isArray(value) || value.length > 4096) throw new Error('nativeObservationInvalid');
+      await inspectAntigravityCopy(binding, layout, result, value.map(object));
       break;
     }
     case 'copilot-marketplace': {

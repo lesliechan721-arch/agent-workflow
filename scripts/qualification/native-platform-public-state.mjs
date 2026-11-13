@@ -121,7 +121,7 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
       matches = rows.filter(item => item.installed);
     } else if (ctx.platform === 'claude') {
       matches = array(result).filter(item => typeof item.id === 'string' && item.id.startsWith(`${ctx.pluginName}@`));
-    } else if (ctx.platform === 'copilot') {
+    } else if (['copilot', 'antigravity'].includes(ctx.platform)) {
       matches = array(result).filter(item => item.name === ctx.pluginName);
     } else throw new Error('native-management-state-unverified');
   }
@@ -201,6 +201,12 @@ export async function readDynamicConsumerContent(ctx, cwd, revision) {
       assert.equal(skill.enabled, true, 'dynamic-consumer-path-unverified');
       filename = skill.path;
     } else filename = skill.sourceInfo?.path;
+  } else if (ctx.platform === 'antigravity') {
+    const plugins = await jsonCommand(ctx, ['plugin', 'list', '--json'], cwd);
+    const plugin = single(array(plugins).filter(item => item.name === ctx.pluginName), 'dynamic-consumer-path-unverified');
+    assert.equal(plugin.enabled, true, 'dynamic-consumer-path-unverified');
+    assert.equal(plugin.version, publicFixtureVersion(revision), 'native-management-version-mismatch');
+    if (typeof plugin.path === 'string') filename = path.join(plugin.path, 'skills', ctx.skillName, 'SKILL.md');
   } else if (ctx.platform === 'claude') {
     const plugins = await jsonCommand(ctx, ['plugin', 'list', '--json'], cwd);
     const plugin = single(array(plugins).filter(item => typeof item.id === 'string'

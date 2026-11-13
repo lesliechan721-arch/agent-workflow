@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
-import { clients, sha256 } from './native-platform-runtime.mjs';
+import { clients, sha256, fixedClientVersion } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
 import { readGeminiSkills } from './native-platform-gemini-skills.mjs';
 import { publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
@@ -35,7 +35,7 @@ export async function preparePublicClientPath(ctx) {
   const entry = ctx.launcher.prefix[0] ?? ctx.launcher.executable;
   const windows = process.platform === 'win32';
   const npmEntry = ctx.launcher.prefix.length === 1;
-  const destination = path.join(directory, `${ctx.platform}${windows ? npmEntry ? '.cmd' : '.exe' : ''}`);
+  const destination = path.join(directory, `${ctx.platform === 'antigravity' ? 'agy' : ctx.platform}${windows ? npmEntry ? '.cmd' : '.exe' : ''}`);
   if (windows && npmEntry) {
     const { renderNpmCmdShim } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
     const relative = path.relative(directory, entry);
@@ -105,6 +105,7 @@ async function readGrokSkills(ctx, cwd, revision, present) {
 }
 
 export async function readSkills(ctx, cwd, revision, present, { requireAbsent = false } = {}) {
+  if (ctx.platform === 'antigravity') await ctx.defer('antigravity-skill-loading-unverified; native-management-scope-and-consumer-content-checked-separately');
   if (ctx.platform === 'opencode') return readPublicOpenCodeSkills(ctx, cwd, revision, present);
   if (ctx.platform === 'claude') await ctx.defer('claude-skill-discovery-interface-unverified');
   if (ctx.platform === 'grok') return readGrokSkills(ctx, cwd, revision, present);
@@ -268,7 +269,9 @@ export async function writePublicFixtureRevision(ctx, plugin, revision) {
 }
 
 export async function qualifyPublicAw(ctx) {
-  if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude', 'opencode'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
+  if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude', 'opencode', 'antigravity'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
+  if (ctx.platform === 'antigravity' && (ctx.scope !== 'user' || process.platform !== 'linux'
+    || process.arch !== 'x64' || process.env.GITHUB_ACTIONS !== 'true')) await ctx.defer('antigravity-public-aw-limited-to-hosted-linux-x64-user');
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => {
@@ -277,18 +280,18 @@ export async function qualifyPublicAw(ctx) {
     assert.equal(target.availability, 'available');
     let found = false;
     for (const product of target.installations) {
-      if (product.product === 'cli' && product.version === clients[ctx.platform].version && product.entry?.kind === 'cli'
+      if (product.product === 'cli' && product.version === fixedClientVersion(ctx.platform) && product.entry?.kind === 'cli'
         && await fs.realpath(product.entry.executable) === expectedEntry) found = true;
     }
     assert(found, 'Public AW must discover the acquired fixed-version client.');
-    return { platform: ctx.platform, version: clients[ctx.platform].version, availability: target.availability };
+    return { platform: ctx.platform, version: fixedClientVersion(ctx.platform), availability: target.availability };
   });
   // Production qualification remains authoritative. Never inject a candidate
   // profile or use --force to turn a missing capability into public success.
   const { getQualifiedPlatformProfile } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
   const profile = getQualifiedPlatformProfile(ctx.platform);
   if (profile.kinds.skill.status !== 'supported'
-    || !profile.qualifiedConsumers?.skill?.some((consumer) => consumer.product === 'cli' && consumer.version === clients[ctx.platform].version)) {
+    || !profile.qualifiedConsumers?.skill?.some((consumer) => consumer.product === 'cli' && consumer.version === fixedClientVersion(ctx.platform))) {
     await ctx.defer('public-aw-production-skill-profile-unverified');
   }
   if (ctx.platform === 'opencode') await ctx.check('public-opencode-observation-environment', () => preparePublicOpenCodeObservation(ctx));

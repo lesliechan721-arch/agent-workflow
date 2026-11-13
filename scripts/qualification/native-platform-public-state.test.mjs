@@ -4,8 +4,47 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { preparePublicClientPath } from './native-platform-public-aw.mjs';
-import { readPublicRemovedNativeScope } from './native-platform-public-state.mjs';
+import { readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { clients } from './native-platform-runtime.mjs';
+
+// Test Value Gate: Antigravity's inventory path, rather than the AW staging
+// file or version alone, must prove the rendered body in both fresh scopes.
+test('checks Antigravity effective User scope and actual dynamic installed bytes', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-antigravity-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const pluginName = 'fixture'; const skillName = 'fixture-skill'; const installed = path.join(root, 'native-copy');
+  const file = path.join(installed, 'skills', skillName, 'SKILL.md');
+  const expected = path.join(root, 'rendered-SKILL.md');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(expected, 'current rendered revision 3'); await fs.writeFile(file, 'stale revision 2');
+  const row = { name: pluginName, version: '0.1.1', enabled: true, source: 'antigravity', path: installed };
+  const calls = []; const ctx = { root, platform: 'antigravity', scope: 'user', pluginName, skillName,
+    publicSkillFile: expected, project: path.join(root, 'target'), neutral: path.join(root, 'neutral'),
+    async command(args, cwd) { calls.push({ args, cwd }); return { stdout: JSON.stringify([row]) }; } };
+  for (const cwd of [ctx.project, ctx.neutral]) {
+    assert.equal((await readPublicNativeState(ctx, cwd, 3, { active: true })).active, true);
+    await assert.rejects(readDynamicConsumerContent(ctx, cwd, 3), /dynamic-consumer-content-mismatch/u);
+  }
+  await fs.copyFile(expected, file);
+  for (const cwd of [ctx.project, ctx.neutral]) {
+    assert.equal((await readDynamicConsumerContent(ctx, cwd, 3)).path, file);
+  }
+  row.enabled = false;
+  await assert.rejects(readPublicNativeState(ctx, ctx.neutral, 3, { active: true }), /native-management-scope-mismatch/u);
+  row.enabled = true; row.version = '0.1.0';
+  await assert.rejects(readPublicNativeState(ctx, ctx.project, 3, { active: true }), /native-management-version-mismatch/u);
+  assert(calls.every(call => call.args.join(' ') === 'plugin list --json'));
+  assert(calls.some(call => call.cwd === ctx.project) && calls.some(call => call.cwd === ctx.neutral));
+});
+
+test('exposes the fixed Antigravity entry as agy in the isolated public PATH', { skip: process.platform === 'win32' }, async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-agy-bin-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const entry = path.join(root, 'antigravity'); await fs.writeFile(entry, 'fixed entry fixture');
+  const ctx = { root, platform: 'antigravity', env: {}, launcher: { executable: entry, prefix: [] } };
+  assert.equal(await preparePublicClientPath(ctx), entry);
+  assert.equal(await fs.realpath(path.join(root, 'client-bin', 'agy')), entry);
+});
 
 // Test Value Gate: the isolated public PATH must expose POSIX system helpers
 // required by the real client without inheriting user or unrelated client bins.

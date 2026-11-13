@@ -17,6 +17,7 @@ import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import type { ProductInstallation } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/gemini-activation.js';
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 
 async function fixture() {
   const isolation = getCurrentSourceTestIsolation();
@@ -92,7 +93,8 @@ function evidenceReadGate() {
   return gate;
 }
 
-async function nativeEvidenceFixture(platform: 'gemini' | 'copilot', options: { state?: 'foreign' | 'unknown'; multiple?: boolean } = {}) {
+async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravity', options: { state?: 'foreign' | 'unknown'; multiple?: boolean } = {}) {
+  if (platform === 'antigravity') installNativeTestQualification({ platforms: ['antigravity'] });
   const isolated = getCurrentSourceTestIsolation();
   const root = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-source`);
   const executable = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-client`);
@@ -107,22 +109,36 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot', options: { 
   const plugin = await readPluginManifest(root, { mode: 'bundle' });
   Object.assign(plugin, { sourceId: 'team', pluginId: 'team/evidence-demo', sourceIdentity: `sha256:${'d'.repeat(64)}` });
   const reads: { discovery?: () => Promise<void>; inspection?: () => Promise<void>; mutation?: () => void | Promise<void>;
-    geminiInstallSource?: () => string } = {};
-  const inventories = platform === 'gemini' ? ['extensions list'] : ['plugin marketplace list --json', 'plugin list --json'];
+    geminiInstallSource?: () => string; antigravityInstallSource?: () => string } = {};
+  const inventories = platform === 'gemini' ? ['extensions list'] : platform === 'antigravity' ? ['plugin list --json'] : ['plugin marketplace list --json', 'plugin list --json'];
   let layout: Awaited<ReturnType<typeof getDeploymentLayout>> | undefined;
   let marketplaceAdded = false;
   let installed = false;
-  let clientVersion = platform === 'gemini' ? '0.67.0' : '1.0.95';
+  let enabled = false;
+  let clientVersion = platform === 'gemini' ? '0.67.0' : platform === 'antigravity' ? '1.3.4' : '1.0.95';
   const runner = vi.fn(async (invocation: Parameters<RebuildExecutionContext['nativeCliRunner']>[0]) => {
     const args = invocation.args;
     if (inventories.includes(args.join(' '))) {
+      if (platform === 'antigravity') return { exitCode: 0, stderr: '', stdout: JSON.stringify(installed ? [{
+        name: layout!.nativeIdentity.packageId, source: 'antigravity', enabled,
+        path: path.join(layout!.physicalIdentity.namespaceRoot, 'plugins', layout!.nativeIdentity.packageId), version: '1.0.0',
+      }] : []) };
       if (options.state === 'unknown' && args[1] === 'marketplace') return { exitCode: 0, stdout: '{}', stderr: '' };
       const rows = args[1] === 'marketplace' ? marketplaceAdded ? [{ name: layout!.marketplaceName, source: layout!.marketplaceRoot }] : []
         : installed ? [{ name: layout!.nativeIdentity.packageId, marketplace: layout!.marketplaceName, source: layout!.marketplaceRoot }] : [];
       return { exitCode: 0, stdout: platform === 'copilot' ? JSON.stringify(rows) : '', stderr: '' };
     }
     await reads.mutation?.();
-    if (platform === 'copilot' && args[1] === 'marketplace' && args[2] === 'add') marketplaceAdded = true;
+    if (platform === 'antigravity') {
+      const directory = path.join(layout!.physicalIdentity.namespaceRoot, 'plugins', layout!.nativeIdentity.packageId);
+      if (args[1] === 'install') {
+        await fs.remove(directory);
+        await fs.copy(reads.antigravityInstallSource?.() ?? args[2]!, directory);
+        installed = true; enabled = true;
+      } else if (args[1] === 'uninstall') { await fs.remove(directory); installed = false; enabled = false; }
+      else if (args[1] === 'enable' || args[1] === 'disable') enabled = args[1] === 'enable';
+      else throw new Error('Unexpected fixture native mutation.');
+    } else if (platform === 'copilot' && args[1] === 'marketplace' && args[2] === 'add') marketplaceAdded = true;
     else if (platform === 'copilot' && args[1] === 'install') installed = true;
     else if (platform === 'gemini' && args[0] === 'extensions' && ['install', 'uninstall'].includes(args[1]!)) {
       const { home, root, file } = geminiExtensionPaths({ cwd: isolated.layout.fixtureCwd, env: isolated.env });
@@ -179,6 +195,79 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot', options: { 
 }
 
 describe('native evidence checks', () => {
+  // Test Value Gate: accepting a newer mutable baseline must not preserve an
+  // absent plan that overwrites a foreign native copy created during preparation.
+  it('protects a foreign Antigravity copy appearing during preparation', async () => {
+    const item = await nativeEvidenceFixture('antigravity');
+    const directory = path.join(item.layout.physicalIdentity.namespaceRoot, 'plugins', item.layout.nativeIdentity.packageId);
+    const foreign = path.join(directory, 'keep.txt');
+    try {
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
+      let inspections = 0;
+      item.reads.inspection = async () => {
+        if (++inspections === 2) { await fs.outputFile(foreign, 'Keep foreign content.'); item.changeRegistration(); }
+      };
+      item.runner.mockClear();
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget({ ...item.input, command: 'install' });
+      await integration.sealMarketplaceGenerations([target]);
+      const result = await executeRebuildOperation({ command: 'install', target, driver: integration.driver });
+      expect(result.status).toBe('failed');
+      expect(item.runner.mock.calls.filter(([invocation]) => invocation.args[1] === 'install')).toEqual([]);
+      expect(await fs.readFile(foreign, 'utf8')).toBe('Keep foreign content.');
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: retry planning and the final grouped check must read the
+  // actual Antigravity copy, including an old copy with a valid old owner.
+  it('repairs Antigravity copy drift and rejects stale native and grouped postchecks', async () => {
+    const item = await nativeEvidenceFixture('antigravity');
+    const installed = path.join(item.layout.physicalIdentity.namespaceRoot, 'plugins', item.layout.nativeIdentity.packageId);
+    const oldCopy = path.join(item.input.cwd, 'old-antigravity-copy');
+    const run = async (integration: typeof item.integration, target: typeof item.target, command: 'install' | 'sync') => {
+      const preparation = await prepareRebuildOperation({ command, target, driver: integration.driver });
+      expect(preparation.status, JSON.stringify(preparation)).toBe('ready');
+      if (preparation.status !== 'ready') throw new Error('Expected a ready native deployment.');
+      return executeRebuildOperation({ command, target, driver: integration.driver, preparation: preparation.preparation });
+    };
+    const prepareSync = async () => {
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget({ ...item.input, command: 'sync' });
+      await integration.sealMarketplaceGenerations([target]);
+      return { integration, target };
+    };
+    try {
+      expect((await run(item.integration, item.target, 'install')).status).toBe('succeeded');
+      await fs.copy(installed, oldCopy);
+      await fs.outputFile(path.join(item.root, 'skills/check/SKILL.md'), '---\nname: check\ndescription: Check evidence.\n---\nRevision 2.\n');
+      const changed = await prepareSync();
+      item.reads.antigravityInstallSource = () => oldCopy;
+      const stale = await run(changed.integration, changed.target, 'sync');
+      expect(stale.status, JSON.stringify(stale)).toBe('failed');
+      expect(await fs.readFile(path.join(item.layout.packageRoot, 'skills/check/SKILL.md'), 'utf8')).toContain('Revision 2.');
+      item.reads.antigravityInstallSource = undefined;
+      const retry = await prepareSync();
+      const plan = retry.target.platformDeployment!.plans[0]!;
+      expect(plan.evidence.contentMatches).toBe(true);
+      expect(plan.effects.map((effect) => effect.kind)).toEqual(['refresh', 'activate']);
+      item.runner.mockClear();
+      const recovered = await run(retry.integration, retry.target, 'sync');
+      expect(recovered.status, JSON.stringify(recovered)).toBe('succeeded');
+      expect(item.runner.mock.calls.filter(([invocation]) => invocation.args[1] === 'uninstall')).toEqual([]);
+      expect(await fs.readFile(path.join(installed, 'skills/check/SKILL.md'), 'utf8')).toContain('Revision 2.');
+      await retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!);
+      await fs.remove(installed);
+      await fs.copy(oldCopy, installed);
+      await expect(retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!)).rejects.toThrow('deploymentPostcheckFailed');
+      expect(recovered.deploymentReceipts?.[0]?.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeInstallContentPostcheckFailed' }));
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
   // Test Value Gate: an already-published AW package cannot hide an old or
   // unconfirmed native copy on the next ordinary prepare/execute cycle.
   it.each(['legacy copy', 'data guard', 'native postcheck'] as const)('retries Gemini sync from %s using fresh installed bytes', async (scenario) => {

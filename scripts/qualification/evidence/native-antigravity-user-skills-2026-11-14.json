@@ -1,0 +1,626 @@
+{
+  "schemaVersion": 2,
+  "kind": "finite-native-skills-qualification-evidence",
+  "observationDate": "2026-11-13",
+  "observationTimezone": "UTC",
+  "source": {
+    "runId": 43457282936,
+    "attempt": 1,
+    "url": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43457282936",
+    "head": "ad16f4945117e07ccd6351c9453f520a2335dd60",
+    "sourceSha": "7f21a2c53248b926742af020659201d8b8ff39f5",
+    "headSha": "ad16f4945117e07ccd6351c9453f520a2335dd60",
+    "tree": "2fe0003dd22bc6f1be0bf1f9eb4a1df330428205",
+    "candidateSha256": "8585922c7c604a1f218264eec15476b14f7bf513ac1fda45e3747b65f1cee501",
+    "tarSha256": "f009dd4714161da2e0c220c64e3705d006a74b6dc5646823ae92a05804a900ac",
+    "files": 4199,
+    "tarFiles": 4140,
+    "scripts": 59,
+    "harnessSha256": "3b848e4945d516c329f52ea18844e85dc73fa1a8bcfd9b8e86bce8daf9b6a9ac",
+    "validation": "complete-set-types-bytes-and-source-parents-tree-matched",
+    "reportSha256": "6bb1cb9171a6dde467443059fdb7289b9a7de6e5e6fb9fad8a46f388e320aa5f"
+  },
+  "sourceResults": {
+    "reportStatus": "failed",
+    "clientStatus": "failed",
+    "userStatus": "observed",
+    "projectStatus": "unverified",
+    "originalProjectFailure": "marked process left its initial process group; original failure retained"
+  },
+  "qualificationBoundary": {
+    "products": "Antigravity CLI 1.3.4 Linux x64 User ordinary Skill only",
+    "surface": "Native install, version update, same-version body refresh, fresh target/neutral effective enabled inventory, native-discovery-path consumer bytes, owner-marker preservation, uninstall and absence",
+    "publicAw": "not yet verified by this source; requires a new public AW run",
+    "limitations": [
+      "Project scope remains unverified and blocked",
+      "Other hosts, versions, products and component kinds remain unverified",
+      "No model, prompt, Skill adoption, invocation controls, session trust, Provider or OS qualification",
+      "No original failed report or source binding is modified"
+    ]
+  },
+  "isolation": {
+    "credentials": "empty temporary HOME/AW/Agent/XDG roots",
+    "modelRequests": "none",
+    "runtimeNetwork": "blocked proxies; not OS firewall",
+    "cleanup": "completed"
+  },
+  "profiles": [
+    {
+      "platform": "antigravity",
+      "product": "cli",
+      "exactVersion": "1.3.4",
+      "environment": {
+        "platform": "linux",
+        "arch": "x64"
+      },
+      "scopes": [
+        "user"
+      ],
+      "sourceClientIndex": 1,
+      "sourceScopeIndex": 0,
+      "evidence": {
+        "scope": "user",
+        "status": "observed",
+        "name": "aw-local-management-user",
+        "scopeEvidence": "observed",
+        "revisions": [
+          {
+            "revision": 1,
+            "version": "1.0.1",
+            "consumers": [
+              {
+                "path": "<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user/skills/management-check/SKILL.md",
+                "expectedSha256": "9160c18bf575dca95be73b30164f79f8e4fe66ec5debe01ac914c80bb4370fc5",
+                "actualSha256": "9160c18bf575dca95be73b30164f79f8e4fe66ec5debe01ac914c80bb4370fc5",
+                "matches": true
+              },
+              {
+                "path": "<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user/skills/management-check/SKILL.md",
+                "expectedSha256": "9160c18bf575dca95be73b30164f79f8e4fe66ec5debe01ac914c80bb4370fc5",
+                "actualSha256": "9160c18bf575dca95be73b30164f79f8e4fe66ec5debe01ac914c80bb4370fc5",
+                "matches": true
+              }
+            ],
+            "ownerMarkerPreserved": true
+          },
+          {
+            "revision": 2,
+            "version": "1.0.2",
+            "consumers": [
+              {
+                "path": "<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user/skills/management-check/SKILL.md",
+                "expectedSha256": "bb20277f68bc29857348c7c0afff8d2a675a54f85ae677fb3f62e3632bc3a69b",
+                "actualSha256": "bb20277f68bc29857348c7c0afff8d2a675a54f85ae677fb3f62e3632bc3a69b",
+                "matches": true
+              },
+              {
+                "path": "<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user/skills/management-check/SKILL.md",
+                "expectedSha256": "bb20277f68bc29857348c7c0afff8d2a675a54f85ae677fb3f62e3632bc3a69b",
+                "actualSha256": "bb20277f68bc29857348c7c0afff8d2a675a54f85ae677fb3f62e3632bc3a69b",
+                "matches": true
+              }
+            ],
+            "ownerMarkerPreserved": true
+          },
+          {
+            "revision": 3,
+            "version": "1.0.2",
+            "consumers": [
+              {
+                "path": "<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user/skills/management-check/SKILL.md",
+                "expectedSha256": "fe4847b386fc2422c9c2c66913a145720c18acfd220f7d8adcd1a0b229e60636",
+                "actualSha256": "fe4847b386fc2422c9c2c66913a145720c18acfd220f7d8adcd1a0b229e60636",
+                "matches": true
+              },
+              {
+                "path": "<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user/skills/management-check/SKILL.md",
+                "expectedSha256": "fe4847b386fc2422c9c2c66913a145720c18acfd220f7d8adcd1a0b229e60636",
+                "actualSha256": "fe4847b386fc2422c9c2c66913a145720c18acfd220f7d8adcd1a0b229e60636",
+                "matches": true
+              }
+            ],
+            "ownerMarkerPreserved": true
+          }
+        ],
+        "targetRows": [
+          {
+            "name": "aw-local-management-user",
+            "enabled": true,
+            "version": "1.0.2",
+            "source": "antigravity",
+            "path": "<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user",
+            "skills": [
+              "management-check"
+            ]
+          }
+        ],
+        "neutralRows": [
+          {
+            "name": "aw-local-management-user",
+            "enabled": true,
+            "version": "1.0.2",
+            "source": "antigravity",
+            "path": "<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user",
+            "skills": [
+              "management-check"
+            ]
+          }
+        ],
+        "nativeRootEntries": [
+          ".agent-workflows-owner.json",
+          ".antigravity-plugin",
+          "skills"
+        ],
+        "removed": true
+      },
+      "commands": [
+        {
+          "id": "user-validate-1",
+          "args": [
+            "plugin",
+            "validate",
+            "<TEMP_ROOT>/management-user/aw-local-management-user"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "  \u001b[32m[ok]\u001b[0m    <TEMP_ROOT>/management-user/aw-local-management-user\n          \u001b[32m\u2714\u001b[0m skills      : 1 processed\n          - agents      : skipped (not found)\n          - commands    : skipped (not found)\n          - mcpServers  : skipped (not found)\n          - hooks       : skipped (not found)\n",
+          "stderr": "",
+          "stdoutBytes": 325,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-install-1",
+          "args": [
+            "plugin",
+            "install",
+            "<TEMP_ROOT>/management-user/aw-local-management-user"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "  \u001b[32m[ok]\u001b[0m    aw-local-management-user\n          \u001b[32m\u2714\u001b[0m skills      : 1 processed\n          - agents      : skipped (not found)\n          - commands    : skipped (not found)\n          - mcpServers  : skipped (not found)\n          - hooks       : skipped (not found)\n",
+          "stderr": "",
+          "stdoutBytes": 277,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-target-list-1",
+          "args": [
+            "plugin",
+            "list",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "[\n  {\n    \"name\": \"aw-local-management-user\",\n    \"enabled\": true,\n    \"version\": \"1.0.1\",\n    \"source\": \"antigravity\",\n    \"path\": \"<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user\",\n    \"skills\": [\n      \"management-check\"\n    ]\n  }\n]\n",
+          "stderr": "",
+          "stdoutBytes": 273,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-neutral-list-1",
+          "args": [
+            "plugin",
+            "list",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "[\n  {\n    \"name\": \"aw-local-management-user\",\n    \"enabled\": true,\n    \"version\": \"1.0.1\",\n    \"source\": \"antigravity\",\n    \"path\": \"<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user\",\n    \"skills\": [\n      \"management-check\"\n    ]\n  }\n]\n",
+          "stderr": "",
+          "stdoutBytes": 273,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-validate-2",
+          "args": [
+            "plugin",
+            "validate",
+            "<TEMP_ROOT>/management-user/aw-local-management-user"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "  \u001b[32m[ok]\u001b[0m    <TEMP_ROOT>/management-user/aw-local-management-user\n          \u001b[32m\u2714\u001b[0m skills      : 1 processed\n          - agents      : skipped (not found)\n          - commands    : skipped (not found)\n          - mcpServers  : skipped (not found)\n          - hooks       : skipped (not found)\n",
+          "stderr": "",
+          "stdoutBytes": 325,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-install-2",
+          "args": [
+            "plugin",
+            "install",
+            "<TEMP_ROOT>/management-user/aw-local-management-user"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "  \u001b[32m[ok]\u001b[0m    aw-local-management-user\n          \u001b[32m\u2714\u001b[0m skills      : 1 processed\n          - agents      : skipped (not found)\n          - commands    : skipped (not found)\n          - mcpServers  : skipped (not found)\n          - hooks       : skipped (not found)\n",
+          "stderr": "",
+          "stdoutBytes": 277,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-target-list-2",
+          "args": [
+            "plugin",
+            "list",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "[\n  {\n    \"name\": \"aw-local-management-user\",\n    \"enabled\": true,\n    \"version\": \"1.0.2\",\n    \"source\": \"antigravity\",\n    \"path\": \"<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user\",\n    \"skills\": [\n      \"management-check\"\n    ]\n  }\n]\n",
+          "stderr": "",
+          "stdoutBytes": 273,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-neutral-list-2",
+          "args": [
+            "plugin",
+            "list",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "[\n  {\n    \"name\": \"aw-local-management-user\",\n    \"enabled\": true,\n    \"version\": \"1.0.2\",\n    \"source\": \"antigravity\",\n    \"path\": \"<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user\",\n    \"skills\": [\n      \"management-check\"\n    ]\n  }\n]\n",
+          "stderr": "",
+          "stdoutBytes": 273,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-validate-3",
+          "args": [
+            "plugin",
+            "validate",
+            "<TEMP_ROOT>/management-user/aw-local-management-user"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "  \u001b[32m[ok]\u001b[0m    <TEMP_ROOT>/management-user/aw-local-management-user\n          \u001b[32m\u2714\u001b[0m skills      : 1 processed\n          - agents      : skipped (not found)\n          - commands    : skipped (not found)\n          - mcpServers  : skipped (not found)\n          - hooks       : skipped (not found)\n",
+          "stderr": "",
+          "stdoutBytes": 325,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-install-3",
+          "args": [
+            "plugin",
+            "install",
+            "<TEMP_ROOT>/management-user/aw-local-management-user"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "  \u001b[32m[ok]\u001b[0m    aw-local-management-user\n          \u001b[32m\u2714\u001b[0m skills      : 1 processed\n          - agents      : skipped (not found)\n          - commands    : skipped (not found)\n          - mcpServers  : skipped (not found)\n          - hooks       : skipped (not found)\n",
+          "stderr": "",
+          "stdoutBytes": 277,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-target-list-3",
+          "args": [
+            "plugin",
+            "list",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "[\n  {\n    \"name\": \"aw-local-management-user\",\n    \"enabled\": true,\n    \"version\": \"1.0.2\",\n    \"source\": \"antigravity\",\n    \"path\": \"<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user\",\n    \"skills\": [\n      \"management-check\"\n    ]\n  }\n]\n",
+          "stderr": "",
+          "stdoutBytes": 273,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-neutral-list-3",
+          "args": [
+            "plugin",
+            "list",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "[\n  {\n    \"name\": \"aw-local-management-user\",\n    \"enabled\": true,\n    \"version\": \"1.0.2\",\n    \"source\": \"antigravity\",\n    \"path\": \"<TEMP_ROOT>/home/.gemini/config/plugins/aw-local-management-user\",\n    \"skills\": [\n      \"management-check\"\n    ]\n  }\n]\n",
+          "stderr": "",
+          "stdoutBytes": 273,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-uninstall",
+          "args": [
+            "plugin",
+            "uninstall",
+            "aw-local-management-user"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "Uninstalled plugin \"aw-local-management-user\"\n",
+          "stderr": "",
+          "stdoutBytes": 46,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-removed-target-list",
+          "args": [
+            "plugin",
+            "list",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/project",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "[]\n",
+          "stderr": "",
+          "stdoutBytes": 3,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        },
+        {
+          "id": "user-removed-neutral-list",
+          "args": [
+            "plugin",
+            "list",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "executable": "<TEMP_ROOT>/distribution/antigravity",
+          "prefix": [],
+          "stdin": "EOF",
+          "timeoutMs": 30000,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "cancelled": false,
+          "terminationReason": "complete",
+          "maxBufferExceeded": false,
+          "stdout": "[]\n",
+          "stderr": "",
+          "stdoutBytes": 3,
+          "stderrBytes": 0,
+          "stdoutPreviewTruncated": false,
+          "stderrPreviewTruncated": false,
+          "processManagement": {
+            "mode": "verified-observed",
+            "gradingEvidenceAccepted": true,
+            "descendantCleanupGuaranteed": false
+          },
+          "status": "observed"
+        }
+      ],
+      "processManagement": "verified-observed; actual command fields preserved; no OS containment claim"
+    }
+  ]
+}

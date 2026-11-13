@@ -198,7 +198,7 @@ POSIX RPC helper 在直接客户端关闭后、输出 JSON 前，等待初始进
 
 POSIX 公开 AW 命令会管理独立的原生命令进程组，不套用 custom provider 必须共享初始进程组的合同。该包装复用现有 lease、持续 marker/启动身份观察及收尾：检查失败立即中止，正常完成时必须已无活后代，marker 丢失、检查失败、清理或 lease 释放失败都不能变为成功；取消、超时和输出超限也失败。它明确报告 `observed`、`gradingEvidenceAccepted:false`、`descendantCleanupGuaranteed:false`，不是 provider grading 或 OS 强隔离资格。失败时保留首次和最后一次 observer 的有界进程元数据，不保存命令文本、环境变量或 marker；子命令已有输出仍只按原规则限量脱敏，不能由其退出码覆盖审计失败。Windows 公开 AW 保持原 Job 路径；直接客户端除上述 Copilot Darwin 和固定 OpenCode 本地管理/scope 查询的显式普通观察范围外，与 RPC 保持原 verified-observed 合同。公开入口比较先解析文件系统规范路径，不把 Windows 扩展名大小写差异当作另一个入口，也不将全路径小写。报告同时替换普通和 JSON 嵌套身份中的转义路径。
 
-本入口仍不覆盖全部平台的完整公开 AW install 编排、独立 tarball 到真实模型消费、模型/调用控制、MCP/Hooks/Agents/Instructions 执行、普通对话会话、Desktop、最低版本矩阵，以及 Antigravity/Cursor 的完整公开 AW 链。固定 OpenCode `2.0.0` 同时执行直接 Native 与公开 AW 链，按上述显式观察范围等待激活并检查实际安装字节与有效 scope；有限 profile 仅依据独立保存的六环境直接 Native 单元，公开链是否通过仍由该次报告判断，旧严格模式或冷启动失败记录保持原来源。Cursor 目标 Hook 已观察到需要登录，其他无认证有效 scope 接口仍待验证；Antigravity 固定版本分发与无认证管理入口仍缺少运行证据。它不申请 Secrets，也不使用自托管 runner。取得报告后仍需核对具体资格范围，不能自动将 production profile 提升为 supported。
+本入口仍不覆盖全部平台的完整公开 AW install 编排、独立 tarball 到真实模型消费、模型/调用控制、MCP/Hooks/Agents/Instructions 执行、普通对话会话、Desktop、最低版本矩阵，以及 Antigravity/Cursor 的完整公开 AW 链。固定 OpenCode `2.0.0` 同时执行直接 Native 与公开 AW 链，按上述显式观察范围等待激活并检查实际安装字节与有效 scope；有限 profile 仅依据独立保存的六环境直接 Native 单元，公开链是否通过仍由该次报告判断，旧严格模式或冷启动失败记录保持原来源。Cursor 目标 Hook 已观察到需要登录，其他无认证有效 scope 接口仍待验证。Antigravity CLI `1.3.4` 的 Linux x64/User 直接 Native 叶证据及有限 Skill profile 见[平台边界](architecture/platforms.md#11-宿主根与固定版本条件)；原始整份失败报告与 Project 限制保留，公开 AW 链继续由新的对应报告独立判断。它不申请 Secrets，也不使用自托管 runner。取得报告后仍需核对具体资格范围，不能自动将 production profile 提升为 supported。
 
 本地复现先运行 `pnpm build` 和 `pnpm test:qualification:native-platforms:harness`，再创建候选清单并显式选择已安装入口或临时下载：
 

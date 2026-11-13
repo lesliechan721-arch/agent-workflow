@@ -175,13 +175,17 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
     }
   } else {
     const packageChanged = operation === 'reinstall' || !evidence.contentMatches || observation.package !== 'present';
-    const nativeCopyChanged = ['gemini-extension', 'grok-cli'].includes(binding.route) && !!state.bundle
+    const nativeCopyChanged = ['gemini-extension', 'grok-cli', 'antigravity-cli'].includes(binding.route) && !!state.bundle
       && (observation.nativePackageContentDigest !== state.bundle.contentDigest || binding.route === 'grok-cli'
         && ids.some((id) => !observation.components.some((component) =>
           component.id === id && component.presence === 'present' && !component.reasonCodes.length)));
     if (!retainPackage && state.bundle && (packageChanged || nativeCopyChanged) && binding.route === 'grok-cli'
       && observation.registration === 'present' && !grokRegistrationOwned(binding, evidence, observation, identity)) {
       return blocked('nativeIdentityUnconfirmed', 'The Grok registration is not an exclusive installation from this AW source. Check its identity and shared references before replacement.');
+    }
+    if (!retainPackage && state.bundle && binding.route === 'antigravity-cli' && observation.registration === 'present'
+      && (observation.ownership !== 'aw' || evidence.sharedReferences !== 'none' || !observation.nativePackageContentDigest)) {
+      return blocked('nativeIdentityUnconfirmed', 'The Antigravity copy is not a confirmed exclusive AW package. Keep local data and check its ownership before replacement.');
     }
     if (!retainPackage && state.bundle && packageChanged) {
       if (!packageSlot || !['present', 'partial', 'absent'].includes(packageSlot.state)) {
@@ -301,7 +305,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       result.mutation = outcome.mutation;
       result.status = outcome.mutation === 'possible' ? 'unknown' : outcome.changed ? 'applied' : 'unchanged';
       if (outcome.mutation === 'possible') throw Object.assign(new Error('nativeMutationUnknown'), { mutation: 'possible' });
-      if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')) {
+      if (['grok-cli', 'antigravity-cli'].includes(binding.route) && (effect.kind === 'register' || effect.kind === 'refresh')) {
         const checked = await observe();
         if (checked.physicalKey !== binding.physicalKey || checked.registration !== 'present' || checked.ownership !== 'aw'
           || !state.bundle || checked.nativePackageContentDigest !== state.bundle.contentDigest) {
@@ -359,7 +363,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     && !!state.bundle && receipt.after.nativePackageContentDigest === state.bundle.contentDigest
     && plan.projections.filter((projection) => projection.bundle).flatMap((projection) => projection.components).every((component) =>
       receipt.after.components.some((observed) => observed.id === component.id && observed.presence === 'present' && !observed.reasonCodes.length));
-  const nativeContentReady = grokContentReady && (binding.route !== 'gemini-extension'
+  const nativeContentReady = grokContentReady && (!['gemini-extension', 'antigravity-cli'].includes(binding.route)
     || receipt.after.ownership === 'aw' && !!state.bundle && receipt.after.nativePackageContentDigest === state.bundle.contentDigest);
   for (const result of receipt.effects) {
     if (result.status !== 'applied') continue;
