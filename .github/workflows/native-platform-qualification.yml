@@ -21,13 +21,13 @@ permissions:
 
 jobs:
   native-windows-job:
-    if: (github.event_name == 'workflow_dispatch' && !inputs.interfaces_only) || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows'
+    if: (github.event_name == 'workflow_dispatch' && !inputs.interfaces_only) || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows' || github.event.label.name == 'native-qualification-antigravity-user-remaining'
     uses: ./.github/workflows/windows-job.yml
     with:
       source-ref: ${{ github.sha }}
 
   candidate:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-interfaces' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows'
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-interfaces' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows' || github.event.label.name == 'native-qualification-antigravity-user-remaining'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -46,7 +46,7 @@ jobs:
       - run: pnpm test:qualification:native-platforms:harness
       - run: node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs scripts/qualification/native-platform-antigravity-management.test.mjs
       - name: Verify the Antigravity User qualification harness
-        if: github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows'
+        if: github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows' || github.event.label.name == 'native-qualification-antigravity-user-remaining'
         run: node --test --test-concurrency=1 scripts/qualification/native-platform-antigravity-distributions.test.mjs scripts/qualification/native-platform-antigravity-user.test.mjs
       - name: Bind the candidate to this source and exact bundle bytes
         shell: bash
@@ -71,10 +71,10 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        runner: ${{ fromJSON(github.event.label.name == 'native-qualification-antigravity-user-windows' && '["windows-2025","windows-11-arm"]' || '["ubuntu-24.04","ubuntu-24.04-arm","macos-15-intel","macos-15","windows-2025","windows-11-arm"]') }}
+        runner: ${{ fromJSON(github.event.label.name == 'native-qualification-antigravity-user-remaining' && '["macos-15","windows-2025","windows-11-arm"]' || github.event.label.name == 'native-qualification-antigravity-user-windows' && '["windows-2025","windows-11-arm"]' || '["ubuntu-24.04","ubuntu-24.04-arm","macos-15-intel","macos-15","windows-2025","windows-11-arm"]') }}
     runs-on: ${{ matrix.runner }}
     env:
-      QUALIFICATION_CLIENT: ${{ inputs.client || (github.event.label.name == 'native-qualification-gemini' && 'gemini') || (github.event.label.name == 'native-qualification-copilot' && 'copilot') || ((github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows') && 'antigravity-user') || 'all' }}
+      QUALIFICATION_CLIENT: ${{ inputs.client || (github.event.label.name == 'native-qualification-gemini' && 'gemini') || (github.event.label.name == 'native-qualification-copilot' && 'copilot') || ((github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows' || github.event.label.name == 'native-qualification-antigravity-user-remaining') && 'antigravity-user') || 'all' }}
       ANTIGRAVITY_PUBLIC_AW: ${{ github.event.label.name == 'native-qualification-antigravity-user-public' && '1' || '0' }}
       AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
       AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'

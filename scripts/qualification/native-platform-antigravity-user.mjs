@@ -67,7 +67,7 @@ export async function probeAntigravityUser(launcher, context, runCommand = execu
         throw new Error('client-version-unconfirmed');
       }
       const help = await command('plugin-help', ['plugin', '--help'], context.project);
-      if (help.status !== 'observed' || !/Usage:\s+antigravity plugin <command>/u.test(`${help.stdout}\n${help.stderr}`)
+      if (help.status !== 'observed' || !/Usage:\s+antigravity(?:\.exe)? plugin <command>/u.test(`${help.stdout}\n${help.stderr}`)
         || !/^\s+list \[--json\]\s+List installed plugins\s*$/mu.test(`${help.stdout}\n${help.stderr}`)) throw new Error('plugin-json-interface-unconfirmed');
       return { version: '1.3.4' };
     });

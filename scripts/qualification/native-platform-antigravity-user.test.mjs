@@ -22,7 +22,7 @@ function completed(stdout = '', patch = {}) {
     descendantCleanupGuaranteed: process.platform === 'win32', ...patch };
 }
 
-function nativeFixture(context, { staleRefresh = false } = {}) {
+function nativeFixture(context, { staleRefresh = false, program = process.platform === 'win32' ? 'antigravity.exe' : 'antigravity' } = {}) {
   let installed = false, installs = 0;
   const cache = path.join(context.env.HOME, '.gemini/config/plugins/aw-local-management-user');
   const calls = [];
@@ -34,7 +34,7 @@ function nativeFixture(context, { staleRefresh = false } = {}) {
     assert.equal(options.env.HOME, context.env.HOME);
     if (args[0] === '--version') return completed('Antigravity 1.3.4\n');
     assert.equal(args[0], 'plugin');
-    if (args[1] === '--help') return completed('Usage: antigravity plugin <command> [arguments]\n  list [--json]          List installed plugins\n');
+    if (args[1] === '--help') return completed(`Usage: ${program} plugin <command> [arguments]\n  list [--json]          List installed plugins\n`);
     if (args[1] === 'validate') assert.equal((await fs.stat(path.join(args[2], 'skills/management-check/SKILL.md'))).isFile(), true);
     if (args[1] === 'install') {
       installs++;
@@ -76,6 +76,16 @@ test('qualifies only User management with actual consumer bytes and unknown load
   assert(!JSON.stringify(publicReport).includes(context.root));
   assert.match(publicReport.management.scopes[0].revisions[0].consumers[0].path, /<TEMP_ROOT>/u);
   await assert.rejects(fs.stat(fake.cache), { code: 'ENOENT' });
+});
+
+// Test Value Gate: the real Windows binary prints its .exe suffix; parser
+// qualification must still retain the fixed version and JSON inventory checks.
+test('accepts the observed Windows executable name in the fixed plugin help', async t => {
+  const context = await fixture(t); const fake = nativeFixture(context, { program: 'antigravity.exe' });
+  const observed = await probeAntigravityUser({ executable: '/fixed/antigravity.exe', prefix: [] }, context, fake.run);
+  assert.equal(observed.status, 'passed', JSON.stringify(observed));
+  assert.equal(observed.checks[0].status, 'passed');
+  assert(observed.commands.some(command => command.args.join(' ') === 'plugin list --json'));
 });
 
 test('does not accept a successful same-version install with old native bytes', async t => {
