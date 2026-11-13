@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
+import { probeClientInterfaces } from './native-platform-interface-probes.mjs';
 import { prepareEnvironment, renderPackage } from './native-platform-runtime.mjs';
 
 async function fixture(t) {
@@ -91,4 +92,27 @@ test('rejects stale native bytes during a same-version refresh', async t => {
   assert.equal(observed.scopes[0].revisions[2].version, '1.0.2');
   assert(observed.scopes[0].revisions[2].consumers.every(row => row.matches === false));
   assert.equal(observed.productionProfileChanged, false);
+});
+
+// Test Value Gate: report redaction must not destroy the native filesystem path
+// before the real consumer oracle reads it; the returned report stays redacted.
+test('reads raw native paths internally and redacts the completed management report', async t => {
+  const ctx = await fixture(t); const fake = await nativeFixture(ctx); let installs = 0;
+  const completed = stdout => ({ stdout, stderr: '', exitCode: 0, signal: null, timedOut: false,
+    cancelled: false, maxBufferExceeded: false, terminationReason: 'complete',
+    containmentMode: 'verified-observed', gradingEvidenceAccepted: true, descendantCleanupGuaranteed: false });
+  const report = await probeClientInterfaces('antigravity', { executable: '/fixed/antigravity', prefix: [] }, ctx,
+    async (launcher, args, options) => {
+      if (args[0] === '--version') return completed('1.3.4');
+      if (args[0] === '--help') return completed('Usage: antigravity [command]\nplugin');
+      if (args.join(' ') === 'plugin --help') return completed('Usage: antigravity plugin <command> [arguments]\nCommands:\n  list [--json]          List installed plugins\n');
+      const id = args[1] === 'install' ? `user-install-${++installs}`
+        : args[1] === 'uninstall' ? 'user-uninstall' : args.join('-');
+      const result = await fake.command(id, args, options.cwd);
+      return completed(result.stdout);
+    }, { localManagement: true });
+  assert.equal(report.management.status, 'observed', JSON.stringify(report.management));
+  assert.equal(report.management.scopes[0].revisions.length, 3);
+  assert(!JSON.stringify(report).includes(ctx.root));
+  assert.match(report.management.scopes[0].revisions[0].consumers[0].path, /<TEMP_ROOT>/u);
 });

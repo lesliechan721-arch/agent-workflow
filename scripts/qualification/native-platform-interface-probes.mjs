@@ -172,7 +172,7 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     const evidence = redactProbe(record, context.root);
     report.commands.push(evidence);
     if (record.status === 'failed') report.status = 'failed';
-    return evidence;
+    return record;
   }
   const commands = [['version', ['--version']], ['help', ['--help']], ['plugin-help', ['plugin', '--help']]];
   if (platform === 'cursor') commands.push(['plugin-marketplace-help', ['plugin', 'marketplace', '--help']]);
@@ -196,7 +196,7 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
   }
   report.authentication.failurePossible = report.commands.some(command => command.authenticationFailurePossible);
   report.processContract = processFailed ? 'failed' : 'verified-observed retained for every executed command';
-  return report;
+  return redactProbe(report, context.root);
 }
 
 export function parseInterfaceProbeArgs(args) {
