@@ -27,7 +27,7 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
   const profile: QualifiedPlatformProfile = { id: `${platform}:${PROFILE_BASELINES[platform]}`, platform, kinds, features, agentConsumers: [] };
   // Finite native qualification: exact CLI versions in the six recorded hosts.
   // It does not qualify invocation metadata, Hooks, MCP execution, or model behavior.
-  const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : platform === 'grok' ? '1.0.77' : null;
+  const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : platform === 'copilot' ? '1.0.95' : platform === 'grok' ? '1.0.77' : null;
   const hostPlatform = host.platform ?? process.platform;
   const hostArch = host.arch ?? process.arch;
   const qualifiedSkillHosts = platform === 'grok'
@@ -39,6 +39,7 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
     kinds.skill = { ...kinds.skill, status: 'supported', reasonCodes: [] };
     profile.qualifiedConsumers = { skill: [{ product: 'cli', version: skillVersion }] };
     profile.qualificationEvidence = [{ reference: platform === 'grok' ? 'scripts/qualification/evidence/native-grok-skills-2026-11-12.json'
+      : platform === 'copilot' ? 'scripts/qualification/evidence/native-copilot-skills-2026-11-12.json'
       : 'scripts/qualification/evidence/native-skills-2026-11-12.json',
       product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: platform === 'grok' ? ['user'] : ['user', 'project'], kinds: ['skill'], features: [],
       limitations: ['host-discovery-and-lifecycle-only', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'] }];

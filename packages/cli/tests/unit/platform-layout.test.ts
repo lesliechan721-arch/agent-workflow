@@ -8,7 +8,7 @@ import { getAuthoringPlatformCapabilities } from '../../src/review/platform-prof
 import type { DeploymentObservation, ResolveRequest } from '../../src/platforms/contracts.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
-async function fixture(platform: 'codex' | 'cursor' | 'pi' | 'grok') {
+async function fixture(platform: 'codex' | 'cursor' | 'pi' | 'grok' | 'copilot') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-layout-')); roots.push(root);
   const ctx = { cwd: root, env: { HOME: root, USERPROFILE: root, AW_HOME: path.join(root, 'aw') } };
   const request: ResolveRequest = { plugin: { sourceId: 'test', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'test/example', version: '1.0.0' },
@@ -107,6 +107,60 @@ it('blocks project writes that alias Codex user configuration but retains cleanu
   expect(writing.exclusions.every((exclusion) => exclusion.reasonCode === 'codexScopePathAlias')).toBe(true);
   const cleanup = await resolveDeployments(ctx, { ...request, operation: 'cleanup' });
   expect(cleanup.bindings).toHaveLength(1);
+});
+
+// Test Value Gate: the Copilot record authorizes ordinary Skills for both scopes
+// on six exact CLI hosts, without authorizing other consumers or features.
+it('limits Copilot ordinary Skills to the recorded CLI version, hosts and scopes', async () => {
+  const { root, ctx, request } = await fixture('copilot');
+  request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '1.0.95' }];
+  const hosts: Array<{ platform: NodeJS.Platform; arch: NodeJS.Architecture }> = [
+    { platform: 'linux', arch: 'x64' }, { platform: 'linux', arch: 'arm64' },
+    { platform: 'darwin', arch: 'x64' }, { platform: 'darwin', arch: 'arm64' },
+    { platform: 'win32', arch: 'x64' }, { platform: 'win32', arch: 'arm64' },
+  ];
+  for (const scope of ['user', 'project'] as const) {
+    const resolved = await resolveDeployments(ctx, { ...request,
+      scope: scope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot: path.join(root, 'project') } });
+    const binding = resolved.bindings[0]!;
+    const renderUnit = resolved.renderUnits.find((unit) => unit.output === 'package')!;
+    const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent',
+      ownership: 'absent', consumers: [], components: [], nativeIdentity: null,
+      prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
+    for (const host of hosts) {
+      const profile = getQualifiedPlatformProfile('copilot', host);
+      const input = { binding, renderUnit, observation, profile };
+      const capabilities = getPlatformCapabilities(input);
+      expect(capabilities.kinds.skill.status).toBe('supported');
+      for (const kind of ['hook', 'mcp', 'instruction', 'agent'] as const) expect(capabilities.kinds[kind].status).toBe('unverified');
+      for (const feature of Object.values(capabilities.features)) expect(feature.status).toBe('unverified');
+      expect(profile.qualificationEvidence?.[0]).toMatchObject({
+        reference: 'scripts/qualification/evidence/native-copilot-skills-2026-11-12.json',
+        product: 'cli', version: '1.0.95', platform: host.platform, arch: host.arch,
+        scopes: ['user', 'project'], kinds: ['skill'], features: [],
+      });
+      for (const version of ['1.0.94', '1.0.96', null]) {
+        binding.consumers[0]!.version = version;
+        expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+      }
+      binding.consumers[0]!.version = '1.0.95';
+      binding.consumers[0]!.product = 'app';
+      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+      binding.consumers[0]!.product = 'cli';
+      binding.consumers.push({ ...binding.consumers[0]!, id: 'other-consumer', version: '1.0.96' });
+      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+      binding.consumers.pop();
+    }
+    for (const host of [{ platform: 'freebsd', arch: 'x64' }, { platform: 'linux', arch: 's390x' }] as const) {
+      expect(getPlatformCapabilities({ binding, renderUnit, observation,
+        profile: getQualifiedPlatformProfile('copilot', host) }).kinds.skill.status).toBe('unverified');
+    }
+    const hostQualified = hosts.some((host) => host.platform === process.platform && host.arch === process.arch);
+    const authoring = getAuthoringPlatformCapabilities('copilot', scope);
+    expect(authoring.kinds.skill.status).toBe(hostQualified ? 'supported' : 'unverified');
+    for (const kind of ['hook', 'mcp', 'instruction', 'agent'] as const) expect(authoring.kinds[kind].status).toBe('unverified');
+    for (const feature of Object.values(authoring.features)) expect(feature.status).toBe('unverified');
+  }
 });
 
 // Test Value Gate: a user-only native record must never authorize project
