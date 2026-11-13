@@ -60,13 +60,13 @@ function projectOpenCode(input: ProjectionInput, files: ProjectionFiles, compone
   // The published V2 AgentEditor exposes update/remove, but no add operation.
   // Do not claim new independent roles by updating a user-owned role.
   if (components.some((component) => component.kind === 'agent')) throw new Error('platformProjectionAgentRegistrationUnsupported');
+  // Local plugin directories do not install SDK dependencies; V2 accepts the definition directly.
   const lines = [
-    "import { Plugin } from '@opencode/plugin';",
     "import { fileURLToPath } from 'node:url';",
     "import path from 'node:path';",
     "import { exec } from 'node:child_process';",
     COMMAND_RESOURCE_SHELL_HELPER,
-    `export default Plugin.define({ id: ${JSON.stringify(getDeploymentResourceKey(input.binding.plugin))}, async setup(ctx) {`,
+    `export default { id: ${JSON.stringify(getDeploymentResourceKey(input.binding.plugin))}, async setup(ctx) {`,
     '  const registrations = [];',
   ];
   if (input.renderUnit.renderScope.kind === 'project') {
@@ -85,7 +85,7 @@ function projectOpenCode(input: ProjectionInput, files: ProjectionFiles, compone
     const definition = { id: name, name, description: frontmatter.description, content: skill.slice(match[0].length) };
     lines.push(`  registrations.push(await ctx.skill.transform((editor) => {`,
       `    if (editor.get(${JSON.stringify(name)})) throw new Error('Native skill name conflict');`,
-      `    editor.add({ ...${JSON.stringify(definition)}, path: fileURLToPath(new URL(${JSON.stringify(`./skills/${name}/SKILL.md`)}, import.meta.url)) });`, '  }));');
+      `    editor.add({ ...${JSON.stringify(definition)}, location: fileURLToPath(new URL(${JSON.stringify(`./skills/${name}/SKILL.md`)}, import.meta.url)) });`, '  }));');
   }
   for (const [name, server] of Object.entries(servers)) {
     const typed = server as Extract<PluginComponent, { kind: 'mcp' }>['content'];
@@ -120,7 +120,7 @@ function projectOpenCode(input: ProjectionInput, files: ProjectionFiles, compone
       `      const child = exec(${commandResourceExpression(input, hook.id, hook.content.command, 'command', undefined, true)}, { timeout: 10000, maxBuffer: 65536 }, (error) => { if (error) console.error('AW Hook command failed.'); resolve(); });`,
       `      child.stdin.end(JSON.stringify(event));`, '    });', '  }));');
   }
-  lines.push('  return async () => { for (const registration of registrations.reverse()) await registration.dispose(); };', '} });', '');
+  lines.push('  return async () => { for (const registration of registrations.reverse()) await registration.dispose(); };', '} };', '');
   files.add('index.mjs', lines.join('\n'), components.map((component) => component.id));
-  files.json('package.json', { ...metadata, type: 'module', exports: { '.': './index.mjs' }, dependencies: { '@opencode/plugin': '^2.0.0' } });
+  files.json('package.json', { ...metadata, type: 'module', exports: { '.': './index.mjs' } });
 }

@@ -80,7 +80,7 @@ activationKey 另含启用位置与需求 scope。身份字符串、路径存在
 | Cursor / cursor-workspace-hook | .cursor-plugin，rules 为 alwaysApply，宿主 workspaceOpen 返回 pluginPaths | 完整包发布后精确合并对应 scope Hook；撤销 Hook 贡献再清包 |
 | Antigravity / antigravity-cli | .antigravity-plugin，Skills/MCP/Agents/Hooks/Rules | 本地 install/list JSON；更新先准备，再审核 uninstall/reinstall；disable/uninstall 后观测 |
 | Antigravity / antigravity-directory | 同一格式，公开 App 用户目录或项目 .agents/plugins | 精确独占目录发布/更新/撤销，不修改 CLI 私有状态 |
-| OpenCode / opencode-directory | V2 Plugin.define，skill/mcp/agent transform、tool/session hook；context hook 直接追加 system 正文 | 公开本地插件目录；更新后 reload/新会话，移除独占包；不写远程 server |
+| OpenCode / opencode-directory | V2 默认 `{id, setup}` 对象，无外部 SDK 运行时依赖；skill/mcp transform、tool/session hook；Skill 的 location 为绝对路径，context hook 直接追加 system 正文 | 公开本地插件目录；更新后 reload/新会话，移除独占包；不写远程 server |
 | Pi / pi-package | pi package Skills；MCP 与 Hook/Instructions extension；Agents 仅 Markdown 加 pi.subagents.agents 声明 | pi install 本地来源，项目 --local；对应 scope remove 后清理包，不安装/移除 Agents 消费者 |
 | Gemini / gemini-extension | extension Skills/MCP/preview Agents/Hooks/contextFileName；AW Agent 组合自身 Instructions | 本地 install/update 与 user/workspace activation；先停用需求，无引用再 uninstall |
 | Copilot / copilot-marketplace | 标准1.0包及 com.github.copilot Agents/Hooks/Rules；AW Agent 组合正文 | 本地 Marketplace/install；user 与 repo enabledPlugins 分开；目录更新由新会话/restart读取 |
