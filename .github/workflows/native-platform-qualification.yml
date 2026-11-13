@@ -21,13 +21,13 @@ permissions:
 
 jobs:
   native-windows-job:
-    if: (github.event_name == 'workflow_dispatch' && !inputs.interfaces_only) || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-antigravity-user'
+    if: (github.event_name == 'workflow_dispatch' && !inputs.interfaces_only) || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows'
     uses: ./.github/workflows/windows-job.yml
     with:
       source-ref: ${{ github.sha }}
 
   candidate:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-interfaces' || github.event.label.name == 'native-qualification-antigravity-user'
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-copilot' || github.event.label.name == 'native-qualification-interfaces' || github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -46,7 +46,7 @@ jobs:
       - run: pnpm test:qualification:native-platforms:harness
       - run: node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs scripts/qualification/native-platform-antigravity-management.test.mjs
       - name: Verify the Antigravity User qualification harness
-        if: github.event.label.name == 'native-qualification-antigravity-user'
+        if: github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows'
         run: node --test --test-concurrency=1 scripts/qualification/native-platform-antigravity-distributions.test.mjs scripts/qualification/native-platform-antigravity-user.test.mjs
       - name: Bind the candidate to this source and exact bundle bytes
         shell: bash
@@ -71,10 +71,11 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-2025, windows-11-arm]
+        runner: ${{ fromJSON(github.event.label.name == 'native-qualification-antigravity-user-windows' && '["windows-2025","windows-11-arm"]' || '["ubuntu-24.04","ubuntu-24.04-arm","macos-15-intel","macos-15","windows-2025","windows-11-arm"]') }}
     runs-on: ${{ matrix.runner }}
     env:
-      QUALIFICATION_CLIENT: ${{ inputs.client || (github.event.label.name == 'native-qualification-gemini' && 'gemini') || (github.event.label.name == 'native-qualification-copilot' && 'copilot') || (github.event.label.name == 'native-qualification-antigravity-user' && 'antigravity-user') || 'all' }}
+      QUALIFICATION_CLIENT: ${{ inputs.client || (github.event.label.name == 'native-qualification-gemini' && 'gemini') || (github.event.label.name == 'native-qualification-copilot' && 'copilot') || ((github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows') && 'antigravity-user') || 'all' }}
+      ANTIGRAVITY_PUBLIC_AW: ${{ github.event.label.name == 'native-qualification-antigravity-user-public' && '1' || '0' }}
       AW_NATIVE_QUALIFICATION_PROCESS_NAMES: '1'
       AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1'
     steps:
@@ -124,11 +125,13 @@ jobs:
       - name: Verify the Antigravity User harness on this host
         if: env.QUALIFICATION_CLIENT == 'antigravity-user'
         run: node --test --test-concurrency=1 scripts/qualification/native-platform-antigravity-management.test.mjs scripts/qualification/native-platform-antigravity-distributions.test.mjs scripts/qualification/native-platform-antigravity-user.test.mjs
-      - name: Verify only fixed Antigravity User native management
+      - name: Verify fixed Antigravity User management and explicitly requested public AW
         if: env.QUALIFICATION_CLIENT == 'antigravity-user'
         shell: bash
         run: |
-          node scripts/qualification/native-platform-antigravity-user.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-results/report.json"
+          args=(--candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-results/report.json")
+          if [[ "$ANTIGRAVITY_PUBLIC_AW" == '1' ]]; then args+=(--public-aw); fi
+          node scripts/qualification/native-platform-antigravity-user.mjs "${args[@]}"
       - name: Observe fixed Cursor and Antigravity interfaces without credentials
         if: ${{ !cancelled() && matrix.runner == 'ubuntu-24.04' && env.QUALIFICATION_CLIENT == 'all' }}
         continue-on-error: true

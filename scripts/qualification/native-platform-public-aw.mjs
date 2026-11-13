@@ -268,10 +268,23 @@ export async function writePublicFixtureRevision(ctx, plugin, revision) {
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 }
 
+async function requireProductionSkillProfile(ctx) {
+  const { getQualifiedPlatformProfile, getQualifiedKindsForScope } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
+  const profile = getQualifiedPlatformProfile(ctx.platform);
+  if (getQualifiedKindsForScope(profile, ctx.scope).skill.status !== 'supported'
+    || !profile.qualifiedConsumers?.skill?.some((consumer) => consumer.product === 'cli' && consumer.version === fixedClientVersion(ctx.platform))) {
+    await ctx.defer('public-aw-production-skill-profile-unverified');
+  }
+}
+
 export async function qualifyPublicAw(ctx) {
   if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude', 'opencode', 'antigravity'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
-  if (ctx.platform === 'antigravity' && (ctx.scope !== 'user' || process.platform !== 'linux'
-    || process.arch !== 'x64' || process.env.GITHUB_ACTIONS !== 'true')) await ctx.defer('antigravity-public-aw-limited-to-hosted-linux-x64-user');
+  if (ctx.platform === 'antigravity') {
+    if (ctx.scope !== 'user' || process.env.GITHUB_ACTIONS !== 'true') await ctx.defer('antigravity-public-aw-limited-to-hosted-user');
+    // Other hosts remain blocked until their actual production profile is qualified.
+    // Check before even target preferences are written in the isolated AW home.
+    await requireProductionSkillProfile(ctx);
+  }
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => {
@@ -288,12 +301,7 @@ export async function qualifyPublicAw(ctx) {
   });
   // Production qualification remains authoritative. Never inject a candidate
   // profile or use --force to turn a missing capability into public success.
-  const { getQualifiedPlatformProfile } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
-  const profile = getQualifiedPlatformProfile(ctx.platform);
-  if (profile.kinds.skill.status !== 'supported'
-    || !profile.qualifiedConsumers?.skill?.some((consumer) => consumer.product === 'cli' && consumer.version === fixedClientVersion(ctx.platform))) {
-    await ctx.defer('public-aw-production-skill-profile-unverified');
-  }
+  if (ctx.platform !== 'antigravity') await requireProductionSkillProfile(ctx);
   if (ctx.platform === 'opencode') await ctx.check('public-opencode-observation-environment', () => preparePublicOpenCodeObservation(ctx));
   const workspace = path.join(ctx.root, 'workspace');
   await fs.mkdir(workspace);

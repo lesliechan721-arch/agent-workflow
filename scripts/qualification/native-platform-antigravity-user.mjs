@@ -3,17 +3,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertCommand, execute, hostInfo, prepareEnvironment, processManagementInfo, renderPackage, sha256, verifyCandidate } from './native-platform-runtime.mjs';
-import { redact } from './native-platforms.mjs';
+import { redact, runScope } from './native-platforms.mjs';
 import { acquireAntigravityDistribution, getAntigravityDistribution } from './native-platform-antigravity-distributions.mjs';
 import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
 
 export function parseAntigravityUserArgs(args) {
   const options = {};
-  for (let index = 0; index < args.length; index += 2) {
+  for (let index = 0; index < args.length; index++) {
     const flag = args[index];
-    if (!['--candidate', '--report'].includes(flag) || options[flag.slice(2)] || !args[index + 1]
+    if (flag === '--public-aw' && !Object.hasOwn(options, 'public-aw')) { options['public-aw'] = true; continue; }
+    if (!['--candidate', '--report'].includes(flag) || Object.hasOwn(options, flag.slice(2)) || !args[index + 1]
       || args[index + 1].startsWith('--')) throw new Error('invalid-antigravity-user-arguments');
-    options[flag.slice(2)] = args[index + 1];
+    options[flag.slice(2)] = args[++index];
   }
   if (!options.candidate || !options.report) throw new Error('invalid-antigravity-user-arguments');
   return options;
@@ -109,16 +110,40 @@ export async function probeAntigravityUser(launcher, context, runCommand = execu
   return report;
 }
 
+function scopeProcessFailed(scope) {
+  return scope.commands.some(command => Object.hasOwn(command, 'processFailure') || command.timedOut || command.cancelled
+    || command.maxBufferExceeded || command.terminationReason && command.terminationReason !== 'complete'
+    || command.reason === 'process-contract-failed' || command.reason === 'process-or-cleanup-failed');
+}
+
+/** Public AW uses runScope's separate home; the acquired launcher stays in its owned root. */
+export async function qualifyAntigravityUserScopes(client, launcher, context, options = {}, runNativeCommand = execute, runPublicScope = runScope) {
+  const direct = await probeAntigravityUser(launcher, context, runNativeCommand);
+  client.scopes.push(direct);
+  client.status = direct.status === 'passed' && !scopeProcessFailed(direct) ? 'passed' : 'failed';
+  if (!options.publicAw) return;
+  client.publicAw = [];
+  if (client.status !== 'passed') return;
+  const publicScope = await runPublicScope('antigravity', 'user', launcher,
+    { publicAw: true, clientBin: path.join(context.root, 'public-client-bin') });
+  client.publicAw.push(publicScope);
+  if (publicScope.status !== 'passed' || publicScope.cleanup !== 'completed' || scopeProcessFailed(publicScope)) {
+    client.status = 'failed';
+    client.reason = publicScope.reason ?? 'public-aw-process-or-cleanup-unconfirmed';
+  }
+}
+
 export async function runAntigravityUserQualification(options) {
+  const publicAwRequested = options['public-aw'] === true;
   const client = { platform: 'antigravity', requiredVersion: '1.3.4', status: 'failed', scopes: [], cleanup: 'not-started' };
   const report = { schemaVersion: 2, kind: 'antigravity-user-native-qualification', status: 'failed', createdAt: new Date().toISOString(),
     acceptancePolicy: { id: 'management-content-scope-v1' }, environment: hostInfo(),
     run: { id: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null, sha: process.env.GITHUB_SHA ?? null },
     boundary: { hostedOnly: true, credentials: 'empty temporary HOME/AW/Agent/XDG roots', modelRequests: 'none', sessions: 'none',
-      scopes: ['user'], stdin: 'EOF', nativeCommandTimeoutMs: 30_000, productionQualificationChanged: false, publicAwRequested: false,
+      scopes: ['user'], stdin: 'EOF', nativeCommandTimeoutMs: 30_000, productionQualificationChanged: false, publicAwRequested,
       runtimeNetwork: 'blocked proxies; not an OS firewall', acquisition: 'fixed official GitHub release asset; no npm or install scripts',
-      processContract: 'existing strict execute; actual command metadata and Windows helper evidence are recorded separately',
-      uncovered: ['project', 'agents', 'other-kinds', 'model-adoption', 'invocation-controls', 'desktop', 'public-aw'] }, clients: [client] };
+      processContract: 'direct Native uses existing strict execute; requested public AW uses its existing ordinary observation; actual command metadata and Windows helper evidence are recorded separately',
+      uncovered: ['project', 'agents', 'other-kinds', 'model-adoption', 'invocation-controls', 'desktop', ...(publicAwRequested ? [] : ['public-aw'])] }, clients: [client] };
   let root;
   try {
     if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('hosted-runner-required');
@@ -137,8 +162,8 @@ export async function runAntigravityUserQualification(options) {
       { cwd: root, env, stdin: '', timeoutMs: 30_000 });
     assertCommand(setup);
     client.projectSetup = commandEvidence(setup);
-    const scope = await probeAntigravityUser(acquired.launcher, { root, project, neutral, env, executable: acquired.entry.path });
-    client.scopes.push(scope); client.status = scope.status;
+    await qualifyAntigravityUserScopes(client, acquired.launcher, { root, project, neutral, env, executable: acquired.entry.path },
+      { publicAw: publicAwRequested });
   } catch (error) {
     client.status = 'failed'; client.reason = error?.code ?? error?.message ?? 'user-qualification-failed';
     if (error?.evidence) client.acquisition = error.evidence;
