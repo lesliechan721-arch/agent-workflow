@@ -26,7 +26,7 @@ const kv = { type: 'object', additionalProperties: { type: 'boolean' } }
 
 function manifest(config: unknown) {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     name: 'array-example', version: '0.1.0', description: 'Array example',
     marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
     config,

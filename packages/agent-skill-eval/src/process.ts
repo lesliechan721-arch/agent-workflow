@@ -6,6 +6,7 @@ import {
   observeProcessTree,
   terminateProcessTree,
   type ProcessTreeDependencies,
+  type ProcessTreeDiagnostic,
   type ProcessTreeObservation,
 } from './process-tree.js'
 import {
@@ -40,9 +41,15 @@ export interface ProviderProcessDependencies {
 }
 
 export class ProviderProcessCleanupError extends Error {
-  constructor(message: string, cause: unknown, readonly result?: ProcessResult) {
+  readonly processTreeDiagnostics: readonly ProcessTreeDiagnostic[]
+
+  constructor(message: string, cause: unknown, readonly result?: ProcessResult,
+    diagnostics: readonly ProcessTreeDiagnostic[] = []) {
     super(message, { cause })
     this.name = 'ProviderProcessCleanupError'
+    this.processTreeDiagnostics = diagnostics.length > 1
+      ? [...diagnostics.slice(0, 1), ...diagnostics.slice(-1)]
+      : [...diagnostics]
   }
 }
 
@@ -237,6 +244,8 @@ export async function runProviderProcess(
         throw new ProviderProcessCleanupError(
           `Provider process tree cleanup could not be proven for pid ${handle.pid}: ${errorMessage(error, marker)}`,
           safeErrorCause(error, marker),
+          undefined,
+          verifiedObservation?.diagnostics,
         )
       }
       if (reason !== 'complete') killDirectChild()
@@ -262,6 +271,8 @@ export async function runProviderProcess(
             reject(cleanupFailure ?? new ProviderProcessCleanupError(
               `Provider direct child termination could not be confirmed for pid ${handle?.pid ?? 'unknown'}.`,
               new Error('direct child close event timed out'),
+              undefined,
+              verifiedObservation?.diagnostics,
             ))
           }, hookTimeoutMs + DIRECT_CHILD_CLOSE_TIMEOUT_MS)
         }
@@ -348,6 +359,7 @@ export async function runProviderProcess(
               descendantCleanupGuaranteed: false,
               gradingEvidenceAccepted: false,
             },
+            verifiedObservation?.diagnostics,
           )
         }
         if (spawnHookError) {
@@ -399,6 +411,7 @@ export async function runProviderProcess(
             gradingEvidenceAccepted: false,
           }
         : undefined,
+      runningError instanceof ProviderProcessCleanupError ? runningError.processTreeDiagnostics : undefined,
     )
   }
   if (runningError) throw runningError

@@ -6,23 +6,19 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PluginMeta } from '../../src/types.js';
-import { createRebuildIntegration } from '../../src/commands/rebuild-integration.js';
-import {
-  createCliExecutionContext,
-  createCommandExecutionContext,
-} from '../../src/commands/runtime.js';
+import { writePreferences } from '../../src/intent/deployment-preferences.js';
+import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { loadConsoleItemsResult, statusCommandV8 } from '../../src/commands/status-v6.js';
 import { installWriteCommand } from '../../src/commands/write-commands.js';
 import type { CommandEvent } from '../../src/output/model.js';
+import { runRecovery } from '../../src/recovery/coordinator.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
-import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
-import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
@@ -33,16 +29,20 @@ import {
 } from '../../src/utils/catalog-generation-service.js';
 import {
   NativeCliError,
-  SYSTEM_CODEX_MANAGER,
   setNativeCliRunnerOverrideForTests,
-  type NativeCliInvocation,
+  type NativeCliRunner,
 } from '../../src/utils/native-cli.js';
 import {
-  createCatalogSnapshotFixture,
   createDependencyCatalogSnapshotFixture,
 } from '../helpers/catalog-source-fixture.js';
+import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
+import {
+  createNativeTestExecution,
+  getNativeTestLayout,
+  installNativeTestQualification,
+} from '../helpers/native-execution-fixture.js';
+import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
-import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
 
 const SAMPLES = 20;
 const BUDGET_MS = 500;
@@ -68,24 +68,21 @@ describe('multi-source performance budgets', () => {
   let sourceRoot: string;
   let env: NodeJS.ProcessEnv;
   let fanoutEnv: NodeJS.ProcessEnv;
+  let nativeCliRunner: NativeCliRunner;
+  let fanoutNativeCliRunner: NativeCliRunner;
   let fanoutProviderInvocations = 0;
-
-  const fakeNativeRunner = async () => ({
-    exitCode: 0,
-    stdout: 'codex-cli 99.0.0',
-    stderr: '',
-  });
+  let providerObservers: Array<{ mockRestore(): void }> = [];
 
   beforeAll(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-multi-source-perf-'));
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-multi-source-perf-')));
+    await fs.ensureDir(path.join(root, '.git'));
     sourceRoot = path.join(root, 'catalog');
-    await createCatalogSnapshotFixture(sourceRoot);
-    env = {
-      ...process.env,
-      AW_HOME: path.join(root, 'aw-home'),
-      CODEX_HOME: path.join(root, 'codex-home'),
-      CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
-    };
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{
+      name: 'demo',
+      configureManifest: (manifest) => { manifest.platforms = ['codex']; },
+    }]);
+    env = (await createIsolatedTestEnv({ rootDir: path.join(root, 'local-isolation') })).env;
+    ({ nativeCliRunner } = await createCodexNativeTestRuntime({ env, layout: { fixtureCwd: root } }));
     await fs.outputJson(path.join(env.AW_HOME!, 'catalog-sources.json'), {
       schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
@@ -120,7 +117,7 @@ describe('multi-source performance budgets', () => {
         configureManifest: (manifest) => {
           manifest.platforms = ['codex'];
           manifest.extensions = {
-            instructions: [{ name: 'config-target', title: 'Config target', content: 'Config target.' }],
+            instructions: [{ name: 'config-target', title: 'Config target', content: 'Config target.', coverage: ['main'] }],
           };
           manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
         },
@@ -139,12 +136,11 @@ describe('multi-source performance budgets', () => {
     await execFileAsync('git', ['add', '.'], { cwd: gitWork });
     await execFileAsync('git', ['commit', '--quiet', '-m', 'catalog'], { cwd: gitWork });
     await execFileAsync('git', ['clone', '--bare', '--quiet', gitWork, gitRemote]);
-    fanoutEnv = {
-      ...process.env,
-      AW_HOME: path.join(root, 'fanout-aw-home'),
-      CODEX_HOME: path.join(root, 'fanout-codex-home'),
-      CLAUDE_CONFIG_DIR: path.join(root, 'fanout-claude-home'),
-    };
+    fanoutEnv = (await createIsolatedTestEnv({ rootDir: path.join(root, 'fanout-isolation') })).env;
+    ({ nativeCliRunner: fanoutNativeCliRunner } = await createCodexNativeTestRuntime({
+      env: fanoutEnv, layout: { fixtureCwd: root },
+    }));
+    // Active-only budgets exclude the TUI's separate background freshness probes.
     await fs.outputJson(path.join(fanoutEnv.AW_HOME!, 'catalog-sources.json'), {
       schemaVersion: 2,
       sources: [
@@ -152,6 +148,7 @@ describe('multi-source performance budgets', () => {
           id: 'git-a',
           type: 'git',
           primary: true,
+          autoCheck: false,
           url: gitRemote,
           refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
         },
@@ -159,11 +156,12 @@ describe('multi-source performance budgets', () => {
           id: 'git-b',
           type: 'git',
           primary: false,
+          autoCheck: false,
           url: gitRemote,
           refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
         },
-        { id: 'path-a', type: 'path', primary: false, path: firstPath },
-        { id: 'path-b', type: 'path', primary: false, path: secondPath },
+        { id: 'path-a', type: 'path', primary: false, autoCheck: false, path: firstPath },
+        { id: 'path-b', type: 'path', primary: false, autoCheck: false, path: secondPath },
       ],
     });
     for (const sourceId of ['git-a', 'git-b', 'path-a', 'path-b']) {
@@ -174,22 +172,33 @@ describe('multi-source performance budgets', () => {
         impactConfirmed: true,
       });
     }
-    const writeRuntime = {
-      env: fanoutEnv,
-      nativeCliRunner: fakeNativeRunner,
-    };
-    await installWriteCommand(['path-a/root'], {
-      cwd: root, platform: 'codex', scope: 'project',
-    }, writeRuntime);
-    await installWriteCommand(['path-a/write-root'], {
-      cwd: root, platform: 'codex', scope: 'project',
-    }, writeRuntime);
-    await installWriteCommand(['path-a/config-target'], {
-      cwd: root, platform: 'codex', scope: 'project',
-    }, writeRuntime);
-    const leafAgent = path.join(root, '.codex', 'agents', 'aw-leaf-leaf-role.toml');
-    await fs.remove(leafAgent);
-    await fs.ensureDir(leafAgent);
+    for (const fixtureEnv of [env, fanoutEnv]) {
+      await writePreferences({ scope: 'user', cwd: root, env: fixtureEnv }, {
+        schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['codex'], exclusions: [],
+      });
+    }
+  });
+
+  beforeEach(() => {
+    installNativeTestQualification({ discovery: true, trust: true });
+    const gitResolve = catalogGitProviderInternal.resolve;
+    const pathResolve = catalogPathProviderInternal.resolve;
+    fanoutProviderInvocations = 0;
+    providerObservers = [
+      vi.spyOn(catalogGitProviderInternal, 'resolve').mockImplementation((...args) => {
+        fanoutProviderInvocations += 1;
+        return gitResolve(...args);
+      }),
+      vi.spyOn(catalogPathProviderInternal, 'resolve').mockImplementation((...args) => {
+        fanoutProviderInvocations += 1;
+        return pathResolve(...args);
+      }),
+    ];
+  });
+
+  afterEach(() => {
+    for (const observer of providerObservers) observer.mockRestore();
+    setNativeCliRunnerOverrideForTests(null);
   });
 
   afterAll(async () => {
@@ -224,98 +233,14 @@ describe('multi-source performance budgets', () => {
   });
 
   it('keeps the first source read after a namespaced marketplace rebuild within budget', async () => {
-    const plugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'demo'), {
-      mode: 'bundle',
+    const installed = await runRecovery('install', ['local/demo'], {
+      cwd: root, env, targets: ['codex'], scope: 'user', context: 'user', cliVersion: '1.0.0', yes: true,
+    }, { env, nativeCliRunner });
+    expect(installed.ok, JSON.stringify(installed)).toBe(true);
+    const layout = await getNativeTestLayout({
+      platform: 'codex', sourceId: 'local', pluginId: 'local/demo', scope: 'user', cwd: root, env,
     });
-    plugin.manifest.apps = './.app.json';
-    await fs.outputJson(path.join(plugin.rootDir, '.app.json'), { apps: {} });
-    const marketplaceRoot = path.join(env.AW_HOME!, 'marketplaces', 'local');
-    const marketplaceName = 'aw-local';
-    const configPath = path.join(env.CODEX_HOME!, 'config.toml');
-    const cacheRoot = path.join(
-      env.CODEX_HOME!,
-      'plugins',
-      'cache',
-      marketplaceName,
-      plugin.manifest.name,
-      plugin.manifest.version,
-    );
-    let marketplaceAdded = false;
-    let pluginAdded = false;
-    const writeCodexConfig = async () => fs.outputFile(configPath, [
-      ...(marketplaceAdded ? [
-        `[marketplaces.${JSON.stringify(marketplaceName)}]`,
-        `source = ${JSON.stringify(marketplaceRoot)}`,
-        'source_type = "local"',
-        '',
-      ] : []),
-      ...(pluginAdded ? [
-        `[plugins.${JSON.stringify(`${plugin.manifest.name}@${marketplaceName}`)}]`,
-        'enabled = true',
-        '',
-      ] : []),
-    ].join('\n'));
-    const nativeCliRunner = async (invocation: NativeCliInvocation) => {
-      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({
-            installed: pluginAdded ? [{
-              pluginId: `${plugin.manifest.name}@${marketplaceName}`,
-              installed: true,
-              enabled: true,
-              version: plugin.manifest.version,
-            }] : [],
-            available: [],
-          }),
-          stderr: '',
-        };
-      }
-      if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
-        marketplaceAdded = true;
-        await writeCodexConfig();
-      } else if (invocation.args[1] === 'add') {
-        pluginAdded = true;
-        await fs.copy(path.join(marketplaceRoot, 'plugins', plugin.manifest.name), cacheRoot);
-        await fs.outputJson(path.join(cacheRoot, 'plugin.json'), {
-          id: plugin.manifest.name,
-          version: plugin.manifest.version,
-        });
-        await writeCodexConfig();
-      }
-      return { exitCode: 0, stdout: '', stderr: '' };
-    };
-    const observationSession = await createCodexNativeObservationSession({
-      exactCwd: root,
-      env,
-      runner: nativeCliRunner,
-    });
-    const context = {
-      ...createCommandExecutionContext({ env, nativeCliRunner }),
-      codexManager: SYSTEM_CODEX_MANAGER,
-      codexObservationSession: observationSession,
-    };
-    const integration = createRebuildIntegration({ context });
-    const target = await integration.buildTarget({
-      sourceId: 'local',
-      sourceIdentity: `sha256:${'1'.repeat(64)}`,
-      pluginId: 'local/demo',
-      marketplaceName,
-      marketplaceRoot,
-      plugin,
-      platform: 'codex',
-      scope: 'user',
-      cwd: root,
-      command: 'install',
-      catalog: { rootDir: sourceRoot, source: 'local' },
-    });
-    try {
-      await integration.prepareNativeMarketplaceGroup(target);
-      await integration.driver.writeNative(target);
-    } finally {
-      await observationSession.dispose();
-    }
-    await expect(fs.pathExists(path.join(marketplaceRoot, 'config.json'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(layout.marketplaceRoot!, 'config.json'))).resolves.toBe(true);
 
     const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
     const startedAt = performance.now();
@@ -333,9 +258,10 @@ describe('multi-source performance budgets', () => {
   });
 
   it('keeps warm multi-source status and console loading within budget', async () => {
+    setNativeCliRunnerOverrideForTests(nativeCliRunner);
     const durations = await sample(async () => {
       const result = await statusCommandV8({
-        cwd: root, env, cliVersion: '1.0.0', json: true,
+        cwd: root, env, cliVersion: '1.0.0', json: true, nativeCliRunner,
       });
       const consoleResult = await loadConsoleItemsResult({ cwd: root }, { env });
       expect(result.payload.catalog.sources[0]?.id).toBe('local');
@@ -379,7 +305,7 @@ describe('multi-source performance budgets', () => {
 
   it('reads four Active sources without invoking a provider', async () => {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(fanoutEnv);
-    let providerInvocations = 0;
+    fanoutProviderInvocations = 0;
     const durations = await sample(async () => {
       await withResolvedMultiSourceCatalog({
         cliVersion: '1.0.0',
@@ -390,7 +316,7 @@ describe('multi-source performance budgets', () => {
         },
       });
     });
-    expect(providerInvocations).toBe(0);
+    expect(fanoutProviderInvocations).toBe(0);
     const summary = createPerfSummary(
       'active-four-source-read-warm',
       durations,
@@ -401,6 +327,20 @@ describe('multi-source performance budgets', () => {
   });
 
   it('keeps a large Active-only TUI load plus Review within the local budget', async () => {
+    const installed = await runRecovery('install', [
+      'path-a/root', 'path-a/write-root', 'path-a/config-target',
+    ], { cwd: root, env: fanoutEnv, targets: ['codex'], scope: 'project', context: 'project',
+      cliVersion: '1.0.0', yes: true }, {
+      env: fanoutEnv, nativeCliRunner: fanoutNativeCliRunner,
+    });
+    expect(installed.ok, JSON.stringify(installed)).toBe(true);
+    const leafLayout = await getNativeTestLayout({
+      platform: 'codex', sourceId: 'path-a', pluginId: 'path-a/leaf', cwd: root, env: fanoutEnv,
+    });
+    const leafAgent = path.join(leafLayout.supplementRoot!, 'aw-path-a-leaf-leaf-role.toml');
+    await expect(fs.pathExists(leafAgent)).resolves.toBe(true);
+    await fs.remove(leafAgent);
+    await fs.ensureDir(leafAgent);
     fanoutProviderInvocations = 0;
     const catalogStageDurations: number[] = [];
     const durations = await sample(async () => {
@@ -409,7 +349,7 @@ describe('multi-source performance budgets', () => {
         cwd: root,
         env: fanoutEnv,
         interactive: false,
-        nativeCliRunner: fakeNativeRunner,
+        nativeCliRunner: fanoutNativeCliRunner,
         debugLogger: { log: (event) => { events.push(event); } },
       });
       const controller = new TuiController(createTuiControllerDependencies(context));
@@ -420,8 +360,8 @@ describe('multi-source performance budgets', () => {
           kind: 'configSave',
           apply: false,
           pluginId: 'path-a/config-target',
-          scope: 'project',
-          projectLayer: 'shared',
+          scope: 'user',
+          context: 'project',
           updates: { mode: 'strict' },
         });
       } finally {
@@ -465,6 +405,11 @@ describe('multi-source performance budgets', () => {
   });
 
   it('keeps a real warm install path observable with local stage budgets', async () => {
+    const installed = await runRecovery('install', ['path-a/write-root'], {
+      cwd: root, env: fanoutEnv, targets: ['codex'], scope: 'project', context: 'project',
+      cliVersion: '1.0.0', yes: true,
+    }, { env: fanoutEnv, nativeCliRunner: fanoutNativeCliRunner });
+    expect(installed.ok, JSON.stringify(installed)).toBe(true);
     fanoutProviderInvocations = 0;
     const native = await createNativeTestExecution({ scope: 'project', cwd: root, env: fanoutEnv,
       selectedTargets: [{ pluginId: 'path-a/write-root', platform: 'codex' }],
@@ -481,7 +426,7 @@ describe('multi-source performance budgets', () => {
       }, {
         env: fanoutEnv,
         executionInput: native.executionInput,
-        nativeCliRunner: fakeNativeRunner,
+        nativeCliRunner: fanoutNativeCliRunner,
         debugLogger: { log: (event) => { events.push(event); } },
       });
       const durationMs = performance.now() - startedAt;
@@ -501,17 +446,30 @@ describe('multi-source performance budgets', () => {
           ? [event.data.name]
           : []));
       expect(actionNames.has('preflight.inspect')).toBe(true);
-      expect(actionNames.has('artifacts.write')).toBe(true);
-      expect(actionNames.has('postcheck.inspect')).toBe(true);
+      const rebuilt = result.rebuildResults.filter((entry) => entry.target.pluginId === 'path-a/write-root'
+        && entry.target.platform === 'codex' && entry.target.scope === 'project');
+      expect(rebuilt).toHaveLength(1);
+      expect(rebuilt[0]!.deploymentReceipts).toHaveLength(1);
+      expect(rebuilt[0]!.deploymentReceipts![0]).toMatchObject({
+        unmet: [],
+        after: {
+          package: 'present', registration: 'present', ownership: 'aw',
+          nativeIdentity: { route: 'codex-marketplace', packageId: 'write-root' },
+          consumers: [expect.objectContaining({ activation: 'enabled' })],
+        },
+      });
       if (record) {
         commandDurations.push(durationMs);
         localStageDurations.push(stageEvents.reduce((total, event) =>
           total + (typeof event.data?.durationMs === 'number' ? event.data.durationMs : 0), 0));
       }
     };
-    await runInstall(false);
-    for (let index = 0; index < 8; index += 1) await runInstall(true);
-    await native.dispose();
+    try {
+      await runInstall(false);
+      for (let index = 0; index < 8; index += 1) await runInstall(true);
+    } finally {
+      await native.dispose();
+    }
     expect(fanoutProviderInvocations).toBe(0);
     const commandSummary = createPerfSummary(
       'install-write-command-warm',

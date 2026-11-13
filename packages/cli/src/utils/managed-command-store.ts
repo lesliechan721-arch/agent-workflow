@@ -322,25 +322,16 @@ export async function captureManagedCommandBindingRecoveryEvidence(options: {
   producer: ProducerIdentity; resourceRoot: string; env?: NodeJS.ProcessEnv;
 }): Promise<ManagedCommandBindingRecoveryEvidence> {
   const producer = normalizeProducerIdentity(options.producer);
-  if (producer.kind === 'package' || producer.scope !== 'user' || producer.projectRoot !== null) {
-    fail('commandOwnerMismatch', 'Binding recovery requires an installed shared Native Skill producer.');
-  }
+  if (producer.kind === 'package') fail('commandOwnerMismatch', 'Binding recovery requires an installed Native Skill producer.');
   const root = await managedCommandRoot(options.env);
   const resourceRoot = path.resolve(options.resourceRoot);
-  const pluginRoot = path.join(path.dirname(root), 'marketplaces', producer.sourceId, 'plugins', producer.pluginName);
-  await safePath(pluginRoot, resourceRoot);
-  const marker = await fs.lstat(path.join(resourceRoot, '.agent-workflows-owner.json')).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
-  if (marker) fail('commandOwnerMismatch', 'Shared Native Skill evidence cannot use a scoped owner marker.');
   const record = await readInstalledCommandProducer(resourceRoot);
   if (!equal(record.producer, producer)) fail('commandOwnerMismatch', 'The installed producer does not match the recovery request.');
   await assertManagedCommandProducerOwnership(producer, resourceRoot, options.env);
   const identities = new Map<string, CommandIdentity>();
   for (const set of record.sets) for (const entry of set.entries) {
     await validateManagedCommandResource(resourceRoot, entry);
-    const identity: CommandIdentity = { schemaVersion: 1, producer, set: set.set, key: entry.key, variant: entry.variant };
+    const identity: CommandIdentity = { schemaVersion: 2, producer, set: set.set, key: entry.key, variant: entry.variant };
     identities.set(getPluginCommandId(identity), identity);
   }
   return { [bindingRecoveryIdentities]: { root, identities } };
@@ -367,6 +358,7 @@ async function entriesAt(directory: string): Promise<string[]> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
 }
 export async function revokeManagedCommandBindings(producer: ProducerIdentity, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  producer = normalizeProducerIdentity(producer);
   const root = await managedCommandRoot(env);
   const removed: string[] = [];
   await safePath(root, path.join(root, 'bindings'));
@@ -389,7 +381,7 @@ async function prepareManagedCommandIdentities(
 ): Promise<Map<string, CommandIdentity>> {
   const candidates = new Map<string, CommandIdentity>();
   for (const record of records) for (const set of record.sets) for (const entry of set.entries) {
-    const identity: CommandIdentity = { schemaVersion: 1, producer: record.producer, set: set.set, key: entry.key, variant: entry.variant };
+    const identity: CommandIdentity = { schemaVersion: 2, producer: record.producer, set: set.set, key: entry.key, variant: entry.variant };
     const id = getPluginCommandId(identity);
     const candidate = candidates.get(id);
     if (candidate && !equal(candidate, identity)) fail('commandIdentityConflict', 'commandIdentityConflict: the command ID already belongs to another identity.');
@@ -434,6 +426,20 @@ export async function publishManagedCommandBindings(options: {
   for (const set of record.sets) for (const entry of set.entries) await validateManagedCommandResource(resourceRoot, entry);
   const candidates = await prepareManagedCommandIdentities(root, [record], options.bindingRecoveryEvidence);
   if (record.nativeTools) await validateNativeToolClosureFiles(resourceRoot, record.nativeTools);
+  await assertManagedCommandProducerOwnership(record.producer, resourceRoot, options.env);
+  let previous: InstalledCommandProducer | undefined;
+  const recordPath = path.join(resourceRoot, COMMAND_PRODUCER_RECORD);
+  await safePath(resourceRoot, recordPath);
+  const recordStats = await fs.lstat(recordPath).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+  if (recordStats) {
+    if (!recordStats.isFile()) fail('commandBindingInvalid', 'The installed producer record must be a regular file.');
+    const content = await fs.readFile(recordPath, 'utf8');
+    try { previous = normalizeInstalledCommandProducer(JSON.parse(content)); }
+    catch (error) {
+      if (!(error instanceof SyntaxError) && (!(error instanceof ManagedCommandError) || error.code !== 'commandBindingInvalid')) throw error;
+    }
+  }
+  if (previous && !equal(previous.producer, record.producer)) fail('commandIdentityConflict', 'The resource root already contains another complete producer identity.');
   await writeInstalledCommandProducer(resourceRoot, record);
   await revokeManagedCommandBindings(record.producer, options.env);
   for (const [id, identity] of candidates) await writeJson(root, path.join(root, 'bindings', `${id}.json`), { schemaVersion: 1, id, identity, resourceRoot });
@@ -570,7 +576,7 @@ export async function listManagedCommandPackages(env: NodeJS.ProcessEnv = proces
         const record = await readInstalledCommandProducer(resourceRoot);
         if (!equal(record.producer, producer)) fail('commandIdentityConflict', 'The package content and owner identities differ.');
         await validateManagedCommandResource(resourceRoot);
-        view.sets = record.sets.map((set) => ({ set: set.set, state: set.state, commandIds: set.entries.map((entry) => getPluginCommandId({ schemaVersion: 1, producer, set: set.set, key: entry.key, variant: entry.variant })) }));
+        view.sets = record.sets.map((set) => ({ set: set.set, state: set.state, commandIds: set.entries.map((entry) => getPluginCommandId({ schemaVersion: 2, producer, set: set.set, key: entry.key, variant: entry.variant })) }));
         for (const set of view.sets) for (const commandId of set.commandIds) await resolveManagedCommand(commandId, env);
         view.availability = view.sets.some((set) => set.commandIds.length) ? 'ready' : 'empty';
       } catch (error) {

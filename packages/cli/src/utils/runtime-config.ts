@@ -9,11 +9,12 @@ import {
   createRuntimeConfigSnapshot,
   selectPluginConfigProfile,
   getPluginConfigDependencyKeys,
-  type RuntimeConfigBinding,
   type RuntimeConfigSnapshot,
+  type RuntimeConfigOrigin,
   type RuntimeInstalledIdentity,
+  type PluginComponent,
 } from '@lesliechan721/aw-plugin-core';
-import type { NormalizedPluginManifest, Scope, PlatformName } from '../types.js';
+import type { NormalizedPluginManifest, Scope, PlatformTarget } from '../types.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
 import type { DynamicSkillTree } from './dynamic-skill-tree.js';
 import { resolveCliPackageRoot } from './paths.js';
@@ -23,15 +24,16 @@ export function createArtifactRuntimeConfigSnapshots(options: {
   sourceIdentity?: string;
   logicalIdentity?: string;
   manifest: NormalizedPluginManifest;
-  platform: PlatformName;
+  platform: PlatformTarget;
   scope: Scope;
   config: ResolvedArtifactRenderConfig;
-  requestedArtifactIds: readonly string[];
+  components: readonly PluginComponent[];
 }): Record<string, RuntimeConfigSnapshot> {
-  const snapshots: Record<string, RuntimeConfigSnapshot> = {};
-  for (const target of options.manifest.artifacts?.targets ?? []) {
-    if (!target.runtimeConfig || target.platform !== options.platform || !target.scopes.includes(options.scope)
-      || !options.requestedArtifactIds.includes(target.id)) continue;
+  const snapshots: Record<string, RuntimeConfigSnapshot> = Object.create(null);
+  for (const target of options.components) {
+    if (target.kind !== 'skill' || !target.runtimeConfig) continue;
+    if (options.platform === 'generic') throw new Error('runtimeConfigUnsupported: Generic Skills do not support installed runtime config.');
+    if (!options.manifest.requires?.aw.capabilities?.includes('aw.installed-runtime-config.v2')) throw new Error('runtimeConfigInvalid: Runtime config requires aw.installed-runtime-config.v2.');
     const sourceId = options.sourceId ?? 'authoring';
     const installedIdentity: RuntimeInstalledIdentity = {
       sourceId,
@@ -41,10 +43,10 @@ export function createArtifactRuntimeConfigSnapshots(options: {
       pluginName: options.manifest.name,
       pluginVersion: options.manifest.version,
       platform: options.platform,
-      scope: target.target === 'codex.skill' || target.target === 'claude.skill' ? 'user' : options.scope,
+      scope: options.scope,
       configScope: options.config.targetScope,
       artifactId: target.id,
-      skillKey: target.skillKey!,
+      skillKey: target.name,
     };
     if (!options.manifest.config) throw new Error('runtimeConfigInvalid: Runtime config requires a config definition.');
     const definition = options.config.definition ?? selectPluginConfigProfile(options.manifest.config, options.platform);
@@ -67,7 +69,7 @@ export function createArtifactRuntimeConfigSnapshots(options: {
 export async function injectInstalledRuntimeConfig(
   tree: DynamicSkillTree,
   snapshot: RuntimeConfigSnapshot | undefined,
-  options: { nativeReceiptPath?: string } = {},
+  options: { origin?: RuntimeConfigOrigin } = {},
 ): Promise<void> {
   for (const reserved of [AW_RUNTIME_CONFIG_BINDING_PATH, AW_RUNTIME_CONFIG_READER_PATH]) {
     if (Object.hasOwn(tree.files, reserved)) throw new Error('runtimeConfigReservedResource: Plugin cannot issue AW runtime resources.');
@@ -79,24 +81,9 @@ export async function injectInstalledRuntimeConfig(
   const helper = path.join(resolveCliPackageRoot(), 'authoring', 'assets', 'aw-runtime-config.mjs');
   const builtHelper = path.join(resolveCliPackageRoot(), 'dist', 'authoring', 'assets', 'aw-runtime-config.mjs');
   tree.files[AW_RUNTIME_CONFIG_READER_PATH] = await fs.readFile(await fs.pathExists(helper) ? helper : builtHelper);
-  tree.files[AW_RUNTIME_CONFIG_BINDING_PATH] = Buffer.from(`${JSON.stringify(createRuntimeConfigBinding(snapshot, options), null, 2)}\n`);
-}
-
-async function readBinding(skillRoot: string): Promise<RuntimeConfigBinding | null> {
-  const bindingPath = path.join(skillRoot, AW_RUNTIME_CONFIG_BINDING_PATH);
-  if (!await fs.pathExists(bindingPath)) return null;
-  const value = await fs.readJson(bindingPath) as RuntimeConfigBinding;
-  if (value.schemaVersion !== 2 || value.kind !== 'aw-runtime-config') {
-    throw new Error('runtimeConfigBindingInvalid: Cannot capture a damaged runtime binding; sync or reinstall.');
+  if (options.origin) {
+    tree.files[AW_RUNTIME_NATIVE_RECEIPT_PATH] = Buffer.from(`${JSON.stringify(options.origin, null, 2)}\n`);
   }
-  return value;
-}
-
-/** AW-owned capture retains the existing native origin receipt when its ancestor will be removed. */
-export async function carryRuntimeConfigNativeReceipt(skillRoot: string, receipt: Buffer): Promise<void> {
-  const binding = await readBinding(skillRoot);
-  if (!binding?.nativeReceiptPath) return;
-  await fs.outputFile(path.join(skillRoot, AW_RUNTIME_NATIVE_RECEIPT_PATH), receipt);
-  const rebound = createRuntimeConfigBinding(binding, { nativeReceiptPath: AW_RUNTIME_NATIVE_RECEIPT_PATH });
-  await fs.outputJson(path.join(skillRoot, AW_RUNTIME_CONFIG_BINDING_PATH), rebound, { spaces: 2 });
+  tree.files[AW_RUNTIME_CONFIG_BINDING_PATH] = Buffer.from(`${JSON.stringify(createRuntimeConfigBinding(snapshot,
+    options.origin ? { originPath: AW_RUNTIME_NATIVE_RECEIPT_PATH } : {}), null, 2)}\n`);
 }

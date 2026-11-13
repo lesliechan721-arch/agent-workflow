@@ -146,7 +146,7 @@ describe('manifest utils', () => {
       },
     });
     expect(plugin.manifest.marketplace.policy).not.toHaveProperty('products');
-    expect(plugin.manifest.schemaVersion).toBe(3);
+    expect(plugin.manifest.schemaVersion).toBe(4);
     expect(plugin.manifest.extensions?.hooks?.[0]).toMatchObject({
       event: 'before_tool',
       matcher: 'Bash',
@@ -284,7 +284,7 @@ describe('manifest utils', () => {
     manifest.extensions.hooks[0].event = 'command';
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'unsupported hook event "command"',
+      '/extensions/hooks/0/event must be equal to one of the allowed values',
     );
 
     manifest.extensions.hooks[0].event = 'before_tool';
@@ -362,7 +362,7 @@ describe('manifest utils', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'skills points to "./skills" but path does not exist',
+      'skills points to missing ./skills',
     );
   });
 
@@ -444,33 +444,8 @@ describe('manifest utils', () => {
     manifest.dependencies = ['shared-runtime'];
     manifest.requires = { aw: { capabilities: ['aw.future-feature.v3'] } };
     manifest.artifacts = {
-      targets: [
-        {
-          id: 'lightweight-instruction',
-          platform: 'codex',
-          scopes: ['user', 'project'],
-          target: 'codex.developerInstructionsBlock',
-          projectManagedKind: 'instruction',
-          states: ['present', 'disabled'],
-          refreshKeys: [
-            'enableLightweightInstruction',
-            'explorerModel',
-            'modelReasoningEffort',
-          ],
-          requiresCodexProjectConfig: true,
-        },
-        {
-          id: 'codex-explorer-role',
-          platform: 'codex',
-          scopes: ['user', 'project'],
-          target: 'codex.agentRole',
-          projectManagedKind: 'agent',
-          states: ['present'],
-          refreshKeys: ['explorerModel', 'modelReasoningEffort'],
-          requiresCodexProjectConfig: true,
-          roleKey: 'codex-explorer',
-        },
-      ],
+      configKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+      scopes: ['user', 'project'],
     };
     await writeFixturePluginManifest(repoRoot, manifest);
 
@@ -518,19 +493,10 @@ describe('manifest utils', () => {
       path: './scripts/render-artifacts.mjs',
       args: ['--plan'],
     });
-    expect(bundleManifest.artifacts?.targets).toEqual([
-      expect.objectContaining({
-        id: 'lightweight-instruction',
-        target: 'codex.developerInstructionsBlock',
-        projectManagedKind: 'instruction',
-      }),
-      expect.objectContaining({
-        id: 'codex-explorer-role',
-        target: 'codex.agentRole',
-        projectManagedKind: 'agent',
-        roleKey: 'codex-explorer',
-      }),
-    ]);
+    expect(bundleManifest.artifacts).toEqual({
+      configKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+      scopes: ['user', 'project'],
+    });
     expect(bundleManifest.config?.fields.token.sensitive).toBe(true);
     expect(bundleManifest.config?.fields.token.title).toBe('API Token');
 
@@ -879,272 +845,62 @@ describe('manifest utils', () => {
     }
   });
 
-  it('rejects invalid dynamic artifact target declarations', async () => {
+  it('validates renderer configuration permissions, scope and resource boundaries', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
-    manifest.config = {
-      fields: {
-        enabled: {
-          type: 'boolean',
-          default: true,
-        },
-        model: {
-          type: 'string',
-          default: 'gpt-5.4-mini',
-        },
-        userOnly: {
-          type: 'string',
-        },
-      },
+    await writeScriptFixture(pluginRoot);
+    await fs.ensureDir(path.join(pluginRoot, 'renderer-resources'));
+    manifest.scripts = {
+      artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } },
     };
-
-    const validTarget = {
-      id: 'lightweight-instruction',
-      platform: 'codex',
-      scopes: ['user', 'project'],
-      target: 'codex.developerInstructionsBlock',
-      projectManagedKind: 'instruction',
-      states: ['present', 'disabled'],
-      refreshKeys: ['enabled', 'model'],
-      requiresCodexProjectConfig: true,
+    manifest.config = { fields: { enabled: { type: 'boolean', default: true } } };
+    const validArtifacts = {
+      configKeys: ['enabled'], scopes: ['user', 'project'], sourceDirs: ['./renderer-resources'],
     };
-
-    manifest.artifacts = {
-      targets: [validTarget],
-    };
+    manifest.artifacts = validArtifacts;
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
-      manifest: {
-        artifacts: {
-          targets: [expect.objectContaining(validTarget)],
-        },
-      },
+      manifest: { artifacts: validArtifacts },
     });
 
-    manifest.artifacts = {
-      targets: [{
-        id: 'native-codex-skill',
-        platform: 'codex',
-        scopes: ['user', 'project'],
-        target: 'codex.skill',
-        states: ['present'],
-        refreshKeys: ['model'],
-        skillKey: 'native-codex-skill',
-      }],
-    };
+    for (const invalid of [
+      { ...validArtifacts, targets: [] },
+      { ...validArtifacts, scopes: [] },
+      { ...validArtifacts, scopes: ['user', 'user'] },
+      { ...validArtifacts, scopes: ['global'] },
+    ]) {
+      manifest.artifacts = invalid;
+      await writeFixturePluginManifest(repoRoot, manifest);
+      await expect(readPluginManifest(pluginRoot)).rejects.toMatchObject({
+        name: 'PluginManifestStructureError',
+        issues: expect.arrayContaining([expect.objectContaining({
+          instancePath: expect.stringMatching(/^\/artifacts/u),
+        })]),
+      });
+    }
+    for (const configKeys of [['missingKey'], ['enabled', 'enabled']]) {
+      manifest.artifacts = { ...validArtifacts, configKeys };
+      await writeFixturePluginManifest(repoRoot, manifest);
+      await expect(readPluginManifest(pluginRoot)).rejects.toThrow(/artifacts[./]configKeys/u);
+    }
+    for (const sourceDirs of [['../outside'], ['/tmp/outside'], ['./missing'], ['./.mcp.json']]) {
+      manifest.artifacts = { ...validArtifacts, sourceDirs };
+      await writeFixturePluginManifest(repoRoot, manifest);
+      await expect(readPluginManifest(pluginRoot)).rejects.toThrow(/artifacts[./]sourceDirs/u);
+    }
+    manifest.artifacts = validArtifacts;
+    manifest.scripts = undefined;
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
-      manifest: {
-        artifacts: {
-          targets: [expect.objectContaining({ target: 'codex.skill', scopes: ['user'] })],
-        },
-      },
-    });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('requires scripts.artifacts.render');
 
-    manifest.artifacts = {
-      targets: [{ ...validTarget, target: 'codex.unknown' }],
+    manifest.scripts = {
+      artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } },
     };
+    await fs.symlink('../renderer-resources', path.join(pluginRoot, 'scripts', 'resource-link'));
+    manifest.artifacts = { ...validArtifacts, sourceDirs: ['./scripts/resource-link'] };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/artifacts/targets/0/target');
-
-    manifest.artifacts = {
-      targets: [{ ...validTarget, states: ['present', 'archived'] }],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/artifacts/targets/0/states/1');
-
-    manifest.artifacts = {
-      targets: [{ ...validTarget, refreshKeys: ['missingKey'] }],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unknown config key "missingKey"');
-
-    manifest.artifacts = {
-      targets: [{ ...validTarget, projectManagedKind: 'codexRole' }],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/artifacts/targets/0/projectManagedKind');
-
-    manifest.artifacts = {
-      targets: [{ ...validTarget, projectManagedKind: 'agent' }],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must map to "instruction"');
-
-    manifest.artifacts = {
-      targets: [
-        {
-          ...validTarget,
-          id: 'codex-explorer-role',
-          target: 'codex.agentRole',
-          projectManagedKind: 'agent',
-          states: ['present'],
-          refreshKeys: ['model'],
-        },
-      ],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must declare a static roleKey');
-
-    manifest.artifacts = {
-      targets: [
-        {
-          id: 'codex-explore-skill',
-          platform: 'codex',
-          scopes: ['project'],
-          target: 'codex.skill',
-          projectManagedKind: 'skill',
-          states: ['present', 'disabled'],
-          refreshKeys: ['model'],
-          skillKey: 'codex-explore',
-        },
-      ],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
-      manifest: {
-        artifacts: {
-          targets: [expect.objectContaining({
-            id: 'codex-explore-skill',
-            target: 'codex.skill',
-            projectManagedKind: 'skill',
-            skillKey: 'codex-explore',
-          })],
-        },
-      },
-    });
-
-    manifest.artifacts = {
-      targets: [
-        {
-          id: 'codex-explore-skill',
-          platform: 'codex',
-          scopes: ['project'],
-          target: 'codex.skill',
-          projectManagedKind: 'skill',
-          states: ['present'],
-          refreshKeys: ['model'],
-        },
-      ],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must declare a static skillKey');
-
-    manifest.artifacts = {
-      targets: [
-        {
-          ...validTarget,
-          roleKey: 'should-not-be-here',
-        },
-      ],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('roleKey is only supported for codex.agentRole targets');
-
-    manifest.artifacts = {
-      targets: [
-        {
-          ...validTarget,
-          skillKey: 'should-not-be-here',
-        },
-      ],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('skillKey is only supported for skill targets');
-
-    manifest.artifacts = {
-      targets: [
-        validTarget,
-        {
-          ...validTarget,
-          scopes: ['project'],
-        },
-      ],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'duplicate artifact id "lightweight-instruction" for surface/scope "codex:project"',
-    );
-
-    manifest.artifacts = {
-      targets: [
-        {
-          id: 'claude-skill-one',
-          platform: 'claude',
-          scopes: ['project'],
-          target: 'claude.skill',
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'codex-explore',
-        },
-        {
-          id: 'claude-skill-two',
-          platform: 'claude',
-          scopes: ['user', 'project'],
-          target: 'claude.skill',
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'codex-explore',
-        },
-      ],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'duplicate dynamic skill owner "claude:user:codex-explore"',
-    );
-
-    await fs.ensureDir(path.join(pluginRoot, 'skills', 'codex-explore', 'base'));
-    manifest.artifacts = {
-      targets: [{
-        id: 'codex-explore-skill',
-        platform: 'codex',
-        scopes: ['project'],
-        target: 'codex.skill',
-        projectManagedKind: 'skill',
-        states: ['present'],
-        refreshKeys: [],
-        skillKey: 'codex-explore',
-        sourceDirs: ['./skills/codex-explore/base'],
-      }],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'must include "./skills/codex-explore" so README.md is published',
-    );
-
-    await fs.ensureDir(path.join(pluginRoot, 'skills', 'codex-explore', 'evals'));
-    manifest.artifacts.targets[0]!.sourceDirs = [
-      './skills/codex-explore',
-      './skills/codex-explore/evals',
-    ];
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'points inside an author-only Skill directory',
-    );
-
-    await fs.ensureDir(path.join(pluginRoot, 'skills', 'codex-explore', 'real'));
-    await fs.symlink('real', path.join(pluginRoot, 'skills', 'codex-explore', 'source-link'));
-    manifest.artifacts = {
-      targets: [{
-        id: 'codex-explore-skill',
-        platform: 'codex',
-        scopes: ['project'],
-        target: 'codex.skill',
-        projectManagedKind: 'skill',
-        states: ['present'],
-        refreshKeys: [],
-        skillKey: 'codex-explore',
-        sourceDirs: [
-          './skills/codex-explore',
-          './skills/codex-explore/source-link',
-        ],
-      }],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin input tree: symbolic links are not supported (skills/codex-explore/source-link).',
-    );
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('symbolic links are not supported');
   });
 
   it('rejects unsupported platform build fields and apps declarations', async () => {
@@ -1177,7 +933,7 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": buildConfig.manifestOverrides.claude requires claude support, but platforms=[codex].',
+      '/buildConfig must NOT have additional properties',
     );
 
     manifest.platforms = ['claude'];
@@ -1186,57 +942,27 @@ describe('manifest utils', () => {
     await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: {} }, { spaces: 2 });
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": apps requires codex support, but platforms=[claude].',
+      '/ must NOT have additional properties',
     );
   });
 
-  it('rejects unsupported Codex artifact targets and keeps dual-platform targets valid', async () => {
+  it('uses one renderer declaration for single and multiple platform sets', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
-    const validTarget = {
-      id: 'lightweight-instruction',
-      platform: 'codex',
-      scopes: ['user', 'project'],
-      target: 'codex.developerInstructionsBlock',
-      projectManagedKind: 'instruction',
-      states: ['present', 'disabled'],
-      refreshKeys: ['enabled', 'model'],
-      requiresCodexProjectConfig: true,
+    await writeScriptFixture(pluginRoot);
+    manifest.config = { fields: { enabled: { type: 'boolean', default: true } } };
+    manifest.scripts = {
+      artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } },
     };
-
-    manifest.platforms = ['claude'];
-    delete manifest.apps;
-    await fs.remove(path.join(pluginRoot, '.app.json'));
-    manifest.config = {
-      fields: {
-        enabled: {
-          type: 'boolean',
-          default: true,
-        },
-        model: {
-          type: 'string',
-          default: 'gpt-5.4-mini',
-        },
-      },
-    };
-    manifest.artifacts = {
-      targets: [validTarget],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid plugin "git-commit": artifacts.targets[0].platform requires codex support, but platforms=[claude].',
-    );
-
-    manifest.platforms = ['codex', 'claude'];
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
-      manifest: {
-        artifacts: {
-          targets: [expect.objectContaining(validTarget)],
-        },
-      },
-    });
+    manifest.artifacts = { configKeys: ['enabled'] };
+    for (const platforms of [['claude'], ['codex', 'claude'], ['gemini', 'copilot', 'grok']]) {
+      manifest.platforms = platforms;
+      await writeFixturePluginManifest(repoRoot, manifest);
+      await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+        manifest: { platforms, artifacts: { configKeys: ['enabled'] } },
+      });
+    }
   });
 
   it('allows only the AW-injected reader inside a declared runtime-config Skill source', () => {
@@ -1763,18 +1489,14 @@ describe('manifest utils', () => {
     );
   });
 
-  it('rejects undeclared default app manifest', async () => {
+  it('rejects the removed apps entry even when its source file exists', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-    delete manifest.apps;
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: [] }, { spaces: 2 });
-
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'found .app.json but missing "apps" declaration',
-    );
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: {} });
+    await expect(readPluginManifest(pluginRoot)).resolves.toBeDefined();
+    await writeFixturePluginManifest(repoRoot, { ...manifest, apps: './.app.json' });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/ must NOT have additional properties');
   });
 
   it('allows templated JSON native assets at source time but validates non-template JSON shape', async () => {
@@ -1783,10 +1505,9 @@ describe('manifest utils', () => {
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.mcpServers = './.mcp.json';
-    manifest.apps = './.app.json';
     manifest.buildConfig = {
       templates: {
-        include: ['.mcp.json', '.app.json'],
+        include: ['.mcp.json'],
         vars: {
           serverName: { claude: 'claude-server', codex: 'codex-server' },
         },
@@ -1794,19 +1515,16 @@ describe('manifest utils', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await fs.writeFile(path.join(pluginRoot, '.mcp.json'), '{"mcpServers": {{serverName}}}', 'utf8');
-    await fs.writeFile(path.join(pluginRoot, '.app.json'), '{"apps": {{serverName}}}', 'utf8');
 
     await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
       manifest: {
         mcpServers: './.mcp.json',
-        apps: './.app.json',
       },
     });
 
     delete manifest.buildConfig;
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await fs.writeJson(path.join(pluginRoot, '.mcp.json'), { mcpServers: [] }, { spaces: 2 });
-    await fs.writeJson(path.join(pluginRoot, '.app.json'), { apps: {} }, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
       'expected top-level "mcpServers" object',
     );
@@ -1845,7 +1563,7 @@ describe('manifest utils', () => {
     const fixtureManifest = await readFixturePluginManifest(repoRoot);
     const pluginRoot = path.join(repoRoot, 'portable-inventory');
     const manifest = {
-      schemaVersion: 3, name: 'portable-inventory', version: '1.0.0',
+      schemaVersion: 4, name: 'portable-inventory', version: '1.0.0',
       description: 'Portable inventory fixture.', platforms: ['generic'],
       marketplace: fixtureManifest.marketplace, skills: './skills',
     };
@@ -1858,11 +1576,14 @@ describe('manifest utils', () => {
         manifest: { name: 'portable-inventory', platforms: ['generic'], skills: './skills' },
       });
     }
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), 'console.log("{}");\n');
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), { ...manifest,
-      artifacts: { targets: [{ id: 'native', platform: 'codex', scopes: ['user'],
-        target: 'codex.developerInstructionsBlock', states: ['present'], refreshKeys: [] }] },
+      artifacts: { configKeys: [] },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
     });
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('requires codex support');
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: { platforms: ['generic'], artifacts: { configKeys: [] } },
+    });
   });
 
   it('accepts native hooks and public session_start shared matcher values', async () => {
@@ -1873,6 +1594,8 @@ describe('manifest utils', () => {
 
     manifest.extensions.hooks = [
       {
+        id: 'fixture-hook-0',
+        feedback: 'notify',
         event: 'session_start',
         matcher: 'startup|resume|clear',
         command: 'echo shared session start',
@@ -1881,17 +1604,23 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       claude: [
         {
+          id: 'fixture-hook-1',
+          feedback: 'notify',
           event: 'Notification',
           matcher: '*',
           command: 'echo claude notification',
         },
         {
+          id: 'fixture-hook-2',
+          feedback: 'notify',
           event: 'Stop',
           command: 'echo claude stop',
         },
       ],
       codex: [
         {
+          id: 'fixture-hook-3',
+          feedback: 'notify',
           event: 'UserPromptSubmit',
           command: 'echo codex prompt',
         },
@@ -1941,17 +1670,21 @@ describe('manifest utils', () => {
 
     manifest.extensions.hooks = [
       {
+        id: 'fixture-hook-4',
+        feedback: 'notify',
         event: 'session_stop',
         command: 'echo stop',
       },
     ];
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'public event "session_stop" has been removed',
+      '/extensions/hooks/0/event',
     );
 
     manifest.extensions.hooks = [
       {
+        id: 'fixture-hook-5',
+        feedback: 'notify',
         event: 'before_tool',
         matcher: 'Bash',
         command: 'echo shared',
@@ -1965,11 +1698,13 @@ describe('manifest utils', () => {
     ];
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'public event "session_stop" has been removed',
+      '/extensions/hooks/0/agentOverrides/codex/event',
     );
 
     manifest.extensions.hooks = [
       {
+        id: 'fixture-hook-6',
+        feedback: 'notify',
         event: 'session_start',
         matcher: 'compact',
         command: 'echo invalid compact',
@@ -2004,6 +1739,8 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       codex: [
         {
+          id: 'fixture-hook-7',
+          feedback: 'notify',
           event: 'UserPromptSubmit',
           matcher: '*',
           command: 'echo codex prompt',
@@ -2018,6 +1755,8 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       codex: [
         {
+          id: 'fixture-hook-8',
+          feedback: 'notify',
           event: 'Stop',
           matcher: '*',
           command: 'echo codex stop',
@@ -2032,6 +1771,8 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       codex: [
         {
+          id: 'fixture-hook-9',
+          feedback: 'notify',
           event: 'PreToolUse',
           matcher: '[',
           command: 'echo invalid regex',
@@ -2046,6 +1787,8 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       codex: [
         {
+          id: 'fixture-hook-10',
+          feedback: 'notify',
           event: 'PreToolUse',
           matcher: 'Write(?=File)',
           command: 'echo unsupported lookahead',
@@ -2060,6 +1803,8 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       claude: [
         {
+          id: 'fixture-hook-11',
+          feedback: 'notify',
           event: 'Notification',
           matcher: '*',
           command: 'echo notify',
@@ -2075,6 +1820,8 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       claude: [
         {
+          id: 'fixture-hook-12',
+          feedback: 'notify',
           event: 'Notification',
           matcher: '*',
           command: 'echo notify',
@@ -2092,18 +1839,25 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       codex: [
         {
+          id: 'fixture-hook-13',
+          feedback: 'notify',
           event: 'Notification',
           command: 'echo wrong platform event',
         },
       ],
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'unsupported codex hook event "Notification"',
-    );
+    await expect(readPluginManifest(pluginRoot)).rejects.toMatchObject({
+      name: 'PluginManifestStructureError',
+      issues: expect.arrayContaining([expect.objectContaining({
+        instancePath: '/extensions/nativeHooks/codex/0/event', keyword: 'enum',
+      })]),
+    });
 
     manifest.extensions.hooks = [
       {
+        id: 'fixture-hook-14',
+        feedback: 'notify',
         event: 'before_tool',
         matcher: 'Bash',
         command: 'echo duplicate',
@@ -2112,6 +1866,8 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       codex: [
         {
+          id: 'fixture-hook-15',
+          feedback: 'notify',
           event: 'PreToolUse',
           matcher: 'Bash',
           command: 'echo duplicate',
@@ -2136,6 +1892,8 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       codex: [
         {
+          id: 'fixture-hook-16',
+          feedback: 'notify',
           event: 'UserPromptSubmit',
           command: 'echo codex prompt',
         },
@@ -2152,6 +1910,7 @@ describe('manifest utils', () => {
         name: 'commit-policy',
         title: '提交规范',
         content: '保持提交规范。',
+        coverage: ['main'],
         agentOverrides: {
           codex: {
             title: 'Codex 提交规范',
@@ -2212,11 +1971,15 @@ describe('manifest utils', () => {
     manifest.extensions.nativeHooks = {
       codex: [
         {
+          id: 'fixture-hook-17',
+          feedback: 'notify',
           event: 'PreToolUse',
           matcher: '(?i:write)',
           command: 'echo inline flags',
         },
         {
+          id: 'fixture-hook-18',
+          feedback: 'notify',
           event: 'PostToolUse',
           matcher: '(?P<tool>Write|Bash)',
           command: 'echo named capture',
@@ -2258,6 +2021,8 @@ describe('manifest utils', () => {
       manifest.extensions.nativeHooks = {
         claude: [
           {
+            id: 'fixture-hook-19',
+            feedback: 'notify',
             event,
             ...(NATIVE_HOOK_EVENT_CONTRACTS.claude[event].matcherAllowed
               ? { matcher: '*' }
@@ -2288,6 +2053,8 @@ describe('manifest utils', () => {
       manifest.extensions.nativeHooks = {
         claude: [
           {
+            id: 'fixture-hook-20',
+            feedback: 'notify',
             event,
             matcher: '*',
             command: `echo ${event}`,
@@ -2328,6 +2095,8 @@ describe('manifest utils', () => {
     for (const matcher of ['startup', 'resume', 'clear', 'startup|resume|clear']) {
       manifest.extensions.hooks = [
         {
+          id: 'fixture-hook-21',
+          feedback: 'notify',
           event: 'session_start',
           matcher,
           command: 'echo start',

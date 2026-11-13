@@ -30,19 +30,22 @@ const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 let buildSnapshot: SmokeBuildSnapshot | null = null;
 
+const EXPECTED_PLATFORMS = [
+  'codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic',
+] as const;
 const EXPECTED_PLUGIN_PLATFORMS = {
-  'agent-content-toolkit': ['claude', 'codex'],
-  'aw-skill-eval-runner': ['claude', 'codex'],
-  'agent-skill-toolkit': ['claude', 'codex'],
-  'agent-subagent': ['claude', 'codex'],
-  'decision-kit': ['claude', 'codex'],
-  'aw-development-toolkit': ['claude', 'codex'],
-  'browser-use': ['claude', 'codex'],
-  'codex-enhance': ['codex'],
-  'dev-workflow': ['claude', 'codex'],
-  'frontend-design': ['claude', 'codex'],
-  'git-toolkit': ['claude', 'codex'],
-  'human-content': ['claude', 'codex'],
+  'agent-content-toolkit': EXPECTED_PLATFORMS,
+  'aw-skill-eval-runner': EXPECTED_PLATFORMS,
+  'agent-skill-toolkit': EXPECTED_PLATFORMS,
+  'agent-subagent': EXPECTED_PLATFORMS,
+  'decision-kit': EXPECTED_PLATFORMS,
+  'aw-development-toolkit': EXPECTED_PLATFORMS,
+  'browser-use': EXPECTED_PLATFORMS,
+  'codex-enhance': EXPECTED_PLATFORMS,
+  'dev-workflow': EXPECTED_PLATFORMS,
+  'frontend-design': EXPECTED_PLATFORMS,
+  'git-toolkit': EXPECTED_PLATFORMS,
+  'human-content': EXPECTED_PLATFORMS,
 } as const;
 
 function repoRoot(): string {
@@ -152,7 +155,7 @@ describe('build smoke', () => {
       },
     }, { spaces: 2 });
     await fs.writeJson(manifestPath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 'version-gate-smoke',
       version: '0.1.0',
       description: 'Baseline version gate smoke plugin.',
@@ -166,7 +169,7 @@ describe('build smoke', () => {
       },
       requires: {
         aw: {
-          capabilities: ['aw.plugin-manifest.v3'],
+          capabilities: ['aw.plugin-manifest.v4'],
         },
       },
     }, { spaces: 2 });
@@ -321,6 +324,9 @@ describe('build smoke', () => {
       validateRuntimeSkillClosuresRoot: (skillsRoot: string) => Promise<void>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'runtime-skill-closure.js'));
     for (const [pluginName, platforms] of Object.entries(EXPECTED_PLUGIN_PLATFORMS)) {
+      const manifest = await fs.readJson(path.join(outputRoot, 'plugins', pluginName, '.agents-plugin', 'plugin.json'));
+      expect(manifest.schemaVersion).toBe(4);
+      expect(new Set(manifest.platforms)).toEqual(new Set(platforms));
       for (const platform of platforms) {
         const skillsRoot = path.join(
           outputRoot,
@@ -329,6 +335,7 @@ describe('build smoke', () => {
           platform,
           'skills',
         );
+        if (manifest.skills) await expect(fs.pathExists(skillsRoot), `${pluginName}/${platform}`).resolves.toBe(true);
         if (await fs.pathExists(skillsRoot)) {
           await expect(
             validateRuntimeSkillClosuresRoot(skillsRoot),
@@ -360,19 +367,16 @@ describe('build smoke', () => {
         }
       }
     }
-    for (const [pluginName, artifactId] of [
-      ['codex-enhance', 'codex-explore-skill'],
-      ['agent-subagent', 'spawn-subagent-skill'],
+    for (const [pluginName, skillName] of [
+      ['codex-enhance', 'codex-explore'],
+      ['agent-subagent', 'spawn-subagent'],
     ]) {
       await expect(fs.pathExists(path.join(
         outputRoot,
         'plugins',
         pluginName,
-        '.agents-plugin',
-        'artifact-sources',
-        'codex',
-        artifactId,
-        '0',
+        'skills',
+        skillName,
         'SKILL.md',
       ))).resolves.toBe(true);
       for (const authorDirectory of ['evals', 'reports']) {
@@ -380,11 +384,8 @@ describe('build smoke', () => {
           outputRoot,
           'plugins',
           pluginName,
-          '.agents-plugin',
-          'artifact-sources',
-          'codex',
-          artifactId,
-          '0',
+          'skills',
+          skillName,
           authorDirectory,
         ))).resolves.toBe(false);
       }
@@ -412,6 +413,7 @@ describe('build smoke', () => {
       'aw-development-toolkit',
       'aw-skill-eval-runner',
       'browser-use',
+      'codex-enhance',
       'decision-kit',
       'dev-workflow',
       'frontend-design',
@@ -467,7 +469,7 @@ describe('build smoke', () => {
           name: 'codex-enhance',
           source: './plugins/codex-enhance',
           policy: expect.objectContaining({
-            products: ['CODEX'],
+            products: ['CLAUDE', 'CODEX'],
           }),
         }),
       ]),
@@ -496,22 +498,16 @@ describe('build smoke', () => {
         outputRoot,
         'plugins',
         'codex-enhance',
-        '.agents-plugin',
-        'artifact-sources',
-        'codex',
-        'codex-explore-skill',
-        '0',
+        'skills',
+        'codex-explore',
         'SKILL.md',
       ),
       path.join(
         outputRoot,
         'plugins',
         'codex-enhance',
-        '.agents-plugin',
-        'artifact-sources',
-        'codex',
-        'codex-explore-skill',
-        '0',
+        'skills',
+        'codex-explore',
         'agents',
         'openai.yaml',
       ),
@@ -519,22 +515,16 @@ describe('build smoke', () => {
         outputRoot,
         'plugins',
         'agent-subagent',
-        '.agents-plugin',
-        'artifact-sources',
-        'codex',
-        'spawn-subagent-skill',
-        '0',
+        'skills',
+        'spawn-subagent',
         'SKILL.md',
       ),
       path.join(
         outputRoot,
         'plugins',
         'agent-subagent',
-        '.agents-plugin',
-        'artifact-sources',
-        'codex',
-        'spawn-subagent-skill',
-        '0',
+        'skills',
+        'spawn-subagent',
         'agents',
         'openai.yaml',
       ),
@@ -558,7 +548,7 @@ describe('build smoke', () => {
           'plugin.json',
         ),
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
     await expect(
       fs.readJson(
         path.join(
@@ -583,14 +573,8 @@ describe('build smoke', () => {
         },
       },
       artifacts: {
-        targets: expect.arrayContaining([
-          expect.objectContaining({
-            target: 'codex.skill',
-          }),
-          expect.objectContaining({
-            target: 'codex.agentRole',
-          }),
-        ]),
+        configKeys: expect.arrayContaining(['quickProfile', 'advisorGeneralProfile']),
+        sourceDirs: ['./skills/codex-explore', './skills/codex-advisor'],
       },
     });
     await expect(
@@ -617,17 +601,22 @@ describe('build smoke', () => {
     });
     expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v7']);
     expect(catalogManifest.entries.every((entry) =>
-      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v3'))).toBe(true);
+      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v4'))).toBe(true);
     expect(catalogManifest.entries.find((entry) => entry.name === 'codex-enhance')).toMatchObject({
       dependencies: ['agent-subagent'],
       requires: { aw: { capabilities: expect.arrayContaining(['aw.plugin-config-cross-plugin-value-ref.v1']) } },
     });
-    const subagentBundle = await fs.readJson(path.join(outputRoot, 'plugins', 'agent-subagent', '.agents-plugin', 'plugin.json'));
-    expect(subagentBundle.artifacts.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'spawn-subagent-skill', platform: 'codex', skillKey: 'spawn-subagent', target: 'codex.skill', scopes: ['user'] }),
-      expect.objectContaining({ id: 'spawn-subagent-claude-skill', platform: 'claude', skillKey: 'spawn-subagent', target: 'claude.skill', scopes: ['user'] }),
-      expect.objectContaining({ id: 'subagent-role', roleKey: 'subagent', target: 'codex.agentRole' }),
-    ]));
+    const subagentRoot = path.join(outputRoot, 'plugins', 'agent-subagent');
+    const subagentBundle = await fs.readJson(path.join(subagentRoot, '.agents-plugin', 'plugin.json'));
+    // Dynamic components are determined at preparation; the published bundle must carry their declared inputs and renderer.
+    expect(subagentBundle.artifacts).not.toHaveProperty('targets');
+    expect(subagentBundle.artifacts.sourceDirs).toContain('./skills/spawn-subagent');
+    expect((await fs.stat(path.join(subagentRoot, subagentBundle.scripts.artifacts.render.path))).isFile()).toBe(true);
+    for (const sourceDir of subagentBundle.artifacts.sourceDirs) {
+      expect((await fs.stat(path.join(subagentRoot, sourceDir))).isDirectory()).toBe(true);
+    }
+    await expect(fs.readFile(path.join(subagentRoot, 'skills/spawn-subagent/SKILL.md')))
+      .resolves.toEqual(await fs.readFile(path.join(root, 'plugins/agent-subagent/skills/spawn-subagent/SKILL.md')));
     expect(catalogManifest).not.toHaveProperty('history');
     expect(catalogManifest).not.toHaveProperty('packages');
     expect((await fs.readdir(outputRoot)).sort()).toEqual([
@@ -769,9 +758,8 @@ describe('build smoke', () => {
     }
   });
 
-  it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {
+  it('bundles static MCP and preserves native hook declarations for later profile preparation', async () => {
     const snapshot = await requireBuildSnapshot();
-
     const tempRoot = await createSmokeTempRoot('aw-smoke-assets-', 'build smoke assets temp root');
     const tempRepo = path.join(tempRoot, 'repo');
     const outputRoot = path.join(tempRoot, 'plugins-dist');
@@ -781,155 +769,31 @@ describe('build smoke', () => {
     const manifestPath = path.join(tempRepo, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.extensions.nativeHooks = {
-      claude: [
-        {
-          event: 'Notification',
-          matcher: '*',
-          command: 'echo smoke claude notification',
-        },
-      ],
-      codex: [
-        {
-          event: 'Stop',
-          command: 'echo smoke codex stop',
-        },
-      ],
-    };
-    manifest.slashCommands = './slash-commands';
-    manifest.buildConfig = {
-      ...(manifest.buildConfig ?? {}),
-      manifestOverrides: {
-        ...(manifest.buildConfig?.manifestOverrides ?? {}),
-        claude: {
-          ...(manifest.buildConfig?.manifestOverrides?.claude ?? {}),
-          outputStyles: './output-styles',
-          lspServers: './config/lsp.json',
-          userConfig: {
-            awSmokeMode: {
-              type: 'string',
-              default: 'standard',
-            },
-          },
-          channels: {
-            stable: {
-              description: 'Smoke stable channel',
-            },
-          },
-        },
-      },
+      claude: [{ id: 'smoke-notification', event: 'Notification', matcher: '*',
+        feedback: 'notify', command: 'echo smoke claude notification' }],
+      codex: [{ id: 'smoke-stop', event: 'Stop', feedback: 'notify', command: 'echo smoke codex stop' }],
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await fs.outputFile(
-      path.join(tempRepo, 'plugins', 'git-commit', 'slash-commands', 'review.md'),
-      [
-        '---',
-        'description: Smoke review command',
-        '---',
-        '',
-        'Run smoke review.',
-      ].join('\n'),
-      'utf8',
-    );
-    await fs.outputFile(
-      path.join(tempRepo, 'plugins', 'git-commit', 'output-styles', 'smoke.md'),
-      '# Smoke Style\n',
-      'utf8',
-    );
-    await fs.outputJson(
-      path.join(tempRepo, 'plugins', 'git-commit', 'config', 'lsp.json'),
-      {
-        smokeLsp: {
-          command: 'node',
-          args: ['server.mjs'],
-        },
-      },
-      { spaces: 2 },
-    );
-
     const { bundlePlugins } = await importSmokeSnapshotModule<{
       bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown>;
     }>(path.join(snapshot.cliDistRoot, 'scripts', 'bundle-plugins.js'));
     await bundlePlugins({ repoRoot: tempRepo, outputRoot });
 
-    await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', 'claude', '.mcp.json')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', 'codex', '.app.json')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      extensions: {
-        nativeHooks: {
-          claude: [
-            {
-              event: 'Notification',
-              matcher: '*',
-              command: 'echo smoke claude notification',
-            },
-          ],
-          codex: [
-            {
-              event: 'Stop',
-              command: 'echo smoke codex stop',
-            },
-          ],
-        },
-      },
+    const pluginRoot = path.join(outputRoot, 'plugins', 'git-commit');
+    await expect(fs.readJson(path.join(pluginRoot, '.mcp.json'))).resolves.toMatchObject({
+      mcpServers: { 'git-commit': { type: 'stdio', command: 'git', args: ['status'] } },
     });
-    await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', 'claude', 'hooks', 'hooks.json')),
-    ).resolves.toMatchObject({
-      hooks: {
-        Notification: [
-          {
-            matcher: '*',
-            hooks: [{ type: 'command', command: 'echo smoke claude notification' }],
-          },
-        ],
-      },
+    await expect(fs.readJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'))).resolves.toMatchObject({
+      schemaVersion: 4, extensions: { nativeHooks: manifest.extensions.nativeHooks },
     });
-    await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      hooks: {
-        hooks: {
-          Stop: [
-            {
-              hooks: [{ type: 'command', command: 'echo smoke codex stop' }],
-            },
-          ],
-        },
-      },
-    });
-    await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.claude-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      hooks: './claude/hooks/hooks.json',
-      commands: './claude/commands',
-      agents: expect.arrayContaining(['./claude/agents/aw-git-commit-commit-reviewer.md']),
-      outputStyles: './claude/output-styles',
-      lspServers: './claude/config/lsp.json',
-      userConfig: {
-        awSmokeMode: {
-          type: 'string',
-          default: 'standard',
-        },
-      },
-      channels: {
-        stable: {
-          description: 'Smoke stable channel',
-        },
-      },
-    });
-    await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', 'claude', 'commands', 'review.md')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', 'claude', 'output-styles', 'smoke.md')),
-    ).resolves.toBe(true);
-
+    for (const platform of ['claude', 'codex']) {
+      await expect(fs.pathExists(path.join(pluginRoot, platform, '.mcp.json'))).resolves.toBe(true);
+      const projected = await fs.readJson(path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'));
+      expect(projected).toMatchObject({ name: 'git-commit', skills: `./${platform}/skills`, mcpServers: `./${platform}/.mcp.json` });
+      expect(projected).not.toHaveProperty('hooks');
+      expect(projected).not.toHaveProperty('agents');
+      await expect(fs.pathExists(path.join(pluginRoot, platform, 'hooks'))).resolves.toBe(false);
+    }
     const { validateBundleLayout } = await importSmokeSnapshotModule<{
       validateBundleLayout: (rootDir: string) => Promise<void>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'bundle-layout.js'));

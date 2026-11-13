@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { createRebuildIntegration, materializeReviewNativeSkills } from '../../src/commands/rebuild-integration.js';
+import { createRebuildIntegration, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
+import { materializeProfilePluginComponents } from '../../src/review/skill-materialization.js';
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createRuntimeSkillSnapshot } from '@lesliechan721/agent-skill-eval';
 import { executeRebuildOperation } from '../../src/commands/rebuild-operations.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
@@ -22,34 +24,27 @@ async function fixture(source: string, withSibling = false) {
   await fs.ensureDir(isolation.layout.awHomeDir);
   const sourceRoot = path.join(isolation.layout.fixtureCwd, source, 'source');
   const manifest = {
-    schemaVersion: 3, name: 'third-party-routing', version: '1.0.0', description: 'Unrelated runtime consumer',
+    schemaVersion: 4, name: 'third-party-routing', version: '1.0.0', description: 'Unrelated runtime consumer',
     platforms: ['codex'],
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
     scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
-    config: { schemaVersion: 3, fields: {
+    config: { schemaVersion: 5, fields: {
       accessToken: { type: 'string', sensitive: true },
       backendCatalog: { type: 'array', default: [], validation: { uniqueBy: 'id' }, items: {
         type: 'object', properties: { id: { type: 'string', required: true }, title: { type: 'string' } },
       } },
       selectedBackend: { type: 'string', default: 'local', valueRef: { field: 'backendCatalog', key: 'id', include: ['local'] } },
     } },
-    artifacts: { targets: [{ id: 'routing-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-      states: ['present'], refreshKeys: ['selectedBackend', 'backendCatalog'], skillKey: 'routing-tool',
-      runtimeConfig: { keys: ['selectedBackend', 'backendCatalog'] },
-    }] },
+    requires: { aw: { capabilities: ['aw.installed-runtime-config.v2'] } },
+    artifacts: { configKeys: ['selectedBackend', 'backendCatalog'], scopes: ['user'] },
   };
-  if (withSibling) {
-    const first = manifest.artifacts.targets[0]!;
-    manifest.artifacts.targets.push({ ...first, id: 'routing-peer', skillKey: 'routing-peer',
-      runtimeConfig: { ...first.runtimeConfig } });
-  }
   await fs.outputJson(path.join(sourceRoot, '.agents-plugin/plugin.json'), manifest);
   const render = `import fs from 'node:fs';
 const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));
 const files={'SKILL.md':'---\\nname: routing-tool\\ndescription: Route a bounded task.\\n---\\n# Routing\\n',
  'README.md':'# Routing runtime\\n', 'agents/openai.yaml':'interface:\\n  display_name: Routing\\n  short_description: Route a bounded task.\\n  default_prompt: Route the current task.\\npolicy:\\n  allow_implicit_invocation: true\\n',
  'scripts/caller.mjs':${JSON.stringify("import {readRuntimeConfig} from './aw-runtime-config.mjs';\ntry { console.log(JSON.stringify(await readRuntimeConfig({from:import.meta.url,keys:process.argv.slice(2).length?process.argv.slice(2):['selectedBackend']}))); } catch(e) { console.log(JSON.stringify({code:e.code,recoveryActions:e.recoveryActions,message:e.message})); process.exitCode=1; }\n")}};
-console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>({id,kind:'skill',platform:'codex',target:'codex.skill',state:'present',refreshKeys:['selectedBackend','backendCatalog'],skillKey:id==='routing-skill'?'routing-tool':'routing-peer',content:{files:{...files,'SKILL.md':files['SKILL.md'].replaceAll('routing-tool',id==='routing-skill'?'routing-tool':'routing-peer')}}}))}));
+console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?${JSON.stringify(withSibling ? ['routing-tool', 'routing-peer'] : ['routing-tool'])}.map((name,index)=>({id:index?'routing-peer':'routing-skill',kind:'skill',name,runtimeConfig:{keys:['selectedBackend','backendCatalog']},content:{files:Object.fromEntries(Object.entries({...files,'SKILL.md':files['SKILL.md'].replaceAll('routing-tool',name)}).map(([p,text])=>[p,{text}]))}})):[],omitted:[],unmet:[]}));
 `;
   await fs.outputFile(path.join(sourceRoot, 'scripts/render.mjs'), render);
   const sourcePlugin = await readPluginManifest(sourceRoot);
@@ -67,18 +62,20 @@ console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>(
   Object.assign(plugin, { sourceId: source, sourceIdentity: sourceIdentity(source), pluginId: `${source}/${manifest.name}` });
   const env = { ...isolation.env, CODEX_HOME: path.join(isolation.layout.fixtureCwd, source, 'codex-home') };
   const native = await createCodexNativeTestRuntime({ env, layout: isolation.layout });
-  const skillRoot = path.join(env.AW_HOME!, 'marketplaces', source, 'plugins', manifest.name,
-    'codex', 'skills', 'routing-tool');
+  const skillRoot = () => path.join([...native.marketplaces.values()][0]!, 'plugins', manifest.name, 'skills', 'routing-tool');
   const install = async (command: 'install' | 'sync' | 'cleanup' = 'install') => {
-    const integration = createRebuildIntegration({ context: {
+    const context: RebuildExecutionContext = {
       ...createCommandExecutionContext({ env, nativeCliRunner: native.nativeCliRunner }),
       codexManager: SYSTEM_CODEX_MANAGER,
-    } });
-    const target = await integration.buildTarget({ plugin, platform: 'codex', scope: 'user',
-      cwd: isolation.layout.fixtureCwd, command,
-      marketplaceName: `aw-${source}`, marketplaceRoot: path.join(env.AW_HOME!, 'marketplaces', source),
-      catalog: { rootDir: bundleRoot, source: 'local' } });
-    return executeRebuildOperation({ command, target, driver: integration.driver });
+    };
+    const integration = createRebuildIntegration({ context });
+    try {
+      const target = await integration.buildTarget({ plugin, platform: 'codex', scope: 'user',
+        cwd: isolation.layout.fixtureCwd, command,
+        catalog: { rootDir: bundleRoot, source: 'local' } });
+      await integration.sealMarketplaceGenerations([target]);
+      return await executeRebuildOperation({ command, target, driver: integration.driver });
+    } finally { await context.platformRebuildSession?.dispose(); }
   };
   const save = (values: Record<string, unknown>) => writePluginConfigStore({ sourceId: source,
     sourceIdentity: sourceIdentity(source), logicalIdentity: plugin.catalogLogicalIdentity,
@@ -87,13 +84,14 @@ console.log(JSON.stringify({version:2,artifacts:c.requestedArtifactIds.map(id=>(
   const read = (keys: string[] = ['selectedBackend']) => {
     const cleanEnv = { ...env };
     delete cleanEnv.AW_PLUGIN_CONTEXT;
-    try { return JSON.parse(execFileSync(process.execPath, [path.join(skillRoot, 'scripts/caller.mjs'), ...keys], { env: cleanEnv, encoding: 'utf8' })); }
+    try { return JSON.parse(execFileSync(process.execPath, [path.join(skillRoot(), 'scripts/caller.mjs'), ...keys], { env: cleanEnv, encoding: 'utf8' })); }
     catch (error) { return JSON.parse((error as { stdout: string }).stdout); }
   };
-  return { plugin, render, install, save, read, skillRoot, env };
+  return { plugin, render, install, save, read, get skillRoot() { return skillRoot(); }, env };
 }
 
 describe('installed runtime config', () => {
+  beforeEach(() => { installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true }); });
   it('isolates same-name source snapshots, keeps saved values inactive, and applies through the real writer', async () => {
     const alpha = await fixture('alpha');
     const beta = await fixture('beta');
@@ -169,8 +167,8 @@ describe('installed runtime config', () => {
     const item = await fixture('alpha', true);
     const isolation = getCurrentSourceTestIsolation();
     const outputRoot = path.join(isolation.layout.fixtureCwd, 'review-final');
-    await materializeReviewNativeSkills({ plugin: item.plugin, platform: 'codex', scope: 'user', cwd: isolation.layout.fixtureCwd,
-      env: item.env, outputRoot, skills: names.map((skill) => ({ skill, targetId: skill === 'routing-tool' ? 'routing-skill' : 'routing-peer' })),
+    await materializeProfilePluginComponents({ plugin: item.plugin, platform: 'codex', scope: 'user', cwd: isolation.layout.fixtureCwd,
+      env: item.env, outputRoot, selectedSkills: names,
     });
     expect((await fs.readdir(path.join(outputRoot, 'skills'))).sort()).toEqual([...names].sort());
     const target = path.join(isolation.layout.fixtureCwd, 'targets/current');
@@ -183,6 +181,10 @@ describe('installed runtime config', () => {
     const actual = JSON.parse(execFileSync(process.execPath, [path.join(restored, 'scripts/caller.mjs')], { env, encoding: 'utf8' }));
     expect(actual).toMatchObject({ effectiveValues: { selectedBackend: 'local' }, installedIdentity: { sourceId: 'alpha', scope: 'user', configScope: 'user' } });
     expect(await fs.pathExists(path.join(restored, '.aw-runtime-native-receipt.json'))).toBe(true);
+    expect(await fs.readJson(path.join(restored, '.aw-runtime-native-receipt.json'))).toMatchObject({
+      kind: 'aw-runtime-component-origin', source: { sourceId: 'alpha', pluginId: 'alpha/third-party-routing' },
+      platform: 'codex', scope: 'user', configScope: 'user', component: { id: 'routing-skill', kind: 'skill', name: 'routing-tool' },
+    });
     expect(await fs.pathExists(path.join(restored, '.aw-runtime-peers'))).toBe(false);
   });
 
@@ -197,8 +199,8 @@ describe('installed runtime config', () => {
     await fs.outputFile(path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-config',
       'alpha', item.plugin.manifest.name, 'config.json'), '{invalid legacy project config');
     const outputRoot = path.join(isolation.layout.fixtureCwd, 'project-runtime-final');
-    await materializeReviewNativeSkills({ plugin: item.plugin, platform: 'codex', scope: 'project', cwd: isolation.layout.fixtureCwd,
-      env: item.env, outputRoot, skills: [{ skill: 'routing-tool', targetId: 'routing-skill' }] });
+    await materializeProfilePluginComponents({ plugin: item.plugin, platform: 'codex', scope: 'project', cwd: isolation.layout.fixtureCwd,
+      env: item.env, outputRoot, selectedSkills: ['routing-tool'] });
     const actual = JSON.parse(execFileSync(process.execPath, [path.join(outputRoot, 'skills/routing-tool/scripts/caller.mjs')], { env: item.env, encoding: 'utf8' }));
     expect(actual).toMatchObject({ effectiveValues: { selectedBackend: 'user-native' }, installedIdentity: { scope: 'user', configScope: 'user' } });
   });

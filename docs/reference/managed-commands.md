@@ -1,161 +1,142 @@
 # 托管命令合同 v1
 
-本文件定义 Plugin Manifest v3 的托管命令声明、ArtifactPlan v2 扩展、稳定身份、权限引用、管理接口和运行边界。字段与校验的机器真值由 Core schema/types、canonical capability registry 和当前 CLI 提供；使用 `aw dev plugin capabilities --surface managed-commands --json` 查询作者合同。
+本文件定义 Plugin Manifest v4 的托管命令声明、ArtifactPlan v2 扩展、稳定身份、权限引用、管理接口和运行边界。字段与校验的机器真值由 Core schema/types、canonical capability registry 和当前 CLI 提供；使用 `aw dev plugin capabilities --surface managed-commands --json` 查询作者合同。
 
 Guide 的参数、输出、文件与消费合同由 [Guide 运行生命周期](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md) 维护，Adapter v5 由 [适配器协议](../../plugins/agent-subagent/skills/spawn-subagent/docs/protocol.md) 维护。Manifest、Config、ArtifactPlan、命令主机与 Adapter 的版本互相独立。
 
 ## A1. 版本与通用校验
 
-新增 capability 固定为 `aw.managed-commands.v1`。声明 `managedCommands`、结构化命令权限或命令占位符均要求此能力。Claude 沙箱排除另外要求 `aw.claude.sandbox-exclusions.v1`，不从普通 allow 推导。Core registry、结构派生和 CLI implemented set 同步支持；公开作者 registry 增加 `managed-commands` surface，`extensions` 和 `artifacts` surface 同步列出相关字段与输出类型。
+声明 managedCommands、结构化命令权限或占位符要求 aw.managed-commands.v1；Claude sandbox 排除另要求 aw.claude.sandbox-exclusions.v1。运行能力 registry 与 Agent 组件能力分开。
 
-Manifest 保持 `schemaVersion: 3`；作者配置声明输入支持 Config v4 或 v5（Config v5 在按目标平台选择 profile 后编译为内部 v4 配置）；ArtifactPlan 保持 `version: 2`，增加本合同定义的两个 artifact 分支。Manifest、Config、ArtifactPlan、命令主机与 Adapter 的版本互相独立演进，不要求现有合法插件强行升级配置版本。旧 AW 在 capability 检查时拒绝不支持的插件，不静默忽略新字段。Guide 的 Adapter v5 保留帧版本；enabled 通信对象不接受主动接收可选能力字段，精确定义及旧 custom adapter 更新要求见 [Guide 运行合同](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md)。命令主机描述和用户命令定义各自使用 schema 1，定义见 [本文件运行合同](#b1-命令管理-cli-与机器输出)。
+Manifest 使用 schemaVersion 4，Config Definition 使用 v5；五类组件使用 v3，命令响应仍为 ArtifactPlan v2。CommandIdentity 使用 schemaVersion 2；用户命令、主机描述与安装记录各自保持独立版本。旧命令身份没有别名或迁移索引。
 
-本合同中的对象均拒绝未知字段；`?` 表示可省略，`null` 不等于省略，除显式列出外均拒绝。所有字符串须为合法 Unicode，不能含 NUL。缺省值只在规范化时补齐；不 trim 标识符、argv 或环境值。JSON 文本解析沿用现有项目合同，不新增重复 member name 检测器。表中 `Name` 为 `[A-Za-z][A-Za-z0-9_.-]{0,63}`，区分大小写；`Platform` 为 `codex | claude`，`Scope` 为 `user | project`。
+规范对象拒绝未知字段，显式字典除外。可选不等于 null，缺省只在规范化时补齐，不 trim 标识符、argv 或环境值。字符串须为合法 Unicode 且无 NUL。JSON 解析沿用既有合同，不新增重复 member name 检测器。Name 为 [A-Za-z][A-Za-z0-9_.-]{0,63}，区分大小写；Platform 为九个具体 Native target，Scope 为 user 或 project。generic 不成为本机 Skill producer。
 
-`RelativeFile` 是用 `/` 分隔的非空相对文件路径：不以 `/`、`./`、盘符或 UNC 起始，不含空段、`.`、`..`、反斜杠或控制字符。解析后须是 producer 内普通文件，路径链不得有 symlink 或特殊节点。插件 `sourceDir` 继续使用现有 `./` plugin-relative 目录语法和 bundle closure 规则；不因命令包放宽受保护目录、作者资料或依赖 symlink 的限制。
+RelativeFile 是非空、以 / 分隔的相对文件路径，拒绝 /、./、盘符、UNC 前缀、空段、.、..、反斜杠和控制字符。解析后须为 producer 内普通文件，路径链不能有链接或特殊节点。sourceDir 沿用 ./ 插件相对目录及闭包规则，不放宽受保护目录。
 
 ## A2. Manifest 的唯一声明入口
 
-Manifest v3 新增顶层 `managedCommands`：
-
-```ts
-type ManagedCommands = {
-  packages?: ManagedPackage[]; // 缺省 []，key 在本插件内唯一
-  sets?: CommandSet[];         // 缺省 []，set 在本插件内唯一
-};
+~~~ts
+type ManagedCommands = { packages?: ManagedPackage[]; sets?: CommandSet[] };
 type ManagedPackage = {
-  key: Name;
-  scope: Scope;
-  platforms: Platform[];      // 非空、无重复：哪些平台操作纳入此包
-  sourceDir: string;
-  render?: true;              // 缺省不渲染；不接受 false
-  refreshKeys?: string[];     // 缺省 []，无重复
+  key: Name; scope: Scope; platforms: Platform[]; sourceDir: string;
+  render?: true; refreshKeys?: string[];
 };
 type ProducerRef =
-  | { kind: "artifact"; artifactId: string }
-  | { kind: "static-skill"; platform: Platform; skillKey: string }
-  | { kind: "package"; packageKey: Name };
+  | { kind: 'artifact'; platform: Platform; artifactId: string }
+  | { kind: 'static-skill'; platform: Platform; skillKey: string }
+  | { kind: 'package'; packageKey: Name };
 type CommandSet =
-  | { set: Name; producer: ProducerRef; mode: "static";
-      entries: CommandDefinition[] }
-  | { set: Name; producer: ProducerRef; mode: "dynamic";
-      refreshKeys: string[] };
+  | { set: Name; producer: ProducerRef; mode: 'static'; entries: CommandDefinition[] }
+  | { set: Name; producer: ProducerRef; mode: 'dynamic'; refreshKeys: string[] };
 type CommandDefinition = {
-  key: Name;
-  variant?: Name;             // default
-  runner: "node" | "executable";
-  entry: RelativeFile;
-  args?: string[];            // []
-  env?: Record<string, string>;     // {}
-  envFrom?: Record<string, string>; // {}
-  cwd?: "caller" | "resource";    // caller
+  key: Name; variant?: Name; // default
+  runner: 'node' | 'executable'; entry: RelativeFile;
+  args?: string[]; env?: Record<string,string>; envFrom?: Record<string,string>;
+  cwd?: 'caller' | 'resource'; // caller
 };
-```
+~~~
 
-声明位置只保留这一处。不再让作者在 `artifacts.targets` 重复声明相同 command set/package target，也不在 package 中维护第二份 commandSet 列表。一个包可拥有多个 set，关联只由 `set.producer.packageKey` 确定。空 entries 合法，表示本集合没有可运行条目。一个集合中规范化后的 `(key, variant)` 不得重复；不同集合可以使用相同 key。
+packages、sets 缺省空数组；package key 与 set 名各自在插件内唯一。包 platforms 非空、无重复；render 只能省略或为 true。一个包可被多个 set 引用，不再声明第二份集合。entries 可为空，同集合规范化后的 key/variant 不得重复。args/env/envFrom 缺省空数组或空字典。
 
-`artifact` 引用同插件中唯一可定位的动态 `codex.skill` 或 `claude.skill` declaration，并使用其完整最终 Skill 目录；不接受没有目录资源的 instruction/role target。若现有 artifact ID 在平台或 scope 间重复而不能唯一定位，拒绝该引用，要求作者为被引用 target 使用唯一 ID。`static-skill` 引用所选平台静态 Skill 的声明 key，不能指向动态 Skill 或任意磁盘路径。其它独立工具用 package 承载。Portable Skill 不成为本机 producer。
+artifact producer 的 platform 必填，artifactId 引用同插件该平台、本次实际 render scope 的动态 Skill ID，无须预声明该 ID。static-skill 引用静态 Skill key。构建校验声明形状，prepare 在完整组件集合产生后校验真实 producer，不绑定碰巧存在的旧目录、别的平台或非 Skill 组件。
 
-artifact set 继承其 producer 的平台、合法 scope、delivery 和配置作用域；Codex shared native 固定为实际 `user` 物化。Codex 和 Claude 的 static-skill producer 均为共享原生资源，固定 `scope: "user"`、`projectRoot: null`，集合仅使用 user 配置并投影为 user renderer target。project 安装或启用不会生成项目资源身份，也不能用 project 配置覆盖共享启动定义。AW-owned 动态 Skill 仍使用各自实际物化 scope。package set 继承包的固定 scope，使用 AW-owned surface，不受调用平台选择改变。user/shared-user 消费者不得引用 project 包；project 消费者可以引用明确声明的 user 包。被引用包必须将该消费者平台列入 `platforms`。
+producer 的配置、集合 scope 与资源身份取实际 RenderUnit，不取 activation scope。共享包固定 user，项目启用不产生另一份共享命令；独立项目 Skill 使用 project 与规范 projectRoot。不同物理位置各有 placementKey，同一共享包的产品面/激活引用复用实例。独立 package 使用声明 scope；user/shared-user 不得引用 project 包，project 可引用明确声明的 user 包。包须允许消费者平台。
 
-每个 `refreshKeys` 必须来自作者声明的 Config v4 或 v5 顶层字段（v5 在按目标平台选择 profile 后编译为内部 v4 配置进行校验），字段及校验依赖闭包均不得敏感。动态 set 即使不读取配置也必须写 `refreshKeys: []`。package 的 refreshKeys 仅控制它生成的普通文件；没有 `render: true` 时只能省略或为 `[]`。包的文件生成和各 set 的 refreshKeys 分别拥有自己的输入；一次 producer 刷新使用所需 target 的并集，不把另一平台配置混入。
+refreshKeys 来自平台编译后的 Config v5 字段，键及校验依赖不得敏感。动态 set 必须声明 refreshKeys，即使为空；包无 render 时只能省略或为空。包文件和命令 set 的配置权限分别计算，不相互扩大。
 
-`args` 最多 128 项，每项最多 4096 个 Unicode code point，允许空串。环境名遵守 `[A-Za-z_][A-Za-z0-9_]*`；env 值最多 4096 个 code point。envFrom 的值是环境名，不是表达式。禁止项、继承与优先级见 B3，安装及执行都校验。
+args 最多 128 项，每项最多 4096 个 Unicode code point，可为空串。env/envFrom 名称为 [A-Za-z_][A-Za-z0-9_]*；env 值最多 4096 个 code point，envFrom 的值是环境名。运行保护与优先级见 B3，安装与执行均校验。
+
+| 本次 producer 状态 | 命令集合与消费者 |
+| --- | --- |
+| 唯一合法 Skill | 使用完整候选目录，校验 set、占位符、nativeTools 与运行闭包后一同发布 |
+| 显式 omitted 或 render scope 被 artifacts.scopes 排除 | 有意关闭；Review 显示旧绑定撤销，仍引用它的组件不能可用 |
+| unmet | 集合也未满足，不当作关闭，不因空集合自动删除旧绑定 |
+| 既无组件也无 omitted/unmet | 缺失 producer，准备失败 |
+| 同 ID 改为非 Skill、多义或归属错误 | 准备失败，不退回旧目录 |
+
+Skill 改名且 ID 不变时重新绑定候选目录，改 ID 须同步 artifactId。失败阻断真实 producer 及其依赖，独立包和其他平台继续。活跃任务保护、已安装记录和 nativeTools 合同继续有效。
 
 ## A3. Renderer 请求与响应
 
-### 规范化 target
+五类组件请求为 surface=agent-plugin，输出完整 v3 集合，不含命令产物。绑定 Skill 的动态 set 为 surface=agent-commands；独立包及其动态 set 为 surface=managed-commands，后者不带 platform，也不接受 platformCapabilities。三类可使用同一脚本，请求与权限分开。
 
-Core 从上述声明生成下列 target，供现有请求、作者工具与 planner 共用；这是声明的确定性投影，不是另一个持久注册表。
+~~~ts
+interface AgentCommandContextV1 {
+  schemaVersion: 1;
+  surface: 'agent-commands';
+  platform: Platform;
+  scope: 'user' | 'project'; // producer render scope
+  plugin: PlatformRenderContextV1['plugin'];
+  config: PlatformRenderContextV1['config'];
+  changedConfigKeys: string[];
+  requestedArtifactIds: string[];
+  previousArtifacts: CommandSetArtifact[];
+  producers: Array<{ set: string; componentId: string; resourceRoot: string }>;
+}
+~~~
 
-| 条件 | id | target / kind | surface / scope | states / refreshKeys |
-| --- | --- | --- | --- | --- |
-| 动态 set | `command-set.<set>` | `aw.command-set` / `commandSet` | 从 producer 取得 | `present, disabled` / set 声明值 |
-| `render: true` 包 | `command-package.<key>` | `aw.command-package` / `commandPackage` | `{kind:"aw",name:"managed-commands"}` / 包固定 scope | 仅 `present` / package 声明值 |
+config 仅含本批 set 的 refreshKeys 及非敏感校验依赖，不用 artifacts.configKeys 扩权。resourceRoot 是完整只读候选 Skill，包括已核验运行资源。previousArtifacts 只属于同一 producer 实例与命令请求，不带其他组件正文或敏感值。
 
-`command-set.` 与 `command-package.` 是本插件 artifact ID 的保留前缀，作者手写 `artifacts.targets[].id` 不得占用。静态 set 和静态包没有 renderer target，但仍进入同一候选校验和发布过程。存在任何动态命令 target 时，必须有现有 `scripts.artifacts.render` 声明。
+动态 set 的 ID 为 command-set. 加 set，target/kind 为 aw.command-set/commandSet；render=true 包的 ID 为 command-package. 加 key，target/kind 为 aw.command-package/commandPackage。两种前缀保留，组件不得占用。静态 set/包不请求 renderer，仍进入候选校验与发布。
 
-ArtifactSurface union 新增 `{kind:"aw", name:"managed-commands"}`。此 context 不带 `platform` 或 `distribution`，进程设置 `AW_PLUGIN_SURFACE=managed-commands`，不设置 `AW_PLUGIN_PLATFORM` 或 `AW_PLUGIN_DISTRIBUTION`。原 platform/distribution surface 保持原行为。共享包的同一 target 只请求一次，不能以 Codex 和 Claude 两份 context 分别渲染。
+独立包上下文沿用 event/plugin/config/changedConfigKeys/requestedArtifactIds/previousArtifacts/paths/renderer 及隔离 home，commandSources 只提供本次包的已核验 sourceDir。进程使用 AW_PLUGIN_SURFACE=managed-commands，不设置 AW_PLUGIN_PLATFORM 或 AW_PLUGIN_DISTRIBUTION。
 
-context 的 `event/plugin/config/changedConfigKeys/requestedArtifactIds/previousArtifacts/artifactSources/runtimeImports/paths/renderer` 沿用现有字段和临时 home 合同。新增字段固定为：
+所有命令响应为一个 {version:2,artifacts:[...]}：
 
-```ts
-commandSources: Array<{
-  packageKey: Name;
-  sourceDir: string; // 固定 bundle 中已核验的绝对目录，只读
-}>;
-```
-
-`commandSources` 在所有新旧 surface 中均存在，缺省 `[]`；仅列出本次所请求 command target 涉及的包。`artifactSources` 继续列 Skill 来源，二者不扩大配置读取范围。`previousArtifacts` 是当前 surface/scope 中已知的上次规范化输出，无历史时为 `[]`；同批拆分的请求共用不可变副本。它不能授权访问别的 producer，也不能替代实际安装证据。
-
-`requestedArtifactIds` 仍要求非空、唯一且精确。AW 先按 surface/scope 和敏感配置隔离拆批；所有命令 target 均进入非敏感批。绑定 Skill 的 producer 与 set 在同一次局部操作中协调：变更任一者时取得完整候选；已健康且不需重新渲染的 producer 可复用。含引用的相关消费者须与集合一起校验，不能在新集合移除命令后发布悬空 Skill。
-
-### 输出类型
-
-仍返回单个 `{ "version": 2, "artifacts": [...] }`。新增两个分支：
-
-```ts
+~~~ts
 type CommandSetArtifact = {
-  id: string;                 // 必须等于 command-set.<set>
-  target: "aw.command-set";
-  kind: "commandSet";
-  platform?: Platform;       // 仅平台 producer：必填且等于请求
-  state: "present" | "disabled";
-  refreshKeys: string[];     // 与规范化 declaration 完全一致
-  entries: CommandDefinition[];
-  disabledReason?: string;   // 仅 disabled 可用，非空
+  id: string; target: 'aw.command-set'; kind: 'commandSet';
+  platform?: Platform; // agent-commands 必填，与请求相同；独立包禁止
+  state: 'present' | 'disabled';
+  refreshKeys: string[]; entries: CommandDefinition[];
+  disabledReason?: string;
 };
 type CommandPackageArtifact = {
-  id: string;                 // 必须等于 command-package.<key>
-  target: "aw.command-package";
-  kind: "commandPackage";
-  state: "present";
-  refreshKeys: string[];
+  id: string; target: 'aw.command-package'; kind: 'commandPackage';
+  state: 'present'; refreshKeys: string[];
   files: Record<RelativeFile, string>;
 };
-```
+~~~
 
-package surface 的输出禁止 `platform` 和 `distribution`；平台 command set 禁止 `distribution`。scope、producer、set/key 归属从请求和声明取得，输出不能携带 `owner`、`commandId`、`resourceRoot`、producer 或 scope 覆盖。`disabled` 必须 `entries: []`；`present` 的空 entries 同样撤销条目，但 list/show 将集合显示为正常空集合。每个请求 ID 返回恰好一次，不接受额外 ID、缺失项或重复项。
+每个请求 ID 精确返回一次，无额外、缺失或重复；platform、refreshKeys 与请求一致。禁止 distribution、owner、commandId、resourceRoot、producer 或 scope 覆盖。disabled 时 entries=[]，disabledReason 若有须非空且仅用于 disabled；present 空 entries 是正常空集合。
 
-`files` 必须显式提供，允许 `{}`。它是本次完整生成文件集；从本次 bundle 的 `sourceDir` 重新准备候选，再以 files 覆盖同路径普通文本文件。上次生成但本次未返回的文件不保留，bundle 本身的原文件仍按本次 sourceDir 存在。拒绝目录/文件冲突、链接、保留 owner/runtime receipt 路径及命令声明 entry 路径的覆盖；生成文件用于配置，不改写可执行代码。编码为 UTF-8，新增文件为非可执行普通文件。二进制资源由 sourceDir 提供。
+package files 必填、可为空，是本次完整生成集合。从 bundle sourceDir 重新准备，再覆盖同路径普通文本，不保留上次生成但本次未返回的文件。拒绝文件/目录冲突、链接、保留 owner/runtime receipt 路径及命令 entry 覆盖。新增文件 UTF-8、不可执行，二进制由 sourceDir 提供。保持既有 timeout、16 MiB 输出、64 KiB 诊断、敏感扫描与进程收尾，失败不发布 producer。
 
-既有 renderer timeout、总输出限值、敏感值扫描、普通文件校验及错误脱敏完整适用；不为命令包另设较宽限值。files 和 entries 均须通过最终闭包检查；失败不发布本次 producer。
+准备顺序为：完整五类集合与 render scope → 真实 Skill producer → 动态 set → 引用、权限、nativeTools 和资源闭包 → 占位符与保留运行文件 → 平台投影与冻结。不为命令重复组件 renderer。只有静态 Skill 和动态 set 时不要求 artifacts；只有独立包时跳过平台组件和 Skill set 请求。命令与 producer 的变化一起进 Review。
 
-## A4. 稳定 ID 的精确定义
+## A4. 稳定 ID 与物理实例
 
-来源字段取安装器已核验元数据，不能由 renderer 传入。`sourceIdentity` 使用现有 `sha256:<64位小写hex>` 字符串；sourceId 和 pluginName 使用现有规范值。producer 的逻辑身份为：
+字段来自 AW 已核验来源和 RenderUnit，renderer 不能提供：
 
-```ts
-type ProducerIdentity = {
-  sourceId: string;
-  sourceIdentity: string;
-  pluginName: string;
-  kind: "artifact" | "static-skill" | "package";
-  key: string;               // artifactId / skillKey / packageKey
-  platform: Platform | null; // package 必须 null
-  scope: Scope;              // 实际物化 scope；shared native 为 user
-  projectRoot: string | null; // user 为 null
-};
-type CommandIdentity = {
-  schemaVersion: 1;
-  producer: ProducerIdentity;
-  set: Name;
-  key: Name;
-  variant: Name;             // 省略输入已归一为 default
-};
-```
+~~~ts
+interface ProducerIdentity {
+  sourceId: string; sourceIdentity: string; pluginName: string;
+  kind: 'artifact' | 'static-skill' | 'package'; key: string;
+  platform: PlatformId | null; scope: 'user' | 'project';
+  projectRoot: string | null; placementKey: string | null;
+}
+interface CommandIdentity {
+  schemaVersion: 2; producer: ProducerIdentity;
+  set: Name; key: Name; variant: Name;
+}
+~~~
 
-projectRoot 使用现有项目根定位器确定项目，再 `realpath` 并按本机 `path.normalize` 规范化，去掉非文件系统根的尾部分隔符。Windows 仅将盘符字母转大写，不把整个路径转小写；不做 Unicode normalization。项目不存在时报错，不以 caller cwd 替代。跨 OS 或移动目录不保证原 project producer 身份保留；user 身份不包含 home 路径。
+全部字段必填，sourceIdentity 为 sha256: 加 64 位小写 hex。key 是 artifactId/skillKey/packageKey；package 的 platform 和 placementKey 均为 null。Skill 的 placementKey 等于 RenderUnit.physicalKey，算法见[平台物理身份](../maintainers/architecture/platforms.md)。user 的 projectRoot 为 null；projectRoot 使用既有项目定位、realpath 与 path.normalize，Windows 只规范盘符大小写，不将全路径小写，缺失项目不以 caller cwd 代替。
 
-规范序列化 C：object keys 按 ECMAScript 默认字符串排序；数组保持顺序；primitive 用 `JSON.stringify`；递归拼接，不含空白或末尾换行。对象中所有列出的 identity 字段必填，不允许 undefined/额外字段。插件命令 ID 精确为：
+规范序列化 C：对象键按 ECMAScript 默认字符串排序、数组保序、primitive 用 JSON.stringify，递归拼接且无空白或末尾换行。身份不能有 undefined 或额外字段。命令 ID 为：
 
-```text
+~~~text
 cmdp_ + lowercaseHex(SHA256(UTF8(C(CommandIdentity))))[0:16]
-```
+~~~
 
-取摘要前 64 位，编码为 16 位小写 hex；完整命令 ID 共 21 个字符。不加第二次摘要，不把版本、config digest、resourceRoot、安装路径或包 revision 放入 identity。sourceId 改名也形成新身份；相同别名替换 sourceIdentity 必须形成新身份。规范化前后的键大小写不互换。绑定仍核对完整 identity；若遇同 ID 不同 identity，不覆盖，返回 `commandIdentityConflict`。
+同 ID 核对完整 identity，不一致返回 commandIdentityConflict。不同物理 namespace 有不同 key，同一共享包的 CLI/App 和多个 activation 复用 key。版本、配置摘要、staging/resourceRoot 和宿主版本化缓存不进入身份。移动安装 namespace 形成新身份，不承诺跨 home/机器保留 ID。
 
-用户命令 ID 为 `cmdu_` 加标准小写带连字符 UUID v4，例如 `cmdu_4ba70354-0867-4ecb-a927-120c1933f514`。首次 install 生成，update 不变，remove 后重新 install 重新生成。两种 ID 都不接受大小写修正或人类名称路由。
+发布、查询、权限引用、占位符、撤销和 nativeTools 闭包使用完整 identity，不退回 source/plugin/platform/scope/set 子集，不按最新记录或文件顺序选绑定。同物理部署解析其 Skill producer，显式 user package 遵循 scope 规则；不同 placement 的同名集合不能混用。list/show 与回执保留安全 placement 标识。
+
+取消共享包的一个 activation 不撤绑定；只有无引用且实际 producer 撤销后才移除该 placement。准备和执行核对候选仍在相同 placement；损坏记录不能授予另一实例删除权。用户命令仍为 cmdu_ 加小写 UUID v4，首次 install 生成、update 不变、remove 后重装生成新 ID；不接受名称路由或大小写修正。
+
+包内现有 owner/nativeProjection 证据保留冻结 PhysicalIdentity；运行时从已核验 marker 的实际 namespace 重算 key 和固定路由位置。同一 AW_HOME 切换宿主配置根后，旧命令 ID 仍指向旧物理实例，不按当前环境重绑定。marker 中的身份或路径本身不授予所有权。
 
 ## A5. 引用与权限
 
@@ -184,7 +165,7 @@ Guide 的 allow 与 Claude exclusion 均固定为 start/send/wait/result/stop �
 
 ## A6. 可交接示例
 
-以下是 Manifest v3 的字段片段；加入插件现有基础 metadata 和 render script 后使用：
+以下是 Manifest v4 的字段片段；加入插件现有基础 metadata 和 render script 后使用：
 
 ```json
 {
@@ -377,7 +358,7 @@ type InstalledCommandProducer = {
 
 上述记录是当前资源内容与目录 owner 证据，不是新安装 ledger。只要旧资源不能保持完整，写入前撤下相关派生绑定；普通失败允许 producer 不可用，由现有恢复入口重建。
 
-Codex/Claude 静态原生 Skill 的共享 producer 固定为 user 身份。平台的安装、启用及权限 scope 与资源身份分开：单个 scope 的 uninstall/cleanup 不撤销仍存在的共享资源绑定，真正移除或替换该资源时才撤销受影响绑定。run 使用已安装的 AW namespaced 原生产物及其来源、平台 manifest、精确 Skill 路径和 producer 记录核验证据，不以当前项目重新选择身份；资源缺失或冲突时拒绝并保留 reinstall 恢复入口。user 配置 apply 更新共享产物，project 保存不能覆盖共享生效定义。不得为此增加项目引用计数、全局扫描或安装 ledger。
+共享原生包内 Skill 的 producer 使用固定 canonical user 身份；独立位置使用 RenderUnit 的实际 scope 与 placementKey。平台的安装、启用及权限 scope 与资源身份分开：单个 scope 的 uninstall/cleanup 不撤销仍存在的共享资源绑定，真正移除或替换该资源时才撤销受影响绑定。run 使用已安装的 AW namespaced 原生产物及其来源、平台 manifest、精确 Skill 路径和 producer 记录核验证据，不以当前项目重新选择身份；资源缺失或冲突时拒绝并保留 reinstall 恢复入口。user 配置 apply 更新共享产物，project 保存不能覆盖共享生效定义。不得为此增加项目引用计数、全局扫描或安装 ledger。
 
 ## B3. 运行参数、环境与主机描述
 

@@ -1,13 +1,60 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { CodexSharedNativeEvidence } from '../../src/utils/codex-shared-native.js';
-import { inspectCodexSharedNative } from '../../src/utils/codex-shared-native.js';
+import { inspectCodexSharedNative, isCanonicalCodexMarketplaceRegistration } from '../../src/utils/codex-shared-native.js';
 import {
   combineCodexNativePluginObservations,
   type CodexNativePluginObservation,
 } from '../../src/utils/codex-native-observation.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
+const marketplaceRoot = path.resolve('/aw/marketplaces/aw-team');
+
+// Ownership must accept Codex's Windows canonical spelling without granting
+// an alias to another directory or interpreting verbatim device path syntax.
+describe('Codex local marketplace source identity', () => {
+  it.each([
+    ['C:\\aw\\marketplaces\\team', '\\\\?\\C:\\aw\\marketplaces\\team', true],
+    ['c:\\aw\\marketplaces\\team', '\\\\?\\C:\\aw\\marketplaces\\team', true],
+    ['C:/aw/marketplaces/team', '\\\\?\\C:\\aw\\marketplaces\\team', true],
+    ['\\\\server\\share\\aw\\team', '\\\\?\\UNC\\server\\share\\aw\\team', true],
+    ['C:\\aw\\team\\', '\\\\?\\C:\\aw\\team', true],
+    ['C:\\aw\\team', '\\\\?\\C:\\aw\\Team', false],
+    ['\\\\server\\share\\aw', '\\\\?\\UNC\\Server\\share\\aw', false],
+    ['C:\\aw\\team', '\\\\?\\D:\\aw\\team', false],
+    ['C:\\aw\\team', '\\\\?\\C:\\foreign\\team', false],
+  ])('compares supported Windows directory spellings %s and %s', (expected, source, matches) => {
+    expect(isCanonicalCodexMarketplaceRegistration({ name: 'team', source, sourceType: 'local',
+      sourcePointsToManifest: false }, expected, 'win32')).toBe(matches);
+    expect(isCanonicalCodexMarketplaceRegistration({ name: 'team', source: expected, sourceType: 'local',
+      sourcePointsToManifest: false }, source, 'win32')).toBe(matches);
+  });
+
+  it.each([
+    'relative', 'C:relative', '\\aw\\team', '\\\\server', '\\\\server\\',
+    '\\\\?\\C:\\aw\\..\\team', '\\\\?\\C:\\aw\\.\\team', '\\\\?\\C:/aw/team',
+    'C:\\aw\\\\team', 'C:\\aw\\team.', 'C:\\aw\\team ', 'C:\\aw\\team:stream',
+    'C:\\aw\\NUL', 'C:\\aw\\com1.txt', 'C:\\aw\\LPT².txt', '\\\\.\\C:\\aw\\team',
+    '\\??\\C:\\aw\\team', '\\\\?\\GLOBALROOT\\Device\\team', '\\\\?\\Volume{abc}\\team',
+    'C:\\aw\\team\u0000suffix',
+  ])('rejects an ambiguous Windows path before identical-string comparison: %s', (source) => {
+    expect(isCanonicalCodexMarketplaceRegistration({ name: 'team', source, sourceType: 'local',
+      sourcePointsToManifest: false }, source, 'win32')).toBe(false);
+  });
+
+  it('keeps source type, manifest, absolute-path and POSIX case boundaries', () => {
+    const registration = { name: 'team', source: '/aw/team', sourceType: 'local' as const, sourcePointsToManifest: false };
+    expect(isCanonicalCodexMarketplaceRegistration(registration, '/aw/team', 'linux')).toBe(true);
+    expect(isCanonicalCodexMarketplaceRegistration(registration, '/aw/Team', 'linux')).toBe(false);
+    expect(isCanonicalCodexMarketplaceRegistration({ ...registration, source: 'relative' }, 'relative', 'linux')).toBe(false);
+    expect(isCanonicalCodexMarketplaceRegistration({ ...registration, sourceType: 'git' }, '/aw/team', 'linux')).toBe(false);
+    expect(isCanonicalCodexMarketplaceRegistration({ ...registration, sourcePointsToManifest: true }, '/aw/team', 'linux')).toBe(false);
+    expect(isCanonicalCodexMarketplaceRegistration(undefined, '/aw/team', 'linux')).toBe(false);
+    expect(isCanonicalCodexMarketplaceRegistration({ ...registration, source: undefined }, '/aw/team', 'linux')).toBe(false);
+    expect(isCanonicalCodexMarketplaceRegistration({ ...registration, source: '\\\\?\\C:\\aw\\team' }, '\\\\?\\C:\\aw\\team', 'linux')).toBe(false);
+  });
+});
 
 function evidence(
   overrides: Partial<CodexSharedNativeEvidence> = {},
@@ -16,12 +63,12 @@ function evidence(
     pluginName: 'demo',
     pluginId: 'demo@aw-team',
     marketplaceName: 'aw-team',
-    canonicalMarketplaceRoot: '/aw/marketplaces/aw-team',
+    canonicalMarketplaceRoot: marketplaceRoot,
     desiredVersion: '2.0.0',
     expectedPayloadDigest: digest,
     marketplaceRegistration: {
       name: 'aw-team',
-      source: '/aw/marketplaces/aw-team',
+      source: marketplaceRoot,
       sourceType: 'local',
       sourcePointsToManifest: false,
     },

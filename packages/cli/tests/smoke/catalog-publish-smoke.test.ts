@@ -32,7 +32,7 @@ async function runAw(cliEntry: string, workspaceRoot: string, args: string[]) {
   });
 }
 
-it('publishes dynamic-only Native Skills through the built public CLI and Git provider', async () => {
+it('publishes complete v3 dynamic source through the built public CLI and Git provider', async () => {
   temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-catalog-smoke-'));
   const workspaceRoot = path.join(temporaryRoot, 'workspace');
   const remoteUrl = path.join(temporaryRoot, 'catalog.git');
@@ -57,14 +57,7 @@ it('publishes dynamic-only Native Skills through the built public CLI and Git pr
     ...pluginManifest,
     platforms: ['codex', 'claude'],
     scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-    artifacts: {
-      targets: (['codex', 'claude'] as const).map((platform) => ({
-        id: `${platform}-dynamic`, platform, target: `${platform}.skill`,
-        scopes: ['user', 'project'], states: ['present'],
-        ...(platform === 'codex' ? { projectManagedKind: 'skill' } : {}),
-        skillKey: 'dynamic', refreshKeys: [],
-      })),
-    },
+    artifacts: { configKeys: [] },
   }, { spaces: 2 });
   await fs.writeFile(path.join(workspaceRoot, 'plugins', 'smoke-demo', 'render.mjs'), [
     'import fs from "node:fs";',
@@ -74,10 +67,12 @@ it('publishes dynamic-only Native Skills through the built public CLI and Git pr
       'README.md': '# Dynamic\n\nDynamic smoke Skill.\n',
       'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
     })};`,
-    'console.log(JSON.stringify({ version: 2, artifacts: context.requestedArtifactIds.map((id) => ({',
-    'id, platform: context.platform, target: `${context.platform}.skill`,',
-    'kind: "skill", state: "present", skillKey: "dynamic", refreshKeys: [], content: { files },',
-    '})) }));',
+    'const offered = context.allowedOutputKinds.includes("skill");',
+    'const supported = context.platformCapabilities.kinds.skill.status === "supported";',
+    'console.log(JSON.stringify({ version: 3, components: offered && supported ? [{',
+    'id: "dynamic", kind: "skill", name: "dynamic", content: { files: Object.fromEntries(Object.entries(files).map(([name,text])=>[name,{text}])) },',
+    '}]:[], omitted:[], unmet:offered && !supported ? [{id:"dynamic",kind:"skill",name:"dynamic",',
+    'requiredFeatures:[{feature:"component.kind.skill"}],reasonCode:"capability-unverified"}]:[] }));',
   ].join('\n'));
   await execFileAsync('git', ['add', '.'], { cwd: workspaceRoot });
   await execFileAsync('git', [
@@ -157,13 +152,14 @@ it('publishes dynamic-only Native Skills through the built public CLI and Git pr
   });
   expect(resolved.resolvedCommit).toBe(receipt.commit);
   expect(resolved.manifest.catalogVersion).toBe('91.0.0');
+  const pluginRoot = path.join(resolved.rootDir, 'plugins', 'smoke-demo');
   for (const platform of ['codex', 'claude']) {
-    const pluginRoot = path.join(resolved.rootDir, 'plugins', 'smoke-demo');
-    await expect(fs.readJson(path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json')))
-      .resolves.toHaveProperty('skills', `./${platform}/skills`);
-    const entries = await fs.readdir(path.join(pluginRoot, platform, 'skills'), { withFileTypes: true });
-    expect(entries.filter((entry) => entry.isDirectory())).toEqual([]);
+    const manifest = await fs.readJson(path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'));
+    expect(manifest).toMatchObject({ name: 'smoke-demo', version: '0.1.0' });
+    expect(manifest).not.toHaveProperty('skills');
+    await expect(fs.pathExists(path.join(pluginRoot, platform, 'skills', 'dynamic'))).resolves.toBe(false);
   }
+  await expect(fs.readFile(path.join(pluginRoot, 'render.mjs'), 'utf8')).resolves.toContain('version: 3');
   await expect(fs.readJson(path.join(
     workspaceRoot,
     '.aw',

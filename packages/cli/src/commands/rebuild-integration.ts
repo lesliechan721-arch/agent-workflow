@@ -1,291 +1,143 @@
 import crypto from 'node:crypto';
-import { captureNativeToolChanges } from '../utils/native-tool-review.js';
-import { forceOfflineCleanupEvidence } from './offline-cleanup-evidence.js';
 import path from 'node:path';
+import { captureNativeToolChanges } from '../utils/native-tool-review.js';
 
+import { catalogFileMode } from '@lesliechan721/aw-plugin-core';
+import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import fs from 'fs-extra';
-import { catalogFileMode, selectPluginConfigProfile, type RuntimeConfigSnapshot } from '@lesliechan721/aw-plugin-core';
-import { COMMAND_PRODUCER_RECORD_FILE, getManagedCommandArtifactTargets, getCommandPackageId, type ManagedCommandProducerRef } from '@lesliechan721/aw-plugin-core/manifest';
 import os from 'node:os';
 import {
-  injectNativeToolClosureFiles, nativeToolsForCommandSets, commandSetsForProducer, createManagedCommandReferenceResolver, discoverRetainedManagedCommandPackages, retainedManagedCommandPackageResult, managedCommandProducerIdentity,
-  prepareManagedCommandPackage, resolveSkillManagedCommandReferences, type ManagedCommandCandidate,
+  discoverRetainedManagedCommandPackages,
+  managedCommandProducerIdentity,
+  prepareManagedCommandPackage,
+  retainedManagedCommandPackageResult,
+  type ManagedCommandCandidate,
+  type PreparedManagedCommandPackage
 } from '../utils/managed-command-materialization.js';
-import { assertManagedCommandBindingIdentities, captureManagedCommandBindingRecoveryEvidence, normalizeInstalledCommandProducer, managedCommandDiagnostic, ManagedCommandError, publishManagedCommandBindings, revokeManagedCommandBindings, syncManagedCommandPackage, readInstalledCommandProducer, listManagedCommands, type ManagedCommandBindingRecoveryEvidence } from '../utils/managed-command-store.js';
-import { injectInstalledRuntimeConfig, carryRuntimeConfigNativeReceipt } from '../utils/runtime-config.js';
-import { resolveCodexSkillsRelativeRoot } from '../utils/codex-skills-root.js';
-import { resolveClaudeSkillsRelativeRoot } from '../utils/claude-skills-root.js';
+import { assertManagedCommandBindingIdentities, listManagedCommands, managedCommandDiagnostic, ManagedCommandError, revokeManagedCommandBindings, syncManagedCommandPackage } from '../utils/managed-command-store.js';
 
-import { generateAgentArtifacts } from '../generators/agents.js';
+import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
 import {
-  generateInstructionArtifacts,
-  renderCodexManagedInstructionBlock,
-} from '../generators/instructions.js';
-import {
-  generateCodexPermissionArtifacts,
-  mergeClaudePermissions,
-  type ClaudePermissions,
+  type ClaudePermissions
 } from '../generators/permissions.js';
 import { buildGeneratedName } from '../generators/shared.js';
+import type { CommandReporter, DebugLogger } from '../output/model.js';
 import type {
   CatalogResolution,
   CodexSharedHookGroup,
-  GeneratedArtifact,
   CommandProducerResult,
-  MarketplaceManifest,
   PlatformName,
-  PlatformTarget,
   PluginMeta,
-  Scope,
-  TrackedHookGroupIdentity,
+  Scope
 } from '../types.js';
-import type { CommandReporter, DebugLogger } from '../output/model.js';
+import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import {
-  applyConditionalCodexConfigTransactionFile,
   applyCodexConfigTransactionFile,
-  composeManagedDeveloperInstructionsBlock,
+  applyConditionalCodexConfigTransactionFile,
   readCodexConfigFile,
-  type CodexAgentRegistrationConfig,
   type CodexAgentRegistrationSnapshot,
-  type CodexMcpServerSnapshot,
+  type CodexMcpServerSnapshot
 } from '../utils/codex-config.js';
+import { isSafeCodexMarketplaceRoot } from '../utils/codex-marketplace-path.js';
 import {
-  canonicalizePathThroughExistingAncestor,
-  resolveClaudeProjectKey,
-  resolveCodexProjectKey,
-} from '../utils/state-paths.js';
+  createCodexNativeObservationSession,
+  type CodexNativeObservationSession,
+  type CodexNativePluginObservation,
+} from '../utils/codex-native-observation.js';
+import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
 import {
-  createCodexSkillStagingTreeContentDigest,
-} from '../utils/codex-skill-staging.js';
+  inspectCodexSharedNative,
+  isCanonicalCodexMarketplaceRegistration,
+  type CodexSharedNativeInspection,
+} from '../utils/codex-shared-native.js';
 import {
-  AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
-  createDynamicSkillExpectedTree,
-  createDynamicSkillTreeContentDigest,
-  readDynamicSkillTree,
-  validateSkillDirectory,
-  writeDynamicSkillTree,
-  type DynamicSkillTree,
+  validateSkillDirectory
 } from '../utils/dynamic-skill-tree.js';
 import {
   parseCodexSharedHooksFile,
   serializeTrackedHookGroupIdentity,
 } from '../utils/hooks-contract.js';
 import {
-  buildCodexMarketplaceAddInvocation,
+  assertSafeNamespacedMarketplacePluginRoot,
+  readStrictNamespacedMarketplaceRoot
+} from '../utils/local-marketplace.js';
+import {
   buildCodexMarketplaceRemoveInvocation,
-  buildCodexPluginAddInvocation,
   buildCodexPluginRemoveInvocation,
   CodexProjectConfigNotEffectiveError,
   runNativeCliChecked,
   SYSTEM_CODEX_MANAGER,
   type CodexManager,
-  type NativeCliRunner,
+  type NativeCliRunner
 } from '../utils/native-cli.js';
-import { attachSafeOperationError, readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import {
-  OWNED_TEXT_HEADER_PREFIX,
-  createSharedOwnerToken,
-  createSkillOwnerMarkerContent,
-  parseSharedOwnerToken,
-  parseOwnedTextHeader,
-  readSkillOwnerMarker,
-  renderOwnedTextFile,
   inspectOwnedComponents,
-  writeOwnedTextFile,
+  OWNED_TEXT_HEADER_PREFIX,
+  parseOwnedTextHeader,
+  parseSharedOwnerToken,
+  readSkillOwnerMarker,
+  type NativeOwnershipProbe,
   type OwnedComponent,
   type OwnedComponentExecutor,
-  type NativeOwnershipProbe,
   type OwnerIdentity,
-  type OwnershipInspection,
+  type OwnershipInspection
 } from '../utils/ownership.js';
-import {
-  resolveArtifactRenderConfig,
-  resolveArtifactRendererTarget,
-  runArtifactRenderer,
-} from '../utils/artifact-renderer.js';
-import type { PluginProcessResult } from '../utils/plugin-scripts.js';
-import {
-  createArtifactConfigDigest,
-  validateArtifactPlan,
-  type ValidatedArtifactPlanArtifact,
-} from '../utils/artifact-plan.js';
-import { resolveAwDeliveredArtifactRequestBatches } from '../utils/artifact-request.js';
-import {
-  createAwPluginRequirementsReceipt,
-  parseAwPluginRequirementsReceipt,
-  readPluginManifest,
-  tryParseStrictSemVer,
-} from '../utils/manifest.js';
-import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
   resolveAwHome,
   resolveClaudePaths,
   resolveCodexPaths,
-  resolveRepoRoot,
-  getCodexHome,
+  resolveRepoRoot
 } from '../utils/paths.js';
-import {
-  assertNoSensitiveConfigInFiles,
-  collectSensitivePluginConfigValues,
-  runPreApplyScript,
-} from '../utils/plugin-scripts.js';
-import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
-import { findSensitiveTokenPath } from '../utils/sensitive-content.js';
 import {
   atomicRemoveConfigFile,
   atomicReplaceConfigFile,
   withConfigFileMutation,
 } from '../utils/plugin-config.js';
-import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import type { PluginProcessResult } from '../utils/plugin-scripts.js';
 import {
-  assertSafeNamespacedMarketplacePluginRoot,
-  getNamespacedMarketplaceName,
-  MarketplaceRootValidationError,
-  projectMarketplaceManifestForPlatform,
-  readStrictNamespacedMarketplaceRoot,
-  deferNativeMarketplacePublications,
-  replayNamespacedMarketplacePluginProjections,
-  refreshPreservedPlatformReceipt,
-  type PreservedPlatformReceipt,
-  type DeferredNativeMarketplacePublication,
-  replayNamespacedCodexSkillOverlays,
-} from '../utils/local-marketplace.js';
-import { commitMarketplaceGenerationBackup } from '../utils/orphan-marketplace-cleanup.js';
-import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
-import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
-import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
-import {
-  codexNativeRenderProjectionsEqual,
-  createCodexNativeRenderProjection,
-  createCodexNativeRenderReceipt,
-  type CodexNativeRenderProjection,
-} from '../utils/codex-native-render-receipt.js';
-import {
-  createClaudeNativeRenderReceipt,
-  nativeSkillRenderReceiptPath,
-  parseNativeSkillRenderReceipt,
-  serializeNativeSkillRenderReceipt,
-  type NativeSkillRenderReceipt,
-} from '../utils/claude-native-render-receipt.js';
-import {
-  inspectCodexSharedNative,
-  type CodexSharedNativeDiagnostic,
-  type CodexSharedNativeInspection,
-} from '../utils/codex-shared-native.js';
-import { calculateCodexNativeRenderPayloadDigest } from '../utils/catalog-digests.js';
-import {
-  createCodexNativeObservationSession,
-  type CodexNativeObservationSession,
-  type CodexNativePluginObservation,
-} from '../utils/codex-native-observation.js';
-import { isSafeCodexMarketplaceRoot } from '../utils/codex-marketplace-path.js';
+  runPreApplyScript
+} from '../utils/plugin-scripts.js';
 import { assertCanonicalProjectManagedRoots } from '../utils/project-boundary.js';
+import { attachSafeOperationError, readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import {
-  findCodexRoleNameConflict,
-  resolveCodexRoleNamespace,
-} from '../utils/codex-roles.js';
+  createProjectLocationKey,
+  resolveRequiredCanonicalRepoRoot,
+  resolveClaudeProjectKey,
+  resolveCodexProjectKey
+} from '../utils/state-paths.js';
+import type { OperationAction } from './operation-plan.js';
 import type {
+  DeferredRebuildPostcheckFailure,
   DesiredTarget,
   RebuildPreApplyInvocation,
-  DeferredRebuildPostcheckFailure,
-  RebuildTargetIdentity,
   RebuildTargetDriver,
+  RebuildTargetIdentity,
 } from './rebuild-operations.js';
-import type { OperationAction } from './operation-plan.js';
+import { platformOwnership, PlatformRebuildSession } from './rebuild-platform-integration.js';
 
 const MARKETPLACE_NAME = 'aw';
 const LEGACY_MCP_OWNER_ENV = 'AW_AGENT_WORKFLOWS_OWNER';
-type OwnedSharedComponent = Extract<OwnedComponent, { locator: unknown }>;
-
-function requirementsReceipt(plugin: PluginMeta): Buffer {
-  const receipt = createAwPluginRequirementsReceipt(
-    { name: plugin.manifest.name, version: plugin.manifest.version },
-    plugin.manifest.requires?.aw.capabilities ?? [],
-  );
-  return Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
-}
-
-function withoutVerifiedRequirementsReceipt(
-  plugin: PluginMeta,
-  files: Readonly<Record<string, Buffer>>,
-): Record<string, Buffer> {
-  const receipt = files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
-  if (!receipt) return { ...files };
-  let actual: ReturnType<typeof parseAwPluginRequirementsReceipt>;
-  let expected: ReturnType<typeof parseAwPluginRequirementsReceipt>;
-  try {
-    actual = parseAwPluginRequirementsReceipt(JSON.parse(receipt.toString('utf8')));
-    expected = parseAwPluginRequirementsReceipt(JSON.parse(requirementsReceipt(plugin).toString('utf8')));
-  } catch {
-    return { ...files };
-  }
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    return { ...files };
-  }
-  const output = { ...files };
-  delete output[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
-  return output;
-}
-
-interface PlannedWrite {
-  artifact: GeneratedArtifact;
-  component?: OwnedComponent;
-  additionalComponents?: OwnedComponent[];
-  optional?: boolean;
-  action?: OperationAction;
-  additionalActions?: OperationAction[];
-}
 
 const commandPackagePreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<{ action: OperationAction; candidate: ManagedCommandCandidate }>>>();
-const staticCommandPreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<ValidatedArtifactPlanArtifact[]>>>();
-const dynamicArtifactPreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, PluginProcessResult>>();
+const platformRebuildSessions = new WeakMap<Map<string, PluginProcessResult>, PlatformRebuildSession>();
+const commandPackageCandidates = new WeakMap<Map<string, PluginProcessResult>, Map<string, Promise<PreparedManagedCommandPackage>>>();
 
-function artifactRenderResults(context: RebuildExecutionContext): Map<string, PluginProcessResult> {
-  if (context.preparedArtifactRenderResults) return context.preparedArtifactRenderResults;
-  let results = dynamicArtifactPreparationCaches.get(context);
-  if (!results) {
-    results = new Map();
-    dynamicArtifactPreparationCaches.set(context, results);
-  }
-  return results;
+export function finalizePreparedPlatformRebuildSession(results: Map<string, PluginProcessResult>): void {
+  platformRebuildSessions.get(results)?.freezeMarketplaceCandidates();
 }
 
-async function prepareStaticCommandArtifacts(options: {
-  plugin: PluginMeta; platform: PlatformName; cwd: string; env: NodeJS.ProcessEnv; context: RebuildExecutionContext;
-}): Promise<ValidatedArtifactPlanArtifact[]> {
-  const targets = getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) => target.producer.kind === 'static-skill' && target.platform === options.platform);
-  if (!targets.length) return [];
-  const config = await resolveArtifactRenderConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, platform: options.platform, scope: 'user', cwd: options.plugin.rootDir, env: options.env, referencePlugins: options.context.referencePlugins });
-  const key = JSON.stringify([options.plugin.rootDir, options.platform, config]);
-  let cache = staticCommandPreparationCaches.get(options.context);
-  if (!cache) { cache = new Map(); staticCommandPreparationCaches.set(options.context, cache); }
-  let prepared = cache.get(key);
-  if (!prepared) {
-    prepared = (async () => {
-      const rendered = await runArtifactRenderer({ plugin: options.plugin, referencePlugins: options.context.referencePlugins, event: 'install', platform: options.platform, scope: 'user', configScope: 'user', cwd: options.plugin.rootDir, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), signal: options.context.signal, scriptTimeoutMs: options.context.scriptTimeoutMs });
-      return validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: options.platform, scope: 'user', requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts;
-    })();
-    cache.set(key, prepared);
+export async function disposePreparedPlatformRebuildSession(results: Map<string, PluginProcessResult>): Promise<void> {
+  const session = platformRebuildSessions.get(results);
+  platformRebuildSessions.delete(results);
+  const packages = commandPackageCandidates.get(results);
+  commandPackageCandidates.delete(results);
+  try { await session?.dispose(); }
+  finally {
+    if (packages) await Promise.all([...packages.values()].map(async (candidate) => {
+      const prepared = await candidate.catch(() => undefined);
+      await prepared?.cleanup();
+    }));
   }
-  return prepared;
-}
-
-/** Normal write preparation compares its real candidate; read-only inspection never calls this. */
-export async function hasPreparedStaticNativeCommandDrift(options: {
-  plugin: PluginMeta; cwd: string; env: NodeJS.ProcessEnv; context: RebuildExecutionContext; marketplaceRoot: string;
-}): Promise<boolean> {
-  const artifacts = await prepareStaticCommandArtifacts({ ...options, platform: 'codex' });
-  if (!artifacts.length) return false;
-  const pluginRoot = path.join(options.marketplaceRoot, 'plugins', options.plugin.manifest.name);
-  const skillsRoot = path.join(pluginRoot, await resolveCodexSkillsRelativeRoot({ ...options.plugin, rootDir: pluginRoot }));
-  for (const set of options.plugin.manifest.managedCommands?.sets ?? []) {
-    if (set.producer.kind !== 'static-skill' || set.producer.platform !== 'codex' || set.mode !== 'dynamic') continue;
-    const producer = await managedCommandProducerIdentity({ ...options, producer: set.producer, platform: 'codex', scope: 'user' });
-    const expected = commandSetsForProducer({ plugin: options.plugin, producer: set.producer, artifacts });
-    const previous = await readInstalledCommandProducer(path.join(skillsRoot, set.producer.skillKey)).catch(() => null);
-    if (!previous || JSON.stringify(previous.producer) !== JSON.stringify(producer) || JSON.stringify(previous.sets) !== JSON.stringify(expected)) return true;
-  }
-  return false;
 }
 
 async function commandPackageActions(options: {
@@ -294,34 +146,51 @@ async function commandPackageActions(options: {
 }): Promise<{ actions: OperationAction[]; candidates: ManagedCommandCandidate[] }> {
   const actions: OperationAction[] = [];
   const candidates: ManagedCommandCandidate[] = [];
+  const packageCache = options.context.packagePreparationCache ??= new Map();
+  let cache = commandPackagePreparationCaches.get(options.context);
+  if (!cache) {
+    cache = new Map();
+    commandPackagePreparationCaches.set(options.context, cache);
+  }
   for (const declaration of options.plugin.manifest.managedCommands?.packages ?? []) {
     if (!declaration.platforms.includes(options.platform)) continue;
-    const producer = await managedCommandProducerIdentity({ ...options, scope: declaration.scope, producer: { kind: 'package', packageKey: declaration.key } });
-    let cache = commandPackagePreparationCaches.get(options.context);
-    if (!cache) { cache = new Map(); commandPackagePreparationCaches.set(options.context, cache); }
-    let preparation = cache.get(getCommandPackageId(producer));
+    const producer = await managedCommandProducerIdentity({ ...options, scope: declaration.scope,
+      producer: { kind: 'package', packageKey: declaration.key } });
+    const key = getCommandPackageId(producer);
+    let preparation = cache.get(key);
     if (!preparation) {
       preparation = (async () => {
-        const prepared = await prepareManagedCommandPackage({ ...options, referencePlugins: options.context.referencePlugins, packageKey: declaration.key, scope: declaration.scope, signal: options.context.signal, scriptTimeoutMs: options.context.scriptTimeoutMs });
-        try {
-      const files: Array<import('./operation-plan.js').OperationArtifactFile & { mode: number }> = [];
-      async function visit(directory: string, prefix: string): Promise<void> {
-        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-          const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-          const absolute = path.join(directory, entry.name);
-          if (entry.isDirectory()) await visit(absolute, relativePath);
-          else {
-            const content = await fs.readFile(absolute);
-            files.push({ relativePath, contentBase64: content.toString('base64'), contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`, mode: (await fs.stat(absolute)).mode & 0o777 });
+        let candidate = packageCache.get(key);
+        if (!candidate) {
+          candidate = prepareManagedCommandPackage({ ...options, referencePlugins: options.context.referencePlugins,
+            packageKey: declaration.key, scope: declaration.scope, signal: options.context.signal,
+            scriptTimeoutMs: options.context.scriptTimeoutMs });
+          packageCache.set(key, candidate);
+        }
+        const prepared = await candidate;
+        const files: Array<import('./operation-plan.js').OperationArtifactFile & { mode: number }> = [];
+        async function visit(directory: string, prefix: string): Promise<void> {
+          for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+            const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+            const absolute = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+              await visit(absolute, relativePath);
+            } else if (entry.isFile()) {
+              const content = await fs.readFile(absolute);
+              files.push({ relativePath, contentBase64: content.toString('base64'),
+                contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
+                mode: (await fs.stat(absolute)).mode & 0o777 });
+            } else throw new ManagedCommandError('commandResourceInvalid', 'The prepared package contains an unsafe resource.');
           }
         }
-      }
-      await visit(prepared.resourceRoot, '');
-      files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-          return { action: { kind: 'syncManagedCommandPackage' as const, pluginId: pluginActionId(options.plugin), scope: declaration.scope, producer: prepared.producer, sets: prepared.sets, nativeTools: prepared.nativeTools, files, contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` }, candidate: { producer: prepared.producer, sets: prepared.sets, nativeTools: prepared.nativeTools } };
-        } finally { await prepared.cleanup(); }
+        await visit(prepared.resourceRoot, '');
+        files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+        return { action: { kind: 'syncManagedCommandPackage' as const, pluginId: pluginActionId(options.plugin),
+          scope: declaration.scope, producer: prepared.producer, sets: prepared.sets, nativeTools: prepared.nativeTools,
+          files, contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` },
+        candidate: { producer: prepared.producer, sets: prepared.sets, nativeTools: prepared.nativeTools } };
       })();
-      cache.set(getCommandPackageId(producer), preparation);
+      cache.set(key, preparation);
     }
     const prepared = await preparation;
     actions.push(prepared.action);
@@ -330,69 +199,9 @@ async function commandPackageActions(options: {
   return { actions, candidates };
 }
 
-async function prepareSkillCommandCandidate(options: {
-  plugin: PluginMeta; producer: ManagedCommandProducerRef; platform: PlatformName; scope: Scope; cwd: string;
-  tree: DynamicSkillTree; artifacts: readonly ValidatedArtifactPlanArtifact[];
-  sets?: import('../utils/managed-command-store.js').InstalledCommandSet[];
-}): Promise<ManagedCommandCandidate | undefined> {
-  const sets = options.sets ?? commandSetsForProducer(options);
-  if (sets.length === 0) return undefined;
-  const producer = await managedCommandProducerIdentity(options);
-  if (Object.keys(options.tree.files).length === 0) return { producer, sets: sets.map((set) => ({ ...set, state: 'disabled', entries: [] })) };
-  if (Object.hasOwn(options.tree.files, COMMAND_PRODUCER_RECORD_FILE)) throw new Error('commandProducerReservedResource: plugin cannot provide the command producer record.');
-  for (const set of sets) for (const entry of set.entries) {
-    if (!options.tree.files[entry.entry]) throw new Error(`commandResourceInvalid: command entry ${entry.entry} is missing from the final Skill.`);
-    if (process.platform !== 'win32' && entry.runner === 'executable' && options.tree.fileModes?.[entry.entry] !== 0o755) throw new Error(`commandRunnerUnsupported: command entry ${entry.entry} has no executable source file.`);
-  }
-  const nativeTools = injectNativeToolClosureFiles(options.tree.files, await nativeToolsForCommandSets(options.plugin, sets));
-  options.tree.files[COMMAND_PRODUCER_RECORD_FILE] = Buffer.from(`${JSON.stringify({ schemaVersion: 1, producer, sets, ...(nativeTools ? { nativeTools } : {}) }, null, 2)}\n`);
-  return { producer, sets, nativeTools };
-}
-
-async function prepareStaticNativeSkillActions(options: {
-  plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
-  artifacts: readonly ValidatedArtifactPlanArtifact[]; commandCandidates: readonly ManagedCommandCandidate[];
-  signal?: AbortSignal;
-  scriptTimeoutMs?: number;
-}): Promise<{ actions: OperationAction[]; candidates: ManagedCommandCandidate[] }> {
-  if (!options.plugin.manifest.skills) return { actions: [], candidates: [] };
-  if (!options.plugin.manifest.requires?.aw.capabilities?.includes('aw.managed-commands.v1')) return { actions: [], candidates: [] };
-  const scope = 'user';
-  const root = path.join(options.plugin.rootDir, options.platform, options.plugin.manifest.skills.replace(/^\.\//u, ''));
-  const trees: DynamicSkillTree[] = [];
-  const candidates: ManagedCommandCandidate[] = [];
-  let artifacts = [...options.artifacts];
-  const missingTargets = getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) => {
-    const producer = target.producer;
-    return producer.kind === 'static-skill' && target.platform === options.platform && !artifacts.some((artifact) => artifact.id === target.id) && !options.commandCandidates.some((candidate) => candidate.producer.kind === 'static-skill' && candidate.producer.key === producer.skillKey && candidate.producer.platform === options.platform && candidate.producer.scope === scope);
-  });
-  if (missingTargets.length) {
-    const rendered = await runArtifactRenderer({ plugin: options.plugin, event: 'install', platform: options.platform, scope, configScope: scope, cwd: options.plugin.rootDir, commandEnv: options.env, requestedArtifactIds: missingTargets.map((target) => target.id), signal: options.signal, scriptTimeoutMs: options.scriptTimeoutMs });
-    artifacts.push(...validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: options.platform, scope, requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts);
-  }
-  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const tree = await readDynamicSkillTree(path.join(root, entry.name), `${options.platform}.skill`);
-    if (!tree) continue;
-    const previous = options.commandCandidates.find((candidate) => candidate.producer.kind === 'static-skill' && candidate.producer.key === tree.skillKey && candidate.producer.platform === options.platform && candidate.producer.scope === scope);
-    const candidate = await prepareSkillCommandCandidate({ ...options, scope, producer: { kind: 'static-skill', platform: options.platform, skillKey: tree.skillKey }, tree, artifacts, ...(previous ? { sets: previous.sets } : {}) });
-    if (candidate) candidates.push(candidate);
-    trees.push(tree);
-  }
-  const resolver = await createManagedCommandReferenceResolver({ ...options, scope, candidates: [...options.commandCandidates, ...candidates] });
-  const actions: OperationAction[] = [];
-  for (const tree of trees) {
-    const hasCommandReferences = Object.entries(tree.files).some(([relative, content]) => relative.endsWith('.md') && content.includes('{{aw.command:'));
-    const hasCommandProducer = Object.hasOwn(tree.files, COMMAND_PRODUCER_RECORD_FILE);
-    if (!hasCommandReferences && !hasCommandProducer) continue;
-    resolveSkillManagedCommandReferences(tree, resolver);
-    const files = Object.entries(tree.files).map(([relativePath, content]) => ({ relativePath, contentBase64: content.toString('base64'), contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`, ...(tree.fileModes?.[relativePath] ? { mode: tree.fileModes[relativePath] } : {}) })).sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-    actions.push({ kind: 'materializeNativeSkill', pluginId: pluginActionId(options.plugin), platform: options.platform, scope, skillKey: tree.skillKey, files, contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` });
-  }
-  return { actions, candidates };
-}
-
 export interface RebuildIntegration {
+  resolvePlatformTargets(inputs: readonly Parameters<RebuildIntegration['buildTarget']>[0][]): Promise<void>;
+  sealMarketplaceGenerations(targets: readonly DesiredTarget[]): Promise<void>;
   driver: RebuildTargetDriver;
   setNativeMarketplaceEligibleTargets(targets: readonly DesiredTarget[]): void;
   prepareNativeMarketplaceGroup(target: DesiredTarget): Promise<void>;
@@ -438,6 +247,12 @@ export class CodexActivationPostcheckError extends Error {
 }
 
 export interface RebuildExecutionContext {
+  /** Explicit --native-consent for this request, independent of AW confirmation. */
+  nativeConsent?: boolean;
+  recoveryCandidates?: readonly import('../platforms/contracts.js').RecoveryCandidate[];
+  sharedReferenceView?: import('../utils/native-demand.js').NativeSharedReferenceView;
+  platformRebuildSession?: PlatformRebuildSession;
+  packagePreparationCache?: Map<string, Promise<PreparedManagedCommandPackage>>;
   interruption?: import('./public-interruption.js').PublicCommandInterruption;
   /** Validated renderer process output shared only by preparations of this operation. */
   preparedArtifactRenderResults?: Map<string, PluginProcessResult>;
@@ -789,135 +604,8 @@ export async function postcheckCodexReconcileActivations(options: {
 const CODEX_REMOVE_RECOVERY =
   'Codex residue was retained. Retry cleanup or uninstall, upgrade AW, or install a compatible official Codex CLI.';
 
-function ownerIdentity(
-  plugin: string,
-  artifactKey: string,
-  platform: PlatformName,
-  scope: Scope,
-): OwnerIdentity {
-  return { owner: 'agent-workflows', plugin, artifactKey, platform, scope };
-}
-
-function pluginOwnerIdentity(
-  plugin: PluginMeta,
-  artifactKey: string,
-  platform: PlatformName,
-  scope: Scope,
-): OwnerIdentity {
-  return {
-    ...ownerIdentity(plugin.manifest.name, artifactKey, platform, scope),
-    ...(plugin.sourceId ? {
-      sourceId: plugin.sourceId,
-      pluginId: plugin.pluginId,
-    } : {}),
-  };
-}
-
-function bindNamespacedOwnerIdentity(
-  components: readonly OwnedComponent[],
-  source: { sourceId?: string; pluginId?: string },
-): void {
-  if (!source.sourceId) return;
-  for (const component of components) {
-    component.identity.sourceId = source.sourceId;
-    component.identity.pluginId = source.pluginId;
-  }
-}
-
-function internalArtifactKey(kind: string, value: string): string {
-  return `${kind}-${crypto.createHash('sha256').update(value).digest('hex').slice(0, 20)}`;
-}
-
-function pathComponent(options: {
-  kind: 'owned-text-file' | 'skill-directory';
-  path: string;
-  allowedRoot: string;
-  identity: OwnerIdentity;
-  pristineTree?: Array<{ relativePath: string; contentDigest: string; mode?: number }>;
-}): OwnedComponent {
-  if (options.kind !== 'skill-directory') return options;
-  return {
-    ...options,
-    validateHealth: true,
-  };
-}
-
 function pluginActionId(plugin: PluginMeta): string {
   return plugin.pluginId ?? plugin.manifest.name;
-}
-
-function finalizeOwnedArtifactActions(actions: readonly OperationAction[]): void {
-  for (const action of actions) {
-    if (action.kind !== 'writeOwnedArtifact' || !action.owner) continue;
-    if (action.artifactKind === 'owned-text-file') {
-      if (action.sourceContent === undefined) throw new Error('Owned text action is missing source content.');
-      action.content = renderOwnedTextFile(action.sourceContent, action.owner);
-      action.contentDigest = `sha256:${crypto.createHash('sha256').update(action.content).digest('hex')}`;
-      continue;
-    }
-    if (action.artifactKind === 'skill-directory') {
-      const markerContent = createSkillOwnerMarkerContent(action.owner);
-      const marker = {
-        relativePath: '.agent-workflows-owner.json',
-        contentBase64: Buffer.from(markerContent).toString('base64'),
-        contentDigest: `sha256:${crypto.createHash('sha256').update(markerContent).digest('hex')}`,
-      };
-      action.files = [
-        ...(action.files ?? []).filter((file) => file.relativePath !== marker.relativePath),
-        marker,
-      ].sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-      action.contentDigest = `sha256:${crypto.createHash('sha256')
-        .update(JSON.stringify(action.files)).digest('hex')}`;
-    }
-  }
-}
-
-function generatedTextWrite(options: {
-  plugin: PluginMeta;
-  platform: PlatformName;
-  scope: Scope;
-  configDir: string;
-  relativePath: string;
-  artifactKey: string;
-  content: string;
-  kind: GeneratedArtifact['kind'];
-}): PlannedWrite {
-  const artifactPath = path.join(options.configDir, options.relativePath);
-  const identity = ownerIdentity(
-    options.plugin.manifest.name,
-    options.artifactKey,
-    options.platform,
-    options.scope,
-  );
-  const component = pathComponent({
-    kind: 'owned-text-file',
-    path: artifactPath,
-    allowedRoot: options.configDir,
-    identity,
-  });
-  const content = options.content;
-  return {
-    artifact: {
-      path: artifactPath,
-      kind: options.kind,
-      platform: options.platform,
-      artifactKey: options.artifactKey,
-    },
-    component,
-    action: {
-      kind: 'writeOwnedArtifact',
-      pluginId: pluginActionId(options.plugin),
-      platform: options.platform,
-      scope: options.scope,
-      path: artifactPath,
-      allowedRoot: options.configDir,
-      owner: identity,
-      artifactKind: 'owned-text-file',
-      sourceContent: content,
-      content,
-      contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
-    },
-  };
 }
 
 function mergePermissionStates(values: Array<Partial<ClaudePermissions> | undefined>): ClaudePermissions {
@@ -1016,73 +704,6 @@ function rebuildClaudePermissions(settings: ClaudeSettings, ownerKey: string, de
   }
 }
 
-function createClaudePermissionsComponent(options: {
-  identity: OwnerIdentity;
-  scope: Scope;
-  settingsPath: string;
-}): OwnedSharedComponent & { kind: 'shared-config' } {
-  const ownerKey = createSharedOwnerToken(options.identity);
-  return {
-    kind: 'shared-config',
-    identity: options.identity,
-    label: `${options.settingsPath}#awGenerated.permissions.${ownerKey}`,
-    locator: { kind: 'claude-permissions', settingsPath: options.settingsPath, ownerKey },
-  };
-}
-
-function createCodexInstructionComponent(options: {
-  identity: OwnerIdentity;
-  scope: Scope;
-  configPath: string;
-}): OwnedSharedComponent & { kind: 'managed-block' } {
-  const ownerKey = createSharedOwnerToken(options.identity);
-  return {
-    kind: 'managed-block',
-    identity: options.identity,
-    label: `${options.configPath}#developer_instructions:${ownerKey}`,
-    locator: { kind: 'codex-instruction', configPath: options.configPath, ownerKey },
-  };
-}
-
-function createCodexActivationComponent(options: {
-  identity: OwnerIdentity;
-  configPath: string;
-  codexPluginId: string;
-  desired: boolean;
-}): OwnedComponent {
-  return {
-    kind: 'shared-config',
-    identity: options.identity,
-    label: `${options.configPath}#plugins.${options.codexPluginId}.enabled`,
-    locator: {
-      kind: 'codex-activation',
-      configPath: options.configPath,
-      codexPluginId: options.codexPluginId,
-      desired: options.desired,
-    },
-  };
-}
-
-function createCodexActivationCleanupComponent(options: {
-  identity: OwnerIdentity;
-  configPath: string;
-  codexPluginId: string;
-  disposition: 'remove' | 'disable';
-}): OwnedComponent {
-  return {
-    kind: 'shared-config',
-    identity: options.identity,
-    label: `${options.configPath}#plugins.${options.codexPluginId}.enabled`,
-    locator: {
-      kind: 'codex-activation',
-      configPath: options.configPath,
-      codexPluginId: options.codexPluginId,
-      desired: options.disposition === 'remove' ? false : true,
-      disposition: options.disposition,
-    },
-  };
-}
-
 function legacyCodexMcpOwner(actual: CodexMcpServerSnapshot | undefined): string | null {
   const envValue = actual?.value?.env;
   return envValue
@@ -1091,25 +712,6 @@ function legacyCodexMcpOwner(actual: CodexMcpServerSnapshot | undefined): string
     && typeof envValue[LEGACY_MCP_OWNER_ENV] === 'string'
     ? envValue[LEGACY_MCP_OWNER_ENV]
     : null;
-}
-
-function createLegacyCodexMcpCleanupComponent(options: {
-  identity: OwnerIdentity;
-  configPath: string;
-  serverKey: string;
-}): OwnedComponent {
-  const ownerKey = createSharedOwnerToken(options.identity);
-  return {
-    kind: 'shared-config',
-    identity: options.identity,
-    label: `${options.configPath}#mcp_servers.${options.serverKey}`,
-    locator: {
-      kind: 'legacy-codex-mcp',
-      configPath: options.configPath,
-      serverKey: options.serverKey,
-      ownerKey,
-    },
-  };
 }
 
 async function readLegacyCodexHooks(hooksPath: string) {
@@ -1154,30 +756,6 @@ async function applyLegacyCodexHookCleanupTransactionFile(
       return true;
     },
   });
-}
-
-function createLegacyCodexHookCleanupComponent(options: {
-  pluginName: string;
-  scope: Scope;
-  hooksPath: string;
-  identity: TrackedHookGroupIdentity;
-}): OwnedComponent {
-  const serialized = serializeTrackedHookGroupIdentity(options.identity);
-  return {
-    kind: 'shared-config',
-    identity: ownerIdentity(
-      options.pluginName,
-      internalArtifactKey('hook', serialized),
-      'codex',
-      options.scope,
-    ),
-    label: `${options.hooksPath}#${serialized}`,
-    locator: {
-      kind: 'legacy-codex-hook',
-      hooksPath: options.hooksPath,
-      serializedIdentity: serialized,
-    },
-  };
 }
 
 async function codexRoleRegistrationOwned(options: {
@@ -1233,1558 +811,12 @@ export async function removeForceCleanupCodexRoleRegistration(options: {
   });
 }
 
-function createCodexRoleRegistrationComponent(options: {
-  identity: OwnerIdentity;
-  fileIdentity: OwnerIdentity;
-  configPath: string;
-  roleKey: string;
-  rolePath: string;
-}): OwnedSharedComponent & { kind: 'shared-config' } {
-  return {
-    kind: 'shared-config',
-    identity: options.identity,
-    label: `${options.configPath}#agents.${options.roleKey}`,
-    locator: {
-      kind: 'codex-role-registration',
-      configPath: options.configPath,
-      roleKey: options.roleKey,
-      rolePath: options.rolePath,
-      fileIdentity: options.fileIdentity,
-    },
-  };
-}
-
-function sameOwnerIdentity(left: OwnerIdentity, right: OwnerIdentity): boolean {
-  return left.owner === right.owner
-    && left.sourceId === right.sourceId
-    && left.pluginId === right.pluginId
-    && left.plugin === right.plugin
-    && left.artifactKey === right.artifactKey
-    && left.platform === right.platform
-    && left.scope === right.scope;
-}
-
 function sharedOwnerPluginName(value: string): string {
   return parseSharedOwnerToken(value)?.plugin ?? value;
-}
-
-async function scanCodexSharedComponents(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  pluginId?: string;
-  pluginName: string;
-  scope: Scope;
-  paths: ReturnType<typeof resolveCodexPaths>;
-  scanConfig: boolean;
-  ignoreReadErrors?: boolean;
-}): Promise<OwnedComponent[]> {
-  const output: OwnedComponent[] = [];
-  const expectedIdentity = (artifactKey: string): OwnerIdentity => ({
-    ...ownerIdentity(options.pluginName, artifactKey, 'codex', options.scope),
-    ...(options.sourceId ? {
-      sourceId: options.sourceId,
-      pluginId: options.pluginId,
-    } : {}),
-  });
-  const corruptedComponent = (filePath: string, error: unknown): OwnedComponent => ({
-    kind: 'shared-config',
-    identity: ownerIdentity(
-      options.pluginName,
-      internalArtifactKey('corrupted-shared-config', filePath),
-      'codex',
-      options.scope,
-    ),
-    label: filePath,
-    locator: {
-      kind: 'corrupted',
-      message: `包含 ${options.pluginName} 的 AW ownership 证据，但共享配置无法解析：${error instanceof Error ? error.message : String(error)}`,
-    },
-  });
-  const containsOwnedEvidence = (raw: string): boolean => raw.includes(options.pluginName) && (
-    raw.includes('[[aw-managed:start plugin=')
-    || raw.includes(OWNED_TEXT_HEADER_PREFIX)
-    || raw.includes('agent-workflows')
-  );
-  if (options.scanConfig) {
-    const config = await readCodexConfigFile(options.paths.configTomlPath).catch(async (error) => {
-      if (!options.ignoreReadErrors) throw error;
-      const raw = await fs.readFile(options.paths.configTomlPath, 'utf8').catch(() => '');
-      if (containsOwnedEvidence(raw)) {
-        output.push(corruptedComponent(options.paths.configTomlPath, error));
-      }
-      return null;
-    });
-    const instructionIdentity = expectedIdentity('developer-instructions');
-    const instructionOwnerKey = createSharedOwnerToken(instructionIdentity);
-    if (config?.snapshot.developerInstructions.managedBlocks[instructionOwnerKey]) {
-      output.push(createCodexInstructionComponent({
-        identity: instructionIdentity,
-        scope: options.scope,
-        configPath: options.paths.configTomlPath,
-      }));
-    }
-    for (const [roleKey, registration] of Object.entries(config?.snapshot.agents ?? {})) {
-      if (!registration.configFile) continue;
-      const rolePath = path.resolve(path.dirname(options.paths.configTomlPath), registration.configFile);
-      const raw = await fs.readFile(rolePath, 'utf8').catch(() => '');
-      const parsed = (() => {
-        try { return parseOwnedTextHeader(raw); } catch { return null; }
-      })();
-      if (!parsed || !sameOwnerIdentity(parsed.identity, expectedIdentity(roleKey))) continue;
-      output.push(createCodexRoleRegistrationComponent({
-        identity: expectedIdentity(internalArtifactKey('role', roleKey)),
-        fileIdentity: expectedIdentity(roleKey),
-        configPath: options.paths.configTomlPath,
-        roleKey,
-        rolePath,
-      }));
-    }
-  }
-  return output;
-}
-
-async function scanClaudeSharedComponents(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  pluginId?: string;
-  pluginName: string;
-  scope: Scope;
-  settingsPath: string;
-}): Promise<OwnedComponent[]> {
-  const settings = await readClaudeSettings(options.settingsPath);
-  const identity: OwnerIdentity = {
-    ...ownerIdentity(options.pluginName, 'permissions', 'claude', options.scope),
-    ...(options.sourceId ? {
-      sourceId: options.sourceId,
-      pluginId: options.pluginId,
-    } : {}),
-  };
-  return settings.awGenerated?.permissions?.[createSharedOwnerToken(identity)]
-    ? [createClaudePermissionsComponent({ ...options, identity })]
-    : [];
-}
-
-async function scanOwnedTextFiles(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  root: string;
-  pluginName: string;
-  platform: PlatformName;
-  scope: Scope;
-}): Promise<OwnedComponent[]> {
-  if (!await fs.pathExists(options.root)) return [];
-  const output: OwnedComponent[] = [];
-  const pending = [options.root];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
-      const entryPath = path.join(current, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        pending.push(entryPath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const raw = await fs.readFile(entryPath, 'utf8').catch(() => '');
-      if (!raw.includes(OWNED_TEXT_HEADER_PREFIX)) continue;
-      let parsed: ReturnType<typeof parseOwnedTextHeader>;
-      try {
-        parsed = parseOwnedTextHeader(raw);
-      } catch {
-        continue;
-      }
-      if (
-        parsed?.identity.plugin !== options.pluginName
-        || (options.sourceId !== undefined && parsed.identity.sourceId !== options.sourceId)
-        || parsed.identity.platform !== options.platform
-        || parsed.identity.scope !== options.scope
-      ) continue;
-      output.push(pathComponent({
-        kind: 'owned-text-file',
-        path: entryPath,
-        allowedRoot: options.root,
-        identity: parsed.identity,
-      }));
-    }
-  }
-  return output;
-}
-
-async function scanOwnedSkills(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  root: string;
-  pluginName: string;
-  platform: PlatformName;
-  scope: Scope;
-  recursive?: boolean;
-}): Promise<OwnedComponent[]> {
-  if (!await fs.pathExists(options.root)) return [];
-  const output: OwnedComponent[] = [];
-  const pending = [options.root];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const skillRoot = path.join(current, entry.name);
-      const marker = await readSkillOwnerMarker({
-        skillRoot,
-        allowedRoot: current,
-      }).catch(() => null);
-      if (
-        marker?.plugin === options.pluginName
-        && (options.sourceId === undefined || marker.sourceId === options.sourceId)
-        && marker.platform === options.platform
-        && marker.scope === options.scope
-      ) {
-        output.push(pathComponent({
-          kind: 'skill-directory',
-          path: skillRoot,
-          allowedRoot: current,
-          identity: marker,
-        }));
-        continue;
-      }
-      if (options.recursive !== false) pending.push(skillRoot);
-    }
-  }
-  return output;
-}
-
-function componentIdentityKey(component: OwnedComponent): string {
-  return [
-    component.kind,
-    component.identity.artifactKey,
-    'path' in component ? path.resolve(component.path) : 'label' in component ? component.label : component.pluginId,
-  ].join('\0');
-}
-
-function dedupeComponents(components: OwnedComponent[]): OwnedComponent[] {
-  const seen = new Set<string>();
-  return components.filter((component) => {
-    const key = componentIdentityKey(component);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-async function preflightCodexWriteSafety(options: {
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-}): Promise<void> {
-  const pluginName = options.plugin.manifest.name;
-  const userConfigPath = resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath;
-  const projectConfigPath = resolveCodexPaths(options.cwd, 'project', options.env).configTomlPath;
-  const nativeSurface = analyzeCodexSurface(options.plugin.manifest).nativeKinds.length > 0;
-  const needsUserConfig = options.scope === 'user'
-    || nativeSurface;
-  let userConfig: Awaited<ReturnType<typeof readCodexConfigFile>> | undefined;
-  if (needsUserConfig) {
-    try {
-      userConfig = await readCodexConfigFile(userConfigPath);
-    } catch (error) {
-      throw new Error(
-        `codexProjectUserConfigUnreadable: 无法解析用户级 Codex 配置 ${userConfigPath}：${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-  if (options.scope === 'project' && userConfig) {
-    const expectedPluginId = `${pluginName}@${options.plugin.marketplaceName ?? MARKETPLACE_NAME}`;
-    for (const [key, plugin] of Object.entries(userConfig.snapshot.plugins)) {
-      if (
-        key !== expectedPluginId
-        && (key === pluginName || key.startsWith(`${pluginName}@`) || plugin.name === pluginName)
-      ) {
-        throw new Error(`externalOwnershipPresent: 用户级 Codex 已存在同名外部插件 ${key}。`);
-      }
-    }
-  }
-
-  const roleKeys = new Set(
-    (options.plugin.manifest.artifacts?.targets ?? [])
-      .filter((target) =>
-        target.platform === 'codex'
-        && target.scopes.includes(options.scope)
-        && target.target === 'codex.agentRole'
-        && target.roleKey)
-      .map((target) => target.roleKey!),
-  );
-  const needsProjectConfig = options.scope === 'project' && Boolean(
-    nativeSurface
-    || resolvePlatformEntries(options.plugin.manifest.extensions?.instructions, 'codex').length > 0
-    || (options.plugin.manifest.artifacts?.targets ?? []).some((target) =>
-      target.platform === 'codex'
-      && target.scopes.includes('project')
-      && (
-        target.target === 'codex.agentRole'
-        || target.target === 'codex.developerInstructionsBlock'
-      )),
-  );
-  if (needsProjectConfig) {
-    try {
-      await readCodexConfigFile(projectConfigPath);
-    } catch (error) {
-      throw new Error(
-        `projectConfigUnreadable: 无法解析项目级 Codex 配置 ${projectConfigPath}：${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-  if (roleKeys.size === 0) return;
-
-  for (const configPath of options.scope === 'project'
-    ? [projectConfigPath]
-    : [userConfigPath]) {
-    const configScope: Scope = configPath === userConfigPath ? 'user' : 'project';
-    const ownedRolePaths: string[] = [];
-    const ownedRoleKeys: string[] = [];
-    for (const roleKey of roleKeys) {
-      const rolePath = path.join(
-        path.dirname(configPath),
-        'agents',
-        `${buildGeneratedName(pluginName, roleKey)}.toml`,
-      );
-      const raw = await fs.readFile(rolePath, 'utf8').catch(() => '');
-      try {
-        if (parseOwnedTextHeader(
-          raw,
-          pluginOwnerIdentity(options.plugin, roleKey, 'codex', configScope),
-        )) {
-          ownedRolePaths.push(rolePath);
-          ownedRoleKeys.push(roleKey);
-        }
-      } catch {
-        // A foreign file remains external below.
-      }
-    }
-    let namespace: Awaited<ReturnType<typeof resolveCodexRoleNamespace>>;
-    try {
-      namespace = await resolveCodexRoleNamespace(configPath, {
-        strict: true,
-        awManagedTableKeys: ownedRoleKeys,
-        awManagedRoleLayerPaths: ownedRolePaths,
-      });
-    } catch (error) {
-      throw new Error(
-        `projectConfigUnreadable: 无法读取 Codex role namespace ${configPath}：${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    for (const roleKey of roleKeys) {
-      const tableCollision = namespace.roles.find((role) =>
-        role.source === 'registration' && role.tableKey === roleKey && !role.awManaged);
-      const nameConflict = findCodexRoleNameConflict(namespace, roleKey);
-      if (tableCollision || nameConflict?.conflict) {
-        throw new Error(`roleNameConflict: Codex role "${roleKey}" 已由外部配置占用（${configPath}）。`);
-      }
-    }
-  }
-}
-
-function renderCodexRole(options: {
-  roleKey: string;
-  description: string;
-  developerInstructions: string;
-  model?: string;
-  modelReasoningEffort?: string;
-}): string {
-  const stringValue = (value: string): string => JSON.stringify(value.trim());
-  return [
-    `name = ${stringValue(options.roleKey)}`,
-    `description = ${stringValue(options.description)}`,
-    `developer_instructions = ${JSON.stringify(options.developerInstructions)}`,
-    ...(options.model ? [`model = ${stringValue(options.model)}`] : []),
-    ...(options.modelReasoningEffort
-      ? [`model_reasoning_effort = ${stringValue(options.modelReasoningEffort)}`]
-      : []),
-    '',
-  ].join('\n');
-}
-
-async function resolveDynamicArtifacts(options: {
-  referencePlugins?: readonly PluginMeta[];
-  plugin: PluginMeta;
-  platform: PlatformName;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  event: 'install';
-  previousArtifacts: readonly GeneratedArtifact[];
-  requestedArtifactIds?: readonly string[];
-  scriptTimeoutMs?: number;
-  signal?: AbortSignal;
-  context?: RebuildExecutionContext;
-}): Promise<{
-  artifacts: ValidatedArtifactPlanArtifact[];
-  sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
-  sensitiveValues: string[];
-  runtimeConfigSnapshots?: Record<string, RuntimeConfigSnapshot>;
-}> {
-  const preparedArtifacts = options.context
-    ? await prepareStaticCommandArtifacts({ ...options, context: options.context }) : [];
-  const preparedIds = new Set(preparedArtifacts.map((artifact) => artifact.id));
-  const requestBatches = (options.requestedArtifactIds
-    ? [options.requestedArtifactIds]
-    : resolveAwDeliveredArtifactRequestBatches({
-        manifest: options.plugin.manifest,
-        platform: options.platform,
-        scope: options.scope,
-      })).map((batch) => batch.filter((id) => !preparedIds.has(id))).filter((batch) => batch.length > 0);
-  if (requestBatches.length === 0 && preparedArtifacts.length === 0) {
-    return { artifacts: [], sourceDirs: () => [], sensitiveValues: [] };
-  }
-  const previousArtifacts = [...options.previousArtifacts];
-  const preparedResults = options.context && artifactRenderResults(options.context);
-  const renders: Awaited<ReturnType<typeof runArtifactRenderer>>[] = [];
-  for (const requestedArtifactIds of requestBatches) {
-    renders.push(await runArtifactRenderer({
-      event: options.event,
-      plugin: options.plugin,
-      referencePlugins: options.referencePlugins ?? options.context?.referencePlugins,
-      platform: options.platform,
-      scope: options.scope,
-      cwd: options.cwd,
-      commandEnv: options.env,
-      previousArtifacts,
-      requestedArtifactIds,
-      scriptTimeoutMs: options.scriptTimeoutMs,
-      signal: options.signal,
-      preparedResults,
-    }));
-  }
-  const config = await resolveArtifactRenderConfig({
-    sourceId: options.plugin.sourceId,
-    sourceIdentity: options.plugin.sourceIdentity,
-    logicalIdentity: options.plugin.catalogLogicalIdentity,
-    pluginName: options.plugin.manifest.name,
-    manifest: options.plugin.manifest,
-    platform: options.platform,
-    referencePlugins: options.referencePlugins ?? options.context?.referencePlugins,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  const artifacts: ValidatedArtifactPlanArtifact[] = [...preparedArtifacts];
-  const sourceDirsByArtifact = new Map<string, string[]>();
-  for (const render of renders) {
-    artifacts.push(...validateArtifactPlan({
-      manifest: options.plugin.manifest,
-      plan: render.plan,
-      platform: options.platform,
-      scope: options.scope,
-      requestedArtifactIds: render.context.requestedArtifactIds,
-      renderConfig: config,
-      rendererDigest: render.target.rendererDigest!,
-      manifestDigest: render.target.manifestDigest!,
-    }).artifacts);
-    for (const source of render.context.artifactSources) {
-      sourceDirsByArtifact.set(`${source.id}\0${source.target}`, source.sourceDirs);
-    }
-  }
-  return {
-    artifacts,
-    runtimeConfigSnapshots: Object.assign({}, ...renders.map((render) => render.runtimeConfigSnapshots)),
-    sourceDirs: (artifact) => sourceDirsByArtifact.get(`${artifact.id}\0${artifact.target}`) ?? [],
-    sensitiveValues: collectSensitivePluginConfigValues(options.plugin.manifest, config.values, options.platform),
-  };
-}
-
-async function buildClaudeWrites(options: {
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  event: 'install';
-  historicalArtifacts: readonly GeneratedArtifact[];
-  scriptTimeoutMs?: number;
-  signal?: AbortSignal;
-  commandCandidates?: readonly ManagedCommandCandidate[];
-  nativeSkillActions?: OperationAction[];
-  context?: RebuildExecutionContext;
-}): Promise<PlannedWrite[]> {
-  const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
-  const writes: PlannedWrite[] = [];
-  const dynamic = await resolveDynamicArtifacts({
-    ...options,
-    platform: 'claude',
-    previousArtifacts: options.historicalArtifacts,
-  });
-  const commandCandidates = [...(options.commandCandidates ?? [])];
-  const staticSkills = await prepareStaticNativeSkillActions({ ...options, platform: 'claude', artifacts: dynamic.artifacts, commandCandidates });
-  commandCandidates.push(...staticSkills.candidates);
-  options.nativeSkillActions?.push(...staticSkills.actions);
-  const commandResolver = await createManagedCommandReferenceResolver({ ...options, platform: 'claude', candidates: commandCandidates });
-  for (const artifact of generateInstructionArtifacts(
-    options.plugin.manifest.name,
-    resolvePlatformEntries(options.plugin.manifest.extensions?.instructions, 'claude'),
-    'claude',
-  )) {
-    writes.push(generatedTextWrite({
-      ...options,
-      platform: 'claude',
-      configDir: paths.configDir,
-      relativePath: artifact.relativePath,
-      artifactKey: artifact.artifactKey!,
-      content: artifact.content,
-      kind: 'instruction',
-    }));
-  }
-  const permissions = resolvePlatformEntries(
-    options.plugin.manifest.extensions?.permissions,
-    'claude',
-  );
-  if (permissions.length > 0) {
-    const component = createClaudePermissionsComponent({
-      identity: pluginOwnerIdentity(options.plugin, 'permissions', 'claude', options.scope),
-      scope: options.scope,
-      settingsPath: paths.settingsPath,
-    });
-    const desiredPermissions = mergeClaudePermissions(permissions, commandResolver);
-    const mutation = { kind: 'claude-permissions' as const, permissions: desiredPermissions };
-    writes.push({
-      artifact: { path: paths.settingsPath, kind: 'permission', platform: 'claude' },
-      component,
-      action: {
-        kind: 'updateSharedConfig',
-        pluginId: pluginActionId(options.plugin),
-        platform: 'claude',
-        scope: options.scope,
-        owner: component.identity,
-        locator: component.locator,
-        mutation,
-        contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(mutation)).digest('hex')}`,
-      },
-    });
-  }
-  return writes;
-}
-
-async function buildCodexWrites(options: {
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  event: 'install';
-  historicalArtifacts: readonly GeneratedArtifact[];
-  scriptTimeoutMs?: number;
-  marketplaceRoot?: string;
-  marketplaceName?: string;
-  userActivationDesired?: ReadonlySet<string>;
-  signal?: AbortSignal;
-  commandCandidates?: readonly ManagedCommandCandidate[];
-  nativeSkillActions?: OperationAction[];
-  context: RebuildExecutionContext;
-}): Promise<PlannedWrite[]> {
-  const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
-  const writes: PlannedWrite[] = [];
-  const dynamic = await resolveDynamicArtifacts({
-    ...options,
-    platform: 'codex',
-    previousArtifacts: options.historicalArtifacts,
-  });
-  const dynamicInstructions = dynamic.artifacts.filter(
-    (entry) => entry.target === 'codex.developerInstructionsBlock',
-  );
-  const dynamicRoles = dynamic.artifacts.filter((entry) => entry.target === 'codex.agentRole');
-  const commandCandidates = [...(options.commandCandidates ?? [])];
-  const staticSkills = await prepareStaticNativeSkillActions({ ...options, platform: 'codex', artifacts: dynamic.artifacts, commandCandidates });
-  commandCandidates.push(...staticSkills.candidates);
-  options.nativeSkillActions?.push(...staticSkills.actions);
-  const commandResolver = await createManagedCommandReferenceResolver({ ...options, platform: 'codex', candidates: commandCandidates });
-  const staticInstructions = dynamicInstructions.length > 0
-    ? []
-    : resolvePlatformEntries(options.plugin.manifest.extensions?.instructions, 'codex');
-  const hasInstructionOutput = dynamicInstructions.length > 0 || staticInstructions.length > 0;
-  if (hasInstructionOutput) {
-    const component = createCodexInstructionComponent({
-      identity: pluginOwnerIdentity(
-        options.plugin,
-        'developer-instructions',
-        'codex',
-        options.scope,
-      ),
-      scope: options.scope,
-      configPath: paths.configTomlPath,
-    });
-    const dynamicBlock = dynamicInstructions.length > 0
-      ? composeManagedDeveloperInstructionsBlock(
-          options.plugin.manifest.name,
-          dynamicInstructions
-            .filter((entry) => entry.state === 'present')
-            .map((entry) => ({ artifactId: entry.id, value: entry.content! })),
-        )
-      : undefined;
-    const block = dynamicBlock?.value
-      ? { ...dynamicBlock, pluginName: createSharedOwnerToken(component.identity) }
-      : staticInstructions.length > 0
-        ? {
-            pluginName: createSharedOwnerToken(component.identity),
-            value: renderCodexManagedInstructionBlock(
-              options.plugin.manifest.name,
-              staticInstructions,
-            ),
-          }
-        : undefined;
-    const instructionMutation = { kind: 'codex-instruction' as const, ...(block ? { block } : {}) };
-    for (const artifact of dynamicInstructions.length > 0 ? dynamicInstructions : [{
-      id: undefined,
-      target: undefined,
-      state: 'present' as const,
-      refreshKeys: [] as string[],
-      configDigest: undefined,
-      disabledReason: undefined,
-    }]) {
-      writes.push({
-        artifact: {
-          path: paths.configTomlPath,
-          kind: 'instruction',
-          platform: 'codex',
-          ...(artifact.id ? { id: artifact.id } : {}),
-          ...(artifact.target ? { target: artifact.target } : {}),
-          state: artifact.state,
-          refreshKeys: [...artifact.refreshKeys],
-          ...(artifact.configDigest ? { configDigest: artifact.configDigest } : {}),
-          ...(artifact.disabledReason ? { disabledReason: artifact.disabledReason } : {}),
-        },
-        ...(block ? { component } : {}),
-        action: {
-          kind: 'updateSharedConfig',
-          pluginId: pluginActionId(options.plugin),
-          platform: 'codex',
-          scope: options.scope,
-          owner: component.identity,
-          locator: component.locator,
-          mutation: instructionMutation,
-          contentDigest: `sha256:${crypto.createHash('sha256')
-            .update(JSON.stringify(instructionMutation)).digest('hex')}`,
-        },
-      });
-    }
-  }
-
-  for (const artifact of dynamicRoles) {
-    const roleKey = artifact.roleKey!;
-    const rolePath = path.join(
-      paths.configDir,
-      'agents',
-      `${buildGeneratedName(options.plugin.manifest.name, roleKey)}.toml`,
-    );
-    const roleComponent = pathComponent({
-      kind: 'owned-text-file',
-      path: rolePath,
-      allowedRoot: paths.configDir,
-      identity: pluginOwnerIdentity(options.plugin, roleKey, 'codex', options.scope),
-    });
-    const registrationComponent = createCodexRoleRegistrationComponent({
-      identity: pluginOwnerIdentity(
-        options.plugin,
-        internalArtifactKey('role', roleKey),
-        'codex',
-        options.scope,
-      ),
-      fileIdentity: roleComponent.identity,
-      configPath: paths.configTomlPath,
-      roleKey,
-      rolePath,
-    });
-    const roleFile = artifact.content?.roleFile;
-    const description = artifact.content?.registration?.description
-      ?? roleFile?.description;
-    const present = artifact.state === 'present';
-    if (present && (!description || !roleFile?.developer_instructions)) {
-      throw new Error(`Artifact "${artifact.id}" 的 codex.agentRole 缺少 description 或 developer_instructions。`);
-    }
-    writes.push({
-      artifact: {
-        path: rolePath,
-        paths: [paths.configTomlPath, rolePath],
-        kind: 'agent',
-        platform: 'codex',
-        artifactKey: roleKey,
-        roleKey,
-        id: artifact.id,
-        target: artifact.target,
-        state: artifact.state,
-        refreshKeys: [...artifact.refreshKeys],
-        configDigest: artifact.configDigest,
-        ...(artifact.disabledReason ? { disabledReason: artifact.disabledReason } : {}),
-      },
-      ...(present ? { component: roleComponent } : {}),
-      ...(present ? { additionalComponents: [registrationComponent] } : {}),
-      ...(present ? {
-        action: (() => {
-          const content = renderCodexRole({
-            roleKey,
-            description: description!,
-            developerInstructions: roleFile!.developer_instructions!,
-            model: roleFile!.model,
-            modelReasoningEffort: roleFile!.model_reasoning_effort,
-          });
-          return {
-            kind: 'writeOwnedArtifact' as const,
-            pluginId: pluginActionId(options.plugin),
-            platform: 'codex' as const,
-            scope: options.scope,
-            path: rolePath,
-            allowedRoot: paths.configDir,
-            owner: roleComponent.identity,
-            artifactKind: 'owned-text-file' as const,
-            sourceContent: content,
-            content,
-            contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
-          };
-        })(),
-      } : {}),
-      ...(present ? {
-        additionalActions: [(() => {
-          const mutation = {
-            kind: 'codex-role-registration' as const,
-            roleKey,
-            configFile: path.relative(path.dirname(paths.configTomlPath), rolePath),
-            description: description!,
-          };
-          return {
-            kind: 'updateSharedConfig' as const,
-            pluginId: pluginActionId(options.plugin),
-            platform: 'codex' as const,
-            scope: options.scope,
-            owner: registrationComponent.identity,
-            locator: registrationComponent.locator,
-            mutation,
-            contentDigest: `sha256:${crypto.createHash('sha256')
-              .update(JSON.stringify(mutation)).digest('hex')}`,
-          };
-        })()],
-      } : {}),
-    });
-  }
-
-  for (const artifact of generateCodexPermissionArtifacts(
-    options.plugin.manifest.name,
-    resolvePlatformEntries(options.plugin.manifest.extensions?.permissions, 'codex'),
-    commandResolver,
-  )) {
-    writes.push(generatedTextWrite({
-      ...options,
-      platform: 'codex',
-      configDir: paths.configDir,
-      relativePath: artifact.relativePath,
-      artifactKey: artifact.artifactKey!,
-      content: artifact.content,
-      kind: 'permission',
-    }));
-  }
-  for (const artifact of generateAgentArtifacts(
-    options.plugin.manifest.name,
-    resolvePlatformEntries(options.plugin.manifest.extensions?.agents, 'codex'),
-    'codex',
-  )) {
-    writes.push(generatedTextWrite({
-      ...options,
-      platform: 'codex',
-      configDir: paths.configDir,
-      relativePath: artifact.relativePath,
-      artifactKey: artifact.artifactKey!,
-      content: artifact.content,
-      kind: 'agent',
-    }));
-  }
-
-  const codexPluginId = `${options.plugin.manifest.name}@${options.marketplaceName ?? options.plugin.marketplaceName ?? MARKETPLACE_NAME}`;
-  const nativeSurface = analyzeCodexSurface(options.plugin.manifest).nativeKinds.length > 0;
-  const userActivationDesired = options.scope === 'user'
-    || options.userActivationDesired?.has(codexPluginId) === true;
-  for (const activation of !nativeSurface ? [] : options.scope === 'project'
-    ? [
-        {
-          scope: 'user' as const,
-          desired: userActivationDesired,
-          configPath: resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
-        },
-        { scope: 'project' as const, desired: true, configPath: paths.configTomlPath },
-      ]
-    : [{ scope: 'user' as const, desired: true, configPath: paths.configTomlPath }]) {
-    const component = createCodexActivationComponent({
-      identity: pluginOwnerIdentity(
-        options.plugin,
-        internalArtifactKey('activation', activation.scope),
-        'codex',
-        options.scope,
-      ),
-      configPath: activation.configPath,
-      codexPluginId,
-      desired: activation.desired,
-    });
-    writes.push({
-      artifact: {
-        path: activation.configPath,
-        kind: 'instruction',
-        platform: 'codex',
-        artifactKey: internalArtifactKey('activation', activation.scope),
-      },
-      component,
-      action: {
-        kind: 'setActivation',
-        pluginId: pluginActionId(options.plugin),
-        platform: 'codex',
-        scope: activation.scope,
-        enabled: activation.desired,
-        configPath: activation.configPath,
-        registration: codexPluginId,
-      },
-    });
-  }
-  return writes;
-}
-
-async function buildInspectionWrites(options: {
-  plugin: PluginMeta;
-  platform: PlatformName;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  marketplaceRoot?: string;
-  marketplaceName?: string;
-  userActivationDesired?: ReadonlySet<string>;
-}): Promise<PlannedWrite[]> {
-  const writes: PlannedWrite[] = [];
-  if (options.platform === 'claude') {
-    const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
-    for (const artifact of generateInstructionArtifacts(
-      options.plugin.manifest.name,
-      resolvePlatformEntries(options.plugin.manifest.extensions?.instructions, 'claude'),
-      'claude',
-    )) {
-      writes.push(generatedTextWrite({
-        ...options,
-        configDir: paths.configDir,
-        relativePath: artifact.relativePath,
-        artifactKey: artifact.artifactKey!,
-        content: artifact.content,
-        kind: 'instruction',
-      }));
-    }
-    if (resolvePlatformEntries(options.plugin.manifest.extensions?.permissions, 'claude').length > 0) {
-      writes.push({
-        artifact: { path: paths.settingsPath, kind: 'permission', platform: 'claude' },
-        component: createClaudePermissionsComponent({
-          identity: pluginOwnerIdentity(options.plugin, 'permissions', 'claude', options.scope),
-          scope: options.scope,
-          settingsPath: paths.settingsPath,
-        }),
-      });
-    }
-    return writes;
-  }
-
-  const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
-  const instructions = resolvePlatformEntries(options.plugin.manifest.extensions?.instructions, 'codex');
-  const targets = (options.plugin.manifest.artifacts?.targets ?? []).filter((target) =>
-    target.platform === 'codex' && target.scopes.includes(options.scope));
-  const instructionTargets = targets.filter((target) =>
-    target.target === 'codex.developerInstructionsBlock');
-  const presentCapableInstructionTargets = instructionTargets.filter((target) =>
-    target.states.includes('present'));
-  const instructionDesired = presentCapableInstructionTargets.length > 0;
-  const instructionOptional = presentCapableInstructionTargets.length > 0
-    && presentCapableInstructionTargets.every((target) => target.states.includes('disabled'));
-  if (instructions.length > 0 || instructionDesired) {
-    writes.push({
-      artifact: { path: paths.configTomlPath, kind: 'instruction', platform: 'codex' },
-      component: createCodexInstructionComponent({
-        identity: pluginOwnerIdentity(
-          options.plugin,
-          'developer-instructions',
-          'codex',
-          options.scope,
-        ),
-        scope: options.scope,
-        configPath: paths.configTomlPath,
-      }),
-      ...(instructions.length === 0 && instructionOptional ? { optional: true } : {}),
-    });
-  }
-  for (const target of targets) {
-    const state = target.states.includes('present') ? 'present' : 'disabled';
-    if (target.target === 'codex.agentRole' && target.roleKey) {
-      const rolePath = path.join(
-        paths.configDir,
-        'agents',
-        `${buildGeneratedName(options.plugin.manifest.name, target.roleKey)}.toml`,
-      );
-      const roleComponent = pathComponent({
-        kind: 'owned-text-file',
-        path: rolePath,
-        allowedRoot: paths.configDir,
-        identity: pluginOwnerIdentity(options.plugin, target.roleKey, 'codex', options.scope),
-      });
-      const registrationComponent = createCodexRoleRegistrationComponent({
-        identity: pluginOwnerIdentity(
-          options.plugin,
-          internalArtifactKey('role', target.roleKey),
-          'codex',
-          options.scope,
-        ),
-        fileIdentity: pluginOwnerIdentity(options.plugin, target.roleKey, 'codex', options.scope),
-        configPath: paths.configTomlPath,
-        roleKey: target.roleKey,
-        rolePath,
-      });
-      writes.push({
-        artifact: {
-          path: rolePath,
-          kind: 'agent',
-          platform: 'codex',
-          artifactKey: target.roleKey,
-          roleKey: target.roleKey,
-          id: target.id,
-          target: target.target,
-          state,
-        },
-        ...(state === 'present'
-          ? { component: roleComponent, additionalComponents: [registrationComponent] }
-          : {}),
-        ...(target.states.includes('present') && target.states.includes('disabled')
-          ? { optional: true }
-          : {}),
-      });
-    }
-  }
-  for (const permission of resolvePlatformEntries(options.plugin.manifest.extensions?.permissions, 'codex')) {
-    const artifactKey = buildGeneratedName(options.plugin.manifest.name, permission.name);
-    const artifactPath = path.join(paths.configDir, 'rules', `${artifactKey}.rules`);
-    writes.push({
-      artifact: { path: artifactPath, kind: 'permission', platform: 'codex', artifactKey },
-      component: pathComponent({
-        kind: 'owned-text-file', path: artifactPath, allowedRoot: paths.configDir,
-        identity: ownerIdentity(options.plugin.manifest.name, artifactKey, 'codex', options.scope),
-      }),
-    });
-  }
-  for (const artifact of generateAgentArtifacts(
-    options.plugin.manifest.name,
-    resolvePlatformEntries(options.plugin.manifest.extensions?.agents, 'codex'),
-    'codex',
-  )) {
-    writes.push(generatedTextWrite({
-      ...options,
-      configDir: paths.configDir,
-      relativePath: artifact.relativePath,
-      artifactKey: artifact.artifactKey!,
-      content: artifact.content,
-      kind: 'agent',
-    }));
-  }
-  const nativeSurface = analyzeCodexSurface(options.plugin.manifest).nativeKinds.length > 0;
-  const codexPluginId = `${options.plugin.manifest.name}@${options.marketplaceName ?? options.plugin.marketplaceName ?? MARKETPLACE_NAME}`;
-  const userActivationDesired = options.scope === 'user'
-    || options.userActivationDesired?.has(codexPluginId) === true;
-  for (const activation of !nativeSurface ? [] : options.scope === 'project'
-    ? [
-        {
-          scope: 'user' as const,
-          desired: userActivationDesired,
-          configPath: resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
-        },
-        { scope: 'project' as const, desired: true, configPath: paths.configTomlPath },
-      ]
-    : [{ scope: 'user' as const, desired: true, configPath: paths.configTomlPath }]) {
-    writes.push({
-      artifact: {
-        path: activation.configPath,
-        kind: 'instruction',
-        platform: 'codex',
-        artifactKey: internalArtifactKey('activation', activation.scope),
-      },
-      component: createCodexActivationComponent({
-        identity: pluginOwnerIdentity(
-          options.plugin,
-          internalArtifactKey('activation', activation.scope),
-          'codex',
-          options.scope,
-        ),
-        configPath: activation.configPath,
-        codexPluginId,
-        desired: activation.desired,
-      }),
-    });
-  }
-  return writes;
-}
-
-async function buildHistoricalComponents(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  pluginId?: string;
-  pluginName: string;
-  platform: PlatformName;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  artifacts: readonly GeneratedArtifact[];
-  command: 'install' | 'sync' | 'reinstall' | 'cleanup' | 'uninstall';
-}): Promise<OwnedComponent[]> {
-  const components: OwnedComponent[] = [];
-  const paths = options.platform === 'codex'
-    ? resolveCodexPaths(options.cwd, options.scope, options.env)
-    : resolveClaudePaths(options.cwd, options.scope, options.env);
-  const historicalIdentity = (artifactKey: string): OwnerIdentity => ({
-    ...ownerIdentity(options.pluginName, artifactKey, options.platform, options.scope),
-    ...(options.sourceId ? {
-      sourceId: options.sourceId,
-      pluginId: options.pluginId,
-    } : {}),
-  });
-  for (const artifact of options.artifacts) {
-    if (artifact.platform !== options.platform) continue;
-    if (artifact.state === 'disabled') continue;
-    if (
-      options.platform === 'codex'
-      && artifact.artifactKey !== undefined
-      && new Set([
-        internalArtifactKey('activation', 'user'),
-        internalArtifactKey('activation', 'project'),
-      ]).has(artifact.artifactKey)
-    ) {
-      continue;
-    }
-    if (
-      options.command === 'cleanup'
-      && artifact.kind === 'hook'
-      && options.platform === 'codex'
-    ) {
-      for (const identity of artifact.hookGroups ?? []) {
-        components.push(createLegacyCodexHookCleanupComponent({
-          pluginName: options.pluginName,
-          scope: options.scope,
-          hooksPath: path.join(resolveCodexPaths(
-            options.cwd,
-            options.scope,
-            options.env,
-          ).configDir, 'hooks.json'),
-          identity,
-        }));
-      }
-      continue;
-    }
-    if (
-      options.command === 'cleanup'
-      && artifact.kind === 'mcpServer'
-      && options.platform === 'codex'
-      && artifact.artifactKey
-    ) {
-      components.push(createLegacyCodexMcpCleanupComponent({
-        identity: historicalIdentity(internalArtifactKey('mcp', artifact.artifactKey)),
-        configPath: resolveCodexPaths(
-          options.cwd,
-          options.scope,
-          options.env,
-        ).configTomlPath,
-        serverKey: artifact.artifactKey,
-      }));
-      continue;
-    }
-    if (artifact.kind === 'instruction' && options.platform === 'codex' && !artifact.artifactKey) {
-      components.push(createCodexInstructionComponent({
-        identity: historicalIdentity('developer-instructions'),
-        scope: options.scope,
-        configPath: resolveCodexPaths(options.cwd, options.scope, options.env).configTomlPath,
-      }));
-      continue;
-    }
-    if (artifact.kind === 'permission' && options.platform === 'claude') {
-      components.push(createClaudePermissionsComponent({
-        identity: historicalIdentity('permissions'),
-        scope: options.scope,
-        settingsPath: resolveClaudePaths(options.cwd, options.scope, options.env).settingsPath,
-      }));
-      continue;
-    }
-    if (
-      artifact.target === 'codex.agentRole'
-      && options.platform === 'codex'
-      && (artifact.roleKey || artifact.artifactKey)
-    ) {
-      const roleKey = artifact.roleKey ?? artifact.artifactKey!;
-      components.push(createCodexRoleRegistrationComponent({
-        identity: historicalIdentity(internalArtifactKey('role', roleKey)),
-        fileIdentity: historicalIdentity(roleKey),
-        configPath: resolveCodexPaths(options.cwd, options.scope, options.env).configTomlPath,
-        roleKey,
-        rolePath: artifact.path,
-      }));
-    }
-    if (!artifact.artifactKey) continue;
-    const identity = ownerIdentity(
-      options.pluginName,
-      artifact.artifactKey,
-      options.platform,
-      options.scope,
-    );
-    components.push(pathComponent({
-      kind: artifact.kind === 'skill' ? 'skill-directory' : 'owned-text-file',
-      path: artifact.path,
-      allowedRoot: artifact.kind === 'skill' ? path.dirname(artifact.path) : paths.configDir,
-      identity,
-    }));
-  }
-  return components;
-}
-
-function isAbsentPath(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === 'ENOENT';
-}
-
-async function lstatIfPresent(filePath: string) {
-  return fs.lstat(filePath).catch((error) => {
-    if (isAbsentPath(error)) return null;
-    throw error;
-  });
-}
-
-async function lstatCodexResidueIfPresent(filePath: string) {
-  return fs.lstat(filePath).catch((error) => {
-    if (isAbsentPath(error)) return null;
-    throw error;
-  });
-}
-
-function isPathWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-}
-
-async function codexReadPathSafe(root: string, candidate: string): Promise<boolean> {
-  if (!isPathWithin(root, candidate)) return false;
-  const rootStats = await lstatCodexResidueIfPresent(root);
-  if (rootStats && (!rootStats.isDirectory() || rootStats.isSymbolicLink())) return false;
-  const [physicalRoot, physicalCandidate] = await Promise.all([
-    canonicalizePathThroughExistingAncestor(root),
-    canonicalizePathThroughExistingAncestor(candidate),
-  ]);
-  return isPathWithin(physicalRoot, physicalCandidate);
-}
-
-async function codexPayloadPathSafe(
-  payloadRoot: string,
-  allowedRoot = payloadRoot,
-): Promise<boolean> {
-  if (!await codexReadPathSafe(allowedRoot, payloadRoot)) return false;
-  const rootStats = await lstatCodexResidueIfPresent(payloadRoot);
-  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return false;
-  const pending = [payloadRoot];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
-      const entryPath = path.join(current, entry.name);
-      if (entry.isSymbolicLink()) return false;
-      if (entry.isDirectory()) {
-        pending.push(entryPath);
-      } else if (!entry.isFile()) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-class NativeSkillProjectionUnsafeError extends Error {}
-
-async function resolveNativeSkillsRoot(
-  payloadRoot: string,
-  rawSkillsRoot: string,
-  platform: PlatformName,
-): Promise<{ relativeRoot: string; root: string }> {
-  const normalizedSeparators = rawSkillsRoot.replace(/\\/gu, '/');
-  const relativeRoot = path.posix.normalize(normalizedSeparators.replace(/^\.\//u, ''));
-  if (!relativeRoot
-    || relativeRoot === '.'
-    || relativeRoot === '..'
-    || relativeRoot.startsWith('../')
-    || path.posix.isAbsolute(normalizedSeparators)
-    || path.win32.isAbsolute(rawSkillsRoot)) {
-    throw new NativeSkillProjectionUnsafeError(
-      `${platform}NativeSkillsRootInvalid: Native Skills root is invalid.`,
-    );
-  }
-  const root = path.join(payloadRoot, ...relativeRoot.split('/'));
-  if (!await codexReadPathSafe(payloadRoot, root)) {
-    throw new NativeSkillProjectionUnsafeError(
-      `${platform}NativeSkillsRootInvalid: Native Skills root is unsafe.`,
-    );
-  }
-  return { relativeRoot, root };
 }
 export interface CodexSharedNativeLiveInspection {
   sharedNative: CodexSharedNativeInspection;
   expectedPayloadDigest?: string;
-}
-
-function codexNativeRenderTargets(plugin: PluginMeta) {
-  return (plugin.manifest.artifacts?.targets ?? []).filter((target) =>
-    target.platform === 'codex'
-    && target.target === 'codex.skill');
-}
-
-function nativeSkillRefreshKeys(plugin: PluginMeta, target: {
-  id: string;
-  platform?: PlatformTarget;
-  refreshKeys: readonly string[];
-}): string[] {
-  const commandKeys = getManagedCommandArtifactTargets(plugin.manifest).flatMap((command) =>
-    command.producer.kind === 'artifact'
-      && command.producer.artifactId === target.id
-      && command.platform === target.platform
-      ? command.refreshKeys
-      : []);
-  return [...new Set([...target.refreshKeys, ...commandKeys])];
-}
-
-function nativeSkillContentDigest(platform: PlatformName, tree: DynamicSkillTree): string {
-  return platform === 'codex'
-    ? createCodexSkillStagingTreeContentDigest(tree)
-    : createDynamicSkillTreeContentDigest(tree);
-}
-
-async function readNativeSkillRenderReceiptEvidence(payloadRoot: string, platform: PlatformName): Promise<
-  | { state: 'absent' }
-  | { state: 'unsafe' }
-  | { state: 'invalid' }
-  | { state: 'unreadable' }
-  | { state: 'present'; receipt: NativeSkillRenderReceipt }
-> {
-  const receiptPath = path.join(payloadRoot, nativeSkillRenderReceiptPath(platform));
-  const stats = await lstatIfPresent(receiptPath);
-  if (!stats) return { state: 'absent' };
-  if (!stats.isFile() || stats.isSymbolicLink()) return { state: 'unsafe' };
-  let content: string;
-  try {
-    content = await fs.readFile(receiptPath, 'utf8');
-  } catch {
-    return { state: 'unreadable' };
-  }
-  try {
-    return { state: 'present', receipt: parseNativeSkillRenderReceipt(platform, content) };
-  } catch {
-    return { state: 'invalid' };
-  }
-}
-
-type NativeSkillRenderExpectedEvidence = {
-  state: 'present';
-  payloadDigest: string;
-  receipt: NativeSkillRenderReceipt;
-  projection?: CodexNativeRenderProjection;
-  sourceProjection: 'current' | 'drifted';
-} | {
-  state: 'issue';
-  reason: 'damaged' | 'foreign' | 'unreadable';
-  diagnostic: CodexSharedNativeDiagnostic;
-};
-
-function nativeSkillRenderEvidenceIssue(
-  reason: 'damaged' | 'foreign' | 'unreadable',
-  diagnostic: CodexSharedNativeDiagnostic,
-): NativeSkillRenderExpectedEvidence {
-  return { state: 'issue', reason, diagnostic };
-}
-
-type NativeSkillProjectionManifestEvidence =
-  | { state: 'present'; value: Record<string, unknown> }
-  | { state: 'missing' | 'invalid' | 'unsafe' | 'unreadable' };
-
-async function readNativeSkillProjectionManifest(
-  manifestPath: string,
-): Promise<NativeSkillProjectionManifestEvidence> {
-  let stats: fs.Stats | null;
-  try {
-    stats = await lstatIfPresent(manifestPath);
-  } catch {
-    return { state: 'unreadable' };
-  }
-  if (!stats) return { state: 'missing' };
-  if (!stats.isFile() || stats.isSymbolicLink()) return { state: 'unsafe' };
-  try {
-    const value = await fs.readJson(manifestPath) as unknown;
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
-      ? { state: 'present', value: value as Record<string, unknown> }
-      : { state: 'invalid' };
-  } catch (error) {
-    return { state: error instanceof SyntaxError ? 'invalid' : 'unreadable' };
-  }
-}
-
-async function resolveNativeSkillRenderExpectedEvidence(options: {
-  plugin: PluginMeta;
-  platform: PlatformName;
-  referencePlugins?: readonly PluginMeta[];
-  marketplaceRoot: string;
-  marketplaceName: string;
-  env: NodeJS.ProcessEnv;
-}): Promise<NativeSkillRenderExpectedEvidence> {
-  const { platform } = options;
-  const logicalPluginId = options.plugin.pluginId
-    ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : undefined);
-  if (!logicalPluginId || !options.plugin.sourceId || !options.plugin.sourceIdentity) {
-    throw new Error('Native Skill render projection requires namespaced source identity.');
-  }
-  const marketplace = await readStrictNamespacedMarketplaceRoot({
-    trustedMarketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces'),
-    rootDir: options.marketplaceRoot,
-  });
-  if (!marketplace) {
-    return nativeSkillRenderEvidenceIssue('damaged', 'projectionReceiptMissing');
-  }
-  if (marketplace.config.sourceId !== options.plugin.sourceId
-    || marketplace.config.sourceIdentity !== options.plugin.sourceIdentity
-    || marketplace.config.marketplaceName !== options.marketplaceName) {
-    return nativeSkillRenderEvidenceIssue('foreign', 'projectionReceiptIdentityMismatch');
-  }
-  const payloadRoot = path.join(options.marketplaceRoot, 'plugins', options.plugin.manifest.name);
-  const payloadStats = await lstatIfPresent(payloadRoot);
-  if (!payloadStats) {
-    return nativeSkillRenderEvidenceIssue('damaged', 'projectionReceiptMissing');
-  }
-  if (!payloadStats.isDirectory() || payloadStats.isSymbolicLink()) {
-    return nativeSkillRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-  }
-  if (!await codexPayloadPathSafe(payloadRoot, options.marketplaceRoot)) {
-    return nativeSkillRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-  }
-  const platformManifestPath = path.join(payloadRoot, `.${platform}-plugin`, 'plugin.json');
-  const [sourceManifestEvidence, platformManifestEvidence] = await Promise.all([
-    readNativeSkillProjectionManifest(path.join(payloadRoot, '.agents-plugin', 'plugin.json')),
-    readNativeSkillProjectionManifest(platformManifestPath),
-  ]);
-  if (sourceManifestEvidence.state === 'unsafe'
-    || platformManifestEvidence.state === 'unsafe') {
-    return nativeSkillRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-  }
-  if ((sourceManifestEvidence.state === 'present'
-      && sourceManifestEvidence.value.name !== options.plugin.manifest.name)
-    || (platformManifestEvidence.state === 'present'
-      && platformManifestEvidence.value.name !== options.plugin.manifest.name)
-    || (sourceManifestEvidence.state === 'present'
-      && platformManifestEvidence.state === 'present'
-      && sourceManifestEvidence.value.version !== platformManifestEvidence.value.version)) {
-    return nativeSkillRenderEvidenceIssue('foreign', 'manifestIdentityMismatch');
-  }
-  if (sourceManifestEvidence.state === 'unreadable'
-    || platformManifestEvidence.state === 'unreadable') {
-    return nativeSkillRenderEvidenceIssue('unreadable', 'manifestUnreadable');
-  }
-  if (sourceManifestEvidence.state === 'missing'
-    || platformManifestEvidence.state === 'missing') {
-    return nativeSkillRenderEvidenceIssue('damaged', 'manifestMissing');
-  }
-  if (sourceManifestEvidence.state === 'invalid'
-    || platformManifestEvidence.state === 'invalid') {
-    return nativeSkillRenderEvidenceIssue('damaged', 'manifestUnreadable');
-  }
-  if (sourceManifestEvidence.state !== 'present'
-    || platformManifestEvidence.state !== 'present') {
-    return nativeSkillRenderEvidenceIssue('damaged', 'manifestUnreadable');
-  }
-  const sourceManifest = sourceManifestEvidence.value;
-  const platformManifest = platformManifestEvidence.value;
-  if (typeof sourceManifest.version !== 'string'
-    || !tryParseStrictSemVer(sourceManifest.version)) {
-    return nativeSkillRenderEvidenceIssue('damaged', 'manifestVersionInvalid');
-  }
-  const defaultSkillsRoot = platform === 'codex'
-    ? './codex/skills'
-    : `./claude/${(options.plugin.manifest.skills ?? './skills').replace(/^\.\//u, '')}`;
-  const rawSkillsRoot = typeof platformManifest.skills === 'string' && platformManifest.skills.trim() !== ''
-    ? platformManifest.skills
-    : defaultSkillsRoot;
-  const { relativeRoot: skillsRelativeRoot } = await resolveNativeSkillsRoot(
-    payloadRoot,
-    rawSkillsRoot,
-    platform,
-  );
-  const skillsRoot = path.join(payloadRoot, ...skillsRelativeRoot.split('/'));
-  const skillsRootStats = await lstatIfPresent(skillsRoot);
-  if (skillsRootStats && (!skillsRootStats.isDirectory() || skillsRootStats.isSymbolicLink())) {
-    return nativeSkillRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-  }
-  const targets = nativeSkillRenderTargets(options.plugin, platform);
-  for (const target of targets) {
-    if (await lstatIfPresent(path.join(
-      skillsRoot,
-      target.skillKey!,
-      '.agent-workflows-owner.json',
-    ))) {
-      return nativeSkillRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-    }
-  }
-  const receiptEvidence = await readNativeSkillRenderReceiptEvidence(payloadRoot, platform);
-  if (receiptEvidence.state === 'absent') {
-    return nativeSkillRenderEvidenceIssue('damaged', 'projectionReceiptMissing');
-  }
-  if (receiptEvidence.state === 'unsafe') {
-    return nativeSkillRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-  }
-  if (receiptEvidence.state === 'invalid') {
-    return nativeSkillRenderEvidenceIssue('damaged', 'projectionReceiptUnreadable');
-  }
-  if (receiptEvidence.state === 'unreadable') {
-    return nativeSkillRenderEvidenceIssue('unreadable', 'projectionReceiptUnreadable');
-  }
-  const receipt = receiptEvidence.receipt;
-  if (receipt.logicalPluginId !== logicalPluginId
-    || receipt.strategy !== 'shared-user'
-    || receipt.sourceIdentity !== marketplace.config.sourceIdentity
-    || receipt.pluginVersion !== sourceManifest.version) {
-    return nativeSkillRenderEvidenceIssue('foreign', 'projectionReceiptIdentityMismatch');
-  }
-  const emptyArtifactDigest = nativeSkillContentDigest(platform, {
-    skillKey: 'empty',
-    files: {},
-  });
-  for (const receiptTarget of receipt.targets) {
-    const skillRoot = path.join(payloadRoot, ...skillsRelativeRoot.split('/'), receiptTarget.skillKey);
-    if (await lstatIfPresent(path.join(skillRoot, '.agent-workflows-owner.json'))) {
-      return nativeSkillRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-    }
-    const skillStats = await lstatIfPresent(skillRoot);
-    if (skillStats && (!skillStats.isDirectory() || skillStats.isSymbolicLink())) {
-      return nativeSkillRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-    }
-    let tree: DynamicSkillTree | null;
-    try {
-      tree = skillStats ? await readDynamicSkillTree(skillRoot, `${platform}.skill`) : null;
-    } catch (error) {
-      return nativeSkillRenderEvidenceIssue(
-        error instanceof Error && typeof (error as NodeJS.ErrnoException).code !== 'string'
-          ? 'damaged'
-          : 'unreadable',
-        'projectionPayloadDigestMismatch',
-      );
-    }
-    const artifactDigest = tree
-      ? nativeSkillContentDigest(platform, tree)
-      : emptyArtifactDigest;
-    if (artifactDigest !== receiptTarget.artifactDigest) {
-      return nativeSkillRenderEvidenceIssue('damaged', 'projectionPayloadDigestMismatch');
-    }
-  }
-  const payloadDigest = await calculateCodexNativeRenderPayloadDigest(payloadRoot);
-  if (payloadDigest !== receipt.payloadDigest) {
-    return nativeSkillRenderEvidenceIssue('damaged', 'projectionPayloadDigestMismatch');
-  }
-  const receiptTargets = new Map(receipt.targets.map((target) => [target.id, target]));
-  if (targets.length === 0
-    || targets.length !== receipt.targets.length
-    || targets.some((target) => receiptTargets.get(target.id)?.skillKey !== target.skillKey)) {
-    return { state: 'present', payloadDigest, receipt, sourceProjection: 'drifted' };
-  }
-  const renderer = await resolveArtifactRendererTarget(options.plugin);
-  if (renderer.noOp || !renderer.rendererDigest) {
-    throw new Error('Native Skill render projection requires an artifact renderer.');
-  }
-  const config = await resolveArtifactRenderConfig({
-    sourceId: options.plugin.sourceId,
-    sourceIdentity: options.plugin.sourceIdentity,
-    logicalIdentity: options.plugin.catalogLogicalIdentity,
-    pluginName: options.plugin.manifest.name,
-    manifest: options.plugin.manifest,
-    platform,
-    referencePlugins: options.referencePlugins,
-    scope: 'user',
-    cwd: options.plugin.rootDir,
-    env: options.env,
-  });
-  if (config.issues.length > 0) {
-    // Validated installed bytes remain live while configuration needs repair.
-    return { state: 'present', payloadDigest, receipt, sourceProjection: 'drifted' };
-  }
-  const projection = createCodexNativeRenderProjection({
-    logicalPluginId,
-    sourceIdentity: options.plugin.sourceIdentity,
-    pluginVersion: options.plugin.manifest.version,
-    rendererDigest: renderer.rendererDigest,
-    targets: targets.map((target) => ({
-      id: target.id,
-      skillKey: target.skillKey!,
-      configDigest: createArtifactConfigDigest({
-        artifact: {
-          id: target.id,
-          platform,
-          target: `${platform}.skill`,
-          refreshKeys: nativeSkillRefreshKeys(options.plugin, target),
-        },
-        renderConfig: config,
-        digestSalt: renderer.rendererDigest!,
-      }),
-      artifactDigest: receiptTargets.get(target.id)!.artifactDigest,
-    })),
-  });
-  return {
-    state: 'present',
-    receipt,
-    projection,
-    payloadDigest,
-    sourceProjection: codexNativeRenderProjectionsEqual(receipt, projection)
-      ? 'current'
-      : 'drifted',
-  };
-}
-
-async function assertNoSensitiveValuesInCanonicalCodexNativePayload(options: {
-  plugin: PluginMeta;
-  marketplaceRoot: string;
-  marketplaceName: string;
-  env: NodeJS.ProcessEnv;
-  sensitiveValues: readonly string[];
-}): Promise<void> {
-  if (options.sensitiveValues.length === 0
-    || !pluginHasCodexNativeSkillSurface(options.plugin)) return;
-  const sourceId = options.plugin.sourceId;
-  if (!sourceId) {
-    throw new Error('Codex native sensitive scan requires namespaced source identity.');
-  }
-  const awHome = resolveAwHome(options.env);
-  if (!await isSafeCodexMarketplaceRoot({
-    awHome,
-    sourceId,
-    marketplaceRoot: options.marketplaceRoot,
-  })) {
-    throw new Error('Codex native sensitive scan canonical marketplace path is unsafe.');
-  }
-  const payloadRoot = path.join(
-    options.marketplaceRoot,
-    'plugins',
-    options.plugin.manifest.name,
-  );
-  if (!await codexPayloadPathSafe(payloadRoot, options.marketplaceRoot)) {
-    throw new Error('Codex native sensitive scan payload path is unsafe.');
-  }
-  const receiptEvidence = await readNativeSkillRenderReceiptEvidence(payloadRoot, 'codex');
-  if (receiptEvidence.state === 'unsafe') {
-    throw new Error('codexNativeRenderReceiptInvalid: Codex native render receipt path is unsafe.');
-  }
-  let verifiedRenderReceipt: NativeSkillRenderReceipt | undefined;
-  if (receiptEvidence.state === 'present') {
-    const expected = await resolveNativeSkillRenderExpectedEvidence({
-      plugin: options.plugin,
-      platform: 'codex',
-      marketplaceRoot: options.marketplaceRoot,
-      marketplaceName: options.marketplaceName,
-      env: options.env,
-    }).catch(() => undefined);
-    if (expected?.state === 'present' && expected.sourceProjection === 'current') {
-      verifiedRenderReceipt = expected.receipt;
-    }
-  }
-  await assertNoSensitiveValuesInNativeSkillPayload({
-    plugin: options.plugin,
-    payloadRoot,
-    allowedRoot: options.marketplaceRoot,
-    sensitiveValues: options.sensitiveValues,
-    verifiedRenderReceipt,
-  });
 }
 
 export interface CodexPluginRegistrationLiveInspection {
@@ -2976,14 +1008,6 @@ export async function inspectCodexSharedNativeLive(options: {
   pluginRegistration?: CodexPluginRegistrationLiveInspection;
   nativeRenderPlugin?: PluginMeta;
 }): Promise<CodexSharedNativeLiveInspection> {
-  const inspectionMode = options.inspectionMode ?? 'payload';
-  const dynamicProjectionExpected = options.nativeRenderPlugin !== undefined
-    && codexNativeRenderTargets(options.nativeRenderPlugin).length > 0;
-  if (inspectionMode === 'payload'
-    && options.expectedPayloadDigest === undefined
-    && !dynamicProjectionExpected) {
-    throw new Error('Payload inspection requires the expected shared native digest.');
-  }
   const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
   const marketplaceRoot = options.marketplaceRoot ?? path.join(
     resolveAwHome(options.env),
@@ -3008,49 +1032,7 @@ export async function inspectCodexSharedNativeLive(options: {
     scope: options.observationScope,
     observationSession: options.observationSession,
   });
-  let expectedPayloadDigest = dynamicProjectionExpected ? undefined : options.expectedPayloadDigest;
-  let sourceProjection: 'current' | 'drifted' | undefined;
-  let sourceProjectionIssue: {
-    reason: 'damaged' | 'foreign' | 'unreadable';
-    diagnostic: CodexSharedNativeDiagnostic;
-  } | undefined;
-  const installed = pluginList.observation.state === 'observed'
-    && pluginList.observation.value === 'installed';
-  if (installed && dynamicProjectionExpected && options.nativeRenderPlugin) {
-    try {
-      const expected = await resolveNativeSkillRenderExpectedEvidence({
-        plugin: options.nativeRenderPlugin,
-        platform: 'codex',
-        marketplaceRoot,
-        marketplaceName,
-        env: options.env,
-      });
-      if (expected.state === 'issue') {
-        sourceProjectionIssue = expected;
-      } else {
-        expectedPayloadDigest = expected.payloadDigest;
-        sourceProjection = expected.sourceProjection;
-      }
-    } catch (error) {
-      if (error instanceof MarketplaceRootValidationError) {
-        sourceProjectionIssue = {
-          reason: error.reason === 'unsafe'
-            ? 'foreign'
-            : error.reason === 'invalid' ? 'damaged' : 'unreadable',
-          diagnostic: error.reason === 'unsafe'
-            ? 'payloadPathUnsafe'
-            : 'projectionReceiptUnreadable',
-        };
-      } else {
-        sourceProjectionIssue = {
-          reason: error instanceof NativeSkillProjectionUnsafeError ? 'foreign' : 'unreadable',
-          diagnostic: error instanceof NativeSkillProjectionUnsafeError
-            ? 'payloadPathUnsafe'
-            : 'projectionReceiptUnreadable',
-        };
-      }
-    }
-  }
+  const expectedPayloadDigest = options.expectedPayloadDigest;
   const sharedNative: CodexSharedNativeInspection = inspectCodexSharedNative({
     pluginName: options.pluginName,
     pluginId,
@@ -3061,95 +1043,10 @@ export async function inspectCodexSharedNativeLive(options: {
     marketplaceRegistration: config.snapshot.marketplaces[marketplaceName],
     marketplacePathSafe,
     observation: pluginList.observation,
-    ...(sourceProjection ? { sourceProjection } : {}),
-    ...(sourceProjectionIssue ? { sourceProjectionIssue } : {}),
   });
   return {
     sharedNative,
     ...(expectedPayloadDigest ? { expectedPayloadDigest } : {}),
-  };
-}
-
-async function ensureCodexActiveSkillsManifest(options: {
-  plugin: PluginMeta;
-  marketplaceRoot: string;
-  hasRequiredSkills: boolean;
-}): Promise<string | null> {
-  const relativeSkillsRoot = await resolveCodexSkillsRelativeRoot(options.plugin);
-  const skillsRoot = path.join(
-    options.marketplaceRoot,
-    'plugins',
-    options.plugin.manifest.name,
-    ...relativeSkillsRoot.split('/'),
-  );
-  if (options.hasRequiredSkills && !await fs.pathExists(skillsRoot)) {
-    throw new Error(`Codex required Skills root 不存在：${skillsRoot}`);
-  }
-  const manifestPath = path.join(
-    options.marketplaceRoot,
-    'plugins',
-    options.plugin.manifest.name,
-    '.codex-plugin',
-    'plugin.json',
-  );
-  const manifest = await fs.readJson(manifestPath).catch((error) => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw error;
-  }) as Record<string, unknown>;
-  const updated: Record<string, unknown> = {
-    ...manifest,
-    name: options.plugin.manifest.name,
-    version: options.plugin.manifest.version,
-  };
-  if (options.hasRequiredSkills) updated.skills = `./${relativeSkillsRoot}`;
-  else delete updated.skills;
-  await fs.outputJson(manifestPath, updated, { spaces: 2 });
-  return options.hasRequiredSkills ? relativeSkillsRoot : null;
-}
-
-async function ensureNativeActiveSkillsManifest(options: {
-  plugin: PluginMeta;
-  platform: PlatformName;
-  marketplaceRoot: string;
-  hasRequiredSkills: boolean;
-  relativeSkillsRoot: string;
-}): Promise<void> {
-  if (options.platform === 'codex') {
-    await ensureCodexActiveSkillsManifest(options);
-    return;
-  }
-  const pluginRoot = path.join(options.marketplaceRoot, 'plugins', options.plugin.manifest.name);
-  const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
-  const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
-  const updated: Record<string, unknown> = { ...manifest, name: options.plugin.manifest.name, version: options.plugin.manifest.version };
-  if (options.hasRequiredSkills) {
-    await fs.ensureDir(path.join(pluginRoot, ...options.relativeSkillsRoot.split('/')));
-    updated.skills = `./${options.relativeSkillsRoot}`;
-  } else delete updated.skills;
-  await fs.outputJson(manifestPath, updated, { spaces: 2 });
-}
-
-function createCodexMarketplaceComponent(options: {
-  pluginName: string;
-  codexManager?: CodexManager;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  runner: NativeCliRunner;
-  marketplaceName: string;
-  marketplaceRoot: string;
-  desired: boolean;
-}): OwnedComponent {
-  const configPath = resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath;
-  return {
-    kind: 'shared-config',
-    identity: ownerIdentity(options.pluginName, `marketplace-${options.marketplaceName}`, 'codex', 'user'),
-    label: `${configPath}#marketplaces.${options.marketplaceName}`,
-    locator: {
-      kind: 'codex-marketplace',
-      marketplaceName: options.marketplaceName,
-      marketplaceRoot: options.marketplaceRoot,
-      desired: options.desired,
-    },
   };
 }
 
@@ -3507,16 +1404,14 @@ export async function inspectNativeMarketplaceRegistrations(options: {
   marketplaceRoot: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
-}): Promise<Record<PlatformName, 'absent' | 'canonical' | 'foreign'>> {
+}): Promise<Record<'codex' | 'claude', 'absent' | 'canonical' | 'foreign'>> {
   const codexConfig = await readCodexConfigFile(
     resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
   );
   const codexMarketplace = codexConfig.snapshot.marketplaces[options.marketplaceName];
   const codexRegistration = codexMarketplace === undefined
     ? 'absent'
-    : codexMarketplace.sourceType === 'local'
-      && !codexMarketplace.sourcePointsToManifest
-      && path.normalize(codexMarketplace.source ?? '') === path.normalize(options.marketplaceRoot)
+    : isCanonicalCodexMarketplaceRegistration(codexMarketplace, options.marketplaceRoot)
       ? 'canonical'
       : 'foreign';
   const codexConsumerSuffix = `@${options.marketplaceName}`;
@@ -3540,871 +1435,14 @@ export async function inspectNativeMarketplaceRegistrations(options: {
   return { codex, claude };
 }
 
-function createClaudeMarketplaceComponent(options: {
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  runner: NativeCliRunner;
-  marketplaceName: string;
-  marketplaceRoot: string;
-  desired: boolean;
-}): OwnedComponent {
-  return {
-    kind: 'shared-config',
-    identity: ownerIdentity(options.pluginName, `marketplace-${options.marketplaceName}`, 'claude', options.scope),
-    label: `${resolveClaudePaths(options.cwd, options.scope, options.env).settingsPath}#marketplaces.${options.marketplaceName}`,
-    locator: {
-      kind: 'claude-marketplace',
-      marketplaceName: options.marketplaceName,
-      marketplaceRoot: options.marketplaceRoot,
-      desired: options.desired,
-    },
-  };
-}
-
-interface StagedNativeSkillRender {
-  payloadDigest: string;
-  projection: CodexNativeRenderProjection;
-  receipt: NativeSkillRenderReceipt;
-  presentSkillKeys: string[];
-  targetSkillKeys: string[];
-}
-
-interface PreparedNativeSkillRender {
-  platform: PlatformName;
-  commandCandidates: ManagedCommandCandidate[];
-  logicalPluginId: string;
-  sourceIdentity: string;
-  rendererDigest: string;
-  skillsRelativeRoot: string;
-  renderedArtifacts: Array<{
-    artifact: ValidatedArtifactPlanArtifact;
-    skillKey: string;
-    tree: DynamicSkillTree;
-  }>;
-  receiptTargets: Array<{
-    id: string;
-    skillKey: string;
-    configDigest: string;
-    artifactDigest: string;
-  }>;
-  projection: CodexNativeRenderProjection;
-  presentSkillKeys: string[];
-  targetSkillKeys: string[];
-}
-
-const nativeSkillRenderPreparationCaches = new WeakMap<
-  RebuildExecutionContext,
-  Map<PlatformName, WeakMap<PluginMeta, Promise<PreparedNativeSkillRender | null>>>
->();
-
-function nativeSkillRenderPreparationCache(
-  context: RebuildExecutionContext,
-  platform: PlatformName,
-): WeakMap<PluginMeta, Promise<PreparedNativeSkillRender | null>> {
-  let platforms = nativeSkillRenderPreparationCaches.get(context);
-  if (!platforms) {
-    platforms = new Map();
-    nativeSkillRenderPreparationCaches.set(context, platforms);
+export async function applyPlannedOperationAction(action: OperationAction): Promise<void> {
+  if (action.kind !== 'updateSharedConfig' || action.mutation.kind !== 'claude-permissions'
+    || action.locator.kind !== 'claude-permissions') {
+    throw new Error('platformContributionUnsupported: expected a Claude permissions contribution.');
   }
-  let cache = platforms.get(platform);
-  if (!cache) {
-    cache = new WeakMap();
-    platforms.set(platform, cache);
-  }
-  return cache;
-}
-
-function nativeSkillRenderTargets(plugin: PluginMeta, platform: PlatformName) {
-  return (plugin.manifest.artifacts?.targets ?? []).filter((target) =>
-    target.platform === platform && target.target === `${platform}.skill`);
-}
-
-function pluginHasCodexNativeSkillSurface(plugin: PluginMeta): boolean {
-  return plugin.manifest.skills !== undefined
-    || codexNativeRenderTargets(plugin).length > 0;
-}
-
-async function resolveSensitiveUserConfigValues(
-  plugin: PluginMeta,
-  env: NodeJS.ProcessEnv,
-  referencePlugins?: readonly PluginMeta[],
-  platform: PlatformName = 'codex',
-): Promise<string[]> {
-  const hasSensitiveFields = Object.values(plugin.manifest.config ? selectPluginConfigProfile(plugin.manifest.config, platform).fields : {}).some((field) =>
-    field.sensitive === true);
-  if (!hasSensitiveFields) return [];
-  const config = await resolveArtifactRenderConfig({
-    sourceId: plugin.sourceId,
-    sourceIdentity: plugin.sourceIdentity,
-    pluginName: plugin.manifest.name,
-    manifest: plugin.manifest,
-    platform,
-    referencePlugins,
-    scope: 'user',
-    cwd: plugin.rootDir,
-    env,
-  });
-  return collectSensitivePluginConfigValues(plugin.manifest, config.values, platform);
-}
-
-async function assertNoSensitiveValuesInNativeSkillPayload(options: {
-  plugin: PluginMeta;
-  payloadRoot: string;
-  allowedRoot?: string;
-  sensitiveValues: readonly string[];
-  verifiedRenderReceipt?: NativeSkillRenderReceipt;
-  platform?: PlatformName;
-}): Promise<void> {
-  if (options.sensitiveValues.length === 0) return;
-  const platform = options.platform ?? 'codex';
-  if (!await codexPayloadPathSafe(options.payloadRoot, options.allowedRoot)) {
-    throw new Error('Codex native sensitive scan payload path is unsafe.');
-  }
-  const codexManifestPath = path.join(options.payloadRoot, `.${platform}-plugin`, 'plugin.json');
-  const codexManifestStats = await lstatCodexResidueIfPresent(codexManifestPath);
-  if (!codexManifestStats?.isFile()) {
-    throw new Error('Codex native sensitive scan manifest is missing or unsafe.');
-  }
-  const codexManifest = await fs.readJson(codexManifestPath).catch(() => null) as Record<string, unknown> | null;
-  if (!codexManifest
-    || codexManifest.name !== options.plugin.manifest.name
-    || codexManifest.version !== options.plugin.manifest.version) {
-    throw new Error('Codex native sensitive scan manifest identity is invalid.');
-  }
-  const rawSkillsRoot = codexManifest.skills;
-  if (rawSkillsRoot !== undefined) {
-    if (typeof rawSkillsRoot !== 'string' || rawSkillsRoot.trim() === '') {
-      throw new Error('Codex native sensitive scan Skills root is invalid.');
-    }
-    const { root: skillsRoot } = await resolveNativeSkillsRoot(
-      options.payloadRoot,
-      rawSkillsRoot,
-      platform,
-    );
-    const skillsRootStats = await lstatCodexResidueIfPresent(skillsRoot);
-    if (!skillsRootStats?.isDirectory()) {
-      throw new Error('Codex native sensitive scan Skills root is missing or unsafe.');
-    }
-    for (const entry of await fs.readdir(skillsRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const skillRoot = path.join(skillsRoot, entry.name);
-      const skillFileStats = await lstatCodexResidueIfPresent(path.join(skillRoot, 'SKILL.md'));
-      if (!skillFileStats) continue;
-      if (!skillFileStats.isFile()) {
-        throw new Error('Codex native sensitive scan Skill entry is unsafe.');
-      }
-      const tree = await readDynamicSkillTree(skillRoot, `${platform}.skill`);
-      if (!tree) continue;
-      const leakedPath = findSensitiveTokenPath(
-        withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
-        options.sensitiveValues,
-      );
-      if (leakedPath) {
-        throw new Error(
-          `codexNativeRenderSensitiveValue: Codex native Skill "${entry.name}" exposes ` +
-            `sensitive config in "${leakedPath}".`,
-        );
-      }
-    }
-  }
-  const receiptPath = path.join(options.payloadRoot, nativeSkillRenderReceiptPath(platform));
-  const receiptStats = await lstatCodexResidueIfPresent(receiptPath);
-  if (receiptStats) {
-    if (!receiptStats.isFile()) {
-      throw new Error('Codex native sensitive scan render receipt path is unsafe.');
-    }
-    const receiptContent = await fs.readFile(receiptPath);
-    let actualReceipt: NativeSkillRenderReceipt | undefined;
-    try {
-      actualReceipt = parseNativeSkillRenderReceipt(platform, receiptContent.toString('utf8'));
-    } catch {
-      actualReceipt = undefined;
-    }
-    const verified = options.verifiedRenderReceipt
-      && JSON.stringify(actualReceipt) === JSON.stringify(options.verifiedRenderReceipt);
-    if (!verified) {
-      const receiptLeak = findSensitiveTokenPath(
-        { [nativeSkillRenderReceiptPath(platform)]: receiptContent },
-        options.sensitiveValues,
-      );
-      if (receiptLeak) {
-        throw new Error(
-          `codexNativeRenderSensitiveValue: Codex native render receipt exposes sensitive config in ` +
-            `"${receiptLeak}".`,
-        );
-      }
-    }
-  }
-}
-
-async function prepareNativeSkillRender(options: {
-  preparedResults?: Map<string, PluginProcessResult>;
-  referencePlugins?: readonly PluginMeta[];
-  plugin: PluginMeta;
-  platform: PlatformName;
-  env: NodeJS.ProcessEnv;
-  requestedArtifactIds?: readonly string[];
-  scriptTimeoutMs?: number;
-  signal?: AbortSignal;
-  commandCandidates?: readonly ManagedCommandCandidate[];
-  prepareCommandReferences?: (trees: DynamicSkillTree[], candidates: ManagedCommandCandidate[]) => Promise<ManagedCommandCandidate[]>;
-}): Promise<PreparedNativeSkillRender | null> {
-  const requested = options.requestedArtifactIds
-    ? new Set(options.requestedArtifactIds)
-    : undefined;
-  const targets = nativeSkillRenderTargets(options.plugin, options.platform)
-    .filter((target) => !requested || requested.has(target.id));
-  if (targets.length === 0) return null;
-  let commandCandidates = [...(options.commandCandidates ?? [])];
-  if (!options.commandCandidates) {
-    for (const declaration of options.plugin.manifest.managedCommands?.packages ?? []) {
-      if (declaration.scope !== 'user' || !declaration.platforms.includes(options.platform)) continue;
-      const prepared = await prepareManagedCommandPackage({ ...options, packageKey: declaration.key, scope: 'user', cwd: options.plugin.rootDir });
-      commandCandidates.push({ producer: prepared.producer, sets: prepared.sets });
-      await prepared.cleanup();
-    }
-  }
-  const skillsRelativeRoot = options.platform === 'codex'
-    ? await resolveCodexSkillsRelativeRoot(options.plugin)
-    : `claude/${(options.plugin.manifest.skills ?? './skills').replace(/^\.\//u, '')}`;
-  const receiptPath = nativeSkillRenderReceiptPath(options.platform);
-  const nativeReceiptPath = `${'../'.repeat(skillsRelativeRoot.split('/').length + 1)}${receiptPath}`;
-  const renderedArtifacts: PreparedNativeSkillRender['renderedArtifacts'] = [];
-  const receiptTargets: PreparedNativeSkillRender['receiptTargets'] = [];
-  const presentSkillKeys: string[] = [];
-  let rendererDigest: string | undefined;
-  {
-    const scope = 'user';
-    const group = targets;
-    const rendered = await runArtifactRenderer({
-      referencePlugins: options.referencePlugins,
-      event: 'install',
-      plugin: options.plugin,
-      platform: options.platform,
-      scope,
-      configScope: 'user',
-      cwd: options.plugin.rootDir,
-      commandEnv: options.env,
-      previousArtifacts: [],
-      requestedArtifactIds: [...group.map((target) => target.id), ...getManagedCommandArtifactTargets(options.plugin.manifest).filter((target) => {
-        const producer = target.producer;
-        return producer.kind === 'artifact' && group.some((skill) => skill.id === producer.artifactId);
-      }).map((target) => target.id)],
-      preparedResults: options.preparedResults,
-      scriptTimeoutMs: options.scriptTimeoutMs,
-      signal: options.signal,
-    });
-    rendererDigest = rendered.target.rendererDigest;
-    const validated = validateArtifactPlan({
-      manifest: options.plugin.manifest,
-      plan: rendered.plan,
-      platform: options.platform,
-      scope,
-      requestedArtifactIds: rendered.context.requestedArtifactIds,
-      renderConfig: rendered.context.config,
-      rendererDigest: rendered.target.rendererDigest,
-      manifestDigest: rendered.target.manifestDigest,
-    });
-    for (const artifact of validated.artifacts) {
-      if (artifact.target === 'aw.command-set') continue;
-      if ((artifact.target !== 'codex.skill' && artifact.target !== 'claude.skill')
-        || artifact.target !== `${options.platform}.skill`) {
-        throw new Error(`Codex native renderer returned non-Skill artifact "${artifact.id}".`);
-      }
-      const sourceDirs = rendered.context.artifactSources.find((entry) =>
-        entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [];
-      const tree = await createDynamicSkillExpectedTree({
-        artifact,
-        sourceDirs,
-        requireReadme: true,
-        requirementsReceipt: requirementsReceipt(options.plugin),
-        sourceRequirementsReceiptPolicy: 'allow',
-      });
-      await injectInstalledRuntimeConfig(tree, rendered.runtimeConfigSnapshots[artifact.id], { nativeReceiptPath });
-      const candidate = await prepareSkillCommandCandidate({ plugin: options.plugin, producer: { kind: 'artifact', artifactId: artifact.id }, platform: options.platform, scope: 'user', cwd: options.plugin.rootDir, tree, artifacts: validated.artifacts });
-      if (candidate) commandCandidates.push(candidate);
-      assertNoSensitiveConfigInFiles(
-        withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
-        collectSensitivePluginConfigValues(
-          options.plugin.manifest,
-          rendered.context.config.values,
-          options.platform,
-        ),
-        'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
-      );
-      const skillKey = artifact.skillKey!;
-      renderedArtifacts.push({
-        artifact,
-        skillKey,
-        tree,
-      });
-      if (artifact.state === 'present') presentSkillKeys.push(skillKey);
-      receiptTargets.push({
-        id: artifact.id,
-        skillKey,
-        configDigest: createArtifactConfigDigest({
-          artifact: { ...artifact, refreshKeys: nativeSkillRefreshKeys(options.plugin, artifact) },
-          renderConfig: rendered.context.config,
-          digestSalt: rendered.target.rendererDigest!,
-        }),
-        artifactDigest: nativeSkillContentDigest(options.platform, tree),
-      });
-    }
-  }
-  if (!rendererDigest || renderedArtifacts.length !== targets.length) {
-    throw new Error('Codex native renderer did not produce the complete declared target set.');
-  }
-  if (options.prepareCommandReferences) commandCandidates = await options.prepareCommandReferences(renderedArtifacts.map((entry) => entry.tree), commandCandidates);
-  else {
-    const staticSkills = await prepareStaticNativeSkillActions({ plugin: options.plugin, platform: options.platform, scope: 'user', cwd: options.plugin.rootDir, env: options.env, artifacts: [], commandCandidates, signal: options.signal, scriptTimeoutMs: options.scriptTimeoutMs });
-    commandCandidates.push(...staticSkills.candidates);
-  }
-  const commandResolver = await createManagedCommandReferenceResolver({ plugin: options.plugin, platform: options.platform, scope: 'user', cwd: options.plugin.rootDir, env: options.env, candidates: commandCandidates });
-  for (const rendered of renderedArtifacts) {
-    resolveSkillManagedCommandReferences(rendered.tree, commandResolver);
-    const receiptTarget = receiptTargets.find((target) => target.id === rendered.artifact.id)!;
-    receiptTarget.artifactDigest = nativeSkillContentDigest(options.platform, rendered.tree);
-  }
-
-  const logicalPluginId = options.plugin.pluginId
-    ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : undefined);
-  if (!logicalPluginId || !options.plugin.sourceIdentity) {
-    throw new Error('Codex native render materialization requires namespaced source identity.');
-  }
-  const projection = createCodexNativeRenderProjection({
-    logicalPluginId,
-    sourceIdentity: options.plugin.sourceIdentity,
-    pluginVersion: options.plugin.manifest.version,
-    rendererDigest,
-    targets: receiptTargets,
-  });
-  return {
-    platform: options.platform,
-    commandCandidates,
-    logicalPluginId,
-    sourceIdentity: options.plugin.sourceIdentity,
-    rendererDigest,
-    skillsRelativeRoot,
-    renderedArtifacts,
-    receiptTargets,
-    projection,
-    presentSkillKeys: presentSkillKeys.sort(),
-    targetSkillKeys: targets.map((target) => target.skillKey!).sort(),
-  };
-}
-
-function prepareNativeSkillRenderCached(options: {
-  context: RebuildExecutionContext;
-  plugin: PluginMeta;
-  platform: PlatformName;
-  scriptTimeoutMs?: number;
-}): Promise<PreparedNativeSkillRender | null> {
-  const cache = nativeSkillRenderPreparationCache(options.context, options.platform);
-  let preparation = cache.get(options.plugin);
-  if (!preparation) {
-    preparation = prepareNativeSkillRender({
-      preparedResults: artifactRenderResults(options.context),
-      referencePlugins: options.context.referencePlugins,
-      plugin: options.plugin,
-      platform: options.platform,
-      env: options.context.env,
-      signal: options.context.signal,
-      scriptTimeoutMs: options.scriptTimeoutMs,
-      commandCandidates: options.context.managedCommandCandidates?.get(pluginActionId(options.plugin)),
-    });
-    cache.set(options.plugin, preparation);
-  }
-  return preparation;
-}
-
-async function requirePreparedNativeSkillRender(options: {
-  context: RebuildExecutionContext;
-  plugin: PluginMeta;
-  platform: PlatformName;
-}): Promise<PreparedNativeSkillRender | null> {
-  if (nativeSkillRenderTargets(options.plugin, options.platform).length === 0) return null;
-  const preparation = nativeSkillRenderPreparationCache(options.context, options.platform).get(options.plugin);
-  if (!preparation) {
-    throw new Error('codexNativeRenderPreflightMissing: Codex native renderer was not prepared.');
-  }
-  return preparation;
-}
-
-async function materializeNativeSkillRender(options: {
-  plugin: PluginMeta;
-  stagingRoot: string;
-  prepared: PreparedNativeSkillRender;
-  hasStaticSkills: boolean;
-}): Promise<StagedNativeSkillRender> {
-  const skillsRoot = path.join(
-    options.stagingRoot,
-    'plugins',
-    options.plugin.manifest.name,
-    ...options.prepared.skillsRelativeRoot.split('/'),
-  );
-  for (const { artifact, skillKey, tree } of options.prepared.renderedArtifacts) {
-    const skillRoot = path.join(skillsRoot, skillKey);
-    if (artifact.state === 'present') {
-      await writeDynamicSkillTree(skillRoot, tree);
-    } else {
-      await fs.remove(skillRoot);
-    }
-  }
-  const platform = options.prepared.platform;
-  await ensureNativeActiveSkillsManifest({
-    plugin: options.plugin,
-    platform,
-    marketplaceRoot: options.stagingRoot,
-    hasRequiredSkills: options.hasStaticSkills || options.prepared.presentSkillKeys.length > 0,
-    relativeSkillsRoot: options.prepared.skillsRelativeRoot,
-  });
-  const pluginRoot = path.join(options.stagingRoot, 'plugins', options.plugin.manifest.name);
-  const payloadDigest = await calculateCodexNativeRenderPayloadDigest(pluginRoot);
-  const receipt = (platform === 'codex' ? createCodexNativeRenderReceipt : createClaudeNativeRenderReceipt)({
-    logicalPluginId: options.prepared.logicalPluginId,
-    sourceIdentity: options.prepared.sourceIdentity,
-    pluginVersion: options.plugin.manifest.version,
-    rendererDigest: options.prepared.rendererDigest,
-    targets: options.prepared.receiptTargets,
-    payloadDigest,
-  });
-  await fs.outputFile(
-    path.join(pluginRoot, nativeSkillRenderReceiptPath(platform)),
-    serializeNativeSkillRenderReceipt(receipt),
-    'utf8',
-  );
-  return {
-    payloadDigest,
-    projection: options.prepared.projection,
-    receipt,
-    presentSkillKeys: options.prepared.presentSkillKeys,
-    targetSkillKeys: options.prepared.targetSkillKeys,
-  };
-}
-
-export interface ReviewNativeSkillSelection {
-  skill: string;
-  targetId: string | null;
-}
-
-export interface MaterializedReviewNativeSkills {
-  rootDir: string;
-  skills: Array<{ skill: string; path: string }>;
-}
-
-/**
- * Materialize only the selected Codex or Claude Skills into an isolated review root.
- * The caller owns outputRoot and is responsible for its cleanup.
- */
-export async function materializeReviewNativeSkills(options: {
-  plugins?: readonly PluginMeta[];
-  plugin: PluginMeta;
-  platform: 'codex' | 'claude';
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  outputRoot: string;
-  skills: readonly ReviewNativeSkillSelection[];
-  allowDisabledNativeSkills?: boolean;
-  scriptTimeoutMs?: number;
-}): Promise<MaterializedReviewNativeSkills> {
-  if (options.skills.length === 0) {
-    throw new Error('Review materialization requires at least one selected Skill.');
-  }
-  const { prepareIsolatedSkillCommandReferences } = await import('../review/skill-materialization.js');
-  const skillsRoot = path.join(options.outputRoot, 'skills');
-  await fs.ensureDir(skillsRoot);
-  let commandCandidates: ManagedCommandCandidate[] = [];
-  const staticTrees: DynamicSkillTree[] = [];
-
-  const declarations = options.plugin.manifest.artifacts?.targets ?? [];
-  const dynamicSelections = options.skills.filter((skill) => skill.targetId !== null);
-  const selectedDeclarations = dynamicSelections.map((selection) => {
-    const matches = declarations.filter((target) =>
-      target.id === selection.targetId
-      && target.platform === options.platform
-      && target.scopes.includes('user')
-      && target.skillKey === selection.skill
-      && target.target === `${options.platform}.skill`);
-    if (matches.length !== 1) {
-      throw new Error(
-        `Selected ${options.platform} Skill target "${selection.targetId}" is missing or ambiguous.`,
-      );
-    }
-    return matches[0]!;
-  });
-  const requiredDeclarations = [...selectedDeclarations];
-  const selectedNames = options.skills.map((skill) => skill.skill);
-  const disabledNativeSkillNames = new Set<string>();
-  if (new Set(selectedNames).size !== selectedNames.length) {
-    throw new Error('Review materialization selected the same Skill more than once.');
-  }
-
-  for (const selection of options.skills.filter((skill) => skill.targetId === null)) {
-    const sourceRoot = path.join(options.plugin.rootDir, options.platform, 'skills', selection.skill);
-    const destination = path.join(skillsRoot, selection.skill);
-    await fs.copy(sourceRoot, destination, {
-      overwrite: false,
-      errorOnExist: true,
-      dereference: false,
-    });
-    staticTrees.push(await validateSkillDirectory(destination, `${options.platform}.skill`, {
-      requirementsReceiptPolicy: 'allow',
-    }));
-  }
-
-  const prepareReferences = async (
-    trees: readonly DynamicSkillTree[], scope: Scope, copy: boolean,
-    candidates: readonly ManagedCommandCandidate[] = commandCandidates,
-  ): Promise<ManagedCommandCandidate[]> => prepareIsolatedSkillCommandReferences({
-    ...options, scope, candidates,
-    trees: copy ? trees.map((tree) => ({ ...tree, files: { ...tree.files } })) : trees,
-  });
-  const staticScope = 'user';
-  commandCandidates = await prepareReferences(staticTrees, staticScope, true);
-
-  const nativeTargetIds = requiredDeclarations.map((target) => target.id);
-  if (nativeTargetIds.length > 0) {
-    const marketplaceRoot = path.join(options.outputRoot, '.native-marketplace');
-    const payloadRoot = path.join(
-      marketplaceRoot,
-      'plugins',
-      options.plugin.manifest.name,
-    );
-    await fs.copy(options.plugin.rootDir, payloadRoot, {
-      overwrite: false,
-      errorOnExist: true,
-      dereference: false,
-    });
-    const prepared = await prepareNativeSkillRender({
-      referencePlugins: options.plugins,
-      plugin: options.plugin,
-      platform: options.platform,
-      env: options.env,
-      requestedArtifactIds: nativeTargetIds,
-      scriptTimeoutMs: options.scriptTimeoutMs,
-      commandCandidates,
-      prepareCommandReferences: (trees, candidates) => prepareReferences(trees, 'user', false, candidates),
-    });
-    if (!prepared) {
-      throw new Error('Selected Codex native Skill targets did not produce a projection.');
-    }
-    commandCandidates = prepared.commandCandidates;
-    const staged = await materializeNativeSkillRender({
-      plugin: options.plugin,
-      stagingRoot: marketplaceRoot,
-      prepared,
-      hasStaticSkills: options.plugin.manifest.skills !== undefined,
-    });
-    await assertNoSensitiveValuesInNativeSkillPayload({
-      plugin: options.plugin,
-      payloadRoot,
-      allowedRoot: marketplaceRoot,
-      platform: options.platform,
-      sensitiveValues: await resolveSensitiveUserConfigValues(options.plugin, options.env, options.plugins, options.platform),
-      verifiedRenderReceipt: staged.receipt,
-    });
-    const presentSkillKeys = new Set(staged.presentSkillKeys);
-    if (options.allowDisabledNativeSkills) {
-      for (const target of requiredDeclarations.filter((entry) =>
-        !presentSkillKeys.has(entry.skillKey!))) {
-        disabledNativeSkillNames.add(target.skillKey!);
-      }
-    }
-    for (const target of requiredDeclarations.filter((entry) =>
-      presentSkillKeys.has(entry.skillKey!))) {
-      const sourceRoot = path.join(
-        payloadRoot,
-        ...prepared.skillsRelativeRoot.split('/'),
-        target.skillKey!,
-      );
-      await fs.copy(sourceRoot, path.join(skillsRoot, target.skillKey!), {
-        overwrite: false,
-        errorOnExist: true,
-        dereference: false,
-      });
-      await carryRuntimeConfigNativeReceipt(path.join(skillsRoot, target.skillKey!), Buffer.from(serializeNativeSkillRenderReceipt(staged.receipt)));
-    }
-    await fs.remove(marketplaceRoot);
-  }
-
-  commandCandidates = await prepareReferences(staticTrees, staticScope, false);
-  for (const tree of staticTrees) {
-    for (const [relativePath, content] of Object.entries(tree.files)) {
-      if (relativePath.endsWith('.md')) {
-        await fs.writeFile(path.join(skillsRoot, tree.skillKey, ...relativePath.split('/')), content);
-      }
-    }
-  }
-
-  const skills: Array<{ skill: string; path: string }> = [];
-  for (const skill of selectedNames.sort((left, right) => left.localeCompare(right))) {
-    const skillRoot = path.join(skillsRoot, skill);
-    if (disabledNativeSkillNames.has(skill)) continue;
-    await validateSkillDirectory(skillRoot, `${options.platform}.skill`, {
-      requirementsReceiptPolicy: 'allow',
-    });
-    await validateRuntimeSkillClosure(skillRoot);
-    skills.push({ skill, path: skillRoot });
-  }
-  return { rootDir: options.outputRoot, skills };
-}
-
-async function mirrorCatalog(
-  catalog: CatalogResolution,
-  env: NodeJS.ProcessEnv,
-  target?: Pick<RebuildTargetIdentity, 'sourceId' | 'sourceIdentity' | 'marketplaceName' | 'marketplaceRoot'>,
-  logicalIdentity?: string,
-  prepareStaging?: (stagingRoot: string) => Promise<void>,
-  rematerializedPluginIds: ReadonlySet<string> = new Set(),
-  rematerializedPluginPlatforms?: ReadonlyMap<string, ReadonlySet<PlatformName>>,
-): Promise<{
-  rootDir: string;
-  commit(): Promise<void>;
-  rollback(): Promise<void>;
-}> {
-  if (!target?.sourceId || !target.marketplaceRoot) {
-    const rootDir = resolveAwHome(env);
-    await fs.ensureDir(rootDir);
-    await fs.copy(catalog.rootDir, rootDir, { overwrite: true });
-    await prepareStaging?.(rootDir);
-    return { rootDir, commit: async () => undefined, rollback: async () => undefined };
-  }
-  const awHome = path.resolve(resolveAwHome(env));
-  const destination = target.marketplaceRoot;
-  const parent = path.dirname(destination);
-  if (!await isSafeCodexMarketplaceRoot({
-    awHome,
-    sourceId: target.sourceId,
-    marketplaceRoot: destination,
-  })) {
-    throw new Error(`marketplaceRootInvalid: marketplace root is unsafe: ${destination}`);
-  }
-  if (!await fs.pathExists(parent)) {
-    await fs.mkdir(parent);
-  }
-  if (!await isSafeCodexMarketplaceRoot({
-    awHome,
-    sourceId: target.sourceId,
-    marketplaceRoot: destination,
-  })) {
-    throw new Error(`marketplaceRootInvalid: marketplace root became unsafe: ${destination}`);
-  }
-  const staging = await fs.mkdtemp(path.join(parent, `.${target.sourceId}-staging-`));
-  try {
-    for (const entry of ['.agents', '.claude-plugin', 'plugins']) {
-      await fs.copy(path.join(catalog.rootDir, entry), path.join(staging, entry));
-    }
-    const marketplaceName = target.marketplaceName ?? getNamespacedMarketplaceName(target.sourceId);
-    for (const [platform, manifestPath] of [
-      ['codex', path.join(staging, '.agents', 'plugins', 'marketplace.json')],
-      ['claude', path.join(staging, '.claude-plugin', 'marketplace.json')],
-    ] as const) {
-      const manifest = await fs.readJson(manifestPath) as MarketplaceManifest;
-      await fs.writeJson(manifestPath, {
-        ...projectMarketplaceManifestForPlatform(manifest, platform),
-        name: marketplaceName,
-      }, { spaces: 2 });
-    }
-    await fs.writeJson(path.join(staging, 'config.json'), {
-      schemaVersion: 2,
-      sourceId: target.sourceId,
-      sourceIdentity: target.sourceIdentity,
-      logicalIdentity,
-      marketplaceName,
-    }, { spaces: 2 });
-    const destinationExists = await fs.lstat(destination).then(
-      () => true,
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
-        throw error;
-      },
-    );
-    const retainedReceipts: PreservedPlatformReceipt[] = [];
-    if (destinationExists) {
-      await replayNamespacedCodexSkillOverlays({
-        sourceRoot: destination,
-        stagingRoot: staging,
-        sourceId: target.sourceId,
-        sourceIdentity: target.sourceIdentity!,
-        marketplaceName,
-      });
-      await replayNamespacedMarketplacePluginProjections({
-        sourceRoot: destination,
-        stagingRoot: staging,
-        sourceId: target.sourceId,
-        sourceIdentity: target.sourceIdentity!,
-        marketplaceName,
-        rematerializedPluginIds,
-        rematerializedPluginPlatforms,
-        onPreservedPlatformReceipt: (receipt) => retainedReceipts.push(receipt),
-      });
-    }
-    await prepareStaging?.(staging);
-    for (const receipt of retainedReceipts) await refreshPreservedPlatformReceipt(staging, receipt);
-    const backup = `${destination}.backup-${crypto.randomUUID()}`;
-    if (destinationExists) await fs.move(destination, backup);
-    try {
-      await fs.move(staging, destination);
-    } catch (error) {
-      const backupStats = await fs.lstat(backup).catch((inspectionError: NodeJS.ErrnoException) => {
-        if (inspectionError.code === 'ENOENT') return null;
-        throw inspectionError;
-      });
-      const destinationStats = await fs.lstat(destination).catch((inspectionError: NodeJS.ErrnoException) => {
-        if (inspectionError.code === 'ENOENT') return null;
-        throw inspectionError;
-      });
-      if (backupStats && !destinationStats) {
-        await fs.move(backup, destination);
-      }
-      throw error;
-    }
-    let state: 'active' | 'committed' | 'rolledBack' = 'active';
-    return {
-      rootDir: destination,
-      commit: async () => {
-        if (state !== 'active') return;
-        try {
-          await commitMarketplaceGenerationBackup({
-            backupRoot: backup,
-            sourceId: target.sourceId!,
-            sourceIdentity: target.sourceIdentity!,
-            ...(target.marketplaceName ? { marketplaceName: target.marketplaceName } : {}),
-            env,
-          });
-          state = 'committed';
-        } catch (error) {
-          if ((error as { durableMaterializeCommit?: unknown }).durableMaterializeCommit === true) {
-            state = 'committed';
-          }
-          throw error;
-        }
-      },
-      rollback: async () => {
-        if (state !== 'active') return;
-        const backupStats = await fs.lstat(backup).catch((error: NodeJS.ErrnoException) => {
-          if (error.code === 'ENOENT') return null;
-          throw error;
-        });
-        await fs.remove(destination);
-        if (backupStats) await fs.move(backup, destination);
-        state = 'rolledBack';
-      },
-    };
-  } catch (error) {
-    await fs.remove(staging);
-    throw error;
-  }
-}
-
-async function applyPlannedOperationAction(action: OperationAction): Promise<void> {
-  switch (action.kind) {
-    case 'writeOwnedArtifact': {
-      if (!action.owner || !action.allowedRoot || !action.artifactKind) {
-        throw new Error('Owned artifact action is missing owner or locator data.');
-      }
-      if (action.artifactKind === 'owned-text-file') {
-        if (action.content === undefined) throw new Error('Owned text action is missing content.');
-        const digest = `sha256:${crypto.createHash('sha256').update(action.content).digest('hex')}`;
-        if (digest !== action.contentDigest) throw new Error('Owned text action content digest mismatch.');
-        if (action.sourceContent === undefined) throw new Error('Owned text action is missing source content.');
-        await fs.ensureDir(action.allowedRoot);
-        await writeOwnedTextFile({
-          path: action.path,
-          allowedRoot: action.allowedRoot,
-          identity: action.owner,
-          content: action.sourceContent,
-        });
-        return;
-      }
-      const files = action.files ?? [];
-      const digest = `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}`;
-      if (digest !== action.contentDigest) throw new Error('Skill action content digest mismatch.');
-      const treeFiles: Record<string, Buffer> = {};
-      const fileModes: Record<string, 0o755> = {};
-      for (const file of files) {
-        const content = Buffer.from(file.contentBase64, 'base64');
-        if (`sha256:${crypto.createHash('sha256').update(content).digest('hex')}` !== file.contentDigest) {
-          throw new Error(`Skill action file digest mismatch: ${file.relativePath}`);
-        }
-        if (file.relativePath !== '.agent-workflows-owner.json') treeFiles[file.relativePath] = content;
-        if (file.mode !== undefined && file.mode !== 0o644 && file.mode !== 0o755) throw new Error('Skill action file mode is invalid.');
-        if (file.mode === 0o755 && file.relativePath !== '.agent-workflows-owner.json') fileModes[file.relativePath] = 0o755;
-      }
-      await writeDynamicSkillTree(action.path, {
-        skillKey: action.owner.artifactKey,
-        files: treeFiles,
-        ...(Object.keys(fileModes).length > 0 ? { fileModes } : {}),
-      }, {
-        allowedRoot: action.allowedRoot,
-        identity: action.owner,
-        allowPristineUnowned: action.allowPristineUnowned === true,
-      });
-      return;
-    }
-    case 'updateSharedConfig': {
-      const mutation = action.mutation;
-      switch (mutation.kind) {
-        case 'claude-permissions': {
-          if (action.locator.kind !== 'claude-permissions') throw new Error('Claude permission locator mismatch.');
-          const settings = await readClaudeSettings(action.locator.settingsPath);
-          rebuildClaudePermissions(
-            settings,
-            action.locator.ownerKey,
-            mutation.permissions as ClaudePermissions,
-          );
-          await writeClaudeSettings(action.locator.settingsPath, settings);
-          return;
-        }
-        case 'codex-instruction': {
-          if (action.locator.kind !== 'codex-instruction') throw new Error('Codex instruction locator mismatch.');
-          await applyCodexConfigTransactionFile(action.locator.configPath, mutation.block
-            ? { upsertManagedInstructionBlock: mutation.block }
-            : { removeManagedInstructionPluginName: action.locator.ownerKey });
-          return;
-        }
-        case 'codex-role-registration': {
-          if (action.locator.kind !== 'codex-role-registration') throw new Error('Codex role locator mismatch.');
-          const locator = action.locator;
-          const registration: CodexAgentRegistrationConfig = {
-            description: mutation.description,
-            configFile: mutation.configFile.split(path.sep).join('/'),
-          };
-          await applyConditionalCodexConfigTransactionFile(locator.configPath, async (snapshot) => {
-            const actual = snapshot.agents[mutation.roleKey];
-            if (actual && !await codexRoleRegistrationOwned({
-              fileIdentity: locator.fileIdentity,
-              configPath: locator.configPath,
-              roleKey: mutation.roleKey,
-              rolePath: locator.rolePath,
-              registration: actual,
-            })) {
-              throw new Error(
-                `Codex agent registration "${mutation.roleKey}" is foreign and cannot be overwritten by plugin "${action.owner.plugin}".`,
-              );
-            }
-            return { upsertAgentRegistrations: { [mutation.roleKey]: registration } };
-          });
-          return;
-        }
-        case 'codex-activation':
-          throw new Error('Codex activation must use a setActivation action.');
-      }
-    }
-    case 'setActivation':
-      if (!action.configPath || !action.registration) {
-        throw new Error('Activation action is missing configPath or registration.');
-      }
-      await applyCodexConfigTransactionFile(action.configPath, {
-        upsertPluginActivations: { [action.registration]: action.enabled },
-      });
-      return;
-    default:
-      throw new Error(`Operation action ${action.kind} is not an artifact write action.`);
-  }
+  const settings = await readClaudeSettings(action.locator.settingsPath);
+  rebuildClaudePermissions(settings, action.locator.ownerKey, action.mutation.permissions as ClaudePermissions);
+  await writeClaudeSettings(action.locator.settingsPath, settings);
 }
 
 function createNativeDriver(options: {
@@ -4418,98 +1456,6 @@ function createNativeDriver(options: {
   captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
 } {
   const runner = options.context.nativeCliRunner;
-  const nativeBindingRecoveryEvidence = new WeakMap<DesiredTarget, ManagedCommandBindingRecoveryEvidence[]>();
-  const captureNativeBindingRecoveryEvidence = async (
-    target: DesiredTarget,
-    producers: readonly ManagedCommandCandidate[],
-  ): Promise<ManagedCommandBindingRecoveryEvidence[]> => {
-    const captured = nativeBindingRecoveryEvidence.get(target);
-    if (captured) return captured;
-    const evidence: ManagedCommandBindingRecoveryEvidence[] = [];
-    const finish = () => {
-      nativeBindingRecoveryEvidence.set(target, evidence);
-      return evidence;
-    };
-    const nativeProducers = producers.filter(({ producer }) =>
-      producer.sourceId === target.identity.sourceId
-      && producer.sourceIdentity === target.identity.sourceIdentity
-      && producer.pluginName === target.identity.pluginName
-      && producer.platform === target.identity.platform
-      && producer.scope === 'user' && producer.projectRoot === null
-      && producer.kind !== 'package');
-    if (nativeProducers.length === 0) return finish();
-    const marketplaceRoot = target.identity.marketplaceRoot ?? resolveAwHome(options.context.env);
-    const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
-    const marketplace = await readStrictNamespacedMarketplaceRoot({
-      rootDir: marketplaceRoot, sourceId: target.identity.sourceId,
-      sourceIdentity: target.identity.sourceIdentity, marketplaceName,
-    });
-    if (!marketplace) return finish();
-    const pluginRoot = await assertSafeNamespacedMarketplacePluginRoot(marketplaceRoot, target.identity.pluginName);
-    const manifest = await readNativeSkillProjectionManifest(path.join(pluginRoot, `.${target.identity.platform}-plugin`, 'plugin.json'));
-    if (manifest.state === 'unsafe' || manifest.state === 'unreadable') {
-      throw new Error('commandOwnerMismatch: the previous Native platform manifest cannot authorize binding recovery.');
-    }
-    if (manifest.state !== 'present') return finish();
-    if (manifest.value.name !== target.identity.pluginName) {
-      throw new Error('commandOwnerMismatch: the previous Native platform belongs to another plugin.');
-    }
-    if (typeof manifest.value.skills !== 'string') return finish();
-    const { root: skillsRoot } = await resolveNativeSkillsRoot(pluginRoot, manifest.value.skills, target.identity.platform);
-    const dynamic = nativeProducers.some(({ producer }) => producer.kind === 'artifact')
-      ? await resolveNativeSkillRenderExpectedEvidence({
-          plugin: target.plugin, platform: target.identity.platform,
-          referencePlugins: options.context.referencePlugins,
-          marketplaceRoot, marketplaceName, env: options.context.env,
-        })
-      : undefined;
-    if (dynamic?.state === 'issue' && dynamic.reason !== 'damaged') {
-      throw new Error(`commandOwnerMismatch: previous Native evidence is ${dynamic.reason}: ${dynamic.diagnostic}.`);
-    }
-    for (const { producer } of nativeProducers) {
-      const skillKey = producer.kind === 'static-skill' ? producer.key
-        : dynamic?.state === 'present'
-          ? dynamic.receipt.targets.find((entry) => entry.id === producer.key)?.skillKey
-          : undefined;
-      if (!skillKey) continue;
-      const resourceRoot = path.join(skillsRoot, skillKey);
-      if (!await lstatIfPresent(path.join(resourceRoot, COMMAND_PRODUCER_RECORD_FILE))) continue;
-      evidence.push(await captureManagedCommandBindingRecoveryEvidence({
-        producer, resourceRoot, env: options.context.env,
-      }));
-    }
-    return finish();
-  };
-  const preflightCommandBindings = async (targets: readonly DesiredTarget[]): Promise<void> => {
-    const producers: ManagedCommandCandidate[] = [];
-    for (const target of targets) for (const action of target.operationActions ?? []) {
-      if (action.kind === 'syncManagedCommandPackage') {
-        producers.push({ producer: action.producer, sets: action.sets, nativeTools: action.nativeTools });
-      } else if (action.kind === 'materializeNativeSkill'
-        || (action.kind === 'writeOwnedArtifact' && action.artifactKind === 'skill-directory')) {
-        const file = action.files?.find((entry) => entry.relativePath === COMMAND_PRODUCER_RECORD_FILE);
-        if (file) producers.push(normalizeInstalledCommandProducer(JSON.parse(Buffer.from(file.contentBase64, 'base64').toString('utf8'))));
-      }
-    }
-    const captured = targets.flatMap((target) => nativeBindingRecoveryEvidence.get(target) ?? []);
-    try {
-      await assertManagedCommandBindingIdentities({ producers, bindingRecoveryEvidence: captured, env: options.context.env });
-    } catch (error) {
-      if (!(error instanceof ManagedCommandError) || error.code !== 'commandBindingInvalid') throw error;
-      const needsRecovery: ManagedCommandCandidate[] = [];
-      for (const producer of producers) {
-        try {
-          await assertManagedCommandBindingIdentities({ producers: [producer], bindingRecoveryEvidence: captured, env: options.context.env });
-        } catch (issue) {
-          if (!(issue instanceof ManagedCommandError) || issue.code !== 'commandBindingInvalid') throw issue;
-          needsRecovery.push(producer);
-        }
-      }
-      const bindingRecoveryEvidence = (await Promise.all(targets.map((target) =>
-        captureNativeBindingRecoveryEvidence(target, needsRecovery)))).flat();
-      await assertManagedCommandBindingIdentities({ producers, bindingRecoveryEvidence, env: options.context.env });
-    }
-  };
   const revokeAtRoot = async (root: string, recursive = false, platform?: PlatformName): Promise<void> => {
     const listed = await listManagedCommands(options.context.env);
     const producers = new Map<string, import('../types.js').ProducerIdentity>();
@@ -4565,78 +1511,11 @@ function createNativeDriver(options: {
     }
   };
   const currentCodexManager = (): CodexManager | undefined => options.context.codexManager;
-  const requireClaudeActivationOnlyProvider = async (target: DesiredTarget) => {
-    const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
-    const marketplaceRoot = target.identity.marketplaceRoot ?? resolveAwHome(options.context.env);
-    const marketplace = await readStrictNamespacedMarketplaceRoot({
-      trustedMarketplaceRoot: path.join(resolveAwHome(options.context.env), 'marketplaces'),
-      rootDir: marketplaceRoot,
-    });
-    if (!marketplace
-      || marketplace.config.sourceId !== target.identity.sourceId
-      || marketplace.config.sourceIdentity !== target.identity.sourceIdentity
-      || marketplace.config.marketplaceName !== marketplaceName) {
-      throw new Error('nativeActivationOnlyRequiresHealthySharedPackage: the Claude marketplace owner does not match the requested source.');
-    }
-    const provider = await readClaudeNativeState({
-      pluginName: target.identity.pluginName,
-      scope: 'user',
-      cwd: target.identity.cwd,
-      env: options.context.env,
-      marketplaceName,
-      marketplaceRoot,
-    });
-    if (provider.marketplaceDeclaredState !== 'canonical'
-      || provider.marketplaceMaterializedState !== 'canonical'
-      || provider.pluginState !== 'present'
-      || !provider.pluginEnabled
-      || provider.pluginVersions.length === 0
-      || provider.pluginVersions.some((version) => version !== target.identity.pluginVersion)) {
-      throw new Error('nativeActivationOnlyRequiresHealthySharedPackage: an enabled current User Claude provider is required.');
-    }
-    const pluginRoot = await assertSafeNamespacedMarketplacePluginRoot(marketplaceRoot, target.identity.pluginName);
-    if (!await codexPayloadPathSafe(pluginRoot, marketplaceRoot)) {
-      throw new Error('nativeActivationOnlyRequiresHealthySharedPackage: the Claude package has an unsafe payload path.');
-    }
-    const installed = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    const platformManifest = await readNativeSkillProjectionManifest(path.join(pluginRoot, '.claude-plugin', 'plugin.json'));
-    if (installed.manifest.name !== target.identity.pluginName
-      || installed.manifest.version !== target.identity.pluginVersion
-      || platformManifest.state !== 'present'
-      || platformManifest.value.name !== target.identity.pluginName
-      || platformManifest.value.version !== target.identity.pluginVersion) {
-      throw new Error('nativeActivationOnlyRequiresHealthySharedPackage: the Claude package manifest is missing or outdated.');
-    }
-    if (nativeSkillRenderTargets(target.plugin, 'claude').length > 0) {
-      const evidence = await resolveNativeSkillRenderExpectedEvidence({
-        plugin: target.plugin, platform: 'claude', referencePlugins: options.context.referencePlugins,
-        marketplaceRoot, marketplaceName, env: options.context.env,
-      });
-      if (evidence.state !== 'present' || evidence.sourceProjection !== 'current') {
-        throw new Error('nativeActivationOnlyRequiresHealthySharedPackage: the Claude Skill projection is not current.');
-      }
-    }
-    const selected = await readClaudeNativeState({
-      pluginName: target.identity.pluginName, scope: target.identity.scope,
-      cwd: target.identity.cwd, env: options.context.env, marketplaceName, marketplaceRoot,
-    });
-    if (selected.marketplaceState === 'foreign' || selected.pluginState === 'foreign') {
-      throw new Error('externalOwnershipPresent: the Claude activation target belongs to a foreign marketplace.');
-    }
-    return selected;
-  };
-  const nativeGroupPreparations = new Map<string, Promise<void>>();
-  const nativeGroupPublications = new Map<string, DeferredNativeMarketplacePublication>();
-  const nativeTargetPreparations = new WeakMap<DesiredTarget, Promise<void>>();
   const codexNativeStates = new Map<string, 'present' | 'absent'>();
   const pendingCodexNativeStates = new Map<string, 'present' | 'absent'>();
   const codexMutationMarketplaces = new Set<string>();
-  const committedNativeGroups = new Set<string>();
   let nativeMarketplaceEligibleTargets: ReadonlySet<DesiredTarget> | undefined;
-  let deferredPostchecks: Array<{
-    target: DesiredTarget;
-    postcheck: () => Promise<void>;
-  }> = [];
+  let deferredPostchecks: Array<{ target: DesiredTarget; postcheck: () => Promise<void> }> = [];
   const nativeGroupKey = (target: DesiredTarget): string => [
     target.identity.sourceId ?? '',
     target.identity.sourceIdentity ?? '',
@@ -4655,12 +1534,6 @@ function createNativeDriver(options: {
     return options.targets.filter((candidate) =>
       nativeGroupKey(candidate) === key
       && (nativeMarketplaceEligibleTargets?.has(candidate) ?? true));
-  };
-  const asNativeGroupFailure = (error: unknown): Error & {
-    nativeMarketplaceGroupFailure: true;
-  } => {
-    const result = error instanceof Error ? error : new Error(String(error));
-    return Object.assign(result, { nativeMarketplaceGroupFailure: true as const });
   };
   const findTarget = (component: OwnedComponent): DesiredTarget => {
     const target = options.targets.find((entry) =>
@@ -4683,173 +1556,18 @@ function createNativeDriver(options: {
       : { observationSession: options.context.codexObservationSession }),
   });
   const prepareNativeGroup = async (target: DesiredTarget): Promise<void> => {
-    const key = nativeGroupKey(target);
-    let preparation = options.operationScopedNativePhases
-      ? nativeGroupPreparations.get(key)
-      : nativeTargetPreparations.get(target);
-    if (!preparation) {
-      preparation = (async () => {
-        const members = groupTargets(target);
-        const materializing = members.filter((candidate) =>
-          candidate.writeNativeRequired ?? candidate.requiresNative);
-        const codexMembers = members.filter((candidate) => candidate.identity.platform === 'codex');
-        if (codexMembers.length) {
-          const observationScope = codexObservationScope(
-            options.context,
-            target.identity.marketplaceName ?? MARKETPLACE_NAME,
-            codexMembers.some((candidate) => candidate.identity.scope === 'project') ? 'project' : 'user',
-          );
-          const nativePluginIds = [...new Set(codexMembers.flatMap((candidate) =>
-            candidate.ownedComponents.flatMap((component) =>
-              component.kind === 'native-plugin' ? [component.pluginId] : [])))].sort();
-          for (const pluginId of nativePluginIds) {
-            const member = codexMembers.find((candidate) => candidate.ownedComponents.some((component) =>
-              component.kind === 'native-plugin' && component.pluginId === pluginId))!;
-            const registration = await inspectCodexPluginRegistrationLive({
-              pluginId,
-              cwd: member.identity.cwd,
-              env: options.context.env,
-              nativeCliRunner: runner,
-              manager: currentCodexManager(),
-              scope: observationScope,
-              observationSession: options.context.codexObservationSession,
-            });
-            codexNativeStates.set(
-              codexStateKey(member, pluginId),
-              requireObservedCodexNativeState(
-                registration.observation,
-                'native group precheck',
-              ) === 'installed' ? 'present' : 'absent',
-            );
-          }
-        }
-        if (materializing.length === 0) return;
-        await preflightCommandBindings(materializing);
-        const first = materializing[0]!;
-        if (!first.catalog) throw new Error('Missing rebuild target catalog data.');
-        const catalogRoot = path.resolve(first.catalog.rootDir);
-        if (materializing.some((candidate) =>
-          !candidate.catalog || path.resolve(candidate.catalog.rootDir) !== catalogRoot)) {
-          throw new Error('nativeMarketplaceGroupInvalid: grouped targets do not share one Catalog root.');
-        }
-        const materializationTargets = [...materializing].sort((left, right) => [
-          left.identity.pluginId ?? left.identity.pluginName,
-          left.identity.scope,
-          left.identity.cwd,
-        ].join('\0').localeCompare([
-          right.identity.pluginId ?? right.identity.pluginName,
-          right.identity.scope,
-          right.identity.cwd,
-        ].join('\0'), 'en'));
-        const requestedPlatforms = new Map<string, Set<PlatformName>>();
-        for (const candidate of materializationTargets) {
-          const pluginId = candidate.identity.pluginId ?? `${candidate.identity.sourceId}/${candidate.identity.pluginName}`;
-          const platforms = requestedPlatforms.get(pluginId) ?? new Set<PlatformName>();
-          platforms.add(candidate.identity.platform);
-          requestedPlatforms.set(pluginId, platforms);
-        }
-        const transaction = await mirrorCatalog(
-          first.catalog,
-          options.context.env,
-          first.identity,
-          first.plugin.catalogLogicalIdentity,
-          async (stagingRoot) => {
-            const renderedReceipts: PreservedPlatformReceipt[] = [];
-            for (const candidate of materializationTargets) {
-              for (const action of candidate.operationActions ?? []) {
-                if (action.kind !== 'materializeNativeSkill' || action.artifactId !== undefined) continue;
-                const skillsRoot = path.join(stagingRoot, 'plugins', candidate.identity.pluginName, action.platform, candidate.plugin.manifest.skills!.replace(/^\.\//u, ''), action.skillKey);
-                if (`sha256:${crypto.createHash('sha256').update(JSON.stringify(action.files)).digest('hex')}` !== action.contentDigest) throw new Error('commandResourceInvalid: prepared static Skill snapshot changed.');
-                for (const file of action.files) {
-                  const content = Buffer.from(file.contentBase64, 'base64');
-                  if (`sha256:${crypto.createHash('sha256').update(content).digest('hex')}` !== file.contentDigest) throw new Error('commandResourceInvalid: prepared static Skill file digest changed.');
-                  if (file.mode !== undefined && file.mode !== 0o644 && file.mode !== 0o755) throw new Error('Skill action file mode is invalid.');
-                  const destination = path.join(skillsRoot, ...file.relativePath.split('/'));
-                  await fs.outputFile(destination, content);
-                  await fs.chmod(destination, file.mode ?? 0o644);
-                }
-              }
-              const platform = candidate.identity.platform;
-              const hasStaticSkills = candidate.plugin.manifest.skills !== undefined;
-              const preparedNativeRender = await requirePreparedNativeSkillRender({
-                context: options.context,
-                plugin: candidate.plugin,
-                platform,
-              });
-              const nativeRender = preparedNativeRender
-                ? await materializeNativeSkillRender({
-                    plugin: candidate.plugin,
-                    stagingRoot,
-                    prepared: preparedNativeRender,
-                    hasStaticSkills,
-                  })
-                : null;
-              if (nativeRender) renderedReceipts.push({ pluginName: candidate.identity.pluginName, receipt: nativeRender.receipt });
-              if (!nativeRender && platform === 'codex') {
-                await ensureCodexActiveSkillsManifest({
-                  plugin: candidate.plugin,
-                  marketplaceRoot: stagingRoot,
-                  hasRequiredSkills: hasStaticSkills,
-                });
-              }
-              if (hasStaticSkills || nativeSkillRenderTargets(candidate.plugin, platform).length > 0) {
-                await assertNoSensitiveValuesInNativeSkillPayload({
-                  plugin: candidate.plugin,
-                  platform,
-                  payloadRoot: path.join(stagingRoot, 'plugins', candidate.identity.pluginName),
-                  allowedRoot: stagingRoot,
-                  sensitiveValues: await resolveSensitiveUserConfigValues(
-                    candidate.plugin,
-                    options.context.env,
-                    options.context.referencePlugins,
-                    platform,
-                  ),
-                  ...(nativeRender ? { verifiedRenderReceipt: nativeRender.receipt } : {}),
-                });
-              }
-            }
-            for (const receipt of renderedReceipts) await refreshPreservedPlatformReceipt(stagingRoot, receipt);
-            if (first.identity.sourceId && first.identity.sourceIdentity && first.identity.marketplaceRoot) {
-              nativeGroupPublications.set(key, await deferNativeMarketplacePublications({
-                sourceRoot: first.identity.marketplaceRoot,
-                stagingRoot,
-                sourceId: first.identity.sourceId,
-                sourceIdentity: first.identity.sourceIdentity,
-                marketplaceName: first.identity.marketplaceName ?? MARKETPLACE_NAME,
-                requestedPlatforms,
-              }));
-            }
-          },
-          new Set(materializationTargets.map((candidate) =>
-            candidate.identity.pluginId ?? `${candidate.identity.sourceId}/${candidate.identity.pluginName}`)),
-          requestedPlatforms,
-        );
-        try {
-          await transaction.commit();
-        } catch (error) {
-          if ((error as { durableMaterializeCommit?: unknown }).durableMaterializeCommit !== true) {
-            try {
-              await transaction.rollback();
-            } catch (rollbackError) {
-              throw new AggregateError(
-                [error, rollbackError],
-                'nativeMarketplaceGroupCommitFailed: marketplace commit and rollback failed.',
-              );
-            }
-          }
-          throw error;
-        }
-        committedNativeGroups.add(key);
-      })().catch((error) => {
-        throw asNativeGroupFailure(error);
-      });
-      if (options.operationScopedNativePhases) {
-        nativeGroupPreparations.set(key, preparation);
-      } else {
-        nativeTargetPreparations.set(target, preparation);
+    for (const member of groupTargets(target)) {
+      if (member.identity.platform !== 'codex') continue;
+      for (const component of member.ownedComponents) {
+        if (component.kind !== 'native-plugin') continue;
+        const registration = await inspectCodexPluginRegistrationLive({ pluginId: component.pluginId,
+          cwd: member.identity.cwd, env: options.context.env, nativeCliRunner: runner,
+          manager: currentCodexManager(), scope: observationScopeFor(member),
+          observationSession: options.context.codexObservationSession });
+        codexNativeStates.set(codexStateKey(member, component.pluginId),
+          requireObservedCodexNativeState(registration.observation, 'native cleanup precheck') === 'installed' ? 'present' : 'absent');
       }
     }
-    await preparation;
   };
   const inspectCodexMarketplace = async (
     component: Extract<OwnedComponent, { kind: 'shared-config' | 'managed-block' }>,
@@ -4861,9 +1579,7 @@ function createNativeDriver(options: {
     const marketplace = config.snapshot.marketplaces[component.locator.marketplaceName];
     const canonical = !marketplace
       ? 'absent' as const
-      : marketplace.sourceType === 'local'
-        && !marketplace.sourcePointsToManifest
-        && path.normalize(marketplace.source ?? '') === path.normalize(component.locator.marketplaceRoot)
+      : isCanonicalCodexMarketplaceRegistration(marketplace, component.locator.marketplaceRoot)
         ? 'present' as const
         : 'foreign' as const;
     if (component.locator.desired) {
@@ -4943,6 +1659,8 @@ function createNativeDriver(options: {
     inspectShared: async (component) => {
       const locator = component.locator;
       switch (locator.kind) {
+        case 'cursor-workspace-hook':
+          return platformOwnership.inspectShared(component);
         case 'claude-permissions':
           return (await readClaudeSettings(locator.settingsPath)).awGenerated
             ?.permissions?.[locator.ownerKey] ? 'present' : 'absent';
@@ -4990,6 +1708,8 @@ function createNativeDriver(options: {
     removeShared: async (component) => {
       const locator = component.locator;
       switch (locator.kind) {
+        case 'cursor-workspace-hook':
+          return platformOwnership.removeShared(component);
         case 'claude-permissions': {
           const settings = await readClaudeSettings(locator.settingsPath);
           rebuildClaudePermissions(settings, locator.ownerKey);
@@ -5125,19 +1845,6 @@ function createNativeDriver(options: {
       nativeMarketplaceEligibleTargets = new Set(eligibleTargets);
     },
     prepareNativeMarketplaceGroup: prepareNativeGroup,
-    selectRecoveryCleanupComponents: (target, components) => {
-      if (!committedNativeGroups.has(nativeGroupKey(target))) return components;
-      const marketplaceRoot = path.resolve(
-        target.identity.marketplaceRoot ?? resolveAwHome(options.context.env),
-      );
-      return components.filter((component) => {
-        if (!('path' in component)) return true;
-        const relative = path.relative(marketplaceRoot, path.resolve(component.path));
-        return relative === '..'
-          || relative.startsWith(`..${path.sep}`)
-          || path.isAbsolute(relative);
-      });
-    },
     ...(options.operationScopedNativePhases ? {
       deferPostcheck: (target: DesiredTarget, postcheck: () => Promise<void>): boolean => {
         if (target.identity.platform !== 'codex') return false;
@@ -5204,14 +1911,19 @@ function createNativeDriver(options: {
       for (const marketplaceName of marketplaceNames) {
         codexMutationMarketplaces.add(marketplaceName);
       }
-      if (codexMutationMarketplaces.size === 0) return;
+      const changedMarketplaces = [...codexMutationMarketplaces];
+      const marketplaces = [...new Set([...changedMarketplaces, ...deferredPostchecks.flatMap(({ target }) =>
+        (target.platformDeployment?.plans ?? []).flatMap((plan) => plan.evidence.layout.marketplaceName
+          && plan.projections.some((projection) => projection.bundle) ? [plan.evidence.layout.marketplaceName] : []))])].sort();
+      if (marketplaces.length === 0) return;
       const session = options.context.codexObservationSession;
       if (!session) {
         throw new Error('codexNativeObservationUnavailable: grouped postcheck requires an observation session.');
       }
-      const marketplaces = [...codexMutationMarketplaces].sort();
       codexMutationMarketplaces.clear();
-      for (const marketplaceName of marketplaces) session.invalidate(marketplaceName);
+      // Platform mutations already invalidated and observed their generation.
+      // Only legacy writes still deferred in the dirty set need invalidation.
+      for (const marketplaceName of changedMarketplaces) session.invalidate(marketplaceName);
       await Promise.all(marketplaces.map((marketplaceName) =>
         session.snapshot(
           marketplaceName,
@@ -5219,53 +1931,17 @@ function createNativeDriver(options: {
             ?? (options.targets.some((target) =>
               (nativeMarketplaceEligibleTargets?.has(target) ?? true)
               && target.identity.platform === 'codex'
-              && (target.identity.marketplaceName ?? MARKETPLACE_NAME) === marketplaceName
-              && target.identity.scope === 'project')
+              && (target.platformDeployment ? target.platformDeployment.plans.some((plan) =>
+                plan.evidence.layout.marketplaceName === marketplaceName && plan.binding.scope.kind === 'project')
+                : (target.identity.marketplaceName ?? MARKETPLACE_NAME) === marketplaceName && target.identity.scope === 'project'))
               ? 'both'
               : 'user'),
         )));
     },
     preflightMutation: async (target) => {
-      if (target.identity.platform === 'claude'
-        && isNativeActivationOnlyTarget(options.context, target.identity)) {
-        await requireClaudeActivationOnlyProvider(target);
-        return;
-      }
-      await preflightCommandBindings([target]);
-      if (!target.codexNativeObservationExpectation
-        && !target.codexNativeSensitivePreflightRequired) return;
-      const sensitiveValues = pluginHasCodexNativeSkillSurface(target.plugin)
-        ? await resolveSensitiveUserConfigValues(target.plugin, options.context.env, options.context.referencePlugins)
-        : [];
-      if (sensitiveValues.length > 0) {
-        await assertNoSensitiveValuesInCanonicalCodexNativePayload({
-          plugin: target.plugin,
-          marketplaceRoot: target.identity.marketplaceRoot ?? resolveAwHome(options.context.env),
-          marketplaceName: target.identity.marketplaceName ?? MARKETPLACE_NAME,
-          env: options.context.env,
-          sensitiveValues,
-        });
-      }
-      if (!target.codexNativeObservationExpectation) return;
-      const pluginId = `${target.identity.pluginName}@${target.identity.marketplaceName ?? MARKETPLACE_NAME}`;
-      const registration = await inspectCodexPluginRegistrationLive({
-        pluginId,
-        cwd: target.identity.cwd,
-        env: options.context.env,
-        nativeCliRunner: runner,
-        manager: currentCodexManager(),
-        scope: observationScopeFor(target),
-        observationSession: options.context.codexObservationSession,
-      });
-      const observed = requireObservedCodexNativeState(
-        registration.observation,
-        'artifact write precheck',
-      );
-      if (target.codexNativeObservationExpectation === 'installed' && observed !== 'installed') {
-        throw new Error(
-          'codexNativeExpectedInstalled: artifact write precheck requires the reused Codex plugin to remain installed.',
-        );
-      }
+      await assertManagedCommandBindingIdentities({ producers: (target.operationActions ?? []).flatMap((action) =>
+        action.kind === 'syncManagedCommandPackage' ? [{ producer: action.producer, sets: action.sets, nativeTools: action.nativeTools }] : []),
+      env: options.context.env });
     },
     preflightMaterialize: async (target) => {
       if (target.identity.sourceId && options.context.expectedCatalogConfigDigest) {
@@ -5274,41 +1950,8 @@ function createNativeDriver(options: {
           throw new Error('catalogSourceConflict: catalog source config changed before owner publication.');
         }
       }
-      if (target.identity.platform === 'claude') {
-        await assertNoClaudeUnboundNativeNameCollision({
-          pluginName: target.identity.pluginName,
-          cwd: target.identity.cwd,
-          env: options.context.env,
-        });
-        return;
-      }
-      const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
-      const marketplaceRoot = target.identity.marketplaceRoot ?? resolveAwHome(options.context.env);
-      const config = await readCodexConfigFile(
-        resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
-      );
-      const marketplace = config.snapshot.marketplaces[marketplaceName];
-      const canonical = marketplace?.sourceType === 'local'
-        && !marketplace.sourcePointsToManifest
-        && path.resolve(marketplace.source ?? '') === path.resolve(marketplaceRoot);
-      const expectedPluginId = `${target.identity.pluginName}@${marketplaceName}`;
-      if ((marketplace !== undefined && !canonical)
-        || (Object.hasOwn(config.snapshot.plugins, expectedPluginId) && !canonical)) {
-        throw new Error(
-          `externalOwnershipPresent: Codex marketplace ${marketplaceName} has a foreign source instead of its canonical namespaced root.`,
-        );
-      }
-      if (target.nativeOverlayDesired
-        && options.targets.some((candidate) =>
-          nativeGroupKey(candidate) === nativeGroupKey(target)
-          && (candidate.writeNativeRequired ?? candidate.requiresNative))) {
-        await prepareNativeSkillRenderCached({
-          context: options.context,
-          plugin: target.plugin,
-          platform: target.identity.platform,
-          scriptTimeoutMs: options.scriptTimeoutMs,
-        });
-      }
+      if (target.identity.platform === 'claude') await assertNoClaudeUnboundNativeNameCollision({
+        pluginName: target.identity.pluginName, cwd: target.identity.cwd, env: options.context.env });
     },
     finalizeCleanup: async (target) => {
       for (const action of target.operationActions ?? []) {
@@ -5361,22 +2004,7 @@ function createNativeDriver(options: {
         });
         if (state.pluginState !== 'present') return state.pluginState;
         if (!state.pluginEnabled) return 'partial';
-        if (nativeSkillRenderTargets(target.plugin, 'claude').length === 0) return 'present';
-        const evidence = await resolveNativeSkillRenderExpectedEvidence({
-          plugin: target.plugin,
-          platform: 'claude',
-          referencePlugins: options.context.referencePlugins,
-          marketplaceRoot: target.identity.marketplaceRoot ?? resolveAwHome(options.context.env),
-          marketplaceName: target.identity.marketplaceName ?? MARKETPLACE_NAME,
-          env: options.context.env,
-        });
-        if (evidence.state === 'issue') {
-          if (evidence.reason === 'unreadable') {
-            throw new Error(`claudeNativeRenderEvidenceUnreadable: ${evidence.diagnostic}`);
-          }
-          return evidence.reason === 'foreign' ? 'foreign' : 'partial';
-        }
-        return evidence.sourceProjection === 'current' ? 'present' : 'partial';
+        return 'present';
       }
       if (target.identity.platform === 'codex') {
         const pluginId = `${target.identity.pluginName}@${target.identity.marketplaceName ?? MARKETPLACE_NAME}`;
@@ -5506,226 +2134,20 @@ function createNativeDriver(options: {
         }
       }
     },
-    writeNative: async (target) => {
-      await publishPackages(target);
-      if (!target.catalog) throw new Error('Missing rebuild target catalog data.');
-      const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
-      const expectedMarketplaceRoot = target.identity.marketplaceRoot ?? resolveAwHome(options.context.env);
-      if (target.identity.platform === 'codex') {
-        const config = await readCodexConfigFile(
-          resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
-        );
-        const marketplace = config.snapshot.marketplaces[marketplaceName];
-        if (marketplace && (
-          marketplace.sourceType !== 'local'
-          || marketplace.sourcePointsToManifest
-          || path.normalize(marketplace.source ?? '') !== path.normalize(expectedMarketplaceRoot)
-        )) {
-          throw new Error(
-            `externalOwnershipPresent: Codex marketplace ${marketplaceName} 已由 foreign source 占用，拒绝覆盖。`,
-          );
-        }
-      } else {
-        const state = await readClaudeNativeState({
-          pluginName: target.identity.pluginName,
-          scope: target.identity.scope,
-          cwd: target.identity.cwd,
-          env: options.context.env,
-          marketplaceName,
-          marketplaceRoot: expectedMarketplaceRoot,
-        });
-        if (state.marketplaceState === 'foreign') {
-          throw new Error(`Claude marketplace ${marketplaceName} 已由 foreign source 占用，拒绝覆盖。`);
-        }
-      }
-      await prepareNativeGroup(target);
-      const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
-      const publishPreparedPlatform = async (): Promise<void> => {
-        await revokeAtRoot(path.join(expectedMarketplaceRoot, 'plugins', target.identity.pluginName), true, target.identity.platform);
-        await nativeGroupPublications.get(nativeGroupKey(target))?.publish(
-          expectedMarketplaceRoot, target.identity.pluginName, target.identity.platform,
-        );
-      };
-      if (target.identity.platform === 'codex') {
-        const stateKey = codexStateKey(target, pluginId);
-        const codexRemovalRequired = pendingCodexNativeStates.get(stateKey)
-          ?? codexNativeStates.get(stateKey);
-        if (!codexRemovalRequired) {
-          throw new Error('codexNativeObservationUnavailable: native group precheck is missing.');
-        }
-        if (codexRemovalRequired === 'present') {
-          codexMutationMarketplaces.add(marketplaceName);
-          await runObservedCodexMutation({
-            marketplaceName,
-            mutation: () => runNativeCliChecked(
-              buildCodexPluginRemoveInvocation(
-                requireCodexManager(currentCodexManager()),
-                pluginId,
-                target.identity.cwd,
-                options.context.env,
-              ),
-              runner,
-            ),
-          });
-          pendingCodexNativeStates.set(stateKey, 'absent');
-        }
-        await publishPreparedPlatform();
-        const config = await readCodexConfigFile(
-          resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
-        );
-        const marketplace = config.snapshot.marketplaces[marketplaceName];
-        if (path.normalize(marketplace?.source ?? '') !== path.normalize(expectedMarketplaceRoot)) {
-          codexMutationMarketplaces.add(marketplaceName);
-          await runObservedCodexMutation({
-            marketplaceName,
-            mutation: () => runNativeCliChecked(
-              buildCodexMarketplaceAddInvocation(
-                requireCodexManager(currentCodexManager()),
-                expectedMarketplaceRoot,
-                target.identity.cwd,
-                options.context.env,
-              ),
-              runner,
-            ),
-          });
-        }
-        codexMutationMarketplaces.add(marketplaceName);
-        await runObservedCodexMutation({
-          marketplaceName,
-          mutation: () => runNativeCliChecked(
-            buildCodexPluginAddInvocation(
-              requireCodexManager(currentCodexManager()),
-              pluginId,
-              target.identity.cwd,
-              options.context.env,
-            ),
-            runner,
-          ),
-        });
-        pendingCodexNativeStates.set(stateKey, 'present');
-        const installedConfig = await readCodexConfigFile(
-          resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
-        );
-        const installedMarketplace = installedConfig.snapshot.marketplaces[marketplaceName];
-        if (installedMarketplace?.sourceType !== 'local'
-          || installedMarketplace.sourcePointsToManifest
-          || path.normalize(installedMarketplace.source ?? '') !== path.normalize(expectedMarketplaceRoot)
-          || installedConfig.snapshot.plugins[pluginId]?.enabled !== true) {
-          throw new Error(`codexNativeInstallIncomplete: ${pluginId} public config is not canonical and enabled.`);
-        }
-      } else {
-        await publishPreparedPlatform();
-        await runNativeCliChecked({
-          command: 'claude',
-          args: ['plugin', 'marketplace', 'add', expectedMarketplaceRoot, '--scope', target.identity.scope],
-          cwd: target.identity.cwd,
-          env: options.context.env,
-        }, runner);
-        await runNativeCliChecked({
-          command: 'claude',
-          args: ['plugin', 'install', pluginId, '--scope', target.identity.scope],
-          cwd: target.identity.cwd,
-          env: options.context.env,
-        }, runner);
-        await runNativeCliChecked({
-          command: 'claude',
-          args: ['plugin', 'list'],
-          cwd: target.identity.cwd,
-          env: options.context.env,
-        }, runner);
-        const after = await readClaudeNativeState({
-          pluginName: target.identity.pluginName,
-          scope: target.identity.scope,
-          cwd: target.identity.cwd,
-          env: options.context.env,
-          marketplaceName,
-          marketplaceRoot: expectedMarketplaceRoot,
-        });
-        if (
-          after.marketplaceDeclaredState !== 'canonical'
-          || after.marketplaceMaterializedState !== 'canonical'
-          || after.pluginState !== 'present'
-          || !after.pluginEnabled
-          || !after.pluginVersions.includes(target.identity.pluginVersion)
-        ) {
-          throw new Error(
-            `Claude native install postcheck 失败：declaredMarketplace=${after.marketplaceDeclaredState}，materializedMarketplace=${after.marketplaceMaterializedState}，plugin=${after.pluginState}，enabled=${after.pluginEnabled}，versions=${after.pluginVersions.join(',')}。`,
-          );
-        }
-      }
-      const pluginRoot = path.join(expectedMarketplaceRoot, 'plugins', target.identity.pluginName);
-      if (target.identity.platform === 'codex' || target.operationActions?.some((action) => action.kind === 'materializeNativeSkill' && action.platform === 'claude')) {
-        const relativeRoot = target.identity.platform === 'codex'
-          ? await resolveCodexSkillsRelativeRoot(target.plugin, expectedMarketplaceRoot)
-          : await resolveClaudeSkillsRelativeRoot(pluginRoot);
-        const skillsRoot = path.join(pluginRoot, relativeRoot);
-        for (const entry of await fs.readdir(skillsRoot, { withFileTypes: true }).catch(() => [])) {
-          if (!entry.isDirectory()) continue;
-          const resourceRoot = path.join(skillsRoot, entry.name);
-          const installed = await readInstalledCommandProducer(resourceRoot).catch(() => null);
-          if (!installed) continue;
-          const commandIds = await publishManagedCommandBindings({ ...installed, resourceRoot,
-            bindingRecoveryEvidence: nativeBindingRecoveryEvidence.get(target), env: options.context.env });
-          options.context.commandResults ??= [];
-          options.context.commandResults.push({ producer: installed.producer, state: 'completed', commandIds, removedCommandIds: [], errors: [], recoveryActions: [] });
-        }
-      }
-    },
+    applyManagedCommands: publishPackages,
+    writeNative: async () => { throw new Error('platformDeploymentRequired: native writes require a frozen platform deployment.'); },
     writeArtifacts: async (target) => {
-      if (target.identity.platform === 'claude'
-        && isNativeActivationOnlyTarget(options.context, target.identity)) {
-        const before = await requireClaudeActivationOnlyProvider(target);
-        if (!before.pluginEnabled || !before.pluginVersions.includes(target.identity.pluginVersion)) {
-          await runNativeCliChecked({
-            command: 'claude',
-            args: ['plugin', before.pluginVersions.includes(target.identity.pluginVersion) ? 'enable' : 'install',
-              `${target.identity.pluginName}@${target.identity.marketplaceName ?? MARKETPLACE_NAME}`,
-              '--scope', target.identity.scope],
-            cwd: target.identity.cwd,
-            env: options.context.env,
-          }, runner);
-        }
-        const after = await readClaudeNativeState({
-          pluginName: target.identity.pluginName, scope: target.identity.scope,
-          cwd: target.identity.cwd, env: options.context.env,
-          marketplaceName: target.identity.marketplaceName, marketplaceRoot: target.identity.marketplaceRoot,
-        });
-        if (after.pluginState !== 'present' || !after.pluginEnabled
-          || !after.pluginVersions.includes(target.identity.pluginVersion)) {
-          throw new Error('claudeActivationPostcheckFailed: the requested scope is not enabled at the expected version.');
-        }
-        return [];
-      }
-      await preflightCommandBindings([target]);
-      await publishPackages(target);
-      for (const operationAction of target.operationActions ?? []) {
-        if (operationAction.kind === 'writeOwnedArtifact'
-          || operationAction.kind === 'updateSharedConfig'
-          || operationAction.kind === 'setActivation') {
-          if (operationAction.kind === 'writeOwnedArtifact' && operationAction.artifactKind === 'skill-directory') {
-            const previous = await readInstalledCommandProducer(operationAction.path).catch(() => null);
-            if (previous && (previous.producer.sourceId !== target.identity.sourceId || previous.producer.sourceIdentity !== target.identity.sourceIdentity || previous.producer.pluginName !== target.identity.pluginName)) throw new Error('commandOwnerMismatch: installed command producer belongs to another source identity; clean up the previous owner first.');
-          }
-          await applyPlannedOperationAction(operationAction);
-          if (operationAction.kind === 'writeOwnedArtifact' && operationAction.artifactKind === 'skill-directory') {
-            const installed = await readInstalledCommandProducer(operationAction.path).catch(() => null);
-            if (installed) {
-              const commandIds = await publishManagedCommandBindings({ ...installed, resourceRoot: operationAction.path, env: options.context.env });
-              options.context.commandResults ??= [];
-              options.context.commandResults.push({ producer: installed.producer, state: 'completed', commandIds, removedCommandIds: [], errors: [], recoveryActions: [] });
-            } else await revokeAtRoot(operationAction.path);
-          }
-        }
-      }
-      return target.artifacts;
+      if (target.artifacts.length > 0) throw new Error('platformDeploymentRequired: platform output requires a frozen platform deployment.');
+      return [];
     },
     runPreApply: async (invocation: RebuildPreApplyInvocation) => {
+      if (isNativeActivationOnlyTarget(options.context, invocation.target.identity)) return;
       const run = () => runPreApplyScript({
         plugin: invocation.plugin,
         platform: invocation.target.identity.platform,
         scope: invocation.target.identity.scope,
         cwd: invocation.target.identity.cwd,
-        context: options.context as never,
+        context: options.context,
         referencePlugins: options.context.referencePlugins,
         scriptTimeoutMs: options.scriptTimeoutMs,
       });
@@ -5744,7 +2166,9 @@ function createNativeDriver(options: {
       const projectKey = identity.scope === 'project'
         ? identity.platform === 'codex'
           ? await resolveCodexProjectKey(identity.cwd)
-          : await resolveClaudeProjectKey(identity.cwd)
+          : identity.platform === 'claude'
+            ? await resolveClaudeProjectKey(identity.cwd)
+            : createProjectLocationKey(await resolveRequiredCanonicalRepoRoot(identity.cwd))
         : '';
       const key = [
         sourceIdentity,
@@ -5782,475 +2206,49 @@ export function createRebuildIntegration(options: {
   options.context.scriptTimeoutMs ??= options.scriptTimeoutMs;
   const targets = [...(options.preparedTargets ?? [])];
   const driver = createNativeDriver({ targets, ...options });
+  const renderResults = options.context.preparedArtifactRenderResults ??= new Map();
+  const packageCache = options.context.packagePreparationCache
+    ?? commandPackageCandidates.get(renderResults) ?? new Map<string, Promise<PreparedManagedCommandPackage>>();
+  commandPackageCandidates.set(renderResults, packageCache);
+  options.context.packagePreparationCache = packageCache;
+  const platformSession = options.context.platformRebuildSession
+    ?? platformRebuildSessions.get(renderResults)
+    ?? new PlatformRebuildSession(options.context);
+  platformRebuildSessions.set(renderResults, platformSession);
+  options.context.platformRebuildSession = platformSession;
+  platformSession.updateContext(options.context);
+  platformSession.setOwnershipExecutor(driver.ownership);
   return {
+    resolvePlatformTargets: (inputs) => platformSession.resolveAll(inputs),
+    sealMarketplaceGenerations: (eligible) => platformSession.sealMarketplaceGenerations(eligible),
     driver,
     setNativeMarketplaceEligibleTargets: driver.setNativeMarketplaceEligibleTargets,
     prepareNativeMarketplaceGroup: driver.prepareNativeMarketplaceGroup,
     captureCodexPostMutationSnapshots: driver.captureCodexPostMutationSnapshots,
     buildTarget: async (input) => {
-      input = {
-        ...input,
-        sourceId: input.sourceId ?? input.plugin.sourceId,
-        sourceIdentity: input.sourceIdentity ?? input.plugin.sourceIdentity,
-        pluginId: input.pluginId ?? input.plugin.pluginId,
-      };
-      const activationOnly = isNativeActivationOnlyTarget(options.context, {
-        pluginId: input.pluginId,
-        platform: input.platform,
-        scope: input.scope,
-      }) && input.command !== 'cleanup' && input.command !== 'uninstall';
-      if (activationOnly) input = { ...input, readOnlyInspectionPlan: true };
-      const materializing = input.command !== 'cleanup'
-        && input.command !== 'uninstall'
-        && input.readOnlyInspectionPlan !== true;
-      if (input.scope === 'project') {
-        const canonicalRepoRoot = await assertCanonicalProjectManagedRoots({
-          cwd: input.cwd,
-          rootNames: input.platform === 'codex' ? ['.agents', '.codex'] : ['.claude'],
-          managedPaths: input.platform === 'codex'
-            ? ['.codex/config.toml']
-            : ['.claude/settings.json'],
-        });
-        input = { ...input, cwd: canonicalRepoRoot };
+      const target = await platformSession.buildTarget(input);
+      if (!input.readOnlyInspectionPlan) {
+        const removed = input.command === 'cleanup' || input.command === 'uninstall';
+        const commands = removed ? { actions: [], candidates: [] }
+          : await commandPackageActions({ ...input, env: options.context.env, context: options.context });
+        const retained = removed ? await discoverRetainedManagedCommandPackages({
+          selectors: [{ sourceId: input.sourceId ?? input.plugin.sourceId, pluginName: input.plugin.manifest.name }],
+          scope: input.scope, cwd: input.cwd, env: options.context.env }) : [];
+        const operationActions: OperationAction[] = [...commands.actions, ...retained.map((entry) => ({ ...entry,
+          kind: 'retainManagedCommandPackage' as const, pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`,
+          scope: entry.producer.scope }))];
+        options.context.managedCommandCandidates ??= new Map();
+        options.context.managedCommandCandidates.set(pluginActionId(input.plugin), commands.candidates);
+        const preApply = input.plugin.manifest.scripts?.preApply;
+        if (preApply && !removed && !isNativeActivationOnlyTarget(options.context, target.identity)) operationActions.push({ kind: 'runPreApply',
+          pluginId: input.pluginId ?? pluginActionId(input.plugin), platform: input.platform, scope: input.scope,
+          script: preApply.path, scriptDigest: `sha256:${crypto.createHash('sha256')
+            .update(await fs.readFile(path.resolve(input.plugin.rootDir, preApply.path.replace(/^\.\//u, '')))).digest('hex')}` });
+        const nativeToolChanges = await captureNativeToolChanges({ actions: operationActions,
+          producers: commands.candidates.map((candidate) => candidate.producer), removed, env: options.context.env });
+        if (nativeToolChanges.length) operationActions[0]!.nativeToolChanges = nativeToolChanges;
+        target.operationActions = operationActions;
       }
-      if (materializing && input.platform === 'codex') {
-        await preflightCodexWriteSafety({
-          plugin: input.plugin,
-          scope: input.scope,
-          cwd: input.cwd,
-          env: options.context.env,
-        });
-      }
-      const event = 'install' as const;
-      const commands = materializing ? await commandPackageActions({ ...input, env: options.context.env, context: options.context }) : { actions: [], candidates: [] };
-      options.context.managedCommandCandidates ??= new Map();
-      options.context.managedCommandCandidates.set(pluginActionId(input.plugin), commands.candidates);
-      const nativeSkillActions: OperationAction[] = [];
-      if (materializing && nativeSkillRenderTargets(input.plugin, input.platform).length) {
-        const native = await prepareNativeSkillRenderCached({ context: options.context, plugin: input.plugin, platform: input.platform, scriptTimeoutMs: options.scriptTimeoutMs });
-        if (native) {
-          commands.candidates.push(...native.commandCandidates);
-          for (const { artifact, skillKey, tree } of native.renderedArtifacts) {
-            const files = Object.entries(tree.files).map(([relativePath, content]) => ({
-              relativePath, contentBase64: content.toString('base64'),
-              contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
-              ...(tree.fileModes?.[relativePath] ? { mode: tree.fileModes[relativePath] } : {}),
-            })).sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-            nativeSkillActions.push({ kind: 'materializeNativeSkill', pluginId: pluginActionId(input.plugin),
-              platform: input.platform, scope: 'user', artifactId: artifact.id, skillKey, files,
-              contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}` });
-          }
-        }
-      }
-      const historicalArtifacts: GeneratedArtifact[] = [];
-      let writes: PlannedWrite[] = [];
-      let currentRemovalComponents: OwnedComponent[] = [];
-      if (input.command !== 'cleanup' && input.command !== 'uninstall') {
-        if (input.readOnlyInspectionPlan) {
-          writes = await buildInspectionWrites({
-            plugin: input.plugin,
-            platform: input.platform,
-            scope: input.scope,
-            cwd: input.cwd,
-            env: options.context.env,
-            marketplaceRoot: input.marketplaceRoot,
-            marketplaceName: input.marketplaceName,
-            userActivationDesired: options.context.codexUserActivationDesired,
-          });
-        } else if (input.platform === 'codex') {
-          writes = await buildCodexWrites({
-            ...input,
-            env: options.context.env,
-            event,
-            historicalArtifacts,
-            signal: options.context.signal,
-            scriptTimeoutMs: options.scriptTimeoutMs,
-            marketplaceName: input.marketplaceName,
-            userActivationDesired: options.context.codexUserActivationDesired,
-            commandCandidates: commands.candidates,
-            nativeSkillActions,
-            context: options.context,
-          });
-        } else {
-          writes = await buildClaudeWrites({
-            ...input,
-            env: options.context.env,
-            event,
-            historicalArtifacts,
-            signal: options.context.signal,
-            scriptTimeoutMs: options.scriptTimeoutMs,
-            commandCandidates: commands.candidates,
-            nativeSkillActions,
-            context: options.context,
-          });
-        }
-      } else if (input.platform === 'codex' && input.scope === 'project') {
-        const currentRemovalWrites = await buildInspectionWrites({
-          plugin: input.plugin,
-          platform: input.platform,
-          scope: input.scope,
-          cwd: input.cwd,
-          env: options.context.env,
-          marketplaceRoot: input.marketplaceRoot,
-          marketplaceName: input.marketplaceName,
-          userActivationDesired: options.context.codexUserActivationDesired,
-        });
-        currentRemovalComponents = currentRemovalWrites.flatMap((write) => [
-          ...(write.additionalComponents ?? []),
-          ...(write.component ? [write.component] : []),
-        ]);
-      }
-      if (activationOnly) writes = [];
-      const desiredComponents = writes.filter((write) => !write.optional).flatMap((write) => [
-        ...(write.additionalComponents ?? []),
-        ...(write.component ? [write.component] : []),
-      ]);
-      const optionalComponents = writes
-        .filter((write) => write.optional)
-        .flatMap((write) => [
-          ...(write.additionalComponents ?? []),
-          ...(write.component ? [write.component] : []),
-        ]);
-      const optionalComponentKeys = new Set(optionalComponents.map(componentIdentityKey));
-      const configDir = input.platform === 'codex'
-        ? resolveCodexPaths(input.cwd, input.scope, options.context.env).configDir
-        : resolveClaudePaths(input.cwd, input.scope, options.context.env).configDir;
-      const textRoots = input.platform === 'codex'
-        ? [path.join(configDir, 'rules'), path.join(configDir, 'agents')]
-        : [path.join(configDir, 'rules'), path.join(configDir, 'agents')];
-      const scannedText = (await Promise.all(textRoots.map((root) => scanOwnedTextFiles({
-        sourceId: input.sourceId,
-        sourceIdentity: input.sourceIdentity,
-        root,
-        pluginName: input.plugin.manifest.name,
-        platform: input.platform,
-        scope: input.scope,
-      })))).flat();
-      const skillRoots = input.platform === 'codex'
-        ? input.scope === 'project'
-          ? materializing
-            || ((input.command === 'cleanup' || input.command === 'uninstall')
-              && input.readOnlyInspectionPlan !== true)
-            ? [path.join(input.cwd, '.agents', 'skills')]
-            : []
-          : [path.join(getCodexHome(options.context.env), 'skills')]
-        : [path.join(configDir, 'skills')];
-      const scanSkills = () => Promise.all(skillRoots.map((root) => scanOwnedSkills({
-        sourceId: input.sourceId,
-        sourceIdentity: input.sourceIdentity,
-        root,
-        pluginName: input.plugin.manifest.name,
-        platform: input.platform,
-        scope: input.scope,
-        recursive: !(input.platform === 'codex' && input.scope === 'project'),
-      })));
-      const scannedSkills = (await scanSkills()).flat();
-      const legacyCodexNativeSkills = input.platform === 'codex'
-        ? (await (async () => {
-            const skillKeys = [...new Set(codexNativeRenderTargets(input.plugin)
-              .map((target) => target.skillKey!))];
-            if (skillKeys.length === 0) return [];
-            const projectRoot = await assertCanonicalProjectManagedRoots({
-              cwd: input.cwd,
-              rootNames: ['.agents'],
-            });
-            const roots = [
-              {
-                root: path.join(getCodexHome(options.context.env), 'skills'),
-                scope: 'user' as const,
-              },
-              {
-                root: path.join(projectRoot, '.agents', 'skills'),
-                scope: 'project' as const,
-              },
-            ];
-            return roots.flatMap(({ root, scope }) => skillKeys.map((skillKey) => pathComponent({
-              kind: 'skill-directory',
-              path: path.join(root, skillKey),
-              allowedRoot: root,
-              identity: ownerIdentity(
-                input.plugin.manifest.name,
-                skillKey,
-                'codex',
-                scope,
-              ),
-            })));
-          })())
-        : [];
-      let historicalComponents = await buildHistoricalComponents({
-        sourceId: input.sourceId,
-        sourceIdentity: input.sourceIdentity,
-        pluginId: input.pluginId,
-        pluginName: input.plugin.manifest.name,
-        platform: input.platform,
-        scope: input.scope,
-        cwd: input.cwd,
-        env: options.context.env,
-        artifacts: historicalArtifacts,
-        command: input.command,
-      });
-      if (input.platform === 'codex') {
-        const nativePluginRoot = await canonicalizePathThroughExistingAncestor(path.join(
-          input.marketplaceRoot ?? resolveAwHome(options.context.env),
-          'plugins',
-          input.plugin.manifest.name,
-        ));
-        const privateCacheRoot = path.resolve(getCodexHome(options.context.env), 'plugins', 'cache');
-        historicalComponents = historicalComponents.filter((component) => {
-          if (!('path' in component)) return true;
-          const componentPath = path.resolve(component.path);
-          return [nativePluginRoot, privateCacheRoot].every((protectedRoot) => {
-            const relative = path.relative(protectedRoot, componentPath);
-            return relative === '..'
-              || relative.startsWith(`..${path.sep}`)
-              || path.isAbsolute(relative);
-          });
-        });
-      }
-      const sharedComponents = input.platform === 'codex'
-        ? await scanCodexSharedComponents({
-            sourceId: input.sourceId,
-            sourceIdentity: input.sourceIdentity,
-            pluginId: input.pluginId,
-            pluginName: input.plugin.manifest.name,
-            scope: input.scope,
-            paths: resolveCodexPaths(input.cwd, input.scope, options.context.env),
-            scanConfig: true,
-            ignoreReadErrors: true,
-          })
-        : await scanClaudeSharedComponents({
-            sourceId: input.sourceId,
-            sourceIdentity: input.sourceIdentity,
-            pluginId: input.pluginId,
-            pluginName: input.plugin.manifest.name,
-            scope: input.scope,
-            settingsPath: resolveClaudePaths(
-              input.cwd,
-              input.scope,
-              options.context.env,
-            ).settingsPath,
-          });
-      const nativeRequired = input.platform === 'claude'
-        || analyzeCodexSurface(input.plugin.manifest).nativeKinds.length > 0;
-      const nativeDesired = nativeRequired
-        && input.command !== 'cleanup'
-        && input.command !== 'uninstall';
-      const codexRegistration = input.platform === 'codex'
-        && nativeDesired
-        && input.readOnlyInspectionPlan !== true
-        ? await inspectCodexPluginRegistrationLive({
-            pluginId: `${input.plugin.manifest.name}@${input.marketplaceName ?? MARKETPLACE_NAME}`,
-            cwd: input.cwd,
-            env: options.context.env,
-            nativeCliRunner: options.context.nativeCliRunner,
-            manager: options.context.codexManager,
-            scope: codexObservationScope(
-              options.context,
-              input.marketplaceName ?? MARKETPLACE_NAME,
-              input.scope,
-            ),
-            observationSession: options.context.codexObservationSession,
-          })
-        : undefined;
-      const codexNativeExact = codexRegistration?.observation.state === 'observed'
-        && codexRegistration.observation.value === 'installed'
-        && (codexRegistration.observation.entry.version === undefined
-          || codexRegistration.observation.entry.version === input.plugin.manifest.version);
-      const materializeNativeRequired = !activationOnly && nativeDesired && (
-        input.platform === 'claude'
-        || input.command === 'reinstall'
-        || !codexNativeExact
-        || (materializing && nativeSkillRenderTargets(input.plugin, input.platform).length > 0)
-        || (materializing && await hasPreparedStaticNativeCommandDrift({ plugin: input.plugin, cwd: input.cwd, env: options.context.env, context: options.context, marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env) }))
-      );
-      const nativeCleanupCandidate = input.includeNativeCleanupCandidate !== false
-        && (input.command === 'cleanup' || input.command === 'uninstall')
-        && (input.platform === 'claude' || (input.platform === 'codex' && nativeRequired));
-      const nativePlugin = (nativeDesired || nativeCleanupCandidate)
-        ? [{
-            kind: 'native-plugin' as const,
-            identity: ownerIdentity(input.plugin.manifest.name, 'native', input.platform, input.scope),
-            pluginId: `${input.plugin.manifest.name}@${input.marketplaceName ?? MARKETPLACE_NAME}`,
-          } satisfies OwnedComponent]
-        : [];
-      const marketplaceDesired = nativeRequired
-        && input.command !== 'cleanup'
-        && input.command !== 'uninstall';
-      const marketplace = input.platform === 'codex'
-        && input.scope === 'user'
-        && nativeRequired
-        && input.readOnlyShallowInspectionPlan !== true
-        ? [createCodexMarketplaceComponent({
-            pluginName: input.plugin.manifest.name,
-            codexManager: options.context.codexManager,
-            cwd: input.cwd,
-            env: options.context.env,
-            runner: options.context.nativeCliRunner,
-            marketplaceName: input.marketplaceName ?? MARKETPLACE_NAME,
-            marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env),
-            desired: marketplaceDesired,
-          })]
-        : input.platform === 'claude' && marketplaceDesired
-          ? [createClaudeMarketplaceComponent({
-              pluginName: input.plugin.manifest.name,
-              scope: input.scope,
-              cwd: input.cwd,
-              env: options.context.env,
-              runner: options.context.nativeCliRunner,
-              marketplaceName: input.marketplaceName ?? MARKETPLACE_NAME,
-              marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env),
-              desired: marketplaceDesired,
-            })]
-          : [];
-      if (nativeDesired) desiredComponents.push(...nativePlugin, ...marketplace);
-      const activationCleanup = input.platform === 'codex'
-        && nativeRequired
-        && (input.command === 'cleanup' || input.command === 'uninstall')
-        ? (input.scope === 'project'
-            ? [
-                createCodexActivationComponent({
-                  identity: ownerIdentity(input.plugin.manifest.name, internalArtifactKey('activation', 'project'), 'codex', input.scope),
-                  configPath: resolveCodexPaths(input.cwd, 'project', options.context.env).configTomlPath,
-                  codexPluginId: `${input.plugin.manifest.name}@${input.marketplaceName ?? MARKETPLACE_NAME}`,
-                  desired: true,
-                }),
-              ]
-            : [createCodexActivationComponent({
-                identity: ownerIdentity(input.plugin.manifest.name, internalArtifactKey('activation', 'user'), 'codex', input.scope),
-                configPath: resolveCodexPaths(input.cwd, 'user', options.context.env).configTomlPath,
-                codexPluginId: `${input.plugin.manifest.name}@${input.marketplaceName ?? MARKETPLACE_NAME}`,
-                desired: true,
-              })])
-        : [];
-      const explicitActivationCleanup = input.platform === 'codex'
-        ? (input.codexActivationCleanup ?? []).map((activation) =>
-            createCodexActivationCleanupComponent({
-              identity: ownerIdentity(
-                input.plugin.manifest.name,
-                internalArtifactKey('activation', activation.scope),
-                'codex',
-                input.scope,
-              ),
-              configPath: resolveCodexPaths(
-                input.cwd,
-                activation.scope,
-                options.context.env,
-              ).configTomlPath,
-              codexPluginId: activation.codexPluginId,
-              disposition: activation.disposition,
-            }))
-        : [];
-      const allComponents = dedupeComponents([
-        ...desiredComponents,
-        ...optionalComponents,
-        ...(input.platform === 'codex' ? sharedComponents : []),
-        ...scannedText,
-        ...scannedSkills,
-        ...legacyCodexNativeSkills,
-        ...currentRemovalComponents,
-        ...historicalComponents,
-        ...(input.platform === 'claude' ? sharedComponents : []),
-        ...nativePlugin,
-        ...marketplace,
-        ...activationCleanup,
-        ...explicitActivationCleanup,
-      ]).filter((component) => (!activationOnly
-        || component.kind === 'native-plugin'
-        || (input.platform === 'codex' && component.kind === 'shared-config'
-          && (component.identity.artifactKey.startsWith('marketplace-')
-            || component.identity.artifactKey.startsWith('activation-'))))
-        && (options.context.preserveLegacyNativeSkills !== true
-          || component.kind !== 'skill-directory'));
-      bindNamespacedOwnerIdentity(allComponents, input);
-      const desiredKeys = new Set(desiredComponents.map(componentIdentityKey));
-      const retainedPackages = input.command === 'cleanup' || input.command === 'uninstall'
-        ? await discoverRetainedManagedCommandPackages({ selectors: [{ sourceId: input.sourceId, pluginName: input.plugin.manifest.name }], scope: input.scope, cwd: input.cwd, env: options.context.env })
-        : [];
-      const operationActions: OperationAction[] = [...commands.actions, ...nativeSkillActions,
-        ...retainedPackages.map((entry) => ({ ...entry, kind: 'retainManagedCommandPackage' as const, pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, scope: entry.producer.scope }))];
-      const preApply = input.plugin.manifest.scripts?.preApply;
-      if (preApply && input.command !== 'cleanup' && input.command !== 'uninstall') {
-        const script = path.resolve(input.plugin.rootDir, preApply.path.replace(/^\.\//u, ''));
-        const scriptDigest = `sha256:${crypto.createHash('sha256')
-          .update(await fs.readFile(script)).digest('hex')}`;
-        operationActions.push({
-          kind: 'runPreApply',
-          pluginId: input.pluginId ?? pluginActionId(input.plugin),
-          platform: input.platform,
-          scope: input.scope,
-          script: preApply.path,
-          scriptDigest,
-        });
-      }
-      if (nativeDesired) {
-        operationActions.push({
-          kind: 'ensureNativeRegistration',
-          pluginId: input.pluginId ?? pluginActionId(input.plugin),
-          platform: input.platform,
-          scope: input.scope,
-          registration: `${input.plugin.manifest.name}@${input.marketplaceName ?? MARKETPLACE_NAME}`,
-          marketplaceName: input.marketplaceName ?? MARKETPLACE_NAME,
-          marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env),
-        });
-      }
-      operationActions.push(...writes.flatMap((write) => [
-        ...(write.action ? [write.action] : []),
-        ...(write.additionalActions ?? []),
-      ]));
-      finalizeOwnedArtifactActions(operationActions);
-      const removed = input.command === 'cleanup' || input.command === 'uninstall';
-      if (input.readOnlyInspectionPlan !== true && (removed || operationActions.length > 0)) {
-        let skillComponents = allComponents.filter((component) => component.kind === 'skill-directory');
-        if (removed && skillComponents.length > 0) {
-          const inspection = await inspectOwnedComponents({ components: skillComponents, executor: driver.ownership });
-          skillComponents = inspection.components.flatMap((entry) =>
-            entry.state === 'present' && entry.component.kind === 'skill-directory' ? [entry.component] : []);
-        }
-        const nativeToolChanges = await captureNativeToolChanges({ actions: operationActions, sourceId: input.sourceId,
-          pluginName: input.plugin.manifest.name, platform: input.platform, scope: input.scope, projectRoot: input.cwd,
-          removed, env: options.context.env, resourceRoots: skillComponents.map((component) => component.path) });
-        if (nativeToolChanges.length > 0 && removed && operationActions.length === 0) {
-          // Ordinary owned Skill removal can have no renderer action. Reuse the
-          // existing owner/path evidence so its native impact enters Review.
-          const evidence = await forceOfflineCleanupEvidence({ reason: 'bundleUnavailable',
-            pluginId: input.pluginId ?? pluginActionId(input.plugin), pluginName: input.plugin.manifest.name,
-            sourceId: input.sourceId!, sourceIdentity: input.sourceIdentity!, platform: input.platform, scope: input.scope,
-            components: skillComponents });
-          operationActions.push(...evidence.plan.actions.map((action): OperationAction => ({ kind: 'removeOwnedArtifact',
-            pluginId: evidence.pluginId, platform: input.platform, scope: input.scope,
-            path: action.target, ownerFingerprint: evidence.targetFingerprint })));
-        }
-        if (nativeToolChanges.length > 0) operationActions[0]!.nativeToolChanges = nativeToolChanges;
-      }
-      const target: DesiredTarget = {
-        plugin: input.plugin,
-        identity: {
-          ...(input.sourceId ? {
-            sourceId: input.sourceId,
-            sourceIdentity: input.sourceIdentity,
-            pluginId: input.pluginId,
-            marketplaceName: input.marketplaceName,
-            marketplaceRoot: input.marketplaceRoot,
-          } : {}),
-          pluginName: input.plugin.manifest.name,
-          pluginVersion: input.plugin.manifest.version,
-          platform: input.platform,
-          scope: input.scope,
-          cwd: input.cwd,
-        },
-        ownedComponents: allComponents,
-        desiredOwnedComponents: allComponents.filter((component) =>
-          desiredKeys.has(componentIdentityKey(component))),
-        optionalOwnedComponents: allComponents.filter((component) =>
-          optionalComponentKeys.has(componentIdentityKey(component))),
-        requiresNative: nativeDesired,
-        writeNativeRequired: materializeNativeRequired,
-        nativeOverlayDesired: nativeDesired && !activationOnly,
-        artifacts: writes.map((write) => write.artifact),
-        operationActions,
-        catalog: input.catalog,
-        preApplySource: input.plugin,
-      };
       targets.push(target);
       return target;
     },
@@ -6476,9 +2474,7 @@ export async function discoverRebuildTargetNames(options: {
       const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
       const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
       const marketplace = config.snapshot.marketplaces[marketplaceName];
-      const canonicalMarketplace = marketplace?.sourceType === 'local'
-        && !marketplace.sourcePointsToManifest
-        && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot);
+      const canonicalMarketplace = isCanonicalCodexMarketplaceRegistration(marketplace, marketplaceRoot);
       const suffix = `@${marketplaceName}`;
       const configuredPluginIds = Object.keys(config.snapshot.plugins)
         .filter((pluginId) => pluginId.endsWith(suffix));

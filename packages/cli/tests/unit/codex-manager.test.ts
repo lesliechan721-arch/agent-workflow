@@ -37,7 +37,7 @@ async function executable(root: string, relative: string): Promise<string> {
   return fs.realpath(target);
 }
 
-async function windowsNpm(root: string, version = '0.151.0'): Promise<string> {
+async function windowsNpm(root: string, version = '0.155.0'): Promise<string> {
   const packageRoot = path.join(root, 'node_modules', '@openai', 'codex');
   const launcher = path.join(packageRoot, 'bin', 'codex.js');
   await fs.outputFile(path.join(root, 'codex.CMD'), '@echo off\r\n');
@@ -46,7 +46,7 @@ async function windowsNpm(root: string, version = '0.151.0'): Promise<string> {
   });
   await fs.outputFile(launcher, [
     'const args = process.argv.slice(2);',
-    "process.stdout.write(args[0] === '--version' ? 'codex-cli 0.151.0' : JSON.stringify(args));",
+    "process.stdout.write(args[0] === '--version' ? 'codex-cli 0.155.0' : JSON.stringify(args));",
   ].join('\n'));
   return fs.realpath(launcher);
 }
@@ -74,7 +74,7 @@ describe('Codex manager resolver', () => {
       platform: 'linux' as const, operationRequirement: requirement, runner,
     };
     await expect(inspectSystemCodex(options)).resolves.toEqual({
-      state: 'missing', requiredMinVersion: '0.151.0',
+      state: 'missing', requiredMinVersion: '0.155.0',
     });
     await expect(previewCodexManager(options)).resolves.toMatchObject({
       state: 'blocked', code: 'codexCliNotFound',
@@ -85,13 +85,13 @@ describe('Codex manager resolver', () => {
   });
 
   it.each([
-    ['codex-cli 0.151.0', 0, 'compatible'],
-    ['codex-cli 0.151.0+build.1', 0, 'compatible'],
-    ['codex-cli 0.151.0-rc.1', 0, 'incompatible'],
-    ['codex-cli 0.150.999', 0, 'incompatible'],
-    ['codex-cli 00.151.0', 0, 'unresolved'],
-    ['codex-cli 0.151.0-01', 0, 'unresolved'],
-    ['codex-cli v0.151.0', 0, 'unresolved'],
+    ['codex-cli 0.155.0', 0, 'compatible'],
+    ['codex-cli 0.155.0+build.1', 0, 'compatible'],
+    ['codex-cli 0.155.0-rc.1', 0, 'incompatible'],
+    ['codex-cli 0.154.999', 0, 'incompatible'],
+    ['codex-cli 00.155.0', 0, 'unresolved'],
+    ['codex-cli 0.155.0-01', 0, 'unresolved'],
+    ['codex-cli v0.155.0', 0, 'unresolved'],
     ['private-secret invalid version', 0, 'unresolved'],
     ['private-secret codex-cli 0.999.0', 1, 'unresolved'],
   ] as const)('applies strict SemVer and the minimum to %s / %s', async (stdout, exitCode, state) => {
@@ -101,7 +101,7 @@ describe('Codex manager resolver', () => {
       env: { ...isolation.env, PATH: 'bin' }, cwd: isolation.layout.fixtureCwd,
       platform: 'linux', operationRequirement: requirement, runner,
     });
-    expect(inspection).toMatchObject({ state, requiredMinVersion: '0.151.0' });
+    expect(inspection).toMatchObject({ state, requiredMinVersion: '0.155.0' });
     if (inspection.state === 'compatible') {
       expect(inspection.manager).toMatchObject({ command, version: inspection.detectedVersion, kind: 'system' });
     }
@@ -117,7 +117,7 @@ describe('Codex manager resolver', () => {
     const options = {
       env: isolation.env, cwd: isolation.layout.fixtureCwd, platform: 'linux' as const,
       operationRequirement: getCodexOperationRequirement(scope),
-      runner: async () => result('codex-cli 0.150.0'),
+      runner: async () => result('codex-cli 0.154.0'),
     };
     await expect(resolveCodexOperationConsumer(options)).rejects.toMatchObject({ code: 'codexCliNotFound' });
     await executable(isolation.layout.fixtureCwd, 'bin/codex');
@@ -130,29 +130,29 @@ describe('Codex manager resolver', () => {
     const command = await executable(oldRuntime, 'codex');
     const marker = path.join(oldRuntime, '.aw-managed-runtime.json');
     await fs.writeFile(marker, 'broken owner data');
-    const runner = vi.fn<NativeCliRunner>(async () => result('codex-cli 0.153.0'));
+    const runner = vi.fn<NativeCliRunner>(async () => result('codex-cli 0.157.0'));
     const options = { env: isolation.env, cwd: isolation.layout.fixtureCwd, platform: 'linux' as const, runner };
     await expect(resolveCodexManager(options)).rejects.toBeInstanceOf(CodexManagerError);
     expect(runner).not.toHaveBeenCalled();
     expect(await fs.readFile(marker, 'utf8')).toBe('broken owner data');
     await expect(resolveCodexManager({ ...options, env: { ...isolation.env, PATH: oldRuntime } }))
-      .resolves.toEqual({ kind: 'system', version: '0.153.0', command, argsPrefix: [] });
+      .resolves.toEqual({ kind: 'system', version: '0.157.0', command, argsPrefix: [] });
   });
 
   it('rediscovers and probes on each resolve without a persistent choice', async () => {
     const command = await executable(isolation.layout.fixtureCwd, 'bin/codex');
     const runner = vi.fn<NativeCliRunner>()
-      .mockResolvedValueOnce(result('codex-cli 0.151.0'))
-      .mockResolvedValueOnce(result('codex-cli 0.153.0'));
+      .mockResolvedValueOnce(result('codex-cli 0.155.0'))
+      .mockResolvedValueOnce(result('codex-cli 0.157.0'));
     const options = {
       env: { ...isolation.env, PATH: 'bin' }, cwd: isolation.layout.fixtureCwd,
       platform: 'linux' as const, runner,
     };
     await expect(previewCodexManager(options)).resolves.toMatchObject({
-      state: 'system', manager: { command, version: '0.151.0' },
+      state: 'system', manager: { command, version: '0.155.0' },
     });
     await expect(resolveCodexOperationConsumer({ ...options, operationRequirement: requirement }))
-      .resolves.toMatchObject({ support: 'observed', manager: { command, version: '0.153.0' }, requirement });
+      .resolves.toMatchObject({ support: 'observed', manager: { command, version: '0.157.0' }, requirement });
     expect(runner).toHaveBeenCalledTimes(2);
   });
 
@@ -160,7 +160,7 @@ describe('Codex manager resolver', () => {
     const first = await executable(isolation.layout.fixtureCwd, 'first/codex');
     const second = await executable(isolation.layout.fixtureCwd, 'second/codex');
     const runner = vi.fn<NativeCliRunner>(async (invocation) => {
-      if (invocation.args[0] === '--version') return result(`codex-cli ${invocation.command === first ? '0.151.0' : '0.153.0'}`);
+      if (invocation.args[0] === '--version') return result(`codex-cli ${invocation.command === first ? '0.155.0' : '0.157.0'}`);
       return result('', 'native command failed', 1);
     });
     const env = { ...isolation.env, PATH: 'first:second' };
@@ -213,7 +213,7 @@ describe('Codex manager resolver', () => {
     const marketplace = path.join(isolation.layout.fixtureCwd, 'marketplace & %PATH%');
     await expect(runNativeCli(buildCodexMarketplaceAddInvocation(manager, marketplace, isolation.layout.fixtureCwd, env), execFileNativeCliRunner))
       .resolves.toMatchObject({ exitCode: 0, stdout: JSON.stringify(['plugin', 'marketplace', 'add', marketplace]) });
-    expect(manager).toEqual({ kind: 'system', version: '0.151.0', command: process.execPath, argsPrefix: [launcher] });
+    expect(manager).toEqual({ kind: 'system', version: '0.155.0', command: process.execPath, argsPrefix: [launcher] });
   });
 
   it.each(['foreign package', 'version mismatch', 'batch launcher', 'package escape'] as const)(
@@ -222,7 +222,7 @@ describe('Codex manager resolver', () => {
       await windowsNpm(prefix);
       if (failure === 'foreign package') {
         await fs.writeJson(path.join(prefix, 'node_modules', '@openai', 'codex', 'package.json'), {
-          name: '@foreign/codex', version: '0.151.0', bin: { codex: 'bin/codex.js' },
+          name: '@foreign/codex', version: '0.155.0', bin: { codex: 'bin/codex.js' },
         });
       }
       if (failure === 'batch launcher') await fs.writeFile(path.join(prefix, 'codex.BAT'), '@echo off');
@@ -232,7 +232,7 @@ describe('Codex manager resolver', () => {
         await fs.move(nodeModules, external);
         await fs.symlink(external, nodeModules, process.platform === 'win32' ? 'junction' : 'dir');
       }
-      const runner = vi.fn<NativeCliRunner>(async () => result(failure === 'version mismatch' ? 'codex-cli 0.153.0' : 'codex-cli 0.151.0'));
+      const runner = vi.fn<NativeCliRunner>(async () => result(failure === 'version mismatch' ? 'codex-cli 0.157.0' : 'codex-cli 0.155.0'));
       await expect(previewCodexManager({
         platform: 'win32', cwd: isolation.layout.fixtureCwd,
         env: { ...isolation.env, PATH: prefix, PATHEXT: failure === 'batch launcher' ? '.BAT' : '.CMD' }, runner,
@@ -253,7 +253,7 @@ describe('Codex manager resolver', () => {
         await fs.remove(shim);
         await fs.symlink(second, shim);
       }
-      return result('codex-cli 0.151.0');
+      return result('codex-cli 0.155.0');
     });
     const env = { ...isolation.env, PATH: 'bin' };
     const manager = await resolveCodexManager({ env, cwd: isolation.layout.fixtureCwd, platform: 'linux', runner });

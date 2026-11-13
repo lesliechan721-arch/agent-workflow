@@ -3,11 +3,13 @@ import { promises as nodeFs } from 'node:fs';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
 
 import { atomicReplaceSafeFile } from './safe-fs.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from './safe-operation-diagnostic.js';
 
-import type { PlatformName, Scope } from '../types.js';
+import type { PlatformTarget, Scope } from '../types.js';
+import type { PhysicalIdentity } from '../platforms/contracts.js';
 
 export const SKILL_OWNER_MARKER = '.agent-workflows-owner.json';
 export const OWNED_TEXT_HEADER_PREFIX = '# agent-workflows-owner: ';
@@ -18,7 +20,7 @@ export type OwnershipInspectionState = OwnershipState | 'error';
 export type OwnershipComponentState = OwnershipInspectionState | 'foreign';
 
 export interface TargetIdentity {
-  platform: PlatformName;
+  platform: PlatformTarget;
   scope: Scope;
 }
 
@@ -26,6 +28,8 @@ export interface OwnerIdentity extends TargetIdentity {
   owner: 'agent-workflows';
   sourceId?: string;
   pluginId?: string;
+  sourceIdentity?: string;
+  physicalKey?: string;
   plugin: string;
   artifactKey: string;
 }
@@ -50,11 +54,62 @@ export function parseSharedOwnerToken(value: string): OwnerIdentity | null {
   return parseOwnerIdentity(parsed, 'Shared owner token');
 }
 
-export type SkillOwnerMarker = OwnerIdentity & { schemaVersion: 3 };
+export interface NativeProjectionEvidence {
+  physicalIdentity: PhysicalIdentity;
+  preparation?: 'complete' | 'partial';
+  components: Array<{ id: string; nativeName: string; relativeOutputs: string[] }>;
+  inputDigest: string;
+  contentDigest: string;
+}
+export type SkillOwnerMarker = OwnerIdentity & { schemaVersion: 3; nativeProjection?: NativeProjectionEvidence };
+
+function nativeProjection(value: unknown, owner?: OwnerIdentity): NativeProjectionEvidence {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Native projection evidence must be an object.');
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !['components', 'inputDigest', 'contentDigest', 'physicalIdentity', 'preparation'].includes(key))
+    || !Array.isArray(record.components)
+    || typeof record.inputDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(record.inputDigest)
+    || typeof record.contentDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(record.contentDigest)) throw new Error('Native projection evidence is invalid.');
+  if (record.preparation !== undefined && record.preparation !== 'complete' && record.preparation !== 'partial') throw new Error('Native preparation evidence is invalid.');
+  const identity = record.physicalIdentity;
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) throw new Error('Native physical identity is invalid.');
+  const physical = identity as Record<string, unknown>;
+  const routes: Record<string, string[]> = { codex: ['codex-marketplace'], claude: ['claude-marketplace'], cursor: ['cursor-workspace-hook'],
+    antigravity: ['antigravity-cli', 'antigravity-directory'], opencode: ['opencode-directory'], pi: ['pi-package'],
+    gemini: ['gemini-extension'], copilot: ['copilot-marketplace'], grok: ['grok-cli', 'grok-directory'], generic: ['generic-skills'] };
+  if (Object.keys(physical).length !== 6 || Object.keys(physical).some((key) => !['sourceIdentity', 'pluginId', 'platform', 'route', 'namespaceRoot', 'resourceKey'].includes(key))
+    || typeof physical.sourceIdentity !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(physical.sourceIdentity)
+    || typeof physical.pluginId !== 'string' || !physical.pluginId
+    || typeof physical.platform !== 'string' || typeof physical.route !== 'string' || !routes[physical.platform]?.includes(physical.route)
+    || typeof physical.namespaceRoot !== 'string' || !path.isAbsolute(physical.namespaceRoot) || path.normalize(physical.namespaceRoot) !== physical.namespaceRoot
+    || typeof physical.resourceKey !== 'string' || !physical.resourceKey
+    || owner && (physical.sourceIdentity !== owner.sourceIdentity || physical.pluginId !== owner.pluginId || physical.platform !== owner.platform)) throw new Error('Native physical identity is invalid.');
+  assertSafeOwnershipSegment(physical.resourceKey, 'Native resource key');
+  const ids = new Set<string>();
+  const components = record.components.map((value): NativeProjectionEvidence['components'][number] => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Native projection component is invalid.');
+    const component = value as Record<string, unknown>;
+    if (Object.keys(component).some((key) => !['id', 'nativeName', 'relativeOutputs'].includes(key))
+      || typeof component.id !== 'string' || !component.id || /[/\\]/u.test(component.id) || ids.has(component.id)
+      || typeof component.nativeName !== 'string' || !Array.isArray(component.relativeOutputs)) throw new Error('Native projection component is invalid.');
+    assertSafeOwnershipSegment(component.nativeName, 'Native component name');
+    ids.add(component.id);
+    const outputs = component.relativeOutputs.map((output) => {
+      if (typeof output !== 'string' || !output || output.includes('\\') || path.posix.isAbsolute(output)
+        || /^[A-Za-z]:/u.test(output) || path.posix.normalize(output) !== output
+        || output.split('/').some((segment) => segment === '..' || segment === '.' || !segment)) throw new Error('Native projection output must be a canonical relative path.');
+      return output;
+    });
+    if (new Set(outputs).size !== outputs.length) throw new Error('Native projection outputs must be unique.');
+    return { id: component.id, nativeName: component.nativeName, relativeOutputs: outputs };
+  });
+  return { components, inputDigest: record.inputDigest, contentDigest: record.contentDigest, physicalIdentity: physical as unknown as PhysicalIdentity, ...(record.preparation ? { preparation: record.preparation } : {}) };
+}
 
 export type OwnedProbeResult = 'present' | 'absent' | 'partial' | 'foreign';
 
 export type OwnedSharedLocator =
+  | { kind: 'cursor-workspace-hook'; hooksPath: string; ownerKey: string; command: string }
   | { kind: 'claude-permissions'; settingsPath: string; ownerKey: string }
   | { kind: 'codex-instruction'; configPath: string; ownerKey: string }
   | {
@@ -91,6 +146,7 @@ export type OwnedComponent =
       pristineTree?: Array<{ relativePath: string; contentDigest: string; mode?: number }>;
     } & OwnedPathComponent)
   | ({ kind: 'owned-text-file' } & OwnedPathComponent)
+  | ({ kind: 'owned-directory' } & OwnedPathComponent)
   | {
       kind: 'managed-block' | 'shared-config';
       identity: OwnerIdentity;
@@ -206,8 +262,13 @@ export function validateOwnerIdentity(identity: OwnerIdentity): void {
       throw new Error('Owner identity.pluginId must be the canonical sourceId/plugin name.');
     }
   }
-  if (identity.platform !== 'codex' && identity.platform !== 'claude') {
+  if (!PLATFORM_TARGETS.includes(identity.platform)) {
     throw new Error(`Owner identity.platform 无效：${String(identity.platform)}`);
+  }
+  if (identity.sourceIdentity !== undefined || identity.physicalKey !== undefined) {
+    if (typeof identity.sourceIdentity !== 'string' || !identity.sourceIdentity
+      || typeof identity.physicalKey !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(identity.physicalKey)
+      || !identity.sourceId || !identity.pluginId) throw new Error('Owner identity requires an exact source identity and physical key together.');
   }
   if (identity.scope !== 'user' && identity.scope !== 'project') {
     throw new Error(`Owner identity.scope 无效：${String(identity.scope)}`);
@@ -218,6 +279,8 @@ function identitiesEqual(left: OwnerIdentity, right: OwnerIdentity): boolean {
   return left.owner === right.owner &&
     left.sourceId === right.sourceId &&
     left.pluginId === right.pluginId &&
+    left.sourceIdentity === right.sourceIdentity &&
+    left.physicalKey === right.physicalKey &&
     left.plugin === right.plugin &&
     left.artifactKey === right.artifactKey &&
     left.platform === right.platform &&
@@ -231,6 +294,7 @@ function markerFromIdentity(identity: OwnerIdentity): SkillOwnerMarker {
     owner: identity.owner,
     sourceId: identity.sourceId,
     pluginId: identity.pluginId,
+    ...(identity.sourceIdentity !== undefined ? { sourceIdentity: identity.sourceIdentity, physicalKey: identity.physicalKey } : {}),
     plugin: identity.plugin,
     artifactKey: identity.artifactKey,
     platform: identity.platform,
@@ -248,6 +312,8 @@ function parseOwnerIdentity(value: unknown, label: string): OwnerIdentity {
     'owner',
     'sourceId',
     'pluginId',
+    'sourceIdentity',
+    'physicalKey',
     'plugin',
     'artifactKey',
     'platform',
@@ -263,6 +329,8 @@ function parseOwnerIdentity(value: unknown, label: string): OwnerIdentity {
     throw new Error(`${label} must use schema 3 stable plugin identity. This beta hard cut requires a new AW_HOME, or cleanup with the old CLI first.`);
   }
   const identity = {
+    ...(record.sourceIdentity !== undefined || record.physicalKey !== undefined
+      ? { sourceIdentity: record.sourceIdentity, physicalKey: record.physicalKey } : {}),
     owner: record.owner,
     sourceId: record.sourceId,
     pluginId: record.pluginId,
@@ -275,8 +343,9 @@ function parseOwnerIdentity(value: unknown, label: string): OwnerIdentity {
   return identity;
 }
 
-export function createSkillOwnerMarkerContent(identity: OwnerIdentity): string {
-  return `${JSON.stringify(markerFromIdentity(identity), null, 2)}\n`;
+export function createSkillOwnerMarkerContent(identity: OwnerIdentity, projection?: NativeProjectionEvidence): string {
+  if (projection && (!identity.sourceIdentity || !identity.physicalKey)) throw new Error('Native projection requires an exact source and physical identity.');
+  return `${JSON.stringify({ ...markerFromIdentity(identity), ...(projection ? { nativeProjection: nativeProjection(projection, identity) } : {}) }, null, 2)}\n`;
 }
 
 function assertPathBoundary(allowedRoot: string, candidatePath: string): {
@@ -344,6 +413,7 @@ export async function writeSkillOwnerMarker(options: {
   skillRoot: string;
   allowedRoot: string;
   identity: OwnerIdentity;
+  nativeProjection?: NativeProjectionEvidence;
 }): Promise<string> {
   await assertOwnedSkillPath(options);
   const stats = await fs.lstat(options.skillRoot).catch((error: unknown) => {
@@ -357,7 +427,7 @@ export async function writeSkillOwnerMarker(options: {
   await atomicReplaceFile({
     path: markerPath,
     allowedRoot: options.allowedRoot,
-    content: createSkillOwnerMarkerContent(options.identity),
+    content: createSkillOwnerMarkerContent(options.identity, options.nativeProjection),
   });
   return markerPath;
 }
@@ -376,7 +446,17 @@ async function readMarkerAt(markerPath: string): Promise<SkillOwnerMarker | null
   } catch {
     throw new Error(`Skill owner marker 不是有效 JSON：${markerPath}`);
   }
-  return markerFromIdentity(parseOwnerIdentity(parsed, 'Skill owner marker'));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Skill owner marker must be an object.');
+  const { nativeProjection: projection, ...identity } = parsed as Record<string, unknown>;
+  const marker = markerFromIdentity(parseOwnerIdentity(identity, 'Skill owner marker'));
+  if (projection !== undefined) {
+    // Projection metadata is rebuildable. Its damage must not remove independent
+    // exact owner evidence needed for cleanup; runtime consumers require it explicitly.
+    if (marker.sourceIdentity && marker.physicalKey) {
+      try { marker.nativeProjection = nativeProjection(projection, marker); } catch { /* Keep only valid ownership. */ }
+    }
+  }
+  return marker;
 }
 
 export async function readSkillOwnerMarker(options: {
@@ -489,7 +569,7 @@ async function inspectPathAt(
     throw error;
   });
   if (!stats) return { state: 'absent' };
-  if (component.kind === 'skill-directory') {
+  if (component.kind === 'skill-directory' || component.kind === 'owned-directory') {
     if (!stats.isDirectory()) return foreignProbe(component, 'typeMismatch');
     const markerPath = path.join(actualPath, SKILL_OWNER_MARKER);
     try {
@@ -506,7 +586,7 @@ async function inspectPathAt(
       return foreignProbe(component, 'unownedContent');
     }
     if (!marker) {
-      const pristine = component.pristineTree && executor?.skillDirectoryMatchesPristineTree
+      const pristine = component.kind === 'skill-directory' && component.pristineTree && executor?.skillDirectoryMatchesPristineTree
         ? await executor.skillDirectoryMatchesPristineTree({
             actualPath,
             files: component.pristineTree,
@@ -554,13 +634,15 @@ function publicOwner(identity: OwnerIdentity): string {
 
 function forceArtifactBasenameMatches(component: Extract<OwnedComponent, OwnedPathComponent>): boolean {
   const basename = path.basename(component.path);
+  if (component.kind === 'owned-directory') return false;
   if (component.kind === 'skill-directory') return basename === component.identity.artifactKey;
   const stem = basename.replace(/\.[^.]+$/u, '');
   const slug = (value: string) => value.trim().toLowerCase()
     .replace(/[^a-z0-9]+/gu, '-')
     .replace(/^-+|-+$/gu, '');
-  return stem === component.identity.artifactKey
-    || stem === `aw-${slug(component.identity.plugin)}-${slug(component.identity.artifactKey)}`;
+  return basename === component.identity.artifactKey || stem === component.identity.artifactKey
+    || stem === `aw-${slug(component.identity.plugin)}-${slug(component.identity.artifactKey)}`
+    || !!component.identity.sourceId && stem === `aw-${slug(component.identity.sourceId)}-${slug(component.identity.plugin)}-${slug(component.identity.artifactKey)}`;
 }
 
 async function inspectForceExclusivePathAt(
@@ -569,6 +651,7 @@ async function inspectForceExclusivePathAt(
   canonicalPath: boolean,
 ): Promise<ComponentProbe> {
   validateOwnerIdentity(component.identity);
+  if (component.kind === 'owned-directory') return foreignProbe(component, 'ownerMismatch');
   if (canonicalPath && !forceArtifactBasenameMatches(component)) {
     return foreignProbe(component, 'ownerMismatch');
   }

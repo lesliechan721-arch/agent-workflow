@@ -1,5 +1,6 @@
 import type { ConfigReferenceContext, ConfigReferenceDraft } from './config-references.js';
-import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
+import { isPlatformTarget, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
+import { agentLabel } from './glossary.js';
 import crypto from 'node:crypto';
 
 import type {
@@ -86,7 +87,7 @@ import {
 } from './operation-history.js';
 import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import { hasStatusInstallationEvidence } from './scoped-inventory.js';
-import { buildScopedInventory, type RecoveryInventoryInput,
+import { buildScopedInventory,
   type ScopedInventoryViewModel, type ScopedInventoryLoadResult, type InventoryRoot } from './scoped-inventory.js';
 import type { ScopedTuiPlan } from './scoped-flow.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
@@ -457,11 +458,12 @@ export interface ConfigOperationEvidence {
   affectedTargets: Array<{ pluginName?: string; platform: PlatformTarget; scope: Scope }>;
   applyEvidence?: unknown;
   applyChanges?: string[];
+  commandReviewChanges?: OperationReviewChange[];
   applyWarnings?: string[];
   applyBlockers?: Array<{ code: string; message: string }>;
   commandPackages?: PluginConfigMutationImpact['affectedCommandPackages'];
   preApplyAuthorization?: PreApplyAuthorizationTarget[];
-  sharedNativeRenderTargets?: Array<{ id: string; pluginName?: string; skillKey: string; refreshKeys: string[]; platform?: PlatformName }>;
+  sharedNativeRenderUnits?: import('../utils/plugin-config-impact.js').PluginConfigImpactSharedNativeRenderUnit[];
   shareability?: 'verified' | 'unverified';
 }
 
@@ -841,7 +843,7 @@ export interface PluginOperationProgressLine {
 }
 
 export interface TuiStatusLoadResult {
-  scopedRecovery?: Partial<Record<Scope, RecoveryInventoryInput & Partial<Pick<ScopedInventoryLoadResult, 'nativeSnapshot'>>>>;
+  scopedRecovery?: Partial<Record<Scope, ScopedInventoryLoadResult>>;
   projectRoot?: string;
   cliChannel?: 'latest' | 'beta';
   payload: StatusV8Payload;
@@ -899,7 +901,7 @@ export interface TuiControllerDependencies {
     scope: Scope;
     kind: 'recovery'; command?: RecoveryCommand; selectors: string[];
     allowDependencySelectors?: boolean;
-    exactTargets?: Array<{ pluginId: string; agent: AgentId }>;
+    exactTargets?: Array<{ pluginId: string; agent: AgentId; scope?: Scope }>;
     targets?: AgentId[]; force?: boolean; refresh?: boolean; retireUnselectedTargets?: boolean;
     dependencyScopeOverrides?: DependencyScopeOverride[];
     saveDependencyScopeOverrides?: boolean; scriptTimeoutMs?: number;
@@ -1728,10 +1730,9 @@ export class TuiController {
         const current = progress.current;
         if (current) {
           const [pluginName, placement = ''] = current.target.split(' · ', 2);
-          const platform = placement.startsWith('Codex') ? 'codex'
-            : placement.startsWith('Claude Code') ? 'claude' : undefined;
+          const platform = PLATFORM_TARGETS.find((candidate) => placement.startsWith(agentLabel(candidate)));
           const scope = placement.endsWith('当前项目') ? 'project'
-            : placement.endsWith('当前用户') ? 'user' : undefined;
+            : placement.endsWith('当前用户') || placement.endsWith('所有项目') ? 'user' : undefined;
           if (pluginName && platform && scope) {
             this.#progressTargets = this.#progressTargets.map((target) =>
               pluginNameFromId(target.pluginId) === pluginName
@@ -2177,10 +2178,31 @@ export class TuiController {
 
   #project(): void {
     if (!this.#status) return;
+    const retainedNativePluginIds = Object.values(this.#status.scopedRecovery ?? {}).flatMap((status) =>
+      (status.extraObserved ?? []).flatMap((extra) => {
+        if (extra.scope !== status.scope || !extra.agent || extra.agent === 'generic' || extra.delivery?.kind !== 'native') return [];
+        const backend = extra.backend && typeof extra.backend === 'object'
+          ? extra.backend as { retainedPackage?: unknown; ownedComponents?: unknown } : undefined;
+        if (backend?.retainedPackage !== true || !Array.isArray(backend.ownedComponents)) return [];
+        const owned = backend.ownedComponents.some((value) => {
+          if (!value || typeof value !== 'object') return false;
+          const component = value as { kind?: unknown; state?: unknown; identity?: { pluginId?: unknown; platform?: unknown; scope?: unknown } };
+          return component.kind === 'owned-directory' && component.state === 'present'
+            && component.identity?.pluginId === extra.pluginId && component.identity.platform === extra.agent
+            && component.identity.scope === extra.scope;
+        });
+        return owned ? [extra.pluginId] : [];
+      }));
     this.#viewModel = buildTuiViewModel({
       status: this.#status.payload,
       pluginSummaries: this.#status.pluginSummaries,
       targetRevisions: this.#status.targetRevisions,
+      recoveryTargets: Object.values(this.#status.scopedRecovery ?? {}).flatMap((status) => [
+        ...(status.inventory ?? []).flatMap((root) => root.targetResults),
+        ...(status.observedTargets ?? []).filter((target) => target.scope === status.scope
+          && (target.providerScope === undefined || target.providerScope === target.scope)),
+      ]),
+      retainedNativePluginIds,
       sourceHealth: this.#health,
       sourceDetails: this.#status.sourceDetails,
       catalogFreshness: this.#catalogFreshness,
@@ -2206,10 +2228,10 @@ export class TuiController {
       }
       this.#scopedInventories[scope] = buildScopedInventory({
         recovery,
-        status: recovery.nativeSnapshot?.payload ?? this.#status.payload,
-        pluginSummaries: recovery.nativeSnapshot?.pluginSummaries ?? this.#viewModel.plugins,
-        targetRevisions: recovery.nativeSnapshot?.targetRevisions ?? this.#status.targetRevisions,
-        dependencyOverviews: recovery.nativeSnapshot?.dependencyOverviews ?? this.#status.dependencyOverviews,
+        status: this.#status.payload,
+        pluginSummaries: this.#viewModel.plugins,
+        targetRevisions: this.#status.targetRevisions,
+        dependencyOverviews: recovery.dependencyOverviews ?? this.#status.dependencyOverviews,
         ...(scope === 'project' && this.#status.projectRoot
           ? { projectRoot: this.#status.projectRoot } : {}),
       });
@@ -2600,12 +2622,12 @@ export class TuiController {
       const recovery = await this.#trackRead(this.dependencies.loadScopedStatus(scope, this.#abort.signal));
       if (this.#disposed || generation !== this.#generation || token !== this.#scopedRefreshToken[scope]) return false;
       const inventory = buildScopedInventory({
-        recovery, status: recovery.nativeSnapshot.payload, pluginSummaries: recovery.nativeSnapshot.pluginSummaries,
-        targetRevisions: recovery.nativeSnapshot.targetRevisions,
-        dependencyOverviews: recovery.nativeSnapshot.dependencyOverviews,
+        recovery, status: { ...this.#status.payload, targets: [] }, pluginSummaries: this.#status.pluginSummaries,
+        dependencyOverviews: recovery.dependencyOverviews ?? this.#status.dependencyOverviews,
         ...(scope === 'project' && this.#status.projectRoot ? { projectRoot: this.#status.projectRoot } : {}),
       });
       this.#status.scopedRecovery = { ...this.#status.scopedRecovery, [scope]: structuredClone(recovery) };
+      this.#project();
       this.#scopedInventories[scope] = inventory;
       this.#lastRefreshedScope = scope;
       this.#scopedInventoryRefresh[scope] = { state: 'idle' };
@@ -3132,8 +3154,8 @@ export class TuiController {
     };
     try {
       const prepared = await this.prepareScopedTask({ kind: 'recovery', command: 'cleanup',
-        scope, selectors: [pluginId], targets: [platform === 'claude' ? 'claude' : 'codex'],
-        exactTargets: [{ pluginId, agent: platform === 'claude' ? 'claude' : 'codex' }], force: true });
+        scope, selectors: [pluginId], targets: [platform],
+        exactTargets: [{ pluginId, agent: platform }], force: true });
       if (prepared.kind !== 'recovery') return undefined;
       try {
         const candidate = prepared.plan.nativeGroups.flatMap((group) =>
@@ -3150,7 +3172,7 @@ export class TuiController {
   }
 
   startForceCleanupReview(candidate: ForceCleanupCandidate): Promise<ScopedTuiPlan> {
-    const agent = candidate.platform === 'claude' ? 'claude' : 'codex';
+    const agent = candidate.platform;
     return this.prepareScopedTask({ kind: 'recovery', command: 'cleanup',
       scope: candidate.scope, selectors: [candidate.pluginId], targets: [agent],
       exactTargets: [{ pluginId: candidate.pluginId, agent }], force: true });
@@ -3727,10 +3749,9 @@ export class TuiController {
       targetRevisions: this.#status.targetRevisions,
       plugins: this.#viewModel.plugins,
       scopedInventories: this.#scopedInventories,
-      scopedSnapshots: {
-        user: this.#status.scopedRecovery?.user?.nativeSnapshot,
-        project: this.#status.scopedRecovery?.project?.nativeSnapshot,
-      },
+      currentScopes: (['user', 'project'] as const).filter((scope) => this.#status!.scopedRecovery?.[scope] !== undefined),
+      dependencyObservations: { user: this.#status.scopedRecovery?.user?.dependencyOverviews,
+        project: this.#status.scopedRecovery?.project?.dependencyOverviews },
       latestScope: this.#lastRefreshedScope,
       dependencyOverviews: this.#status.dependencyOverviews,
     });

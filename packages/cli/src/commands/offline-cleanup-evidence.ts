@@ -22,7 +22,9 @@ export interface OfflineCleanupTargetEvidence {
 
 export interface OfflineCleanupPlanAction {
   action: 'removeOwnedOutput' | 'removeNativeRegistration';
-  kind: 'namespacedOwner' | 'namespacedMarketplace' | 'skill-directory' | 'owned-text-file';
+  kind: 'namespacedOwner' | 'namespacedMarketplace' | 'skill-directory' | 'owned-text-file' | 'owned-directory';
+  component?: OwnedComponent;
+  recoveryCandidate?: import('../platforms/contracts.js').RecoveryCandidate;
   target: string;
   allowedRoot?: string;
   owner?: OwnerIdentity;
@@ -43,7 +45,7 @@ async function pathEvidence(component: Extract<OwnedComponent, { path: string }>
   })).catch((error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
     ? { type: 'absent' }
     : { type: 'error', code: (error as NodeJS.ErrnoException).code ?? 'unknown' });
-  const ownershipPath = component.kind === 'skill-directory'
+  const ownershipPath = component.kind === 'skill-directory' || component.kind === 'owned-directory'
     ? path.join(component.path, '.agent-workflows-owner.json')
     : component.path;
   const ownership = await fs.readFile(ownershipPath).then((content) =>
@@ -62,6 +64,9 @@ export async function forceOfflineCleanupEvidence(options: {
   scope: Scope;
   components: ReadonlyArray<Extract<OwnedComponent, { path: string }>>;
 }): Promise<OfflineCleanupTargetEvidence> {
+  if (options.components.some((component) => component.kind === 'owned-directory')) {
+    throw new Error('forceCleanupNotExclusive: native package directories cannot use force cleanup.');
+  }
   const actions = await Promise.all(options.components.map(async (component): Promise<OfflineCleanupPlanAction> => ({
     action: 'removeOwnedOutput',
     kind: component.kind,
@@ -155,8 +160,7 @@ export function offlineCleanupEvidenceFromInventory(options: {
       || reference.kind === 'namespacedMarketplace')
     && reference.pluginName === options.pluginName
     && reference.sourceId === options.sourceId
-    && (reference.kind === 'namespacedOwner'
-      || reference.sourceIdentity === options.sourceIdentity)
+    && (reference.sourceIdentity ?? reference.ownedComponent?.identity.sourceIdentity) === options.sourceIdentity
     && reference.platform === options.platform
     && reference.scope === options.scope);
   if (references.length === 0) return null;
@@ -181,7 +185,10 @@ export function offlineCleanupEvidenceFromInventory(options: {
         ? 'removeOwnedOutput'
         : 'removeNativeRegistration',
       kind: reference.kind as OfflineCleanupPlanAction['kind'],
-      target: reference.location,
+      target: reference.ownedComponent && 'path' in reference.ownedComponent ? reference.ownedComponent.path : reference.location,
+      ...(reference.ownedComponent ? { component: reference.ownedComponent } : {}),
+      ...(reference.recoveryCandidate ? { recoveryCandidate: reference.recoveryCandidate } : {}),
+      ...(reference.pathEvidence ? { pathEvidence: reference.pathEvidence } : {}),
       ...(reference.marketplaceName ? { marketplaceName: reference.marketplaceName } : {}),
       ...(reference.projectKey !== undefined ? { projectKey: reference.projectKey } : {}),
       ...(reference.pluginVersion ? { pluginVersion: reference.pluginVersion } : {}),

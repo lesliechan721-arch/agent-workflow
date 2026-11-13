@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "decision-kit",
   "version": "0.1.0",
   "description": "主题对齐、可体验决策与项目领域知识维护；按需组合，保留真实确认与清楚的独立职责。",
@@ -10,6 +10,9 @@
     "cursor",
     "opencode",
     "pi",
+    "gemini",
+    "copilot",
+    "grok",
     "generic"
   ],
   "dependencies": [

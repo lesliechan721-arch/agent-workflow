@@ -1,0 +1,1160 @@
+{
+  "schemaVersion": 1,
+  "kind": "finite-native-skills-qualification-evidence",
+  "observationDate": "2026-11-10",
+  "observationTimezone": "Asia/Shanghai",
+  "qualificationBoundary": {
+    "products": "仅列出的精确 CLI 版本、OS 和架构；不覆盖 Desktop 或 App 内置 CLI。",
+    "surface": "仅 Skills 的宿主发现、原生生命周期和 scope 隔离。",
+    "fixture": "本次创建并由真实客户端消费的最小原生包；不是 AW adapter 的端到端安装产物。",
+    "limitations": [
+      "未发送 prompt 或模型请求。",
+      "未验证 Skill 调用控制、工具限制或模型是否采用正文。",
+      "不授予 MCP、Hooks、Instructions 或 Agents 运行资格。",
+      "不外推到其他版本、OS、架构或产品面。",
+      "这是一次性兼容性证据，不是安装账本，也不是普通测试或发布门禁。"
+    ]
+  },
+  "extraction": {
+    "sourceKind": "native-platform-finite-observation",
+    "temporaryPaths": "原报告的临时根已统一替换为 <TEMP_ROOT>；这里保留该符号路径。",
+    "executablePaths": "移除真实用户 home 和可执行文件绝对路径；保留版本输出及原入口文件内容 SHA-256。",
+    "nativeOutput": "stdoutJson 是原 stdout 的 JSON.parse 结果；其余 stdout 保留原字符串。未归档 native stderr。",
+    "rpcOutput": "Codex skills 数组仅保留 fixture pluginId；Pi commands 数组仅保留 fixture Skill。Pi state 仅保留四个运行状态字段。其他选中字段直接取自原报告。",
+    "sourceIndices": "sourceIndex 指向对应原报告的 records 或 rpcRecords 数组索引。"
+  },
+  "isolation": {
+    "temporaryEnvironmentRoots": [
+      "HOME",
+      "USERPROFILE",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "XDG_CACHE_HOME",
+      "XDG_STATE_HOME",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "AW_HOME",
+      "CODEX_HOME",
+      "CLAUDE_CONFIG_DIR",
+      "PI_CODING_AGENT_DIR",
+      "GROK_HOME",
+      "GEMINI_CLI_HOME"
+    ],
+    "temporaryWorkingDirectories": [
+      "workspace",
+      "neutral"
+    ],
+    "credentials": "未提供或复制真实用户凭据；未登录。",
+    "clientInstallation": "仅使用已安装客户端；未下载或升级客户端。",
+    "network": "HTTP/HTTPS/ALL proxy 指向阻断代理；不是 OS 网络沙箱。",
+    "codexTransport": "本次短命隔离 stdio app-server，只读发现请求；未连接已有或远程 server。",
+    "piTransport": "本次短命 stdio RPC，--offline --no-session --no-mcp；仅 get_commands/get_state。"
+  },
+  "profiles": [
+    {
+      "platform": "codex",
+      "product": "cli",
+      "exactVersion": "0.167.0",
+      "environment": {
+        "os": "darwin",
+        "arch": "arm64",
+        "kernel": "25.3.0",
+        "osVersion": "26.3.1",
+        "osBuild": "25D2128",
+        "node": "v24.14.1"
+      },
+      "scopes": [
+        "user",
+        "project"
+      ],
+      "observedAt": "2026-11-09T17:27:37.401Z",
+      "sourceReport": {
+        "filename": "native-qualification-codex-0.167.0.json",
+        "sha256": "1b36f276139013ee0ff15b232759ad37e036b621d9e2fa898858c1c22e31e0f1"
+      },
+      "entryContentSha256": "030316ecfbb41f4e7946e584b0063ef333b7a36cd312ba349f2f6869e39b62cc",
+      "fixture": {
+        "manifestPath": ".codex-plugin/plugin.json",
+        "manifest": {
+          "name": "aw-finite-probe",
+          "version": "1.0.0",
+          "description": "Local offline qualification",
+          "skills": "./skills",
+          "mcpServers": "./.mcp.json",
+          "hooks": "./hooks/hooks.json"
+        },
+        "initialUserConfig": "[marketplaces.aw-finite-qualification]\nsource_type = \"local\"\nsource = \"<TEMP_ROOT>/marketplace\"\n\n[plugins.\"aw-finite-probe@aw-finite-qualification\"]\nenabled = true\n"
+      },
+      "nativeCommandEvidence": [
+        {
+          "sourceIndex": 0,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "--version"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdout": "codex-cli 0.167.0\n"
+        },
+        {
+          "sourceIndex": 1,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "marketplace",
+            "add",
+            "<TEMP_ROOT>/marketplace",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "marketplaceName": "aw-finite-qualification",
+            "installedRoot": "<TEMP_ROOT>/marketplace",
+            "alreadyAdded": false
+          }
+        },
+        {
+          "sourceIndex": 2,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "add",
+            "aw-finite-probe@aw-finite-qualification",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "pluginId": "aw-finite-probe@aw-finite-qualification",
+            "name": "aw-finite-probe",
+            "marketplaceName": "aw-finite-qualification",
+            "version": "1.0.0",
+            "installedPath": "<TEMP_ROOT>/codex/plugins/cache/aw-finite-qualification/aw-finite-probe/1.0.0",
+            "authPolicy": "ON_INSTALL"
+          }
+        },
+        {
+          "sourceIndex": 3,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "list",
+            "--marketplace",
+            "aw-finite-qualification",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "installed": [
+              {
+                "pluginId": "aw-finite-probe@aw-finite-qualification",
+                "name": "aw-finite-probe",
+                "marketplaceName": "aw-finite-qualification",
+                "version": "1.0.0",
+                "installed": true,
+                "enabled": true,
+                "source": {
+                  "source": "local",
+                  "path": "<TEMP_ROOT>/marketplace/plugins/aw-finite-probe"
+                },
+                "marketplaceSource": {
+                  "sourceType": "local",
+                  "source": "<TEMP_ROOT>/marketplace"
+                },
+                "installPolicy": "AVAILABLE",
+                "authPolicy": "ON_INSTALL"
+              }
+            ],
+            "available": []
+          }
+        },
+        {
+          "sourceIndex": 4,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "list",
+            "--marketplace",
+            "aw-finite-qualification",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "installed": [
+              {
+                "pluginId": "aw-finite-probe@aw-finite-qualification",
+                "name": "aw-finite-probe",
+                "marketplaceName": "aw-finite-qualification",
+                "version": "1.0.0",
+                "installed": true,
+                "enabled": false,
+                "source": {
+                  "source": "local",
+                  "path": "<TEMP_ROOT>/marketplace/plugins/aw-finite-probe"
+                },
+                "marketplaceSource": {
+                  "sourceType": "local",
+                  "source": "<TEMP_ROOT>/marketplace"
+                },
+                "installPolicy": "AVAILABLE",
+                "authPolicy": "ON_INSTALL"
+              }
+            ],
+            "available": []
+          }
+        },
+        {
+          "sourceIndex": 9,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "remove",
+            "aw-finite-probe@aw-finite-qualification",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "pluginId": "aw-finite-probe@aw-finite-qualification",
+            "name": "aw-finite-probe",
+            "marketplaceName": "aw-finite-qualification"
+          }
+        },
+        {
+          "sourceIndex": 10,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "list",
+            "--marketplace",
+            "aw-finite-qualification",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "installed": [],
+            "available": []
+          }
+        },
+        {
+          "sourceIndex": 11,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "add",
+            "aw-finite-probe@aw-finite-qualification",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "pluginId": "aw-finite-probe@aw-finite-qualification",
+            "name": "aw-finite-probe",
+            "marketplaceName": "aw-finite-qualification",
+            "version": "1.0.0",
+            "installedPath": "<TEMP_ROOT>/codex/plugins/cache/aw-finite-qualification/aw-finite-probe/1.0.0",
+            "authPolicy": "ON_INSTALL"
+          }
+        },
+        {
+          "sourceIndex": 12,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "remove",
+            "aw-finite-probe@aw-finite-qualification",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "pluginId": "aw-finite-probe@aw-finite-qualification",
+            "name": "aw-finite-probe",
+            "marketplaceName": "aw-finite-qualification"
+          }
+        },
+        {
+          "sourceIndex": 13,
+          "executable": "<CODEX_CLI>",
+          "args": [
+            "plugin",
+            "list",
+            "--marketplace",
+            "aw-finite-qualification",
+            "--json"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdoutJson": {
+            "installed": [],
+            "available": []
+          }
+        }
+      ],
+      "skillsRpcEvidence": [
+        {
+          "sourceIndex": 0,
+          "scenario": "user-default",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/neutral"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/neutral",
+                  "skills": [
+                    {
+                      "name": "aw-finite-probe:aw-finite-probe-skill",
+                      "description": "Isolated native Skill marker revision one.",
+                      "path": "<TEMP_ROOT>/codex/plugins/cache/aw-finite-qualification/aw-finite-probe/1.0.0/skills/aw-finite-probe-skill/SKILL.md",
+                      "scope": "user",
+                      "enabled": true,
+                      "pluginId": "aw-finite-probe@aw-finite-qualification"
+                    }
+                  ],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 2,
+          "scenario": "project-only-project",
+          "cwd": "<TEMP_ROOT>/workspace",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/workspace"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/workspace",
+                  "skills": [
+                    {
+                      "name": "aw-finite-probe:aw-finite-probe-skill",
+                      "description": "Isolated native Skill marker revision one.",
+                      "path": "<TEMP_ROOT>/codex/plugins/cache/aw-finite-qualification/aw-finite-probe/1.0.0/skills/aw-finite-probe-skill/SKILL.md",
+                      "scope": "user",
+                      "enabled": true,
+                      "pluginId": "aw-finite-probe@aw-finite-qualification"
+                    }
+                  ],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 4,
+          "scenario": "project-only-neutral",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/neutral"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/neutral",
+                  "skills": [],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 6,
+          "scenario": "both-project",
+          "cwd": "<TEMP_ROOT>/workspace",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/workspace"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/workspace",
+                  "skills": [
+                    {
+                      "name": "aw-finite-probe:aw-finite-probe-skill",
+                      "description": "Isolated native Skill marker revision one.",
+                      "path": "<TEMP_ROOT>/codex/plugins/cache/aw-finite-qualification/aw-finite-probe/1.0.0/skills/aw-finite-probe-skill/SKILL.md",
+                      "scope": "user",
+                      "enabled": true,
+                      "pluginId": "aw-finite-probe@aw-finite-qualification"
+                    }
+                  ],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 8,
+          "scenario": "both-neutral",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/neutral"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/neutral",
+                  "skills": [
+                    {
+                      "name": "aw-finite-probe:aw-finite-probe-skill",
+                      "description": "Isolated native Skill marker revision one.",
+                      "path": "<TEMP_ROOT>/codex/plugins/cache/aw-finite-qualification/aw-finite-probe/1.0.0/skills/aw-finite-probe-skill/SKILL.md",
+                      "scope": "user",
+                      "enabled": true,
+                      "pluginId": "aw-finite-probe@aw-finite-qualification"
+                    }
+                  ],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 10,
+          "scenario": "user-only-project",
+          "cwd": "<TEMP_ROOT>/workspace",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/workspace"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/workspace",
+                  "skills": [],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 12,
+          "scenario": "user-only-neutral",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/neutral"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/neutral",
+                  "skills": [
+                    {
+                      "name": "aw-finite-probe:aw-finite-probe-skill",
+                      "description": "Isolated native Skill marker revision one.",
+                      "path": "<TEMP_ROOT>/codex/plugins/cache/aw-finite-qualification/aw-finite-probe/1.0.0/skills/aw-finite-probe-skill/SKILL.md",
+                      "scope": "user",
+                      "enabled": true,
+                      "pluginId": "aw-finite-probe@aw-finite-qualification"
+                    }
+                  ],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 14,
+          "scenario": "disabled-project",
+          "cwd": "<TEMP_ROOT>/workspace",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/workspace"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/workspace",
+                  "skills": [],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 16,
+          "scenario": "untrusted-project",
+          "cwd": "<TEMP_ROOT>/workspace",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/workspace"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/workspace",
+                  "skills": [],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 19,
+          "scenario": "removed",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/neutral"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/neutral",
+                  "skills": [],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "sourceIndex": 21,
+          "scenario": "revision-two-reinstalled",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "method": "skills/list",
+          "params": {
+            "cwds": [
+              "<TEMP_ROOT>/neutral"
+            ],
+            "forceReload": true
+          },
+          "exitCode": 0,
+          "response": {
+            "id": 2,
+            "result": {
+              "data": [
+                {
+                  "cwd": "<TEMP_ROOT>/neutral",
+                  "skills": [
+                    {
+                      "name": "aw-finite-probe:aw-finite-probe-skill",
+                      "description": "Isolated native Skill marker revision two.",
+                      "path": "<TEMP_ROOT>/codex/plugins/cache/aw-finite-qualification/aw-finite-probe/1.0.0/skills/aw-finite-probe-skill/SKILL.md",
+                      "scope": "user",
+                      "enabled": true,
+                      "pluginId": "aw-finite-probe@aw-finite-qualification"
+                    }
+                  ],
+                  "errors": []
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "otherObservation": {
+        "sourceIndex": 1,
+        "method": "hooks/list",
+        "hooks": [
+          {
+            "eventName": "sessionStart",
+            "enabled": true,
+            "trustStatus": "untrusted",
+            "pluginId": "aw-finite-probe@aw-finite-qualification"
+          },
+          {
+            "eventName": "subagentStart",
+            "enabled": true,
+            "trustStatus": "untrusted",
+            "pluginId": "aw-finite-probe@aw-finite-qualification"
+          }
+        ]
+      },
+      "limitations": [
+        "No model request. Hook body script executed directly, not by host. MCP registration only; no MCP connect. Agents not probed. Project enabled=false overrides user enabled=true in project cwd.",
+        "project enabled=false 在该项目覆盖 user enabled=true；neutral 仍发现 user Skill。没有宣称旧 0.151.0 完整 activation suite 通过。",
+        "更新证据是源 Skill 改动后的 remove/add 刷新；没有运行不存在的 plugin update 子命令。"
+      ]
+    },
+    {
+      "platform": "pi",
+      "product": "cli",
+      "exactVersion": "1.5.0",
+      "environment": {
+        "os": "darwin",
+        "arch": "arm64",
+        "kernel": "25.3.0",
+        "osVersion": "26.3.1",
+        "osBuild": "25D2128",
+        "node": "v24.14.1"
+      },
+      "scopes": [
+        "user",
+        "project"
+      ],
+      "observedAt": "2026-11-09T17:31:15.660Z",
+      "sourceReport": {
+        "filename": "native-qualification-pi-1.5.0.json",
+        "sha256": "e24a14f69d4418fcf8aa1766843dade6ce5e8e06f8b11fb0568af9de7be42765"
+      },
+      "entryContentSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+      "fixture": {
+        "manifestPath": "package.json",
+        "manifest": {
+          "name": "aw-finite-probe",
+          "version": "1.0.0",
+          "keywords": [
+            "pi-package"
+          ],
+          "pi": {
+            "skills": [
+              "./skills"
+            ],
+            "extensions": [
+              "./extension.mjs"
+            ],
+            "subagents": {
+              "agents": [
+                "./agents"
+              ]
+            }
+          }
+        }
+      },
+      "nativeCommandEvidence": [
+        {
+          "sourceIndex": 0,
+          "executable": "<PI_CLI>",
+          "args": [
+            "--version"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdout": "1.5.0\n"
+        },
+        {
+          "sourceIndex": 1,
+          "executable": "<PI_CLI>",
+          "args": [
+            "install",
+            "<TEMP_ROOT>/package"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdout": "Installing <TEMP_ROOT>/package...\nInstalled <TEMP_ROOT>/package\n"
+        },
+        {
+          "sourceIndex": 2,
+          "executable": "<PI_CLI>",
+          "args": [
+            "list"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdout": "User packages:\n  ../package\n    <TEMP_ROOT>/package\n"
+        },
+        {
+          "sourceIndex": 3,
+          "executable": "<PI_CLI>",
+          "args": [
+            "update",
+            "<TEMP_ROOT>/package"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdout": "Updated <TEMP_ROOT>/package\n"
+        },
+        {
+          "sourceIndex": 4,
+          "executable": "<PI_CLI>",
+          "args": [
+            "remove",
+            "<TEMP_ROOT>/package"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdout": "Removing <TEMP_ROOT>/package...\nRemoved <TEMP_ROOT>/package\n"
+        },
+        {
+          "sourceIndex": 5,
+          "executable": "<PI_CLI>",
+          "args": [
+            "list"
+          ],
+          "cwd": "<TEMP_ROOT>/neutral",
+          "exitCode": 0,
+          "stdout": "No packages installed.\n"
+        },
+        {
+          "sourceIndex": 6,
+          "executable": "<PI_CLI>",
+          "args": [
+            "install",
+            "<TEMP_ROOT>/package",
+            "--local",
+            "--approve"
+          ],
+          "cwd": "<TEMP_ROOT>/workspace",
+          "exitCode": 0,
+          "stdout": "Installing <TEMP_ROOT>/package...\nInstalled <TEMP_ROOT>/package\n"
+        },
+        {
+          "sourceIndex": 7,
+          "executable": "<PI_CLI>",
+          "args": [
+            "list",
+            "--approve"
+          ],
+          "cwd": "<TEMP_ROOT>/workspace",
+          "exitCode": 0,
+          "stdout": "Project packages:\n  ../../package\n    <TEMP_ROOT>/package\n"
+        },
+        {
+          "sourceIndex": 8,
+          "executable": "<PI_CLI>",
+          "args": [
+            "remove",
+            "<TEMP_ROOT>/package",
+            "--local",
+            "--approve"
+          ],
+          "cwd": "<TEMP_ROOT>/workspace",
+          "exitCode": 0,
+          "stdout": "Removing <TEMP_ROOT>/package...\nRemoved <TEMP_ROOT>/package\n"
+        },
+        {
+          "sourceIndex": 9,
+          "executable": "<PI_CLI>",
+          "args": [
+            "list",
+            "--approve"
+          ],
+          "cwd": "<TEMP_ROOT>/workspace",
+          "exitCode": 0,
+          "stdout": "No packages installed.\n"
+        }
+      ],
+      "skillsRpcEvidence": [
+        {
+          "sourceIndex": 0,
+          "scenario": "user-installed",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "args": [
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--offline",
+            "--no-mcp",
+            "--no-context-files",
+            "--approve"
+          ],
+          "exitCode": 0,
+          "responses": [
+            {
+              "id": "commands",
+              "type": "response",
+              "command": "get_commands",
+              "success": true,
+              "data": {
+                "commands": [
+                  {
+                    "name": "skill:finite-skill",
+                    "description": "Native qualification Skill revision one.",
+                    "source": "skill",
+                    "sourceInfo": {
+                      "path": "<TEMP_ROOT>/package/skills/finite-skill/SKILL.md",
+                      "source": "../package",
+                      "scope": "user",
+                      "origin": "package",
+                      "baseDir": "<TEMP_ROOT>/package"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "state",
+              "type": "response",
+              "command": "get_state",
+              "success": true,
+              "data": {
+                "isStreaming": false,
+                "isCompacting": false,
+                "messageCount": 0,
+                "pendingMessageCount": 0
+              }
+            }
+          ]
+        },
+        {
+          "sourceIndex": 1,
+          "scenario": "user-updated",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "args": [
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--offline",
+            "--no-mcp",
+            "--no-context-files",
+            "--approve"
+          ],
+          "exitCode": 0,
+          "responses": [
+            {
+              "id": "commands",
+              "type": "response",
+              "command": "get_commands",
+              "success": true,
+              "data": {
+                "commands": [
+                  {
+                    "name": "skill:finite-skill",
+                    "description": "Native qualification Skill revision two.",
+                    "source": "skill",
+                    "sourceInfo": {
+                      "path": "<TEMP_ROOT>/package/skills/finite-skill/SKILL.md",
+                      "source": "../package",
+                      "scope": "user",
+                      "origin": "package",
+                      "baseDir": "<TEMP_ROOT>/package"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "state",
+              "type": "response",
+              "command": "get_state",
+              "success": true,
+              "data": {
+                "isStreaming": false,
+                "isCompacting": false,
+                "messageCount": 0,
+                "pendingMessageCount": 0
+              }
+            }
+          ]
+        },
+        {
+          "sourceIndex": 2,
+          "scenario": "user-removed",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "args": [
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--offline",
+            "--no-mcp",
+            "--no-context-files",
+            "--approve"
+          ],
+          "exitCode": 0,
+          "responses": [
+            {
+              "id": "commands",
+              "type": "response",
+              "command": "get_commands",
+              "success": true,
+              "data": {
+                "commands": []
+              }
+            },
+            {
+              "id": "state",
+              "type": "response",
+              "command": "get_state",
+              "success": true,
+              "data": {
+                "isStreaming": false,
+                "isCompacting": false,
+                "messageCount": 0,
+                "pendingMessageCount": 0
+              }
+            }
+          ]
+        },
+        {
+          "sourceIndex": 3,
+          "scenario": "project-trusted",
+          "cwd": "<TEMP_ROOT>/workspace",
+          "args": [
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--offline",
+            "--no-mcp",
+            "--no-context-files",
+            "--approve"
+          ],
+          "exitCode": 0,
+          "responses": [
+            {
+              "id": "commands",
+              "type": "response",
+              "command": "get_commands",
+              "success": true,
+              "data": {
+                "commands": [
+                  {
+                    "name": "skill:finite-skill",
+                    "description": "Native qualification Skill revision two.",
+                    "source": "skill",
+                    "sourceInfo": {
+                      "path": "<TEMP_ROOT>/package/skills/finite-skill/SKILL.md",
+                      "source": "../../package",
+                      "scope": "project",
+                      "origin": "package",
+                      "baseDir": "<TEMP_ROOT>/package"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "state",
+              "type": "response",
+              "command": "get_state",
+              "success": true,
+              "data": {
+                "isStreaming": false,
+                "isCompacting": false,
+                "messageCount": 0,
+                "pendingMessageCount": 0
+              }
+            }
+          ]
+        },
+        {
+          "sourceIndex": 4,
+          "scenario": "project-neutral",
+          "cwd": "<TEMP_ROOT>/neutral",
+          "args": [
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--offline",
+            "--no-mcp",
+            "--no-context-files",
+            "--approve"
+          ],
+          "exitCode": 0,
+          "responses": [
+            {
+              "id": "commands",
+              "type": "response",
+              "command": "get_commands",
+              "success": true,
+              "data": {
+                "commands": []
+              }
+            },
+            {
+              "id": "state",
+              "type": "response",
+              "command": "get_state",
+              "success": true,
+              "data": {
+                "isStreaming": false,
+                "isCompacting": false,
+                "messageCount": 0,
+                "pendingMessageCount": 0
+              }
+            }
+          ]
+        },
+        {
+          "sourceIndex": 5,
+          "scenario": "project-untrusted",
+          "cwd": "<TEMP_ROOT>/workspace",
+          "args": [
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--offline",
+            "--no-mcp",
+            "--no-context-files",
+            "--no-approve"
+          ],
+          "exitCode": 0,
+          "responses": [
+            {
+              "id": "commands",
+              "type": "response",
+              "command": "get_commands",
+              "success": true,
+              "data": {
+                "commands": []
+              }
+            },
+            {
+              "id": "state",
+              "type": "response",
+              "command": "get_state",
+              "success": true,
+              "data": {
+                "isStreaming": false,
+                "isCompacting": false,
+                "messageCount": 0,
+                "pendingMessageCount": 0
+              }
+            }
+          ]
+        },
+        {
+          "sourceIndex": 6,
+          "scenario": "project-removed",
+          "cwd": "<TEMP_ROOT>/workspace",
+          "args": [
+            "--mode",
+            "rpc",
+            "--no-session",
+            "--offline",
+            "--no-mcp",
+            "--no-context-files",
+            "--approve"
+          ],
+          "exitCode": 0,
+          "responses": [
+            {
+              "id": "commands",
+              "type": "response",
+              "command": "get_commands",
+              "success": true,
+              "data": {
+                "commands": []
+              }
+            },
+            {
+              "id": "state",
+              "type": "response",
+              "command": "get_state",
+              "success": true,
+              "data": {
+                "isStreaming": false,
+                "isCompacting": false,
+                "messageCount": 0,
+                "pendingMessageCount": 0
+              }
+            }
+          ]
+        }
+      ],
+      "otherObservation": {
+        "sourceField": "extensionEvents",
+        "extensionEvents": [
+          {
+            "type": "setup"
+          },
+          {
+            "type": "session_start",
+            "reason": "startup"
+          },
+          {
+            "type": "session_shutdown"
+          },
+          {
+            "type": "setup"
+          },
+          {
+            "type": "session_start",
+            "reason": "startup"
+          },
+          {
+            "type": "session_shutdown"
+          },
+          {
+            "type": "setup"
+          },
+          {
+            "type": "session_start",
+            "reason": "startup"
+          },
+          {
+            "type": "session_shutdown"
+          }
+        ]
+      },
+      "limitations": [
+        "No prompt command sent. get_commands and get_state only. Skills and custom extension command discovery; extension session_start Hook observed via own temporary log. before_agent_start Instructions handler not invoked. MCP disabled. Community Agents consumer absent; declaration alone does not provide Agents.",
+        "project --approve 仅授予本次自有临时 fixture 的信任；--no-approve 和 neutral 均不发现该项目 Skill。",
+        "本地包是引用来源。更新后新宿主进程返回 revision two；没有 npm、git 或客户端自更新证据。"
+      ]
+    }
+  ]
+}

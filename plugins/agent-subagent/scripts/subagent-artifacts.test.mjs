@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,19 +6,28 @@ import { fileURLToPath } from 'node:url';
 import { CONFIG_KEYS, SKILL_CONFIG_KEYS, renderArtifactPlan } from './render-artifacts.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const codexIds = ['spawn-subagent-skill', 'subagent-role'];
 const sourceManifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
 const defaultValues = Object.fromEntries(Object.entries(sourceManifest.config.fields)
   .filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default]));
-function context(values = {}, platform = 'codex', scope = 'user') {
-  const id = platform === 'codex' ? codexIds[0] : 'spawn-subagent-claude-skill';
-  const staged = path.join(root, '.agents-plugin/artifact-sources', platform, id, '0');
-  const source = existsSync(staged) ? staged : path.join(root, 'skills/spawn-subagent');
-  return { platform, scope, requestedArtifactIds: platform === 'codex' ? codexIds : [id],
-    artifactSources: [{ id, target: `${platform}.skill`, sourceDirs: [source] }],
+// This profile controls script tests only and does not qualify a real client.
+function context(values = {}, platform = 'codex', scope = 'user', allowedOutputKinds = ['skill', 'agent']) {
+  return { schemaVersion: 1, surface: 'agent-plugin', platform, scope, allowedOutputKinds,
+    changedConfigKeys: [], previousComponents: [],
+    resources: [{ kind: 'bundle', name: './skills/spawn-subagent', root: path.join(root, 'skills/spawn-subagent'), digest: 'test-resource' }],
+    platformCapabilities: { schemaVersion: 1, platform, scope, basis: 'profile', profileId: 'script-test', consumers: [],
+      kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
+        { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])),
+      features: { 'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },
+        'agent.prompt-mode': { status: 'supported', reasonCodes: [], values: ['host-default'] },
+        'agent.declaration-protocol': { status: 'supported', reasonCodes: [], values: ['aw.pi.agents.v1'] },
+        'skill.runtime-config': { status: 'supported', reasonCodes: [], values: ['aw.installed-runtime-config.v2'] } } },
     config: { values: { ...structuredClone(defaultValues), ...values } } };
 }
-function files(plan) { return plan.artifacts.find((item) => item.kind === 'skill').content.files; }
+async function files(plan) {
+  const resources = plan.components.find((item) => item.kind === 'skill').content.files;
+  return Object.fromEntries(await Promise.all(Object.entries(resources).map(async ([name, value]) => [name,
+    'text' in value ? value.text : await readFile(path.join(root, value.source.path), 'utf8')])));
+}
 function rows(text, first) {
   const lines = text.split('\n'), start = lines.findIndex((line) => line.startsWith(first));
   if (start < 0) return [];
@@ -78,27 +86,17 @@ test('owns generic configuration, optional native overrides and Codex command pr
   assert.deepEqual(presentation.groups.find((group) => group.id === 'executors'), {
     id: 'executors', title: '外部执行器', fields: ['subagentCommands', 'subagentRetentionHours'], advanced: true,
   });
-  assert.deepEqual(manifest.platforms, ['codex', 'claude']);
+  assert.equal(manifest.schemaVersion, 4);
+  assert.ok(manifest.platforms.includes('pi'));
+  assert.ok(manifest.platforms.includes('grok'));
   assert.equal(Object.hasOwn(manifest.marketplace.policy, 'products'), false);
-  assert.deepEqual(manifest.artifacts.targets.map((target) => target.id), [...codexIds, 'spawn-subagent-claude-skill']);
-  for (const target of manifest.artifacts.targets) {
-    const expectedScopes = process.env.AW_PLUGIN_CONTEXT && target.target.endsWith('.skill')
-      ? ['user'] : ['user', 'project'];
-    assert.deepEqual(target.scopes, expectedScopes);
-    if (target.target.endsWith('.skill')) {
-      assert.deepEqual(target.sourceDirs, ['./skills/spawn-subagent']);
-      assert.deepEqual(target.refreshKeys, SKILL_CONFIG_KEYS['spawn-subagent']);
-    }
-    if (target.target === 'codex.skill') {
-      assert.equal(Object.hasOwn(target, 'delivery'), false);
-      assert.deepEqual(target.runtimeConfig, { keys: ['subagentCommands', 'subagentRetentionHours'] });
-    }
-    if (target.platform === 'claude') assert.deepEqual(target.runtimeConfig, { keys: ['subagentCommands', 'subagentRetentionHours'] });
-  }
+  assert.deepEqual(manifest.artifacts.configKeys, SKILL_CONFIG_KEYS['spawn-subagent']);
+  assert.deepEqual(manifest.artifacts.sourceDirs, ['./skills/spawn-subagent']);
+  assert.equal(Object.hasOwn(manifest.artifacts, 'targets'), false);
   assert.deepEqual(manifest.managedCommands.packages ?? [], []);
   assert.deepEqual(manifest.managedCommands.sets.map((set) => set.set), ['guide', 'guide-communication', 'guide-claude', 'guide-communication-claude']);
   for (const set of manifest.managedCommands.sets) {
-    assert.deepEqual(set.producer, { kind: 'artifact', artifactId: set.set.endsWith('-claude') ? 'spawn-subagent-claude-skill' : 'spawn-subagent-skill' });
+    assert.deepEqual(set.producer, { kind: 'artifact', platform: set.set.endsWith('-claude') ? 'claude' : 'codex', artifactId: set.set.endsWith('-claude') ? 'spawn-subagent-claude-skill' : 'spawn-subagent-skill' });
   }
   const communicationEntries = manifest.managedCommands.sets[1].entries;
   assert.equal(communicationEntries.length, 1);
@@ -121,13 +119,13 @@ test('owns generic configuration, optional native overrides and Codex command pr
 
 // Test Value Gate: the rendered configuration must not invent native overrides or leak backend settings.
 test('renders default inheritance, custom ordering, escaping and fixed adapter modes', async () => {
-  const baseline = files(await renderArtifactPlan(context()));
+  const baseline = await files(await renderArtifactPlan(context()));
   assert.deepEqual(rows(baseline['references/execution-profiles.md'], '| 档位 |').map((row) => row.slice(2)),
     Array.from({ length: 4 }, () => ['native', '宿主默认', '宿主默认']));
   assert.deepEqual(rows(baseline['SKILL.md'], '| 档位 |'), []);
   const applicability = '数据库|锁`\n<details>';
   const key = 'service|`<alias>';
-  const configured = files(await renderArtifactPlan(context({
+  const configured = await files(await renderArtifactPlan(context({
     generalTaskProfile: { executor: 'external' }, complexTaskProfile: { executor: 'native', model: 'one-model' },
     taskCustomProfiles: [{ applicability, executor: 'external' }, { applicability: '第二项' }],
     subagentCommands: [{ key, adapter: 'oracle', envFrom: { SECRET: 'HOST_SECRET' } },
@@ -145,7 +143,7 @@ test('renders default inheritance, custom ordering, escaping and fixed adapter m
   assert.equal(configured['references/external-delegation.md'].includes('/not-invoked/adapter'), false);
   assert.equal(configured['SKILL.md'], baseline['SKILL.md']);
   for (const body of Object.values(configured)) assert.doesNotMatch(body, /<!-- (?:generic-profiles|subagent-commands|subagent-retention|platform-status|codex-execution)/);
-  const refreshed = files(await renderArtifactPlan(context({ subagentCommands: [] })));
+  const refreshed = await files(await renderArtifactPlan(context({ subagentCommands: [] })));
   assert.deepEqual(rows(refreshed['references/external-delegation.md'], '| key |'), []);
 });
 
@@ -153,21 +151,21 @@ test('renders default inheritance, custom ordering, escaping and fixed adapter m
 test('projects the common method and runtime to both platforms and scopes', async () => {
   for (const scope of ['user', 'project']) {
     const codex = await renderArtifactPlan(context({}, 'codex', scope));
-    const generic = codex.artifacts.find((artifact) => artifact.id === 'subagent-role');
-    assert.equal(generic.roleKey, 'subagent');
-    assert.equal(generic.content.roleFile.developer_instructions, files(codex)['assets/task-instructions.md']);
-    assert.equal(Object.hasOwn(generic.content.roleFile, 'model'), false);
+    const generic = codex.components.find((artifact) => artifact.id === 'subagent-role');
+    assert.equal(generic.name, 'subagent');
+    assert.equal(generic.content.prompt, (await files(codex))['assets/task-instructions.md']);
+    assert.equal(Object.hasOwn(generic.content, 'model'), false);
     const claude = await renderArtifactPlan(context({}, 'claude', scope));
-    assert.deepEqual(claude.artifacts.map((artifact) => artifact.id), ['spawn-subagent-claude-skill']);
-    const restored = Object.fromEntries(Object.entries(files(claude)).map(([name, body]) => [name,
+    assert.deepEqual(claude.components.map((artifact) => artifact.id), ['spawn-subagent-claude-skill', 'subagent-role']);
+    const restored = Object.fromEntries(Object.entries(await files(claude)).map(([name, body]) => [name,
       body.replaceAll('aw.command:guide-claude/', 'aw.command:guide/').replaceAll('aw.command:guide-communication-claude/', 'aw.command:guide-communication/')]));
-    assert.deepEqual(restored, files(codex));
+    assert.deepEqual(restored, await files(codex));
   }
 });
 
 // Test Value Gate: installed content must contain the referenced module and document closure.
 test('Codex delivered resources retain their module and document closure', async () => {
-  const output = files(await renderArtifactPlan(context()));
+  const output = await files(await renderArtifactPlan(context()));
   for (const entry of ['subagent.mjs', 'worker.mjs', 'scan-expired.mjs', 'message.mjs', 'message-mcp.mjs',
     'adapters/codex-v5.mjs', 'adapters/codex-profile.mjs', 'adapters/claude-code-v5.mjs', 'adapters/antigravity-v5.mjs', 'adapters/oracle-v5.mjs']) {
     assert.equal(typeof output[`scripts/${entry}`], 'string');
@@ -184,22 +182,36 @@ test('Codex delivered resources retain their module and document closure', async
   }
 });
 
-// Test Value Gate: malformed requests must not widen the delivered artifact set or read specialist config.
-test('returns exact subsets and rejects invalid platform targets', async () => {
-  const input = context();
-  Object.defineProperty(input.config.values, 'advisorGeneralProfile', { get() { throw new Error('read specialist'); } });
-  const plan = await renderArtifactPlan(input);
-  for (const id of codexIds) {
-    const subset = { ...input, requestedArtifactIds: [id] };
-    if (id === 'subagent-role') Object.defineProperty(subset, 'config', { get() { throw new Error('role read config'); } });
-    assert.deepEqual(await renderArtifactPlan(subset), { version: 2, artifacts: [plan.artifacts.find((artifact) => artifact.id === id)] });
+// Test Value Gate: complete batches do not depend on changed keys; unavailable consumers
+// and command closures stay unmet without a fabricated executor or model mapping.
+test('honors batch permissions, full sets and explicit dependency gaps', async () => {
+  const input = context({}, 'codex', 'user', ['skill']);
+  input.changedConfigKeys = ['subagentRetentionHours'];
+  assert.deepEqual((await renderArtifactPlan(input)).components.map((item) => item.id), ['spawn-subagent-skill']);
+  const roles = context({}, 'codex', 'user', ['agent']);
+  Object.defineProperty(roles, 'config', { get() { throw new Error('role read config'); } });
+  assert.deepEqual((await renderArtifactPlan(roles)).components.map((item) => item.id), ['subagent-role']);
+  for (const platform of ['antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok']) {
+    const plan = await renderArtifactPlan(context({}, platform));
+    assert.deepEqual(plan.components.map((item) => item.id), ['subagent-role']);
+    assert.deepEqual(plan.unmet, [{ id: 'spawn-subagent-skill', kind: 'skill', name: 'spawn-subagent',
+      requiredFeatures: [], reasonCode: 'dependency-unmet' }]);
+    assert.doesNotMatch(JSON.stringify(plan.components), /registerTool|spawn_agent|gpt-/);
   }
-  for (const requestedArtifactIds of [[], ['subagent-role', 'subagent-role'], ['unknown']]) {
-    await assert.rejects(renderArtifactPlan({ platform: 'codex', requestedArtifactIds }));
-  }
-  await assert.rejects(renderArtifactPlan({ ...context({}, 'claude'), requestedArtifactIds: codexIds }));
+  const pi = context({}, 'pi', 'user', ['agent']);
+  pi.platformCapabilities.kinds.agent = { status: 'unsupported', reasonCodes: ['consumer-missing'], delivery: ['native-package'] };
+  pi.platformCapabilities.features['agent.execution'] = { status: 'unsupported', reasonCodes: ['consumer-missing'], values: [] };
+  assert.deepEqual(await renderArtifactPlan(pi), { version: 3, components: [], omitted: [], unmet: [{
+    id: 'subagent-role', kind: 'agent', name: 'subagent', reasonCode: 'consumer-missing',
+    requiredFeatures: [{ feature: 'component.kind.agent' }, { feature: 'agent.execution', values: ['isolated-context'] }],
+  }] });
+  const noRuntime = context({}, 'claude', 'user', ['skill']);
+  noRuntime.platformCapabilities.features['skill.runtime-config'] = { status: 'unverified', reasonCodes: ['capability-unverified'], values: [] };
+  assert.deepEqual((await renderArtifactPlan(noRuntime)).unmet[0].requiredFeatures,
+    [{ feature: 'skill.runtime-config', values: ['aw.installed-runtime-config.v2'] }]);
   await assert.rejects(renderArtifactPlan({ ...context(), platform: 'other' }));
   await assert.rejects(renderArtifactPlan({ ...context(), platform: undefined }));
+  await assert.rejects(renderArtifactPlan({ ...context(), surface: 'agent-commands' }), /surface=agent-plugin/);
   const incomplete = context();
   delete incomplete.config.values.generalTaskProfile;
   await assert.rejects(renderArtifactPlan(incomplete), /Missing resolved config value: generalTaskProfile/);

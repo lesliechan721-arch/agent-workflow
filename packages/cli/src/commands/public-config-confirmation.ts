@@ -1,5 +1,5 @@
 import type { Confirmation } from '../output/public-result.js';
-import { analyzePluginConfigMutationImpact, type PluginConfigImpactMutation } from '../utils/plugin-config-impact.js';
+import { analyzePluginConfigMutationImpact, pluginSharedNativeConfigRenderUnits, type PluginConfigImpactMutation } from '../utils/plugin-config-impact.js';
 import { preparePluginConfigApply, disposePluginConfigApply, resolveConfigPreApplyAuthorization, type ApplyPluginConfigOptions } from '../utils/plugin-config-write.js';
 import { resolvePluginConfigReferencePlugins } from '../utils/plugin-config-references.js';
 import type { ReceiptTargetIdentity } from '../types.js';
@@ -17,14 +17,14 @@ export async function preparePublicConfigConfirmation(options: ApplyPluginConfig
     const requested = prepared.plan.receipt.requestedTargets.filter((target) => !prepared.plan.receipt.targetResults.some((result) =>
       result.pluginId === target.pluginId && result.agent === target.agent && result.scope === target.scope
       && (result.satisfaction === 'unsupported' || result.satisfaction === 'excluded')));
-    const native: ReceiptTargetIdentity[] = requested.flatMap((target) => target.agent === 'codex' || target.agent === 'claude'
+    const native: ReceiptTargetIdentity[] = requested.flatMap((target) => target.agent !== 'generic'
       ? [{ pluginName: target.pluginId.split('/').at(-1)!, pluginId: target.pluginId, platform: target.agent, scope: target.scope }] : []);
     const impact = options.mutation ? await analyzePluginConfigMutationImpact({ plugin: options.plugin,
       scope: options.context ?? options.scope, platform: options.platform, cwd: options.cwd, env: options.env,
       visibleTargets: native, mutation: options.mutation, referencePlugins,
       commandDiscovery: { packages: prepared.commandPackages, errors: prepared.commandDiscoveryErrors } }) : undefined;
     const effects: Confirmation['effects'] = [];
-    const affected = impact ? requested.filter((target) => target.agent !== 'codex' && target.agent !== 'claude'
+    const affected = impact ? requested.filter((target) => target.agent === 'generic'
       ? impact.storeChanged : impact.affectedTargets.some((candidate) => candidate.pluginId === target.pluginId && candidate.platform === target.agent && candidate.scope === target.scope)) : requested;
     const authorization = await resolveConfigPreApplyAuthorization({
       ...options,
@@ -41,10 +41,10 @@ export async function preparePublicConfigConfirmation(options: ApplyPluginConfig
     }
     for (const target of affected) {
       const plugin = referencePlugins.find((entry) => entry.pluginId === target.pluginId) ?? options.plugin;
-      const scripted = target.agent !== 'codex' && target.agent !== 'claude'
+      const scripted = target.agent === 'generic'
         && (plugin.manifest.scripts?.preApply !== undefined || prepared.preApplyAuthorization.some((entry) => entry.pluginId === target.pluginId && entry.platform === target.agent && entry.scope === target.scope));
       if (scripted) effects.push({ code: 'runPreApply', message: 'Run the plugin preApply script before applying configuration.', subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope }, impact: 'unknown' });
-      if (target.agent === 'codex' && (impact === undefined || impact.sharedNativeRenderTargets.some((entry) => (entry.pluginName ?? options.plugin.manifest.name) === plugin.manifest.name && (entry.platform ?? 'codex') === target.agent))) {
+      if ((impact?.sharedNativeRenderUnits ?? pluginSharedNativeConfigRenderUnits(plugin)).some((entry) => entry.pluginName === plugin.manifest.name && entry.platform === target.agent)) {
         effects.push({ code: 'replaceSharedOutput', message: 'Refresh the shared native output with the proposed configuration.', subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope }, impact: 'shared' });
       }
     }

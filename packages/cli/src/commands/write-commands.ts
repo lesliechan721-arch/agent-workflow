@@ -34,6 +34,8 @@ export function mergeWriteCommandResults(
   results: readonly RebuildCommandResult[],
 ): RebuildCommandResult {
   const operationPlans = results.flatMap((result) => result.operationPlan ? [result.operationPlan] : []);
+  const deploymentExclusions = results.flatMap((result) => result.deploymentExclusions
+    ?? result.rebuildResults.flatMap((entry) => entry.deploymentExclusions ?? []));
   const dependencyPlans = results.flatMap((result) => result.dependencyPlan ? [result.dependencyPlan] : []);
   const dependencyPlan: ReconcileOperationPlan | undefined = dependencyPlans.length > 0
     ? {
@@ -47,6 +49,7 @@ export function mergeWriteCommandResults(
       }
     : undefined;
   return {
+    ...(deploymentExclusions.length ? { deploymentExclusions } : {}),
     platforms: [...new Set(results.flatMap((result) => result.platforms))],
     plugins: [...new Set(results.flatMap((result) => result.plugins))],
     warnings: results.flatMap((result) => result.warnings),
@@ -66,6 +69,9 @@ export function mergeWriteCommandResults(
       : {}),
     ...(operationPlans.length > 0 ? {
       operationPlan: createOperationPlan({
+        deploymentExclusions: operationPlans.flatMap((plan) => plan.deploymentExclusions ?? []),
+        deploymentPlans: operationPlans.flatMap((plan) => plan.deploymentPlans ?? []),
+        nativeToolChanges: operationPlans.flatMap((plan) => plan.nativeToolChanges ?? []),
         intentChanges: operationPlans.flatMap((plan) => plan.intentChanges),
         actions: operationPlans.flatMap((plan) => plan.actions),
         changes: operationPlans.flatMap((plan) => plan.changes),
@@ -118,6 +124,9 @@ export function failedWriteCommandResult(
   error: unknown,
 ): RebuildCommandResult {
   const message = error instanceof Error ? error.message : String(error);
+  const rawExclusions = error && typeof error === 'object' ? (error as { deploymentExclusions?: unknown }).deploymentExclusions : undefined;
+  const deploymentExclusions = Array.isArray(rawExclusions)
+    ? rawExclusions as NonNullable<RebuildCommandResult['deploymentExclusions']> : [];
   const codedError = (error as { code?: unknown }).code;
   const errorCode = typeof codedError === 'string' && /^[A-Za-z][A-Za-z0-9]*$/u.test(codedError)
     ? codedError
@@ -172,36 +181,42 @@ export function failedWriteCommandResult(
       pluginId = 'pluginId' in resolvedTarget ? resolvedTarget.pluginId : undefined;
     }
     const targetPlatforms = resolvedTarget?.platform ? [resolvedTarget.platform] : platforms;
-    return targetPlatforms.map((platform) => ({
-      status: 'failed' as const,
-      command,
-      target: {
-        pluginName,
-        pluginVersion: resolvedTarget && 'pluginVersion' in resolvedTarget
-          ? resolvedTarget.pluginVersion ?? 'unavailable'
-          : 'unavailable',
-        ...(sourceId ? {
-          sourceId,
-          pluginId,
-          ...(resolvedTarget && 'sourceIdentity' in resolvedTarget
-            ? { sourceIdentity: resolvedTarget.sourceIdentity }
-            : {}),
-        } : {}),
-        platform,
-        scope: resolvedTarget?.scope ?? options.scope,
-        cwd: options.cwd,
-      },
-      actions: [],
-      cleanupAttempted: false,
-      removed: [],
-      absent: [],
-      residual: [],
-      quarantined: [],
-      failures: [{ phase: 'preflight' as const, message }],
-      error: { phase: 'preflight' as const, message },
-    }));
+    return targetPlatforms.map((platform) => {
+      const exclusions = deploymentExclusions.filter((entry) => entry.pluginId === (pluginId ?? selector)
+        && entry.platform === platform && entry.scope.kind === (resolvedTarget?.scope ?? options.scope));
+      return {
+        ...(exclusions.length ? { deploymentExclusions: exclusions } : {}),
+        status: 'failed' as const,
+        command,
+        target: {
+          pluginName,
+          pluginVersion: resolvedTarget && 'pluginVersion' in resolvedTarget
+            ? resolvedTarget.pluginVersion ?? 'unavailable'
+            : 'unavailable',
+          ...(sourceId ? {
+            sourceId,
+            pluginId,
+            ...(resolvedTarget && 'sourceIdentity' in resolvedTarget
+              ? { sourceIdentity: resolvedTarget.sourceIdentity }
+              : {}),
+          } : {}),
+          platform,
+          scope: resolvedTarget?.scope ?? options.scope,
+          cwd: options.cwd,
+        },
+        actions: [],
+        cleanupAttempted: false,
+        removed: [],
+        absent: [],
+        residual: [],
+        quarantined: [],
+        failures: [{ phase: 'preflight' as const, message }],
+        error: { phase: 'preflight' as const, message },
+      };
+    });
   });
   return {
+    ...(deploymentExclusions.length ? { deploymentExclusions } : {}),
     platforms: [...new Set(rebuildResults.map((result) => result.target.platform))],
     plugins: [],
     warnings: [],

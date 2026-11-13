@@ -16,7 +16,7 @@ aw plugin install aw-development-toolkit --scope user
 
 分析 AW Skill 的职责时可以只读源码；检查实际平台内容时核对匹配的 final，缺少时按任务授权准备隔离副本。准备可能运行必要的 build/renderer，明确的静态读取限制优先。
 
-为通用方法准备完整包使用 `aw dev review prepare`；导出标准 Agent Skills 使用 `aw dev skill export --platform`，明确选择具体 Portable 平台并核对插件支持集合。两种用途分别核对其 source、配置和实际产物，不要求先创建 Eval。
+为通用方法准备完整包使用 `aw dev review prepare`；导出标准 Agent Skills 使用 `aw dev skill export --platform`，明确选择具体平台 profile并核对插件支持集合。两种用途分别核对其 source、配置和实际产物，不要求先创建 Eval。
 
 Skill 内容设计使用通用 Author。用户显式启动的 Reviewer 与 Simplifier 可采用 AW 来源和物化方法，仍各自负责质量判断、候选与接受标准。采用 AW 方法不会自动运行专项工作流或模型 Eval。报告按当前任务交付，不作为插件发布门禁。
 

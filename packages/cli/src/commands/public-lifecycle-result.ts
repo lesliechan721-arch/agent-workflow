@@ -4,6 +4,36 @@ import type { NativeToolChange } from '../utils/native-tool-review.js';
 import type { CommandResult, Confirmation, Diagnostic } from '../output/public-result.js';
 import { commandResult, safePublicMessage } from '../output/public-result.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
+import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
+import { identityDigest } from '../platforms/identity.js';
+import type { ComponentUnmet, ComponentOmission, PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
+import { geminiConsentMessages } from '../platforms/gemini-consent.js';
+
+export interface PublicDeploymentPlan {
+  bindingId: string;
+  physicalKey: string;
+  products: ProductInstallation[];
+  expected: { components: Array<Pick<PluginComponent, 'id' | 'kind' | 'name'>>; omitted: ComponentOmission[]; unmet: ComponentUnmet[] };
+  effects: PlannedEffect[];
+  sharedReferences: FrozenDeploymentPlan['evidence']['sharedReferences'];
+}
+
+export interface PublicDeploymentResult extends Omit<DeploymentReceipt, 'after'> {
+  products: ProductInstallation[];
+  after: Pick<DeploymentObservation, 'physicalKey' | 'package' | 'registration' | 'ownership' | 'consumers' | 'components' | 'nativeIdentity'> & {
+    prerequisites?: { nativeSources: {
+      observation: 'complete' | 'unknown'; configurationEvidence: string;
+      sources: Array<Omit<NonNullable<DeploymentObservation['prerequisites']['nativeSources']>['sources'][number], 'path'>>;
+      overlaps: string[];
+    } };
+  };
+}
+export type PublicDeploymentObservation = Pick<PublicDeploymentResult, 'bindingId' | 'products' | 'after'>;
+export type PublicDeploymentExclusion = Omit<DeploymentExclusion, 'scope' | 'product'> & {
+  scope: Scope;
+  product: Pick<ProductInstallation, 'id' | 'product' | 'version' | 'availability' | 'reasonCodes'> | null;
+};
+export type PublicComponentGap = ComponentUnmet & { providerPluginId: string; agent: 'generic'; renderScope: Scope };
 
 export interface PublicTargetResult {
   pluginId: string;
@@ -19,11 +49,16 @@ export interface PublicTargetResult {
   requirementScope?: Scope;
   providerScope?: Scope;
   satisfaction?: RecoveryTarget['satisfaction'];
+  deploymentReceipts?: PublicDeploymentResult[];
+  deploymentPlans?: PublicDeploymentPlan[];
+  deploymentObservations?: PublicDeploymentObservation[];
+  deploymentExclusions?: PublicDeploymentExclusion[];
+  componentGaps?: PublicComponentGap[];
 }
 
 export interface LifecycleData {
   request: { plugins: string[]; scope: Scope | null; context: Scope; targets: string[];
-    targetOrigin: 'argument' | 'preference' | 'none'; mode: 'apply' | 'requirements-only' | 'outputs-only' };
+    targetOrigin: 'argument' | 'preference' | 'none'; mode: 'apply' | 'requirements-only' | 'outputs-only'; nativeConsent?: boolean };
   confirmation: Confirmation | null;
   changes: Record<'requirements' | 'preferences' | 'config' | 'sources' | 'outputs', 'none' | 'changed' | 'unknown'>;
   requirements: RecoveryReceipt['intent'];
@@ -37,6 +72,7 @@ export interface LifecycleData {
 }
 
 const messages: Record<string, string> = {
+  ...geminiConsentMessages,
   confirmationRequired: 'Repeat this request with --yes to confirm the listed effects.',
   noTargetsEnabled: 'No effective deployment targets are enabled. Set targets or choose --only requirements.',
   projectRootUnavailable: 'A valid project root is required for this request.',
@@ -46,6 +82,7 @@ const messages: Record<string, string> = {
   operationReviewStale: 'The operation evidence changed. Review the current state and repeat the request.',
   pluginSelectorAmbiguous: 'The plugin name is ambiguous. Use a source-qualified plugin ID.',
   pluginUnavailable: 'The plugin is not available in the selected Active Catalog.',
+  nativeTrustUnconfirmed: 'The native client effective trust state could not be observed. Registration and activation do not establish trust.',
   outputsRetainedRequirements: 'Requirements were retained. A later sync can deploy these outputs again.',
 };
 
@@ -55,7 +92,10 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   const publicMessage = sourceMessage && !/[\u3400-\u9fff]/u.test(sourceMessage)
     && !/(?:\/(?:Users|home|tmp|private|var)\/|[A-Za-z]:[\\/])/u.test(sourceMessage)
     ? safePublicMessage(sourceMessage, code) : undefined;
-  return { code, severity, message: messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
+  // Native consent receipts include the checked plugin and scope recovery command.
+  // Preserve that safe detail for CLI and TUI instead of replacing it with the generic code text.
+  const consentMessage = Object.hasOwn(geminiConsentMessages, code) ? publicMessage : undefined;
+  return { code, severity, message: consentMessage ?? messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
     ...(subject || typeof value !== 'string' && value.pluginId ? { subject: { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}), ...subject } } : {}) };
 }
 
@@ -66,7 +106,80 @@ export function projectTarget(value: RecoveryTarget): PublicTargetResult {
     ...(value.relation ? { relation: value.relation } : {}),
     ...(value.requirementScope ? { requirementScope: value.requirementScope } : {}),
     ...(value.providerScope ? { providerScope: value.providerScope } : {}),
-    ...(value.satisfaction ? { satisfaction: value.satisfaction } : {}) };
+    ...(value.satisfaction ? { satisfaction: value.satisfaction } : {}),
+    ...(value.deploymentExclusions ? { deploymentExclusions: value.deploymentExclusions.map(projectDeploymentExclusion) } : {}),
+    ...(value.componentGaps ? { componentGaps: value.componentGaps.map((gap) => ({
+      id: gap.id, kind: gap.kind, providerPluginId: gap.providerPluginId, agent: gap.agent, renderScope: gap.renderScope,
+      ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
+      reasonCode: gap.reasonCode, requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
+        ...(requirement.values ? { values: [...requirement.values] } : {}) })),
+    })) } : {}),
+    ...(value.deploymentPlans ? { deploymentPlans: value.deploymentPlans.map(projectDeploymentPlan) } : {}),
+    ...(value.deploymentObservations ? { deploymentObservations: value.deploymentObservations.map(projectDeploymentObservation) } : {}),
+    ...(value.deploymentReceipts ? { deploymentReceipts: value.deploymentReceipts.map(projectDeploymentReceipt) } : {}) };
+}
+
+export function projectDeploymentExclusion(value: DeploymentExclusion): PublicDeploymentExclusion {
+  const productId = identityDigest({ productId: value.productId });
+  return { platform: value.platform, pluginId: value.pluginId, scope: value.scope.kind, productId,
+    product: value.product ? { id: productId, product: value.product.product, version: value.product.version,
+      availability: value.product.availability, reasonCodes: [...value.product.reasonCodes] } : null,
+    reasonCode: value.reasonCode, execution: 'not-run', recoveryActions: value.recoveryActions.map((action) => safePublicMessage(action, 'productRecovery')) };
+}
+
+export function projectDeploymentPlan(value: FrozenDeploymentPlan): PublicDeploymentPlan {
+  return { bindingId: value.binding.id, physicalKey: value.binding.physicalKey,
+    products: value.binding.consumers.map((product) => ({ id: product.id, product: product.product,
+      version: product.version, availability: product.availability, reasonCodes: [...product.reasonCodes],
+      entry: product.entry ? { ...product.entry } : null })),
+    expected: { components: value.expected.components.map((component) => ({ id: component.id, kind: component.kind, name: component.name })),
+      omitted: value.expected.omitted.map((component) => ({ id: component.id, kind: component.kind, reason: component.reason })),
+      unmet: value.expected.unmet.map((gap) => ({ id: gap.id, kind: gap.kind,
+        ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
+        requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
+          ...(requirement.values ? { values: [...requirement.values] } : {}) })), reasonCode: gap.reasonCode })) },
+    effects: value.effects.map((effect) => ({ id: effect.id, kind: effect.kind, physicalKey: effect.physicalKey,
+      ...(effect.activationKey ? { activationKey: effect.activationKey } : {}), componentIds: [...effect.componentIds], destination: effect.destination, destructive: effect.destructive })),
+    sharedReferences: value.evidence.sharedReferences };
+}
+
+export function projectDeploymentObservation(value: NonNullable<RecoveryTarget['deploymentObservations']>[number]): PublicDeploymentObservation {
+  return {
+    bindingId: value.bindingId,
+    products: value.products.map((product) => ({ id: product.id, product: product.product, version: product.version,
+      availability: product.availability, reasonCodes: [...product.reasonCodes], entry: product.entry
+        ? product.entry.kind === 'cli' ? { kind: 'cli', executable: product.entry.executable, configRoot: product.entry.configRoot }
+          : product.entry.kind === 'directory' ? { kind: 'directory', configRoot: product.entry.configRoot }
+            : { kind: 'generic', root: product.entry.root } : null })),
+    after: { physicalKey: value.after.physicalKey, package: value.after.package, registration: value.after.registration,
+      ownership: value.after.ownership, consumers: value.after.consumers.map((consumer) => ({ productId: consumer.productId,
+        activationKey: consumer.activationKey, activation: consumer.activation, trust: consumer.trust, load: consumer.load })),
+      components: value.after.components.map((component) => ({ id: component.id, presence: component.presence, reasonCodes: [...component.reasonCodes] })),
+      ...(value.after.prerequisites.nativeSources ? { prerequisites: { nativeSources: {
+        observation: value.after.prerequisites.nativeSources.observation,
+        configurationEvidence: value.after.prerequisites.nativeSources.configurationEvidence,
+        sources: value.after.prerequisites.nativeSources.sources.map(({ name, version, scope, origin, enabled, effectiveComponents }) =>
+          ({ name, version, scope, origin, enabled, effectiveComponents: [...effectiveComponents] })),
+        overlaps: [...value.after.prerequisites.nativeSources.overlaps],
+      } } } : {}),
+      nativeIdentity: value.after.nativeIdentity ? { route: value.after.nativeIdentity.route, packageId: value.after.nativeIdentity.packageId,
+        ...(value.after.nativeIdentity.registrationId ? { registrationId: value.after.nativeIdentity.registrationId } : {}), sourceLocation: value.after.nativeIdentity.sourceLocation } : null },
+  };
+}
+
+export function projectDeploymentReceipt(value: NonNullable<RecoveryTarget['deploymentReceipts']>[number]): PublicDeploymentResult {
+  return {
+    ...projectDeploymentObservation(value),
+    effects: value.effects.map((effect) => ({ id: effect.id, status: effect.status, mutation: effect.mutation,
+      diagnostics: effect.diagnostics.map((entry) => publicDiagnostic(entry, entry.subject, entry.severity)) })),
+    unmet: value.unmet.map((gap) => ({ id: gap.id, kind: gap.kind,
+      ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
+      requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
+        ...(requirement.values ? { values: [...requirement.values] } : {}) })),
+      reasonCode: gap.reasonCode, productIds: [...gap.productIds] })),
+    reload: value.reload,
+    diagnostics: value.diagnostics.map((entry) => publicDiagnostic(entry, entry.subject, entry.severity)),
+  };
 }
 
 export function mergeProducerResults(previous: Pick<LifecycleData, 'commandResults' | 'nativeToolChanges'>, data: LifecycleData): void {
@@ -90,6 +203,35 @@ export function mergeProducerResults(previous: Pick<LifecycleData, 'commandResul
   }
   if (previous.commandResults || data.commandResults) data.commandResults = [...commands.values()];
   if (previous.nativeToolChanges || data.nativeToolChanges) data.nativeToolChanges = [...tools.values()];
+}
+
+/** Keep exact cleanup recovery locations attached to their actual target. */
+function cleanupRecoveryActions(receipt: RecoveryReceipt): Array<{ kind: 'manual'; message: string }> {
+  const actions = new Map<string, { kind: 'manual'; message: string }>();
+  for (const target of receipt.targetResults) {
+    const backend = target.backend && typeof target.backend === 'object'
+      ? target.backend as { targetResults?: unknown } : undefined;
+    const entries = Array.isArray(target.backend) ? target.backend.filter((entry) => entry && typeof entry === 'object'
+      && Array.isArray(entry.quarantined) && Array.isArray(entry.residual)) : backend?.targetResults;
+    if (!Array.isArray(entries)) continue;
+    for (const value of entries) {
+      if (!value || typeof value !== 'object') continue;
+      const entry = value as { target?: { pluginId?: unknown; platform?: unknown; scope?: unknown }; quarantined?: unknown; residual?: unknown };
+      if (entry.target?.pluginId !== target.pluginId || entry.target.platform !== target.agent
+        || entry.target.scope !== target.scope) continue;
+      for (const [kind, locations] of [['quarantined', entry.quarantined], ['residual', entry.residual]] as const) {
+        if (!Array.isArray(locations)) continue;
+        for (const location of locations) {
+          if (typeof location !== 'string' || !location) continue;
+          const key = `${target.pluginId}\0${target.agent}\0${target.scope}\0${kind}\0${location}`;
+          actions.set(key, { kind: 'manual', message: kind === 'quarantined'
+            ? `${target.pluginId} (${target.agent}/${target.scope}): Inspect quarantined output at ${JSON.stringify(location)}. Restore any needed files manually before retrying; they were not restored.`
+            : `${target.pluginId} (${target.agent}/${target.scope}): Inspect retained output or recovery item ${JSON.stringify(location)}. Resolve it before retrying; it was not removed.` });
+        }
+      }
+    }
+  }
+  return [...actions.values()];
 }
 
 export function receiptResult(command: string, data: LifecycleData, receipt: RecoveryReceipt): CommandResult<LifecycleData> {
@@ -122,7 +264,16 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));
   if (!receipt.ok) {
     if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
-    else for (const target of data.remainingTargets) result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', data.request.context, '--target', target.target], reason: 'Retry the selected incomplete target after resolving its diagnostics.', requiresConfirmation: true });
+    else for (const target of data.remainingTargets) {
+      const consent = target.target === 'gemini' && result.diagnostics.some((entry) =>
+        (entry.code.startsWith('nativeConsent') || entry.code === 'nativeRefreshDataUnconfirmed'
+          || entry.code === 'nativeInstallContentPostcheckFailed') && entry.subject?.pluginId === target.pluginId);
+      result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', data.request.context, '--target', target.target,
+        ...(consent ? ['--native-consent'] : [])], reason: consent
+        ? 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.'
+        : 'Retry the selected incomplete target after resolving its diagnostics.', requiresConfirmation: true });
+    }
   }
+  result.nextActions.push(...cleanupRecoveryActions(receipt));
   return result;
 }

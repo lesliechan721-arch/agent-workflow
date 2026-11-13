@@ -1,5 +1,7 @@
 import type { RebuildActionName } from '../types.js';
 import type { CommandEvent, CommandNotice, RebuildActionEvent } from './model.js';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core';
+import { TARGET_DISPLAY_NAMES } from '../platforms/discovery.js';
 
 const ACTION_LABELS: Record<RebuildActionName, string> = {
   'preflight.inspect': '检查当前组件',
@@ -16,9 +18,7 @@ const SAFE_PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function safeNoticeSource(notice: CommandNotice): string | undefined {
   const parts = [
-    notice.source?.platform === 'codex'
-      ? 'Codex'
-      : notice.source?.platform === 'claude' ? 'Claude Code' : undefined,
+    isPlatformTarget(notice.source?.platform) ? TARGET_DISPLAY_NAMES[notice.source.platform] : undefined,
     typeof notice.source?.plugin === 'string' && SAFE_PLUGIN_NAME_PATTERN.test(notice.source.plugin)
       ? notice.source.plugin
       : undefined,
@@ -61,7 +61,7 @@ function isRebuildActionEvent(event: CommandEvent): event is RebuildActionEvent 
   const data = event.data as Partial<RebuildActionEvent['data']>;
   return typeof event.source.plugin === 'string'
     && SAFE_PLUGIN_NAME_PATTERN.test(event.source.plugin)
-    && (event.source.platform === 'codex' || event.source.platform === 'claude')
+    && isPlatformTarget(event.source.platform)
     && (event.source.scope === 'user' || event.source.scope === 'project')
     && typeof data.name === 'string'
     && Object.hasOwn(ACTION_LABELS, data.name)
@@ -69,7 +69,7 @@ function isRebuildActionEvent(event: CommandEvent): event is RebuildActionEvent 
 }
 
 function targetLabel(event: RebuildActionEvent): string {
-  const platform = event.source.platform === 'codex' ? 'Codex' : 'Claude Code';
+  const platform = TARGET_DISPLAY_NAMES[event.source.platform];
   const scope = event.source.scope === 'project' ? '当前项目' : '当前用户';
   return `${event.source.plugin} · ${platform}/${scope}`;
 }

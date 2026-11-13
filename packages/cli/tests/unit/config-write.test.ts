@@ -9,7 +9,7 @@ import { compilePluginConfigDefinition, normalizePluginConfigDefinition } from '
 
 import type { PluginMeta } from '../../src/types.js';
 import { applyPluginConfig, applyPluginConfigWrite, disposePluginConfigApply, preparePluginConfigApply,
-  resetPluginConfigWithHelper } from '../../src/utils/plugin-config-write.js';
+  resetPluginConfigWithHelper, resolveConfigPreApplyAuthorization } from '../../src/utils/plugin-config-write.js';
 import { patchPluginConfigStore, readPluginConfigStore, resolveConfigRead,
   resolvePluginConfigStorePath, setAtomicConfigBeforeRenameHookForTests, toCliConfigPromptSchema,
   writePluginConfigStore } from '../../src/utils/plugin-config.js';
@@ -31,7 +31,7 @@ function fixture(config: unknown = { schemaVersion: 5, fields: {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const manifest: PluginMeta['manifest'] = {
-    schemaVersion: 3, name: 'demo', version: '1.0.0', description: 'Config write fixture',
+    schemaVersion: 4, name: 'demo', version: '1.0.0', description: 'Config write fixture',
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
     config: normalizePluginConfigDefinition(config),
   };
@@ -127,8 +127,7 @@ describe('configuration saves and explicit apply', () => {
   // Test Value Gate: renderer source identity is observable even when a newly stored value equals its default.
   it('counts a same-value default-to-common source change as effective impact', async () => {
     const f = fixture();
-    f.plugin.manifest.artifacts = { targets: [{ id: 'mode', platform: 'codex',
-      target: 'codex.developerInstructionsBlock', scopes: ['user'], states: ['present'], refreshKeys: ['mode'] }] };
+    f.plugin.manifest.artifacts = { configKeys: ['mode'], scopes: ['user'] };
     const target = { pluginName: 'demo', pluginId: 'team/demo', platform: 'codex' as const, scope: 'user' as const };
     const impact = await analyzePluginConfigMutationImpact({ ...f.options, visibleTargets: [target],
       commandDiscovery: { packages: [], errors: [] }, mutation: { kind: 'patch', updates: { mode: 'safe' } } });
@@ -138,13 +137,65 @@ describe('configuration saves and explicit apply', () => {
   // Test Value Gate: a common edit hidden by an explicit platform value must not refresh that platform.
   it('excludes a platform whose final value and source stay unchanged', async () => {
     const f = fixture();
-    f.plugin.manifest.artifacts = { targets: [{ id: 'mode', platform: 'codex',
-      target: 'codex.developerInstructionsBlock', scopes: ['user'], states: ['present'], refreshKeys: ['mode'] }] };
+    f.plugin.manifest.artifacts = { configKeys: ['mode'], scopes: ['user'] };
     await writePluginConfigStore({ ...f.store, platform: 'codex', values: { mode: 'native' } });
     const impact = await analyzePluginConfigMutationImpact({ ...f.options,
       visibleTargets: [{ pluginName: 'demo', platform: 'codex', scope: 'user' }], commandDiscovery: { packages: [], errors: [] },
       mutation: { kind: 'patch', updates: { mode: 'shared-next' } } });
     expect(impact).toMatchObject({ storeChanged: true, noEffectiveChange: true, affectedTargets: [] });
+  });
+
+  // Test Value Gate: an empty previous dynamic set must still refresh when an authorized renderer or Skill set input changes.
+  it.each(['codex', 'gemini', 'copilot'] as const)('tracks complete %s render units and real command producers without guessing component names', async (platform) => {
+    const f = fixture();
+    f.plugin.manifest.platforms = [platform];
+    f.plugin.manifest.artifacts = { configKeys: ['mode'] };
+    f.plugin.manifest.managedCommands = { packages: [], sets: [{ set: 'checks', mode: 'dynamic', refreshKeys: ['note'],
+      producer: { kind: 'artifact', platform, artifactId: 'runtime-selected-skill' } }] };
+    const run = vi.spyOn(defaultPluginProcessRunner, 'run');
+    const target = { pluginName: 'demo', pluginId: 'team/demo', platform, scope: 'project' as const };
+    const impact = await analyzePluginConfigMutationImpact({ ...f.options, context: 'project', visibleTargets: [target],
+      commandDiscovery: { packages: [], errors: [] }, mutation: { kind: 'patch', updates: { mode: 'fast', note: 'enabled' } } });
+    expect(impact.affectedTargets).toEqual([target]);
+    expect(impact.sharedNativeRenderUnits).toEqual([{ pluginName: 'demo', platform, renderScope: 'user',
+      configKeys: ['mode', 'note'], dynamicComponents: true,
+      commandSets: [{ set: 'checks', producer: { kind: 'artifact', platform, artifactId: 'runtime-selected-skill' } }] }]);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  // Test Value Gate: activation scope cannot grant a shared renderer an excluded config profile, or hide a separate static Skill command consumer.
+  it('uses the actual render scope and independent Skill command refresh keys', async () => {
+    const f = fixture();
+    f.plugin.manifest.platforms = ['claude'];
+    f.plugin.manifest.artifacts = { configKeys: ['mode'], scopes: ['project'] };
+    f.plugin.manifest.skills = './skills';
+    f.plugin.manifest.managedCommands = { packages: [], sets: [{ set: 'checks', mode: 'dynamic', refreshKeys: ['note'],
+      producer: { kind: 'static-skill', platform: 'claude', skillKey: 'check' } }] };
+    const target = { pluginName: 'demo', platform: 'claude' as const, scope: 'project' as const };
+    const options = { ...f.options, context: 'project' as const, visibleTargets: [target], commandDiscovery: { packages: [], errors: [] } };
+    const ignored = await analyzePluginConfigMutationImpact({ ...options, mutation: { kind: 'patch', updates: { mode: 'fast' } } });
+    expect(ignored.affectedTargets).toEqual([]);
+    const impact = await analyzePluginConfigMutationImpact({ ...options, mutation: { kind: 'patch', updates: { note: 'enabled' } } });
+    expect(impact.affectedTargets).toEqual([target]);
+    expect(impact.sharedNativeRenderUnits).toEqual([{ pluginName: 'demo', platform: 'claude', renderScope: 'user',
+      configKeys: ['note'], dynamicComponents: false,
+      commandSets: [{ set: 'checks', producer: { kind: 'static-skill', platform: 'claude', skillKey: 'check' } }] }]);
+  });
+
+  // Test Value Gate: two Native platforms must not be widened into the Codex/Claude shorthand while preparing preApply authorization.
+  it('keeps non-Codex Native preApply previews bound to their exact platforms', async () => {
+    const f = fixture();
+    f.plugin.manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
+    const targets = (['cursor', 'pi'] as const).map((platform) => ({ pluginName: 'demo', pluginId: 'team/demo', platform, scope: 'user' as const }));
+    const preview = vi.fn(async (_names: string[], _options: unknown, runtime?: import('../../src/commands/rebuild-command.js').RebuildCommandRuntime) => ({
+      overallState: 'succeeded' as const,
+      preApplyAuthorization: runtime!.executionInput!.selectedTargets,
+    } as import('../../src/commands/rebuild-command.js').RebuildCommandResult));
+    const result = await resolveConfigPreApplyAuthorization({ ...f.options, applyTargets: targets, reinstallCommandImpl: preview });
+    expect(result.availableApplyTargets).toEqual(targets);
+    expect(result.unavailableTargetResults).toEqual([]);
+    expect(preview.mock.calls.map(([, options]) => (options as { platform: string }).platform)).toEqual(['cursor', 'pi']);
+    expect(result.targets.map(({ platform }) => platform)).toEqual(['cursor', 'pi']);
   });
 
   // Test Value Gate: unset can remove unknown stored keys while preserving all unrelated configuration and platform layers.

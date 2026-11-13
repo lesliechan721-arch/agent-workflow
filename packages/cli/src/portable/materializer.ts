@@ -4,46 +4,32 @@ import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
 import fs from 'fs-extra';
-import { isPortablePlatformTarget, resolveSupportedPlatforms, type PortablePlatformTarget } from '@lesliechan721/aw-plugin-core';
-import { prepareSkillPluginBundle } from '../review/skill-materialization.js';
+import { isPlatformTarget, PLATFORM_TARGETS, resolveSupportedPlatforms, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
+import { createIsolatedSkillEnv, materializeProfilePluginComponents, prepareSkillPluginBundle, type ComponentPreparationBinding } from '../review/skill-materialization.js';
 
 import type {
-  ArtifactRuntimeImportDefinition,
   CatalogSourceResolution,
   PluginMeta,
   PortablePluginRelation,
   PortableSkillCandidate,
   Scope,
 } from '../types.js';
-import { validateArtifactPlan } from '../utils/artifact-plan.js';
 import {
-  runArtifactRenderer,
-  type ResolvedArtifactRenderConfig,
-} from '../utils/artifact-renderer.js';
-import { calculateFileDigest } from '../utils/bundle-integrity.js';
-import {
-  AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
   parsePortableSkillFrontmatter,
   validatePortableSkillDirectory,
   type DynamicSkillTree,
 } from '../utils/dynamic-skill-tree.js';
+import { writePluginConfigStore } from '../utils/plugin-config.js';
+import { getAuthoringPlatformCapabilities } from '../review/platform-profile.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import {
-  createAwPluginRequirementsReceipt,
-  parseAwPluginRequirementsReceipt,
   checkAwCapabilitySupport,
   readPluginManifest,
 } from '../utils/manifest.js';
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import type { CatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
-import { prepareWindowsJobHelper } from '../utils/process-tree.js';
-import {
-  assertNoSensitiveConfigInFiles,
-  collectSensitivePluginConfigValues,
-} from '../utils/plugin-scripts.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
-import { isSkillAuthorOnlyPath } from '../utils/skill-authoring.js';
 import { validateCatalogSnapshotPluginEntriesComplete } from '../utils/catalog-snapshot.js';
 import {
   AwCapabilityUnsupportedError,
@@ -55,12 +41,13 @@ import {
   resolvePortableProfileBindingInputs,
   type AwCatalogSnapshotBindingSource,
   type AwSourceBindingProfile,
+  type PortablePluginProfileConfig,
 } from '../review/source-binding.js';
 
 export interface PortableMaterializationProvenance {
   schemaVersion: 1;
   pluginId: string;
-  platform: PortablePlatformTarget;
+  platform: PlatformTarget;
   scope: Scope;
   dependencyPluginIds: string[];
   configDigest: string;
@@ -71,7 +58,7 @@ export interface PortableMaterializationProvenance {
 export interface MaterializePortableSkillsOptions {
   plugins: readonly PluginMeta[];
   pluginId: string;
-  platform: PortablePlatformTarget;
+  platform: PlatformTarget;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -87,20 +74,21 @@ export interface MaterializedPortableSkills {
   sourceId?: string;
   sourceIdentity?: string;
   pluginVersion?: string;
-  platform: PortablePlatformTarget;
+  platform: PlatformTarget;
   scope: Scope;
   candidates: PortableSkillCandidate[];
   dependencyPluginIds: string[];
   configDigest: string;
   digest: string;
   provenancePath: string;
+  preparation: ComponentPreparationBinding[];
   sourceBindingSource?: AwCatalogSnapshotBindingSource;
   cleanup(): Promise<void>;
 }
 
 export interface MaterializePortableSkillsFromCatalogOptions {
   selector: string;
-  platform: PortablePlatformTarget;
+  platform: PlatformTarget;
   scope: Scope;
   cwd: string;
   cliVersion: string;
@@ -125,9 +113,9 @@ export interface PortableCatalogBindingInput {
   providerConfigs?: ReadonlyArray<readonly [string, string]>;
 }
 
-export function assertPortablePlatform(platform: unknown): asserts platform is PortablePlatformTarget {
-  if (!isPortablePlatformTarget(platform)) {
-    throw new Error('Portable materialization requires an explicit Portable canonical platform: antigravity, cursor, opencode, pi, or generic.');
+export function assertPortablePlatform(platform: unknown): asserts platform is PlatformTarget {
+  if (!isPlatformTarget(platform)) {
+    throw new Error(`Skill export requires an explicit canonical platform: ${PLATFORM_TARGETS.join(', ')}.`);
   }
 }
 
@@ -210,297 +198,49 @@ async function copyTreeFiles(files: Record<string, Buffer>, targetRoot: string):
   }
 }
 
-async function overlayDirectory(
-  sourceRoot: string,
-  files: Record<string, Buffer>,
-): Promise<void> {
-  const visit = async (current: string, parent = ''): Promise<void> => {
-    const stats = await fs.lstat(current).catch(() => undefined);
-    if (!stats?.isDirectory() || stats.isSymbolicLink()) {
-      throw new Error(`Portable Skill source must be a regular directory: ${sourceRoot}.`);
-    }
-    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
-      const relativePath = parent ? `${parent}/${entry.name}` : entry.name;
-      if (isSkillAuthorOnlyPath(relativePath)) continue;
-      const absolutePath = path.join(current, entry.name);
-      if (entry.isSymbolicLink()) {
-        throw new Error(`Portable Skill source contains a symbolic link: ${relativePath}.`);
-      }
-      if (entry.isDirectory()) {
-        await visit(absolutePath, relativePath);
-      } else if (entry.isFile()) {
-        files[relativePath] = await fs.readFile(absolutePath);
-      } else {
-        throw new Error(`Portable Skill source contains a non-regular file: ${relativePath}.`);
-      }
-    }
-  };
-  await visit(sourceRoot);
-}
-
-function assertNoUnresolvedTemplates(candidate: CandidateTree): void {
-  for (const [relativePath, content] of Object.entries(candidate.tree.files)) {
-    const text = content.toString('utf8');
-    if (text.includes('{{aw.command:')) {
-      throw new Error('managedCommandPortableUnsupported: Portable Skills cannot reference local managed commands.');
-    }
-    if (/\{\{[^{}]+\}\}/u.test(text)) {
-      throw new Error(`Portable Skill "${candidate.tree.skillKey}" contains an unresolved template in "${relativePath}".`);
-    }
-  }
-}
-
-async function assertRuntimeImports(plugin: PluginMeta): Promise<void> {
-  const imports = (plugin.manifest.artifacts?.targets ?? [])
-    .filter((target) => target.target === 'agent-skills.skill')
-    .flatMap((target) => target.runtimeImports ?? []);
-  for (const runtimeImport of imports) {
-    await assertRuntimeImport(plugin, runtimeImport);
-  }
-}
-
-async function assertRuntimeImport(
-  plugin: PluginMeta,
-  runtimeImport: ArtifactRuntimeImportDefinition,
-): Promise<void> {
-  if (!runtimeImport.resolved) {
-    throw new Error(`Artifact runtime import "${runtimeImport.name}" is not resolved in the consumer bundle.`);
-  }
-  const root = await fs.realpath(plugin.rootDir);
-  const importPath = path.join(root, runtimeImport.resolved.path.replace(/^\.\//u, ''));
-  const stats = await fs.lstat(importPath).catch(() => undefined);
-  if (!stats?.isFile() || stats.isSymbolicLink()) {
-    throw new Error(`Artifact runtime import "${runtimeImport.name}" is missing from the consumer bundle.`);
-  }
-  const realImport = await fs.realpath(importPath);
-  const relative = path.relative(root, realImport);
-  if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`Artifact runtime import "${runtimeImport.name}" escapes the consumer bundle.`);
-  }
-  if (await calculateFileDigest(realImport) !== runtimeImport.resolved.digest) {
-    throw new Error(`Artifact runtime import "${runtimeImport.name}" has an invalid digest.`);
-  }
-}
-
 async function materializePluginCandidates(options: {
   plugins: readonly PluginMeta[];
   plugin: PluginMeta;
   relation: PortablePluginRelation;
-  platform: PortablePlatformTarget;
+  platform: PlatformTarget;
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   inputMode: 'source' | 'bundle';
+  profileConfig?: PortablePluginProfileConfig;
   selectedSkills?: ReadonlySet<string>;
   recordConfigDigest: (pluginId: string, configDigest: string) => void;
+  recordPreparation: (preparation: ComponentPreparationBinding[]) => void;
 }): Promise<CandidateTree[]> {
-  options.signal?.throwIfAborted();
-  const dynamicTargets = (options.plugin.manifest.artifacts?.targets ?? [])
-    .filter((target) =>
-      target.target === 'agent-skills.skill'
-      && target.platform === options.platform
-      && target.scopes.includes(options.scope)
-      && (!options.selectedSkills || options.selectedSkills.has(target.skillKey!)));
-  const dynamicKeys = new Set((options.plugin.manifest.artifacts?.targets ?? [])
-    .filter((target) => target.target === 'agent-skills.skill' && target.platform === options.platform)
-    .map((target) => target.skillKey!));
-  const output: CandidateTree[] = [];
-  let config: Pick<ResolvedArtifactRenderConfig, 'values' | 'sources' | 'issues'> | undefined;
-  let sensitiveValues: string[] = [];
-  if (!options.selectedSkills) {
-    const profileConfig = await resolvePortablePluginProfileConfig({
-      plugins: options.plugins,
-      plugin: options.plugin,
-      platform: options.platform,
-      scope: options.scope,
-      cwd: options.cwd,
-      env: options.env,
+  const profileConfig = options.profileConfig ?? await resolvePortablePluginProfileConfig({ ...options });
+  options.recordConfigDigest(pluginId(options.plugin), profileConfig.digest);
+  const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-profile-skills-'));
+  try {
+    const materialized = await materializeProfilePluginComponents({
+      ...options, outputRoot: stagingRoot, kinds: ['skill'], config: profileConfig.config,
+      selectedSkills: options.selectedSkills ? [...options.selectedSkills] : undefined,
     });
-    config = profileConfig.config;
-    options.recordConfigDigest(pluginId(options.plugin), profileConfig.digest);
-    sensitiveValues = collectSensitivePluginConfigValues(
-      options.plugin.manifest,
-      config.values,
-      options.platform,
-    );
-  }
-  const staticRoot = path.join(options.plugin.rootDir, options.platform, 'skills');
-
-  if (await fs.pathExists(staticRoot)) {
-    const rootStats = await fs.lstat(staticRoot).catch(() => undefined);
-    if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) {
-      throw new Error('Portable Skills root must be a regular directory.');
-    }
-    const entries = await fs.readdir(staticRoot, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const entryStats = await fs.lstat(path.join(staticRoot, entry.name)).catch(() => undefined);
-      if (!entryStats?.isDirectory() || entryStats.isSymbolicLink()) {
-        throw new Error(`Portable Skills root direct child must be a regular directory: ${entry.name}.`);
-      }
-      if (dynamicKeys.has(entry.name)) continue;
-      if (options.selectedSkills && !options.selectedSkills.has(entry.name)) continue;
-      output.push({
-        plugin: options.plugin,
-        relation: options.relation,
-        dynamic: false,
-        tree: await validatePortableSkillDirectory(path.join(staticRoot, entry.name)),
-      });
-    }
-  }
-
-  const finalizeCandidates = (): CandidateTree[] => {
-    const receipt = createAwPluginRequirementsReceipt(
-      { name: options.plugin.manifest.name, version: options.plugin.manifest.version },
-      options.plugin.manifest.requires?.aw.capabilities ?? [],
-    );
-    const receiptBytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
-    for (const candidate of output) {
-      const existingReceipt = candidate.tree.files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
-      if (existingReceipt && options.inputMode !== 'bundle') {
-        throw new Error(
-          `Portable Skill "${candidate.tree.skillKey}" cannot declare reserved file "${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}".`,
-        );
-      }
-      if (existingReceipt) {
-        let parsedReceipt: ReturnType<typeof parseAwPluginRequirementsReceipt>;
-        try {
-          parsedReceipt = parseAwPluginRequirementsReceipt(JSON.parse(existingReceipt.toString('utf8')));
-        } catch {
-          throw new Error(
-            `Portable Skill "${candidate.tree.skillKey}" has an invalid reserved requirements receipt.`,
-          );
-        }
-        if (JSON.stringify(parsedReceipt) !== JSON.stringify(receipt)) {
-          throw new Error(
-            `Portable Skill "${candidate.tree.skillKey}" has a mismatched reserved requirements receipt.`,
-          );
-        }
-      } else {
-        candidate.tree.files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH] = receiptBytes;
-      }
-      const filesToScan = { ...candidate.tree.files };
-      delete filesToScan[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
-      assertNoSensitiveConfigInFiles(
-        filesToScan,
-        sensitiveValues,
-        'portableSkillSensitiveConfigExposed: Portable Skill exposes sensitive config.',
-      );
+    options.recordPreparation(materialized.preparation.map((unit) => ({ ...unit, outputs: [] })));
+    const output: CandidateTree[] = [];
+    for (const skill of materialized.skills) {
+      const tree = await validatePortableSkillDirectory(skill.path);
+      const candidate = { plugin: options.plugin, relation: options.relation, dynamic: skill.dynamic, tree };
       assertNoUnresolvedTemplates(candidate);
+      output.push(candidate);
     }
     return output;
-  };
+  } finally {
+    await fs.remove(stagingRoot);
+  }
+}
 
-  if (dynamicTargets.length === 0) {
-    if (options.selectedSkills) {
-      options.recordConfigDigest(pluginId(options.plugin), `sha256:${crypto.createHash('sha256')
-        .update(JSON.stringify([]))
-        .digest('hex')}`);
-    }
-    return finalizeCandidates();
-  }
-  await assertRuntimeImports(options.plugin);
-  if (process.platform === 'win32') {
-    await prepareWindowsJobHelper();
-  }
-  const rendered = await runArtifactRenderer({
-    event: 'materialize',
-    referencePlugins: options.plugins,
-    plugin: options.plugin,
-    platform: options.platform,
-    scope: options.scope,
-    cwd: options.cwd,
-    commandEnv: options.env,
-    signal: options.signal,
-    requestedArtifactIds: dynamicTargets.map((target) => target.id),
-  });
-  if (options.selectedSkills) {
-    config = rendered.context.config;
-    sensitiveValues = collectSensitivePluginConfigValues(
-      options.plugin.manifest,
-      config.values,
-      options.platform,
-    );
-    options.recordConfigDigest(pluginId(options.plugin), `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify({ platform: options.platform, values: config.values, sources: config.sources }))
-      .digest('hex')}`);
-  }
-  if (!config) {
-    throw new Error(`Portable config is unresolved for plugin "${options.plugin.manifest.name}".`);
-  }
-  const plan = validateArtifactPlan({
-    pluginName: options.plugin.manifest.name,
-    manifest: options.plugin.manifest,
-    plan: rendered.plan,
-    platform: options.platform,
-    scope: options.scope,
-    requestedArtifactIds: rendered.context.requestedArtifactIds,
-    renderConfig: config,
-    rendererDigest: rendered.target.rendererDigest,
-    manifestDigest: rendered.target.manifestDigest,
-  });
-  const sourcesById = new Map(rendered.context.artifactSources.map((source) => [source.id, source]));
-  const portableRuntimeProjectionPath = path.join(
-    options.plugin.rootDir,
-    '.agents-plugin',
-    'portable-runtime-files.json',
-  );
-  const portableRuntimeProjections = await fs.readJson(portableRuntimeProjectionPath)
-    .catch(() => []) as Array<{ platform: PortablePlatformTarget; skill: string; target: string; path: string; digest: string }>;
-  for (const artifact of plan.artifacts) {
-    if (artifact.target !== 'agent-skills.skill' || artifact.state === 'disabled') continue;
-    const files: Record<string, Buffer> = {};
-    for (const sourceDir of sourcesById.get(artifact.id)?.sourceDirs ?? []) {
-      await overlayDirectory(sourceDir, files);
-    }
-    for (const projection of portableRuntimeProjections.filter((entry) =>
-      entry.platform === options.platform && entry.skill === artifact.skillKey)) {
-      const expectedPath = `./${options.platform}/skills/${artifact.skillKey}/${projection.target}`;
-      if (
-        projection.path !== expectedPath
-        || projection.target.includes('\\')
-        || path.posix.normalize(projection.target) !== projection.target
-        || !/^(?:references|assets|scripts)\/.+/u.test(projection.target)
-      ) {
-        throw new Error(`Portable runtime projection "${artifact.skillKey}/${projection.target}" has an invalid bundle path.`);
-      }
-      const projectionPath = path.join(options.plugin.rootDir, projection.path.replace(/^\.\//u, ''));
-      if (await calculateFileDigest(projectionPath) !== projection.digest) {
-        throw new Error(`Portable runtime projection "${artifact.skillKey}/${projection.target}" has an invalid digest.`);
-      }
-      files[projection.target] = await fs.readFile(projectionPath);
-    }
-    for (const [relativePath, content] of Object.entries(artifact.content?.files ?? {})) {
-      if (isSkillAuthorOnlyPath(relativePath)) {
-        throw new Error(
-          `Portable dynamic Skill "${artifact.skillKey}" renderer returned author-only path "${relativePath}".`,
-        );
-      }
-      if (relativePath === AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH) {
-        throw new Error(`Portable dynamic Skill renderer cannot declare reserved file "${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}".`);
-      }
-      files[relativePath] = Buffer.from(content, 'utf8');
-    }
-    assertNoSensitiveConfigInFiles(
-      files,
-      sensitiveValues,
-      'portableSkillSensitiveConfigExposed: Portable Skill exposes sensitive config.',
-    );
-    const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-tree-'));
-    try {
-      const skillRoot = path.join(stagingRoot, artifact.skillKey);
-      await copyTreeFiles(files, skillRoot);
-      output.push({
-        plugin: options.plugin,
-        relation: options.relation,
-        dynamic: true,
-        tree: await validatePortableSkillDirectory(skillRoot),
-      });
-    } finally {
-      await fs.remove(stagingRoot);
+function assertNoUnresolvedTemplates(candidate: CandidateTree): void {
+  for (const [file, bytes] of Object.entries(candidate.tree.files)) {
+    if (/\{\{[^{}]+\}\}/u.test(bytes.toString('utf8'))) {
+      throw new Error(`Portable Skill "${candidate.tree.skillKey}" has an unresolved template in ${file}.`);
     }
   }
-  return finalizeCandidates();
 }
 
 async function resolvePortableCatalogPlugins(options: {
@@ -612,6 +352,7 @@ export async function materializePortableSkillsFromCatalog(
           pluginVersion: requestedPlugin.manifest.version,
           platform: materialized.platform,
           scope: materialized.scope,
+          preparation: materialized.preparation,
           candidates: materialized.candidates,
           dependencyPluginIds: materialized.dependencyPluginIds,
           configDigest: materialized.configDigest,
@@ -658,10 +399,22 @@ export async function materializePortableSkills(
     await fs.ensureDir(rootDir);
   }
   const skillsRoot = path.join(rootDir, 'skills');
-  const env = options.env ?? process.env;
+  const profileConfigs = await Promise.all(closure.map(async (plugin) => ({
+    plugin,
+    config: await resolvePortablePluginProfileConfig({ ...options, plugin, env: options.env ?? process.env }),
+  })));
+  const env = await createIsolatedSkillEnv(options.env ?? process.env, path.join(rootDir, '.environment'));
+  for (const { plugin, config } of profileConfigs) {
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity,
+      pluginName: plugin.manifest.name, platform: options.platform, scope: options.scope,
+      cwd: options.cwd, env, values: config.config.values,
+    });
+  }
   try {
     const trees: CandidateTree[] = [];
     const configDigests: Array<[string, string]> = [];
+    const preparation: ComponentPreparationBinding[] = [];
     const selectedSkills = options.selectedSkills
       ? new Set(options.selectedSkills)
       : undefined;
@@ -686,14 +439,17 @@ export async function materializePortableSkills(
           env,
           signal: options.signal,
           inputMode: 'bundle',
+          profileConfig: profileConfigs.find((entry) => entry.plugin.manifest.name === plugin.manifest.name)!.config,
           ...(selectedSkills ? { selectedSkills } : {}),
           recordConfigDigest: (id, configDigest) => configDigests.push([id, configDigest]),
+          recordPreparation: (entries) => preparation.push(...entries),
         }));
       } finally {
         await prepared?.cleanup();
       }
     }
     await fs.remove(path.join(rootDir, '.prepare'));
+    await fs.remove(path.join(rootDir, '.environment'));
     if (selectedSkills) {
       const materializedNames = new Set(trees.map((candidate) => candidate.tree.skillKey));
       const missing = [...selectedSkills]
@@ -727,7 +483,7 @@ export async function materializePortableSkills(
       .filter((plugin) => plugin.manifest.name !== requested.manifest.name)
       .map(pluginId);
     const configDigest = `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify({ platform: options.platform, scope: options.scope, config: configDigests }))
+      .update(JSON.stringify({ platform: options.platform, scope: options.scope, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope), config: configDigests }))
       .digest('hex')}`;
     const digest = `sha256:${crypto.createHash('sha256')
       .update(JSON.stringify({ platform: options.platform, scope: options.scope, skills: candidates.map((candidate) => [candidate.name, candidate.filesDigest]) }))
@@ -754,6 +510,7 @@ export async function materializePortableSkills(
       configDigest,
       digest,
       provenancePath,
+      preparation,
       cleanup: async () => {
         if (createdRoot) await fs.remove(rootDir);
       },

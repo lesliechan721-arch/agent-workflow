@@ -8,8 +8,8 @@ import { tuiTheme } from './theme.js';
 import { wrapDisplayText } from './viewport.js';
 
 export const contentTypeLabels: Record<PluginContentType, string> = {
-  skill: 'Skill', agent: 'Agent', role: '角色', instruction: '指令', permission: '权限',
-  hook: 'Hook', command: '命令', mcpServer: 'MCP Server', app: 'App',
+  skill: 'Skill', agent: 'Agent', instruction: '指令', permission: '权限',
+  hook: 'Hook', mcpServer: 'MCP Server', renderer: '动态组件',
 };
 
 type ContentLine = { text: string; kind: 'fact' | 'description' | 'issue' };

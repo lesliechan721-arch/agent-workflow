@@ -1,10 +1,10 @@
-import type { Scope } from '../types.js';
+import type { PlatformName, Scope } from '../types.js';
 import type { AgentId, PreferencesObservation } from '../intent/deployment-preferences.js';
 import type { IntentObservation } from '../intent/intent-store.js';
 
 export type Delivery =
-  | { kind: 'native'; platform: 'codex' | 'claude' }
-  | { kind: 'agent-skills'; provider: 'aw'; agentId: AgentId };
+  | { kind: 'native'; platform: PlatformName }
+  | { kind: 'agent-skills'; provider: 'aw'; agentId: 'generic' };
 
 export type Execution = 'not-run' | 'no-op' | 'applied' | 'partial' | 'failed';
 export type Observation = 'verified' | 'missing' | 'unknown';

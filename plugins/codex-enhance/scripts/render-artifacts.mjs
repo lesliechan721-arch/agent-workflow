@@ -3,10 +3,6 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const pluginRoot = path.resolve(scriptDir, '..');
-const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-
 export const SKILL_CONFIG_KEYS = {
   'codex-advisor': [
     'advisorGeneralProfile', 'advisorAdvancedProfile', 'advisorExpertProfile', 'advisorCustomProfiles',
@@ -49,23 +45,19 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-async function readInstructions(context, manifest, key) {
-  const id = Object.keys(SKILLS).find((candidate) => SKILLS[candidate] === key);
-  const sourceRoot = await readSkillSourceRoot(context, manifest, id);
+async function readInstructions(context, key) {
+  const sourceRoot = readSkillSourceRoot(context, key);
   return readFile(path.join(sourceRoot, INSTRUCTIONS[key]), 'utf8');
 }
 
-function renderRoleArtifact(id, role, instructions) {
+function renderRoleComponent(id, role, instructions, requirements) {
   return {
-    id, kind: 'codexRole', platform: 'codex', target: 'codex.agentRole', state: 'present',
-    roleKey: role.key, refreshKeys: [],
+    id, kind: 'agent', name: role.key,
+    requires: requirements,
     content: {
-      registration: { description: role.description },
-      roleFile: {
-        name: role.key, description: role.description,
-        developer_instructions: role.localInstructions
-          ? `${instructions.trimEnd()}\n\n${role.localInstructions}\n` : instructions,
-      },
+      description: role.description,
+      prompt: role.localInstructions
+        ? `${instructions.trimEnd()}\n\n${role.localInstructions}\n` : instructions,
     },
   };
 }
@@ -133,34 +125,60 @@ function renderProfiles(template, key, config) {
   return slot(template, marker, `${customProfiles(config[customKey])}${profileTable(profiles, config)}`);
 }
 
-async function readSkillSourceRoot(context, manifest, id) {
-  const declaredSources = manifest.artifacts.targets.find((target) => target.id === id)?.sourceDirs ?? [];
-  const sources = context?.artifactSources?.find((entry) => entry.id === id)?.sourceDirs
-    ?? declaredSources.map((source) => path.resolve(pluginRoot, source));
-  let lastError;
-  for (const source of sources) {
-    try {
-      await readFile(path.join(source, 'SKILL.md'), 'utf8');
-      return source;
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      lastError = error;
-    }
+function readSkillSourceRoot(context, key) {
+  const name = `./skills/${key}`;
+  const resource = context.resources?.find((entry) => entry.kind === 'bundle' && entry.name === name);
+  if (!resource || !path.isAbsolute(resource.root)) {
+    throw new Error(`Missing verified bundle resource: ${name}`);
   }
-  throw lastError ?? new Error(`Skill ${id} has no declared source directory.`);
+  return resource.root;
 }
 
-async function runtimeResourceFiles(root, relative) {
+async function runtimeResourceFiles(context, key, relative) {
+  const root = readSkillSourceRoot(context, key);
   const result = {};
   for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
     const name = `${relative}/${entry.name}`;
-    if (entry.isDirectory()) Object.assign(result, await runtimeResourceFiles(root, name));
-    // PE resources stay in sourceDirs, whose copy step preserves their bytes.
-    else if (entry.isFile() && !entry.name.endsWith('.test.mjs') && !entry.name.endsWith('.exe')) {
-      result[name] = await readFile(path.join(root, name), 'utf8');
+    if (entry.isDirectory()) Object.assign(result, await runtimeResourceFiles(context, key, name));
+    else if (entry.isFile() && !entry.name.endsWith('.test.mjs')) {
+      result[name] = { source: { kind: 'bundle', path: `skills/${key}/${name}` } };
     }
   }
   return result;
+}
+
+const PLATFORMS = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'];
+
+function validateContext(context) {
+  if (context?.schemaVersion !== 1 || context.surface !== 'agent-plugin') {
+    throw new Error('A PlatformRenderContext v1 with surface=agent-plugin is required.');
+  }
+  if (!PLATFORMS.includes(context.platform)) throw new Error(`Unsupported platform: ${context.platform}`);
+  if (!Array.isArray(context.allowedOutputKinds) || new Set(context.allowedOutputKinds).size !== context.allowedOutputKinds.length
+      || context.allowedOutputKinds.some((kind) => !['skill', 'mcp', 'agent', 'hook', 'instruction'].includes(kind))) {
+    throw new Error('allowedOutputKinds must contain distinct component kinds.');
+  }
+  const capabilities = context.platformCapabilities;
+  if (capabilities?.schemaVersion !== 1 || capabilities.platform !== context.platform || capabilities.scope !== context.scope) {
+    throw new Error('Matching platformCapabilities v1 are required.');
+  }
+}
+
+function capabilityGap(context, kind, requirements) {
+  const facts = context.platformCapabilities;
+  const missing = requirements.filter(({ feature, values = [] }) => {
+    const fact = facts.features[feature];
+    return fact?.status !== 'supported' || values.some((value) => !fact.values?.includes(value));
+  });
+  const kindFact = facts.kinds[kind];
+  if (kindFact?.status !== 'supported') missing.unshift({ feature: `component.kind.${kind}` });
+  if (missing.length === 0) return null;
+  const reasonFact = kindFact?.status !== 'supported' ? kindFact : facts.features[missing[0].feature];
+  return { requiredFeatures: missing, reasonCode: reasonFact?.reasonCodes?.[0] ?? 'capability-unverified' };
+}
+
+function addGap(plan, id, kind, name, gap) {
+  plan.unmet.push({ id, kind, name, ...gap });
 }
 
 export async function readArtifactRenderContext() {
@@ -169,48 +187,43 @@ export async function readArtifactRenderContext() {
 }
 
 export async function renderArtifactPlan(context) {
-  const platform = context?.platform;
-  if (platform !== 'codex') throw new Error(`Unsupported platform: ${platform}`);
-  const ids = context?.requestedArtifactIds;
-  if (!Array.isArray(ids) || ids.length === 0 || new Set(ids).size !== ids.length) {
-    throw new Error('requestedArtifactIds must be a non-empty array without duplicates.');
-  }
-  for (const id of ids) {
-    if (!Object.hasOwn(SKILLS, id) && !Object.hasOwn(ROLES, id)) {
-      throw new Error(`Unknown requested artifact: ${id}`);
+  validateContext(context);
+  const plan = { version: 3, components: [], omitted: [], unmet: [] };
+  const execution = [{ feature: 'agent.execution', values: ['isolated-context'] },
+    { feature: 'agent.prompt-mode', values: ['host-default'] }];
+
+  if (context.allowedOutputKinds.includes('skill')) {
+    for (const [id, key] of Object.entries(SKILLS)) {
+      // The scheduling method uses Codex model/effort profiles and the matching
+      // spawn-subagent command closure. Role declarations have no such dependency.
+      if (context.platform !== 'codex') {
+        addGap(plan, id, 'skill', key, { requiredFeatures: [], reasonCode: 'dependency-unmet' });
+        continue;
+      }
+      const gap = capabilityGap(context, 'skill', execution);
+      if (gap) { addGap(plan, id, 'skill', key, gap); continue; }
+      const config = resolveConfigValues(context, SKILL_CONFIG_KEYS[key]);
+      const sourceRoot = readSkillSourceRoot(context, key);
+      const template = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
+      plan.components.push({ id, kind: 'skill', name: key, requires: execution,
+        content: { files: {
+          'SKILL.md': { text: renderProfiles(template, key, config) },
+          'README.md': { source: { kind: 'bundle', path: `skills/${key}/README.md` } },
+          ...(await runtimeResourceFiles(context, key, 'assets')),
+          ...(await runtimeResourceFiles(context, key, 'agents')),
+        } } });
     }
   }
-
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  const skillIds = ids.filter((id) => Object.hasOwn(SKILLS, id));
-  let config;
-  if (skillIds.length > 0) {
-    const keys = [...new Set(skillIds.flatMap((id) => SKILL_CONFIG_KEYS[SKILLS[id]]))];
-    config = resolveConfigValues(context, keys);
-  }
-
-  const artifacts = [];
-  for (const id of ids) {
-    if (Object.hasOwn(ROLES, id)) {
-      const role = ROLES[id];
-      artifacts.push(renderRoleArtifact(id, role, await readInstructions(context, manifest, role.skill)));
-      continue;
+  if (context.allowedOutputKinds.includes('agent')) {
+    const requirements = context.platform === 'pi'
+      ? [...execution, { feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] }] : execution;
+    for (const [id, role] of Object.entries(ROLES)) {
+      const gap = capabilityGap(context, 'agent', requirements);
+      if (gap) { addGap(plan, id, 'agent', role.key, gap); continue; }
+      plan.components.push(renderRoleComponent(id, role, await readInstructions(context, role.skill), requirements));
     }
-    const key = SKILLS[id];
-    const sourceRoot = await readSkillSourceRoot(context, manifest, id);
-    const template = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
-    const files = {
-      'SKILL.md': renderProfiles(template, key, config),
-      [INSTRUCTIONS[key]]: await readFile(path.join(sourceRoot, INSTRUCTIONS[key]), 'utf8'),
-      ...(await runtimeResourceFiles(sourceRoot, 'assets')),
-      ...(await runtimeResourceFiles(sourceRoot, 'agents')),
-    };
-    artifacts.push({
-      id, kind: 'skill', platform: 'codex', target: 'codex.skill', state: 'present',
-      skillKey: key, refreshKeys: [...SKILL_CONFIG_KEYS[key]], content: { files },
-    });
   }
-  return { version: 2, artifacts };
+  return plan;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

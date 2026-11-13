@@ -86,7 +86,7 @@ aw dev review inspect <target> [--materialization <receipt>]... [--skill <name>]
 aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <scope> --out <new-dir> [--skill <name>]... [--config <file>] [--workspace-root <root>] [--json]
 ```
 
-- **目标与平台**：准备单插件、单平台（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`）的所选 Skill；`--platform`、`--scope` 与 `--out` 为必填项。
+- **目标与平台**：准备单插件、单平台（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`）的所选 Skill；`--platform`、`--scope` 与 `--out` 为必填项。
 - **Skill 与配置选项**：支持可重复的 `--skill <name>` 筛选具体 Skill；配置覆盖使用 `--config <file>`（传入普通 JSON 文件的非敏感覆盖，**严禁使用 `--config-file`**）；支持 `--workspace-root <root>` 显式指定工作区根。
 - **配置来源隔离**：配置仅来自对应平台 manifest 默认值与 `--config <file>` 显式非敏感覆盖，**绝不读取真实用户的持久配置 Store**。
 - **安全新目录门禁（`--out`）**：
@@ -108,7 +108,7 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
 
 ### 2.2 跨插件 `valueRef` 依赖闭包扩展
 
-- **依赖扩展**：从所选 Skill 的 `refreshKeys` 扩展实际校验依赖闭包。
+- **依赖扩展**：从 renderer 的 artifacts.configKeys 和所需真实命令声明的 refreshKeys 扩展实际校验依赖闭包，不从已移除的动态 target 清单推断。
 - **配置来源**：依赖定义来自同次 Workspace 或 Catalog snapshot；依赖配置只取 defaults 和同一 config 文件的非敏感覆盖。
 - **凭据绑定**：实际消费的依赖覆盖进入规范化 profile，`source-binding v2` 的 `inputDigest` 与 source evidence 覆盖其有效值、来源及相关 provider 定义；inspect 用同一选择算法重算。
 - **失效与漂移**：provider 变化使旧绑定失效，准备期间变化仍返回 `sourceChanged`。
@@ -141,8 +141,25 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
     "platform": "codex",
     "scope": "user",
     "inputDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "config": {}
+    "config": {},
+    "requestedSkills": ["example-skill"]
   },
+  "preparation": [
+    {
+      "plugin": "example-plugin",
+      "platform": "codex",
+      "renderScope": "user",
+      "profileId": "codex:0.155.0:darwin-arm64-cli-0.167.0-skills",
+      "capabilitiesDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "expectedDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "resourceDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "renderInputDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "outputs": [],
+      "components": [{"id": "skill.example-skill", "kind": "skill", "name": "example-skill", "source": "static"}],
+      "omitted": [],
+      "unmet": []
+    }
+  ],
   "artifacts": [
     {
       "kind": "review-skill",
@@ -162,7 +179,9 @@ aw dev review prepare <plugin-or-source-skill> --platform <platform> --scope <sc
   - `subject`：绑定被审插件名称、可选 Skill 与可选 suite；
   - `profile`：保存 platform、scope、`inputDigest` 和已验证的非敏感配置覆盖。Review profile 的 `id` 必须严格等于 `${platform}-${scope}`（如 `codex-user`）；
   - `artifacts`：数组形式，记录生成物的 kind（`eval-target` | `eval-workspace` | `eval-cases` | `portable-skill` | `review-skill`）、相对路径与 sha256 摘要；
-  - `finalDigest`：**对整个去掉 `finalDigest` 的 binding envelope 对象执行规范化 JSON 摘要（`bindingDigest(bindingOmitFinalDigest)`）**，覆盖 source、subject、profile、可选 evalInput 和 artifacts 的完整内容，绝非各个产物摘要的简单字符串拼接。
+  - `preparation`：必填非空数组；每个实际准备的平台/插件记录 `plugin`、`platform`、`renderScope`、`profileId`、`capabilitiesDigest`、`expectedDigest`、`resourceDigest`、`renderInputDigest`、`outputs: [{path,digest}]`、`components: [{id,kind,name,source}]`、`omitted` 与 `unmet`。`source` 为 static/dynamic，输出路径是相对路径。只记录摘要和规范身份，不记录配置原值或私有绝对路径。Review 保留并核验原生投影摘要；Eval/export 的 outputs 为空，最终 Skill/工作区由 artifacts 绑定。缺少 preparation 的绑定须重新 prepare。
+  - Review profile 的 `requestedSkills` 记录显式选择；其 inputDigest 包含固定 capabilities。动态集合通过真实准备及绑定取得，inspect 不运行 renderer。
+  - `finalDigest`：**对整个去掉 `finalDigest` 的 binding envelope 对象执行规范化 JSON 摘要（`bindingDigest(bindingOmitFinalDigest)`）**，覆盖 source、subject、profile、可选 evalInput、preparation 和 artifacts 的完整内容，绝非各个产物摘要的简单字符串拼接。
 - **Eval 输入绑定（`evalInput`）**：
   当 `profile.kind === 'eval'` 时，必须包含 `evalInput` 结构：
 ```json
@@ -255,7 +274,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
 
 由 `aw dev eval prepare` 生成，定义评测输入闭包：
 - **平台与执行器分离及内置 Backend 资格**：
-  - Manifest 的每个 profile 必须显式声明七平台之一（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`）的 `platform`，与 backend/executor 分离；
+  - Manifest 的每个 profile 必须显式声明十平台之一（`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`）的 `platform`，与 backend/executor 分离；
   - **内置 Eval suite backend 仅支持 `codex` 平台**（`profile.platform === 'codex'`）；非 Codex 平台只有在使用显式 `custom-process` provider 时才被支持，否则 prepare 阶段直接拒绝（抛出不支持 backend 错误）。
 - **工作区与内容**：包含 runtime target、可选 previous target、筛选后的 cases、Eval-owned fixture，以及**移除被测 Skill 后的完整 subject workspace**。
 - **配置覆盖规则与继承**：
@@ -343,7 +362,7 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
 
 ### 6.4 失败证据保留与 `outputDir` 安全清理
 
-- **失败诊断证据**：运行或清理失败时仍保存脱敏的 `provider-evidence.json` 与 `provider-trace.json`，但不产生成功 grade。POSIX 进程检查失败时附带首次失败和最后清理检查的进程元数据与 PID，**不保存命令文本、环境变量或 marker 字符串**。
+- **失败诊断证据**：运行或清理失败时仍保存脱敏的 `provider-evidence.json` 与 `provider-trace.json`，但不产生成功 grade。POSIX 进程检查失败时附带首次失败和最后清理检查的进程元数据与 PID，**不保存命令文本、环境变量或 marker 字符串**。`capturedAt` 是诊断生成时间，不能用作进程表查询起点，也不重建进程退出瞬间的 OS 状态。身份扫描未同时验证 marker 时，诊断中的 marker 字段为 `null`；这不表示已确认标记缺失或查询失败，也不能由较早扫描的匹配结果补成 `true`。
 - **凭据清理边界**：凭据清理仅扫描本次 provider 的 `outputDir`，其中的符号链接一律只 unlink 绝不跟随。subject workspace、Eval fixture 和其它输入**绝不扫描、不改权限、也不删除**。
 
 ---
@@ -368,12 +387,15 @@ aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
       - 严禁调用 `setsid`、`setpgid`、detached、daemonize 或 double-fork；
       - 严禁遗留后台任务，必须在输出最终 JSON 和退出前等待全部后代退出；
   - **Marker 检查、三值语义与僵尸豁免**：
-    - 采样器扫描系统进程表与环境变量，严格区分以下三种 `markerMatches` 状态：
+    - 采样器扫描系统进程表与启动标记证据，严格区分以下三种 `markerMatches` 状态：
       - `markerMatches: true`：标记匹配且可读；
-      - `markerMatches: false`：进程环境可读，但标记缺失或不匹配（诊断原因包含 `root-marker-missing`、`known-process-marker-missing` 或 `initial-group-marker-missing`）；
-      - `markerMatches: null`：无法取得可用匹配证据（包含：存活相关进程环境经单次复查后仍不可读，诊断原因为 `process-marker-unreadable`；或整次 marker 查询失败/复查超时命令失败，诊断原因为 `marker-lookup-failed`）；
+      - `markerMatches: false`：标记查询可用，但没有匹配的启动标记（诊断原因包含 `root-marker-missing`、`known-process-marker-missing` 或 `initial-group-marker-missing`）；
+      - `markerMatches: null`：无法取得可用匹配证据（包含：存活相关进程经复查与补证后仍无可用标记证据，诊断原因为 `process-marker-unreadable`；或整次 marker 查询失败/复查超时命令失败，诊断原因为 `marker-lookup-failed`）；
     - **单次复查与僵尸豁免**：遇到 marker 暂时不可读时，在同一次命令预算（`POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS`）内**允许执行一次复查**；已退出进程及僵尸进程（zombie，状态以 `Z` 开头）免于复查；
-    - 若复查后仍存活且无 marker（`false`）或无法取得可用证据（`null`），立即判定失败；
+    - **Linux 不可读形式与身份确认**：未匹配正标记且完整 command 为 `[comm]`（可带固定 `<defunct>` 后缀）时，按 procps 的参数不可读形式处理，复用上述原预算内的一次 marker 复查。带普通参数或环境的方括号前缀不属于该形式。仅运行期 `observation` 阶段，在复查 callback 完成后，对仍为 `null` 且匹配原 PID/启动时间的相关候选，共用一次直接启动的新身份查询，不复用共享在途查询。新表必须完整可解析，且受控 observer 或 sentinel 的启动身份锚点有效；只对原 PID 完全不在该表中的候选，排除本次 marker 失败判断。查询失败、空表、残缺表、无效锚点、超时、身份替换及同一身份仍在（包括新表中变为 `Z`）均不能取得这一排除结果。此结果不证明旧 marker 成功，不覆盖旧 marker 快照、不删除已知身份、不授权新信号；后续完成与清理仍使用各阶段独立的新查询和原门禁。复查变为可读但缺标记仍为 `false` 失败；常规可读负例不增加等待退出的机会。同一身份离组后仍保持相关；原表、复查表及新身份表中已证的离组违规和已锁存失败均保留。marker 复查本身已证退出、zombie 或身份替换时，保持原有身份保护，不认领或 signal 替代身份。该方括号分类不增加 Darwin 的 ps 复查。
+    - **macOS 标题改写补证**：`process.title` 的 NUL 填充可能使 `ps` 提前停止，漏掉仍保留的启动标记。对相关存活且缺失或不可读的 PID，使用系统 JXA 调用 `KERN_PROCARGS2`，只在内核实际返回的启动字符串区中匹配完整 NUL 边界的精确随机标记，再立即核对新的 PID/启动时间。该区包含 argv、启动环境与 Apple 附加字符串，不能完整证明 token 来自环境区，也不检测运行时环境变量修改；此采样路径不是强隔离。只补读 `ps` 的负例或不可读行，原有正匹配歧义保持。
+    - 补证批量读取本次候选，不缓存跨次成功；权限或无法读取保持 `null`，辅助程序失败或无效结果保持查询失败。已退出、zombie 或身份替换必须由新身份表证明，不能只凭 sysctl 错误推断退出。原行与新身份表中的进程组违规均保留，已锁存失败不被补证清除。
+    - 原始读取、新身份查询、已有复查与阶段等待共用原2秒绝对预算，不重置截止、不改变外层清理时限。若补证后仍存活且无 marker（`false`）或无法取得可用证据（`null`），立即判定失败；
   - **检查失效保护**：Engine 在运行期观察该合同，发现违规或检查失效时，Engine 立即 fail closed：**丢弃 grade 并停止 batch，绝不盲杀 foreign 进程**。
   - **Unmanaged 模式与收尾边界**：
     - POSIX managed 模式仅代表引擎具备进程检查能力并尝试追踪协作式后代，**绝不是 OS 内核级别的强制 containment**；

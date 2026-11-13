@@ -22,7 +22,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function createSyncCatalogFixture(root: string, name = 'demo', capabilities: readonly string[] = [], readme = `${name}\n`) {
   await createCatalogFixture(root, name, capabilities, readme, (manifest) => {
-    manifest.extensions = { instructions: [{ name: `${name}-instruction`, title: name, content: `${name}.` }] };
+    manifest.extensions = { instructions: [{ name: `${name}-instruction`, title: name, content: `${name}.`, coverage: ['main'] }] };
   });
 }
 
@@ -229,12 +229,12 @@ describe('scoped sync source refresh', () => {
   });
 });
 
-async function ownedCursorSkill(location: { cwd: string; env: NodeJS.ProcessEnv }) {
+async function ownedGenericSkill(location: { cwd: string; env: NodeJS.ProcessEnv }) {
   const sourceDir = path.join(location.cwd, 'portable-source', 'demo');
   await fs.ensureDir(location.env.HOME!);
-  const destinationRoot = path.join(await fs.realpath(location.env.HOME!), '.cursor', 'skills');
+  const destinationRoot = path.join(await fs.realpath(location.env.HOME!), '.agents', 'skills');
   const identity = { pluginId: 'local/demo', logicalIdentity: 'sha256:logical',
-    platform: 'cursor' as const, scope: 'user' as const, skill: 'demo' };
+    platform: 'generic' as const, scope: 'user' as const, skill: 'demo' };
   await fs.outputFile(path.join(sourceDir, 'SKILL.md'), '---\nname: demo\ndescription: Test skill\n---\nUse demo.\n');
   await fs.outputFile(path.join(sourceDir, 'README.md'), 'Use demo.\n');
   const expectedDigest = await portableOwnedTreeDigest(sourceDir);
@@ -245,21 +245,22 @@ async function ownedCursorSkill(location: { cwd: string; env: NodeJS.ProcessEnv 
 }
 
 describe('ordinary scoped cleanup residue', () => {
-  // Test Value Gate: failed output inspection must retain each physical target as retryable.
-  it('keeps each unobservable Portable target in the cleanup retry set', async () => {
+  // Test Value Gate: failed output inspection must retain every selected deployment as retryable.
+  it('keeps every unobservable generic deployment in the cleanup retry set', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     await addRoot(location, 'local/demo', 'sha256:logical');
-    await fs.outputFile(path.join(isolation.env.HOME!, '.cursor', 'skills'), 'foreign file');
-    await fs.outputFile(path.join(isolation.env.HOME!, '.pi', 'agent', 'skills'), 'foreign file');
+    await addRoot(location, 'local/other', 'sha256:logical');
+    await fs.outputFile(path.join(isolation.env.HOME!, '.agents', 'skills'), 'foreign file');
 
-    const receipt = await runRecovery('cleanup', ['local/demo'], { ...location,
-      cliVersion: '1.0.0', targets: ['cursor', 'pi'], yes: true });
+    const receipt = await runRecovery('cleanup', ['local/demo', 'local/other'], { ...location,
+      cliVersion: '1.0.0', targets: ['generic'], yes: true });
 
-    expect(receipt.remainingTargets.map((target) => target.agent).sort()).toEqual(['cursor', 'pi']);
+    expect(receipt.remainingTargets.map((target) => `${target.pluginId}/${target.agent}`).sort())
+      .toEqual(['local/demo/generic', 'local/other/generic']);
     for (const target of receipt.targetResults) expect(target.blockers)
       .toContainEqual(expect.objectContaining({ code: 'portableObservationFailed' }));
-    expect(await fs.readFile(path.join(isolation.env.HOME!, '.cursor', 'skills'), 'utf8')).toBe('foreign file');
+    expect(await fs.readFile(path.join(isolation.env.HOME!, '.agents', 'skills'), 'utf8')).toBe('foreign file');
     expect(receipt.outputsMayHaveChanged).toBe(false);
   });
 
@@ -272,12 +273,12 @@ describe('ordinary scoped cleanup residue', () => {
     const beforePreferences = await observePreferences(location);
     const configPath = resolvePluginConfigStorePath({ ...location, sourceId: 'local', pluginName: 'demo' });
     await fs.outputFile(configPath, 'saved config bytes');
-    const owned = await ownedCursorSkill(location);
+    const owned = await ownedGenericSkill(location);
     const foreign = path.join(path.dirname(owned), 'foreign', 'SKILL.md');
     await fs.outputFile(foreign, 'foreign skill bytes');
 
     const receipt = await runRecovery('cleanup', ['local/demo'], { ...location,
-      cliVersion: '1.0.0', targets: ['cursor'], yes: true });
+      cliVersion: '1.0.0', targets: ['generic'], yes: true });
 
     expect(receipt).toMatchObject({ ok: true, declarationChanged: false,
       preferencesChanged: false, configChanged: false, outputsMayHaveChanged: true, remainingTargets: [] });
@@ -291,7 +292,7 @@ describe('ordinary scoped cleanup residue', () => {
   it('removes a declaration while leaving unowned Portable output untouched', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
-    await setTargets(location, ['cursor']);
+    await setTargets(location, ['generic']);
     const sourceRoot = path.join(location.cwd, 'remove-foreign-source');
     await createSyncCatalogFixture(sourceRoot);
     const sourceConfig = await readCatalogSourcesConfigSnapshot(location.env);
@@ -303,7 +304,7 @@ describe('ordinary scoped cleanup residue', () => {
     if (!active) throw new Error('Missing Active generation in fixture.');
     await addRoot(location, 'local/demo', active.logicalIdentity);
     const beforePreferences = await observePreferences(location);
-    const foreign = path.join(isolation.env.HOME!, '.cursor', 'skills', 'demo', 'SKILL.md');
+    const foreign = path.join(isolation.env.HOME!, '.agents', 'skills', 'demo', 'SKILL.md');
     await fs.outputFile(foreign, 'legacy third-party skill');
 
     const receipt = await runRecovery('uninstall', ['local/demo'], { ...location,
@@ -322,9 +323,9 @@ describe('ordinary scoped cleanup residue', () => {
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
     await addRoot(location, 'local/demo', 'sha256:logical');
     const before = await observeIntent(location);
-    const owned = await ownedCursorSkill(location);
+    const owned = await ownedGenericSkill(location);
     const plan = await prepareRecovery('cleanup', ['local/demo'], { ...location,
-      cliVersion: '1.0.0', targets: ['cursor'], yes: true });
+      cliVersion: '1.0.0', targets: ['generic'], yes: true });
     await fs.outputFile(path.join(plan.context.executionCwd, '.codex'), 'new local config marker');
 
     const receipt = await executeRecovery(plan);
@@ -348,9 +349,9 @@ describe('ordinary scoped cleanup residue', () => {
       env: { ...isolation.env, HOME: alias, USERPROFILE: alias } };
     await addRoot(location, 'local/demo', 'sha256:logical');
     const before = await observeIntent(location);
-    await ownedCursorSkill(location);
+    await ownedGenericSkill(location);
     const plan = await prepareRecovery('cleanup', ['local/demo'], { ...location,
-      cliVersion: '1.0.0', targets: ['cursor'], yes: true });
+      cliVersion: '1.0.0', targets: ['generic'], yes: true });
     await fs.remove(alias);
     await fs.symlink(otherHome, alias, 'dir');
 
@@ -361,6 +362,6 @@ describe('ordinary scoped cleanup residue', () => {
     ]));
     expect(receipt.outputsMayHaveChanged).toBe(false);
     expect(await observeIntent(location)).toEqual(before);
-    expect(await fs.pathExists(path.join(isolation.layout.homeDir, '.cursor', 'skills', 'demo'))).toBe(true);
+    expect(await fs.pathExists(path.join(isolation.layout.homeDir, '.agents', 'skills', 'demo'))).toBe(true);
   });
 });

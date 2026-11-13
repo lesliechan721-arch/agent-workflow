@@ -8,10 +8,6 @@ vi.mock('../../src/commands/rebuild-command.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/rebuild-command.js')>(),
   runRebuildCommand: native.run,
 }));
-vi.mock('../../src/portable/recovery.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/portable/recovery.js')>(),
-  inspectPortableResidue: vi.fn(async () => ({ state: 'absent', targets: [], blockers: [] })),
-}));
 
 import { executeRecovery, prepareRecovery, prepareScopedRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import type { RebuildCommandResult } from '../../src/commands/rebuild-command.js';
@@ -19,8 +15,34 @@ import type { CommandProducerResult, PlatformName, Scope } from '../../src/types
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { nativeToolFixture } from '../helpers/native-tools.js';
 
 describe('scoped Native recovery receipt', () => {
+  // Frozen Skill native authority must reach the authorization gate without a legacy write action.
+  it('requires authorization for a top-level frozen Skill native tool change before execution', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const target = { pluginId: 'team/demo', pluginName: 'demo', pluginVersion: '1.0.0', platform: 'claude' as const,
+      scope: 'user' as const, cwd: isolation.layout.fixtureCwd };
+    const change = { producer: { sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, pluginName: 'demo',
+      kind: 'static-skill' as const, key: 'tools', platform: 'claude' as const, scope: 'user' as const,
+      projectRoot: null, placementKey: `sha256:${'3'.repeat(64)}` }, before: nativeToolFixture().closure, after: null };
+    let executions = 0;
+    native.run.mockImplementation(async (options: { runtime?: { previewOperationPlan?: boolean } }): Promise<RebuildCommandResult> => {
+      if (!options.runtime?.previewOperationPlan) executions += 1;
+      return { platforms: ['claude'], plugins: ['team/demo'], warnings: [], overallState: 'succeeded', rebuildResults: [],
+        targetResults: [{ target, action: 'cleanup', state: 'completed' }],
+        operationPlan: createOperationPlan({ nativeToolChanges: [change], actions: [], intentChanges: [], changes: [], warnings: [],
+          evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } }),
+      };
+    });
+    const receipt = await runRecovery('cleanup', ['team/demo'], {
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', targets: ['claude'], yes: false,
+    }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'fixture 99.0.0', stderr: '' }) });
+    expect(receipt.ok).toBe(false);
+    expect(receipt.nativeToolChanges).toEqual([change]);
+    expect(receipt.blockers).toContainEqual(expect.objectContaining({ code: 'nativeToolAuthorizationRequired' }));
+    expect(executions).toBe(0);
+  });
   // Test Value Gate: command failures must not become successful recovery after platform writes succeed.
   it.each([
     { state: 'completed' as const, producerPlugin: 'demo' },
@@ -32,7 +54,7 @@ describe('scoped Native recovery receipt', () => {
       platform: 'claude' as const, scope: 'user' as const, cwd: isolation.layout.fixtureCwd };
     const producer: CommandProducerResult = {
       producer: { sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, pluginName: producerPlugin,
-        kind: 'static-skill', key: 'tools', platform: 'claude', scope: 'user', projectRoot: null },
+        kind: 'static-skill', key: 'tools', platform: 'claude', placementKey: `sha256:${'3'.repeat(64)}`, scope: 'user', projectRoot: null },
       state, commandIds: [], removedCommandIds: [],
       errors: state === 'failed' ? [{ code: 'commandBindingInvalid', message: 'Command binding failed.' }] : [],
       recoveryActions: state === 'failed'
@@ -81,7 +103,7 @@ describe('scoped Native recovery receipt', () => {
     const sourceIdentity = `sha256:${'1'.repeat(64)}`;
     await fs.outputFile(path.join(pluginRoot, 'tools', 'run.mjs'), 'process.exit(0);\n');
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3, name: pluginName, version: '1.0.0', description: 'Package receipt fixture.',
+      schemaVersion: 4, name: pluginName, version: '1.0.0', description: 'Package receipt fixture.',
       requires: { aw: { capabilities: ['aw.managed-commands.v1'] } },
       marketplace: { category: 'test', strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
@@ -94,7 +116,7 @@ describe('scoped Native recovery receipt', () => {
     const producer: CommandProducerResult = {
       producer: { sourceId: 'team', sourceIdentity: mismatch === 'sourceIdentity'
         ? `sha256:${'2'.repeat(64)}` : sourceIdentity, pluginName, kind: 'package', key: 'tools',
-      platform: null, scope: mismatch === 'scope' ? 'project' : 'user',
+      platform: null, placementKey: null, scope: mismatch === 'scope' ? 'project' : 'user',
       projectRoot: mismatch === 'scope' ? await fs.realpath(isolation.layout.fixtureCwd) : null },
       state: 'failed', commandIds: [], removedCommandIds: [],
       errors: [{ code: 'commandResourceInvalid', message: 'Package publication failed.' }],
@@ -150,7 +172,7 @@ describe('scoped Native recovery receipt', () => {
     const isolation = getCurrentSourceTestIsolation();
     const producer: CommandProducerResult = {
       producer: { sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, pluginName: 'demo',
-        kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null },
+        kind: 'package', key: 'tools', platform: null, placementKey: null, scope: 'user', projectRoot: null },
       state: 'failed', commandIds: [], removedCommandIds: [],
       errors: [{ code: 'commandResourceInvalid', message: 'Package publication failed.' }],
       recoveryActions: ['aw command package sync team/demo tools --scope user --yes'],
@@ -184,6 +206,48 @@ describe('scoped Native recovery receipt', () => {
     expect(receipt.remainingTargets).toEqual([expect.objectContaining({ agent: 'codex' })]);
     expect(receipt.targetResults.find((target) => target.agent === 'claude'))
       .toMatchObject({ execution: 'applied', blockers: [] });
+  });
+
+  // A failed Skill producer must not rewrite a completed independent package or another platform as failed.
+  it('keeps an independent package result completed when a separate Skill producer fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    const commandResults: CommandProducerResult[] = [{
+      producer: { sourceId: 'team', sourceIdentity, pluginName: 'demo', kind: 'artifact', key: 'bad-skill',
+        platform: 'claude', scope: 'user', projectRoot: null, placementKey: `sha256:${'3'.repeat(64)}` },
+      state: 'failed', commandIds: [], removedCommandIds: [],
+      errors: [{ code: 'commandReferenceInvalid', message: 'The Skill producer is unavailable.' }],
+      recoveryActions: ['aw plugin sync team/demo --target claude --context user --rebuild --yes'],
+    }, {
+      producer: { sourceId: 'team', sourceIdentity, pluginName: 'demo', kind: 'package', key: 'independent',
+        platform: null, scope: 'user', projectRoot: null, placementKey: null },
+      state: 'completed', commandIds: [`cmdp_${'1'.repeat(16)}`], removedCommandIds: [], errors: [], recoveryActions: [],
+    }];
+    native.run.mockImplementation(async (options: { runtime: { previewOperationPlan?: boolean;
+      executionInput: { selectedTargets: Array<{ platform: PlatformName }> } } }): Promise<RebuildCommandResult> => {
+      const targets = options.runtime.executionInput.selectedTargets.map(({ platform }) => ({
+        sourceId: 'team', sourceIdentity, pluginId: 'team/demo', pluginName: 'demo', pluginVersion: '1.0.0', platform,
+        scope: 'user' as const, cwd: isolation.layout.fixtureCwd,
+      }));
+      return { platforms: targets.map((target) => target.platform), plugins: ['team/demo'], warnings: [], rebuildResults: [],
+        overallState: options.runtime.previewOperationPlan ? 'succeeded' : 'partial',
+        targetResults: targets.map((target) => ({ target, action: 'cleanup', state: 'completed' })),
+        ...(options.runtime.previewOperationPlan ? {} : { commandResults }),
+        operationPlan: createOperationPlan({ intentChanges: [], changes: [], warnings: [], actions: targets.map((target) => ({
+          kind: 'removeOwnedArtifact', pluginId: target.pluginId, platform: target.platform, scope: target.scope,
+          path: path.join(isolation.layout.fixtureCwd, target.platform), ownerFingerprint: 'sha256:fixture',
+        })), evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } }),
+      };
+    });
+    const receipt = await runRecovery('cleanup', ['team/demo'], {
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', targets: ['codex', 'claude'], yes: true,
+    }, { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'fixture 99.0.0', stderr: '' }) });
+    expect(receipt.ok).toBe(false);
+    expect(receipt.commandResults).toEqual(commandResults);
+    expect(receipt.commandResults?.find((result) => result.producer.kind === 'package')).toMatchObject({ state: 'completed', errors: [] });
+    expect(receipt.remainingTargets).toEqual([expect.objectContaining({ agent: 'claude' })]);
+    expect(receipt.targetResults.find((target) => target.agent === 'codex')).toMatchObject({ execution: 'applied', blockers: [] });
+    expect(receipt.targetResults.find((target) => target.agent === 'claude')).toMatchObject({ execution: 'partial', blockers: [{ code: 'commandReferenceInvalid' }] });
   });
 
   // Test Value Gate: successful Codex work must not turn a wholly failed Claude target into partial success.
@@ -259,5 +323,41 @@ describe('scoped Native recovery receipt', () => {
     expect(receipt.targetResults).toEqual([expect.objectContaining({
       pluginId: 'team/demo', agent: 'claude', execution: 'applied', content, observation,
     })]);
+  });
+});
+
+// Test Value Gate: an excluded installed product must survive the frozen-plan to recovery boundary,
+// including successful usable products, failed execution, and a preview with no deployment binding.
+describe('excluded Native product recovery receipt', () => {
+  it.each(['succeeded', 'failed'] as const)('keeps an unsupported App beside a %s usable CLI', async (state) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const identity = { pluginId: 'team/demo', pluginName: 'demo', pluginVersion: '1.0.0', platform: 'codex' as const,
+      scope: 'user' as const, cwd: isolation.layout.fixtureCwd };
+    const excluded = { pluginId: 'team/demo', platform: 'codex' as const, scope: { kind: 'user' as const }, productId: 'unsupported-app',
+      product: { id: 'unsupported-app', product: 'app' as const, version: '0.151.0', availability: 'unsupported' as const,
+        reasonCodes: ['clientVersionUnsupported'], entry: null }, reasonCode: 'clientVersionUnsupported', execution: 'not-run' as const,
+      recoveryActions: ['aw target list'] };
+    native.run.mockImplementation(async (options: { runtime?: { previewOperationPlan?: boolean } }): Promise<RebuildCommandResult> => {
+      const preview = options.runtime?.previewOperationPlan === true;
+      return { platforms: ['codex'], plugins: ['team/demo'], warnings: [], overallState: preview ? 'succeeded' : state,
+        targetResults: [{ target: identity, action: 'cleanup', state: preview || state === 'succeeded' ? 'completed' : 'failed',
+          ...(!preview && state === 'failed' ? { errorCode: 'nativeCleanupFailed' } : {}) }],
+        rebuildResults: preview ? [] : [{ target: identity, command: 'cleanup', actions: [], cleanupAttempted: false,
+          removed: [], absent: [], residual: [], quarantined: [], failures: [], deploymentExclusions: [excluded],
+          ...(state === 'succeeded' ? { status: 'succeeded' as const } : { status: 'failed' as const,
+            error: { phase: 'preflight' as const, message: 'nativeCleanupFailed' } }) }],
+        ...(preview ? { operationPlan: createOperationPlan({ deploymentExclusions: [excluded], actions: [], intentChanges: [], changes: [], warnings: [],
+          evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] } }) } : {}),
+      };
+    });
+    const plan = await prepareScopedRecovery('cleanup', ['team/demo'], { scope: 'user', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env, cliVersion: '1.0.0', targets: ['codex'], yes: true },
+    { nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }) });
+    try {
+      expect(plan.receipt.targetResults[0]!.deploymentExclusions).toEqual([excluded]);
+      const result = await executeRecovery(plan, { yes: true });
+      expect(result.targetResults[0]!.deploymentExclusions).toEqual([excluded]);
+      expect(result.targetResults[0]!.execution).toBe(state === 'succeeded' ? 'applied' : 'failed');
+    } finally { await plan.context.dispose(); }
   });
 });

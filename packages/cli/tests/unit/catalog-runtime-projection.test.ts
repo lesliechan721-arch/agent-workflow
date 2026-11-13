@@ -29,7 +29,7 @@ async function createPlugin(options: {
   const pluginRoot = path.join(options.root, options.name);
   await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
   await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-    schemaVersion: 3,
+    schemaVersion: 4,
     name: options.name,
     version: '0.1.0',
     description: options.name,
@@ -44,7 +44,7 @@ async function createPlugin(options: {
       },
     },
     ...(options.buildConfig ? { buildConfig: options.buildConfig } : {}),
-    ...(options.scripts ? { scripts: options.scripts } : {}),
+    ...((options.scripts || options.artifacts) ? { scripts: { ...options.scripts, ...(options.artifacts ? { artifacts: { render: { runner: 'node', path: './render.mjs' } } } : {}) } } : {}),
     ...(options.artifacts ? { artifacts: options.artifacts } : {}),
     ...(options.extensions ? { extensions: options.extensions } : {}),
   }, { spaces: 2 });
@@ -53,6 +53,7 @@ async function createPlugin(options: {
     await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: demo\n---\n');
     await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'agents', 'openai.yaml'), 'interface:\n  display_name: Demo\n');
   }
+  if (options.artifacts) await fs.outputFile(path.join(pluginRoot, 'render.mjs'), 'console.log(JSON.stringify({schemaVersion:3,components:[],omitted:[],unmet:[]}));\n');
   for (const [relativePath, content] of Object.entries(options.files ?? {})) {
     await fs.outputFile(path.join(pluginRoot, relativePath), content);
   }
@@ -162,17 +163,9 @@ describe('catalog runtime projection', () => {
       name: 'portable-consumer',
       platforms: ['codex', 'claude', 'generic'],
       artifacts: {
-        targets: [{
-          id: 'dynamic-portable',
-          platform: 'generic',
-          distribution: 'agent-skills',
-          target: 'agent-skills.skill',
-          scopes: ['user'],
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'dynamic-portable',
-          runtimeImports: [{ name: 'registry', plugin: 'portable-provider', export: 'registry' }],
-        }],
+        configKeys: [],
+        scopes: ['user'],
+        runtimeImports: [{ name: 'registry', plugin: 'portable-provider', export: 'registry' }],
       },
       buildConfig: {
         skillRuntimeFiles: [{
@@ -206,7 +199,7 @@ describe('catalog runtime projection', () => {
     const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
     expect(consumer.manifest.requires?.aw.capabilities ?? []).not.toContain('aw.review-inspection.v3');
     expect(bundleManifest.requires.aw.capabilities).toContain('aw.review-inspection.v3');
-    const resolvedImport = bundleManifest.artifacts.targets[0].runtimeImports[0].resolved;
+    const resolvedImport = bundleManifest.artifacts.runtimeImports[0].resolved;
     expect(resolvedImport).toMatchObject({
       providerPluginId: 'portable-provider',
       source: './registry.json',
@@ -249,17 +242,9 @@ describe('catalog runtime projection', () => {
       name: 'artifact-consumer',
       platforms: ['generic'],
       artifacts: {
-        targets: [{
-          id: 'dynamic',
-          platform: 'generic',
-          distribution: 'agent-skills',
-          target: 'agent-skills.skill',
-          scopes: ['user'],
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'dynamic',
-          runtimeImports: [{ name: 'registry', plugin: 'artifact-provider', export: 'registry' }],
-        }],
+        configKeys: [],
+        scopes: ['user'],
+        runtimeImports: [{ name: 'registry', plugin: 'artifact-provider', export: 'registry' }],
       },
     });
     const outputRoot = path.join(root, 'artifact-bundle');
@@ -270,7 +255,7 @@ describe('catalog runtime projection', () => {
 
     const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
     expect(bundleManifest.requires.aw.capabilities).toContain('aw.review-inspection.v3');
-    expect(bundleManifest.artifacts.targets[0].runtimeImports[0].resolved)
+    expect(bundleManifest.artifacts.runtimeImports[0].resolved)
       .toMatchObject({ requiredCapabilities: ['aw.review-inspection.v3'] });
   });
 

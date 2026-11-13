@@ -51,7 +51,7 @@ describe('Config platform profiles', () => {
       expect(selectPluginConfigProfile(normalized, platform)).toEqual(compilePluginConfigDefinition(normalized, platform))
     }
     const manifest = validatePluginManifest('/tmp/platform-config', {
-      schemaVersion: 3, name: 'platform-config', version: '1.0.0', description: 'Example',
+      schemaVersion: 4, name: 'platform-config', version: '1.0.0', description: 'Example',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       config: source,
     })

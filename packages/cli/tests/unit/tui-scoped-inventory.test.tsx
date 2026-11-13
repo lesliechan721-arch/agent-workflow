@@ -41,8 +41,7 @@ function recovery(scope: 'user' | 'project'): ScopedInventoryLoadResult {
       targetResults: [{ pluginId: 'official/demo', agent: 'codex', scope,
         delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run', observation: 'missing',
         content: 'absent', blockers: [], requiredBy: [] }] }],
-    extraObserved: [], errors: [], allSatisfied: false,
-    nativeSnapshot: { payload: status.payload, pluginSummaries: status.pluginSummaries, targetRevisions: [], dependencyOverviews: [] } };
+    extraObserved: [], errors: [], allSatisfied: false, dependencyOverviews: [] };
 }
 
 async function tick(): Promise<void> {
@@ -88,19 +87,19 @@ async function readScopedPages(
 afterEach(cleanup);
 
 describe('scoped inventory in Ink', () => {
-  // Test Value Gate: a verified Portable target must show the same health in inventory and detail cards.
+  // Test Value Gate: a verified generic Skills target must show the same health in inventory and detail cards.
   it.each([
     { observation: 'verified', content: 'satisfied', state: 'ready', label: '可用', actual: true },
     { observation: 'unknown', content: 'drifted', state: 'pending', label: '待同步', actual: true },
     { observation: 'unknown', content: 'unknown', state: 'unknown', label: '未确认', actual: false },
     { observation: 'unknown', content: 'conflict', state: 'blocked', label: '受阻', actual: false },
-  ] as const)('projects Portable $content through recovery, inventory, detail and Ink', (caseValue) => {
+  ] as const)('projects generic Skills $content through recovery, inventory, detail and Ink', (caseValue) => {
     const pluginId = 'official/demo';
     const recoveryStatus: ScopedInventoryLoadResult = { ...recovery('user'),
-      selection: { agents: ['cursor'], preferences: 'valid' },
+      selection: { agents: ['generic'], preferences: 'valid' },
       inventory: [{ pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: [{
-        pluginId, agent: 'cursor', scope: 'user',
-        delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+        pluginId, agent: 'generic', scope: 'user',
+        delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
         execution: 'not-run', observation: caseValue.observation, content: caseValue.content,
         blockers: [], requiredBy: [pluginId],
       }] }],
@@ -112,7 +111,7 @@ describe('scoped inventory in Ink', () => {
       pluginSummaries: status.pluginSummaries, plugins: model.plugins,
       scopedInventories: { user: inventory } });
     expect(subject?.placements).toEqual([expect.objectContaining({
-      agent: 'cursor', delivery: 'agent-skills', projectState: caseValue.state,
+      agent: 'generic', delivery: 'agent-skills', projectState: caseValue.state,
       observation: caseValue.state === 'ready' || caseValue.content === 'drifted'
         || caseValue.content === 'absent' ? 'known' : 'unknown', actual: caseValue.actual,
     })]);
@@ -127,17 +126,17 @@ describe('scoped inventory in Ink', () => {
     }
   });
 
-  it('keeps a Portable location through satisfied, drifted and satisfied observations but omits absence', () => {
+  it('keeps a generic Skills location through satisfied, drifted and satisfied observations but omits absence', () => {
     const pluginId = 'official/demo';
     for (const [observation, content, actual] of [
       ['verified', 'satisfied', true], ['unknown', 'drifted', true],
       ['verified', 'satisfied', true], ['missing', 'absent', false],
     ] as const) {
       const recoveryStatus: ScopedInventoryLoadResult = { ...recovery('project'),
-        selection: { agents: ['cursor'], preferences: 'valid' },
+        selection: { agents: ['generic'], preferences: 'valid' },
         inventory: [{ pluginId, source: 'official', sourceState: 'ready', blockers: [], targetResults: [{
-          pluginId, agent: 'cursor', scope: 'project',
-          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+          pluginId, agent: 'generic', scope: 'project',
+          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
           execution: 'not-run', observation, content, blockers: [], requiredBy: [pluginId],
         }] }],
       };
@@ -148,7 +147,7 @@ describe('scoped inventory in Ink', () => {
       const detail = buildPluginDetailSubject({ pluginId, status: status.payload,
         pluginSummaries: status.pluginSummaries, plugins: model.plugins,
         scopedInventories: { project: inventory } });
-      expect(detail?.placements.filter((placement) => placement.agent === 'cursor')).toHaveLength(actual ? 1 : 0);
+      expect(detail?.placements.filter((placement) => placement.agent === 'generic')).toHaveLength(actual ? 1 : 0);
       if (actual) expect(detail?.placements[0]?.projectState).toBe(content === 'drifted' ? 'pending' : 'ready');
     }
   });
@@ -337,15 +336,15 @@ describe('scoped inventory in Ink', () => {
       cwd: '/tmp/project', version: '2.0.0', state: 'ready' as const,
       components: [{ kind: 'ownership' as const, key: 'extra', state: 'present' }],
       reasons: [], recoveryActions: [] };
-    const revisions = [{ pluginId: native.pluginId, platform: native.platform,
-      scope: native.scope, revision: { state: 'current' as const, installedVersion: '2.0.0', availableVersion: '2.0.0' } }];
-    const initial = { ...status, payload: { ...status.payload, targets: [native] }, targetRevisions: revisions };
-    let current = { ...recovery('user'), nativeSnapshot: {
-      payload: initial.payload, pluginSummaries: [{ pluginId: native.pluginId, displayName: 'Current Extra' }],
-      targetRevisions: revisions, dependencyOverviews: [],
-    } };
-    current.extraObserved = [{ pluginId: native.pluginId, agent: 'claude', scope: 'user',
-      delivery: { kind: 'native', platform: 'claude' }, observation: 'verified', content: 'satisfied' }];
+    const initial: TuiStatusLoadResult = { ...status, pluginSummaries: [...status.pluginSummaries,
+      { pluginId: native.pluginId, pluginName: 'extra', displayName: 'Current Extra', description: 'Extra', version: '2.0.0' }],
+      payload: { ...status.payload, targets: [] }, targetRevisions: [] };
+    let current: ScopedInventoryLoadResult = { ...recovery('user'), dependencyOverviews: [],
+      existingTargets: [{ pluginId: native.pluginId, agent: 'claude', scope: 'user' }],
+      extraObserved: [{ pluginId: native.pluginId, agent: 'claude', scope: 'user',
+        delivery: { kind: 'native', platform: 'claude' }, observation: 'verified', content: 'satisfied',
+        expectedVersion: '2.0.0', installedVersion: '2.0.0' }] };
+    initial.scopedRecovery = { user: current };
     const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(initial),
       loadScopedStatus: vi.fn(async () => current), loadPluginContent: vi.fn().mockRejectedValue(new Error('unavailable')) });
     await controller.load();
@@ -353,10 +352,9 @@ describe('scoped inventory in Ink', () => {
     expect(controller.listScopedInventoryRoots('user', 'extraInstalled')[0]?.displayName).toBe('Current Extra');
     expect(controller.listScopedInventoryRoots('user', 'extraInstalled')[0]?.targets[0])
       .toMatchObject({ installedVersion: '2.0.0', state: 'ready' });
-    if (change === 'removed') current = { ...current, extraObserved: [], nativeSnapshot: {
-      ...current.nativeSnapshot, payload: { ...status.payload, targets: [] }, targetRevisions: [] } };
+    if (change === 'removed') current = { ...current, extraObserved: [], existingTargets: [] };
     else current = { ...current,
-      extraObserved: [{ ...current.extraObserved![0]!, observation: 'unknown', content: change }] };
+      existingTargets: [], extraObserved: [{ ...current.extraObserved![0]!, observation: 'unknown', content: change, installedVersion: undefined }] };
     await controller.refreshScopedInventory('user');
     const expected = change === 'removed' ? [] : [expect.objectContaining({
       state: change === 'conflict' ? 'blocked' : 'unknown',
@@ -364,6 +362,7 @@ describe('scoped inventory in Ink', () => {
     expect(controller.listScopedInventoryRoots('user', 'extraInstalled')).toEqual(expected);
     await controller.loadPluginContent('official/demo');
     expect(controller.listScopedInventoryRoots('user', 'extraInstalled')).toEqual(expected);
+    if (change !== 'removed') expect(controller.listScopedInventoryRoots('user', 'extraInstalled')[0]?.targets[0]).not.toHaveProperty('installedVersion');
     expect(controller.snapshot.scopedInventoryRefresh.user?.state).toBe('idle');
     controller.dispose();
   });
@@ -434,19 +433,19 @@ describe('scoped inventory in Ink', () => {
 
   it('refreshes shared User dependency evidence while preserving the other inventory', async () => {
     const project = recovery('project');
-    project.nativeSnapshot = { payload: { ...status.payload, targets: [{
-      pluginId: 'official/demo', pluginName: 'demo', sourceId: 'official', sourceIdentity: 'source',
-      platform: 'claude', scope: 'project', cwd: '/tmp/project', version: '2.0.0', state: 'ready',
-      components: [{ kind: 'ownership', key: 'demo', state: 'present' },
-        { kind: 'dependency', key: 'official/base', state: 'ready',
-          metadata: { platform: 'claude', scope: 'user', project: 'none' } }],
-      reasons: [], recoveryActions: [],
-    }] }, pluginSummaries: status.pluginSummaries, targetRevisions: [{ pluginId: 'official/demo', platform: 'claude', scope: 'project',
-      revision: { state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0' } }],
-    dependencyOverviews: [{ pluginId: 'official/demo',
-      summary: { directCount: 1, transitiveCount: 0, dependentCount: 0, blockedCount: 0 },
+    project.inventory![0]!.targetResults = [{ pluginId: 'official/demo', agent: 'claude', scope: 'project',
+      delivery: { kind: 'native', platform: 'claude' }, execution: 'not-run', observation: 'unknown', content: 'drifted',
+      blockers: [], requiredBy: ['official/demo'], expectedVersion: '2.0.0', installedVersion: '1.0.0' }];
+    project.existingTargets = [{ pluginId: 'official/demo', agent: 'claude', scope: 'project' },
+      { pluginId: 'official/base', agent: 'claude', scope: 'user' }];
+    project.observedTargets = [{ pluginId: 'official/base', agent: 'claude', scope: 'user', providerScope: 'user',
+      delivery: { kind: 'native', platform: 'claude' }, execution: 'not-run', observation: 'verified', content: 'satisfied',
+      blockers: [], requiredBy: ['official/demo'], relation: 'dependency',
+      contributions: [{ root: 'official/demo', scope: 'project', path: ['official/demo', 'official/base'] }] }];
+    project.dependencyOverviews = [{ pluginId: 'official/demo',
+      summary: { directCount: 1, transitiveCount: 0, totalCount: 1, readyCount: 1, missingCount: 0, issueCount: 0 },
       dependencies: [{ pluginId: 'official/base', displayName: 'Base', relation: 'direct', depth: 1,
-        requiredBy: [], placements: [], aggregateStatus: 'ready' }], dependents: [], blockers: [] }] };
+        requiredBy: [], placements: [], aggregateStatus: 'ready' }], dependents: [], blockers: [] }];
     const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus: vi.fn(async (scope: 'user' | 'project') => scope === 'project' ? project : recovery('user')) });
     await controller.load();
@@ -457,11 +456,13 @@ describe('scoped inventory in Ink', () => {
     expect(root.targets).toContainEqual(expect.objectContaining({ platform: 'claude',
       installedVersion: '1.0.0', expectedVersion: '2.0.0' }));
     expect(root.dependencies[0]?.targets).toEqual([{ platform: 'claude', scope: 'user',
-      location: 'sharedUser', state: 'ready', reasonCodes: [] }]);
+      location: 'sharedUser', state: 'ready', reasonCodes: [], agent: 'claude', delivery: 'native', observation: 'known', actual: true }]);
     expect(controller.getPluginDetailSubject('official/base')?.placements).toEqual([expect.objectContaining({
-      scope: 'user', sharedWithCurrentProject: true, actual: false, observation: 'known', projectState: 'ready',
+      scope: 'user', sharedWithCurrentProject: true, actual: true, observation: 'known', projectState: 'ready',
     })]);
-    project.nativeSnapshot.payload.targets[0]!.components[1]!.state = 'error';
+    project.observedTargets![0]!.content = 'unknown';
+    project.observedTargets![0]!.observation = 'unknown';
+    project.existingTargets = project.existingTargets!.filter((entry) => entry.pluginId !== 'official/base');
     await controller.refreshScopedInventory('project');
     expect(controller.listScopedInventoryRoots('project')[0]?.dependencies[0]?.targets[0]?.state).toBe('unknown');
     expect(controller.snapshot.scopedInventories.user).toEqual(user);
@@ -519,15 +520,15 @@ describe('scoped inventory in Ink', () => {
 
   it('submits only the pending unblocked plugin and Agent pairs for syncable inventory', async () => {
     const current = recovery('user');
-    current.selection.agents = ['codex', 'cursor'];
+    current.selection.agents = ['codex', 'generic'];
     current.inventory = [
       { pluginId: 'official/ready', source: 'official', sourceState: 'ready', blockers: [],
         targetResults: [{ pluginId: 'official/ready', agent: 'codex', scope: 'user',
           delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run',
           observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [] }] },
       { pluginId: 'official/pending', source: 'official', sourceState: 'ready', blockers: [],
-        targetResults: [{ pluginId: 'official/pending', agent: 'cursor', scope: 'user',
-          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }, execution: 'not-run',
+        targetResults: [{ pluginId: 'official/pending', agent: 'generic', scope: 'user',
+          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' }, execution: 'not-run',
           observation: 'missing', content: 'absent', blockers: [], requiredBy: [] }] },
       { pluginId: 'official/blocked', source: 'official', sourceState: 'ready', blockers: [],
         targetResults: [{ pluginId: 'official/blocked', agent: 'codex', scope: 'user',
@@ -539,13 +540,13 @@ describe('scoped inventory in Ink', () => {
           { pluginId: 'official/mixed', agent: 'codex', scope: 'user',
             delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run',
             observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [] },
-          { pluginId: 'official/mixed', agent: 'cursor', scope: 'user',
-            delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }, execution: 'not-run',
+          { pluginId: 'official/mixed', agent: 'generic', scope: 'user',
+            delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' }, execution: 'not-run',
             observation: 'missing', content: 'absent', blockers: [], requiredBy: [] },
         ] },
     ];
     const receipt = { requestedRoots: ['official/pending', 'official/mixed'],
-      selection: { agents: ['cursor'] }, targetResults: [], blockers: [], errors: [] };
+      selection: { agents: ['generic'] }, targetResults: [], blockers: [], errors: [] };
     const plan = { kind: 'recovery', scope: 'user', plan: { receipt,
       plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
       changes: [], warnings: [], context: { dispose: async () => {} }, sourceRefreshes: [],
@@ -557,8 +558,8 @@ describe('scoped inventory in Ink', () => {
     await controller.load();
     expect(buildScopedInventory({ recovery: current, status: status.payload,
       pluginSummaries: status.pluginSummaries }).syncTargets).toEqual([
-      { pluginId: 'official/pending', agent: 'cursor', scope: 'user' },
-      { pluginId: 'official/mixed', agent: 'cursor', scope: 'user' },
+      { pluginId: 'official/pending', agent: 'generic', scope: 'user' },
+      { pluginId: 'official/mixed', agent: 'generic', scope: 'user' },
     ]);
     controller.push({ name: 'intentInventory', scope: 'user' });
     const instance = render(<ConsoleAppV4 controller={controller} size={sizes[0]!} />);
@@ -567,27 +568,27 @@ describe('scoped inventory in Ink', () => {
     await vi.waitFor(() => expect(prepareScopedTask).toHaveBeenCalledTimes(1));
     expect(prepareScopedTask.mock.calls[0]?.[0]).toMatchObject({
       kind: 'recovery', scope: 'user', selectors: ['official/pending', 'official/mixed'],
-      targets: ['cursor'], exactTargets: [
-        { pluginId: 'official/pending', agent: 'cursor' },
-        { pluginId: 'official/mixed', agent: 'cursor' },
+      targets: ['generic'], exactTargets: [
+        { pluginId: 'official/pending', agent: 'generic' },
+        { pluginId: 'official/mixed', agent: 'generic' },
       ],
     });
     instance.unmount();
   });
 
-  it('keeps Native and Portable Agent identities separate in inventory and unified detail', async () => {
+  it('keeps Native and generic Skills Agent identities separate in inventory and unified detail', async () => {
     const current = recovery('user');
-    current.selection.agents = ['codex', 'cursor'];
+    current.selection.agents = ['codex', 'generic'];
     current.inventory![0]!.targetResults = [
       { pluginId: 'official/demo', agent: 'codex', scope: 'user',
         delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run',
         observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [] },
-      { pluginId: 'official/demo', agent: 'cursor', scope: 'user',
-        delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }, execution: 'not-run',
+      { pluginId: 'official/demo', agent: 'generic', scope: 'user',
+        delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' }, execution: 'not-run',
         observation: 'verified', content: 'satisfied', blockers: [], requiredBy: [] },
     ];
-    current.extraObserved = [{ pluginId: 'official/extra', agent: 'cursor', scope: 'user',
-      delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+    current.extraObserved = [{ pluginId: 'official/extra', agent: 'generic', scope: 'user',
+      delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
       observation: 'verified', content: 'satisfied' }];
     const loaded = { ...status, pluginSummaries: [...status.pluginSummaries,
       { pluginId: 'official/extra', pluginName: 'extra', displayName: 'Extra', version: '1.0.0' }] };
@@ -598,20 +599,20 @@ describe('scoped inventory in Ink', () => {
     const root = controller.listScopedInventoryRoots('user')[0]!;
     expect(root.targets).toEqual(expect.arrayContaining([
       expect.objectContaining({ platform: 'codex', agent: 'codex', delivery: 'native', state: 'ready' }),
-      expect.objectContaining({ agent: 'cursor', delivery: 'agent-skills', state: 'ready' }),
+      expect.objectContaining({ agent: 'generic', delivery: 'agent-skills', state: 'ready' }),
     ]));
-    expect(root.targets.find((target) => target.agent === 'cursor')?.platform).toBeUndefined();
+    expect(root.targets.find((target) => target.agent === 'generic')?.platform).toBeUndefined();
     const placements = controller.getPluginDetailSubject('official/demo')?.placements ?? [];
     expect(placements).toEqual(expect.arrayContaining([
       expect.objectContaining({ platform: 'codex', agent: 'codex', delivery: 'native' }),
-      expect.objectContaining({ agent: 'cursor', delivery: 'agent-skills' }),
+      expect.objectContaining({ agent: 'generic', delivery: 'agent-skills' }),
     ]));
-    expect(placements.find((placement) => placement.agent === 'cursor')?.platform).toBeUndefined();
+    expect(placements.find((placement) => placement.agent === 'generic')?.platform).toBeUndefined();
     const extra = controller.listScopedInventoryRoots('user', 'extraInstalled')[0]!;
-    expect(extra.targets[0]).toMatchObject({ agent: 'cursor', delivery: 'agent-skills', state: 'ready' });
+    expect(extra.targets[0]).toMatchObject({ agent: 'generic', delivery: 'agent-skills', state: 'ready' });
     expect(extra.targets[0]?.platform).toBeUndefined();
     expect(controller.getPluginDetailSubject('official/extra')?.placements[0]).toMatchObject({
-      agent: 'cursor', delivery: 'agent-skills', platformLabel: 'Cursor',
+      agent: 'generic', delivery: 'agent-skills', platformLabel: 'Generic',
     });
     controller.dispose();
   });
@@ -647,12 +648,12 @@ describe('scoped inventory in Ink', () => {
       env: isolation.env };
     await writeIntentFixture(location, { roots: [{ pluginId: 'official/demo' },
       { pluginId: 'official/other' }],
-      agents: ['codex', 'claude', 'cursor'] });
+      agents: ['codex', 'claude', 'generic'] });
     const previousPreferences = await observePreferences(location);
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
       command: 'sync', ok: false, intent: { state: 'valid', roots: ['official/demo', 'official/other'] },
       requestedRoots: ['official/demo', 'official/other'], requestedTargets: [], selection: {
-        agents: ['codex', 'claude', 'cursor'], origin: 'preference', preferences: 'valid',
+        agents: ['codex', 'claude', 'generic'], origin: 'preference', preferences: 'valid',
       }, blockers: [], errors: [], targetResults: [
         { pluginId: 'official/demo', agent: 'codex', scope: 'user',
           delivery: { kind: 'native', platform: 'codex' }, execution: 'failed',
@@ -660,7 +661,7 @@ describe('scoped inventory in Ink', () => {
         { pluginId: 'official/demo', agent: 'claude', scope: 'user',
           delivery: { kind: 'native', platform: 'claude' }, execution: 'not-run',
           observation: 'unknown', blockers: [], requiredBy: ['official/demo'] },
-        { pluginId: 'official/demo', agent: 'cursor', scope: 'user',
+        { pluginId: 'official/demo', agent: 'generic', scope: 'user',
           delivery: null, execution: 'not-run', observation: 'unknown',
           blockers: [{ code: 'deliveryUnsupported', message: 'blocked' }], requiredBy: ['official/demo'] },
         { pluginId: 'official/other', agent: 'codex', scope: 'user',
@@ -703,8 +704,8 @@ describe('scoped inventory in Ink', () => {
     expect(prepareScopedTask.mock.calls[1]?.[0]).toMatchObject({ kind: 'recovery', scope: 'user',
       command: 'sync', selectors: ['official/demo', 'official/other'],
       targets: ['codex', 'claude'], exactTargets: [
-        { pluginId: 'official/demo', agent: 'codex' },
-        { pluginId: 'official/other', agent: 'claude' },
+        { pluginId: 'official/demo', agent: 'codex', scope: 'user' },
+        { pluginId: 'official/other', agent: 'claude', scope: 'user' },
       ] });
     await vi.waitFor(() => expect(retryPlan).toBeDefined());
     expect(retryPlan?.receipt.selection).toMatchObject({
@@ -724,18 +725,18 @@ describe('scoped inventory in Ink', () => {
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
       command: 'sync', ok: false, intent: { state: 'valid', roots: ['official/demo'] },
       requestedRoots: ['official/demo'], requestedTargets: [], selection: {
-        agents: ['codex', 'claude', 'cursor'], origin: 'preference', preferences: 'valid',
+        agents: ['codex', 'claude', 'generic'], origin: 'preference', preferences: 'valid',
       }, blockers: [], errors: [], targetResults: [
         { pluginId: 'official/demo', agent: 'codex', scope: 'user',
           delivery: { kind: 'native', platform: 'codex' }, execution: 'failed',
           observation: 'unknown', content: 'unknown',
           blockers: [{ code: 'nativeRecoveryFailed', message: 'diagnosed' }], requiredBy: ['official/demo'] },
         { pluginId: 'official/demo', agent: 'claude', scope: 'user',
-          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'claude' },
+          delivery: { kind: 'native', platform: 'claude' },
           execution: 'failed', observation: 'unknown', content: 'conflict',
-          blockers: [{ code: 'portableOutputConflict', message: 'external content' }], requiredBy: ['official/demo'] },
-        { pluginId: 'official/demo', agent: 'cursor', scope: 'user',
-          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+          blockers: [{ code: 'deploymentOwnershipUnconfirmed', message: 'external content' }], requiredBy: ['official/demo'] },
+        { pluginId: 'official/demo', agent: 'generic', scope: 'user',
+          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
           execution: 'partial', observation: 'unknown', content: 'absent',
           blockers: [], requiredBy: ['official/demo'] },
       ], remainingTargets: [], recoveryActions: [], declarationChanged: false,
@@ -763,8 +764,8 @@ describe('scoped inventory in Ink', () => {
     await focusAction(instance, '重试明确失败项（1）');
     await press(instance, '\r');
     await vi.waitFor(() => expect(prepareScopedTask).toHaveBeenCalledTimes(2));
-    expect(prepareScopedTask.mock.calls[1]?.[0]).toMatchObject({ kind: 'recovery',
-      exactTargets: [{ pluginId: 'official/demo', agent: 'cursor' }] });
+    expect(prepareScopedTask.mock.calls[1]?.[0]).toMatchObject({ kind: 'recovery', scope: 'user',
+      exactTargets: [{ pluginId: 'official/demo', agent: 'generic', scope: 'user' }] });
     await press(instance, '\u001b');
     await press(instance, 'c');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
@@ -1010,7 +1011,7 @@ describe('scoped inventory in Ink', () => {
   });
 
   it.each([
-    { name: 'User Portable', scope: 'user' as const, kind: 'portable' as const },
+    { name: 'User generic Skills', scope: 'user' as const, kind: 'portable' as const },
     { name: 'shared Native', scope: 'project' as const, kind: 'shared' as const },
     { name: 'joint child shared Native', scope: 'project' as const, kind: 'joint-shared' as const },
     { name: 'retirement config deletion', scope: 'project' as const, kind: 'retire' as const },
@@ -1088,15 +1089,15 @@ describe('scoped inventory in Ink', () => {
     instance.unmount();
   });
 
-  it.each(['user', 'project'] as const)('allows %s Portable needs-preparation into a new Review', async (scope) => {
+  it.each(['user', 'project'] as const)('allows %s generic Skills needs-preparation into a new Review', async (scope) => {
     const current = recovery(scope);
-    current.selection.agents = ['cursor'];
-    current.inventory![0]!.targetResults = [{ pluginId: 'official/demo', agent: 'cursor', scope,
-      delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+    current.selection.agents = ['generic'];
+    current.inventory![0]!.targetResults = [{ pluginId: 'official/demo', agent: 'generic', scope,
+      delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
       execution: 'not-run', observation: 'unknown', content: 'unknown',
       blockers: [{ code: 'needs-preparation', message: 'prepare first' }], requiredBy: ['official/demo'] }];
     const plan = { kind: 'recovery', scope, plan: { receipt: {
-      requestedRoots: ['official/demo'], selection: { agents: ['cursor'] }, targetResults: [],
+      requestedRoots: ['official/demo'], selection: { agents: ['generic'] }, targetResults: [],
       blockers: [], errors: [],
     }, plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
     changes: ['首次准备后同步'], warnings: [], context: { dispose: async () => {} },
@@ -1114,13 +1115,13 @@ describe('scoped inventory in Ink', () => {
     await press(instance, 'c');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'recovery', scope, selectors: ['official/demo'], targets: ['cursor'],
-      exactTargets: [{ pluginId: 'official/demo', agent: 'cursor' }],
+      kind: 'recovery', scope, selectors: ['official/demo'], targets: ['generic'],
+      exactTargets: [{ pluginId: 'official/demo', agent: 'generic' }],
     }), expect.anything());
     instance.unmount();
   });
 
-  it.each(['user', 'project'] as const)('projects %s readonly Portable needs-preparation from status into Ink', async (scope) => {
+  it.each(['user', 'project'] as const)('projects %s readonly generic Skills needs-preparation from status into Ink', async (scope) => {
     const inspect = vi.spyOn(portableRecovery, 'inspectPortableRecovery')
       .mockResolvedValue({ blockers: ['needs-preparation'], targets: [] } as never);
     try {
@@ -1128,18 +1129,18 @@ describe('scoped inventory in Ink', () => {
         kind: 'aw-plugin-intents', sources: { official: { logicalIdentity: 'official' } },
         roots: [{ pluginId: 'official/demo' }] }, digest: 'intent', rawDigest: 'intent', rawBytes: Buffer.from('{}') },
       preferences: { state: 'valid', value: { schemaVersion: 2,
-        kind: 'aw-deployment-preferences', targets: ['cursor'], exclusions: [] },
+        kind: 'aw-deployment-preferences', targets: ['generic'], exclusions: [] },
       digest: 'preferences', rawDigest: 'preferences', rawBytes: Buffer.from('{}') },
       roots: [{ pluginId: 'official/demo', sourceId: 'official', sourceState: 'ready', blockers: [],
-        plugin: { manifest: { platforms: ['cursor'], skills: './skills' } } }], plugins: [], errors: [],
+        plugin: { manifest: { platforms: ['generic'], skills: './skills' } } }], plugins: [], errors: [],
       } as unknown as DemandSnapshot;
       const projected = await statusFromObservations({ scope, cwd: '/tmp/project',
         context: { scope } as ScopeContext, demand, nativeObservations: [] });
-      expect(projected.inventory?.[0]?.targetResults[0]).toMatchObject({ agent: 'cursor',
+      expect(projected.inventory?.[0]?.targetResults[0]).toMatchObject({ agent: 'generic',
         delivery: { kind: 'agent-skills' }, observation: 'unknown',
         blockers: [{ code: 'needs-preparation' }] });
       const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
-        loadScopedStatus: vi.fn().mockResolvedValue({ ...projected, nativeSnapshot: recovery(scope).nativeSnapshot }) });
+        loadScopedStatus: vi.fn().mockResolvedValue({ ...projected, dependencyOverviews: [] }) });
       await controller.load();
       controller.push({ name: 'intentInventory', scope,
         ...(scope === 'project' ? { projectKey: '/tmp/project' } : {}) });
@@ -1150,18 +1151,18 @@ describe('scoped inventory in Ink', () => {
     } finally { inspect.mockRestore(); }
   });
 
-  it.each(['user', 'project'] as const)('keeps explicit Portable drifted %s targets pending and syncable in Ink', async (scope) => {
+  it.each(['user', 'project'] as const)('keeps explicit generic Skills drifted %s targets pending and syncable in Ink', async (scope) => {
     const inspect = vi.spyOn(portableRecovery, 'inspectPortableRecovery')
-      .mockResolvedValue({ blockers: [], targets: [{ agent: 'cursor', observation: 'drifted' }] } as never);
+      .mockResolvedValue({ blockers: [], targets: [{ agent: 'generic', observation: 'drifted' }] } as never);
     try {
       const demand = { scope, intent: { state: 'valid', value: { schemaVersion: 3,
         kind: 'aw-plugin-intents', sources: { official: { logicalIdentity: 'official' } },
         roots: [{ pluginId: 'official/demo' }] }, digest: 'intent', rawDigest: 'intent', rawBytes: Buffer.from('{}') },
       preferences: { state: 'valid', value: { schemaVersion: 2,
-        kind: 'aw-deployment-preferences', targets: ['cursor'], exclusions: [] },
+        kind: 'aw-deployment-preferences', targets: ['generic'], exclusions: [] },
       digest: 'preferences', rawDigest: 'preferences', rawBytes: Buffer.from('{}') },
       roots: [{ pluginId: 'official/demo', sourceId: 'official', sourceState: 'ready', blockers: [],
-        plugin: { manifest: { platforms: ['cursor'], skills: './skills' } } }], plugins: [], errors: [],
+        plugin: { manifest: { platforms: ['generic'], skills: './skills' } } }], plugins: [], errors: [],
       } as unknown as DemandSnapshot;
       const projected = await statusFromObservations({ scope, cwd: '/tmp/project',
         context: { scope } as ScopeContext, demand, nativeObservations: [] });
@@ -1171,9 +1172,9 @@ describe('scoped inventory in Ink', () => {
       const view = buildScopedInventory({ recovery: projected, status: status.payload,
         pluginSummaries: status.pluginSummaries });
       expect(view.declaredRoots[0]?.state).toBe('pending');
-      expect(view.syncTargets).toEqual([{ pluginId: 'official/demo', agent: 'cursor', scope }]);
+      expect(view.syncTargets).toEqual([{ pluginId: 'official/demo', agent: 'generic', scope }]);
       const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
-        loadScopedStatus: vi.fn().mockResolvedValue({ ...projected, nativeSnapshot: recovery(scope).nativeSnapshot }) });
+        loadScopedStatus: vi.fn().mockResolvedValue({ ...projected, dependencyOverviews: [] }) });
       await controller.load();
       controller.push({ name: 'intentInventory', scope,
         ...(scope === 'project' ? { projectKey: '/tmp/project' } : {}) });
@@ -1184,7 +1185,7 @@ describe('scoped inventory in Ink', () => {
     } finally { inspect.mockRestore(); }
   });
 
-  it('shows incomplete Portable coverage in the scoped inventory', async () => {
+  it('shows incomplete generic Skills coverage in the scoped inventory', async () => {
     const current = recovery('project');
     current.coverage = { native: true, portable: false };
     const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
@@ -1204,7 +1205,7 @@ describe('managed commands in scoped Ink recovery', () => {
   it.each(['sync', 'cleanup'] as const)('keeps command facts through %s Review, Progress and Result', async (command) => {
     const producer = { sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`,
       pluginName: 'provider', kind: 'package' as const, key: 'tools', platform: null,
-      scope: 'user' as const, projectRoot: null };
+      scope: 'user' as const, projectRoot: null, placementKey: null };
     const packageId = `pkg_${'2'.repeat(64)}`;
     const remove = `aw command package remove ${packageId} --yes`;
     const action = command === 'cleanup'

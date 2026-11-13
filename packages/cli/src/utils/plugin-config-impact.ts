@@ -3,14 +3,15 @@ import crypto from 'node:crypto';
 import {
   selectPluginConfigProfile,
   PLATFORM_TARGETS,
+  NATIVE_PLATFORM_TARGETS,
   type PlatformTarget,
-  getManagedCommandArtifactTargets,
+  supportsPlatform,
+  type ManagedCommandProducerRef,
   getPluginConfigDependencyKeys,
   stablePluginConfigStringify,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
-  PluginArtifactTargetDefinition,
   PlatformName,
   PluginMeta,
   ReceiptTargetIdentity,
@@ -37,6 +38,7 @@ import {
   resolvePluginConfigReferenceContext,
   resolvePluginConfigReferenceConsumers,
 } from './plugin-config-references.js';
+import { getProfileRenderScopes } from '../platforms/layout.js';
 
 export type PluginConfigImpactMutation =
   | {
@@ -46,12 +48,13 @@ export type PluginConfigImpactMutation =
     }
   | { kind: 'reset' };
 
-export interface PluginConfigImpactSharedNativeTarget {
-  pluginName?: string;
-  id: string;
-  skillKey: string;
-  refreshKeys: string[];
-  platform?: PlatformName;
+export interface PluginConfigImpactSharedNativeRenderUnit {
+  pluginName: string;
+  platform: PlatformName;
+  renderScope: 'user';
+  configKeys: string[];
+  dynamicComponents: boolean;
+  commandSets: Array<{ set: string; producer: Exclude<ManagedCommandProducerRef, { kind: 'package' }> }>;
 }
 
 export interface PluginConfigMutationImpact {
@@ -64,7 +67,7 @@ export interface PluginConfigMutationImpact {
   removedKeys: string[];
   staleRemovedKeys: string[];
   affectedTargets: ReceiptTargetIdentity[];
-  sharedNativeRenderTargets: PluginConfigImpactSharedNativeTarget[];
+  sharedNativeRenderUnits: PluginConfigImpactSharedNativeRenderUnit[];
   commandPackages: ManagedCommandPackageDiscovery['packages'];
   affectedCommandPackages: ManagedCommandPackageDiscovery['packages'];
   commandDiscoveryErrors: ManagedCommandPackageDiscovery['errors'];
@@ -159,74 +162,60 @@ function digestStores(stores: {
   })).digest('hex')}`;
 }
 
-function targetArtifactDeclarations(plugin: PluginMeta, target: ReceiptTargetIdentity) {
-  return (plugin.manifest.artifacts?.targets ?? []).filter((declaration) =>
-    declaration.platform === target.platform
-    && (declaration.target === 'codex.skill' || declaration.target === 'claude.skill' || declaration.scopes.includes(target.scope)));
+interface ConfigRenderConsumer {
+  pluginName: string;
+  platform: ReceiptTargetIdentity['platform'];
+  scope: Scope;
+  configKeys: string[];
+  dynamicComponents: boolean;
+  commandSet?: PluginConfigImpactSharedNativeRenderUnit['commandSets'][number];
 }
 
-function nativeDeclaration(declaration: PluginArtifactTargetDefinition):
-declaration is typeof declaration & { target: 'codex.skill' | 'claude.skill'; skillKey: string } {
-  return (declaration.target === 'codex.skill' || declaration.target === 'claude.skill') && typeof declaration.skillKey === 'string';
-}
-
-function targetConfigConsumers(plugin: PluginMeta, target: ReceiptTargetIdentity) {
-  const consumers = targetArtifactDeclarations(plugin, target).map((declaration) => ({
-    pluginName: plugin.manifest.name,
-    id: declaration.id,
-    refreshKeys: declaration.refreshKeys,
-    scope: nativeDeclaration(declaration) ? 'user' as const : target.scope,
-    sharedNativeSkillKey: nativeDeclaration(declaration) ? declaration.skillKey : undefined,
-    platform: target.platform,
-  }));
-  for (const declaration of getManagedCommandArtifactTargets(plugin.manifest)) {
-    if (declaration.target !== 'aw.command-set' || declaration.platform !== target.platform) continue;
-    const producer = declaration.producer;
-    if (producer.kind === 'package') continue;
-    const artifact = producer.kind === 'artifact'
-      ? plugin.manifest.artifacts?.targets?.find((entry) => entry.id === producer.artifactId)
-      : undefined;
-    const sharedNativeSkillKey = producer.kind === 'static-skill'
-      ? producer.skillKey : artifact && nativeDeclaration(artifact) ? artifact.skillKey : undefined;
-    if (!sharedNativeSkillKey && !declaration.scopes.includes(target.scope)) continue;
-    consumers.push({
-      pluginName: plugin.manifest.name,
-      id: artifact?.id ?? declaration.id,
-      refreshKeys: declaration.refreshKeys,
-      scope: sharedNativeSkillKey ? 'user' : target.scope,
-      sharedNativeSkillKey,
-      platform: target.platform,
-    });
+function targetConfigConsumers(plugin: PluginMeta, target: ReceiptTargetIdentity): ConfigRenderConsumer[] {
+  if (!supportsPlatform(plugin.manifest, target.platform)) return [];
+  const scopes = getProfileRenderScopes(target.platform, target.scope);
+  const artifacts = plugin.manifest.artifacts;
+  const consumers: ConfigRenderConsumer[] = artifacts ? scopes
+    .filter((scope) => !artifacts.scopes || artifacts.scopes.includes(scope))
+    .map((scope) => ({ pluginName: plugin.manifest.name, platform: target.platform, scope,
+      configKeys: artifacts.configKeys, dynamicComponents: true })) : [];
+  // Skill producers belong to the package render scope, including shared user packages.
+  const skillScope = scopes[0]!;
+  for (const set of plugin.manifest.managedCommands?.sets ?? []) {
+    const producer = set.producer;
+    if (set.mode !== 'dynamic' || producer.kind === 'package' || producer.platform !== target.platform) continue;
+    if (producer.kind === 'artifact' && artifacts?.scopes && !artifacts.scopes.includes(skillScope)) continue;
+    consumers.push({ pluginName: plugin.manifest.name, platform: target.platform, scope: skillScope,
+      configKeys: set.refreshKeys, dynamicComponents: false, commandSet: { set: set.set, producer } });
   }
   return consumers;
 }
 
-/** Activation scope can differ from the profile used to render shared native content. */
-export function pluginConfigTargetRenderScopes(plugin: PluginMeta, target: ReceiptTargetIdentity): Scope[] {
-  const consumers = targetConfigConsumers(plugin, target).filter((consumer) => consumer.refreshKeys.length > 0);
-  return consumers.length ? [...new Set(consumers.map((consumer) => consumer.scope))] : [target.scope];
+/** Render scopes come from the fixed platform layout, independently of the previous component set. */
+export function pluginConfigTargetRenderScopes(_plugin: PluginMeta, target: ReceiptTargetIdentity): Scope[] {
+  return getProfileRenderScopes(target.platform, target.scope);
 }
 
-function addSharedNativeConsumer(
-  output: Map<string, PluginConfigImpactSharedNativeTarget>,
-  consumer: ReturnType<typeof targetConfigConsumers>[number],
-): void {
-  if (!consumer.sharedNativeSkillKey) return;
-  const key = `${consumer.pluginName}\0${consumer.platform}\0${consumer.id}`;
+function addSharedNativeConsumer(output: Map<string, PluginConfigImpactSharedNativeRenderUnit>, consumer: ConfigRenderConsumer): void {
+  if (consumer.scope !== 'user'
+    || !getProfileRenderScopes(consumer.platform, 'project').includes('user')) return;
+  const key = `${consumer.pluginName}\0${consumer.platform}`;
   const previous = output.get(key);
-  output.set(key, { id: consumer.id, pluginName: consumer.pluginName, skillKey: consumer.sharedNativeSkillKey,
-    ...(consumer.platform === 'claude' ? { platform: 'claude' } : {}),
-    refreshKeys: [...new Set([...(previous?.refreshKeys ?? []), ...consumer.refreshKeys])] });
+  const commandSets = [...(previous?.commandSets ?? [])];
+  if (consumer.commandSet && !commandSets.some((entry) => entry.set === consumer.commandSet!.set)) commandSets.push(consumer.commandSet);
+  output.set(key, { pluginName: consumer.pluginName, platform: consumer.platform, renderScope: 'user',
+    configKeys: [...new Set([...(previous?.configKeys ?? []), ...consumer.configKeys])],
+    dynamicComponents: previous?.dynamicComponents === true || consumer.dynamicComponents, commandSets });
 }
 
-export function pluginSharedNativeConfigTargets(plugin: PluginMeta): PluginConfigImpactSharedNativeTarget[] {
-  const targets = new Map<string, PluginConfigImpactSharedNativeTarget>();
-  for (const platform of ['codex', 'claude'] as const) {
+export function pluginSharedNativeConfigRenderUnits(plugin: PluginMeta): PluginConfigImpactSharedNativeRenderUnit[] {
+  const units = new Map<string, PluginConfigImpactSharedNativeRenderUnit>();
+  for (const platform of NATIVE_PLATFORM_TARGETS) {
     for (const consumer of targetConfigConsumers(plugin, { pluginName: plugin.manifest.name, platform, scope: 'user' })) {
-      if (consumer.refreshKeys.length > 0) addSharedNativeConsumer(targets, consumer);
+      if (consumer.configKeys.length > 0) addSharedNativeConsumer(units, consumer);
     }
   }
-  return [...targets.values()];
+  return [...units.values()];
 }
 
 function rendererProjectionEqual(
@@ -258,14 +247,13 @@ function unknownImpact(options: {
   plugins?: readonly PluginMeta[];
 }): PluginConfigMutationImpact {
   const affectedTargets = dedupeTargets(options.visibleTargets);
-  const sharedNativeRenderTargets = new Map<string, PluginConfigImpactSharedNativeTarget>();
+  const sharedNativeRenderUnits = new Map<string, PluginConfigImpactSharedNativeRenderUnit>();
   for (const target of affectedTargets) {
-    if (options.scope !== 'user') continue;
     const plugin = target.pluginName === options.plugin.manifest.name ? options.plugin
       : options.plugins?.find((entry) => entry.manifest.name === target.pluginName);
     if (!plugin) continue;
     for (const consumer of targetConfigConsumers(plugin, target)) {
-      if (consumer.refreshKeys.length > 0) addSharedNativeConsumer(sharedNativeRenderTargets, consumer);
+      if (consumer.configKeys.length > 0) addSharedNativeConsumer(sharedNativeRenderUnits, consumer);
     }
   }
   return {
@@ -278,7 +266,7 @@ function unknownImpact(options: {
     removedKeys: options.removedKeys,
     staleRemovedKeys: options.staleRemovedKeys,
     affectedTargets,
-    sharedNativeRenderTargets: [...sharedNativeRenderTargets.values()],
+    sharedNativeRenderUnits: [...sharedNativeRenderUnits.values()],
     commandPackages: options.commands.packages,
     affectedCommandPackages: options.commands.packages,
     commandDiscoveryErrors: options.commands.errors,
@@ -336,7 +324,7 @@ export async function analyzePluginConfigMutationImpact(options: {
     visibleTargets, storeChanged, changedKeys, updatedKeys, removedKeys, staleRemovedKeys, plugins }), storeDigest: currentStoreDigest };
   if (!storeChanged) return { impactState: commands.errors.length ? 'unknown' : 'known', noEffectiveChange: true,
     storeChanged: false, storeDigest: currentStoreDigest, changedKeys: [], updatedKeys: [], removedKeys: [], staleRemovedKeys: [],
-    affectedTargets: [], sharedNativeRenderTargets: [], commandPackages: selectedCommands.packages, affectedCommandPackages: [], commandDiscoveryErrors: commands.errors };
+    affectedTargets: [], sharedNativeRenderUnits: [], commandPackages: selectedCommands.packages, affectedCommandPackages: [], commandDiscoveryErrors: commands.errors };
   const values = options.mutation.kind === 'reset' ? {} : { ...user.values };
   if (options.mutation.kind === 'patch') {
     for (const key of requestedRemoveKeys) delete values[key];
@@ -365,7 +353,7 @@ export async function analyzePluginConfigMutationImpact(options: {
   const allPlugins = new Map([options.plugin, ...referenceImpact.consumers.map((entry) => entry.plugin)].map((plugin) => [plugin.manifest.name, plugin]));
   const affectedTargets: ReceiptTargetIdentity[] = [];
   const affectedCommandPackages: ManagedCommandPackageDiscovery['packages'] = [];
-  const sharedNativeRenderTargets = new Map<string, PluginConfigImpactSharedNativeTarget>();
+  const sharedNativeRenderUnits = new Map<string, PluginConfigImpactSharedNativeRenderUnit>();
   try {
     for (const target of dedupeTargets(visibleTargets)) {
       const plugin = allPlugins.get(target.pluginName);
@@ -376,10 +364,10 @@ export async function analyzePluginConfigMutationImpact(options: {
         affected ||= !configValuesEqual(pair.before.values, pair.after.values);
       }
       for (const consumer of targetConfigConsumers(plugin, target)) {
-        if (!consumer.refreshKeys.length) continue;
-        const keys = getPluginConfigDependencyKeys(selectPluginConfigProfile(plugin.manifest.config, target.platform), consumer.refreshKeys);
+        if (!consumer.configKeys.length) continue;
+        const keys = getPluginConfigDependencyKeys(selectPluginConfigProfile(plugin.manifest.config, target.platform), consumer.configKeys);
         if (pair?.before && pair.after && rendererProjectionEqual(pair.before, pair.after, keys)) continue;
-        affected = true; addSharedNativeConsumer(sharedNativeRenderTargets, consumer);
+        affected = true; addSharedNativeConsumer(sharedNativeRenderUnits, consumer);
       }
       if (affected) affectedTargets.push(target);
     }
@@ -400,7 +388,7 @@ export async function analyzePluginConfigMutationImpact(options: {
     return { impactState: commands.errors.length || referenceWarnings.length ? 'unknown' : 'known',
       noEffectiveChange: !affectedTargets.length && !affectedCommandPackages.length && !commands.errors.length,
       storeChanged, storeDigest, changedKeys, updatedKeys, removedKeys, staleRemovedKeys, affectedTargets,
-      sharedNativeRenderTargets: [...sharedNativeRenderTargets.values()], commandPackages: selectedCommands.packages,
+      sharedNativeRenderUnits: [...sharedNativeRenderUnits.values()], commandPackages: selectedCommands.packages,
       affectedCommandPackages, commandDiscoveryErrors: commands.errors, referenceWarnings,
       referenceBlockers: [...referenceImpact.blockedReferences, ...referenceImpact.unreadableConsumers.map((location) => `Cannot check config references in ${location}.`)] };
   } catch {

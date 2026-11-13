@@ -19,7 +19,7 @@ it('ships the native author contract and produces a reader usable without AW or 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-core-native-dist-'));
   try {
     const manifest = validatePluginManifest(root, {
-      schemaVersion: 3, name: 'third-party', version: '1.0.0', description: 'Third-party native test',
+      schemaVersion: 4, name: 'third-party', version: '1.0.0', description: 'Third-party native test',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       scripts: { tests: { node: ['tests/native.test.mjs'] } },
       nativeTools: { definitions: [{ key: 'job', protocol: 'aw.windows-job.v1' }],

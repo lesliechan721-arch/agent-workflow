@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { isPortablePlatformTarget, type PortablePlatformTarget } from '@lesliechan721/aw-plugin-core';
+import { isPortablePlatformTarget, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
 
 import type { CliPromptResult } from '../commands/runtime.js';
 import type { PortableSkillCandidate, Scope } from '../types.js';
@@ -29,6 +29,7 @@ export type PortableCommandErrorCode =
   | 'portableSensitiveOutput'
   | 'portableRuntimeImportMissing'
   | 'portableRendererFailed'
+  | 'portableComponentsUnmet'
   | 'portableInvalidAgentSelection'
   | 'portableRetryNotExact'
   | 'portableNoRetryTargets'
@@ -118,9 +119,9 @@ export interface PortableRetryReview extends PortableReview {
 export interface PortableMaterializeReceipt {
   receiptSchemaVersion: 5;
   command: 'skill:materialize';
-  ok: true;
+  ok: boolean;
   plugin: PortableInstallReceipt['plugin'];
-  platform: PortablePlatformTarget;
+  platform: PlatformTarget;
   scope: Scope;
   out: string;
   selectedSkills: PortableSkillCandidate[];
@@ -304,7 +305,7 @@ async function prepareExistingOutput(
   pluginId: string,
   sourceIdentity: string | undefined,
   scope: Scope,
-  platform: PortablePlatformTarget,
+  platform: PlatformTarget,
 ): Promise<void> {
   if (!await fs.pathExists(target)) return;
   await assertNoSymlinks(target);
@@ -332,7 +333,7 @@ async function prepareExistingOutput(
 async function commitOutput(
   staging: string,
   target: string,
-  expected: { pluginId: string; sourceIdentity: string | undefined; scope: Scope; platform: PortablePlatformTarget },
+  expected: { pluginId: string; sourceIdentity: string | undefined; scope: Scope; platform: PlatformTarget },
 ): Promise<void> {
   const existing = await fs.lstat(target).catch(() => undefined);
   const backup = `${target}.aw-backup-${crypto.randomBytes(6).toString('hex')}`;
@@ -370,12 +371,14 @@ async function commitOutput(
 
 export async function materializePortableSkillsToDirectory(options: {
   selector: string;
-  platform: PortablePlatformTarget;
+  platform: PlatformTarget;
   scope: string;
   out: string;
   requestedSkills?: string[];
   /** Recovery may prepare an empty deployment to remove its obsolete owned Skills. */
   allowEmpty?: boolean;
+  /** Freeze capability gaps for Recovery without granting permission to remove old output. */
+  allowUnmet?: boolean;
   cwd: string;
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
@@ -405,6 +408,11 @@ export async function materializePortableSkillsToDirectory(options: {
     catalogOperationContext,
   });
   try {
+    const unmet = materialized.preparation.flatMap((unit) => unit.unmet);
+    if (unmet.length && !options.allowUnmet) {
+      throw new PortableCommandError('portableComponentsUnmet',
+        `The explicit profile cannot prepare all requested components: ${JSON.stringify(unmet)}.`);
+    }
     const selected = options.allowEmpty && options.requestedSkills === undefined && materialized.candidates.length === 0
       ? [] : selectCandidates(materialized.candidates, options.requestedSkills);
     await prepareExistingOutput(
@@ -442,7 +450,7 @@ export async function materializePortableSkillsToDirectory(options: {
       const receipt: PortableMaterializeReceipt = {
         receiptSchemaVersion: 5,
         command: 'skill:materialize',
-        ok: true,
+        ok: unmet.length === 0,
         plugin: {
           id: materialized.pluginId,
           ...(materialized.sourceId ? { sourceId: materialized.sourceId } : {}),
@@ -486,6 +494,7 @@ export async function materializePortableSkillsToDirectory(options: {
           scope,
           inputDigest: materialized.configDigest,
         },
+        preparation: materialized.preparation,
         artifacts: selected.map((candidate) => ({
           kind: 'portable-skill' as const,
           plugin: parsePluginId(candidate.providerPluginId).pluginName,

@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopeContext } from '../../src/intent/scope-context.js';
 import { writeAwSourceBinding } from '../../src/review/source-binding.js';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
+import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
 import { portableJsonDigest, portableSkillTreeDigest } from '../../src/portable/historical-materialization.js';
 import { executePortableRecovery, inspectPortableExtraInstalled, inspectPortableRecovery, inspectPortableResidue,
   preparePortableCleanup, preparePortableRecovery } from '../../src/portable/recovery.js';
@@ -33,17 +35,25 @@ vi.mock('../../src/portable/commands.js', () => ({
     const selectedSkills = [];
     for (const candidate of state.skills) {
       const skill = path.join(options.out, 'skills', candidate.name);
-      await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${candidate.name}\ndescription: Test\n---\n${state.content} ${options.platform}`);
+      await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${candidate.name}\ndescription: Test\n---\n${state.content} ${options.platform} ${options.scope}`);
       await fs.outputFile(path.join(skill, 'README.md'), 'Complete Portable skill.');
       selectedSkills.push({ ...candidate, filesDigest: await portableSkillTreeDigest(skill),
         configDigest: portableJsonDigest({ platform: options.platform, provider: candidate.providerPluginId }) });
     }
     const { resolvePortableCatalogBindingInput } = await import('../../src/portable/materializer.js');
     const binding = await resolvePortableCatalogBindingInput(options as never);
-    await writeAwSourceBinding({ rootDir: options.out, ...binding, artifacts: selectedSkills.map((candidate) => ({
-      kind: 'portable-skill' as const, plugin: candidate.providerPluginId.split('/')[1]!, skill: candidate.name,
-      path: `skills/${candidate.name}`,
-    })) });
+    const capabilities = getAuthoringPlatformCapabilities(options.platform, options.scope);
+    await writeAwSourceBinding({ rootDir: options.out, ...binding,
+      preparation: [{ plugin: 'root', platform: options.platform, renderScope: options.scope,
+        profileId: capabilities.profileId, capabilitiesDigest: artifactValueDigest(capabilities),
+        expectedDigest: portableJsonDigest(selectedSkills), resourceDigest: portableJsonDigest(state.content),
+        renderInputDigest: binding.profile.inputDigest, outputs: [],
+        components: selectedSkills.map((candidate) => ({ id: `skill:${candidate.name}`, kind: 'skill',
+          name: candidate.name, source: 'static' })), omitted: [], unmet: [] }],
+      artifacts: selectedSkills.map((candidate) => ({
+        kind: 'portable-skill' as const, plugin: candidate.providerPluginId.split('/')[1]!, skill: candidate.name,
+        path: `skills/${candidate.name}`,
+      })) });
     const outputDigest = portableJsonDigest(selectedSkills.map((entry) => [entry.name, entry.filesDigest]));
     await fs.writeJson(path.join(options.out, '.aw-materialization.json'), {
       schemaVersion: 1, receiptSchemaVersion: 5, command: 'skill:materialize', platform: options.platform, scope: options.scope,
@@ -54,7 +64,7 @@ vi.mock('../../src/portable/commands.js', () => ({
   },
 }));
 
-async function fixture(scope: 'user' | 'project' = 'project', agents: PortablePlatformTarget[] = ['cursor']) {
+async function fixture(scope: 'user' | 'project' = 'project', agents: PortablePlatformTarget[] = ['generic']) {
   const isolated = getCurrentSourceTestIsolation();
   const cwd = path.join(isolated.env.AW_HOME!, 'project');
   await fs.ensureDir(path.join(cwd, '.git'));
@@ -69,29 +79,34 @@ beforeEach(() => { state.content = 'first'; state.builds = 0; state.catalogUnava
   state.skills = [{ name: 'alpha', providerPluginId: 'team/root' }]; });
 
 describe('AW Portable recovery', () => {
-  // Test Value Gate: two independent consumer profiles must not write the same project directory.
-  it('rejects shared project paths before materialization or publishing', async () => {
-    const options = await fixture('project', ['antigravity', 'generic']);
-    expect((await preparePortableRecovery(options)).blockers).toEqual(['portableOutputConflict']);
+  // Test Value Gate: a Native target must never fall back to the generic writer.
+  it('rejects a Native target before materialization or publishing', async () => {
+    const options = await fixture('project', ['antigravity', 'generic'] as never);
+    await expect(preparePortableRecovery(options)).rejects.toThrow('portableInvalidAgentSelection');
     expect(state.builds).toBe(0);
     expect(await fs.pathExists(path.join(options.context.executionCwd, '.agents', 'skills'))).toBe(false);
   });
 
-  // Test Value Gate: status must stay read-only and per-target candidates must never share content or credentials.
-  it('inspects without building, writes each concrete target, and then performs a file no-op', async () => {
-    const options = await fixture('project', ['cursor', 'pi']);
-    expect((await inspectPortableRecovery(options)).blockers).toEqual(['needs-preparation']);
+  // Test Value Gate: status stays read-only, and User and Project candidates keep separate content and paths.
+  it('inspects without building, isolates scopes, and then performs a file no-op', async () => {
+    const project = await fixture('project');
+    const user = await fixture('user');
+    expect((await inspectPortableRecovery(project)).blockers).toEqual(['needs-preparation']);
+    expect((await inspectPortableRecovery(user)).blockers).toEqual(['needs-preparation']);
     expect(state.builds).toBe(0);
-    expect((await apply(options)).execution).toBe('applied');
+    expect((await apply(project)).execution).toBe('applied');
+    expect((await apply(user)).execution).toBe('applied');
     expect(state.builds).toBe(2);
-    const cursor = path.join(options.context.executionCwd, '.cursor', 'skills', 'alpha', 'SKILL.md');
-    const pi = path.join(options.context.executionCwd, '.pi', 'skills', 'alpha', 'SKILL.md');
-    expect(await fs.readFile(cursor, 'utf8')).toContain('cursor');
-    expect(await fs.readFile(pi, 'utf8')).toContain('pi');
-    const before = (await fs.stat(cursor)).mtimeMs;
-    expect((await apply(options)).execution).toBe('no-op');
-    expect((await fs.stat(cursor)).mtimeMs).toBe(before);
-    expect(await fs.pathExists(path.join(options.context.executionCwd, 'skills-lock.json'))).toBe(false);
+    const projectSkill = path.join(project.context.executionCwd, '.agents', 'skills', 'alpha', 'SKILL.md');
+    const userSkill = path.join(user.context.targetHomes.home, '.agents', 'skills', 'alpha', 'SKILL.md');
+    expect(projectSkill).not.toBe(userSkill);
+    expect(await fs.readFile(projectSkill, 'utf8')).toContain('generic project');
+    expect(await fs.readFile(userSkill, 'utf8')).toContain('generic user');
+    const before = [(await fs.stat(projectSkill)).mtimeMs, (await fs.stat(userSkill)).mtimeMs];
+    expect((await apply(project)).execution).toBe('no-op');
+    expect((await apply(user)).execution).toBe('no-op');
+    expect([(await fs.stat(projectSkill)).mtimeMs, (await fs.stat(userSkill)).mtimeMs]).toEqual(before);
+    expect(await fs.pathExists(path.join(project.context.executionCwd, 'skills-lock.json'))).toBe(false);
   });
 
   // Test Value Gate: healthy old content and user-damaged content are repairable only through an authorized update.
@@ -116,7 +131,7 @@ describe('AW Portable recovery', () => {
     const options = await fixture();
     state.skills.push({ name: 'old-root', providerPluginId: 'team/root' }, { name: 'independent', providerPluginId: 'team/independent' });
     await apply(options);
-    const root = path.join(options.context.executionCwd, '.cursor', 'skills');
+    const root = path.join(options.context.executionCwd, '.agents', 'skills');
     state.skills = [{ name: 'alpha', providerPluginId: 'team/root' }];
     state.content = 'new';
     const prepared = await preparePortableRecovery(options);
@@ -135,7 +150,7 @@ describe('AW Portable recovery', () => {
     const prepared = await preparePortableRecovery(options);
     expect(prepared.targets).toMatchObject([{ skill: 'alpha', disposition: 'remove' }]);
     expect((await apply(options, { authorizeUpdate: true })).execution).toBe('applied');
-    expect(await fs.pathExists(path.join(options.context.executionCwd, '.cursor', 'skills', 'alpha'))).toBe(false);
+    expect(await fs.pathExists(path.join(options.context.executionCwd, '.agents', 'skills', 'alpha'))).toBe(false);
   });
 
   // Test Value Gate: project provider assignment must filter user-provided dependencies after complete materialization validation.
@@ -145,7 +160,7 @@ describe('AW Portable recovery', () => {
     const prepared = await preparePortableRecovery(options);
     expect(prepared.targets.map((target) => target.providerPluginId)).toEqual(['team/root']);
     expect((await apply(options)).execution).toBe('applied');
-    expect(await fs.pathExists(path.join(options.context.executionCwd, '.cursor', 'skills', 'dependency'))).toBe(false);
+    expect(await fs.pathExists(path.join(options.context.executionCwd, '.agents', 'skills', 'dependency'))).toBe(false);
     const changed = await preparePortableRecovery({ ...options, excludedPluginIds: [] });
     expect(changed.evidenceDigest).not.toBe(prepared.evidenceDigest);
   });
@@ -202,7 +217,7 @@ describe('AW Portable recovery', () => {
     const options = await fixture(scope);
     await apply(options);
     expect(await inspectPortableExtraInstalled(options)).toMatchObject({ complete: true,
-      targets: [expect.objectContaining({ pluginId: 'team/root', agent: 'cursor', observation: 'verified' })] });
+      targets: [expect.objectContaining({ pluginId: 'team/root', agent: 'generic', observation: 'verified' })] });
     const prepared = await preparePortableCleanup(options);
     await fs.appendFile(path.join(prepared.targets[0]!.physicalPath, 'README.md'), 'after review');
     await withAwHomeMutationLock({ env: options.env, action: async (token) => {

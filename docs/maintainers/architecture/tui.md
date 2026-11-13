@@ -36,7 +36,9 @@ TUI 插件清单先显式选择个人或当前项目，再读取所选范围需�
 
 TUI 插件清单按显式 scope 组合当前 Catalog summary、统一恢复 status inventory、可识别的 config store 和 live ownership。已移除插件的声明、禁用 activation、Native、AW 输出、Portable 与 config-only 残留仍可见，进入独立“停用已移除插件”任务；普通 cleanup 只清理所选现场且不改强配置。新增安装只接受健康 Catalog summary 中符合资格的插件。foreign 与 shared 内容保留；成功后重新读取 Intent、Catalog、live ownership 与设置事实决定是否继续显示。
 
-TUI 按当前 scope 将受阻、未确认、待同步、就绪依次作为互斥根分类；明确 false 与 unknown 同时存在时，底层 `allSatisfied` 仍为 false。声明根和额外现场分别显示，extraObserved 不把另一 scope 的已安装内容当作本 scope 的额外根。来源缺失、依赖、配置、collision 和残留保留具体诊断及下一步动作；诊断不写入新的持久数据库。
+读取插件详情前先按 Catalog 的能力要求判断当前 CLI 是否支持。能力不足或单个 manifest 无效时，保留该插件的缺口或不可读取状态，其他独立插件继续显示；不尝试读取不支持的 manifest 格式。
+
+TUI 按当前 scope 将受阻、未确认、待同步、就绪依次作为互斥根分类；明确 false 与 unknown 同时存在时，底层 `allSatisfied` 仍为 false。声明根和额外现场分别显示，extraObserved 不把另一 scope 的已安装内容当作本 scope 的额外根。问题列表采用当前恢复 inventory 的目标事实：缺包、缺组件或内容漂移显示未完成，foreign 显示冲突，未知事实保留诊断；按实际 provider scope 关联，不猜测其他项目。局部只读重查成功后，用新事实替换该 scope 的问题。来源缺失、依赖、配置、collision 和残留保留具体诊断及下一步动作；诊断不写入新的持久数据库。
 
 TUI 必须把 `orphaned` placement 纳入“需要处理”问题列表，并提供指向该范围的清理入口；同插件另一范围为 `ready` 时，不能隐藏残留问题或把清理指向正常范围。
 
@@ -48,7 +50,11 @@ TUI placement 在 ownership health 之外投影 collision blocker，但不能把
 
 ## 安装与批量目标
 
-插件安装使用唯一本机 targets，不临时选择平台或逐依赖位置。用户只选择所有项目或当前项目的需求范围，再进入只读准备和操作汇总。完整 User/Project 闭包先确定 provider 与必要 activation；目标过滤不改变声明或依赖保护。空 targets 时单项、批量和快捷键安装均禁用，提供独立 Agent 管理，保存后重新发起安装。统一 Skill 来源按每个 Agent 的交付方式投影，不再提供独立通用 Skills 消费入口。Agent 管理只有一个保存动作和 s 快捷键，成功后弹窗默认同步，取消只保留策略。目录冲突可保存策略但阻止冲突部署，必需依赖排除则不能保存。
+插件安装使用唯一本机 targets，不临时选择平台或逐依赖位置。用户选择所有项目或当前项目的需求范围，再进入只读准备和操作汇总。完整 User/Project 闭包先确定 provider 与必要 activation，目标过滤不改变声明或依赖保护。空 targets 时安装入口引导至 Agent 管理，保存后重新发起安装。具体 Agent 使用原生包或扩展，generic 使用通用 Skills writer。目录冲突可保存偏好但阻止冲突部署，必需依赖排除不能保存。
+
+Agent 管理从完整注册表读取十个 target 与共享发现结果，按 available、generic、不可用/无法确认分组，组内稳定排序。显示勾选、可用性和简短原因，详情保留产品面与恢复动作。没有已保存 targets 时只在创建草稿时预选 available，generic 不预选；没有可用项时保留空草稿，不自动回退。保存前不写偏好或安装。
+
+新增不可用项先二次确认，默认取消，确认后才勾选；取消勾选不需要确认。刷新保留草稿与按 target ID 定位的焦点；清空后不自动重新预选。保存前重查，新选项从 available 恶化时补充确认。已有不可用选择保留并显示原因。唯一保存动作及 s 快捷键保存成功后询问同步，取消只保留偏好；target 确认不代替安装 Review。
 
 批量选择页的插件行显示用途与版本信息，Space 修改插件选择，Enter 查看插件。批量添加只选择所有项目或当前项目的需求范围，使用本机已选 Agent；本机 targets 为空时禁止安装，并提供 Agent 管理入口。维护任务默认沿用本次枚举的精确安装目标，范围编辑只能删减或恢复该集合，不添加缺失的平台或位置；范围变化后撤销旧 Review 并重新取证。 重新检查后出现的新位置不会自动加入；位置或相关证据变化时必须重新确认。空集合不执行。
 
@@ -63,6 +69,10 @@ TUI 批量写入支持添加、同步、重建、移除和普通清理；force c
 平台维护每个平台只有一个入口，位置卡绑定精确 `(pluginId, platform, scope)`。多个位置初次进入不预选，Enter 选定后才启用对应动作；上下移动只改变焦点。单位置初次可自动选择，返回保留有效选择；已选目标失效后清空且不自动换到其它位置，即使仅剩一个。补充安装入口明确标出新位置，并进入原安装选择与 Review 流程，不作为已选位置的维护写入。新增位置不加入原授权。实际许可、共享影响与受限清理继续由原 planner 和 ownership 门禁决定，未知状态不产生伪安全写入。
 
 ## 确认与结果
+
+平台 Review 消费冻结的 deploymentPlans，按平台及实际产品面展示组件、原生动作、补足位置、共享影响、preApply 与重载要求。unmet 保留具体 requiredFeatures 的 feature/values 和 componentId，例如缺少 block 或 plugin-agents 覆盖。准备失败的平台也进入 Review，不因无动作而消失。
+
+进度在独立平台失败后继续。结果先显示各平台完成情况，再展开产品面、组件和位置；包发布、注册、激活、观测与运行加载分别呈现。未知写入保留 possible/unknown，不作为安全缺失。重试只选择本次未完成且可精确定位的目标，重新取证与 Review，不重复成功平台。
 
 TUI 的部署与来源变更入口在进入 Review 前先进入 `ReviewPreparing`。普通 `ReviewPreparing` 只执行当前 intent 的验证和证据采集，不执行写入。用户显式选择“刷新并同步”是唯一例外：它在建立插件 Review 前刷新相关来源，并可切换可重建的 Active 弱状态；Esc 只取消后续 Review 和插件写入，不回滚已完成的 Active 刷新。一次成功的 TUI load 固定可用来源的 Active snapshot 子集，并保留其它来源的失败证据；子集 digest 只包含成功来源。同一 session 的浏览、设置、status、依赖 preview 和 Review 都读取该固定子集。load 只读取 source config、catalog state 和 Active store；它不 fetch 或同步，并在本地读取完成后立即进入 ready。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
 
@@ -86,7 +96,7 @@ Review 仍是用户确认边界。插件 Review 按 Project intent、User intent
 
 TUI 普通 cleanup 使用[生命周期离线清理](lifecycle.md#安装重建卸载与清理)，不扩大为停用。受限 force 必须从当前唯一 exact shallow 候选建立新 Review；执行后重新安装另起操作。
 
-插件和配置 Review 展示托管命令的 producer、固定参数、共享影响、权限与沙箱例外；Progress/Result 同时投影 commandResults 和平台结果。平台卸载报告保留的共享包及显式移除入口。操作汇总的声明、偏好、配置、输出四类影响来自准备计划；结果的四类变更来自实际回执。来源启用成功与插件更新成功分别报告。
+插件和配置 Review 展示托管命令的 producer、固定参数、共享影响、权限与沙箱例外。Native 明细取自同一冻结部署的 producer 记录和实际权限文件；保存后首次应用与重试都使用已准备的配置应用计划。Review 不再读取 staging 或运行 renderer。Progress/Result 同时投影 commandResults 和平台结果。平台卸载报告保留的共享包及显式移除入口。操作汇总的声明、偏好、配置、输出四类影响来自准备计划；结果的四类变更来自实际回执。来源启用成功与插件更新成功分别报告。
 
 TUI preview 保持只读，显示本次本机 CLI 的来源与版本。CLI 缺失或不支持时提示安装、升级或修复 Codex CLI/App；不提供托管获取或缓存授权。
 
@@ -108,7 +118,7 @@ TUI 把结构损坏的 store、Catalog/schema 不可用和字段覆盖无效分�
 
 ## 依赖关系
 
-TUI 的依赖关系页只解释当前数据，不改变 placement。正向声明边来自当前 source 的 manifest。Controller 从统一恢复状态 inventory 的 dependency component 读取 dependency ID、platform、scope、project 和 state；只有声明边有效、dependency state 为 `ready`，且 consumer 有当前现场 scope evidence（复用 `hasActualScopeEvidence`，不接受纯 Intent）时，才写入内部 `availablePlacementReferences`。它不重新计算 scope 选择。反向“哪些插件依赖它”同时保留已知声明边和这些可用关系，边分别显示为未验证与已验证；无位置的声明仍可阅读，不能按 `depth` 推断一条边。默认页面把它说明为本次状态检查：只检查当前项目和个人位置，其他项目未检查；它不表示插件已被调用，也不表示历史安装关系已经确认。共享节点明确标记为同一节点；graph blocker 或环显示为无效，不能渲染为正常树。该页不恢复已安装依赖迁移，不提供绕过依赖保护的删除入口，也不改变 `getBlockingDependents`、移除或 cleanup 门禁。
+TUI 的依赖关系页只解释当前数据，不改变 placement。正向声明边来自当前 source 的 manifest。Controller 从统一恢复状态读取联合需求的真实贡献路径、需求 scope 和实际 provider scope；只有声明边有效、依赖已核验且内容满足，并且路径中的 consumer 与 provider 都匹配本次观察到的实际位置时，才写入内部 `availablePlacementReferences`。项目关系仅覆盖当前项目，纯 Intent 不证明位置存在；它不重新计算 scope 选择。局部刷新按需求 scope 替换对应的已验证关系，保留其他 scope 的证据，不沿用已失效的关系。反向“哪些插件依赖它”同时保留已知声明边和这些可用关系，边分别显示为未验证与已验证；无位置的声明仍可阅读，不能按 `depth` 推断一条边。默认页面把它说明为本次状态检查：只检查当前项目和个人位置，其他项目未检查；它不表示插件已被调用，也不表示历史安装关系已经确认。共享节点明确标记为同一节点；graph blocker 或环显示为无效，不能渲染为正常树。该页不恢复已安装依赖迁移，不提供绕过依赖保护的删除入口，也不改变 `getBlockingDependents`、移除或 cleanup 门禁。
 
 TUI 依赖关系区分三类数据。Catalog declaration 说明插件声明需要什么；`availablePlacementReferences` 说明本次 统一状态 检查中，声明边、依赖 `ready` 状态和 consumer 当前现场位置可以同时匹配；历史 applied binding 则需要证明某次安装已把该边应用到该位置。历史 binding 尚未实现，因此不会填充 `placementReferences`，也不会把可用关系称为实际调用或已确认安装关系。`availablePlacementReferences` 只是 TUI 内部投影，不新增 Status JSON、I/O、持久记录、锁或现场扫描。图的证据分类不放宽锁内写入与依赖删除保护。
 

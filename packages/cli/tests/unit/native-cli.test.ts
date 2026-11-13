@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { probeAgentVersion } from '../../src/utils/agent-version.js';
+import { geminiConsentInput } from '../../src/platforms/gemini-consent.js';
 import {
   NativeCliError,
   CodexProjectConfigNotEffectiveError,
@@ -88,7 +89,7 @@ async function writeWindowsAgentNpmFixture(root: string, agent: 'claude' | 'code
   await Promise.all([
     fs.writeJson(path.join(packageRoot, 'package.json'), {
       name: packageName,
-      version: agent === 'codex' ? '0.200.0' : '2.1.88',
+      version: agent === 'codex' ? '0.200.0' : '2.1.292',
       bin: { [agent]: launcherEntry },
     }),
     fs.outputFile(launcher, '#!/usr/bin/env node\n'),
@@ -101,6 +102,134 @@ async function writeWindowsAgentNpmFixture(root: string, agent: 'claude' | 'code
 }
 
 describe('native-cli', () => {
+  // Test Value Gate: namespacing an ordinary cwd changes native trust keys;
+  // long cwd values must retain the existing Windows compatibility handling.
+  it.each([
+    ['short drive', 'C:\\work\\project', 'C:\\work\\project'],
+    ['relative', 'relative-project', 'relative-project'],
+    ['short UNC', '\\\\server\\share\\project', '\\\\server\\share\\project'],
+    ['259 code units', `C:\\${'a\\'.repeat(125)}abcdef`, `C:\\${'a\\'.repeat(125)}abcdef`],
+    ['260 code units', `C:\\${'a\\'.repeat(125)}abcdefg`, `\\\\?\\C:\\${'a\\'.repeat(125)}abcdefg`],
+    ['Unicode 259 code units', `C:\\${'😀\\'.repeat(85)}x`, `C:\\${'😀\\'.repeat(85)}x`],
+    ['Unicode 260 code units', `C:\\${'😀\\'.repeat(85)}xx`, `\\\\?\\C:\\${'😀\\'.repeat(85)}xx`],
+    ['explicit namespace', '\\\\?\\C:\\work\\project', '\\\\?\\C:\\work\\project'],
+    ['long UNC', `\\\\server\\share\\${'a\\'.repeat(130)}project`, `\\\\?\\UNC\\server\\share\\${'a\\'.repeat(130)}project`],
+  ])('preserves the Windows cwd contract for %s', async (_name, cwd, expected) => {
+    let observedCwd: string | undefined;
+    const runner = createExecFileNativeCliRunner({ platform: 'win32',
+      createWindowsJobInvocation: (executable, args) => ({ command: 'fixture-job-helper',
+        args: ['--config', 'fixed'], config: { schemaVersion: 1, executable, args: [...args], parentPid: 42 } }),
+      execFile: (_command, _args, options, callback) => {
+        observedCwd = options.cwd;
+        const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: 0, signalCode: null, kill: vi.fn(() => true) });
+        queueMicrotask(() => callback(null, 'cwd fixture', ''));
+        return child;
+      } });
+    await expect(runner({ command: 'controlled-client', args: [], cwd })).resolves.toMatchObject({ exitCode: 0 });
+    expect(observedCwd).toBe(expected);
+  });
+
+  // Test Value Gate: streaming input must preserve UTF-8 chunks and close stdin only after the exchange requests EOF.
+  it('runs a bounded input exchange through the formal process runner', async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() });
+    const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: 0, signalCode: null,
+      kill: vi.fn(() => true), stdout, stderr, stdin });
+    const chunks: string[] = [];
+    const errorChunks: string[] = [];
+    const runner = createExecFileNativeCliRunner({ platform: 'darwin',
+      killProcess: (_pid, signal) => {
+        if (signal === 0) throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+        return true;
+      },
+      execFile: (_command, _args, _options, callback) => {
+        queueMicrotask(() => {
+          const output = Buffer.from('项目\n');
+          const errors = Buffer.from('检查\n');
+          stdout.write(output.subarray(0, 1));
+          stderr.write(errors.subarray(0, 1));
+          stdout.write(output.subarray(1));
+          stderr.write(errors.subarray(1));
+          callback(null, '项目\n', '检查\n');
+        });
+        return child;
+      } });
+    const result = await runner({ command: 'codex', args: ['app-server', '--stdio'], input: {
+      initial: 'initialize\n', onStdout: (chunk) => {
+        chunks.push(chunk);
+        return chunk.includes('\n') ? { write: 'config/read\n', end: true } : {};
+      },
+      onStderr: (chunk) => { errorChunks.push(chunk); return undefined; },
+    } });
+    expect(result).toEqual({ exitCode: 0, stdout: '项目\n', stderr: '检查\n' });
+    expect(chunks.join('')).toBe('项目\n');
+    expect(errorChunks.join('')).toBe('检查\n');
+    expect(stdin.write.mock.calls).toEqual([['initialize\n'], ['config/read\n']]);
+    expect(stdin.end).toHaveBeenCalledTimes(1);
+  });
+
+  // Test Value Gate: input errors must wait for the existing process cleanup instead of rejecting while descendants remain.
+  it.each(['callback', 'stderr', 'stdin'] as const)('waits for cleanup after a streaming %s failure', async (origin) => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() });
+    const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: null,
+      kill: vi.fn(() => true), stdout, stderr, stdin });
+    let finishCleanup: (() => void) | undefined;
+    const terminate = vi.fn(() => new Promise<void>((resolve) => { finishCleanup = resolve; }));
+    const runner = createExecFileNativeCliRunner({ platform: 'win32', terminateProcessTree: terminate,
+      execFile: () => child });
+    const cause = new Error('exchange failed');
+    const pending = runner({ command: 'controlled-helper', args: [], input: {
+      initial: 'initialize\n', onStdout: () => { throw cause; },
+      onStderr: () => { throw cause; },
+    } });
+    const rejected = expect(pending).rejects.toMatchObject({ reason: 'exit', cause });
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    if (origin === 'callback') stdout.write('reply');
+    else if (origin === 'stderr') stderr.write('reply');
+    else stdin.emit('error', cause);
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf('function'));
+    expect(settled).toBe(false);
+    finishCleanup!();
+    await rejected;
+  });
+
+  // Test Value Gate: Gemini's description and question use different pipes.
+  // Exercise the actual process runner in both arrival orders, with no early answer.
+  it.each(['stdout', 'stderr'] as const)('waits for both Gemini consent streams when %s arrives first', async (firstStream) => {
+    const question = 'Do you want to continue? [Y/n]: ';
+    const description = '\u001b[33m日志：项目\nInstalling extension "demo".\u001b[0m\n';
+    const script = `
+      const first = ${JSON.stringify(firstStream)};
+      const question = ${JSON.stringify(question)};
+      const description = ${JSON.stringify(description)};
+      const deadline = setTimeout(() => process.exit(91), 5000);
+      let secondSent = false;
+      let answer = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => {
+        if (!secondSent) process.exit(92);
+        answer += chunk;
+      });
+      process.stdin.on('end', () => {
+        clearTimeout(deadline);
+        if (answer !== 'y\\n') process.exit(93);
+        process.stdout.write('accepted\\n');
+      });
+      process[first].write(first === 'stdout' ? question : description);
+      setTimeout(() => {
+        secondSent = true;
+        process[first === 'stdout' ? 'stderr' : 'stdout'].write(first === 'stdout' ? description : question);
+      }, 25);
+    `;
+    const observed = await execFileNativeCliRunner({ command: process.execPath, args: ['-e', script], timeoutMs: 3000,
+      input: geminiConsentInput('refresh', '/source', '/workspace', 'demo') });
+    expect(observed).toEqual({ exitCode: 0, stdout: `${question}accepted\n`, stderr: description });
+  });
+
   // Test Value Gate: cancellation must preserve the production runner's unconfirmed-cleanup evidence and original cause.
   it('preserves NativeCliError cleanup evidence when a bound read is cancelled', async () => {
     const abort = new AbortController();
@@ -144,7 +273,7 @@ describe('native-cli', () => {
         queueMicrotask(() => callback(
           null,
           targetArgs.includes('--version')
-            ? agent === 'codex' ? 'codex-cli 0.200.0' : '2.1.88 (Claude Code)'
+            ? agent === 'codex' ? 'codex-cli 0.200.0' : '2.1.292 (Claude Code)'
             : 'ok',
           '',
         ));
@@ -171,7 +300,7 @@ describe('native-cli', () => {
         cwd: root,
         env,
         runner,
-      })).resolves.toMatchObject({ status: 'supported', detectedVersion: agent === 'codex' ? '0.200.0' : '2.1.88' });
+      })).resolves.toMatchObject({ status: 'supported', detectedVersion: agent === 'codex' ? '0.200.0' : '2.1.292' });
       await expect(runner({
         command: agent,
         args: ['plugin', 'list'],

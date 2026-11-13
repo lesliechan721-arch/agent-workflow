@@ -451,7 +451,7 @@ describe('ConsoleAppV4', () => {
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
       kind: 'recovery', scope: 'user', command: 'reinstall',
-      exactTargets: [{ pluginId: roots[1], agent: 'codex' }],
+      exactTargets: [{ pluginId: roots[1], agent: 'codex', scope: 'user' }],
     }), expect.any(AbortSignal));
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
@@ -1641,7 +1641,7 @@ describe('ConsoleAppV4', () => {
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('确认恢复可执行目标'));
     expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
       kind: 'recovery', scope: 'project', command: 'sync',
-      exactTargets: [{ pluginId: root, agent: 'codex' }],
+      exactTargets: [{ pluginId: root, agent: 'codex', scope: 'project' }],
     }), expect.any(AbortSignal));
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));

@@ -1,13 +1,11 @@
 import path from 'node:path';
+import { NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { NormalizedPluginManifest, PlatformName, PluginMeta, Scope } from '../types.js';
 import { observePreferences, type PreferencesObservation, type AgentId } from '../intent/deployment-preferences.js';
 import { resolvePreferencesPath } from '../intent/deployment-preferences.js';
 import { observeIntent, resolveIntentPath, type IntentObservation } from '../intent/intent-store.js';
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
-import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
-import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
-import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
   resolvePartialCatalogOperationContext,
   type CatalogOperationContext,
@@ -17,28 +15,6 @@ import { readPluginManifest } from '../utils/manifest.js';
 import { createEmptyNativeDemandView, type NativeDemandView } from '../utils/native-demand.js';
 import { supportsPlatform } from '../utils/platform-support.js';
 import type { Delivery, Diagnostic } from './types.js';
-
-function claudeNativeApplicable(manifest: NormalizedPluginManifest): boolean {
-  const staticSurface = Boolean(
-    manifest.skills
-    || manifest.slashCommands
-    || manifest.mcpServers
-    || resolvePlatformHookDefinitions(manifest, 'claude').length > 0
-    || resolvePlatformEntries(manifest.extensions?.instructions, 'claude').length > 0
-    || resolvePlatformEntries(manifest.extensions?.permissions, 'claude').length > 0
-    || resolvePlatformEntries(manifest.extensions?.agents, 'claude').length > 0
-    || Object.keys(manifest.buildConfig?.manifestOverrides?.claude ?? {}).length > 0
-  );
-  if (staticSurface) return true;
-  const dynamicTargets = (manifest.artifacts?.targets ?? []).filter((target) =>
-    target.platform === 'claude'
-    && target.target === 'claude.skill'
-    && target.states.includes('present'));
-  if (dynamicTargets.length > 0) {
-    return true;
-  }
-  return false;
-}
 
 export type DemandSourceState = 'ready' | 'missing' | 'unavailable' | 'identity-mismatch';
 export interface DemandRoot {
@@ -71,23 +47,12 @@ export interface ReadDemandOptions {
 
 /** Manifest delivery choice is independent of tool, trust, and configuration health. */
 export function resolveDelivery(
-  manifest: NormalizedPluginManifest, agent: AgentId, scope: Scope,
+  manifest: NormalizedPluginManifest, agent: AgentId, _scope: Scope,
 ): Delivery | undefined {
-  const platform = agent === 'claude' ? 'claude' : agent === 'codex' ? 'codex' : undefined;
-  if (platform && supportsPlatform(manifest, platform)) {
-    const surface = platform === 'codex' ? analyzeCodexSurface(manifest) : undefined;
-    const applicable = platform === 'claude'
-      ? claudeNativeApplicable(manifest)
-      : surface!.unsupportedKinds.length === 0
-        && surface!.components.some((component) => component.scopes.includes(scope));
-    if (applicable) return { kind: 'native', platform };
-  }
-  if (!platform && supportsPlatform(manifest, agent) && (manifest.skills
-    || manifest.artifacts?.targets?.some((target) => target.target === 'agent-skills.skill'
-      && target.platform === agent && target.scopes.includes(scope)))) {
-    return { kind: 'agent-skills', provider: 'aw', agentId: agent };
-  }
-  return undefined;
+  if (!supportsPlatform(manifest, agent)) return undefined;
+  return agent === 'generic'
+    ? { kind: 'agent-skills', provider: 'aw', agentId: agent }
+    : { kind: 'native', platform: agent };
 }
 
 export async function readDemand(options: ReadDemandOptions): Promise<DemandSnapshot> {
@@ -188,10 +153,10 @@ export function demandNativeProjection(demand: DemandSnapshot): NativeDemandView
   const preferences = demand.preferences.state === 'valid' ? demand.preferences.value : undefined;
   view.roots = (demand.roots ?? []).flatMap((root) => {
     const platforms: PlatformName[] = root.plugin
-      ? (['codex', 'claude'] as const).filter((platform) => resolveDelivery(
+      ? NATIVE_PLATFORM_TARGETS.filter((platform) => resolveDelivery(
           root.plugin!.manifest, platform, demand.scope,
         )?.kind === 'native')
-      : ['codex', 'claude'];
+      : [...NATIVE_PLATFORM_TARGETS];
     const selected = platforms.filter((platform) => preferences?.targets.includes(platform)
       && !preferences.exclusions.some((entry) => entry.plugin === root.pluginId && entry.target === platform)
       && !(demand.scope === 'project' && demand.userProviders?.[platform]?.includes(root.pluginId))
@@ -199,7 +164,7 @@ export function demandNativeProjection(demand: DemandSnapshot): NativeDemandView
     return selected.length ? [{ pluginId: root.pluginId, platforms: selected }] : [];
   });
   view.dependencyScopeOverrides = demand.scope === 'project'
-    ? (['codex', 'claude'] as const).flatMap((platform) => (demand.userProviders?.[platform] ?? [])
+    ? NATIVE_PLATFORM_TARGETS.flatMap((platform) => (demand.userProviders?.[platform] ?? [])
       .map((pluginId) => ({ pluginId, platform, scope: 'user' as const }))) : [];
   return view;
 }

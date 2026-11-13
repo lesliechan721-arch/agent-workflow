@@ -929,8 +929,9 @@ describe('ConsoleAppV4', () => {
           schemaIdentity: 'sha256:schema',
           storeDigest: 'sha256:store',
           affectedTargets: [{ platform: 'codex', scope: 'user' }],
-          sharedNativeRenderTargets: [{
-            id: 'explore', skillKey: 'codex-explore', refreshKeys: ['exploreWait'],
+          sharedNativeRenderUnits: [{
+            pluginName: 'enhance', platform: 'codex', renderScope: 'user',
+            configKeys: ['exploreWait'], dynamicComponents: true, commandSets: [],
           }],
         },
       }),
@@ -944,6 +945,10 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     expect(instance.lastFrame()).toContain('更新已有插件内容');
+    expect(value.snapshot.activeReview?.changes).toContainEqual(expect.objectContaining({
+      title: '重新生成 enhance · Codex 共享组件集合',
+      description: expect.stringContaining('动态组件名称和数量需在准备后确认'),
+    }));
     await input(instance, '\r');
     expect(executeIntent).not.toHaveBeenCalled();
     expect(instance.lastFrame()).toContain('返回检查');
@@ -990,8 +995,9 @@ describe('ConsoleAppV4', () => {
         config: {
           scope: 'user', schemaIdentity: 'sha256:schema', storeDigest: 'sha256:store',
           affectedTargets: [{ platform: 'codex', scope: 'user' }],
-          sharedNativeRenderTargets: [{
-            id: 'explore', skillKey: 'codex-explore', refreshKeys: ['exploreWait'],
+          sharedNativeRenderUnits: [{
+            pluginName: 'enhance', platform: 'codex', renderScope: 'user',
+            configKeys: ['exploreWait'], dynamicComponents: true, commandSets: [],
           }],
         },
       }),

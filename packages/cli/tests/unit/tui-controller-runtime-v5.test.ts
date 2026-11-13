@@ -2,6 +2,8 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
+import type { RecoveryStatus } from '../../src/recovery/status.js';
+import type { RecoveryTarget } from '../../src/recovery/receipt.js';
 import { observePreferences } from '../../src/intent/deployment-preferences.js';
 
 import { flattenStatusTargets, type StatusV8Payload } from '../../src/commands/status-v6.js';
@@ -16,6 +18,7 @@ import {
   TuiController,
   type OperationEvidence,
 } from '../../src/tui/controller.js';
+import { buildPluginDetailActions } from '../../src/tui/model.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import {
@@ -181,35 +184,25 @@ function claudeTarget(
   };
 }
 
-function bundleUnavailableStatus(
-  configDigest = 'sha256:config',
-): Awaited<ReturnType<typeof runtimeMocks.statusCommandV8>> {
-  const orphan = target('user', 'error');
-  orphan.reasons = [{ code: 'bundleUnavailable', message: 'safe failure', severity: 'blocking' }];
-  orphan.placements[0]!.reasons = orphan.reasons;
-  return {
-    payload: {
-      schemaVersion: 8,
-      catalog: {
-        primarySourceId: 'official',
-        configDigest,
-        compositeDigest: 'sha256:composite',
-        sources: [{
-          id: 'official',
-          identity: 'identity:official',
-          type: 'path',
-          primary: true,
-          requestedRef: 'path',
-          freshness: 'active',
-        }],
-      },
-      filters: { plugins: ['official/demo'], platform: 'codex', cwd: '/workspace' },
-      targets: [orphan],
-      errors: [],
-    },
-    pluginSummaries: [],
-  };
+function mockCurrentTargets(targets: Array<{ pluginId: string; agent: 'codex' | 'claude'; scope: 'user' | 'project';
+  content: 'satisfied' | 'drifted' | 'absent' | 'unknown' }>, projectRoot?: string): void {
+  const observations: RecoveryTarget[] = targets.map((item) => ({ ...item, delivery: { kind: 'native', platform: item.agent },
+    execution: 'not-run', observation: item.content === 'satisfied' ? 'verified' : item.content === 'absent' ? 'missing' : 'unknown',
+    blockers: [], requiredBy: [], relation: 'root' }));
+  const current: RecoveryStatus = { schemaVersion: 1, kind: 'aw-recovery-status', scope: 'user', ok: true,
+    intent: { state: 'valid' }, selection: { agents: [...new Set(targets.map((target) => target.agent))], origin: 'preference', preferences: 'valid' },
+    inventory: observations.map((target) => ({ pluginId: target.pluginId, source: target.pluginId.split('/')[0]!,
+      sourceState: 'ready', blockers: [], targetResults: [target] })), observedTargets: observations,
+    existingTargets: targets.filter((target) => target.content !== 'absent').map(({ pluginId, agent, scope }) => ({ pluginId, agent, scope })),
+    extraObserved: [], coverage: { native: true, portable: true, scopes: ['user', 'project'], ...(projectRoot ? { projectRoot } : {}) },
+    counts: { blocked: 0, pending: 0, ready: 0, unconfirmed: 0 }, allSatisfied: true, inSync: true, errors: [] };
+  runtimeMocks.readRecoveryStatus.mockResolvedValue(current);
 }
+
+beforeEach(async () => {
+  const actual = await vi.importActual<typeof import('../../src/recovery/status.js')>('../../src/recovery/status.js');
+  runtimeMocks.readRecoveryStatus.mockReset().mockImplementation(actual.readRecoveryStatus);
+});
 
 describe('TUI scoped recovery runtime', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -218,10 +211,8 @@ describe('TUI scoped recovery runtime', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-project-detail-source');
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
-    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.platforms = ['codex'];
-      manifest.apps = './.app.json';
     });
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -231,14 +222,9 @@ describe('TUI scoped recovery runtime', () => {
     });
     await writeIntentFixture({ scope: 'project', cwd: isolation.layout.fixtureCwd,
       env: isolation.env }, { roots: [{ pluginId: 'local/demo', platforms: ['codex'] }] });
-    const actual = await vi.importActual<typeof import('../../src/commands/status-v6.js')>(
-      '../../src/commands/status-v6.js');
-    const result = await actual.statusCommandV8({ cwd: isolation.layout.fixtureCwd,
-      env: isolation.env, cliVersion: '1.0.0' });
-    const controller = new TuiController({ loadStatus: async () => ({
-      payload: result.payload, pluginSummaries: result.pluginSummaries,
-      targetRevisions: result.targetRevisions, projectRoot: result.projectRoot,
-    }) });
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    })));
     await controller.load();
     expect(controller.getPluginDetailSubject('local/demo')?.placements).toEqual(
       expect.arrayContaining([expect.objectContaining({ platform: 'codex', scope: 'project',
@@ -248,26 +234,19 @@ describe('TUI scoped recovery runtime', () => {
     controller.dispose();
   });
 
-  it('returns one scoped Native observation with recovery facts and keeps public JSON unchanged', async () => {
+  it('returns current scoped observations without a legacy Native payload or extra status process', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
     }));
-    const actual = await vi.importActual<typeof import('../../src/recovery/status.js')>('../../src/recovery/status.js');
-    runtimeMocks.readRecoveryStatus.mockImplementation(actual.readRecoveryStatus);
-    const native = { ...bundleUnavailableStatus(), targetRevisions: [], nativeObservations: [], nativeExtraObserved: [] };
-    runtimeMocks.statusCommandV8.mockResolvedValue(native);
     const signal = new AbortController().signal;
     const result = await dependencies.loadScopedStatus!('user', signal);
-    expect(result).toMatchObject({ scope: 'user', nativeSnapshot: { payload: native.payload, targetRevisions: [] } });
-    expect(runtimeMocks.statusCommandV8).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ scope: 'user', intent: { state: 'absent' }, inventory: [] });
+    expect(runtimeMocks.readRecoveryStatus).toHaveBeenCalledOnce();
+    expect(runtimeMocks.statusCommandV8).not.toHaveBeenCalled();
     expect(runtimeMocks.readRecoveryStatus.mock.calls[0]![0].signal).toBe(signal);
-    expect(runtimeMocks.statusCommandV8.mock.calls[0]![0].signal).toBe(signal);
-    expect(runtimeMocks.statusCommandV8.mock.calls[0]![0].scope).toBe('user');
-    expect(runtimeMocks.statusCommandV8.mock.calls[0]![0].cwd).not.toBe(isolation.layout.fixtureCwd);
-    const publicStatus = await runtimeMocks.readRecoveryStatus.mock.results[0]!.value;
-    expect(JSON.parse(JSON.stringify(publicStatus))).not.toHaveProperty('nativeSnapshot');
-    expect(JSON.parse(JSON.stringify(publicStatus))).not.toHaveProperty('payload');
+    expect(result).not.toHaveProperty('nativeSnapshot');
+    expect(result).not.toHaveProperty('payload');
   });
 
   it('passes one scope through recovery preparation and execution', async () => {
@@ -515,6 +494,31 @@ describe('TUI config affected targets', () => {
 
 describe('TUI controller runtime scope conflict validation', () => {
 
+  // Test Value Gate: source metadata must keep settings reachable when all fields belong to a concrete platform profile.
+  it('keeps platform-only configuration reachable in the current source view', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'platform-only-config-source');
+    await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', (manifest) => {
+      manifest.platforms = ['grok'];
+      manifest.config = { schemaVersion: 5, fields: {}, platforms: { grok: { fields: {
+        mode: { type: 'string', title: 'Mode', default: 'safe' },
+      } } } };
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: root }] },
+      expectedDigest: configured.digest, env: isolation.env });
+    const value = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    })));
+    try {
+      await value.load();
+      const overview = value.getPluginOverview('team/demo')!;
+      expect(overview).toMatchObject({ configFieldCount: 1, supportedPlatforms: ['grok'] });
+      expect(buildPluginDetailActions(overview)).toContainEqual({ id: 'settings' });
+      expect(runtimeMocks.statusCommandV8).not.toHaveBeenCalled();
+    } finally { value.dispose(); }
+  });
+
   it('loads recognizable saved settings without a current Catalog plugin', async () => {
     const isolation = getCurrentSourceTestIsolation();
     await writePluginConfigStore({
@@ -533,20 +537,8 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
     await fs.ensureDir(path.dirname(brokenPath));
     await fs.writeFile(brokenPath, '{broken');
-    const catalogConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV8.mockResolvedValue({
-      projectRoot: await fs.realpath(isolation.layout.fixtureCwd),
-      payload: {
-        schemaVersion: 8,
-        catalog: {
-          primarySourceId: 'official', configDigest: catalogConfig.digest,
-          compositeDigest: 'sha256:composite', sources: [],
-        },
-        filters: { plugins: [], platform: 'both', cwd: isolation.layout.fixtureCwd },
-        targets: [], errors: [],
-      },
-      pluginSummaries: [], targetRevisions: [],
-    });
+    await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
+    mockCurrentTargets([], await fs.realpath(isolation.layout.fixtureCwd));
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
     }));
@@ -641,35 +633,10 @@ describe('TUI controller runtime scope conflict validation', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV8.mockResolvedValue({
-      payload: {
-        schemaVersion: 8,
-        catalog: {
-          configDigest: configured.digest,
-          compositeDigest: 'sha256:composite',
-          primarySourceId: 'team',
-          sources: [],
-        },
-        targets: [
-          { ...target('user', 'present'), pluginId: 'team/demo', sourceId: 'team' },
-          { ...target('project', 'partial'), pluginId: 'team/demo', sourceId: 'team' },
-        ],
-        errors: [],
-      },
-      pluginSummaries: [{
-        pluginId: 'team/demo',
-        pluginName: 'demo',
-        sourceId: 'team',
-        sourceIdentity: 'ignored-by-test',
-        dependencyDirectCount: 0,
-        dependencyTotalCount: 0,
-      }],
-      targetRevisions: [
-        { pluginId: 'team/demo', platform: 'codex', scope: 'user', revision: { state: 'current', availableVersion: '1.0.0' } },
-        { pluginId: 'team/demo', platform: 'codex', scope: 'project', revision: { state: 'current', availableVersion: '1.0.0' } },
-      ],
-    });
+    mockCurrentTargets([
+      { pluginId: 'team/demo', agent: 'codex', scope: 'user', content: 'satisfied' },
+      { pluginId: 'team/demo', agent: 'codex', scope: 'project', content: 'drifted' },
+    ]);
     let reviewLogCount = 0;
     const debugLog = vi.fn((event: { type: string }) => {
       if (!event.type.startsWith('review.prepare.')) return undefined;
@@ -712,7 +679,8 @@ describe('TUI controller runtime scope conflict validation', () => {
       },
     });
 
-    expect(runtimeMocks.statusCommandV8).toHaveBeenCalledOnce();
+    expect(runtimeMocks.readRecoveryStatus).toHaveBeenCalledOnce();
+    expect(runtimeMocks.statusCommandV8).not.toHaveBeenCalled();
     expect(stages).toEqual(['config', 'evidence']);
     expect(debugLog.mock.calls.map(([event]) => event)
       .filter((event) => event.type.startsWith('review.prepare.'))).toEqual([
@@ -773,12 +741,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     await replaceCatalogSourcesConfig({ config: { schemaVersion: 2,
       sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: initial.digest, env: isolation.env });
-    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV8.mockResolvedValue({
-      payload: { schemaVersion: 8, catalog: { configDigest: configured.digest,
-        compositeDigest: 'sha256:composite', primarySourceId: 'team', sources: [] },
-        targets: [], errors: [] }, pluginSummaries: [], targetRevisions: [],
-    });
+    mockCurrentTargets([]);
     let revision = 1;
     let selected: Array<'codex' | 'generic'> = ['codex', 'generic'];
     const preApplyAuthorization = [{
@@ -1054,22 +1017,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     runtimeMocks.resetPluginConfigWithHelper.mockImplementation(
       actualWrites.resetPluginConfigWithHelper,
     );
-    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV8.mockResolvedValue({
-      payload: {
-        schemaVersion: 8,
-        catalog: {
-          configDigest: configured.digest,
-          compositeDigest: 'sha256:offline-reset',
-          sources: [],
-        },
-        filters: { plugins: [], platform: 'all', cwd: isolation.layout.fixtureCwd },
-        targets: [],
-        errors: [],
-      },
-      pluginSummaries: [],
-      targetRevisions: [],
-    });
+    mockCurrentTargets([]);
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1087,7 +1035,8 @@ describe('TUI controller runtime scope conflict validation', () => {
       summary: { resetDisposition: 'deletedFile' },
     });
 
-    expect(runtimeMocks.statusCommandV8).toHaveBeenCalledOnce();
+    expect(runtimeMocks.readRecoveryStatus).toHaveBeenCalledOnce();
+    expect(runtimeMocks.statusCommandV8).not.toHaveBeenCalled();
     await expect(fs.pathExists(storePath)).resolves.toBe(false);
     controller.dispose();
     runtimeMocks.resetPluginConfigWithHelper.mockReset();
@@ -1203,29 +1152,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV8.mockResolvedValue({
-      payload: {
-        schemaVersion: 8,
-        catalog: {
-          configDigest: configured.digest,
-          compositeDigest: 'sha256:composite',
-          primarySourceId: 'team',
-          sources: [],
-        },
-        filters: { plugins: ['team/demo'], platform: 'codex', cwd: isolation.layout.fixtureCwd },
-        targets: [{
-          ...target('user', 'present'), pluginId: 'team/demo', sourceId: 'team',
-          sourceIdentity: 'identity:team', cwd: isolation.layout.fixtureCwd,
-        }],
-        errors: [],
-      },
-      pluginSummaries: [{
-        pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team', sourceIdentity: 'identity:team',
-        dependencyDirectCount: 0, dependencyTotalCount: 0,
-      }],
-      targetRevisions: [],
-    });
+    mockCurrentTargets([{ pluginId: 'team/demo', agent: 'codex', scope: 'user', content: 'satisfied' }]);
     runtimeMocks.resetPluginConfigWithHelper.mockResolvedValue({
       configWrite: 'succeeded',
       overallState: 'succeeded',

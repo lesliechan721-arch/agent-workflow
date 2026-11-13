@@ -4,11 +4,14 @@ import type {
   HookEvent,
   NativeHookDefinition,
   PlatformName,
+  PlatformId,
   NormalizedPluginManifest,
   RenderedHookGroup,
   TrackedHookGroupIdentity,
 } from './types.js';
 import { resolvePlatformEntries } from './platform-entries.js';
+import { getHookHandlerContract, getPlatformHookHandlerRegistry } from './hook-handlers.js';
+import type { PluginComponent } from './plugin-components.js';
 
 export const PUBLIC_HOOK_EVENTS = [
   'before_tool',
@@ -24,119 +27,19 @@ export const PUBLIC_SESSION_START_SOURCES = [
 
 export const PUBLIC_SESSION_START_DEFAULT_MATCHER = PUBLIC_SESSION_START_SOURCES.join('|');
 
-export const PUBLIC_HOOK_EVENT_RENDER_MAP = {
-  before_tool: {
-    claude: 'PreToolUse',
-    codex: 'PreToolUse',
-  },
-  after_tool: {
-    claude: 'PostToolUse',
-    codex: 'PostToolUse',
-  },
-  session_start: {
-    claude: 'SessionStart',
-    codex: 'SessionStart',
-  },
-} as const satisfies Record<HookEvent, Record<PlatformName, string>>;
-
-// Claude allowlist source:
-// - src/entrypoints/sdk/coreSchemas.ts `HOOK_EVENTS`
-// - src/utils/hooks/hooksConfigManager.ts `HookEventMetadata.matcherMetadata`
-// - src/utils/hooks.ts runtime `matchQuery`
-// Verified against Claude Code source on 2026-04-27.
-export const CLAUDE_NATIVE_HOOK_EVENTS = [
-  'PreToolUse',
-  'PostToolUse',
-  'PostToolUseFailure',
-  'Notification',
-  'UserPromptSubmit',
-  'SessionStart',
-  'SessionEnd',
-  'Stop',
-  'StopFailure',
-  'SubagentStart',
-  'SubagentStop',
-  'PreCompact',
-  'PostCompact',
-  'PermissionRequest',
-  'PermissionDenied',
-  'Setup',
-  'TeammateIdle',
-  'TaskCreated',
-  'TaskCompleted',
-  'Elicitation',
-  'ElicitationResult',
-  'ConfigChange',
-  'WorktreeCreate',
-  'WorktreeRemove',
-  'InstructionsLoaded',
-  'CwdChanged',
-  'FileChanged',
-] as const;
-
-export const CODEX_NATIVE_HOOK_EVENTS = [
-  'PreToolUse',
-  'PermissionRequest',
-  'PostToolUse',
-  'SessionStart',
-  'UserPromptSubmit',
-  'Stop',
-] as const;
-
-type NativeHookEventContract = {
-  matcherAllowed: boolean;
-};
-
-export const NATIVE_HOOK_EVENT_CONTRACTS = {
-  claude: {
-    PreToolUse: { matcherAllowed: true },
-    PostToolUse: { matcherAllowed: true },
-    PostToolUseFailure: { matcherAllowed: true },
-    Notification: { matcherAllowed: true },
-    UserPromptSubmit: { matcherAllowed: false },
-    SessionStart: { matcherAllowed: true },
-    SessionEnd: { matcherAllowed: true },
-    Stop: { matcherAllowed: false },
-    StopFailure: { matcherAllowed: true },
-    SubagentStart: { matcherAllowed: true },
-    SubagentStop: { matcherAllowed: true },
-    PreCompact: { matcherAllowed: true },
-    PostCompact: { matcherAllowed: true },
-    PermissionRequest: { matcherAllowed: true },
-    PermissionDenied: { matcherAllowed: true },
-    Setup: { matcherAllowed: true },
-    TeammateIdle: { matcherAllowed: false },
-    TaskCreated: { matcherAllowed: false },
-    TaskCompleted: { matcherAllowed: false },
-    Elicitation: { matcherAllowed: true },
-    ElicitationResult: { matcherAllowed: true },
-    ConfigChange: { matcherAllowed: true },
-    WorktreeCreate: { matcherAllowed: false },
-    WorktreeRemove: { matcherAllowed: false },
-    InstructionsLoaded: { matcherAllowed: true },
-    CwdChanged: { matcherAllowed: false },
-    // Claude runtime uses basename(file_path) as matchQuery for FileChanged.
-    FileChanged: { matcherAllowed: true },
-  },
-  codex: {
-    PreToolUse: { matcherAllowed: true },
-    PermissionRequest: { matcherAllowed: true },
-    PostToolUse: { matcherAllowed: true },
-    SessionStart: { matcherAllowed: true },
-    UserPromptSubmit: { matcherAllowed: false },
-    Stop: { matcherAllowed: false },
-  },
-} as const satisfies Record<PlatformName, Record<string, NativeHookEventContract>>;
+const HOOK_HANDLERS = getPlatformHookHandlerRegistry();
+export const PUBLIC_HOOK_EVENT_RENDER_MAP = Object.fromEntries(PUBLIC_HOOK_EVENTS.map((event) => [event,
+  Object.fromEntries(Object.entries(HOOK_HANDLERS).map(([platform, handlers]) => [platform, handlers.common[event].nativeEvent])),
+])) as Record<HookEvent, Record<PlatformName, string | null>>;
+export const CLAUDE_NATIVE_HOOK_EVENTS = Object.keys(HOOK_HANDLERS.claude.native);
+export const CODEX_NATIVE_HOOK_EVENTS = Object.keys(HOOK_HANDLERS.codex.native);
+export const NATIVE_HOOK_EVENT_CONTRACTS = Object.fromEntries(Object.entries(HOOK_HANDLERS).map(([platform, handlers]) => [platform, handlers.native]));
+type NativeHookEventContract = { matcherAllowed: boolean | null };
 
 const PUBLIC_HOOK_EVENT_SET = new Set<string>(PUBLIC_HOOK_EVENTS);
 const PUBLIC_SESSION_START_SOURCE_SET = new Set<string>(PUBLIC_SESSION_START_SOURCES);
 const CODEX_EXACT_MATCHER_PATTERN = /^[A-Za-z0-9_|]+$/;
 const CODEX_REGEX_FLAG_SET = new Set(['i', 'm', 'R', 's', 'U', 'u', 'x']);
-const NATIVE_HOOK_EVENT_SETS = {
-  claude: new Set<string>(CLAUDE_NATIVE_HOOK_EVENTS),
-  codex: new Set<string>(CODEX_NATIVE_HOOK_EVENTS),
-} as const;
-
 export interface ResolvedPublicHookDefinition {
   kind: 'public';
   event: HookEvent;
@@ -205,8 +108,7 @@ function getNativeHookEventContract(
   platform: PlatformName,
   fieldName: string,
 ): NativeHookEventContract {
-  const contracts = NATIVE_HOOK_EVENT_CONTRACTS[platform] as Record<string, NativeHookEventContract>;
-  const contract = contracts[event];
+  const contract = getHookHandlerContract(platform, 'native', event);
   if (!contract) {
     throw new Error(`Invalid ${fieldName}: unsupported ${platform} hook event "${event}".`);
   }
@@ -939,7 +841,9 @@ export function renderPublicHookEvent(
   event: HookEvent,
   platform: PlatformName,
 ): string {
-  return PUBLIC_HOOK_EVENT_RENDER_MAP[event][platform];
+  const nativeEvent = getHookHandlerContract(platform, 'common', event).nativeEvent;
+  if (!nativeEvent) throw new Error(`Hook render mapping for ${platform} ${event} is unavailable.`);
+  return nativeEvent;
 }
 
 export function assertNativeHookEvent(
@@ -948,54 +852,48 @@ export function assertNativeHookEvent(
   fieldName: string,
 ): string {
   assertNonEmptyString(event, fieldName);
-  if (!NATIVE_HOOK_EVENT_SETS[platform].has(event)) {
-    throw new Error(`Invalid ${fieldName}: unsupported ${platform} hook event "${event}".`);
-  }
+  getHookHandlerContract(platform, 'native', event);
 
   return event;
 }
 
-export function assertHookMatcherAllowed(
-  options:
-    | {
-        kind: 'public';
-        event: HookEvent;
-        matcher: string | undefined;
-        fieldName: string;
-      }
-    | {
-        kind: 'native';
-        platform: PlatformName;
-        event: string;
-        matcher: string | undefined;
-        fieldName: string;
-      },
-): void {
-  if (options.kind === 'public') {
-    if (options.event !== 'session_start' || options.matcher === undefined) {
-      return;
-    }
-
+export function assertHookMatcherAllowed(options: {
+  kind: 'public' | 'native'; platform: PlatformId; event: string;
+  matcher: string | undefined; fieldName: string; phase?: 'source' | 'target';
+}): void {
+  const dialect = options.kind === 'public' ? 'common' : 'native';
+  const contract = getHookHandlerContract(options.platform, dialect, options.event);
+  if (options.matcher === undefined) return;
+  if (contract.matcherAllowed === false && !(options.kind === 'public' && options.phase === 'source')) {
+    throw new Error(`Invalid ${options.fieldName}: ${options.platform} event "${options.event}" does not allow matcher.`);
+  }
+  if (options.kind === 'public' && options.event === 'session_start') {
     normalizePublicSessionStartMatcher(options.matcher, options.fieldName);
-    return;
   }
-
-  const contract = getNativeHookEventContract(
-    options.event,
-    options.platform,
-    options.fieldName,
-  );
-  if (!contract.matcherAllowed && options.matcher !== undefined) {
-    throw new Error(
-      `Invalid ${options.fieldName}: ${options.platform} event "${options.event}" does not allow matcher.`,
-    );
-  }
-  if (
-    contract.matcherAllowed &&
-    options.platform === 'codex' &&
-    options.matcher !== undefined
-  ) {
+  if (contract.matcherAllowed === true && options.platform === 'codex') {
     assertCodexMatcherPattern(options.matcher, options.fieldName);
+  }
+}
+
+/** Stable component IDs do not permit the same host handler to execute twice. */
+export function assertNoDuplicateHookHandlers(components: readonly PluginComponent[], platform: PlatformId): void {
+  const handlers = new Set<string>();
+  for (const component of components) {
+    if (component.kind !== 'hook') continue;
+    const hook = component.content;
+    const contract = getHookHandlerContract(platform, hook.dialect, hook.event);
+    const command = assertNonEmptyString(hook.command, `component ${component.id}.command`);
+    const rendered = (platform === 'codex' || platform === 'claude') && contract.nativeEvent
+      ? renderHookDefinitionGroup(hook.dialect === 'common'
+        ? { kind: 'public', event: assertPublicHookEvent(hook.event, 'hook.event'), matcher: hook.matcher, command }
+        : { kind: 'native', event: hook.event, matcher: hook.matcher, command }, platform)
+      : null;
+    const identity = rendered
+      ? normalizeRenderedHookGroupIdentity({ platform: platform === 'claude' ? 'claude' : 'codex', event: rendered.event, matcher: rendered.matcher, command })
+      : { event: contract.nativeEvent ?? `common:${hook.event}`, matcher: contract.matcherAllowed ? hook.matcher ?? '*' : hook.matcher, command };
+    const key = serializeTrackedHookGroupIdentity(identity);
+    if (handlers.has(key)) throw new Error(`Invalid components: duplicate ${platform} hook handler for ${identity.event}.`);
+    handlers.add(key);
   }
 }
 
@@ -1007,13 +905,13 @@ export function resolvePlatformHookDefinitions(
     kind: 'public' as const,
     event: hook.event,
     matcher: hook.matcher,
-    command: hook.command,
+    command: assertNonEmptyString(hook.command, `hook ${hook.id}.command`),
   }));
   const nativeHooks = (manifest.extensions?.nativeHooks?.[platform] ?? []).map((hook) => ({
     kind: 'native' as const,
     event: hook.event,
     matcher: hook.matcher,
-    command: hook.command,
+    command: assertNonEmptyString(hook.command, `hook ${hook.id}.command`),
   }));
 
   return [...publicHooks, ...nativeHooks];
@@ -1074,21 +972,21 @@ export function normalizeRenderedHookGroupIdentity(options: {
         `Invalid ${options.platform}.${options.event}.matcher: expected undefined, null, or string.`,
       );
     }
-    matcher = normalizeCodexSharedMatcherValue(options.matcher, contract.matcherAllowed);
+    matcher = normalizeCodexSharedMatcherValue(options.matcher, contract.matcherAllowed === true);
   } else {
     if (options.matcher !== undefined && options.matcher !== null && typeof options.matcher !== 'string') {
       throw new Error(
         `Invalid ${options.platform}.${options.event}.matcher: expected a string.`,
       );
     }
-    if (!contract.matcherAllowed && options.matcher !== undefined) {
+    if (contract.matcherAllowed === false && options.matcher !== undefined) {
       throw new Error(
         `Invalid ${options.platform}.${options.event}.matcher: event "${options.event}" does not allow matcher.`,
       );
     }
     matcher = normalizeStrictMatcherValue(
       options.matcher ?? undefined,
-      contract.matcherAllowed,
+      contract.matcherAllowed === true,
       options.platform,
       `${options.platform}.${options.event}.matcher`,
     );
@@ -1367,7 +1265,7 @@ export function normalizeNativeHookDefinition(
     kind: 'native',
     event: entry.event,
     matcher: entry.matcher,
-    command: entry.command,
+    command: assertNonEmptyString(entry.command, `hook ${entry.id}.command`),
   };
 }
 
@@ -1378,6 +1276,6 @@ export function normalizePublicHookDefinition(
     kind: 'public',
     event: entry.event,
     matcher: entry.matcher,
-    command: entry.command,
+    command: assertNonEmptyString(entry.command, `hook ${entry.id}.command`),
   };
 }
