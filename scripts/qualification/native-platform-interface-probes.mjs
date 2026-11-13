@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { execute, prepareEnvironment, sha256, verifyCandidate } from './native-platform-runtime.mjs';
+import { execute, prepareEnvironment, renderPackage, sha256, verifyCandidate } from './native-platform-runtime.mjs';
+import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
 
 export const interfaceDistributions = Object.freeze({
   cursor: Object.freeze({ version: '2026.11.05-86047df',
@@ -136,7 +137,7 @@ function interfaceConfirmed(commands) {
     && /^\s+list \[--json\]\s+List installed plugins\s*$/mu.test(pluginHelp);
 }
 
-export async function probeClientInterfaces(platform, launcher, context, runCommand = execute) {
+export async function probeClientInterfaces(platform, launcher, context, runCommand = execute, options = {}) {
   const report = { platform, version: interfaceDistributions[platform].version, status: 'observed', commands: [],
     scope: { status: 'unverified', reason: 'No installation, update, dynamic content, or effective scope fixture was run.' },
     authentication: { status: 'unverified', credentials: 'none', login: 'not-requested' },
@@ -187,6 +188,12 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
       }
     } else report.inventory = { status: 'unverified', reason: 'Fixed version and plugin list --json parser were not confirmed.' };
   } else report.inventory = { status: 'unverified', reason: 'Marketplace list is account-visible; no account query was requested.' };
+  if (platform === 'antigravity' && options.localManagement && !processFailed && report.status === 'observed'
+    && report.commands.filter(entry => entry.id.endsWith('-plugin-list')).length === 2
+    && report.commands.filter(entry => entry.id.endsWith('-plugin-list')).every(entry => entry.stdout.trim() === '[]')) {
+    report.management = await probeAntigravityLocalManagement({ ...context, executable: launcher.executable }, command, renderPackage);
+    if (report.management.status !== 'observed') { report.status = 'failed'; report.reason = 'initial-management-or-scope-unverified'; }
+  }
   report.authentication.failurePossible = report.commands.some(command => command.authenticationFailurePossible);
   report.processContract = processFailed ? 'failed' : 'verified-observed retained for every executed command';
   return report;
@@ -211,7 +218,8 @@ export async function runInterfaceProbes(options) {
     boundary: { hostedOnly: true, host: 'ubuntu-24.04 x64', qualification: 'unverified', scope: 'unverified',
       credentials: 'empty temporary runtime whitelist', stdin: 'EOF', sessions: 'none', models: 'none',
       network: 'blocking HTTP(S)/ALL proxies for client commands; not an OS firewall',
-      clientProcessContract: 'existing execute verified-observed; no independent-group exception' }, clients: [] };
+      clientProcessContract: 'existing execute verified-observed; no independent-group exception',
+      localManagement: 'Antigravity candidate-only initial local Skill install/remove and Project directory discovery; no update qualification' }, clients: [] };
   try {
     if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || process.arch !== 'x64') throw new Error('hosted-linux-x64-required');
     report.candidate = await verifyCandidate(options.candidate);
@@ -241,7 +249,7 @@ export async function runInterfaceProbes(options) {
         const project = path.join(root, 'project');
         const neutral = path.join(root, 'neutral');
         await fs.mkdir(project); await fs.mkdir(neutral);
-        Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }));
+        Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }, execute, { localManagement: platform === 'antigravity' }));
       } catch (error) {
         client.status = 'failed'; client.reason = error?.message;
         if (error?.evidence) client.acquisition = error.evidence;

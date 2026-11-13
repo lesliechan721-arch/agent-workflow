@@ -262,9 +262,15 @@ export async function renderPackage(ctx, revision) {
   const packageVersion = platform === 'opencode' ? revision === 1 ? '0.1.0' : '0.1.1' : `1.0.${revision}`;
   const binding = { id: 'qualification', platform,
     plugin: { sourceId: 'qualification', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: `qualification/${ctx.pluginName}`, version: packageVersion },
-    scope, route: { codex: 'codex-marketplace', claude: 'claude-marketplace', pi: 'pi-package', gemini: 'gemini-extension', copilot: 'copilot-marketplace', opencode: 'opencode-directory', grok: ctx.scope === 'user' ? 'grok-cli' : 'grok-directory' }[platform],
+    scope, route: { codex: 'codex-marketplace', claude: 'claude-marketplace', pi: 'pi-package', gemini: 'gemini-extension', copilot: 'copilot-marketplace', opencode: 'opencode-directory', antigravity: ctx.scope === 'user' ? 'antigravity-cli' : 'antigravity-directory', grok: ctx.scope === 'user' ? 'grok-cli' : 'grok-directory' }[platform],
     consumers: [], physicalKey: 'qualification', activationKey: 'qualification', renderUnitIds: ['qualification'],
   };
+  if (platform === 'antigravity') {
+    const { resolvePlatformConfigRoot } = await import('../../packages/cli/dist/src/platforms/discovery.js');
+    binding.consumers.push({ id: 'qualification-antigravity-cli', product: 'cli', version: '1.3.4', availability: 'available',
+      reasonCodes: [], entry: { kind: 'cli', executable: ctx.executable ?? '/qualification/antigravity',
+        configRoot: resolvePlatformConfigRoot(platform, { cwd: ctx.project, env: ctx.env }) } });
+  }
   // Explicit test candidate only. No production profile is changed or qualified by rendering.
   const capabilities = { schemaVersion: 1, platform, scope: renderScope, basis: 'profile',
     profileId: 'qualification-candidate:ordinary-skill-only', consumers: [], features: {},
@@ -290,6 +296,7 @@ export async function renderPackage(ctx, revision) {
     await fs.writeFile(file, descriptor.bytes);
   }
   return { revision, contentDigest: projected.bundle.contentDigest, components: projected.components,
+    ...(platform === 'antigravity' ? { nativeDirectory: (await (await import('../../packages/cli/dist/src/platforms/layout.js')).getDeploymentLayout({ cwd: ctx.project, env: ctx.env }, binding)).packageRoot } : {}),
     ...(platform === 'opencode' ? { version: packageVersion, projectionInput: { binding, renderScope: scope, capabilities },
       nativePluginId: (await import('../../packages/cli/dist/src/platforms/layout.js')).getDeploymentResourceKey(binding.plugin) } : {}) };
 }

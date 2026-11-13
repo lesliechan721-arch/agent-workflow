@@ -44,7 +44,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test:qualification:native-platforms:harness
-      - run: node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs
+      - run: node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs scripts/qualification/native-platform-antigravity-management.test.mjs
       - name: Bind the candidate to this source and exact bundle bytes
         shell: bash
         run: |
@@ -124,7 +124,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/native-interface-probes"
-          node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs | tee "$RUNNER_TEMP/native-interface-probes/harness.log"
+          node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs scripts/qualification/native-platform-antigravity-management.test.mjs | tee "$RUNNER_TEMP/native-interface-probes/harness.log"
           node scripts/qualification/native-platform-interface-probes.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-interface-probes/report.json"
       - name: Summarize observed scope results
         if: always()
@@ -174,7 +174,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/native-interface-probes"
-          node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs | tee "$RUNNER_TEMP/native-interface-probes/harness.log"
+          node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs scripts/qualification/native-platform-antigravity-management.test.mjs | tee "$RUNNER_TEMP/native-interface-probes/harness.log"
           node scripts/qualification/native-platform-interface-probes.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-interface-probes/report.json"
       - uses: actions/upload-artifact@v4
         if: always()
