@@ -30,8 +30,8 @@ it('shares Codex products and user rendering while keeping project roles and act
 });
 
 // Test Value Gate: the observed User leaf must not qualify the failed Project
-// branch, other hosts, neighbouring versions, Apps, or other component kinds.
-it('limits Antigravity ordinary Skills to CLI 1.3.4 on Linux x64 at User scope', async () => {
+// branch, unrecorded hosts, neighbouring versions, Apps, or other component kinds.
+it('limits Antigravity ordinary Skills to CLI 1.3.4 on six recorded hosts at User scope', async () => {
   const { root, ctx, request } = await fixture('antigravity');
   request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '1.3.4' }];
   const resolved = await resolveDeployments(ctx, request);
@@ -42,7 +42,7 @@ it('limits Antigravity ordinary Skills to CLI 1.3.4 on Linux x64 at User scope',
     prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } };
   const profile = getQualifiedPlatformProfile('antigravity', { platform: 'linux', arch: 'x64' });
   expect(profile.qualificationEvidence).toEqual([expect.objectContaining({
-    reference: 'scripts/qualification/evidence/native-antigravity-user-skills-2026-11-14.json',
+    reference: 'scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json',
     product: 'cli', version: '1.3.4', platform: 'linux', arch: 'x64', scopes: ['user'], kinds: ['skill'], features: [],
   })]);
   const input = { binding, renderUnit, observation, profile };
@@ -62,9 +62,14 @@ it('limits Antigravity ordinary Skills to CLI 1.3.4 on Linux x64 at User scope',
   binding.consumers[0]!.product = 'cli';
   for (const host of [{ platform: 'linux', arch: 'arm64' }, { platform: 'darwin', arch: 'x64' }, { platform: 'darwin', arch: 'arm64' },
     { platform: 'win32', arch: 'x64' }, { platform: 'win32', arch: 'arm64' }] as const) {
-    expect(getPlatformCapabilities({ ...input, profile: getQualifiedPlatformProfile('antigravity', host) }).kinds.skill.status).toBe('unverified');
+    const recorded = getQualifiedPlatformProfile('antigravity', host);
+    expect(getPlatformCapabilities({ ...input, profile: recorded }).kinds.skill.status).toBe('supported');
+    expect(getPlatformCapabilities({ ...input, binding: project.bindings[0]!, renderUnit: project.renderUnits[0]!, profile: recorded }).kinds.skill.status).toBe('unverified');
+    expect(recorded.qualificationEvidence?.[0]).toEqual(expect.objectContaining({ ...host, scopes: ['user'], kinds: ['skill'], features: [] }));
   }
-  expect(getAuthoringPlatformCapabilities('antigravity', 'user').kinds.skill.status).toBe(process.platform === 'linux' && process.arch === 'x64' ? 'supported' : 'unverified');
+  expect(getQualifiedPlatformProfile('antigravity', { platform: 'freebsd', arch: 'x64' }).kinds.skill.status).toBe('unverified');
+  expect(getQualifiedPlatformProfile('antigravity', { platform: 'linux', arch: 'ia32' }).kinds.skill.status).toBe('unverified');
+  expect(getAuthoringPlatformCapabilities('antigravity', 'user').kinds.skill.status).toBe(['linux', 'darwin', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch) ? 'supported' : 'unverified');
   expect(getAuthoringPlatformCapabilities('antigravity', 'project').kinds.skill.status).toBe('unverified');
 });
 it('separates Cursor scope packages without changing physical identity on upgrades', async () => {

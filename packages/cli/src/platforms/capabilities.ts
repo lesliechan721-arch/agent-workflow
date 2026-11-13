@@ -31,7 +31,7 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
     : platform === 'gemini' ? '0.67.0' : platform === 'grok' ? '1.0.77' : platform === 'opencode' ? '2.0.0' : platform === 'antigravity' ? '1.3.4' : null;
   const hostPlatform = host.platform ?? process.platform;
   const hostArch = host.arch ?? process.arch;
-  const qualifiedSkillHosts = platform === 'antigravity' ? ['linux-x64'] : platform === 'grok'
+  const qualifiedSkillHosts = platform === 'grok'
     ? ['linux-x64', 'linux-arm64', 'darwin-arm64', 'win32-x64']
     : ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'];
   const qualifiedSkillHost = qualifiedSkillHosts.includes(`${hostPlatform}-${hostArch}`);
@@ -39,7 +39,7 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
     profile.id += `:${hostPlatform}-${hostArch}-cli-${skillVersion}-skills`;
     kinds.skill = { ...kinds.skill, status: 'supported', reasonCodes: [] };
     profile.qualifiedConsumers = { skill: [{ product: 'cli', version: skillVersion }] };
-    profile.qualificationEvidence = [{ reference: platform === 'antigravity' ? 'scripts/qualification/evidence/native-antigravity-user-skills-2026-11-14.json'
+    profile.qualificationEvidence = [{ reference: platform === 'antigravity' ? 'scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json'
       : platform === 'grok' ? 'scripts/qualification/evidence/native-grok-skills-2026-11-12.json'
       : platform === 'copilot' ? 'scripts/qualification/evidence/native-copilot-skills-2026-11-12.json'
       : platform === 'gemini' ? 'scripts/qualification/evidence/native-gemini-skills-2026-11-12.json'
