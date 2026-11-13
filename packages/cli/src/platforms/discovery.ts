@@ -198,7 +198,8 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
       }
       const version = platform === 'cursor' ? versionOutput.match(/\b(\d{4}\.\d{2}\.\d{2}-[a-z0-9]+)\b/u)?.[1] ?? null
         : extractStrictSemVerTokenFromVersionOutput(platform === 'opencode'
-          ? versionOutput.replace(/\bopencode\s+v(?=\d)/giu, 'opencode ') : versionOutput);
+          ? versionOutput.replace(/\bopencode\s+v(?=\d)/giu, 'opencode ')
+          : platform === 'copilot' ? versionOutput.replace(/^GitHub Copilot CLI ([^\s]+)\.\r?$/gmu, 'GitHub Copilot CLI $1') : versionOutput);
       product.version = version;
       if (!version) {
         product.reasonCodes = ['clientVersionUnknown'];

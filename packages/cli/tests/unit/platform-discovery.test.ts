@@ -117,6 +117,46 @@ describe('read-only target discovery and production selection', () => {
     expect(found.availability).toBe('unknown');
   });
 
+  // Test Value Gate: the official Copilot sentence punctuation must not hide its
+  // version; only its complete branded line receives this normalization.
+  it.each(['\n', '\r\n'])('reads the official Copilot version sentence with %j line endings', async (lineEnding) => {
+    const ctx = await fixture(); await executable(ctx, 'copilot');
+    const stdout = `GitHub Copilot CLI 1.0.95.${lineEnding}Run 'copilot update' to check for updates.${lineEnding}`;
+    const found = await discoverPlatform('copilot', { ...ctx, runner: async () => ({ exitCode: 0, stdout, stderr: '' }) });
+    expect(found.availability).toBe('available');
+    expect(found.installations[0]).toMatchObject({ version: '1.0.95', availability: 'available', reasonCodes: [] });
+  });
+
+  it('retains the valid unpunctuated Copilot version output', async () => {
+    const ctx = await fixture(); await executable(ctx, 'copilot');
+    const found = await discoverPlatform('copilot', { ...ctx,
+      runner: async () => ({ exitCode: 0, stdout: 'GitHub Copilot CLI 1.0.95', stderr: '' }) });
+    expect(found.installations[0]).toMatchObject({ version: '1.0.95', availability: 'available' });
+  });
+
+  it.each([
+    'GitHub Copilot CLI 1.0.95..',
+    'GitHub Copilot CLI 1.0.95-01.',
+    'GitHub Copilot CLI 1.0.95-beta..',
+    'GitHub Copilot CLI 01.0.95.',
+    'Unrelated GitHub Copilot CLI 1.0.95.',
+  ])('rejects malformed or unrecognized Copilot version lines: %s', async (line) => {
+    const ctx = await fixture(); await executable(ctx, 'copilot');
+    const found = await discoverPlatform('copilot', { ...ctx, runner: async () => ({ exitCode: 0,
+      stdout: `${line}\nRun 'copilot update' to check for updates.\n`, stderr: '' }) });
+    expect(found.availability).toBe('unknown');
+    expect(found.installations[0]).toMatchObject({ version: null, reasonCodes: ['clientVersionUnknown'] });
+  });
+
+  // Test Value Gate: Copilot sentence normalization must not relax other clients.
+  it('keeps the strict version token gate for other platforms', async () => {
+    const ctx = await fixture(); await executable(ctx, 'codex');
+    const found = await discoverPlatform('codex', { ...ctx,
+      runner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.167.0.', stderr: '' }) });
+    expect(found.availability).toBe('unknown');
+    expect(found.installations[0]).toMatchObject({ version: null, reasonCodes: ['clientProbeFailed'] });
+  });
+
   // Test Value Gate: a broken earlier PATH entry must not hide a healthy independent client entry.
   it.runIf(process.platform !== 'win32')('keeps a healthy CLI when another PATH entry lacks execute permission', async () => {
     const ctx = await fixture(); const healthyBin = path.join(ctx.cwd, 'healthy-bin'); await fs.ensureDir(healthyBin);

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { constants } from 'node:fs';
 import { clients, sha256 } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
+import { readGeminiSkills } from './native-platform-gemini-skills.mjs';
 
 // One fixed Node child, using AW's real default native backend and the same
 // isolated cwd/env as Pi. This observes path spelling without granting trust.
@@ -102,6 +103,10 @@ async function readGrokSkills(ctx, cwd, revision, present) {
 
 export async function readSkills(ctx, cwd, revision, present, { requireAbsent = false } = {}) {
   if (ctx.platform === 'grok') return readGrokSkills(ctx, cwd, revision, present);
+  if (ctx.platform === 'gemini') {
+    const result = await readGeminiSkills(ctx, cwd, `AW public acceptance revision ${revision}`, present);
+    return { ...result, level: 'fresh-process-skill-discovery' };
+  }
   if (ctx.platform === 'copilot') {
     const result = await readCopilotSkills(ctx, cwd, `AW public acceptance revision ${revision}`, present);
     if (requireAbsent) assert.equal(result.present, false, 'Public remove must leave no fixture Skill in Copilot discovery.');
@@ -231,7 +236,8 @@ async function grokStatusFiles(ctx) {
 }
 
 export async function qualifyPublicAw(ctx) {
-  if (!['codex', 'pi', 'grok', 'copilot'].includes(ctx.platform)) await ctx.defer('public-aw-read-only-skill-observer-not-implemented');
+  if (!['codex', 'pi', 'grok', 'copilot', 'gemini'].includes(ctx.platform)) await ctx.defer('public-aw-read-only-skill-observer-not-implemented');
+  if (ctx.platform === 'gemini' && ctx.scope !== 'user') await ctx.defer('public-aw-gemini-project-skill-unverified');
   if (ctx.platform === 'grok' && ctx.scope !== 'user') await ctx.defer('public-aw-grok-project-skill-unverified');
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
@@ -276,6 +282,15 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['dev', 'catalog', 'build', '--workspace-root', workspace], workspace);
     await ctx.aw(['source', 'add', 'qualification', '--path', path.join(workspace, '.aw/catalog'), '--no-auto-check', '--primary', '--yes']);
     return { source: 'qualification', plugin: ctx.pluginName, version: '0.1.0' };
+  });
+  if (ctx.platform === 'gemini') await ctx.check('explicit-host-user-fixture-trust', async () => {
+    assert.equal(ctx.scope, 'user');
+    assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Real Gemini public qualification requires a credential-free Hosted environment.');
+    const directory = path.join(ctx.env.GEMINI_CLI_HOME, '.gemini');
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, 'trustedFolders.json'),
+      JSON.stringify(Object.fromEntries([workspace, ctx.project, ctx.neutral].map((location) => [location, 'TRUST_FOLDER'])), null, 2) + '\n');
+    return { level: 'fixture-config', scope: 'user', trusted: 'isolated source workspace and working directories', sessionRequests: 'none' };
   });
   if (ctx.scope === 'project') await ctx.check('explicit-host-project-trust', async () => {
     // Host trust is an explicit isolated fixture, separate from AW --yes.

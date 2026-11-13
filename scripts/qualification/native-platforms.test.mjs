@@ -13,9 +13,30 @@ import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
 import './native-platform-copilot-skills.test.mjs';
+import './native-platform-gemini-skills.test.mjs';
 import './native-platform-linux-environment.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
+
+// Test Value Gate: public Gemini observation must bind its current revision to
+// the fixture record and require complete removal without opening an RPC session.
+test('public Gemini reads use current Skill metadata and require absence after removal', async () => {
+  const calls = [];
+  let stdout = 'Discovered Agent Skills:\n\nskill [Enabled]\n  Description: AW public acceptance revision 2\n  Location:    /fixture/SKILL.md\n\n';
+  const ctx = { platform: 'gemini', skillName: 'skill',
+    async command(...args) { calls.push(args); return { stdout }; },
+    async rpc() { assert.fail('Gemini Skill discovery must not open an RPC session.'); } };
+  assert.deepEqual(await readPublicSkills(ctx, '/project', 2, true), {
+    level: 'fresh-process-skill-discovery', name: 'skill', present: true, description: 'AW public acceptance revision 2' });
+  await assert.rejects(readPublicSkills(ctx, '/project', 1, true), { code: 'ERR_ASSERTION' });
+  stdout = stdout.replace('[Enabled]', '[Disabled]');
+  await assert.rejects(readPublicSkills(ctx, '/neutral', 2, false, { requireAbsent: true }), { code: 'ERR_ASSERTION' });
+  stdout = 'No skills discovered.\n';
+  assert.deepEqual(await readPublicSkills(ctx, '/neutral', 2, false, { requireAbsent: true }), {
+    level: 'fresh-process-skill-discovery', name: 'skill', present: false });
+  assert(calls.every(([args]) => JSON.stringify(args) === JSON.stringify(['skills', 'list'])));
+  assert.equal(calls[3][1], '/neutral');
+});
 
 // Test Value Gate: public observation must use the public revision and a fresh
 // local command; disabled inventory cannot satisfy complete removal.

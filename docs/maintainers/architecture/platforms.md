@@ -27,9 +27,9 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 | Grok Build | install/list JSON/enable/disable/uninstall 与 trust 接口合同 | CLI；Windows npm 入口验证 `@xai-official/grok`，没有已证明数字最低版本 |
 | generic | 无客户端条件 | notApplicable，手动选择，不默认勾选 |
 
-数字门槛是必要接口条件，不是完整运行资格。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。
+数字门槛是必要接口条件，不是完整运行资格。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。Copilot 官方版本句末的单个句点只在完整品牌行内规范化，随后仍走严格版本解析；其他客户端和非法版本不放宽。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。
 
-普通 Skill 的有限 profile 对 Codex CLI `0.167.0`、Pi CLI `1.5.0` 在 Linux/macOS/Windows 的 x64/arm64 开放，依据[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)。Copilot CLI `1.0.95` 同样仅在上述六环境开放 User/Project 普通 Skill，依据[Copilot 六环境原生记录](../../../scripts/qualification/evidence/native-copilot-skills-2026-11-12.json)；Project 证据有显式宿主信任前提，公开 AW 编排仍须另验。Grok CLI `1.0.77` 仅在 Linux x64/arm64、macOS arm64、Windows x64 开放 User 普通 Skill，依据[四环境用户级原生记录](../../../scripts/qualification/evidence/native-grok-skills-2026-11-12.json)；Project 保持未验证。记录中的 scope 限制同时用于实际部署和作者能力视图。这些有限 profile 只确认已列范围的原生管理、发现与作用域；App、相邻版本、调用控制、模型采用及其他组件不继承资格。公开 AW 完整编排仍须单独验证。
+普通 Skill 的有限 profile 对 Codex CLI `0.167.0`、Pi CLI `1.5.0` 在 Linux/macOS/Windows 的 x64/arm64 开放，依据[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)。Copilot CLI `1.0.95` 同样仅在上述六环境开放 User/Project 普通 Skill，依据[Copilot 六环境原生记录](../../../scripts/qualification/evidence/native-copilot-skills-2026-11-12.json)；Project 证据有显式宿主信任前提，公开 AW 编排仍须另验。Gemini CLI `0.67.0` 仅在六环境开放 User 普通 Skill，依据[Gemini 用户级原生记录](../../../scripts/qualification/evidence/native-gemini-skills-2026-11-12.json)；Project 的能力与生产写入继续阻断，共享 User 包体不扩大资格。Grok CLI `1.0.77` 仅在 Linux x64/arm64、macOS arm64、Windows x64 开放 User 普通 Skill，依据[四环境用户级原生记录](../../../scripts/qualification/evidence/native-grok-skills-2026-11-12.json)；Project 保持未验证。记录中的 scope 限制同时用于实际部署和作者能力视图。这些有限 profile 只确认已列范围的原生管理、发现与作用域；App、相邻版本、调用控制、模型采用及其他组件不继承资格。公开 AW 完整编排仍须单独验证。
 
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 

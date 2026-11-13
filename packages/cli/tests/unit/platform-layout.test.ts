@@ -8,7 +8,7 @@ import { getAuthoringPlatformCapabilities } from '../../src/review/platform-prof
 import type { DeploymentObservation, ResolveRequest } from '../../src/platforms/contracts.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
-async function fixture(platform: 'codex' | 'cursor' | 'pi' | 'grok' | 'copilot') {
+async function fixture(platform: 'codex' | 'cursor' | 'pi' | 'grok' | 'copilot' | 'gemini') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-layout-')); roots.push(root);
   const ctx = { cwd: root, env: { HOME: root, USERPROFILE: root, AW_HOME: path.join(root, 'aw') } };
   const request: ResolveRequest = { plugin: { sourceId: 'test', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'test/example', version: '1.0.0' },
@@ -209,4 +209,63 @@ it('limits Grok ordinary Skills to the four recorded CLI user environments', asy
   expect(getAuthoringPlatformCapabilities('grok', 'project').kinds.skill.status).toBe('unverified');
   const hostQualified = ['linux-x64', 'linux-arm64', 'darwin-arm64', 'win32-x64'].includes(`${process.platform}-${process.arch}`);
   expect(getAuthoringPlatformCapabilities('grok', 'user').kinds.skill.status).toBe(hostQualified ? 'supported' : 'unverified');
+});
+
+// Test Value Gate: a user-only native record must never authorize project
+// deployment or author materialization, another version/product, or another host.
+it('limits Gemini ordinary Skills to the six recorded CLI user environments', async () => {
+  const { root, ctx, request } = await fixture('gemini');
+  request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '0.67.0' }];
+  const user = await resolveDeployments(ctx, request);
+  const project = await resolveDeployments(ctx, { ...request, scope: { kind: 'project', projectRoot: path.join(root, 'project') } });
+  const binding = user.bindings[0]!;
+  const renderUnit = user.renderUnits.find((unit) => unit.output === 'package')!;
+  const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent',
+    ownership: 'absent', consumers: [], components: [], nativeIdentity: null,
+    prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
+  const hosts: Array<{ platform: NodeJS.Platform; arch: NodeJS.Architecture }> = [
+    { platform: 'linux', arch: 'x64' }, { platform: 'linux', arch: 'arm64' },
+    { platform: 'darwin', arch: 'x64' }, { platform: 'darwin', arch: 'arm64' },
+    { platform: 'win32', arch: 'x64' }, { platform: 'win32', arch: 'arm64' },
+  ];
+  for (const host of hosts) {
+    const profile = getQualifiedPlatformProfile('gemini', host);
+    const input = { binding, renderUnit, observation, profile };
+    const capability = getPlatformCapabilities(input);
+    expect(capability.kinds.skill.status).toBe('supported');
+    for (const kind of ['hook', 'mcp', 'instruction', 'agent'] as const) expect(capability.kinds[kind].status).toBe('unverified');
+    for (const feature of Object.values(capability.features)) expect(feature.status).toBe('unverified');
+    expect(profile.qualificationEvidence?.[0]).toMatchObject({ product: 'cli', version: '0.67.0',
+      reference: 'scripts/qualification/evidence/native-gemini-skills-2026-11-12.json',
+      platform: host.platform, arch: host.arch, scopes: ['user'], kinds: ['skill'], features: [] });
+    const projectBinding = project.bindings[0]!;
+    const projectUnit = project.renderUnits.find((unit) => unit.output === 'package')!;
+    expect(projectUnit.renderScope.kind).toBe('user');
+    expect(getPlatformCapabilities({ binding: projectBinding, renderUnit: projectUnit,
+      observation: { ...observation, physicalKey: projectBinding.physicalKey }, profile }).kinds.skill.status).toBe('unverified');
+    for (const version of ['0.66.0', '0.67.1', '0.68.0', null]) {
+      binding.consumers[0]!.version = version;
+      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+    }
+    binding.consumers[0]!.version = '0.67.0';
+    binding.consumers[0]!.product = 'app';
+    expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+    binding.consumers[0]!.product = 'cli';
+    binding.consumers.push({ ...binding.consumers[0]!, id: 'other-consumer', version: '0.67.1' });
+    expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+    binding.consumers.pop();
+  }
+  for (const host of [{ platform: 'freebsd', arch: 'x64' }, { platform: 'linux', arch: 's390x' }] as const) {
+    expect(getPlatformCapabilities({ binding, renderUnit, observation,
+      profile: getQualifiedPlatformProfile('gemini', host) }).kinds.skill.status).toBe('unverified');
+  }
+  const authoringProject = getAuthoringPlatformCapabilities('gemini', 'project');
+  expect(authoringProject.kinds.skill.status).toBe('unverified');
+  const hostQualified = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64', 'win32-arm64'].includes(`${process.platform}-${process.arch}`);
+  const authoringUser = getAuthoringPlatformCapabilities('gemini', 'user');
+  expect(authoringUser.kinds.skill.status).toBe(hostQualified ? 'supported' : 'unverified');
+  for (const capabilities of [authoringUser, authoringProject]) {
+    for (const kind of ['hook', 'mcp', 'instruction', 'agent'] as const) expect(capabilities.kinds[kind].status).toBe('unverified');
+    for (const feature of Object.values(capabilities.features)) expect(feature.status).toBe('unverified');
+  }
 });

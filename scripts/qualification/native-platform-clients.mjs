@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs'
+import { readGeminiSkills } from './native-platform-gemini-skills.mjs'
 
 const version = revision => `1.0.${revision}`
 const description = revision => `AW qualification revision ${revision}`
@@ -247,13 +248,7 @@ async function geminiInventory(ctx, cwd, revision) {
 }
 
 async function geminiSkills(ctx, cwd, revision, present) {
-  const result = await ctx.command(['skills', 'list'], cwd)
-  const skill = new RegExp(`^${escapeRegExp(ctx.skillName)} \\[Enabled\\]\\r?$`, 'mu')
-  assert.equal(skill.test(result.stdout), present,
-    present ? 'Gemini must discover the enabled fixture Skill.' : 'A project Gemini Skill must not be discovered in neutral cwd.')
-  if (present) assert.match(result.stdout, new RegExp(`^\\s*Description: ${escapeRegExp(description(revision))}\\r?$`, 'mu'))
-  else assert(!new RegExp(`^${escapeRegExp(ctx.skillName)} \\[`, 'mu').test(result.stdout), 'Gemini must not retain the fixture in Skill discovery.')
-  return { level: 'skill-discovery', name: ctx.skillName, present, ...(present ? { description: description(revision) } : {}) }
+  return readGeminiSkills(ctx, cwd, description(revision), present)
 }
 
 async function qualifyGemini(ctx) {

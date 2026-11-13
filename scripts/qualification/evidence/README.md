@@ -17,3 +17,5 @@
 历史本机记录是固定证据，不是安装账本，也不加入默认测试、构建或发布链。原始报告和本机临时探针保留在对应开发工作项中。临时探针绑定本机入口，不能直接作为通用 runner。复现该历史本机观察时，必须显式提供已安装的精确版本 binary，使用独立临时 HOME、Agent/XDG/AW 根和 workspace，保持无凭据、无 prompt、无模型请求；不得下载客户端或连接已有/远程 server。不能通过替换版本号复用旧 `0.151.0` suite 的资格结论。
 
 [native-copilot-skills-2026-11-12.json](native-copilot-skills-2026-11-12.json) 保存 Copilot CLI `1.0.95` 在 Linux/macOS/Windows x64/arm64 的 User/Project 普通 Skill 原生管理、发现、更新、隔离与移除记录。12 个 Native 通过单元来自[同次候选运行](https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43293549338)，原报告整体仍为 unverified，不用摘录覆盖其他未验证场景。记录保留原索引、摘要、获取信息及每条命令的真实进程观察模式；Darwin 使用已接受的 ordinary observed，不是 Provider 或 OS 隔离资格。Project 证据显式使用 `COPILOT_ALLOW_ALL=true` 临时信任前提，该值也批准工具，但测试没有工具、prompt 或模型请求；不传给用户环境。公开 AW 链、普通新会话、模型采用、调用控制和其他组件仍须单独验证。
+
+[native-gemini-skills-2026-11-12.json](native-gemini-skills-2026-11-12.json) 仅保存 Gemini CLI `0.67.0` 六环境 User 普通 Skill 的六个通过单元及96条命令，来自同次43293549338原生报告。精确来源、命令模式、发现/更新/移除与无凭据前提均保留，原整体及公开链仍未验证。Project 的原生 fixture 使用额外默认禁用规则，不进入此资格；生产仍阻断项目写入，User 共用包体不授予 Project 能力。公开 AW 链、其他版本/组件/App、调用控制与模型采用均须另验。
