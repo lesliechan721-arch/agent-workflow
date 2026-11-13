@@ -259,7 +259,8 @@ export async function renderPackage(ctx, revision) {
   const platform = ctx.platform;
   const renderScope = ['codex', 'claude', 'gemini', 'copilot'].includes(platform) ? 'user' : ctx.scope;
   const scope = renderScope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot: ctx.project };
-  const packageVersion = platform === 'opencode' ? revision === 1 ? '0.1.0' : '0.1.1' : `1.0.${revision}`;
+  const packageVersion = platform === 'opencode' ? revision === 1 ? '0.1.0' : '0.1.1'
+    : platform === 'antigravity' ? revision === 1 ? '1.0.1' : '1.0.2' : `1.0.${revision}`;
   const binding = { id: 'qualification', platform,
     plugin: { sourceId: 'qualification', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: `qualification/${ctx.pluginName}`, version: packageVersion },
     scope, route: { codex: 'codex-marketplace', claude: 'claude-marketplace', pi: 'pi-package', gemini: 'gemini-extension', copilot: 'copilot-marketplace', opencode: 'opencode-directory', antigravity: ctx.scope === 'user' ? 'antigravity-cli' : 'antigravity-directory', grok: ctx.scope === 'user' ? 'grok-cli' : 'grok-directory' }[platform],
@@ -273,14 +274,24 @@ export async function renderPackage(ctx, revision) {
   }
   // Explicit test candidate only. No production profile is changed or qualified by rendering.
   const capabilities = { schemaVersion: 1, platform, scope: renderScope, basis: 'profile',
-    profileId: 'qualification-candidate:ordinary-skill-only', consumers: [], features: {},
+    profileId: platform === 'antigravity' && ctx.observeAgent === true
+      ? 'qualification-candidate:skill-and-uninvoked-agent-scope-observer' : 'qualification-candidate:ordinary-skill-only', consumers: [], features: {},
     kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
       { status: kind === 'skill' ? 'supported' : 'unverified', reasonCodes: kind === 'skill' ? [] : ['capability-unverified'], delivery: [platform === 'opencode' ? 'native-extension' : 'native-package'] }])) };
+  const components = [{ id: 'skill:qualification', kind: 'skill', name: ctx.skillName, content: { files: {
+      'SKILL.md': { text: `---\nname: ${ctx.skillName}\ndescription: AW qualification revision ${revision}\n---\n${['opencode', 'antigravity'].includes(platform) ? `Qualification fixture revision ${revision}.` : 'Qualification fixture.'} No model request is required.\n` },
+    } } }];
+  const observeAgent = platform === 'antigravity' && ctx.observeAgent === true;
+  if (observeAgent) {
+    capabilities.kinds.agent = { status: 'supported', reasonCodes: [], delivery: ['native-package'] };
+    capabilities.features['agent.prompt-mode'] = { status: 'supported', reasonCodes: [], values: ['host-default'] };
+    capabilities.features['agent.execution'] = { status: 'supported', reasonCodes: [], values: ['isolated-context'] };
+    components.push({ id: 'agent:scope-observer', kind: 'agent', name: 'management-observer',
+      content: { description: 'Local scope observation fixture.', prompt: 'No invocation is requested.' } });
+  }
   const projected = await projectPlatform({ cwd: ctx.project, env: ctx.env, stagingRoot: path.join(ctx.root, `stage-${revision}`) }, {
-    binding, renderUnit: { id: 'qualification', physicalKey: 'qualification', renderScope: scope, output: 'package', kinds: ['skill'], consumers: [] },
-    capabilities, components: [{ id: 'skill:qualification', kind: 'skill', name: ctx.skillName, content: { files: {
-      'SKILL.md': { text: `---\nname: ${ctx.skillName}\ndescription: AW qualification revision ${revision}\n---\n${platform === 'opencode' ? `Qualification fixture revision ${revision}.` : 'Qualification fixture.'} No model request is required.\n` },
-    } } }], policy: { platform, permissions: [] }, resources: { resources: [], files: [], bundleFiles: [], commandResources: [], digest: 'qualification' },
+    binding, renderUnit: { id: 'qualification', physicalKey: 'qualification', renderScope: scope, output: 'package', kinds: observeAgent ? ['skill', 'agent'] : ['skill'], consumers: [] },
+    capabilities, components, policy: { platform, permissions: [] }, resources: { resources: [], files: [], bundleFiles: [], commandResources: [], digest: 'qualification' },
   });
   if (!projected.bundle) throw new Error('candidate-package-missing');
   await fs.rm(ctx.bundle, { recursive: true, force: true });

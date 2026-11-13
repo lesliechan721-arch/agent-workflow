@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { execute, prepareEnvironment, renderPackage, sha256, verifyCandidate } from './native-platform-runtime.mjs';
+import { assertCommand, execute, prepareEnvironment, renderPackage, sha256, verifyCandidate } from './native-platform-runtime.mjs';
 import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
 
 export const interfaceDistributions = Object.freeze({
@@ -219,7 +219,7 @@ export async function runInterfaceProbes(options) {
       credentials: 'empty temporary runtime whitelist', stdin: 'EOF', sessions: 'none', models: 'none',
       network: 'blocking HTTP(S)/ALL proxies for client commands; not an OS firewall',
       clientProcessContract: 'existing execute verified-observed; no independent-group exception',
-      localManagement: 'Antigravity candidate-only initial local Skill install/remove and Project directory discovery; no update qualification' }, clients: [] };
+      localManagement: 'Antigravity candidate-only User version/same-version refresh with native consumer bytes; Project directory and uninvoked agent inventory observations' }, clients: [] };
   try {
     if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || process.arch !== 'x64') throw new Error('hosted-linux-x64-required');
     report.candidate = await verifyCandidate(options.candidate);
@@ -249,6 +249,11 @@ export async function runInterfaceProbes(options) {
         const project = path.join(root, 'project');
         const neutral = path.join(root, 'neutral');
         await fs.mkdir(project); await fs.mkdir(neutral);
+        if (platform === 'antigravity') {
+          const setup = await execute({ executable: 'git', prefix: [] }, ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env });
+          assertCommand(setup);
+          client.projectSetup = commandEvidence(setup);
+        }
         Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }, execute, { localManagement: platform === 'antigravity' }));
       } catch (error) {
         client.status = 'failed'; client.reason = error?.message;
