@@ -200,10 +200,18 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       break;
     }
     case 'copilot-marketplace': {
-      const marketplace = await inspectCopilotMarketplaceSource(ctx, binding, layout.marketplaceName!, layout.marketplaceRoot!);
+      // These inventories are independent. Finish both reads before returning,
+      // including when one fails, so no native read outlives this inspection.
+      const [marketplaceRead, pluginsRead] = await Promise.allSettled([
+        inspectCopilotMarketplaceSource(ctx, binding, layout.marketplaceName!, layout.marketplaceRoot!),
+        probe(ctx, binding, ['plugin', 'list', '--json']),
+      ]);
+      if (marketplaceRead.status === 'rejected') throw marketplaceRead.reason;
+      const marketplace = marketplaceRead.value;
       if (marketplace === 'foreign') result.ownership = 'foreign';
       if (marketplace === 'unknown') result.ownership = 'unknown';
-      const value: unknown = JSON.parse(await probe(ctx, binding, ['plugin', 'list', '--json']));
+      if (pluginsRead.status === 'rejected') throw pluginsRead.reason;
+      const value: unknown = JSON.parse(pluginsRead.value);
       if (!Array.isArray(value)) throw new Error('nativeObservationInvalid');
       const matches = value.map(object).filter((row) => row.name === layout.nativeIdentity.packageId && row.marketplace === layout.marketplaceName);
       if (matches.length > 1) throw new Error('nativeIdentityDuplicate');

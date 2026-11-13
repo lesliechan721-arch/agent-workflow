@@ -15,6 +15,7 @@ import type { PortableMaterializeReceipt } from '../portable/commands.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import { projectTarget } from '../commands/public-lifecycle-result.js';
 import { commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
+import { geminiNativeConsentDiagnostic } from './native-consent.js';
 
 type RecordValue = Record<string, unknown>;
 /** Pick only the declared domain DTO members. Never spread a service result. */
@@ -239,6 +240,8 @@ function projectData(command: string, r: RecordValue, diagnostics: Diagnostic[])
     }
     case 'plugin.config.schema': case 'plugin.config.get': case 'plugin.config.set': case 'plugin.config.unset': case 'plugin.config.reset': case 'plugin.config.apply': {
       const data: RecordValue = pick(r, ['configSchemaVersion', 'plugin', 'pluginName', 'pluginId', 'sourceId', 'sourceIdentity', 'scope', 'platform', 'schema', 'fields', 'key', 'configWrite', 'affectedFields', 'removedKey', 'existed', 'deleted', 'resetDisposition', 'quarantineBasename', 'updatedKeys', 'removedKeys', 'effective', 'otherProjectsMayRequireSync', 'staleRemovedKeys']);
+      if (typeof r.nativeConsent === 'boolean') data.nativeConsent = r.nativeConsent;
+      if (r.nativeConsent === true) diagnostics.push(geminiNativeConsentDiagnostic());
       if (typeof r.context === 'string') data.context = r.context;
       else if (r.context) data.context = pick(record(r.context), ['context', 'projectRoot']);
       if (r.apply) data.apply = applyResult(r.apply as ConfigApplyResult, diagnostics);
@@ -488,7 +491,8 @@ export function projectReceipt(command: string, input: unknown, options: { yes?:
       for (const entry of list(apply.targetResults)) {
         const target = record(entry.target);
         if (entry.state !== 'completed' && (entry.state !== 'skipped' || entry.errorCode) && typeof target.pluginId === 'string' && typeof target.platform === 'string' && (target.scope === 'user' || target.scope === 'project')) {
-          result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', target.scope, '--target', target.platform], reason: 'Repair the affected deployment target after resolving its diagnostics.', requiresConfirmation: true });
+          result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', target.scope, '--target', target.platform,
+            ...(target.platform === 'gemini' && String(entry.errorCode).startsWith('nativeConsent') ? ['--native-consent'] : [])], reason: 'Repair the affected deployment target after reviewing its diagnostics and any native trust permission.', requiresConfirmation: true });
         }
       }
     }

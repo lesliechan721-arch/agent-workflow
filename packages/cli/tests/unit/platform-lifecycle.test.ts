@@ -738,6 +738,52 @@ describe('platform inspection and native activation', () => {
     expect(runner.mock.calls.map(([call]) => call.args)).toEqual([['plugin', 'marketplace', 'list', '--json']]);
   });
 
+  // Test Value Gate: slow Copilot inventories must overlap without an early
+  // return on failure or loss of the source and row safety checks.
+  it.each([
+    { issue: 'foreign source', marketplace: 'foreign', plugin: 'valid', delayed: 'marketplace', ownership: 'foreign', registration: 'present' },
+    { issue: 'unknown source', marketplace: 'unknown', plugin: 'valid', delayed: 'marketplace', ownership: 'unknown', registration: 'present' },
+    { issue: 'invalid plugin row', marketplace: 'canonical', plugin: 'invalid', delayed: 'marketplace', ownership: 'aw', registration: 'unknown' },
+    { issue: 'failed plugin read', marketplace: 'foreign', plugin: 'failed', delayed: 'marketplace', ownership: 'foreign', registration: 'unknown' },
+    { issue: 'failed marketplace read', marketplace: 'failed', plugin: 'valid', delayed: 'plugin', ownership: 'aw', registration: 'unknown' },
+  ] as const)('finishes both Copilot inventories and preserves $issue', async (testCase) => {
+    const ctx = await environment();
+    const { binding } = fixture('copilot-marketplace');
+    binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/copilot', configRoot: path.join(ctx.cwd, '.copilot') };
+    const layout = await getDeploymentLayout(ctx, binding);
+    binding.physicalKey = layout.renderUnits[0]!.physicalKey;
+    const owner = deploymentPackageComponent(binding, layout);
+    await fs.outputFile(path.join(layout.packageRoot, SKILL_OWNER_MARKER), createSkillOwnerMarkerContent(owner.identity));
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const started = new Set<string>();
+    const runner = vi.fn(async (call: NativeCliInvocation) => {
+      const read = call.args[1] === 'marketplace' ? 'marketplace' : 'plugin';
+      started.add(read);
+      if (read === testCase.delayed) await readGate;
+      if (testCase[read] === 'failed') return { exitCode: 1, stdout: '', stderr: 'inventory unavailable' };
+      const source = testCase.marketplace === 'foreign' ? '/foreign'
+        : testCase.marketplace === 'unknown' ? {} : layout.marketplaceRoot;
+      const rows = read === 'marketplace' ? [{ name: layout.marketplaceName, source }]
+        : testCase.plugin === 'invalid' ? [null]
+          : [{ name: layout.nativeIdentity.packageId, marketplace: layout.marketplaceName, source: layout.marketplaceRoot }];
+      return { exitCode: 0, stdout: JSON.stringify(rows), stderr: '' };
+    });
+    let settled = false;
+    const pending = inspectDeployment({ ...ctx, runner }, binding).then((observation) => {
+      settled = true;
+      return observation;
+    });
+    try {
+      await vi.waitFor(() => { expect(started).toEqual(new Set(['marketplace', 'plugin'])); });
+      expect(settled).toBe(false);
+    } finally {
+      releaseRead();
+      await pending;
+    }
+    expect(await pending).toMatchObject({ ownership: testCase.ownership, registration: testCase.registration });
+  });
+
   it('uses Gemini local-source metadata and does not treat home-only disable as global disable', async () => {
     const ctx = await environment();
     const input = fixture('gemini-extension');

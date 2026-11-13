@@ -75,7 +75,7 @@ export async function execute(launcher, args, options) {
   const names = options.captureProcessNames && process.platform === 'darwin'
     && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
     ? createProcessNameDiagnostic() : undefined;
-  const nativeLinux = options.nativeClient === 'gemini' && process.platform === 'linux'
+  const nativeLinux = ['gemini', 'grok'].includes(options.nativeClient) && process.platform === 'linux'
     && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1';
   const markerRows = nativeLinux ? createProcessMarkerRowDiagnostic(undefined, {
     learnMarkerEnvironmentVariable: 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER',

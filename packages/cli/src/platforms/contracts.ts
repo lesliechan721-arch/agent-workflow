@@ -285,6 +285,8 @@ export interface MutationOutcome {
   changed: boolean;
 }
 export interface MutationContext extends ReadContext {
+  /** One explicit CLI grant for this exact frozen Gemini plan; never persisted or inferred. */
+  geminiNativeConsent?: FrozenDeploymentPlan;
   /** Operation-local receipts for native actions on a shared registration. */
   nativeEffects?: Map<string, Promise<MutationOutcome>>;
   /** Checked Gemini configuration baseline, rebased only after this operation's writes. */

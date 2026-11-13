@@ -31,6 +31,10 @@
 
 `--yes` 不绕过 ownership、依赖、scope、stale、发布 digest 或宿主审批。执行开始后出现新影响不得扩大原授权；按真实变化报告 blocked 或 partial。cache prune preview 和 publication plan 分别保持 preview/prepared，不表示已经删除或发布。
 
+`plugin install`、`plugin sync`、`plugin config apply` 及带 `--apply` 的配置写命令接受独立的 `--native-consent`。该选项仅授权本次冻结插件、来源、版本与所选 scope 计划中的 Gemini 原生安装或更新。Gemini 可能持久保存源目录与当前工作区的信任，并接受扩展许可；AW 不保存全局自动批准设置。普通 `--yes`、环境变量、旧回执与 TUI Review 确认均不提供此许可。授权事实在生命周期的 `data.request.nativeConsent`、配置结果的 `data.nativeConsent` 中表示；显式授权时保留 `nativeConsentGranted` warning，说明持久信任副作用，该字段不表示原生动作已经完成。
+
+没有原生许可时，Gemini 安装或更新在启动该原生命令前返回 `nativeConsentRequired`，不会等待用户 stdin。已提交的需求、配置和 AW 源包保留，结果按实际变化为 blocked 或 partial，并给出 `aw plugin sync <source/plugin> --context <user|project> --target gemini --native-consent` 恢复命令；需先审阅副作用，同次其他 AW 重要影响仍须单独提供 `--yes`。TUI 当前没有原生许可入口，遇到此阻断时通过该 CLI 命令恢复。固定交互只支持 Gemini CLI `0.67.0`；未知版本返回 `nativeConsentVersionUnsupported`，未知或重复提示返回 `nativeConsentPromptUnsupported`，不扩展自动授权。卸载扩展不代表 Gemini 已撤销独立的持久信任条目。
+
 `aw dev plugin validate` 默认保留当前共同来源的合法 frontmatter，由能力准备报告目标缺口；显式 `--claude-skill-profile minimum` 仅对声明的 Claude 目标要求 2.1.88 字段，`--strict-agent-skills` 优先使用严格 Portable 字段集，模板与普通源码适用同一规则。
 
 ### 1.1 本机 target 选择
@@ -146,6 +150,7 @@ type LifecycleData = {
     targets: string[];
     targetOrigin: 'argument' | 'preference' | 'none';
     mode: 'apply' | 'requirements-only' | 'outputs-only';
+    nativeConsent?: boolean; // 本次是否显式提供 Gemini 原生许可，不表示执行成功。
   };
   confirmation: Confirmation | null;
   changes: {

@@ -8,6 +8,7 @@ import type {
 } from './contracts.js';
 import { inspectDeployment } from './inspection.js';
 import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, routeReload } from './lifecycle-native.js';
+import { geminiConsentMessages } from './gemini-consent.js';
 
 interface PreparedContribution {
   effectId: string;
@@ -317,12 +318,17 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
       const mutation = error && typeof error === 'object' && 'mutation' in error ? error.mutation : undefined;
+      const consentCode = binding.route === 'gemini-extension' && Object.hasOwn(geminiConsentMessages, code)
+        ? code as keyof typeof geminiConsentMessages : undefined;
       const definite = !(binding.route === 'gemini-extension' && mutation === 'confirmed')
         && (code === 'clientInstallEntryUnavailable' || code === 'nativeIdentityUnconfirmed' || code === 'nativeTrustRequired');
       result.mutation = mutation === 'none' || definite ? 'none' : mutation === 'confirmed' ? 'confirmed' : started ? 'possible' : 'none';
-      result.status = definite ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
-      result.diagnostics.push(lifecycleDiagnostic(binding, code === 'operationPlanStale' ? code : definite ? code : 'platformMutationFailed',
-        definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.' : 'A platform action did not complete. Check status and retry the remaining actions.'));
+      result.status = definite || (consentCode !== undefined && result.mutation === 'none') ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
+      const failureDiagnostic = lifecycleDiagnostic(binding, consentCode ?? (code === 'operationPlanStale' ? code : definite ? code : 'platformMutationFailed'),
+        consentCode ? `${geminiConsentMessages[consentCode]} In the same workspace, review and run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini --native-consent.`
+          : definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.' : 'A platform action did not complete. Check status and retry the remaining actions.');
+      result.diagnostics.push(failureDiagnostic);
+      if (consentCode) receipt.diagnostics.push(failureDiagnostic);
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
         && (!definite || code === 'nativeTrustRequired')) {
         result.diagnostics.push(lifecycleDiagnostic(binding, 'grokNativeInstallRecovery',
@@ -335,7 +341,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       for (const componentId of effect.componentIds) {
         const component = plan.expected.components.find((item) => item.id === componentId);
         if (component) receipt.unmet.push({ id: `execution:${effect.id}:${componentId}`, componentId, kind: component.kind,
-          reasonCode: result.status === 'unknown' ? 'platformMutationUnknown' : 'platformMutationFailed', requiredFeatures: [], productIds: binding.consumers.map((item) => item.id) });
+          reasonCode: consentCode ?? (result.status === 'unknown' ? 'platformMutationUnknown' : 'platformMutationFailed'), requiredFeatures: [], productIds: binding.consumers.map((item) => item.id) });
       }
     }
   }

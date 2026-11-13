@@ -52,6 +52,12 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
       limitations: ['native-management-and-effective-activation-only', 'fixture-project-trust-required', 'skill-discovery-unverified',
         'skill-loading-unverified', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'],
     });
+    if (platform === 'gemini') profile.qualificationEvidence.push({
+      reference: 'scripts/qualification/evidence/native-gemini-project-skills-2026-11-13.json',
+      product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: ['project'], kinds: ['skill'], features: [],
+      limitations: ['native-management-and-effective-activation-only', 'fixture-project-default-disable-rule-required',
+        'skill-loading-unverified', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'],
+    });
   }
   return profile;
 }

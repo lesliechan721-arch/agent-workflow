@@ -18,6 +18,7 @@ import './native-platform-gemini-skills.test.mjs';
 import './native-platform-linux-environment.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
+import './native-platform-public-state.test.mjs';
 
 // Test Value Gate: local discovery can be observed or unavailable without
 // changing the result of required management and scope checks.

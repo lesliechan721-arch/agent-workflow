@@ -247,6 +247,8 @@ export class CodexActivationPostcheckError extends Error {
 }
 
 export interface RebuildExecutionContext {
+  /** Explicit --native-consent for this request, independent of AW confirmation. */
+  nativeConsent?: boolean;
   recoveryCandidates?: readonly import('../platforms/contracts.js').RecoveryCandidate[];
   sharedReferenceView?: import('../utils/native-demand.js').NativeSharedReferenceView;
   platformRebuildSession?: PlatformRebuildSession;

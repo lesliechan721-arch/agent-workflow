@@ -1,0 +1,3289 @@
+{
+  "schemaVersion": 2,
+  "kind": "finite-native-skills-qualification-evidence",
+  "observationDate": "2026-11-13",
+  "observationTimezone": "UTC",
+  "extraction": {
+    "sourceIndices": "sourceClientIndex/sourceScopeIndex/sourceCommandIndex address the original report arrays.",
+    "outputs": "Checks, observations and command fields are copied from the redacted source report. Native stderr is omitted; stdout is unchanged.",
+    "paths": "Original report placeholders are retained."
+  },
+  "isolation": {
+    "credentials": "not-provided",
+    "modelRequests": "none",
+    "homes": "Independent temporary HOME/AW/Agent/XDG roots and project/neutral directories per scope.",
+    "runtimeNetwork": "blocked-proxy-not-os-firewall",
+    "clientInstallation": "Exact public npm versions; scripts disabled; temporary prefixes removed."
+  },
+  "qualificationBoundary": {
+    "products": "Only Gemini CLI 0.67.0 Project ordinary Skills in Linux, macOS and Windows x64/arm64.",
+    "surface": "Native extension installation and refresh, fresh enabled target and disabled neutral inventories, observed current Skill descriptions, removal and cleanup from the AW projection candidate.",
+    "trust": "Fixtures explicitly trust the isolated source and working directories. This does not authorize trust for another directory or user environment.",
+    "activation": "Project fixtures manually insert the !* default-disable rule before the exact project enable rule. These cells prove effective scope under that premise, not production AW automatic project activation.",
+    "skillLoading": "Skill discovery and refreshed descriptions are observed. Actual loading and model adoption remain unverified and do not block this limited management qualification.",
+    "publicAw": "No public AW Project pass is claimed. New Hosted public install/update/same-version dynamic consumer bytes/effective scope/remove validation must use the production activation writer without manual fixture activation.",
+    "userEvidence": "User qualification remains separately bound to native-gemini-skills-2026-11-12.json; no old record is rebound.",
+    "limitations": [
+      "No prompts, model adoption or invocation-control qualification.",
+      "No MCP, Hook, Agent or Instructions execution qualification.",
+      "Only the six passed Project Native cells qualify. All six original reports and their Gemini client results remain failed; public AW failures are not overwritten.",
+      "Projection digests and observed Skill descriptions do not qualify full dynamic consumer byte equality through public AW.",
+      "Process receipts support only the recorded lifecycle and scope observations, not other Provider, OS or profile capabilities.",
+      "No extrapolation to User, App, another version, OS, architecture, component or feature."
+    ]
+  },
+  "source": {
+    "sourceMerge": "eb889258dbd851d908e5a0fb2a8db89d3cf212cc",
+    "head": "bdb00ea5d110f6dac385c9f84fff1a5f5a77e6b2",
+    "parents": [
+      "b0ae0ecf90287e4a6cdb462a043e82e9f9280aa5",
+      "bdb00ea5d110f6dac385c9f84fff1a5f5a77e6b2"
+    ],
+    "candidateManifestSha256": "7faead7a0a18a674e862e7107dd8849d163e66ff147a0403d924a67cecb20bc9",
+    "candidateFiles": 4177
+  },
+  "profiles": [
+    {
+      "platform": "gemini",
+      "product": "cli",
+      "exactVersion": "0.67.0",
+      "environment": {
+        "platform": "darwin",
+        "arch": "arm64",
+        "release": "24.6.0",
+        "node": "v24.22.2",
+        "imageOS": "macos15",
+        "imageVersion": "20261104.0514.1"
+      },
+      "scopes": [
+        "project"
+      ],
+      "observedAt": "2026-11-13T06:01:14.682Z",
+      "sourceReport": {
+        "runId": 43372721076,
+        "attempt": 1,
+        "url": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43372721076",
+        "artifact": "native-qualification-macos-15",
+        "sha256": "5f9c707708e09e5325c21677171d20d8bfe0415eed15588b7891d906a9d61e5d",
+        "status": "failed",
+        "sourceClientIndex": 3,
+        "clientStatus": "failed"
+      },
+      "candidate": {
+        "sourceSha": "eb889258dbd851d908e5a0fb2a8db89d3cf212cc",
+        "manifestSha256": "7faead7a0a18a674e862e7107dd8849d163e66ff147a0403d924a67cecb20bc9",
+        "files": 4177
+      },
+      "harnessSha256": "e0f52bb7b57226b9f60f74ed5ce63010c34c410521f04bf7c059e3a4bc67c975",
+      "clientAcquisition": {
+        "package": "@google/gemini-cli",
+        "version": "0.67.0",
+        "source": "https://github.com/google-gemini/gemini-cli",
+        "integrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "executablePackage": "@google/gemini-cli",
+        "executablePackageVersion": "0.67.0",
+        "executablePackageIntegrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "lockSha256": "178bb7cc3b6a9f021b89b3a59bd6d89dca901f37984d77b8a074b5fdbd30a9e2",
+        "entrySha256": "7e35ba8d8629a295c0db3e6a60040177e87f1a6440c51b379922e046db9939a3",
+        "scripts": "disabled"
+      },
+      "acquisitionCleanup": "completed",
+      "processManagement": {
+        "mode": "verified-observed",
+        "osContainment": false
+      },
+      "nativeScopeEvidence": [
+        {
+          "sourceScopeIndex": 1,
+          "scope": "project",
+          "input": "aw-projection-candidate",
+          "status": "passed",
+          "checks": [
+            {
+              "id": "client-version",
+              "status": "passed",
+              "evidence": {
+                "version": "0.67.0"
+              }
+            },
+            {
+              "id": "aw-candidate-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 1,
+                "contentDigest": "sha256:ec231c62b6fa7021a1b233da308ec8b775586f8fb12150d8b7e4d67095530553",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "fixture-trust",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-config",
+                "trusted": "isolated source and working directories"
+              }
+            },
+            {
+              "id": "install",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "fixture-project-activation",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-native-extension-enablement",
+                "name": "aw-qualification",
+                "before": [
+                  "!<TEMP_ROOT>/gemini/*",
+                  "<TEMP_ROOT>/project/*"
+                ],
+                "overrides": [
+                  "!*",
+                  "!<TEMP_ROOT>/gemini/*",
+                  "<TEMP_ROOT>/project/*"
+                ]
+              }
+            },
+            {
+              "id": "target-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "neutral-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": false
+              }
+            },
+            {
+              "id": "aw-candidate-refresh-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 2,
+                "contentDigest": "sha256:81ed04d52144c82bf0f6709a2c8e6c9610a805f1a03d1d4c62f481479c2a0791",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "refresh",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.2",
+                "enabled": true
+              }
+            },
+            {
+              "id": "remove",
+              "status": "passed",
+              "evidence": {
+                "level": "extension-inventory",
+                "installed": false
+              }
+            }
+          ],
+          "observations": [
+            {
+              "id": "skill-discovery",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 1"
+              }
+            },
+            {
+              "id": "skill-refresh",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 2"
+              }
+            },
+            {
+              "id": "skill-removal",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "present": false
+              }
+            }
+          ],
+          "cleanup": "completed",
+          "commands": [
+            {
+              "sourceCommandIndex": 0,
+              "args": [
+                "--version"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "0.67.0\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 1,
+              "args": [
+                "extensions",
+                "install",
+                "<TEMP_ROOT>/source/plugins/aw-qualification",
+                "--consent",
+                "--skip-settings"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 2,
+              "args": [
+                "extensions",
+                "disable",
+                "aw-qualification",
+                "--scope",
+                "User"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 3,
+              "args": [
+                "extensions",
+                "enable",
+                "aw-qualification",
+                "--scope",
+                "Workspace"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 4,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 5,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 1\n  Location:    <TEMP_ROOT>/gemini/.gemini/extensions/aw-qualification/skills/aw-qualification/SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 6,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 7,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 8,
+              "args": [
+                "extensions",
+                "update",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Do you want to continue? [Y/n]: ",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 9,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 10,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 11,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 2\n  Location:    <TEMP_ROOT>/gemini/.gemini/extensions/aw-qualification/skills/aw-qualification/SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 12,
+              "args": [
+                "extensions",
+                "uninstall",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 13,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 14,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 15,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 16,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "platform": "gemini",
+      "product": "cli",
+      "exactVersion": "0.67.0",
+      "environment": {
+        "platform": "darwin",
+        "arch": "x64",
+        "release": "24.6.0",
+        "node": "v24.19.0",
+        "imageOS": "macos15",
+        "imageVersion": "20260824.0482.1"
+      },
+      "scopes": [
+        "project"
+      ],
+      "observedAt": "2026-11-13T05:44:20.643Z",
+      "sourceReport": {
+        "runId": 43372721076,
+        "attempt": 1,
+        "url": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43372721076",
+        "artifact": "native-qualification-macos-15-intel",
+        "sha256": "52f5c4137ba3f9d77dd51a9011af5d38643ac51953cc5216f3fc9c4fe52ab595",
+        "status": "failed",
+        "sourceClientIndex": 3,
+        "clientStatus": "failed"
+      },
+      "candidate": {
+        "sourceSha": "eb889258dbd851d908e5a0fb2a8db89d3cf212cc",
+        "manifestSha256": "7faead7a0a18a674e862e7107dd8849d163e66ff147a0403d924a67cecb20bc9",
+        "files": 4177
+      },
+      "harnessSha256": "e0f52bb7b57226b9f60f74ed5ce63010c34c410521f04bf7c059e3a4bc67c975",
+      "clientAcquisition": {
+        "package": "@google/gemini-cli",
+        "version": "0.67.0",
+        "source": "https://github.com/google-gemini/gemini-cli",
+        "integrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "executablePackage": "@google/gemini-cli",
+        "executablePackageVersion": "0.67.0",
+        "executablePackageIntegrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "lockSha256": "178bb7cc3b6a9f021b89b3a59bd6d89dca901f37984d77b8a074b5fdbd30a9e2",
+        "entrySha256": "7e35ba8d8629a295c0db3e6a60040177e87f1a6440c51b379922e046db9939a3",
+        "scripts": "disabled"
+      },
+      "acquisitionCleanup": "completed",
+      "processManagement": {
+        "mode": "verified-observed",
+        "osContainment": false
+      },
+      "nativeScopeEvidence": [
+        {
+          "sourceScopeIndex": 1,
+          "scope": "project",
+          "input": "aw-projection-candidate",
+          "status": "passed",
+          "checks": [
+            {
+              "id": "client-version",
+              "status": "passed",
+              "evidence": {
+                "version": "0.67.0"
+              }
+            },
+            {
+              "id": "aw-candidate-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 1,
+                "contentDigest": "sha256:ec231c62b6fa7021a1b233da308ec8b775586f8fb12150d8b7e4d67095530553",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "fixture-trust",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-config",
+                "trusted": "isolated source and working directories"
+              }
+            },
+            {
+              "id": "install",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "fixture-project-activation",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-native-extension-enablement",
+                "name": "aw-qualification",
+                "before": [
+                  "!<TEMP_ROOT>/gemini/*",
+                  "<TEMP_ROOT>/project/*"
+                ],
+                "overrides": [
+                  "!*",
+                  "!<TEMP_ROOT>/gemini/*",
+                  "<TEMP_ROOT>/project/*"
+                ]
+              }
+            },
+            {
+              "id": "target-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "neutral-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": false
+              }
+            },
+            {
+              "id": "aw-candidate-refresh-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 2,
+                "contentDigest": "sha256:81ed04d52144c82bf0f6709a2c8e6c9610a805f1a03d1d4c62f481479c2a0791",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "refresh",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.2",
+                "enabled": true
+              }
+            },
+            {
+              "id": "remove",
+              "status": "passed",
+              "evidence": {
+                "level": "extension-inventory",
+                "installed": false
+              }
+            }
+          ],
+          "observations": [
+            {
+              "id": "skill-discovery",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 1"
+              }
+            },
+            {
+              "id": "skill-refresh",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 2"
+              }
+            },
+            {
+              "id": "skill-removal",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "present": false
+              }
+            }
+          ],
+          "cleanup": "completed",
+          "commands": [
+            {
+              "sourceCommandIndex": 0,
+              "args": [
+                "--version"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "0.67.0\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 1,
+              "args": [
+                "extensions",
+                "install",
+                "<TEMP_ROOT>/source/plugins/aw-qualification",
+                "--consent",
+                "--skip-settings"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 2,
+              "args": [
+                "extensions",
+                "disable",
+                "aw-qualification",
+                "--scope",
+                "User"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 3,
+              "args": [
+                "extensions",
+                "enable",
+                "aw-qualification",
+                "--scope",
+                "Workspace"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 4,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 5,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 1\n  Location:    <TEMP_ROOT>/gemini/.gemini/extensions/aw-qualification/skills/aw-qualification/SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 6,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 7,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 8,
+              "args": [
+                "extensions",
+                "update",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Do you want to continue? [Y/n]: ",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 9,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 10,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 11,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 2\n  Location:    <TEMP_ROOT>/gemini/.gemini/extensions/aw-qualification/skills/aw-qualification/SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 12,
+              "args": [
+                "extensions",
+                "uninstall",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 13,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 14,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 15,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 16,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "platform": "gemini",
+      "product": "cli",
+      "exactVersion": "0.67.0",
+      "environment": {
+        "platform": "linux",
+        "arch": "x64",
+        "release": "7.0.0-1017-azure",
+        "node": "v24.22.2",
+        "imageOS": "ubuntu24",
+        "imageVersion": "20261101.360.1"
+      },
+      "scopes": [
+        "project"
+      ],
+      "observedAt": "2026-11-13T05:43:56.898Z",
+      "sourceReport": {
+        "runId": 43372721076,
+        "attempt": 1,
+        "url": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43372721076",
+        "artifact": "native-qualification-ubuntu-24.04",
+        "sha256": "40391b16e095b1f89c09d97112b15a66c6284b952cf0b04fb8f1e926800755af",
+        "status": "failed",
+        "sourceClientIndex": 3,
+        "clientStatus": "failed"
+      },
+      "candidate": {
+        "sourceSha": "eb889258dbd851d908e5a0fb2a8db89d3cf212cc",
+        "manifestSha256": "7faead7a0a18a674e862e7107dd8849d163e66ff147a0403d924a67cecb20bc9",
+        "files": 4177
+      },
+      "harnessSha256": "e0f52bb7b57226b9f60f74ed5ce63010c34c410521f04bf7c059e3a4bc67c975",
+      "clientAcquisition": {
+        "package": "@google/gemini-cli",
+        "version": "0.67.0",
+        "source": "https://github.com/google-gemini/gemini-cli",
+        "integrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "executablePackage": "@google/gemini-cli",
+        "executablePackageVersion": "0.67.0",
+        "executablePackageIntegrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "lockSha256": "178bb7cc3b6a9f021b89b3a59bd6d89dca901f37984d77b8a074b5fdbd30a9e2",
+        "entrySha256": "7e35ba8d8629a295c0db3e6a60040177e87f1a6440c51b379922e046db9939a3",
+        "scripts": "disabled"
+      },
+      "acquisitionCleanup": "completed",
+      "processManagement": {
+        "mode": "verified-observed",
+        "osContainment": false
+      },
+      "nativeScopeEvidence": [
+        {
+          "sourceScopeIndex": 1,
+          "scope": "project",
+          "input": "aw-projection-candidate",
+          "status": "passed",
+          "checks": [
+            {
+              "id": "client-version",
+              "status": "passed",
+              "evidence": {
+                "version": "0.67.0"
+              }
+            },
+            {
+              "id": "aw-candidate-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 1,
+                "contentDigest": "sha256:ec231c62b6fa7021a1b233da308ec8b775586f8fb12150d8b7e4d67095530553",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "fixture-trust",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-config",
+                "trusted": "isolated source and working directories"
+              }
+            },
+            {
+              "id": "install",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "fixture-project-activation",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-native-extension-enablement",
+                "name": "aw-qualification",
+                "before": [
+                  "!<TEMP_ROOT>/gemini/*",
+                  "<TEMP_ROOT>/project/*"
+                ],
+                "overrides": [
+                  "!*",
+                  "!<TEMP_ROOT>/gemini/*",
+                  "<TEMP_ROOT>/project/*"
+                ]
+              }
+            },
+            {
+              "id": "target-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "neutral-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": false
+              }
+            },
+            {
+              "id": "aw-candidate-refresh-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 2,
+                "contentDigest": "sha256:81ed04d52144c82bf0f6709a2c8e6c9610a805f1a03d1d4c62f481479c2a0791",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "refresh",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.2",
+                "enabled": true
+              }
+            },
+            {
+              "id": "remove",
+              "status": "passed",
+              "evidence": {
+                "level": "extension-inventory",
+                "installed": false
+              }
+            }
+          ],
+          "observations": [
+            {
+              "id": "skill-discovery",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 1"
+              }
+            },
+            {
+              "id": "skill-refresh",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 2"
+              }
+            },
+            {
+              "id": "skill-removal",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "present": false
+              }
+            }
+          ],
+          "cleanup": "completed",
+          "commands": [
+            {
+              "sourceCommandIndex": 0,
+              "args": [
+                "--version"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "0.67.0\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 1,
+              "args": [
+                "extensions",
+                "install",
+                "<TEMP_ROOT>/source/plugins/aw-qualification",
+                "--consent",
+                "--skip-settings"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 2,
+              "args": [
+                "extensions",
+                "disable",
+                "aw-qualification",
+                "--scope",
+                "User"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 3,
+              "args": [
+                "extensions",
+                "enable",
+                "aw-qualification",
+                "--scope",
+                "Workspace"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 4,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 5,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 1\n  Location:    <TEMP_ROOT>/gemini/.gemini/extensions/aw-qualification/skills/aw-qualification/SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 6,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 7,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 8,
+              "args": [
+                "extensions",
+                "update",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Do you want to continue? [Y/n]: ",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 9,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 10,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 11,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 2\n  Location:    <TEMP_ROOT>/gemini/.gemini/extensions/aw-qualification/skills/aw-qualification/SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 12,
+              "args": [
+                "extensions",
+                "uninstall",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 13,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 14,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 15,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 16,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "platform": "gemini",
+      "product": "cli",
+      "exactVersion": "0.67.0",
+      "environment": {
+        "platform": "linux",
+        "arch": "arm64",
+        "release": "7.0.0-1017-azure",
+        "node": "v24.22.2",
+        "imageOS": "ubuntu24-arm64",
+        "imageVersion": "20261101.172.1"
+      },
+      "scopes": [
+        "project"
+      ],
+      "observedAt": "2026-11-13T05:44:03.573Z",
+      "sourceReport": {
+        "runId": 43372721076,
+        "attempt": 1,
+        "url": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43372721076",
+        "artifact": "native-qualification-ubuntu-24.04-arm",
+        "sha256": "e58b3f390f11b2562dc45922b1f5157281a334d7530e904529534fc0aa32ef3d",
+        "status": "failed",
+        "sourceClientIndex": 3,
+        "clientStatus": "failed"
+      },
+      "candidate": {
+        "sourceSha": "eb889258dbd851d908e5a0fb2a8db89d3cf212cc",
+        "manifestSha256": "7faead7a0a18a674e862e7107dd8849d163e66ff147a0403d924a67cecb20bc9",
+        "files": 4177
+      },
+      "harnessSha256": "e0f52bb7b57226b9f60f74ed5ce63010c34c410521f04bf7c059e3a4bc67c975",
+      "clientAcquisition": {
+        "package": "@google/gemini-cli",
+        "version": "0.67.0",
+        "source": "https://github.com/google-gemini/gemini-cli",
+        "integrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "executablePackage": "@google/gemini-cli",
+        "executablePackageVersion": "0.67.0",
+        "executablePackageIntegrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "lockSha256": "178bb7cc3b6a9f021b89b3a59bd6d89dca901f37984d77b8a074b5fdbd30a9e2",
+        "entrySha256": "7e35ba8d8629a295c0db3e6a60040177e87f1a6440c51b379922e046db9939a3",
+        "scripts": "disabled"
+      },
+      "acquisitionCleanup": "completed",
+      "processManagement": {
+        "mode": "verified-observed",
+        "osContainment": false
+      },
+      "nativeScopeEvidence": [
+        {
+          "sourceScopeIndex": 1,
+          "scope": "project",
+          "input": "aw-projection-candidate",
+          "status": "passed",
+          "checks": [
+            {
+              "id": "client-version",
+              "status": "passed",
+              "evidence": {
+                "version": "0.67.0"
+              }
+            },
+            {
+              "id": "aw-candidate-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 1,
+                "contentDigest": "sha256:ec231c62b6fa7021a1b233da308ec8b775586f8fb12150d8b7e4d67095530553",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "fixture-trust",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-config",
+                "trusted": "isolated source and working directories"
+              }
+            },
+            {
+              "id": "install",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "fixture-project-activation",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-native-extension-enablement",
+                "name": "aw-qualification",
+                "before": [
+                  "!<TEMP_ROOT>/gemini/*",
+                  "<TEMP_ROOT>/project/*"
+                ],
+                "overrides": [
+                  "!*",
+                  "!<TEMP_ROOT>/gemini/*",
+                  "<TEMP_ROOT>/project/*"
+                ]
+              }
+            },
+            {
+              "id": "target-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "neutral-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": false
+              }
+            },
+            {
+              "id": "aw-candidate-refresh-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 2,
+                "contentDigest": "sha256:81ed04d52144c82bf0f6709a2c8e6c9610a805f1a03d1d4c62f481479c2a0791",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "refresh",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.2",
+                "enabled": true
+              }
+            },
+            {
+              "id": "remove",
+              "status": "passed",
+              "evidence": {
+                "level": "extension-inventory",
+                "installed": false
+              }
+            }
+          ],
+          "observations": [
+            {
+              "id": "skill-discovery",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 1"
+              }
+            },
+            {
+              "id": "skill-refresh",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 2"
+              }
+            },
+            {
+              "id": "skill-removal",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "present": false
+              }
+            }
+          ],
+          "cleanup": "completed",
+          "commands": [
+            {
+              "sourceCommandIndex": 0,
+              "args": [
+                "--version"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "0.67.0\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 1,
+              "args": [
+                "extensions",
+                "install",
+                "<TEMP_ROOT>/source/plugins/aw-qualification",
+                "--consent",
+                "--skip-settings"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 2,
+              "args": [
+                "extensions",
+                "disable",
+                "aw-qualification",
+                "--scope",
+                "User"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 3,
+              "args": [
+                "extensions",
+                "enable",
+                "aw-qualification",
+                "--scope",
+                "Workspace"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 4,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 5,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 1\n  Location:    <TEMP_ROOT>/gemini/.gemini/extensions/aw-qualification/skills/aw-qualification/SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 6,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 7,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 8,
+              "args": [
+                "extensions",
+                "update",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Do you want to continue? [Y/n]: ",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 9,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 10,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 11,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 2\n  Location:    <TEMP_ROOT>/gemini/.gemini/extensions/aw-qualification/skills/aw-qualification/SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 12,
+              "args": [
+                "extensions",
+                "uninstall",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 13,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 14,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 15,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            },
+            {
+              "sourceCommandIndex": 16,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>/neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "platform": "gemini",
+      "product": "cli",
+      "exactVersion": "0.67.0",
+      "environment": {
+        "platform": "win32",
+        "arch": "arm64",
+        "release": "10.0.26200",
+        "node": "v24.22.2",
+        "imageOS": "win11-vs2026-arm64",
+        "imageVersion": "20261101.203.1"
+      },
+      "scopes": [
+        "project"
+      ],
+      "observedAt": "2026-11-13T06:03:42.337Z",
+      "sourceReport": {
+        "runId": 43372721076,
+        "attempt": 1,
+        "url": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43372721076",
+        "artifact": "native-qualification-windows-11-arm",
+        "sha256": "c4899e5e25b5f3e131af94555aad49d4bec7fb7748514fd5dad8f8aabd37d2f7",
+        "status": "failed",
+        "sourceClientIndex": 3,
+        "clientStatus": "failed"
+      },
+      "candidate": {
+        "sourceSha": "eb889258dbd851d908e5a0fb2a8db89d3cf212cc",
+        "manifestSha256": "7faead7a0a18a674e862e7107dd8849d163e66ff147a0403d924a67cecb20bc9",
+        "files": 4177
+      },
+      "harnessSha256": "e0f52bb7b57226b9f60f74ed5ce63010c34c410521f04bf7c059e3a4bc67c975",
+      "clientAcquisition": {
+        "package": "@google/gemini-cli",
+        "version": "0.67.0",
+        "source": "https://github.com/google-gemini/gemini-cli",
+        "integrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "executablePackage": "@google/gemini-cli",
+        "executablePackageVersion": "0.67.0",
+        "executablePackageIntegrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "lockSha256": "178bb7cc3b6a9f021b89b3a59bd6d89dca901f37984d77b8a074b5fdbd30a9e2",
+        "entrySha256": "7e35ba8d8629a295c0db3e6a60040177e87f1a6440c51b379922e046db9939a3",
+        "scripts": "disabled"
+      },
+      "acquisitionCleanup": "completed",
+      "processManagement": {
+        "mode": "windows-job",
+        "osContainment": true,
+        "helperSha256": "f32dda3f5d2a46c6d0ead77f3f2f6b348fa62f13c3a6460bf522a18a03d05a24"
+      },
+      "nativeScopeEvidence": [
+        {
+          "sourceScopeIndex": 1,
+          "scope": "project",
+          "input": "aw-projection-candidate",
+          "status": "passed",
+          "checks": [
+            {
+              "id": "client-version",
+              "status": "passed",
+              "evidence": {
+                "version": "0.67.0"
+              }
+            },
+            {
+              "id": "aw-candidate-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 1,
+                "contentDigest": "sha256:ec231c62b6fa7021a1b233da308ec8b775586f8fb12150d8b7e4d67095530553",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "fixture-trust",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-config",
+                "trusted": "isolated source and working directories"
+              }
+            },
+            {
+              "id": "install",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "fixture-project-activation",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-native-extension-enablement",
+                "name": "aw-qualification",
+                "before": [
+                  "!/<TEMP_ROOT>/gemini/*",
+                  "/<TEMP_ROOT>/project/*"
+                ],
+                "overrides": [
+                  "!*",
+                  "!/<TEMP_ROOT>/gemini/*",
+                  "/<TEMP_ROOT>/project/*"
+                ]
+              }
+            },
+            {
+              "id": "target-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "neutral-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": false
+              }
+            },
+            {
+              "id": "aw-candidate-refresh-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 2,
+                "contentDigest": "sha256:81ed04d52144c82bf0f6709a2c8e6c9610a805f1a03d1d4c62f481479c2a0791",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "refresh",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.2",
+                "enabled": true
+              }
+            },
+            {
+              "id": "remove",
+              "status": "passed",
+              "evidence": {
+                "level": "extension-inventory",
+                "installed": false
+              }
+            }
+          ],
+          "observations": [
+            {
+              "id": "skill-discovery",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 1"
+              }
+            },
+            {
+              "id": "skill-refresh",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 2"
+              }
+            },
+            {
+              "id": "skill-removal",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "present": false
+              }
+            }
+          ],
+          "cleanup": "completed",
+          "commands": [
+            {
+              "sourceCommandIndex": 0,
+              "args": [
+                "--version"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "0.67.0\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 1,
+              "args": [
+                "extensions",
+                "install",
+                "<TEMP_ROOT>\\source\\plugins\\aw-qualification",
+                "--consent",
+                "--skip-settings"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 2,
+              "args": [
+                "extensions",
+                "disable",
+                "aw-qualification",
+                "--scope",
+                "User"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 3,
+              "args": [
+                "extensions",
+                "enable",
+                "aw-qualification",
+                "--scope",
+                "Workspace"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 4,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 5,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 1\n  Location:    <TEMP_ROOT>\\gemini\\.gemini\\extensions\\aw-qualification\\skills\\aw-qualification\\SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 6,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 7,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 8,
+              "args": [
+                "extensions",
+                "update",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Do you want to continue? [Y/n]: ",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 9,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 10,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 11,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 2\n  Location:    <TEMP_ROOT>\\gemini\\.gemini\\extensions\\aw-qualification\\skills\\aw-qualification\\SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 12,
+              "args": [
+                "extensions",
+                "uninstall",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 13,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 14,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 15,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 16,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "platform": "gemini",
+      "product": "cli",
+      "exactVersion": "0.67.0",
+      "environment": {
+        "platform": "win32",
+        "arch": "x64",
+        "release": "10.0.26100",
+        "node": "v24.22.2",
+        "imageOS": "win25-vs2026",
+        "imageVersion": "20261103.298.1"
+      },
+      "scopes": [
+        "project"
+      ],
+      "observedAt": "2026-11-13T06:02:02.632Z",
+      "sourceReport": {
+        "runId": 43372721076,
+        "attempt": 1,
+        "url": "https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43372721076",
+        "artifact": "native-qualification-windows-2025",
+        "sha256": "99bf56beaf7c82558421eb0a3a8c0f205edbc17da7d5a9a5a56a1e67644ab1e7",
+        "status": "failed",
+        "sourceClientIndex": 3,
+        "clientStatus": "failed"
+      },
+      "candidate": {
+        "sourceSha": "eb889258dbd851d908e5a0fb2a8db89d3cf212cc",
+        "manifestSha256": "7faead7a0a18a674e862e7107dd8849d163e66ff147a0403d924a67cecb20bc9",
+        "files": 4177
+      },
+      "harnessSha256": "e0f52bb7b57226b9f60f74ed5ce63010c34c410521f04bf7c059e3a4bc67c975",
+      "clientAcquisition": {
+        "package": "@google/gemini-cli",
+        "version": "0.67.0",
+        "source": "https://github.com/google-gemini/gemini-cli",
+        "integrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "executablePackage": "@google/gemini-cli",
+        "executablePackageVersion": "0.67.0",
+        "executablePackageIntegrity": "sha512-lDJfCcYem6/6QZdwZFiGfOu1ZxJJ+j4wsr4HlmcYBfqUHTDXLKDv1MPUXYL2Ok1ygdfMve0F5KrW/ORNZRSHIg==",
+        "lockSha256": "178bb7cc3b6a9f021b89b3a59bd6d89dca901f37984d77b8a074b5fdbd30a9e2",
+        "entrySha256": "7e35ba8d8629a295c0db3e6a60040177e87f1a6440c51b379922e046db9939a3",
+        "scripts": "disabled"
+      },
+      "acquisitionCleanup": "completed",
+      "processManagement": {
+        "mode": "windows-job",
+        "osContainment": true,
+        "helperSha256": "3d43fe627039c4726faf32979d420333df89850cb16cfe7666e9a5160f0513f8"
+      },
+      "nativeScopeEvidence": [
+        {
+          "sourceScopeIndex": 1,
+          "scope": "project",
+          "input": "aw-projection-candidate",
+          "status": "passed",
+          "checks": [
+            {
+              "id": "client-version",
+              "status": "passed",
+              "evidence": {
+                "version": "0.67.0"
+              }
+            },
+            {
+              "id": "aw-candidate-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 1,
+                "contentDigest": "sha256:ec231c62b6fa7021a1b233da308ec8b775586f8fb12150d8b7e4d67095530553",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "fixture-trust",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-config",
+                "trusted": "isolated source and working directories"
+              }
+            },
+            {
+              "id": "install",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "fixture-project-activation",
+              "status": "passed",
+              "evidence": {
+                "level": "fixture-native-extension-enablement",
+                "name": "aw-qualification",
+                "before": [
+                  "!/<TEMP_ROOT>/gemini/*",
+                  "/<TEMP_ROOT>/project/*"
+                ],
+                "overrides": [
+                  "!*",
+                  "!/<TEMP_ROOT>/gemini/*",
+                  "/<TEMP_ROOT>/project/*"
+                ]
+              }
+            },
+            {
+              "id": "target-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": true
+              }
+            },
+            {
+              "id": "neutral-scope",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.1",
+                "enabled": false
+              }
+            },
+            {
+              "id": "aw-candidate-refresh-projection",
+              "status": "passed",
+              "evidence": {
+                "revision": 2,
+                "contentDigest": "sha256:81ed04d52144c82bf0f6709a2c8e6c9610a805f1a03d1d4c62f481479c2a0791",
+                "components": [
+                  {
+                    "id": "skill:qualification",
+                    "nativeName": "aw-qualification",
+                    "relativeOutputs": [
+                      "skills/aw-qualification/SKILL.md"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "refresh",
+              "status": "passed",
+              "evidence": {
+                "level": "activation-inventory",
+                "name": "aw-qualification",
+                "version": "1.0.2",
+                "enabled": true
+              }
+            },
+            {
+              "id": "remove",
+              "status": "passed",
+              "evidence": {
+                "level": "extension-inventory",
+                "installed": false
+              }
+            }
+          ],
+          "observations": [
+            {
+              "id": "skill-discovery",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 1"
+              }
+            },
+            {
+              "id": "skill-refresh",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "name": "aw-qualification",
+                "present": true,
+                "description": "AW qualification revision 2"
+              }
+            },
+            {
+              "id": "skill-removal",
+              "status": "observed",
+              "evidence": {
+                "level": "skill-discovery",
+                "present": false
+              }
+            }
+          ],
+          "cleanup": "completed",
+          "commands": [
+            {
+              "sourceCommandIndex": 0,
+              "args": [
+                "--version"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "0.67.0\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 1,
+              "args": [
+                "extensions",
+                "install",
+                "<TEMP_ROOT>\\source\\plugins\\aw-qualification",
+                "--consent",
+                "--skip-settings"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 2,
+              "args": [
+                "extensions",
+                "disable",
+                "aw-qualification",
+                "--scope",
+                "User"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 3,
+              "args": [
+                "extensions",
+                "enable",
+                "aw-qualification",
+                "--scope",
+                "Workspace"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 4,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 5,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 1\n  Location:    <TEMP_ROOT>\\gemini\\.gemini\\extensions\\aw-qualification\\skills\\aw-qualification\\SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 6,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 7,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 8,
+              "args": [
+                "extensions",
+                "update",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Do you want to continue? [Y/n]: ",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 9,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 10,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 11,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "Discovered Agent Skills:\n\naw-qualification [Enabled]\n  Description: AW qualification revision 2\n  Location:    <TEMP_ROOT>\\gemini\\.gemini\\extensions\\aw-qualification\\skills\\aw-qualification\\SKILL.md\n\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 12,
+              "args": [
+                "extensions",
+                "uninstall",
+                "aw-qualification"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 13,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 14,
+              "args": [
+                "extensions",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 15,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\project",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            },
+            {
+              "sourceCommandIndex": 16,
+              "args": [
+                "skills",
+                "list"
+              ],
+              "cwd": "<TEMP_ROOT>\\neutral",
+              "exitCode": 0,
+              "timedOut": false,
+              "cancelled": false,
+              "terminationReason": "complete",
+              "maxBufferExceeded": false,
+              "stdout": "No skills discovered.\n",
+              "processManagement": {
+                "mode": "verified-observed",
+                "gradingEvidenceAccepted": true,
+                "descendantCleanupGuaranteed": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

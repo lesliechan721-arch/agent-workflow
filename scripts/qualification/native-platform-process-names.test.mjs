@@ -7,7 +7,7 @@ const columns = ['-A', '-o', 'pid=,ppid=,pgid=,state=,lstart='];
 const failure = (pid, reason = 'marked-process-group-changed') => [{ reason, affectedPids: [pid], processes: [{ pid, startTime: start }] }];
 
 // Diagnostic reads require the root's unique UUID assignment and repeated
-// unreadable rows; unrelated processes and ordinary missing markers cannot opt in.
+// missing-marker rows; unrelated processes cannot opt in.
 test('does not probe without a valid root marker or repeated unreadable shape', async () => {
   const name = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
   const marker = 'b99cad21-9df4-4bc8-af11-e3cb2377de5f';
@@ -15,7 +15,6 @@ test('does not probe without a valid root marker or repeated unreadable shape', 
     ['node', '[node]', `200 1 200 S ${start} node ${name}=${marker}\n`],
     [`node ${name}=invalid`, '[node]', ''],
     [`node ${name}=${marker} ${name}=a99cad21-9df4-4bc8-af11-e3cb2377de5f`, '[node]', ''],
-    [`node ${name}=${marker}`, 'node ordinary-missing-marker', ''],
   ]) {
     const requests = [];
     const probe = createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + 1000,
@@ -34,10 +33,10 @@ test('does not probe without a valid root marker or repeated unreadable shape', 
 
 // The native observer owns its random marker. Learn only its root row; reads
 // must never delay or replace the original ps callback or its failure decision.
-test('learns the native root marker and records repeated unreadable rows without awaiting diagnostics', async () => {
+for (const childCommand of ['[node]', 'node ordinary-missing-marker']) test(`records repeated ${childCommand} marker rows without awaiting diagnostics`, async () => {
   const marker = 'b99cad21-9df4-4bc8-af11-e3cb2377de5f';
   const name = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER';
-  const table = `100 1 100 S ${start} node ${name}=${marker}\n101 100 100 R ${start} [node]\n`;
+  const table = `100 1 100 S ${start} node ${name}=${marker}\n101 100 100 R ${start} ${childCommand}\n`;
   let settle; const pending = new Promise(resolve => { settle = resolve; });
   const reads = [];
   const probe = createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + 1000, read: request => { reads.push(request); return pending; } });

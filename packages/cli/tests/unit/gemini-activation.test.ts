@@ -13,6 +13,7 @@ import { finishGeminiNativeMutation, geminiActivationEvidence, geminiExtensionPa
   geminiUserActivation, readGeminiActivationSnapshot, setGeminiActivation } from '../../src/platforms/gemini-activation.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
+import { geminiConsentInput } from '../../src/platforms/gemini-consent.js';
 
 describe('Gemini shared extension activation', () => {
   const temporary: string[] = [];
@@ -56,7 +57,10 @@ describe('Gemini shared extension activation', () => {
     const before = await readGeminiActivationSnapshot(ctx);
     // Independent fixed-version sample: User enable deletes the child rule and
     // the native schema strips unknown entry fields before writing its map.
-    const runner = vi.fn(async (_invocation: NativeCliInvocation) => {
+    const runner = vi.fn(async (invocation: NativeCliInvocation) => {
+      expect(invocation.input?.initial).toBe('');
+      expect(invocation.input?.onStdout(`Do you trust the files in this folder?\nThe extension source at "${identity.sourceLocation}" is not trusted.\n`)).toBeUndefined();
+      expect(invocation.input?.onStdout('Do you want to trust this folder and continue with the installation? [y/N]: ')).toEqual({ write: 'y\n', end: true });
       await fs.writeFile(file, JSON.stringify({ demo: { overrides: ['!*', geminiScopePattern(home)] }, sibling: { overrides: ['!*'] } }, null, 2));
       return { exitCode: 0, stdout: '', stderr: '' };
     });
@@ -72,8 +76,17 @@ describe('Gemini shared extension activation', () => {
       verifyEvidence: async () => true, publishPackage: noMutation, writeContribution: noMutation, removeOwned: noMutation,
       setActivation: noMutation, registerMarketplace: noMutation,
     } };
+    await expect(executeNativeLifecycle(execution, prepared, effect)).rejects.toMatchObject({ code: 'nativeConsentRequired', mutation: 'none' });
+    expect(runner).not.toHaveBeenCalled();
+    execution.geminiNativeConsent = structuredClone(prepared.plan);
+    await expect(executeNativeLifecycle(execution, prepared, effect)).rejects.toMatchObject({ code: 'nativeConsentRequired' });
+    execution.geminiNativeConsent = prepared.plan;
+    binding.consumers[0]!.version = '0.68.0';
+    await expect(executeNativeLifecycle(execution, prepared, effect)).rejects.toMatchObject({ code: 'nativeConsentVersionUnsupported', mutation: 'none' });
+    expect(runner).not.toHaveBeenCalled();
+    binding.consumers[0]!.version = '0.67.0';
     await expect(executeNativeLifecycle(execution, prepared, effect)).resolves.toMatchObject({ mutation: 'confirmed' });
-    expect(runner.mock.calls.map(([invocation]) => invocation.args)).toEqual([['extensions', 'install', identity.sourceLocation]]);
+    expect(runner.mock.calls.map(([invocation]) => invocation.args)).toEqual([['extensions', 'install', identity.sourceLocation, '--consent', '--skip-settings']]);
     const value = await fs.readJson(file);
     expect(value).toEqual({ demo: { overrides: ['!*', other, geminiScopePattern(project), `!${nested}`], retained: { setting: 1 } },
       sibling: { overrides: ['!*'], retained: 'keep' } });
@@ -82,6 +95,23 @@ describe('Gemini shared extension activation', () => {
     expect(geminiPathEnabled(value.demo.overrides, path.join(project, 'nested'))).toBe(false);
     expect(geminiPathEnabled(value.demo.overrides, path.join(home, 'neutral'))).toBe(false);
     expect(geminiPathEnabled(value.demo.overrides, path.join(path.dirname(home), 'outside'))).toBe(false);
+  });
+
+  // Update has no --consent option. Answer only the fixed workspace/extension
+  // questions, then close input; unrelated and repeated questions are refused.
+  it('bounds the fixed update consent exchange and rejects unknown prompts', () => {
+    const input = geminiConsentInput('refresh', '/source', '/workspace', 'demo');
+    expect(input.onStdout('Do you want to con')).toBeUndefined();
+    expect(input.onStderr?.('The current workspace at "/workspace" is not trusted. Do you want to trust this workspace to install extensions?\n')).toBeUndefined();
+    expect(input.onStdout('tinue? [Y/n]: ')).toEqual({ write: 'y\n' });
+    expect(input.onStdout('Do you want to continue? [Y/n]: ')).toBeUndefined();
+    expect(input.onStderr?.('Installing extension "de')).toBeUndefined();
+    expect(input.onStderr?.('mo".\n')).toEqual({ write: 'y\n', end: true });
+    expect(() => input.onStdout('Do you want to continue? [Y/n]: ')).toThrow();
+    const unknown = geminiConsentInput('register', '/source', '/workspace', 'demo');
+    expect(() => unknown.onStdout('Trust another folder? [y/N]: ')).toThrow();
+    const other = geminiConsentInput('refresh', '/source', '/workspace', 'demo');
+    expect(() => other.onStderr?.('Installing extension "another-plugin".\n')).toThrow();
   });
 
   // Test Value Gate: User install/remove and one project's removal must preserve

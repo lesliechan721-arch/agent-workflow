@@ -679,6 +679,7 @@ async function runSingleSourceRebuildCommand(options: {
   };
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
+    nativeConsent: options.runtime?.nativeConsent === true,
     referencePlugins: options.runtime?.referencePlugins,
     recoveryCandidates: options.runtime?.recoveryCandidates,
     sharedReferenceView: options.runtime?.executionInput?.requirements.sharedReferenceView ?? options.runtime?.sharedReferenceView,
@@ -3504,6 +3505,7 @@ async function runRebuildCommandInSession(
         }
       }
       const executionContext: RebuildExecutionContext = {
+        nativeConsent: options.runtime?.nativeConsent === true,
         recoveryCandidates: options.runtime?.recoveryCandidates,
         sharedReferenceView: options.runtime?.executionInput?.requirements.sharedReferenceView ?? options.runtime?.sharedReferenceView,
         platformRebuildSession: options.runtime?.platformRebuildSession,

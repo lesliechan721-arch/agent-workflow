@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import { clients, sha256 } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
 import { readGeminiSkills } from './native-platform-gemini-skills.mjs';
-import { publicFixtureVersion, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
+import { publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 
 // One fixed Node child, using AW's real default native backend and the same
 // isolated cwd/env as Pi. This observes path spelling without granting trust.
@@ -51,7 +51,7 @@ export async function preparePublicClientPath(ctx) {
     try { await fs.symlink(entry, destination); }
     catch (error) { if (error.code !== 'EEXIST') throw error; assert.equal(await fs.realpath(destination), await fs.realpath(entry)); }
   }
-  const systemDirectories = windows ? [path.join(ctx.env.SystemRoot, 'System32')] : ['/usr/bin', '/bin'];
+  const systemDirectories = windows ? [path.join(ctx.env.SystemRoot, 'System32')] : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   if (windows) {
     const { resolveWindowsPathCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
     const git = await resolveWindowsPathCommand('git', ctx.project, ctx.env);
@@ -267,7 +267,6 @@ export async function writePublicFixtureRevision(ctx, plugin, revision) {
 
 export async function qualifyPublicAw(ctx) {
   if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
-  if (ctx.platform === 'gemini' && ctx.scope !== 'user') await ctx.defer('public-aw-gemini-project-skill-unverified');
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
   await ctx.check('public-target-discovery', async () => {
@@ -302,14 +301,13 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['source', 'add', 'qualification', '--path', path.join(workspace, '.aw/catalog'), '--no-auto-check', '--primary', '--yes']);
     return { source: 'qualification', plugin: ctx.pluginName, version: '0.1.0' };
   });
-  if (ctx.platform === 'gemini') await ctx.check('explicit-host-user-fixture-trust', async () => {
-    assert.equal(ctx.scope, 'user');
+  if (ctx.platform === 'gemini') await ctx.check('explicit-host-fixture-trust', async () => {
     assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Real Gemini public qualification requires a credential-free Hosted environment.');
     const directory = path.join(ctx.env.GEMINI_CLI_HOME, '.gemini');
     await fs.mkdir(directory, { recursive: true });
     await fs.writeFile(path.join(directory, 'trustedFolders.json'),
       JSON.stringify(Object.fromEntries([workspace, ctx.project, ctx.neutral].map((location) => [location, 'TRUST_FOLDER'])), null, 2) + '\n');
-    return { level: 'fixture-config', scope: 'user', trusted: 'isolated source workspace and working directories', sessionRequests: 'none' };
+    return { level: 'fixture-config', scope: ctx.scope, trusted: 'isolated source workspace and working directories', sessionRequests: 'none', activationOverridesWritten: false };
   });
   if (ctx.scope === 'project') await ctx.check('explicit-host-project-trust', async () => {
     // Host trust is an explicit isolated fixture, separate from AW --yes.
@@ -360,12 +358,13 @@ export async function qualifyPublicAw(ctx) {
   await ctx.check('public-install', async () => {
     const result = ctx.platform === 'grok' && ctx.scope === 'user'
       ? await ctx.aw(['plugin', 'sync', pluginId, '--context', 'user', '--target', 'grok', '--yes'])
-      : await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
+      : await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes',
+        ...(ctx.platform === 'gemini' ? ['--native-consent'] : [])]);
     return { command: result.command, status: result.status };
   });
-  const nativeScope = async (revision, absent = false) => ({
-    target: await readPublicNativeState(ctx, ctx.project, revision, { active: !absent, absent }),
-    neutral: await readPublicNativeState(ctx, ctx.neutral, revision, { active: !absent && ctx.scope === 'user', absent }),
+  const nativeScope = async (revision) => ({
+    target: await readPublicNativeState(ctx, ctx.project, revision, { active: true }),
+    neutral: await readPublicNativeState(ctx, ctx.neutral, revision, { active: ctx.scope === 'user' }),
   });
   await ctx.check('public-install-native-scope', () => nativeScope(1));
   await ctx.observe('public-install-skill-discovery', () => readSkills(ctx, ctx.project, 1, true));
@@ -375,7 +374,8 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['dev', 'catalog', 'version', '--bump', 'patch', '--workspace-root', workspace], workspace);
     await ctx.aw(['dev', 'catalog', 'build', '--workspace-root', workspace, '--force', '--yes'], workspace);
     await ctx.aw(['source', 'sync', 'qualification', '--yes']);
-    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes']);
+    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes',
+      ...(ctx.platform === 'gemini' ? ['--native-consent'] : [])]);
     return { command: result.command, status: result.status };
   });
   await ctx.check('public-update-native-scope', () => nativeScope(2));
@@ -421,7 +421,8 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['dev', 'catalog', 'version', '--bump', 'patch', '--workspace-root', workspace], workspace);
     await ctx.aw(['dev', 'catalog', 'build', '--workspace-root', workspace, '--force', '--yes'], workspace);
     await ctx.aw(['source', 'sync', 'qualification', '--yes']);
-    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes']);
+    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes',
+      ...(ctx.platform === 'gemini' ? ['--native-consent'] : [])]);
     return { command: result.command, status: result.status, version: publicFixtureVersion(3), revision: 3, samePluginVersion: true };
   });
   await ctx.check('public-dynamic-native-scope', () => nativeScope(3));
@@ -438,12 +439,14 @@ export async function qualifyPublicAw(ctx) {
       ...(ctx.platform === 'codex' && ctx.scope === 'project' ? ['--observe-native'] : [])]);
     return { command: result.command, status: result.status, data: result.data };
   });
+  let removeResult;
   await ctx.check('public-remove', async () => {
     const result = await ctx.aw(['plugin', 'remove', pluginId, '--scope', ctx.scope, '--yes']);
+    removeResult = result;
     if (ctx.platform === 'grok' && ctx.scope === 'user') await assert.rejects(fs.stat(ctx.grokPublicSource), { code: 'ENOENT' });
     return { command: result.command, status: result.status };
   });
-  await ctx.check('public-remove-native-scope', () => nativeScope(3, true));
+  await ctx.check('public-remove-native-scope', () => readPublicRemovedNativeScope(ctx, 3, removeResult, pluginId));
   await ctx.observe('public-remove-skill-discovery', async () => {
     await readSkills(ctx, ctx.project, 3, false, { requireAbsent: true });
     return readSkills(ctx, ctx.neutral, 3, false, { requireAbsent: true });

@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { probeAgentVersion } from '../../src/utils/agent-version.js';
+import { geminiConsentInput } from '../../src/platforms/gemini-consent.js';
 import {
   NativeCliError,
   CodexProjectConfigNotEffectiveError,
@@ -131,10 +132,12 @@ describe('native-cli', () => {
   // Test Value Gate: streaming input must preserve UTF-8 chunks and close stdin only after the exchange requests EOF.
   it('runs a bounded input exchange through the formal process runner', async () => {
     const stdout = new PassThrough();
+    const stderr = new PassThrough();
     const stdin = Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() });
     const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: 0, signalCode: null,
-      kill: vi.fn(() => true), stdout, stdin });
+      kill: vi.fn(() => true), stdout, stderr, stdin });
     const chunks: string[] = [];
+    const errorChunks: string[] = [];
     const runner = createExecFileNativeCliRunner({ platform: 'darwin',
       killProcess: (_pid, signal) => {
         if (signal === 0) throw Object.assign(new Error('missing'), { code: 'ESRCH' });
@@ -143,9 +146,12 @@ describe('native-cli', () => {
       execFile: (_command, _args, _options, callback) => {
         queueMicrotask(() => {
           const output = Buffer.from('项目\n');
+          const errors = Buffer.from('检查\n');
           stdout.write(output.subarray(0, 1));
+          stderr.write(errors.subarray(0, 1));
           stdout.write(output.subarray(1));
-          callback(null, '项目\n', '');
+          stderr.write(errors.subarray(1));
+          callback(null, '项目\n', '检查\n');
         });
         return child;
       } });
@@ -154,19 +160,22 @@ describe('native-cli', () => {
         chunks.push(chunk);
         return chunk.includes('\n') ? { write: 'config/read\n', end: true } : {};
       },
+      onStderr: (chunk) => { errorChunks.push(chunk); return undefined; },
     } });
-    expect(result).toEqual({ exitCode: 0, stdout: '项目\n', stderr: '' });
+    expect(result).toEqual({ exitCode: 0, stdout: '项目\n', stderr: '检查\n' });
     expect(chunks.join('')).toBe('项目\n');
+    expect(errorChunks.join('')).toBe('检查\n');
     expect(stdin.write.mock.calls).toEqual([['initialize\n'], ['config/read\n']]);
     expect(stdin.end).toHaveBeenCalledTimes(1);
   });
 
   // Test Value Gate: input errors must wait for the existing process cleanup instead of rejecting while descendants remain.
-  it.each(['callback', 'stdin'] as const)('waits for cleanup after a streaming %s failure', async (origin) => {
+  it.each(['callback', 'stderr', 'stdin'] as const)('waits for cleanup after a streaming %s failure', async (origin) => {
     const stdout = new PassThrough();
+    const stderr = new PassThrough();
     const stdin = Object.assign(new EventEmitter(), { write: vi.fn(() => true), end: vi.fn() });
     const child = Object.assign(new EventEmitter(), { pid: 321, exitCode: null,
-      kill: vi.fn(() => true), stdout, stdin });
+      kill: vi.fn(() => true), stdout, stderr, stdin });
     let finishCleanup: (() => void) | undefined;
     const terminate = vi.fn(() => new Promise<void>((resolve) => { finishCleanup = resolve; }));
     const runner = createExecFileNativeCliRunner({ platform: 'win32', terminateProcessTree: terminate,
@@ -174,16 +183,51 @@ describe('native-cli', () => {
     const cause = new Error('exchange failed');
     const pending = runner({ command: 'controlled-helper', args: [], input: {
       initial: 'initialize\n', onStdout: () => { throw cause; },
+      onStderr: () => { throw cause; },
     } });
     const rejected = expect(pending).rejects.toMatchObject({ reason: 'exit', cause });
     let settled = false;
     void pending.then(() => { settled = true; }, () => { settled = true; });
     if (origin === 'callback') stdout.write('reply');
+    else if (origin === 'stderr') stderr.write('reply');
     else stdin.emit('error', cause);
     await vi.waitFor(() => expect(finishCleanup).toBeTypeOf('function'));
     expect(settled).toBe(false);
     finishCleanup!();
     await rejected;
+  });
+
+  // Test Value Gate: Gemini's description and question use different pipes.
+  // Exercise the actual process runner in both arrival orders, with no early answer.
+  it.each(['stdout', 'stderr'] as const)('waits for both Gemini consent streams when %s arrives first', async (firstStream) => {
+    const question = 'Do you want to continue? [Y/n]: ';
+    const description = '\u001b[33m日志：项目\nInstalling extension "demo".\u001b[0m\n';
+    const script = `
+      const first = ${JSON.stringify(firstStream)};
+      const question = ${JSON.stringify(question)};
+      const description = ${JSON.stringify(description)};
+      const deadline = setTimeout(() => process.exit(91), 5000);
+      let secondSent = false;
+      let answer = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => {
+        if (!secondSent) process.exit(92);
+        answer += chunk;
+      });
+      process.stdin.on('end', () => {
+        clearTimeout(deadline);
+        if (answer !== 'y\\n') process.exit(93);
+        process.stdout.write('accepted\\n');
+      });
+      process[first].write(first === 'stdout' ? question : description);
+      setTimeout(() => {
+        secondSent = true;
+        process[first === 'stdout' ? 'stderr' : 'stdout'].write(first === 'stdout' ? description : question);
+      }, 25);
+    `;
+    const observed = await execFileNativeCliRunner({ command: process.execPath, args: ['-e', script], timeoutMs: 3000,
+      input: geminiConsentInput('refresh', '/source', '/workspace', 'demo') });
+    expect(observed).toEqual({ exitCode: 0, stdout: `${question}accepted\n`, stderr: description });
   });
 
   // Test Value Gate: cancellation must preserve the production runner's unconfirmed-cleanup evidence and original cause.

@@ -7,6 +7,7 @@ import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
 import { identityDigest } from '../platforms/identity.js';
 import type { ComponentUnmet, ComponentOmission, PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
+import { geminiConsentMessages } from '../platforms/gemini-consent.js';
 
 export interface PublicDeploymentPlan {
   bindingId: string;
@@ -57,7 +58,7 @@ export interface PublicTargetResult {
 
 export interface LifecycleData {
   request: { plugins: string[]; scope: Scope | null; context: Scope; targets: string[];
-    targetOrigin: 'argument' | 'preference' | 'none'; mode: 'apply' | 'requirements-only' | 'outputs-only' };
+    targetOrigin: 'argument' | 'preference' | 'none'; mode: 'apply' | 'requirements-only' | 'outputs-only'; nativeConsent?: boolean };
   confirmation: Confirmation | null;
   changes: Record<'requirements' | 'preferences' | 'config' | 'sources' | 'outputs', 'none' | 'changed' | 'unknown'>;
   requirements: RecoveryReceipt['intent'];
@@ -71,6 +72,7 @@ export interface LifecycleData {
 }
 
 const messages: Record<string, string> = {
+  ...geminiConsentMessages,
   confirmationRequired: 'Repeat this request with --yes to confirm the listed effects.',
   noTargetsEnabled: 'No effective deployment targets are enabled. Set targets or choose --only requirements.',
   projectRootUnavailable: 'A valid project root is required for this request.',
@@ -90,7 +92,10 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   const publicMessage = sourceMessage && !/[\u3400-\u9fff]/u.test(sourceMessage)
     && !/(?:\/(?:Users|home|tmp|private|var)\/|[A-Za-z]:[\\/])/u.test(sourceMessage)
     ? safePublicMessage(sourceMessage, code) : undefined;
-  return { code, severity, message: messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
+  // Native consent receipts include the checked plugin and scope recovery command.
+  // Preserve that safe detail for CLI and TUI instead of replacing it with the generic code text.
+  const consentMessage = Object.hasOwn(geminiConsentMessages, code) ? publicMessage : undefined;
+  return { code, severity, message: consentMessage ?? messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
     ...(subject || typeof value !== 'string' && value.pluginId ? { subject: { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}), ...subject } } : {}) };
 }
 
@@ -259,7 +264,14 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));
   if (!receipt.ok) {
     if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
-    else for (const target of data.remainingTargets) result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', data.request.context, '--target', target.target], reason: 'Retry the selected incomplete target after resolving its diagnostics.', requiresConfirmation: true });
+    else for (const target of data.remainingTargets) {
+      const consent = target.target === 'gemini' && result.diagnostics.some((entry) =>
+        entry.code.startsWith('nativeConsent') && entry.subject?.pluginId === target.pluginId);
+      result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'sync', target.pluginId, '--context', data.request.context, '--target', target.target,
+        ...(consent ? ['--native-consent'] : [])], reason: consent
+        ? 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.'
+        : 'Retry the selected incomplete target after resolving its diagnostics.', requiresConfirmation: true });
+    }
   }
   result.nextActions.push(...cleanupRecoveryActions(receipt));
   return result;

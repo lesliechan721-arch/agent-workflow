@@ -120,7 +120,7 @@ export function createProcessMarkerRowDiagnostic(runCommand = execFile, configur
             : /^\[[^\]]*\]\s+<defunct>$/u.test(command) ? 'bracketed-defunct'
               : /^\[[^\]]*\]$/u.test(command) ? 'bracketed' : 'other';
       let environment;
-      if (configuration.environmentProbe && commandForm !== 'other') {
+      if (configuration.environmentProbe) {
         const key = `${row.pid}:${row.startTime}`;
         const seen = (unreadableCounts.get(key) ?? 0) + 1;
         unreadableCounts.delete(key); unreadableCounts.set(key, seen);

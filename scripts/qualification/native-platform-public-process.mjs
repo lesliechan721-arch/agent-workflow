@@ -1,5 +1,5 @@
 import { execute } from './native-platform-runtime.mjs';
-import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic } from './native-platform-process-names.mjs';
+import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
 
 const MARKER_ENV = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 
@@ -15,7 +15,9 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
     ? createProcessNameDiagnostic(processTree.execFile) : undefined;
   const markerRows = names && process.platform === 'linux'
-    ? createProcessMarkerRowDiagnostic(names.execFile) : undefined;
+    ? createProcessMarkerRowDiagnostic(names.execFile, {
+      environmentProbe: createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + (options.timeoutMs ?? 60_000) }),
+    }) : undefined;
   const dependencies = { ...processTree, markerEnvironmentVariable: MARKER_ENV,
     enforceProcessMarker: true, enforceCooperativeProcessGroup: false,
     ...(names ? { execFile: markerRows?.execFile ?? names.execFile } : {}) };

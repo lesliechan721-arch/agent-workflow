@@ -234,9 +234,9 @@ test('owns a new private JSONL file and enforces record and byte limits', async 
   const { root } = await fixture(t);
   const file = path.join(root, 'count.jsonl');
   const writer = createManagedTraceWriter(file); t.after(writer.close);
-  for (let index = 0; index < 100; index += 1) assert.equal(writer.emit({ index }), index < 96);
+  for (let index = 0; index < 260; index += 1) assert.equal(writer.emit({ index }), index < 256);
   const lines = (await fs.readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-  assert.equal(lines.length, 96); assert.equal(lines.at(-1).index, 95);
+  assert.equal(lines.length, 256); assert.equal(lines.at(-1).index, 255);
   if (process.platform !== 'win32') assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
   const byteFile = path.join(root, 'bytes.jsonl');
   const byteWriter = createManagedTraceWriter(byteFile); t.after(byteWriter.close);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { sha256 } from './native-platform-runtime.mjs';
+import { clients, sha256 } from './native-platform-runtime.mjs';
 
 export const publicFixtureVersion = revision => `0.1.${Math.min(revision, 2) - 1}`;
 
@@ -81,7 +81,6 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
   assert.equal(typeof active, 'boolean');
   let matches;
   if (ctx.platform === 'gemini') {
-    if (ctx.scope === 'project') throw new Error('gemini-project-scope-unverified');
     matches = await geminiExtensions(ctx, cwd);
   } else if (ctx.platform === 'pi') {
     const skills = await rpcSkills(ctx, cwd);
@@ -134,6 +133,60 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
   assert.equal(item.version, publicFixtureVersion(revision), 'native-management-version-mismatch');
   return { level: 'native-management-state', active, present: true, version: item.version,
     ...(item.scope ? { scope: item.scope } : {}) };
+}
+
+function retainedSharedRegistration(ctx, result, pluginId) {
+  const routes = { codex: 'codex-marketplace', claude: 'claude-marketplace',
+    gemini: 'gemini-extension', copilot: 'copilot-marketplace' };
+  if (!routes[ctx.platform] || result?.command !== 'plugin.remove' || result.status !== 'success') return false;
+  const request = result.data?.request;
+  if (request?.scope !== ctx.scope || request.plugins?.length !== 1 || request.plugins[0] !== pluginId
+    || request.targets?.length !== 1 || request.targets[0] !== ctx.platform) return false;
+  const targets = result.data?.targetResults;
+  if (!Array.isArray(targets) || targets.length !== 1) return false;
+  const target = targets[0];
+  const empty = (items) => Array.isArray(items) && items.length === 0;
+  if (target?.pluginId !== pluginId || target.target !== ctx.platform || target.scope !== ctx.scope
+    || target.delivery?.kind !== 'native' || target.delivery.platform !== ctx.platform
+    || target.execution !== 'applied' || !empty(target.blockerCodes)
+    || target.deploymentPlans?.length !== 1 || target.deploymentReceipts?.length !== 1) return false;
+  const plan = target.deploymentPlans[0];
+  const receipt = target.deploymentReceipts[0];
+  if (!['present', 'unknown'].includes(plan?.sharedReferences) || typeof plan.bindingId !== 'string'
+    || !plan.bindingId || receipt?.bindingId !== plan.bindingId
+    || typeof plan.physicalKey !== 'string' || !plan.physicalKey
+    || receipt.after?.physicalKey !== plan.physicalKey
+    || plan.effects?.length !== 1 || receipt.effects?.length !== 1
+    || plan.products?.length !== 1 || receipt.products?.length !== 1 || !empty(receipt.unmet)) return false;
+  const effect = plan.effects[0];
+  const applied = receipt.effects[0];
+  const product = plan.products[0];
+  if (effect?.kind !== 'deactivate' || typeof effect.id !== 'string' || !effect.id
+    || effect.physicalKey !== plan.physicalKey || typeof effect.activationKey !== 'string' || !effect.activationKey
+    || applied?.id !== effect.id || applied.status !== 'applied' || applied.mutation !== 'confirmed'
+    || product?.product !== 'cli' || product.version !== clients[ctx.platform].version
+    || typeof product.id !== 'string' || !product.id || receipt.products[0]?.id !== product.id) return false;
+  const after = receipt.after;
+  if (after.package !== 'present' || after.registration !== 'present' || after.ownership !== 'aw'
+    || after.nativeIdentity?.route !== routes[ctx.platform] || after.nativeIdentity.packageId !== ctx.pluginName
+    || !Array.isArray(after.consumers) || after.consumers.length !== 1) return false;
+  const consumer = after.consumers[0];
+  if (consumer?.productId !== product.id || consumer.activationKey !== effect.activationKey
+    || consumer.activation !== 'disabled') return false;
+  const warning = plan.sharedReferences === 'unknown' ? 'sharedReferenceUnknown' : 'sharedPackageRetained';
+  return Array.isArray(receipt.diagnostics) && receipt.diagnostics.some((item) => item.code === warning
+    && item.severity === 'warning' && item.subject?.pluginId === pluginId
+    && item.subject.target === ctx.platform && item.subject.scope === ctx.scope);
+}
+
+export async function readPublicRemovedNativeScope(ctx, revision, result, pluginId) {
+  // A successful shared-retention receipt permits a disabled registration. The
+  // new client processes still have to prove effective off in both directories.
+  const retainedRegistration = retainedSharedRegistration(ctx, result, pluginId);
+  const options = { active: false, absent: !retainedRegistration };
+  return { retainedRegistration,
+    target: await readPublicNativeState(ctx, ctx.project, revision, options),
+    neutral: await readPublicNativeState(ctx, ctx.neutral, revision, options) };
 }
 
 export async function readDynamicConsumerContent(ctx, cwd, revision) {

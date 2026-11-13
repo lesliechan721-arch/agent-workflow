@@ -852,7 +852,10 @@ export class PlatformRebuildSession {
           const commandPreparationFailed = prepared.plan.binding.renderUnitIds.some((unitId) => preparedUnits.get(unitId)?.finalized.producerResolutions
             .some((resolution) => resolution.state === 'failed' || resolution.state === 'unmet'));
           let receipt: DeploymentReceipt;
-          const executionContext = { ...ctx, geminiActivationSnapshot: structuredClone(this.mutableChecks.get(prepared.plan.binding.id)?.geminiActivationSnapshot?.()) };
+          const executionContext = { ...ctx,
+            ...(this.context.nativeConsent === true && prepared.plan.binding.route === 'gemini-extension'
+              ? { geminiNativeConsent: prepared.plan } : {}),
+            geminiActivationSnapshot: structuredClone(this.mutableChecks.get(prepared.plan.binding.id)?.geminiActivationSnapshot?.()) };
           const nativeServices = createNativeLifecycleServices(executionContext, prepared.plan.evidence);
           try { receipt = await adapter.lifecycle.execute({ ...executionContext, nativeEffects: this.nativeEffects, inspect: (binding) => adapter.inspect(ctx, binding), services: {
             ...nativeServices,

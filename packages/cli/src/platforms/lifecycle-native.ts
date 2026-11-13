@@ -1,11 +1,12 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
-import { NativeCliError, runNativeCliChecked } from '../utils/native-cli.js';
+import { NativeCliError, runNativeCliChecked, type NativeCliInput } from '../utils/native-cli.js';
 import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
 import type { PlatformDriverState } from './lifecycle.js';
 import { inspectDeployment } from './inspection.js';
 import { assertGeminiNativeOwner, assertGeminiProjectRules, finishGeminiNativeMutation, geminiActivationEvidence, geminiActivationRules,
   readGeminiActivationSnapshot } from './gemini-activation.js';
+import { geminiConsentInput } from './gemini-consent.js';
 
 export function nativeRoute(route: InstallRoute): boolean {
   return ['codex-marketplace', 'claude-marketplace', 'antigravity-cli', 'pi-package',
@@ -62,13 +63,17 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
   const cwd = binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd;
   const id = identity.registrationId ?? identity.packageId;
   let confirmed = false;
-  const run = async (args: string[]): Promise<void> => {
+  const run = async (args: string[], input?: NativeCliInput): Promise<void> => {
     if (!product) blocked('clientInstallEntryUnavailable');
     const invocation = await installationInvocation(product, { ...ctx, cwd }, args);
     try {
-      await runNativeCliChecked({ ...invocation, timeoutMs: Math.max(60_000, DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS) }, ctx.runner);
+      await runNativeCliChecked({ ...invocation, ...(input ? { input } : {}), timeoutMs: Math.max(60_000, DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS) }, ctx.runner);
       confirmed = true;
     } catch (error) {
+      if (input && error instanceof NativeCliError
+        && (error.cause as { code?: string } | undefined)?.code === 'nativeConsentPromptUnsupported') {
+        throw Object.assign(error, { code: 'nativeConsentPromptUnsupported', mutation: 'possible' });
+      }
       // A non-zero exit does not prove that a third-party CLI made no changes.
       if (error instanceof NativeCliError && (error.cause as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
         throw Object.assign(error, { mutation: confirmed ? 'confirmed' : 'none' });
@@ -132,6 +137,10 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       await run([effect.kind === 'unregister' ? 'remove' : 'install', ...(binding.scope.kind === 'project' ? ['--local'] : []), identity.sourceLocation]);
       break;
     case 'gemini-extension': {
+      if (effect.kind === 'register' || effect.kind === 'refresh') {
+        if (ctx.geminiNativeConsent !== prepared.plan) blocked('nativeConsentRequired');
+        if (product?.version !== '0.67.0') blocked('nativeConsentVersionUnsupported');
+      }
       if (!ctx.geminiActivationSnapshot) blocked('nativeActivationEvidenceUnknown');
       const snapshot = await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
       await assertGeminiProjectRules(ctx, binding, geminiActivationRules(snapshot, identity.packageId));
@@ -139,8 +148,10 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       if (effect.kind !== 'register') await assertGeminiNativeOwner(ctx, binding, identity, evidence);
       await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
       if (effect.kind === 'unregister') await run(['extensions', 'uninstall', identity.packageId]);
-      else if (effect.kind === 'refresh') await run(['extensions', 'update', identity.packageId]);
-      else await run(['extensions', 'install', evidence.layout.packageRoot]);
+      else if (effect.kind === 'refresh') await run(['extensions', 'update', identity.packageId],
+        geminiConsentInput('refresh', evidence.layout.packageRoot, cwd, identity.packageId));
+      else await run(['extensions', 'install', evidence.layout.packageRoot, '--consent', '--skip-settings'],
+        geminiConsentInput('register', evidence.layout.packageRoot, cwd, identity.packageId));
       try {
         await finishGeminiNativeMutation(ctx, evidence, binding, identity, effect.kind, snapshot);
         Object.assign(ctx.geminiActivationSnapshot, geminiActivationEvidence(snapshot));

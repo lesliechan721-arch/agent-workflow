@@ -41,7 +41,7 @@ export function createManagedTraceWriter(file) {
     }
   }
   return { close, emit(record) {
-    if (closed || count >= 96) return false;
+    if (closed || count >= 256) return false;
     try {
       const json = JSON.stringify(record);
       if (typeof json !== 'string') return false;

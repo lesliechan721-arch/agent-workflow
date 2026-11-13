@@ -119,7 +119,7 @@ async function readManagedTrace(file) {
   try {
     if ((await fs.stat(file)).size > 256 * 1024) return { state: 'over-limit', records };
     const lines = (await fs.readFile(file, 'utf8')).split('\n').filter((line) => line.trim());
-    if (lines.length > 96) return { state: 'over-limit', records };
+    if (lines.length > 256) return { state: 'over-limit', records };
     for (const line of lines) {
       try { records.push(JSON.parse(line)); }
       catch { return { state: 'partial-or-invalid-jsonl', records }; }

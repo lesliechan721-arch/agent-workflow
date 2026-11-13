@@ -41,6 +41,7 @@ export interface NativeCliInvocation {
 export interface NativeCliInput {
   initial: string;
   onStdout(chunk: string): { write?: string; end?: true } | undefined;
+  onStderr?(chunk: string): { write?: string; end?: true } | undefined;
 }
 
 export interface CodexManager {
@@ -895,15 +896,15 @@ export function createExecFileNativeCliRunner(
         processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
       }
 
-      const inputDecoder = new StringDecoder('utf8');
+      const stdoutInputDecoder = new StringDecoder('utf8');
+      const stderrInputDecoder = new StringDecoder('utf8');
       let inputEnded = false;
       const inputErrorListener = (error: Error): void => startTermination('input', error);
-      const stdoutListener = (chunk: unknown): void => {
-        streamedStdout += renderNativeCliOutputChunk(chunk);
-        if (!invocation.input || settled || terminationReason) return;
+      const handleInput = (chunk: unknown, decoder: StringDecoder,
+        handler: NativeCliInput['onStdout'] | undefined): void => {
+        if (!handler || settled || terminationReason) return;
         try {
-          const action = invocation.input.onStdout(Buffer.isBuffer(chunk)
-            ? inputDecoder.write(chunk) : String(chunk));
+          const action = handler.call(invocation.input, Buffer.isBuffer(chunk) ? decoder.write(chunk) : String(chunk));
           if (action?.write !== undefined) {
             if (inputEnded || !child.stdin) throw new Error('Native CLI input is unavailable.');
             child.stdin.write(action.write);
@@ -917,8 +918,13 @@ export function createExecFileNativeCliRunner(
           startTermination('input', error);
         }
       };
+      const stdoutListener = (chunk: unknown): void => {
+        streamedStdout += renderNativeCliOutputChunk(chunk);
+        handleInput(chunk, stdoutInputDecoder, invocation.input?.onStdout);
+      };
       const stderrListener = (chunk: unknown): void => {
         streamedStderr += renderNativeCliOutputChunk(chunk);
+        handleInput(chunk, stderrInputDecoder, invocation.input?.onStderr);
       };
       child.stdout?.on('data', stdoutListener);
       child.stderr?.on('data', stderrListener);

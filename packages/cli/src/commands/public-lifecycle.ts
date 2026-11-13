@@ -23,12 +23,13 @@ import { parseScriptTimeoutMs } from './options.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import { readJointDemand, deriveJointDemand } from '../recovery/joint-demand.js';
 import { deploymentConfirmationEffects } from './deployment-confirmation.js';
+import { geminiNativeConsentDiagnostic } from '../output/native-consent.js';
 
 export type { LifecycleData } from './public-lifecycle-result.js';
 export interface PublicLifecycleOptions {
   cwd: string; env?: NodeJS.ProcessEnv; cliVersion: string;
   scope?: string; context?: string; target?: string[]; targets?: string[];
-  only?: string; yes?: boolean; force?: boolean; keepDependencies?: boolean; deleteConfig?: boolean;
+  only?: string; yes?: boolean; nativeConsent?: boolean; force?: boolean; keepDependencies?: boolean; deleteConfig?: boolean;
   refresh?: boolean; rebuild?: boolean; all?: boolean; scriptTimeout?: number | string; scriptTimeoutMs?: number;
 }
 
@@ -130,6 +131,13 @@ async function withPreparedSources<T>(options: RecoveryOptions, plugins: string[
 
 export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync', plugins: string[], options: PublicLifecycleOptions,
   input: CommandExecutionContextInput = {}): Promise<CommandResult<LifecycleData>> {
+  const result = await runPublicLifecycleRequest(command, plugins, options, input);
+  if (options.nativeConsent === true && 'request' in result.data) result.diagnostics.push(geminiNativeConsentDiagnostic());
+  return result;
+}
+
+async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync', plugins: string[], options: PublicLifecycleOptions,
+  input: CommandExecutionContextInput): Promise<CommandResult<LifecycleData>> {
   const id = `plugin.${command}`;
   const invalid = (message: string, field?: string) => lifecycleArgumentError(id, 'invalidOptionValue', message, field);
   if (options.scope !== undefined && !['user', 'project'].includes(options.scope)) return invalid('Invalid scope. Expected user or project.', 'scope');
@@ -144,6 +152,7 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
   if (options.deleteConfig && (command !== 'remove' || options.only)) return invalid('--delete-config requires normal remove.', 'deleteConfig');
   if (options.force && (command !== 'remove' || options.only === 'requirements')) return invalid('--force requires normal remove or remove --only outputs.', 'force');
   if (options.keepDependencies && (command !== 'remove' || options.only)) return invalid('--keep-dependencies requires normal remove.', 'keepDependencies');
+  if (options.nativeConsent && (command === 'remove' || options.only === 'requirements')) return invalid('--native-consent requires install or sync with deployment.', 'nativeConsent');
   const argumentsTargets = options.targets ?? options.target;
   if (options.only === 'requirements' && (argumentsTargets !== undefined || options.scriptTimeout !== undefined || options.scriptTimeoutMs !== undefined)) return invalid('Requirements-only does not accept target or script timeout options.');
   if (command === 'remove' && options.only !== 'outputs' && argumentsTargets !== undefined) return invalid('Use --only outputs to select removal targets.', 'target');
@@ -166,7 +175,7 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
   const targets = options.only === 'requirements' ? [] : options.only === 'outputs' ? selected! : (preferences.state === 'valid' ? preferences.value.targets.filter((target) => !selected || selected.includes(target)) : []);
   const observation = await observeIntent(location);
   const data: LifecycleData = { request: { plugins: [...plugins], scope: scope ?? null, context: work.context, targets,
-    targetOrigin: selected ? 'argument' : targets.length ? 'preference' : 'none', mode: options.only === 'requirements' ? 'requirements-only' : options.only === 'outputs' ? 'outputs-only' : 'apply' },
+    targetOrigin: selected ? 'argument' : targets.length ? 'preference' : 'none', mode: options.only === 'requirements' ? 'requirements-only' : options.only === 'outputs' ? 'outputs-only' : 'apply', nativeConsent: options.nativeConsent === true },
     confirmation: null, changes: { requirements: 'none', preferences: 'none', config: 'none', sources: 'none', outputs: 'none' },
     requirements: { state: observation.state, ...('digest' in observation ? { digest: observation.digest } : {}), roots: observation.state === 'valid' ? observation.value.roots.map((root) => root.pluginId) : observation.state === 'absent' ? [] : null },
     targetResults: [], remainingTargets: [], coverage: { scopes: work.scopes, currentProject: work.context === 'project', otherProjects: 'unobserved' } };
@@ -175,7 +184,7 @@ export async function runPublicLifecycle(command: 'install' | 'remove' | 'sync',
     data.confirmation = { required: effects.length > 0, provided: options.yes === true, effects };
     return !effects.length || options.yes === true;
   };
-  const runtime: RebuildCommandRuntime = { ...context, directCli: true };
+  const runtime: RebuildCommandRuntime = { ...context, directCli: true, nativeConsent: options.nativeConsent === true };
   const recovery: RecoveryOptions = { ...location, scope, context: work.context, signal: context.signal, cliVersion: options.cliVersion, targets: selected ? targets : undefined, yes: options.yes, force: options.force, keepDependencies: options.keepDependencies, scriptTimeoutMs: timeout, interactive: false };
   try {
     if (command === 'remove' && options.only === 'requirements') {
