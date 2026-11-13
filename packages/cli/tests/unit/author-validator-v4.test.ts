@@ -50,7 +50,7 @@ console.log(JSON.stringify({version:3,components:context.allowedOutputKinds.incl
   });
 
   it('keeps source legality separate from the fixed profile capability gaps', async () => {
-    const { plugin } = await fixture('claude');
+    const { plugin } = await fixture('cursor');
     await fs.outputFile(path.join(plugin, 'render.mjs'), `
 import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
@@ -60,7 +60,7 @@ console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:context.all
 `);
     const result = await validate(plugin);
     expect(result).toMatchObject({ ok: true, errors: [] });
-    expect(result.warnings.join('\n')).toContain('component unmet (claude/user)');
+    expect(result.warnings.join('\n')).toContain('component unmet (cursor/user)');
   });
 
   it('uses an already installed declared renderer dependency without changing its source', async () => {

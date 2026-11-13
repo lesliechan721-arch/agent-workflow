@@ -54,6 +54,40 @@ export function versionFrom(output) {
   return /(?:^|\s)v?(\d+\.\d+\.\d+)(?=$|\s|\(|\.(?:\s|$))/u.exec(output.trim())?.[1] ?? null;
 }
 
+export function aggregateQualificationStatus(statuses) {
+  const required = statuses.filter(status => status !== 'excluded');
+  if (!required.length) return statuses.length ? 'excluded' : 'unverified';
+  if (required.some(status => status === 'failed')) return 'failed';
+  return required.every(status => status === 'passed') ? 'passed' : 'unverified';
+}
+
+// Discovery observations do not grade management, consumer content or scope.
+// Their commands retain the same process safety gates as required checks.
+export async function observeQualification(report, id, action, root, clientBin) {
+  const observation = { id, status: 'failed' };
+  report.observations.push(observation);
+  const start = report.commands.length;
+  const processFailed = () => report.commands.slice(start).some(command =>
+    Object.hasOwn(command, 'processFailure') || command.timedOut || command.maxBufferExceeded
+    || command.cancelled || command.terminationReason && command.terminationReason !== 'complete');
+  try {
+    const evidence = await action() ?? {};
+    if (processFailed()) throw new Error('observation-process-failed');
+    observation.evidence = redact(evidence, root, clientBin);
+    observation.status = 'observed';
+    return { status: observation.status, evidence: observation.evidence };
+  } catch (error) {
+    observation.reason = redact(error?.message ?? 'observation-unverified', root, clientBin);
+    if (processFailed() || error && typeof error === 'object'
+      && ['processTreeDiagnostics', 'publicAwProcessDiagnostics'].some(key => Object.hasOwn(error, key))) {
+      if (error instanceof Unverified) throw new Error('observation-process-failed', { cause: error });
+      throw error;
+    }
+    observation.status = 'unverified';
+    return { status: observation.status, reason: observation.reason };
+  }
+}
+
 // The raw command preview remains bounded. Preserve selected failure facts from
 // the complete public JSON before that preview truncates a deployment receipt.
 export function publicAwFailureSummary(stdout) {
@@ -120,7 +154,7 @@ export async function readQualificationCodexSources(home) {
 
 export async function runScope(platform, scope, launcher, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
-  const report = { scope, input: options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate', status: 'failed', checks: [], commands: [], cleanup: 'pending' };
+  const report = { scope, input: options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate', status: 'failed', checks: [], observations: [], commands: [], cleanup: 'pending' };
   try {
     const env = await prepareEnvironment(root);
     const project = path.join(root, 'project');
@@ -150,6 +184,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           throw error;
         }
         report.commands.push(redact({ args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          cancelled: result.cancelled, terminationReason: result.terminationReason,
           maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
           processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
             descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
@@ -171,7 +206,8 @@ export async function runScope(platform, scope, launcher, options = {}) {
           throw error;
         }
         report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
-          cwd, exitCode: result.exitCode, timedOut: result.timedOut, stderr: result.stderr }, root, options.clientBin));
+          cwd, exitCode: result.exitCode, timedOut: result.timedOut, maxBufferExceeded: result.maxBufferExceeded,
+          cancelled: result.cancelled, terminationReason: result.terminationReason, stderr: result.stderr }, root, options.clientBin));
         assertCommand(result);
         return JSON.parse(result.stdout);
       },
@@ -239,6 +275,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
         }
         catch (error) { check.reason = redact(error?.message ?? 'check-failed', root, options.clientBin); throw error; }
       },
+      async observe(id, action) { return observeQualification(report, id, action, root, options.clientBin); },
       async defer(reason) { throw new Unverified(reason); },
       async render(revision) {
         return revision === 1 ? renderPackage(ctx, revision)
@@ -272,7 +309,11 @@ export async function runScope(platform, scope, launcher, options = {}) {
 }
 
 export async function run(options) {
-  const report = { schemaVersion: 1, kind: 'aw-native-hosted-qualification', status: 'failed',
+  const report = { schemaVersion: 2, kind: 'aw-native-hosted-qualification', status: 'failed',
+    acceptancePolicy: { id: 'management-content-scope-v1',
+      required: ['management', 'dynamic-consumer-content', 'scope-isolation', 'process-safety', 'cleanup'],
+      nonBlocking: ['skill-loading', 'model-adoption'],
+      excluded: 'official-client-distribution-unavailable' },
     createdAt: new Date().toISOString(), environment: hostInfo(),
     run: { id: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
     boundary: { credentials: 'not-provided', modelRequests: 'none', clients: 'real',
@@ -307,7 +348,7 @@ export async function run(options) {
       report.clients.push(result);
       if (platform === 'grok' && (process.platform === 'darwin' && process.arch === 'x64'
         || process.platform === 'win32' && process.arch === 'arm64')) {
-        result.status = 'unverified'; result.reason = 'official-client-distribution-unavailable'; continue;
+        result.status = 'excluded'; result.reason = 'official-client-distribution-unavailable'; continue;
       }
       let installRoot;
       try {
@@ -328,8 +369,7 @@ export async function run(options) {
           for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin }));
         }
         const scopes = [...result.scopes, ...(result.publicAw ?? [])];
-        result.status = scopes.every((scope) => scope.status === 'passed') ? 'passed'
-          : scopes.some((scope) => scope.status === 'failed') ? 'failed' : 'unverified';
+        result.status = aggregateQualificationStatus(scopes.map(scope => scope.status));
       } catch (error) {
         result.reason = /^[a-z][a-z-]+$/u.test(error?.message ?? '') ? error.message : 'client-acquisition-or-execution-failed';
         if (error.evidence && installRoot) result.evidence = redact(error.evidence, installRoot);
@@ -343,8 +383,7 @@ export async function run(options) {
         }
       }
     }
-    report.status = report.clients.every((client) => client.status === 'passed') ? 'passed'
-      : report.clients.some((client) => client.status === 'failed') ? 'failed' : 'unverified';
+    report.status = aggregateQualificationStatus(report.clients.map(client => client.status));
   } catch (error) {
     report.reason = /^[a-z][a-z-]+$/u.test(error?.message ?? '') ? error.message : 'candidate-or-harness-failed';
   }
@@ -360,7 +399,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     else {
       const report = await run(options);
       console.log(JSON.stringify({ status: report.status, clients: report.clients.map(({ platform, status }) => ({ platform, status })) }));
-      process.exitCode = report.status === 'passed' ? 0 : 1;
+      process.exitCode = ['passed', 'excluded'].includes(report.status) ? 0 : 1;
     }
   } catch (error) {
     console.error(`${error?.message === 'invalid-arguments' ? usage : 'Qualification setup failed.'}`);

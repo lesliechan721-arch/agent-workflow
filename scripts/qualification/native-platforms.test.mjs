@@ -6,7 +6,8 @@ import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readQualificationCodexSources } from './native-platforms.mjs';
+import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readQualificationCodexSources,
+  observeQualification } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
@@ -17,6 +18,24 @@ import './native-platform-gemini-skills.test.mjs';
 import './native-platform-linux-environment.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
+
+// Test Value Gate: local discovery can be observed or unavailable without
+// changing the result of required management and scope checks.
+test('records redacted discovery observations separately from required checks', async () => {
+  const root = '/isolated/qualification';
+  const report = { checks: [{ id: 'scope', status: 'passed' }], observations: [], commands: [] };
+  assert.deepEqual(await observeQualification(report, 'discovery', async () => ({ path: `${root}/skill` }), root),
+    { status: 'observed', evidence: { path: '<TEMP_ROOT>/skill' } });
+  assert.deepEqual(await observeQualification(report, 'loading', async () => {
+    report.commands.push({ exitCode: 1 });
+    throw new Error(`discovery unavailable in ${root}`);
+  }, root), { status: 'unverified', reason: 'discovery unavailable in <TEMP_ROOT>' });
+  assert.deepEqual(report.observations, [
+    { id: 'discovery', status: 'observed', evidence: { path: '<TEMP_ROOT>/skill' } },
+    { id: 'loading', status: 'unverified', reason: 'discovery unavailable in <TEMP_ROOT>' },
+  ]);
+  assert.deepEqual(report.checks, [{ id: 'scope', status: 'passed' }]);
+});
 
 // Test Value Gate: public Gemini observation must bind its current revision to
 // the fixture record and require complete removal without opening an RPC session.
@@ -710,9 +729,10 @@ test('public AW inspection preflight failure prevents command launch', posixOnly
 
 test('public AW observation failure aborts and remains failed after cleanup', posixOnly, async () => {
   await publicProcessFixture(async (options) => {
+    const report = { observations: [], commands: [] };
     const marker = path.join(options.cwd, 'launched');
     let injected = false;
-    await assert.rejects(executePublicAw(nodeLauncher, ['-e',
+    await assert.rejects(observeQualification(report, 'discovery', () => executePublicAw(nodeLauncher, ['-e',
       `require('node:fs').writeFileSync(${JSON.stringify(marker)},'yes');setTimeout(()=>{},10000)`], options, {
       execFile(command, args, settings, callback) {
         fs.stat(marker).then(() => {
@@ -720,13 +740,14 @@ test('public AW observation failure aborts and remains failed after cleanup', po
           else execFile(command, args, settings, callback);
         }, () => execFile(command, args, settings, callback));
       },
-    }), (error) => {
+    }), options.cwd), (error) => {
       assert.equal(injected, true);
       assert.equal(error.result?.cancelled, true);
       assert(error.publicAwProcessDiagnostics.length > 0);
       assert.equal(typeof error.publicAwProcessDiagnostics[0].rootPid, 'number');
       return true;
     });
+    assert.equal(report.observations[0].status, 'failed');
   });
 });
 

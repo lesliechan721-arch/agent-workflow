@@ -27,7 +27,7 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
   const profile: QualifiedPlatformProfile = { id: `${platform}:${PROFILE_BASELINES[platform]}`, platform, kinds, features, agentConsumers: [] };
   // Finite native qualification: exact CLI versions in the six recorded hosts.
   // It does not qualify invocation metadata, Hooks, MCP execution, or model behavior.
-  const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : platform === 'copilot' ? '1.0.95' : platform === 'gemini' ? '0.67.0' : platform === 'grok' ? '1.0.77' : null;
+  const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : platform === 'copilot' ? '1.0.95' : platform === 'claude' ? '2.1.317' : platform === 'gemini' ? '0.67.0' : platform === 'grok' ? '1.0.77' : null;
   const hostPlatform = host.platform ?? process.platform;
   const hostArch = host.arch ?? process.arch;
   const qualifiedSkillHosts = platform === 'grok'
@@ -41,9 +41,11 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
     profile.qualificationEvidence = [{ reference: platform === 'grok' ? 'scripts/qualification/evidence/native-grok-skills-2026-11-12.json'
       : platform === 'copilot' ? 'scripts/qualification/evidence/native-copilot-skills-2026-11-12.json'
       : platform === 'gemini' ? 'scripts/qualification/evidence/native-gemini-skills-2026-11-12.json'
+      : platform === 'claude' ? 'scripts/qualification/evidence/native-claude-skills-2026-11-12.json'
       : 'scripts/qualification/evidence/native-skills-2026-11-12.json',
       product: 'cli', version: skillVersion, platform: hostPlatform, arch: hostArch, scopes: platform === 'grok' || platform === 'gemini' ? ['user'] : ['user', 'project'], kinds: ['skill'], features: [],
-      limitations: ['host-discovery-and-lifecycle-only', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'] }];
+      limitations: [...(platform === 'claude' ? ['native-management-and-effective-activation-only', 'skill-discovery-unverified', 'skill-loading-unverified']
+        : ['host-discovery-and-lifecycle-only']), 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'] }];
   }
   return profile;
 }

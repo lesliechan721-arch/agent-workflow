@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs'
 import { readGeminiSkills } from './native-platform-gemini-skills.mjs'
@@ -84,6 +84,14 @@ async function codexInventory(ctx, revision) {
   return { level: 'plugin-inventory', pluginId: entry.pluginId, version: entry.version }
 }
 
+async function codexScope(ctx, cwd, enabled) {
+  const skills = await codexSkills(ctx, cwd)
+  if (!enabled && skills.length === 0) return { level: 'activation-inventory', present: false }
+  const skill = one(skills, item => item.name === `${ctx.pluginName}:${ctx.skillName}`, 'Codex scope Skill')
+  assert.equal(skill.enabled, enabled)
+  return { level: 'activation-inventory', pluginId: pluginId(ctx), enabled: skill.enabled }
+}
+
 async function qualifyCodex(ctx) {
   const id = pluginId(ctx)
   await ctx.check('marketplace-register', async () => {
@@ -98,13 +106,9 @@ async function qualifyCodex(ctx) {
     await codexActivation(ctx)
     return codexInventory(ctx, 1)
   })
-  await ctx.check('skill-discovery', async () => assertCodexSkill(ctx, await codexSkills(ctx, ctx.project), 1))
-  await ctx.check('neutral-scope', async () => {
-    const skills = await codexSkills(ctx, ctx.neutral)
-    if (ctx.scope === 'user') return assertCodexSkill(ctx, skills, 1)
-    assert.equal(skills.length, 0, 'A project Codex Skill must not be discovered in neutral cwd.')
-    return { level: 'skill-discovery', present: false }
-  })
+  await ctx.observe('skill-discovery', async () => assertCodexSkill(ctx, await codexSkills(ctx, ctx.project), 1))
+  await ctx.check('target-scope', async () => codexScope(ctx, ctx.project, true))
+  await ctx.check('neutral-scope', async () => codexScope(ctx, ctx.neutral, ctx.scope === 'user'))
   await ctx.render(2)
   await ctx.check('refresh', async () => {
     const removed = await jsonCommand(ctx, ['plugin', 'remove', id, '--json'])
@@ -113,16 +117,22 @@ async function qualifyCodex(ctx) {
     assert.equal(installed.pluginId, id)
     assert.equal(installed.version, version(2))
     await codexActivation(ctx)
-    await codexInventory(ctx, 2)
-    return assertCodexSkill(ctx, await codexSkills(ctx, ctx.project), 2)
+    const inventory = await codexInventory(ctx, 2)
+    await codexScope(ctx, ctx.project, true)
+    await codexScope(ctx, ctx.neutral, ctx.scope === 'user')
+    return inventory
   })
+  await ctx.observe('skill-refresh', async () => assertCodexSkill(ctx, await codexSkills(ctx, ctx.project), 2))
   await ctx.check('remove', async () => {
     const result = await jsonCommand(ctx, ['plugin', 'remove', id, '--json'])
     assert.equal(result.pluginId, id)
     const list = await jsonCommand(ctx, ['plugin', 'list', '--marketplace', ctx.marketplaceName, '--json'])
     assert(!array(list.installed, 'Codex installed plugins').some(item => item.pluginId === id))
+    return { level: 'plugin-inventory', installed: false }
+  })
+  await ctx.observe('skill-removal', async () => {
     for (const cwd of [ctx.project, ctx.neutral]) assert.equal((await codexSkills(ctx, cwd)).length, 0)
-    return { level: 'skill-discovery', installed: false, present: false }
+    return { level: 'skill-discovery', present: false }
   })
 }
 
@@ -144,34 +154,54 @@ function assertPiSkill(ctx, skills, revision) {
   return { level: 'skill-discovery', name: skill.name, description: skill.description, scope: skill.sourceInfo.scope }
 }
 
+async function piInventory(ctx) {
+  const result = await ctx.command(['list', '--approve'])
+  assert(result.stdout.includes(ctx.scope === 'project' ? 'Project packages:' : 'User packages:'))
+  assert(result.stdout.includes(ctx.bundle), 'Pi list must include the local fixture source.')
+  return { level: 'package-inventory', scope: ctx.scope }
+}
+
+async function piScope(ctx, cwd, present) {
+  const skills = await piSkills(ctx, cwd)
+  if (!present) {
+    assert.equal(skills.length, 0, 'A project Pi Skill must not be discovered in neutral cwd.')
+    return { level: 'activation-inventory', present: false }
+  }
+  const skill = one(skills, item => item.source === 'skill', 'Pi scope Skill')
+  assert.equal(skill.sourceInfo.scope, ctx.scope)
+  assert.equal(skill.sourceInfo.origin, 'package')
+  samePath(skill.sourceInfo.baseDir, ctx.bundle, 'Pi package source')
+  return { level: 'activation-inventory', scope: skill.sourceInfo.scope, present: true }
+}
+
 async function qualifyPi(ctx) {
   const flags = ctx.scope === 'project' ? ['--local', '--approve'] : []
   await ctx.check('install', async () => {
     await ctx.command(['install', ctx.bundle, ...flags])
-    const result = await ctx.command(['list', '--approve'])
-    assert(result.stdout.includes(ctx.scope === 'project' ? 'Project packages:' : 'User packages:'))
-    assert(result.stdout.includes(ctx.bundle), 'Pi list must include the local fixture source.')
-    return { level: 'package-inventory', scope: ctx.scope }
+    return piInventory(ctx)
   })
-  await ctx.check('skill-discovery', async () => assertPiSkill(ctx, await piSkills(ctx, ctx.project), 1))
-  await ctx.check('neutral-scope', async () => {
-    const skills = await piSkills(ctx, ctx.neutral)
-    if (ctx.scope === 'user') return assertPiSkill(ctx, skills, 1)
-    assert.equal(skills.length, 0, 'A project Pi Skill must not be discovered in neutral cwd.')
-    return { level: 'skill-discovery', present: false }
-  })
+  await ctx.observe('skill-discovery', async () => assertPiSkill(ctx, await piSkills(ctx, ctx.project), 1))
+  await ctx.check('target-scope', async () => piScope(ctx, ctx.project, true))
+  await ctx.check('neutral-scope', async () => piScope(ctx, ctx.neutral, ctx.scope === 'user'))
   await ctx.render(2)
   await ctx.check('refresh', async () => {
     // An exact source updates a package. Bare `pi update` updates Pi itself.
     await ctx.command(['update', ctx.bundle, '--approve'])
-    return assertPiSkill(ctx, await piSkills(ctx, ctx.project), 2)
+    const inventory = await piInventory(ctx)
+    await piScope(ctx, ctx.project, true)
+    await piScope(ctx, ctx.neutral, ctx.scope === 'user')
+    return inventory
   })
+  await ctx.observe('skill-refresh', async () => assertPiSkill(ctx, await piSkills(ctx, ctx.project), 2))
   await ctx.check('remove', async () => {
     await ctx.command(['remove', ctx.bundle, ...flags])
     const list = await ctx.command(['list', '--approve'])
     assert(!list.stdout.includes(ctx.bundle), 'Pi remove must clear the local package registration.')
+    return { level: 'package-inventory', installed: false }
+  })
+  await ctx.observe('skill-removal', async () => {
     for (const cwd of [ctx.project, ctx.neutral]) assert.equal((await piSkills(ctx, cwd)).length, 0)
-    return { level: 'skill-discovery', installed: false, present: false }
+    return { level: 'skill-discovery', present: false }
   })
 }
 
@@ -208,7 +238,7 @@ async function qualifyClaude(ctx) {
     assert.equal(result.scope, scope)
     return claudeInventory(ctx, ctx.project, 1, true)
   })
-  await ctx.check('component-inventory', async () => claudeDetails(ctx, 1))
+  await ctx.observe('component-inventory', async () => claudeDetails(ctx, 1))
   await ctx.check('neutral-scope', async () => claudeInventory(ctx, ctx.neutral, 1, ctx.scope === 'user'))
   await ctx.render(2)
   await ctx.check('refresh', async () => {
@@ -218,9 +248,11 @@ async function qualifyClaude(ctx) {
     assert.equal(result.updateOutcome, 'updated')
     assert.equal(result.oldVersion, version(1))
     assert.equal(result.newVersion, version(2))
-    await claudeInventory(ctx, ctx.project, 2, true)
-    return claudeDetails(ctx, 2)
+    const inventory = await claudeInventory(ctx, ctx.project, 2, true)
+    await claudeInventory(ctx, ctx.neutral, 2, ctx.scope === 'user')
+    return inventory
   })
+  await ctx.observe('component-refresh', async () => claudeDetails(ctx, 2))
   await ctx.check('remove', async () => {
     const result = await jsonCommand(ctx, ['plugin', 'uninstall', id, '--scope', scope, '--json'])
     assert.equal(result.outcome, 'ok')
@@ -229,6 +261,9 @@ async function qualifyClaude(ctx) {
       const list = array(await jsonCommand(ctx, ['plugin', 'list', '--json'], cwd), 'Claude plugins')
       assert(!list.some(item => item.id === id))
     }
+    return { level: 'activation-inventory', installed: false }
+  })
+  await ctx.observe('component-removal', async () => {
     const details = await ctx.command(['plugin', 'details', id], ctx.project, { allowFailure: true })
     assert.notEqual(details.exitCode, 0)
     assert((details.stdout + details.stderr).includes('not found'), 'Claude details must report the removed plugin absent.')
@@ -241,10 +276,22 @@ function output(result) {
   return `${result.stdout}\n${result.stderr}`
 }
 
-async function geminiInventory(ctx, cwd, revision) {
+async function geminiInventory(ctx, cwd, revision, enabled = true) {
   const text = output(await ctx.command(['extensions', 'list'], cwd))
-  assert.match(text, new RegExp(`^[✓✗] ${escapeRegExp(ctx.pluginName)} \\(${escapeRegExp(version(revision))}\\)\\r?$`, 'mu'))
-  return { level: 'extension-inventory', name: ctx.pluginName, version: version(revision) }
+  const header = new RegExp(`^([✓✗]) ${escapeRegExp(ctx.pluginName)} \\(${escapeRegExp(version(revision))}\\)\\r?$`, 'mu')
+  const match = header.exec(text)
+  assert(match, 'Gemini must list the current fixture version.')
+  const block = text.slice(match.index + match[0].length).split(/^[✓✗] /mu)[0]
+  const user = /^ Enabled \(User\): (true|false)\r?$/mu.exec(block)
+  const workspace = /^ Enabled \(Workspace\): (true|false)\r?$/mu.exec(block)
+  assert(user && workspace, 'Gemini must report effective User and Workspace activation.')
+  assert.equal(user[1], ctx.scope === 'user' ? 'true' : 'false')
+  assert.equal(workspace[1], String(enabled))
+  assert.equal(match[1], enabled ? '✓' : '✗')
+  const source = /^ Source: (.+) \(Type: local\)\r?$/mu.exec(block)
+  assert(source, 'Gemini must identify its local source.')
+  samePath(source[1], ctx.bundle, 'Gemini extension source')
+  return { level: 'activation-inventory', name: ctx.pluginName, version: version(revision), enabled }
 }
 
 async function geminiSkills(ctx, cwd, revision, present) {
@@ -284,32 +331,34 @@ async function qualifyGemini(ctx) {
     await writeFixture(ctx, filename, `${JSON.stringify(config, null, 2)}\n`)
     return { level: 'fixture-native-extension-enablement', name: ctx.pluginName, before, overrides: [...overrides] }
   })
-  await ctx.check('skill-discovery', async () => geminiSkills(ctx, ctx.project, 1, true))
+  await ctx.observe('skill-discovery', async () => geminiSkills(ctx, ctx.project, 1, true))
+  await ctx.check('target-scope', async () => geminiInventory(ctx, ctx.project, 1, true))
   await ctx.check('neutral-scope', async () => {
     // Keep neutral outside GEMINI_CLI_HOME: 0.67.0 leaked project activation there.
     const relative = path.relative(ctx.env.GEMINI_CLI_HOME, ctx.neutral)
     assert(relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative),
       'Gemini neutral cwd must be outside its effective home to test the known scope leak.')
-    await geminiInventory(ctx, ctx.neutral, 1)
-    return geminiSkills(ctx, ctx.neutral, 1, ctx.scope === 'user')
+    return geminiInventory(ctx, ctx.neutral, 1, ctx.scope === 'user')
   })
   await ctx.render(2)
   await ctx.check('refresh', async () => {
     await ctx.command(['extensions', 'update', ctx.pluginName], ctx.project, { input: 'y\n' })
-    await geminiInventory(ctx, ctx.project, 2)
-    const discovery = await geminiSkills(ctx, ctx.project, 2, true)
-    await geminiInventory(ctx, ctx.neutral, 2)
-    await geminiSkills(ctx, ctx.neutral, 2, ctx.scope === 'user')
-    return discovery
+    const inventory = await geminiInventory(ctx, ctx.project, 2, true)
+    await geminiInventory(ctx, ctx.neutral, 2, ctx.scope === 'user')
+    return inventory
   })
+  await ctx.observe('skill-refresh', async () => geminiSkills(ctx, ctx.project, 2, true))
   await ctx.check('remove', async () => {
     await ctx.command(['extensions', 'uninstall', ctx.pluginName])
     for (const cwd of [ctx.project, ctx.neutral]) {
       const inventory = output(await ctx.command(['extensions', 'list'], cwd))
       assert(!new RegExp(`^[✓✗] ${escapeRegExp(ctx.pluginName)} \\(`, 'mu').test(inventory))
-      await geminiSkills(ctx, cwd, 2, false)
     }
-    return { level: 'skill-discovery', installed: false, present: false }
+    return { level: 'extension-inventory', installed: false }
+  })
+  await ctx.observe('skill-removal', async () => {
+    for (const cwd of [ctx.project, ctx.neutral]) await geminiSkills(ctx, cwd, 2, false)
+    return { level: 'skill-discovery', present: false }
   })
 }
 
@@ -317,13 +366,15 @@ async function grokInspect(ctx, cwd = ctx.project) {
   const result = await jsonCommand(ctx, ['inspect', '--json'], cwd)
   return {
     plugins: array(result.plugins, 'Grok plugins').filter(item => item.name === ctx.pluginName),
-    skills: array(result.skills, 'Grok skills').filter(item => item.name === ctx.skillName && item.source?.plugin_name === ctx.pluginName),
+    projectTrusted: result.projectTrusted,
+    skills: result.skills,
   }
 }
 
 function assertGrokSkill(ctx, observation, revision) {
   one(observation.plugins, item => item.scope === ctx.scope, 'Grok fixture plugin')
-  const skill = one(observation.skills, item => item.source?.type === 'plugin', 'Grok fixture Skill')
+  const skill = one(array(observation.skills, 'Grok skills'), item => item.name === ctx.skillName
+    && item.source?.plugin_name === ctx.pluginName && item.source?.type === 'plugin', 'Grok fixture Skill')
   assert.equal(skill.description, description(revision), 'Grok must discover the new local-source Skill revision.')
   return { level: 'skill-discovery', name: skill.name, description: skill.description, scope: ctx.scope }
 }
@@ -344,39 +395,87 @@ async function grokInventory(ctx, revision) {
   return { level: 'plugin-inventory', name: item.name, version: item.version }
 }
 
+async function grokScope(ctx, cwd) {
+  const observation = await grokInspect(ctx, cwd)
+  const plugin = one(observation.plugins, item => item.scope === ctx.scope, 'Grok scope plugin')
+  assert.equal(plugin.enabled, true, 'Grok must report the fixture enabled in this scope.')
+  return { level: 'activation-inventory', name: plugin.name, scope: plugin.scope, enabled: plugin.enabled }
+}
+
 async function qualifyGrok(ctx) {
   if (ctx.scope === 'project') {
     const directory = fixturePath(ctx, path.join(ctx.project, '.grok', 'plugins', ctx.pluginName))
-    await ctx.check('project-directory-inventory', async () => {
+    const projectInventory = async revision => {
+      const result = await grokInspect(ctx, ctx.project)
+      assert.equal(result.projectTrusted, true, 'Grok must report this isolated project trusted.')
+      assert.equal(result.plugins.length, 1, 'Grok must identify only the fixture plugin with this name.')
+      const plugin = one(result.plugins, item => item.scope === 'project', 'Grok project fixture')
+      assert.equal(plugin.enabled, true, 'Grok must report the project fixture enabled.')
+      samePath(plugin.path, directory, 'Grok project plugin path')
+      for (const relative of ['.grok-plugin/plugin.json', `skills/${ctx.skillName}/SKILL.md`]) {
+        assert.equal(await readFile(path.join(plugin.path, relative), 'utf8'), await readFile(path.join(ctx.bundle, relative), 'utf8'),
+          'Grok project discovery must point to the current installed source bytes.')
+      }
+      const manifest = JSON.parse(await readFile(path.join(plugin.path, '.grok-plugin', 'plugin.json'), 'utf8'))
+      assert.equal(manifest.version, version(revision))
+      return { level: 'activation-inventory', scope: plugin.scope, enabled: plugin.enabled,
+        projectTrusted: result.projectTrusted, version: manifest.version, installedContent: 'matches-current-bundle' }
+    }
+    const neutralInventory = async () => {
+      const result = await grokInspect(ctx, ctx.neutral)
+      assert.equal(result.plugins.length, 0, 'The project fixture must not be active in neutral cwd.')
+      return { level: 'activation-inventory', present: false }
+    }
+    await ctx.check('fixture-project-trust', async () => {
+      const canonical = fixturePath(ctx, await realpath(ctx.project))
+      const home = fixturePath(ctx, await realpath(ctx.env.GROK_HOME))
+      // Empirical 1.0.77 state from an isolated probe, not a public trust command
+      // or permission for production code to trust user projects automatically.
+      await writeFixture(ctx, path.join(home, 'trusted_folders.toml'),
+        `[folders.${JSON.stringify(canonical)}]\ntrusted = true\ndecided_at = ${Math.floor(Date.now() / 1000)}\n`)
+      return { level: 'fixture-config', interface: 'empirical-isolated-folder-trust-state',
+        exactVersion: '1.0.77', project: 'exact-canonical-fixture-project', productionAutomaticTrust: false }
+    })
+    await ctx.check('install', async () => {
       await mkdir(path.dirname(directory), { recursive: true })
       await cp(ctx.bundle, directory, { recursive: true, errorOnExist: true, force: false })
-      const result = await grokInspect(ctx)
-      const plugin = one(result.plugins, item => item.scope === 'project', 'Grok project fixture')
-      samePath(plugin.path, directory, 'Grok project plugin path')
-      return { level: 'plugin-inventory', scope: plugin.scope, enabled: plugin.enabled, skillPresent: result.skills.length > 0 }
+      return projectInventory(1)
     })
-    await ctx.check('neutral-scope', async () => {
-      const result = await grokInspect(ctx, ctx.neutral)
-      assert.equal(result.plugins.length, 0)
-      assert.equal(result.skills.length, 0)
-      return { level: 'plugin-inventory', present: false }
+    await ctx.check('neutral-scope', neutralInventory)
+    await ctx.observe('skill-discovery', async () => assertGrokSkill(ctx, await grokInspect(ctx), 1))
+    await ctx.render(2)
+    await ctx.check('refresh', async () => {
+      // This directory was created exclusively by this fixture's install above.
+      await cp(ctx.bundle, directory, { recursive: true })
+      const inventory = await projectInventory(2)
+      await neutralInventory()
+      return inventory
     })
-    await ctx.check('remove-project-directory', async () => {
+    await ctx.observe('skill-refresh', async () => assertGrokSkill(ctx, await grokInspect(ctx), 2))
+    await ctx.check('remove', async () => {
       await rm(directory, { recursive: true })
-      const result = await grokInspect(ctx)
-      assert.equal(result.plugins.length, 0)
-      assert.equal(result.skills.length, 0)
+      for (const cwd of [ctx.project, ctx.neutral]) {
+        const result = await grokInspect(ctx, cwd)
+        assert.equal(result.plugins.length, 0, 'Grok must no longer list the removed project fixture.')
+      }
       return { level: 'plugin-inventory', installed: false, present: false }
     })
-    await ctx.defer('Grok project directory discovery is observed. No verified noninteractive public project enable/trust interface is available; project Skill loading and refresh remain unverified.')
+    await ctx.observe('skill-removal', async () => {
+      for (const cwd of [ctx.project, ctx.neutral]) {
+        const result = await grokInspect(ctx, cwd)
+        assert(!array(result.skills, 'Grok skills').some(item => item.name === ctx.skillName && item.source?.plugin_name === ctx.pluginName))
+      }
+      return { level: 'skill-discovery', present: false }
+    })
     return
   }
   await ctx.check('install', async () => {
     await ctx.command(['plugin', 'install', ctx.bundle, '--trust'])
     return grokInventory(ctx, 1)
   })
-  await ctx.check('skill-discovery', async () => assertGrokSkill(ctx, await grokInspect(ctx), 1))
-  await ctx.check('neutral-scope', async () => assertGrokSkill(ctx, await grokInspect(ctx, ctx.neutral), 1))
+  await ctx.observe('skill-discovery', async () => assertGrokSkill(ctx, await grokInspect(ctx), 1))
+  await ctx.check('target-scope', async () => grokScope(ctx, ctx.project))
+  await ctx.check('neutral-scope', async () => grokScope(ctx, ctx.neutral))
   await ctx.render(2)
   await ctx.check('refresh', async () => {
     const before = array(await jsonCommand(ctx, ['plugin', 'list', '--json']), 'Grok plugin list')
@@ -388,12 +487,12 @@ async function qualifyGrok(ctx) {
     const removed = array(await jsonCommand(ctx, ['plugin', 'list', '--json']), 'Grok plugin list')
     assert(!removed.some(item => item.name === ctx.pluginName), 'Grok uninstall must clear the old registration before reinstall.')
     await ctx.command(['plugin', 'install', ctx.bundle, '--trust'])
-    await grokInventory(ctx, 2)
-    const observation = await grokInspect(ctx)
-    const skill = assertGrokSkill(ctx, observation, 2)
-    assertGrokSkill(ctx, await grokInspect(ctx, ctx.neutral), 2)
-    return { ...skill, registryVersion: version(2), strategy: 'native-uninstall-install' }
+    const inventory = await grokInventory(ctx, 2)
+    await grokScope(ctx, ctx.project)
+    await grokScope(ctx, ctx.neutral)
+    return { ...inventory, strategy: 'native-uninstall-install' }
   })
+  await ctx.observe('skill-refresh', async () => assertGrokSkill(ctx, await grokInspect(ctx), 2))
   await ctx.check('remove', async () => {
     await ctx.command(['plugin', 'uninstall', ctx.pluginName, '--confirm'])
     const list = array(await jsonCommand(ctx, ['plugin', 'list', '--json']), 'Grok plugin list')
@@ -401,9 +500,15 @@ async function qualifyGrok(ctx) {
     for (const cwd of [ctx.project, ctx.neutral]) {
       const result = await grokInspect(ctx, cwd)
       assert.equal(result.plugins.length, 0)
-      assert.equal(result.skills.length, 0)
     }
-    return { level: 'skill-discovery', installed: false, present: false }
+    return { level: 'plugin-inventory', installed: false }
+  })
+  await ctx.observe('skill-removal', async () => {
+    for (const cwd of [ctx.project, ctx.neutral]) {
+      const result = await grokInspect(ctx, cwd)
+      assert(!array(result.skills, 'Grok skills').some(item => item.name === ctx.skillName && item.source?.plugin_name === ctx.pluginName))
+    }
+    return { level: 'skill-discovery', present: false }
   })
 }
 
@@ -450,16 +555,18 @@ async function qualifyCopilot(ctx) {
     }
     return copilotInventory(ctx, ctx.project, 1, true)
   })
-  await ctx.check('skill-discovery', async () => copilotSkills(ctx, ctx.project, 1, true))
+  await ctx.observe('skill-discovery', async () => copilotSkills(ctx, ctx.project, 1, true))
   await ctx.check('neutral-scope', async () => {
-    await copilotInventory(ctx, ctx.neutral, 1, ctx.scope === 'user')
-    return copilotSkills(ctx, ctx.neutral, 1, ctx.scope === 'user')
+    return copilotInventory(ctx, ctx.neutral, 1, ctx.scope === 'user')
   })
   await ctx.render(2)
   await ctx.check('refresh', async () => {
-    // Directory marketplace sources load live. A fresh public command must see new bytes.
-    return copilotSkills(ctx, ctx.project, 2, true)
+    // Directory marketplace sources load live; a fresh inventory must see the new version.
+    const inventory = await copilotInventory(ctx, ctx.project, 2, true)
+    await copilotInventory(ctx, ctx.neutral, 2, ctx.scope === 'user')
+    return inventory
   })
+  await ctx.observe('skill-refresh', async () => copilotSkills(ctx, ctx.project, 2, true))
   await ctx.check('remove', async () => {
     if (ctx.scope === 'project') {
       await writeFixture(ctx, path.join(ctx.project, '.github', 'copilot', 'settings.local.json'),
@@ -467,16 +574,18 @@ async function qualifyCopilot(ctx) {
     }
     await ctx.command(['plugin', 'uninstall', nativeName])
     const disabled = await copilotInventory(ctx, ctx.project, 2, false)
-    await copilotSkills(ctx, ctx.project, 2, false)
     // A live directory source remains discoverable after uninstall disables it.
     // This marketplace belongs only to this isolated fixture, so remove it too.
     await ctx.command(['plugin', 'marketplace', 'remove', ctx.marketplaceName, '--force'])
     for (const cwd of [ctx.project, ctx.neutral]) {
       const list = array(await jsonCommand(ctx, ['plugin', 'list', '--json'], cwd), 'Copilot plugins')
       assert(!list.some(item => item.name === ctx.pluginName && item.marketplace === ctx.marketplaceName))
-      assert.equal((await copilotSkills(ctx, cwd, 2, false)).present, false, 'Copilot must not discover the removed fixture Skill.')
     }
-    return { level: 'skill-discovery', nativeUninstall: disabled, marketplaceRemoved: true, installed: false, enabled: false }
+    return { level: 'activation-inventory', nativeUninstall: disabled, marketplaceRemoved: true, installed: false, enabled: false }
+  })
+  await ctx.observe('skill-removal', async () => {
+    for (const cwd of [ctx.project, ctx.neutral]) await copilotSkills(ctx, cwd, 2, false)
+    return { level: 'skill-discovery', present: false }
   })
 }
 

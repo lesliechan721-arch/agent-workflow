@@ -5,6 +5,7 @@ import { constants } from 'node:fs';
 import { clients, sha256 } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
 import { readGeminiSkills } from './native-platform-gemini-skills.mjs';
+import { publicFixtureVersion, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 
 // One fixed Node child, using AW's real default native backend and the same
 // isolated cwd/env as Pi. This observes path spelling without granting trust.
@@ -92,7 +93,7 @@ async function readGrokSkills(ctx, cwd, revision, present) {
     assert.deepEqual(manifestBytes, await fs.readFile(path.join(ctx.grokPublicSource, '.grok-plugin/plugin.json')));
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
     assert.equal(manifest.name, ctx.pluginName);
-    assert.equal(manifest.version, `0.1.${revision - 1}`);
+    assert.equal(manifest.version, publicFixtureVersion(revision));
     const expectedSkill = await fs.readFile(ctx.publicSkillFile);
     assert.deepEqual(await fs.readFile(path.join(ctx.grokPublicSource, 'skills', ctx.skillName, 'SKILL.md')), expectedSkill);
     assert.deepEqual(await fs.readFile(installedSkill), expectedSkill, 'Grok must load the current Skill body bytes.');
@@ -102,6 +103,7 @@ async function readGrokSkills(ctx, cwd, revision, present) {
 }
 
 export async function readSkills(ctx, cwd, revision, present, { requireAbsent = false } = {}) {
+  if (ctx.platform === 'claude') await ctx.defer('claude-skill-discovery-interface-unverified');
   if (ctx.platform === 'grok') return readGrokSkills(ctx, cwd, revision, present);
   if (ctx.platform === 'gemini') {
     const result = await readGeminiSkills(ctx, cwd, `AW public acceptance revision ${revision}`, present);
@@ -235,8 +237,35 @@ async function grokStatusFiles(ctx) {
   })]));
 }
 
+export async function writePublicFixtureRevision(ctx, plugin, revision) {
+  const manifestPath = path.join(plugin, '.agents-plugin', 'plugin.json');
+  const skillPath = path.join(plugin, 'skills', ctx.skillName);
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    manifest.platforms = [ctx.platform]; manifest.skills = './skills'; manifest.version = publicFixtureVersion(revision);
+    ctx.publicSkillFile = revision === 3 ? path.join(ctx.root, 'expected-dynamic-SKILL.md') : path.join(skillPath, 'SKILL.md');
+    if (revision === 3) await fs.rm(path.join(plugin, 'skills'), { recursive: true, force: true });
+    else await fs.mkdir(skillPath, { recursive: true });
+    const body = `---\nname: ${ctx.skillName}\ndescription: AW public acceptance revision ${revision}\n---\nThis is an installation fixture. No model request is required.\nFixture body revision ${revision}.\n`;
+    await fs.writeFile(ctx.publicSkillFile, body);
+    if (revision !== 3) await fs.writeFile(path.join(skillPath, 'README.md'), '# Public acceptance fixture\n\nTests installation and discovery without a model request.\n');
+    if (revision === 3) {
+      // Keep the plugin version fixed while switching the same component to an
+      // actual renderer. Only bytes at the client's consumption path prove refresh.
+      delete manifest.skills;
+      manifest.artifacts = { configKeys: [] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
+      const plan = { version: 3, components: [{ id: `skill:${ctx.skillName}`, kind: 'skill', name: ctx.skillName,
+        content: { files: { 'SKILL.md': { text: body },
+          'README.md': { text: '# Public acceptance fixture\n\nTests generated content without a model request.\n' } } } }], omitted: [], unmet: [] };
+      await fs.mkdir(path.join(plugin, 'scripts'), { recursive: true });
+      await fs.writeFile(path.join(plugin, 'scripts', 'render.mjs'),
+        `import fs from 'node:fs';\nconst context=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));\nconst plan=${JSON.stringify(plan)};\nif(!context.allowedOutputKinds.includes('skill'))plan.components=[];\nconsole.log(JSON.stringify(plan));\n`);
+    }
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+}
+
 export async function qualifyPublicAw(ctx) {
-  if (!['codex', 'pi', 'grok', 'copilot', 'gemini'].includes(ctx.platform)) await ctx.defer('public-aw-read-only-skill-observer-not-implemented');
+  if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
   if (ctx.platform === 'gemini' && ctx.scope !== 'user') await ctx.defer('public-aw-gemini-project-skill-unverified');
   if (ctx.platform === 'grok' && ctx.scope !== 'user') await ctx.defer('public-aw-grok-project-skill-unverified');
   const expectedEntry = await preparePublicClientPath(ctx);
@@ -264,17 +293,7 @@ export async function qualifyPublicAw(ctx) {
   const workspace = path.join(ctx.root, 'workspace');
   await fs.mkdir(workspace);
   const plugin = path.join(workspace, 'plugins', ctx.pluginName);
-  const manifestPath = path.join(plugin, '.agents-plugin', 'plugin.json');
-  const skillPath = path.join(plugin, 'skills', ctx.skillName);
-  if (ctx.platform === 'grok') ctx.publicSkillFile = path.join(skillPath, 'SKILL.md');
-  const writeRevision = async (revision) => {
-    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-    manifest.platforms = [ctx.platform]; manifest.skills = './skills'; manifest.version = `0.1.${revision - 1}`;
-    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
-    await fs.mkdir(skillPath, { recursive: true });
-    await fs.writeFile(path.join(skillPath, 'SKILL.md'), `---\nname: ${ctx.skillName}\ndescription: AW public acceptance revision ${revision}\n---\nThis is an installation fixture. No model request is required.\n${ctx.platform === 'grok' ? `Fixture body revision ${revision}.\n` : ''}`);
-    await fs.writeFile(path.join(skillPath, 'README.md'), '# Public acceptance fixture\n\nTests installation and discovery without a model request.\n');
-  };
+  const writeRevision = revision => writePublicFixtureRevision(ctx, plugin, revision);
   await ctx.check('public-authoring-and-source', async () => {
     await ctx.aw(['dev', 'catalog', 'create', '--workspace-root', workspace, '--owner-url', 'https://example.com/qualification'], workspace);
     await ctx.aw(['dev', 'plugin', 'create', ctx.pluginName, '--description', 'Public Native acceptance fixture.', '--no-skills', '--workspace-root', workspace], workspace);
@@ -333,8 +352,13 @@ export async function qualifyPublicAw(ctx) {
       : await ctx.aw(['plugin', 'install', pluginId, '--scope', ctx.scope, '--target', ctx.platform, '--yes']);
     return { command: result.command, status: result.status };
   });
-  await ctx.check('public-install-skill-discovery', () => readSkills(ctx, ctx.project, 1, true));
-  await ctx.check('public-install-neutral-scope', () => readSkills(ctx, ctx.neutral, 1, ctx.scope === 'user'));
+  const nativeScope = async (revision, absent = false) => ({
+    target: await readPublicNativeState(ctx, ctx.project, revision, { active: !absent, absent }),
+    neutral: await readPublicNativeState(ctx, ctx.neutral, revision, { active: !absent && ctx.scope === 'user', absent }),
+  });
+  await ctx.check('public-install-native-scope', () => nativeScope(1));
+  await ctx.observe('public-install-skill-discovery', () => readSkills(ctx, ctx.project, 1, true));
+  await ctx.observe('public-install-neutral-skill-observation', () => readSkills(ctx, ctx.neutral, 1, ctx.scope === 'user'));
   await ctx.check('public-update', async () => {
     await writeRevision(2);
     await ctx.aw(['dev', 'catalog', 'version', '--bump', 'patch', '--workspace-root', workspace], workspace);
@@ -343,8 +367,23 @@ export async function qualifyPublicAw(ctx) {
     const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes']);
     return { command: result.command, status: result.status };
   });
-  await ctx.check('public-update-skill-discovery', () => readSkills(ctx, ctx.project, 2, true));
-  await ctx.check('public-update-neutral-scope', () => readSkills(ctx, ctx.neutral, 2, ctx.scope === 'user'));
+  await ctx.check('public-update-native-scope', () => nativeScope(2));
+  await ctx.observe('public-update-skill-discovery', () => readSkills(ctx, ctx.project, 2, true));
+  await ctx.observe('public-update-neutral-skill-observation', () => readSkills(ctx, ctx.neutral, 2, ctx.scope === 'user'));
+  await ctx.check('public-dynamic-same-version-update', async () => {
+    await writeRevision(3);
+    await ctx.aw(['dev', 'catalog', 'version', '--bump', 'patch', '--workspace-root', workspace], workspace);
+    await ctx.aw(['dev', 'catalog', 'build', '--workspace-root', workspace, '--force', '--yes'], workspace);
+    await ctx.aw(['source', 'sync', 'qualification', '--yes']);
+    const result = await ctx.aw(['plugin', 'sync', pluginId, '--target', ctx.platform, '--yes']);
+    return { command: result.command, status: result.status, version: publicFixtureVersion(3), revision: 3, samePluginVersion: true };
+  });
+  await ctx.check('public-dynamic-native-scope', () => nativeScope(3));
+  await ctx.check('public-dynamic-consumer-content', async () => ({
+    target: await readDynamicConsumerContent(ctx, ctx.project, 3),
+    ...(ctx.scope === 'user' ? { neutral: await readDynamicConsumerContent(ctx, ctx.neutral, 3) } : {}),
+  }));
+  await ctx.observe('public-dynamic-skill-observation', () => readSkills(ctx, ctx.project, 3, true));
   await ctx.check('public-status', async () => {
     const observeNative = ctx.platform === 'codex' && ctx.scope === 'project';
     const before = ctx.platform === 'grok' ? await grokStatusFiles(ctx) : undefined;
@@ -383,8 +422,9 @@ export async function qualifyPublicAw(ctx) {
     if (ctx.platform === 'grok') await assert.rejects(fs.stat(ctx.grokPublicSource), { code: 'ENOENT' });
     return { command: result.command, status: result.status };
   });
-  await ctx.check('public-remove-skill-discovery', async () => {
-    await readSkills(ctx, ctx.project, 2, false, { requireAbsent: true });
-    return readSkills(ctx, ctx.neutral, 2, false, { requireAbsent: true });
+  await ctx.check('public-remove-native-scope', () => nativeScope(3, true));
+  await ctx.observe('public-remove-skill-discovery', async () => {
+    await readSkills(ctx, ctx.project, 3, false, { requireAbsent: true });
+    return readSkills(ctx, ctx.neutral, 3, false, { requireAbsent: true });
   });
 }
