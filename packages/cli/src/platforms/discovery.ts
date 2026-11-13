@@ -73,6 +73,7 @@ const cliProfiles = {
   grok: { names: ['grok'], identity: /\bgrok\b/iu, packageName: '@xai-official/grok' },
 } as const;
 const MAX_PROBE_OUTPUT_BYTES = 1024 * 1024;
+const GEMINI_NPM_VERSION_PROBE_TIMEOUT_MS = 10_000;
 
 function diagnostic(platform: PlatformTarget, code: string, message: string): Diagnostic {
   return { code, severity: 'warning', message, subject: { target: platform } };
@@ -129,10 +130,10 @@ export function resolvePlatformConfigRoot(platform: PlatformTarget, ctx: ReadCon
   }
   return path.join(home, platform === 'antigravity' ? '.gemini/config' : `.${platform}`);
 }
-async function probe(ctx: ReadContext, command: string, args: string[]): Promise<string> {
+async function probe(ctx: ReadContext, command: string, args: string[], timeoutMs = DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS): Promise<string> {
   ctx.signal?.throwIfAborted();
   const result = await runNativeCli({ command, args, cwd: ctx.cwd, env: ctx.env,
-    signal: ctx.signal, timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, ctx.runner);
+    signal: ctx.signal, timeoutMs }, ctx.runner);
   if (result.exitCode !== 0 || Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > MAX_PROBE_OUTPUT_BYTES) {
     throw new Error('probeFailed');
   }
@@ -183,8 +184,8 @@ export async function installationInvocation(product: ProductInstallation, ctx: 
   return { command: executable, args, cwd: ctx.cwd, env: ctx.env, signal: ctx.signal };
 }
 
-/** Metadata identifies the same npm JS entry; the version still comes from this probe. */
-async function geminiNpmIdentity(ctx: ReadContext, invocation: NativeCliInvocation, versionOutput: string): Promise<boolean> {
+/** Metadata binds the declared version to this npm JS entry; discovery still probes it. */
+async function geminiNpmIdentity(ctx: ReadContext, invocation: NativeCliInvocation, versionOutput: string, requiredBin?: string): Promise<boolean> {
   const entry = invocation.command === process.execPath && invocation.args.length === 2
     && invocation.args[1] === '--version' ? invocation.args[0] : undefined;
   const version = versionOutput.trim();
@@ -205,6 +206,7 @@ async function geminiNpmIdentity(ctx: ReadContext, invocation: NativeCliInvocati
       if (typeof bin !== 'string' || path.isAbsolute(bin)) return false;
       const parts = bin.replace(/^\.\//u, '').split(/[/\\]/u);
       if (!parts.length || parts.some((part) => !part || part === '.' || part === '..')) return false;
+      if (requiredBin && parts.join('/') !== requiredBin) return false;
       return await containedFile(root, path.join(root, ...parts)) === actualEntry;
     }
   } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
@@ -222,7 +224,12 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
     const product = installation(platform, 'cli', entry, 'unknown', null, ['clientProbeFailed']);
     try {
       const invocation = await installationInvocation(product, ctx, ['--version']);
-      const versionOutput = await probe(ctx, invocation.command, invocation.args);
+      const directGeminiVersion = platform === 'gemini' && await geminiNpmIdentity(ctx, invocation, '0.67.0', 'bundle/gemini.js');
+      // Fixed 0.67.0 otherwise loads the CLI twice by relaunching Node. Keep
+      // this environment override local to its actual version probe.
+      const versionContext = directGeminiVersion ? { ...ctx, env: { ...(ctx.env ?? process.env), GEMINI_CLI_NO_RELAUNCH: 'true' } } : ctx;
+      const versionOutput = await probe(versionContext, invocation.command, invocation.args,
+        directGeminiVersion ? GEMINI_NPM_VERSION_PROBE_TIMEOUT_MS : DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
       if (!profile.identity.test(versionOutput)
         && !(platform === 'gemini' && await geminiNpmIdentity(ctx, invocation, versionOutput))) {
         const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);

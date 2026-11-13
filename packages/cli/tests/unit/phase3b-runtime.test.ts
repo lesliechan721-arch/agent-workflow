@@ -19,6 +19,8 @@ import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { prepareRetire, executeRetire } from '../../src/recovery/retirement.js';
 import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
+import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
+import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
@@ -29,7 +31,7 @@ import {
   reinstallWriteCommand as reinstallNativeWriteCommand,
   uninstallWriteCommand as uninstallNativeWriteCommand,
 } from '../../src/commands/write-commands.js';
-import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
+import { createNativeTestExecution, getNativeTestLayout } from '../helpers/native-execution-fixture.js';
 import { readIntentReferences } from '../../src/recovery/demand.js';
 import {
   createSkillOwnerMarkerContent,
@@ -1824,6 +1826,40 @@ describe('phase 3B namespaced runtime stores', () => {
     const after = await inventoryCatalogSourceReferences({ cwd, env: runtime.env, scope: 'project' });
     expect(ownCandidates(after).map((reference) => reference.scope)).toEqual(['user', 'project']);
     expect(ownCandidates(after).every((reference) => reference.recoveryCandidate!.binding.physicalKey === installedPlan.binding.physicalKey)).toBe(true);
+  });
+
+  // Test Value Gate: canonical User bytes authorize only the exact observed
+  // Project entry. Inheritance and unrelated or malformed rules grant no scope.
+  it('records Gemini Project recovery only for its exact explicit activation rule', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    await fs.ensureDir(path.join(cwd, '.git'));
+    const otherProject = path.join(cwd, 'other-project');
+    await fs.ensureDir(otherProject);
+    const native = await getNativeTestLayout({ platform: 'gemini', sourceId: 'team', pluginId: 'team/demo',
+      sourceIdentity: SOURCE_IDENTITY, cwd, env, scope: 'user' });
+    const component = deploymentPackageComponent(native.binding, native);
+    if (component.kind !== 'owned-directory') throw new Error('Expected a Gemini source package.');
+    await fs.ensureDir(component.path);
+    await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity });
+    const { home, file } = geminiExtensionPaths({ cwd, env });
+    const target = geminiScopePattern(cwd);
+    for (const [rules, expected] of [
+      [[], false], [['*'], false], [[geminiScopePattern(home)], false], [[geminiScopePattern(otherProject)], false],
+      [[target], true], [[`!${target}`], true],
+    ] as const) {
+      await fs.outputJson(file, { demo: { overrides: rules } });
+      const inventory = await inventoryCatalogSourceReferences({ cwd, env, scope: 'project' });
+      expect(inventory.errors).toEqual([]);
+      const references = inventory.references.filter((reference) => reference.sourceId === 'team'
+        && reference.pluginName === 'demo' && reference.platform === 'gemini' && reference.recoveryCandidate);
+      expect(references.map((reference) => reference.scope), JSON.stringify(rules)).toEqual(expected ? ['user', 'project'] : ['user']);
+      expect(references.every((reference) => reference.recoveryCandidate!.binding.physicalKey === native.binding.physicalKey)).toBe(true);
+    }
+    await fs.outputFile(file, '{invalid');
+    const malformed = await inventoryCatalogSourceReferences({ cwd, env, scope: 'project' });
+    expect(malformed.references.some((reference) => reference.platform === 'gemini' && reference.scope === 'project' && reference.recoveryCandidate)).toBe(false);
+    expect(malformed.errors).toContainEqual(expect.objectContaining({ kind: 'nativeProjectActivationRead' }));
   });
 
   it('repairs a damaged native package through reinstall while retaining its foreign sibling', async () => {

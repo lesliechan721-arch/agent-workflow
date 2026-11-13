@@ -34,6 +34,8 @@ import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import { getDeploymentLayout, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
 import { getPhysicalKey, identityDigest } from '../platforms/identity.js';
 import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
+import { assertGeminiProjectRules, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
+  readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
 import type { DeploymentBinding, InstallRoute, RecoveryCandidate } from '../platforms/contracts.js';
 import type { PlatformName, Scope } from '../types.js';
 
@@ -1179,6 +1181,17 @@ async function observedProjectReference(options: {
   if (binding.scope.kind !== 'project') return false;
   const projectRoot = binding.scope.projectRoot;
   const nativeId = layout.nativeIdentity.registrationId ?? layout.nativeIdentity.packageId;
+  if (binding.platform === 'gemini') {
+    return inventoryRead({ errors, env, cwd, location: geminiExtensionPaths({ cwd, env }).file,
+      kind: 'nativeProjectActivationRead', absent: false, operation: async () => {
+        const rules = geminiActivationRules(await readGeminiActivationSnapshot({ cwd, env }), nativeId);
+        await assertGeminiProjectRules({ cwd, env }, binding, rules);
+        const target = geminiScopePattern(projectRoot);
+        // A scope-local entry remains a reference when explicitly disabled.
+        // Global/HOME inheritance and other projects do not create this entry.
+        return rules.some((rule) => rule === target || rule === `!${target}`);
+      } });
+  }
   const settingsPath = binding.platform === 'codex' ? path.join(projectRoot, '.codex/config.toml')
     : binding.platform === 'claude' ? path.join(projectRoot, '.claude/settings.local.json')
       : binding.platform === 'copilot' ? path.join(projectRoot, '.github/copilot/settings.local.json') : undefined;

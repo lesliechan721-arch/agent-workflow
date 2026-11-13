@@ -453,6 +453,10 @@ describe('five namespaced write commands', () => {
 
   it('keeps a present user transitive dependency when installing its project consumer', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    const startedAt = Date.now();
+    const checkpoint = (phase: string) => {
+      if (process.platform === 'win32') console.info('AW_DEPENDENCY_PLACEMENT_TIMING', { phase, elapsedMs: Date.now() - startedAt });
+    };
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-dependency-keep-source');
     const configurePreApply = (manifest: PluginMeta['manifest']) => {
       manifest.platforms = ['codex'];
@@ -495,9 +499,11 @@ describe('five namespaced write commands', () => {
     const leafInstall = await installFixturePlugin(['team/leaf'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user', yes: true,
     }, runtime);
+    checkpoint('user-provider-installed');
     expect(leafInstall.overallState, JSON.stringify(leafInstall.rebuildResults)).toBe('succeeded');
     const leafStatus = await readRecoveryStatus({ cwd: isolation.layout.fixtureCwd, env: isolation.env,
       cliVersion: '1.0.0', context: 'user', targets: ['codex'], nativeCliRunner: runtime.nativeCliRunner });
+    checkpoint('user-provider-observed');
     expect(leafStatus.observedTargets, JSON.stringify(leafStatus)).toContainEqual(expect.objectContaining({
       pluginId: 'team/leaf', scope: 'user', observation: 'verified', content: 'satisfied', blockers: [],
     }));
@@ -515,6 +521,7 @@ describe('five namespaced write commands', () => {
     const installedReceipt = await runRecovery('install', ['team/root'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', scope: 'project', yes: true,
     }, runtime);
+    checkpoint('project-consumer-installed');
     expect(installedReceipt.ok, JSON.stringify(installedReceipt)).toBe(true);
     expect(installedReceipt.targetResults).toContainEqual(expect.objectContaining({
       pluginId: 'team/middle', scope: 'project', providerScope: 'project', observation: 'verified',
@@ -531,6 +538,7 @@ describe('five namespaced write commands', () => {
     })).toEqual([]);
     const installedStatus = await readRecoveryStatus({ cwd: isolation.layout.fixtureCwd, env: isolation.env,
       cliVersion: '1.0.0', targets: ['codex'], nativeCliRunner: runtime.nativeCliRunner });
+    checkpoint('project-consumer-observed');
     expect(installedStatus.allSatisfied, JSON.stringify(installedStatus)).toBe(true);
     expect(installedStatus.observedTargets).toEqual(expect.arrayContaining([
       expect.objectContaining({ pluginId: 'team/leaf', scope: 'user', relation: 'root',
@@ -547,6 +555,7 @@ describe('five namespaced write commands', () => {
       interactive: false,
     })));
     await controller.load();
+    checkpoint('tui-loaded');
     const issues = controller.listUserIssues();
     expect(issues).not.toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -563,6 +572,7 @@ describe('five namespaced write commands', () => {
     const repeated = await runRecovery('install', ['team/root'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', scope: 'project', yes: true,
     }, runtime);
+    checkpoint('repeated-install-completed');
     expect(repeated.ok, JSON.stringify(repeated)).toBe(true);
     await expect(fs.readFile(path.join(counterRoot, 'pre-apply-count-leaf-user.txt'), 'utf8'))
       .resolves.toBe('1');
@@ -580,7 +590,9 @@ describe('five namespaced write commands', () => {
       return index >= 0 && ['add', 'remove', 'enable', 'disable'].includes(invocation.args[index + 1] ?? '')
         && invocation.args[index + 2] === leafId;
     })).toEqual([]);
-  });
+    // This fixture includes five preApply processes, repeated status reads and TUI loading.
+    // Windows reached the former 15s test limit; product operation deadlines stay unchanged.
+  }, process.platform === 'win32' ? 30_000 : 15_000);
 
   it('keeps an absent project placement out of extension repair for a healthy user install', async () => {
     const isolation = getCurrentSourceTestIsolation();
