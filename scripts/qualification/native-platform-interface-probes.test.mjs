@@ -24,7 +24,7 @@ test('limits the approved agent observer to the fixed Hosted inventory query', (
   for (const other of [{ platform: 'darwin', arch: 'x64' }, { platform: 'linux', arch: 'arm64' }]) {
     assert.equal(usesAntigravityAgentObservation(['agents'], options, other, 'true'), false);
   }
-  assert.equal(usesAntigravityAgentObservation(['agents'], options, host, undefined), false);
+  assert.equal(usesAntigravityAgentObservation(['agents'], options, host, 'false'), false);
 });
 
 async function fixture(t) {
