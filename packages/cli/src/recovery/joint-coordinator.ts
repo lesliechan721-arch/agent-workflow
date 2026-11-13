@@ -561,11 +561,12 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       children.unshift(...cleanups);
     }
     // The first preview already seals every target in its native group. A lone
-    // Gemini ensure group has no later sibling contribution to refresh here.
+    // Gemini/Copilot ensure group has no later sibling contribution to refresh here.
     const onlyChild = children.length === 1 ? children[0] : undefined;
     const onlyGroup = onlyChild?.nativeGroups.length === 1 ? onlyChild.nativeGroups[0] : undefined;
-    const singleGeminiPreviewComplete = !plan.blockExecution && onlyChild !== undefined && !onlyChild.blockExecution
-      && onlyChild.command === 'sync' && onlyGroup?.platform === 'gemini' && onlyGroup.command === 'sync'
+    const singleNativePreviewComplete = !plan.blockExecution && onlyChild !== undefined && !onlyChild.blockExecution
+      && onlyChild.command === 'sync' && (onlyGroup?.platform === 'gemini' || onlyGroup?.platform === 'copilot')
+      && onlyGroup.command === 'sync'
       && onlyGroup.preview.operationPlan !== undefined
       && (onlyGroup.preview.operationPlan.deploymentPlans?.length ?? 0) > 0
       && onlyGroup.preview.operationPlan.deploymentPlans!.every((deployment) => deployment.operation === 'ensure')
@@ -575,7 +576,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       && onlyChild.portableResidues.length === 0;
     // Other scopes and groups can change shared descriptors, preApply actions
     // or retained packages. Refresh those previews before exposing Review.
-    if (!singleGeminiPreviewComplete) for (const child of children) await refreshRecoveryNativePreviews(child);
+    if (!singleNativePreviewComplete) for (const child of children) await refreshRecoveryNativePreviews(child);
     const preparedNativeTargets = children.flatMap((child) => child.receipt.targetResults)
       .filter((target) => target.delivery?.kind === 'native');
     const failedProviders = preparedNativeTargets.filter((target) => target.blockers.length > 0);
