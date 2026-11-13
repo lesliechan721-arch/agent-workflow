@@ -7,7 +7,25 @@ import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { downloadInterfaceArchive, extractInterfaceArchive, interfaceDistributions,
   parseInterfaceProbeArgs, probeClientInterfaces } from './native-platform-interface-probes.mjs';
-import { prepareEnvironment } from './native-platform-runtime.mjs';
+import { prepareEnvironment, usesAntigravityAgentObservation } from './native-platform-runtime.mjs';
+
+// Test Value Gate: the accepted inventory exception cannot escape its pinned
+// command, version, opt-in, Hosted environment, architecture, or platform.
+test('limits the approved agent observer to the fixed Hosted inventory query', () => {
+  const options = { nativeClient: 'antigravity', nativeClientVersion: '1.3.4', antigravityAgentObservation: true };
+  const host = { platform: 'linux', arch: 'x64' };
+  assert(usesAntigravityAgentObservation(['agents'], options, host, 'true'));
+  for (const args of [['--agent'], ['agents', '--help'], ['plugin', 'list', '--json']]) {
+    assert.equal(usesAntigravityAgentObservation(args, options, host, 'true'), false);
+  }
+  for (const patch of [{ nativeClient: 'cursor' }, { nativeClientVersion: '1.3.5' }, { antigravityAgentObservation: false }]) {
+    assert.equal(usesAntigravityAgentObservation(['agents'], { ...options, ...patch }, host, 'true'), false);
+  }
+  for (const other of [{ platform: 'darwin', arch: 'x64' }, { platform: 'linux', arch: 'arm64' }]) {
+    assert.equal(usesAntigravityAgentObservation(['agents'], options, other, 'true'), false);
+  }
+  assert.equal(usesAntigravityAgentObservation(['agents'], options, host, undefined), false);
+});
 
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-interface-probe-test-')));

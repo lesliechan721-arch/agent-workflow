@@ -116,3 +116,33 @@ test('reads raw native paths internally and redacts the completed management rep
   assert(!JSON.stringify(report).includes(ctx.root));
   assert.match(report.management.scopes[0].revisions[0].consumers[0].path, /<TEMP_ROOT>/u);
 });
+
+// Test Value Gate: the accepted independent-group observation must be recorded
+// without waiving timeout, cleanup, or strict management-command requirements.
+test('records the approved agents mode and retains its process failures', async t => {
+  for (const failed of [false, true]) await t.test(failed ? 'deadline remains failed' : 'inventory mode is disclosed', async sub => {
+    const ctx = await fixture(sub); const fake = await nativeFixture(ctx); let installs = 0;
+    const completed = stdout => ({ stdout, stderr: '', exitCode: 0, signal: null, timedOut: false,
+      cancelled: false, maxBufferExceeded: false, terminationReason: 'complete',
+      containmentMode: 'verified-observed', gradingEvidenceAccepted: true, descendantCleanupGuaranteed: false });
+    const report = await probeClientInterfaces('antigravity', { executable: '/fixed/antigravity', prefix: [] }, ctx,
+      async (launcher, args, options) => {
+        if (args[0] === '--version') return completed('1.3.4');
+        if (args[0] === '--help') return completed('Usage: antigravity [command]');
+        if (args.join(' ') === 'plugin --help') return completed('Usage: antigravity plugin <command>\n  list [--json]          List installed plugins\n');
+        const id = args[1] === 'install' ? `user-install-${++installs}`
+          : args[1] === 'uninstall' ? 'user-uninstall' : args.join('-');
+        const result = completed((await fake.command(id, args, options.cwd)).stdout);
+        if (args[0] !== 'agents') { assert.equal(options.antigravityAgentObservation, undefined); return result; }
+        assert.equal(options.antigravityAgentObservation, true); assert.equal(options.nativeClientVersion, '1.3.4');
+        assert.equal(options.timeoutMs, 30_000); assert.equal(options.stdin, '');
+        return { ...result, containmentMode: 'observed', gradingEvidenceAccepted: false,
+          ...(failed ? { timedOut: true, terminationReason: 'timeout' } : {}) };
+      }, { localManagement: true, antigravityAgentObservation: true });
+    const inventories = report.commands.filter(command => command.args[0] === 'agents');
+    assert(inventories.length > 0); assert(inventories.every(command => command.observation));
+    assert.equal(report.status, failed ? 'failed' : 'observed');
+    if (failed) assert.equal(report.processContract, 'failed');
+    else assert.match(report.processContract, /approved agents inventories observed/u);
+  });
+});

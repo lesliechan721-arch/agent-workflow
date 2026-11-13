@@ -144,15 +144,22 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     nativeQualification: 'unverified; interface observations do not qualify Native support' };
   let processFailed = false;
   async function command(id, args, cwd = context.project) {
+    const agentObservation = options.antigravityAgentObservation === true && platform === 'antigravity'
+      && report.commands[0]?.versionMatched === true && args.length === 1 && args[0] === 'agents';
     const record = { id, args, cwd, executable: launcher.executable, prefix: launcher.prefix,
-      stdin: 'EOF', timeoutMs: 30_000 };
+      stdin: 'EOF', timeoutMs: 30_000,
+      ...(agentObservation ? { observation: 'approved Antigravity 1.3.4 Linux x64 agents inventory only; not Provider grading or OS containment' } : {}) };
     let result;
     try {
       result = await runCommand(launcher, args, { cwd, env: context.env, stdin: '', timeoutMs: 30_000,
-        nativeClient: platform });
+        nativeClient: platform, ...(agentObservation ? { nativeClientVersion: report.version,
+          antigravityAgentObservation: true } : {}) });
       Object.assign(record, commandEvidence(result));
+      const acceptedMode = agentObservation
+        ? result.containmentMode === 'observed' && result.gradingEvidenceAccepted === false
+        : result.containmentMode === 'verified-observed' && result.gradingEvidenceAccepted === true;
       if (result.timedOut || result.cancelled || result.maxBufferExceeded || result.terminationReason !== 'complete'
-        || result.containmentMode !== 'verified-observed' || result.gradingEvidenceAccepted !== true) {
+        || !acceptedMode) {
         record.status = 'failed'; record.reason = 'process-contract-failed'; processFailed = true;
       } else if (result.exitCode !== 0) {
         record.status = 'failed'; record.reason = 'client-exit-nonzero';
@@ -166,7 +173,8 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     } catch (error) {
       record.status = 'failed'; record.reason = 'process-or-cleanup-failed'; processFailed = true;
       record.processFailure = error?.message;
-      record.processDiagnostics = (error?.processTreeDiagnostics ?? []).slice(0, 2);
+      record.processDiagnostics = (error?.publicAwProcessDiagnostics ?? error?.processTreeDiagnostics ?? []).slice(0, 2);
+      if (error?.publicAwProcessNames) record.processNames = error.publicAwProcessNames;
       if (error?.result) Object.assign(record, commandEvidence(error.result));
     }
     const evidence = redactProbe(record, context.root);
@@ -195,7 +203,9 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     if (report.management.status !== 'observed') { report.status = 'failed'; report.reason = 'initial-management-or-scope-unverified'; }
   }
   report.authentication.failurePossible = report.commands.some(command => command.authenticationFailurePossible);
-  report.processContract = processFailed ? 'failed' : 'verified-observed retained for every executed command';
+  report.processContract = processFailed ? 'failed' : report.commands.some(entry => entry.observation)
+    ? 'approved agents inventories observed; all other commands verified-observed; original deadlines and cleanup retained'
+    : 'verified-observed retained for every executed command';
   return redactProbe(report, context.root);
 }
 
@@ -218,7 +228,7 @@ export async function runInterfaceProbes(options) {
     boundary: { hostedOnly: true, host: 'ubuntu-24.04 x64', qualification: 'unverified', scope: 'unverified',
       credentials: 'empty temporary runtime whitelist', stdin: 'EOF', sessions: 'none', models: 'none',
       network: 'blocking HTTP(S)/ALL proxies for client commands; not an OS firewall',
-      clientProcessContract: 'existing execute verified-observed; no independent-group exception',
+      clientProcessContract: 'verified-observed except explicitly approved Antigravity 1.3.4 Linux x64 agents inventory observed mode; original deadlines, marker/identity and normal descendant exit/cleanup retained; not Provider or OS qualification',
       localManagement: 'Antigravity candidate-only User version/same-version refresh with native consumer bytes; Project directory and uninvoked agent inventory observations' }, clients: [] };
   try {
     if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || process.arch !== 'x64') throw new Error('hosted-linux-x64-required');
@@ -254,7 +264,8 @@ export async function runInterfaceProbes(options) {
           assertCommand(setup);
           client.projectSetup = commandEvidence(setup);
         }
-        Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }, execute, { localManagement: platform === 'antigravity' }));
+        Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }, execute, {
+          localManagement: platform === 'antigravity', antigravityAgentObservation: platform === 'antigravity' }));
       } catch (error) {
         client.status = 'failed'; client.reason = error?.message;
         if (error?.evidence) client.acquisition = error.evidence;

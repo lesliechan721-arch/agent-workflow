@@ -65,8 +65,15 @@ export async function prepareEnvironment(root) {
   return env;
 }
 
+export function usesAntigravityAgentObservation(args, options, host = process, hosted = process.env.GITHUB_ACTIONS) {
+  return hosted === 'true' && host.platform === 'linux' && host.arch === 'x64'
+    && options.nativeClient === 'antigravity' && options.nativeClientVersion === '1.3.4'
+    && options.antigravityAgentObservation === true && args.length === 1 && args[0] === 'agents';
+}
+
 export async function execute(launcher, args, options) {
-  if (options.nativeClient === 'copilot' && process.platform === 'darwin') {
+  if (options.nativeClient === 'copilot' && process.platform === 'darwin'
+    || usesAntigravityAgentObservation(args, options)) {
     const { executePublicAw } = await import('./native-platform-public-process.mjs');
     return executePublicAw(launcher, args, { ...options, timeoutMs: options.timeoutMs ?? 30_000 });
   }
