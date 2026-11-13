@@ -129,9 +129,11 @@ function commandEvidence(result) {
 function interfaceConfirmed(commands) {
   const help = (id) => commands.find(command => command.id === id && command.status === 'observed');
   const text = (command) => command ? `${command.stdout}\n${command.stderr}` : '';
-  return /\bplugin\b/u.test(text(help('help'))) && /\blist\b/u.test(text(help('plugin-help')))
-    && /\bplugin\s+list\b/u.test(text(help('plugin-list-help')))
-    && /(?:^|\s)--json\b/u.test(text(help('plugin-list-help')));
+  // The pinned Go CLI documents list flags on plugin help and rejects
+  // `plugin list --help`; do not require that unsupported parser path.
+  const pluginHelp = text(help('plugin-help'));
+  return /Usage:\s+antigravity plugin <command>/u.test(pluginHelp)
+    && /^\s+list \[--json\]\s+List installed plugins\s*$/mu.test(pluginHelp);
 }
 
 export async function probeClientInterfaces(platform, launcher, context, runCommand = execute) {
@@ -171,9 +173,8 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     if (record.status === 'failed') report.status = 'failed';
     return evidence;
   }
-  const commands = [['version', ['--version']], ['help', ['--help']], ['plugin-help', ['plugin', '--help']],
-    platform === 'cursor' ? ['plugin-marketplace-help', ['plugin', 'marketplace', '--help']]
-      : ['plugin-list-help', ['plugin', 'list', '--help']]];
+  const commands = [['version', ['--version']], ['help', ['--help']], ['plugin-help', ['plugin', '--help']]];
+  if (platform === 'cursor') commands.push(['plugin-marketplace-help', ['plugin', 'marketplace', '--help']]);
   for (const [id, args] of commands) {
     await command(id, args);
     if (processFailed) break;

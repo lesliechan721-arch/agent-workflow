@@ -10,6 +10,10 @@ on:
         type: choice
         default: all
         options: [all, codex, pi, claude, gemini, copilot, grok, opencode]
+      interfaces_only:
+        description: Observe only fixed Cursor and Antigravity interfaces on Ubuntu x64
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -17,13 +21,13 @@ permissions:
 
 jobs:
   native-windows-job:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini'
+    if: (github.event_name == 'workflow_dispatch' && !inputs.interfaces_only) || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini'
     uses: ./.github/workflows/windows-job.yml
     with:
       source-ref: ${{ github.sha }}
 
   candidate:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini'
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'native-qualification' || github.event.label.name == 'native-qualification-gemini' || github.event.label.name == 'native-qualification-interfaces'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -58,7 +62,7 @@ jobs:
   qualify:
     needs: [candidate, native-windows-job]
     # A missing Windows helper must not suppress the Linux/macOS observations.
-    if: ${{ !cancelled() && needs.candidate.result == 'success' }}
+    if: ${{ !cancelled() && needs.candidate.result == 'success' && !inputs.interfaces_only && github.event.label.name != 'native-qualification-interfaces' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -136,6 +140,44 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ always() && matrix.runner == 'ubuntu-24.04' && env.QUALIFICATION_CLIENT == 'all' }}
         continue-on-error: true
+        with:
+          name: native-interface-probes-ubuntu-24.04
+          path: ${{ runner.temp }}/native-interface-probes/
+          if-no-files-found: error
+          retention-days: 14
+
+  interface-probes:
+    needs: candidate
+    if: ${{ !cancelled() && needs.candidate.result == 'success' && (inputs.interfaces_only || github.event.label.name == 'native-qualification-interfaces') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-qualification-candidate
+          path: ${{ runner.temp }}/native-candidate
+      - name: Restore the same candidate without rebuilding
+        shell: bash
+        run: tar -xzf - < "$RUNNER_TEMP/native-candidate/native-candidate.tgz"
+      - name: Observe only fixed interfaces in credential-free temporary environments
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-interface-probes"
+          node --test --test-concurrency=1 scripts/qualification/native-platform-interface-probes.test.mjs | tee "$RUNNER_TEMP/native-interface-probes/harness.log"
+          node scripts/qualification/native-platform-interface-probes.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --report "$RUNNER_TEMP/native-interface-probes/report.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: native-interface-probes-ubuntu-24.04
           path: ${{ runner.temp }}/native-interface-probes/

@@ -24,7 +24,9 @@ function completed(stdout, exitCode = 0, stderr = '') {
 function parserOutput(platform, args) {
   if (args[0] === '--version') return interfaceDistributions[platform].version;
   if (args[0] === '--help') return 'Usage: client [command]\nCommands:\n  plugin  Manage plugins\n';
-  if (args.length === 2) return 'Usage: client plugin [command]\nCommands:\n  list  List plugins\n';
+  if (args.length === 2) return platform === 'antigravity'
+    ? 'Usage: antigravity plugin <command> [arguments]\n\nCommands:\n  list [--json]          List installed plugins\n'
+    : 'Usage: client plugin [command]\nCommands:\n  list  List plugins\n';
   if (args.at(-1) === '--help') return 'Usage: agy plugin list [options]\nOptions:\n  --json  Print JSON\n';
   return '[]';
 }
@@ -53,10 +55,12 @@ test('queries Antigravity empty inventories in new target and neutral calls only
   const calls = [];
   const report = await probeClientInterfaces('antigravity', { executable: '/fixed/antigravity', prefix: [] }, context,
     async (launcher, args, options) => {
-      calls.push({ args, cwd: options.cwd }); return completed(parserOutput('antigravity', args));
+      calls.push({ args, cwd: options.cwd });
+      if (args.join(' ') === 'plugin list --help') return completed('', 1, 'Error: unknown list option "--help": only --json is supported');
+      return completed(parserOutput('antigravity', args));
     });
-  assert.deepEqual(calls.slice(4), [context.project, context.neutral].map(cwd => ({ args: ['plugin', 'list', '--json'], cwd })));
-  assert.equal(report.commands.length, 6); assert.equal(report.scope.status, 'unverified');
+  assert.deepEqual(calls.slice(3), [context.project, context.neutral].map(cwd => ({ args: ['plugin', 'list', '--json'], cwd })));
+  assert.equal(report.commands.length, 5); assert.equal(report.scope.status, 'unverified');
   assert.equal(report.status, 'observed');
 });
 
@@ -72,7 +76,7 @@ test('does not try inventory when fixed version or the JSON parser flag is uncon
         if (missing === 'json' && args.at(-1) === '--help') output = output.replace('--json', '--text');
         return completed(output);
       });
-    assert.equal(calls.length, 4); assert.equal(report.inventory.status, 'unverified');
+    assert.equal(calls.length, 3); assert.equal(report.inventory.status, 'unverified');
     assert.equal(report.scope.status, 'unverified');
     if (missing === 'version') assert.equal(report.status, 'failed');
   });
@@ -85,8 +89,8 @@ test('records authentication failures for both inventories without logging in', 
   const report = await probeClientInterfaces('antigravity', { executable: '/fixed/antigravity', prefix: [] }, context,
     async (launcher, args) => args.at(-1) === '--json' ? completed('', 7, 'Authentication required: sign in')
       : completed(parserOutput('antigravity', args)));
-  assert.equal(report.status, 'failed'); assert.equal(report.commands.length, 6);
-  assert(report.commands.slice(4).every(command => command.exitCode === 7 && command.stderr === 'Authentication required: sign in'));
+  assert.equal(report.status, 'failed'); assert.equal(report.commands.length, 5);
+  assert(report.commands.slice(3).every(command => command.exitCode === 7 && command.stderr === 'Authentication required: sign in'));
   assert.equal(report.authentication.failurePossible, true); assert.equal(report.authentication.login, 'not-requested');
   assert.equal(report.scope.status, 'unverified');
 });
