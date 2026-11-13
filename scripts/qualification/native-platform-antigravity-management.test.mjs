@@ -15,7 +15,7 @@ async function fixture(t) {
   return { root, project, neutral, env: await prepareEnvironment(root) };
 }
 const result = stdout => ({ status: 'observed', stdout, exitCode: 0 });
-async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false } = {}) {
+async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false, dropOwner = false, neutralEnabled = true, retainOnUninstall = false } = {}) {
   let installed = false, installs = 0;
   const cache = path.join(ctx.env.HOME, '.gemini/config/plugins/aw-local-management-user');
   const projectDirectory = path.join(ctx.project, '.agents/plugins/aw-qualification-aw-local-management-project');
@@ -30,16 +30,17 @@ async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false 
       if (!(staleDynamic && installs === 3)) {
         await fs.rm(cache, { recursive: true, force: true });
         await fs.cp(args[2], cache, { recursive: true });
+        if (dropOwner) await fs.rm(path.join(cache, '.agent-workflows-owner.json'));
       }
       installed = true;
     }
-    if (id === 'user-uninstall') { installed = false; await fs.rm(cache, { recursive: true }); }
+    if (id === 'user-uninstall' && !retainOnUninstall) { installed = false; await fs.rm(cache, { recursive: true }); }
     const present = await fs.stat(projectDirectory).then(() => true, () => false);
     if (args[0] === 'agents') return result(cwd === ctx.project && present ? 'management-observer (workspace plugin)' : 'Built-in agents only');
     const rows = [];
     if (installed) {
       const manifest = JSON.parse(await fs.readFile(path.join(cache, '.antigravity-plugin/plugin.json'), 'utf8'));
-      rows.push({ name: 'aw-local-management-user', enabled: true, version: manifest.version, source: 'antigravity', path: cache });
+      rows.push({ name: 'aw-local-management-user', enabled: cwd === ctx.neutral ? neutralEnabled : true, version: manifest.version, source: 'antigravity', path: cache });
     }
     if (projectVisible && cwd === ctx.project && present) rows.push({ name: 'aw-local-management-project', enabled: true });
     return result(JSON.stringify(rows));
@@ -59,6 +60,36 @@ test('checks version and same-version consumer bytes through fresh scope queries
   assert.equal(observed.dynamicConsumerBytes, 'observed-at-native-inventory-path');
   assert.equal(observed.productionProfileChanged, false);
   await assert.rejects(fs.stat(fake.projectDirectory), { code: 'ENOENT' });
+});
+
+// Test Value Gate: the six-host User observation cannot reach the still blocked
+// Project or agents branches, and omitted options preserve the existing suite.
+test('runs only User management when scopes explicitly selects User', async t => {
+  const ctx = await fixture(t); const fake = await nativeFixture(ctx); const calls = [];
+  const observed = await probeAntigravityLocalManagement(ctx, async (...args) => {
+    calls.push(args[0]); return fake.command(...args);
+  }, renderPackage, { scopes: ['user'] });
+  assert.equal(observed.status, 'observed', JSON.stringify(observed));
+  assert.deepEqual(observed.scopes.map(scope => scope.scope), ['user']);
+  assert(calls.every(id => id.startsWith('user-')));
+  assert.equal(observed.scopes[0].revisions.length, 3);
+  for (const scopes of [[], ['unknown'], ['user', 'user'], 'user']) {
+    await assert.rejects(probeAntigravityLocalManagement(ctx, fake.command, renderPackage, { scopes }), /invalid-management-scopes/u);
+  }
+});
+
+// Test Value Gate: scope, copied ownership and final absence are required even
+// when the native commands all exit zero and the Skill bytes are otherwise right.
+test('keeps missing owner, neutral activation and removal evidence blocking', async t => {
+  for (const options of [{ dropOwner: true }, { neutralEnabled: false }, { retainOnUninstall: true }]) await t.test(JSON.stringify(options), async subtest => {
+    const ctx = await fixture(subtest); const fake = await nativeFixture(ctx, options);
+    const observed = await probeAntigravityLocalManagement(ctx, fake.command, renderPackage, { scopes: ['user'] });
+    assert.equal(observed.status, 'unverified');
+    assert.equal(observed.scopes.length, 1);
+    if (options.dropOwner) assert.equal(observed.scopes[0].revisions[0].ownerMarkerPreserved, false);
+    if (options.neutralEnabled === false) assert.equal(observed.scopes[0].scopeEvidence, 'unverified');
+    if (options.retainOnUninstall) assert.equal(observed.scopes[0].removed, false);
+  });
 });
 
 // Test Value Gate: process failure cannot be hidden by later successful queries.

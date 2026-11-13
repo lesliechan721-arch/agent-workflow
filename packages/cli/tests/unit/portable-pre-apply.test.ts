@@ -20,6 +20,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
+import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -67,8 +68,16 @@ async function fixture(platforms: FixtureTarget[], dependency = false, options: 
     // Synthetic qualification only; use the real discovery, package projection and lifecycle.
     context.platformRebuildSession = new PlatformRebuildSession(context, (platform) => {
       const adapter = getAgentPluginAdapter(platform);
-      return { ...adapter, capabilities: (input) => adapter.capabilities({ ...input, profile: { ...input.profile,
-        kinds: { ...input.profile.kinds, skill: { ...input.profile.kinds.skill, status: 'supported', reasonCodes: [] } } } }) };
+      return { ...adapter, capabilities: (input) => {
+        // Exercise the finite User-only profile on every host. This test grants
+        // synthetic Project Skill capability; it does not qualify that scope.
+        const profile = structuredClone(platform === 'antigravity'
+          ? getQualifiedPlatformProfile(platform, { platform: 'linux', arch: 'x64' }) : input.profile);
+        delete profile.qualifiedConsumers;
+        delete profile.qualificationEvidence;
+        profile.kinds.skill = { ...profile.kinds.skill, status: 'supported', reasonCodes: [] };
+        return adapter.capabilities({ ...input, profile });
+      } };
     });
     sessions.push(context.platformRebuildSession);
     return context;

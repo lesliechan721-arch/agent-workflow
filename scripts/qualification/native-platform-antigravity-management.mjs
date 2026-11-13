@@ -24,7 +24,10 @@ async function consumerEvidence(context, rows, expected) {
 }
 
 /** Candidate-only management observation. No production profile changes. */
-export async function probeAntigravityLocalManagement(context, command, renderPackage) {
+export async function probeAntigravityLocalManagement(context, command, renderPackage, options = {}) {
+  const scopes = options.scopes ?? ['user', 'project'];
+  if (!Array.isArray(scopes) || !scopes.length || new Set(scopes).size !== scopes.length
+    || scopes.some(scope => !['user', 'project'].includes(scope))) throw new Error('invalid-management-scopes');
   const report = { status: 'unverified', candidateOnly: true, commands: [], scopes: [],
     updates: 'not-tested', dynamicConsumerBytes: 'not-tested', productionProfileChanged: false };
   const run = async (id, args, cwd) => {
@@ -33,7 +36,7 @@ export async function probeAntigravityLocalManagement(context, command, renderPa
     if (result.status !== 'observed') throw new Error(`native-command-failed:${id}`);
     return result;
   };
-  for (const scope of ['user', 'project']) {
+  for (const scope of scopes) {
     const name = `aw-local-management-${scope}`;
     const root = path.join(context.root, `management-${scope}`);
     const ctx = { ...context, root, platform: 'antigravity', scope, pluginName: name, observeAgent: scope === 'project',
@@ -74,6 +77,10 @@ export async function probeAntigravityLocalManagement(context, command, renderPa
           if (item.scopeEvidence !== 'observed') throw new Error('installed-identity-or-scope-unconfirmed');
           const version = revision === 1 ? '1.0.1' : '1.0.2';
           if ([...target, ...neutral].some(row => row.version !== version)) throw new Error('installed-version-mismatch');
+          const nativeRoot = path.join(context.env.HOME, '.gemini/config/plugins', name);
+          if ([...target, ...neutral].some(row => row.source !== 'antigravity' || path.normalize(row.path ?? '') !== nativeRoot)) {
+            throw new Error('native-consumer-path-unconfirmed');
+          }
           const expected = await fs.readFile(path.join(ctx.bundle, 'skills/management-check/SKILL.md'));
           const consumers = await consumerEvidence(context, [...target, ...neutral], expected);
           const row = { revision, version, consumers };
@@ -81,8 +88,9 @@ export async function probeAntigravityLocalManagement(context, command, renderPa
           if (consumers.some(consumer => !consumer.matches)) throw new Error('native-consumer-content-mismatch');
           item.nativeRootEntries = (await fs.readdir(target[0].path)).sort().slice(0, 40);
           const { readSkillOwnerMarker } = await import('../../packages/cli/dist/src/utils/ownership.js');
-          const owner = await readSkillOwnerMarker({ skillRoot: target[0].path, allowedRoot: path.dirname(target[0].path) });
-          row.ownerMarkerPreserved = owner?.sourceIdentity === fixtureOwner.sourceIdentity && owner?.physicalKey === fixtureOwner.physicalKey;
+          const owner = await readSkillOwnerMarker({ skillRoot: target[0].path, allowedRoot: context.env.HOME, expectedIdentity: fixtureOwner });
+          row.ownerMarkerPreserved = owner !== null;
+          if (!row.ownerMarkerPreserved) throw new Error('native-owner-marker-unconfirmed');
         }
       }
       if (scope === 'user') {
