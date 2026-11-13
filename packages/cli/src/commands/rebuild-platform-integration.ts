@@ -675,12 +675,26 @@ export class PlatformRebuildSession {
           supplements: await Promise.all(projection.supplements.map((contribution) => pathEvidence(contribution.stagingPath))),
         }))),
       });
-      const initialParts = await fingerprintParts();
+      // Gemini and Copilot discovery and inspection are independent reads. Settle
+      // both before comparing or throwing, while preserving immutable priority.
+      const parallelNativeReads = entry.binding.route === 'gemini-extension' || entry.binding.route === 'copilot-marketplace';
+      const initialReads = parallelNativeReads
+        ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
+      if (initialReads?.[0].status === 'rejected') throw initialReads[0].reason;
+      const initialParts = initialReads?.[0].status === 'fulfilled' ? initialReads[0].value : await fingerprintParts();
       const initial = artifactValueDigest(initialParts);
       const fingerprint = async (): Promise<string> => artifactValueDigest(await fingerprintParts());
-      let mutableBaseline = await currentMutable();
-      checks.set(entry.binding.id, async () => await fingerprint() === initial
-        && artifactValueDigest(await currentMutable()) === artifactValueDigest(mutableBaseline));
+      if (initialReads?.[1].status === 'rejected') throw initialReads[1].reason;
+      let mutableBaseline = initialReads?.[1].status === 'fulfilled' ? initialReads[1].value : await currentMutable();
+      checks.set(entry.binding.id, async () => {
+        if (!parallelNativeReads) return await fingerprint() === initial
+          && artifactValueDigest(await currentMutable()) === artifactValueDigest(mutableBaseline);
+        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(), currentMutable()]);
+        if (immutableRead.status === 'rejected') throw immutableRead.reason;
+        if (immutableRead.value !== initial) return false;
+        if (mutableRead.status === 'rejected') throw mutableRead.reason;
+        return artifactValueDigest(mutableRead.value) === artifactValueDigest(mutableBaseline);
+      });
       this.mutableChecks.set(entry.binding.id, { physicalKey: entry.binding.physicalKey,
         marketplaceRoot: entry.layout.marketplaceRoot, sourceId: entry.binding.plugin.sourceId,
         sourceIdentity: entry.binding.plugin.sourceIdentity,
@@ -703,13 +717,17 @@ export class PlatformRebuildSession {
           mutableBaseline = current;
         },
         rebase: async (geminiExpected) => {
-          const current = await fingerprintParts();
+          const reads = parallelNativeReads
+            ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
+          if (reads?.[0].status === 'rejected') throw reads[0].reason;
+          const current = reads?.[0].status === 'fulfilled' ? reads[0].value : await fingerprintParts();
           if (artifactValueDigest(current) !== initial) {
             const changed = (Object.keys(initialParts) as Array<keyof typeof initialParts>)
               .filter((key) => artifactValueDigest(current[key]) !== artifactValueDigest(initialParts[key]));
             throw new Error(`operationPlanStale: immutable deployment input changed (${changed.join(', ')}).`);
           }
-          const mutable = await currentMutable();
+          if (reads?.[1].status === 'rejected') throw reads[1].reason;
+          const mutable = reads?.[1].status === 'fulfilled' ? reads[1].value : await currentMutable();
           if (artifactValueDigest(mutable.geminiActivation ?? null) !== artifactValueDigest(geminiExpected ?? mutableBaseline.geminiActivation ?? null)) {
             throw new Error('operationPlanStale: Gemini activation changed outside the checked native mutation.');
           }

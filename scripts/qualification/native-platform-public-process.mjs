@@ -1,5 +1,6 @@
 import { execute } from './native-platform-runtime.mjs';
 import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
+import { createMarkerIdentityConfirmationCapture } from './native-platform-marker-confirmations.mjs';
 
 const MARKER_ENV = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
 
@@ -18,9 +19,11 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     ? createProcessMarkerRowDiagnostic(names.execFile, {
       environmentProbe: createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + (options.timeoutMs ?? 60_000) }),
     }) : undefined;
+  const confirmations = markerRows ? createMarkerIdentityConfirmationCapture() : undefined;
   const dependencies = { ...processTree, markerEnvironmentVariable: MARKER_ENV,
     enforceProcessMarker: true, enforceCooperativeProcessGroup: false,
-    ...(names ? { execFile: markerRows?.execFile ?? names.execFile } : {}) };
+    ...(names ? { execFile: markerRows?.execFile ?? names.execFile } : {}),
+    ...(confirmations ? { onLinuxMarkerIdentityConfirmation: confirmations.capture } : {}) };
   const controller = new AbortController();
   const abort = () => controller.abort(options.signal.reason);
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -55,7 +58,9 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     if (result.cancelled || result.terminationReason !== 'complete') {
       throw Object.assign(new Error(`public-aw-process-${result.terminationReason}`), { result });
     }
-    return { ...result, stdout: result.stdout.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>'),
+    const markerIdentityConfirmations = confirmations?.snapshot();
+    return { ...result, ...(markerIdentityConfirmations ? { markerIdentityConfirmations } : {}),
+      stdout: result.stdout.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>'),
       stderr: result.stderr.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>') };
   } catch (error) {
     failure = error;
@@ -68,6 +73,8 @@ export async function executePublicAw(launcher, args, options, processTree = {})
         if (hints?.length) error.publicAwProcessNames = hints;
         const rows = markerRows?.snapshot(error.publicAwProcessDiagnostics);
         if (rows?.length) error.publicAwMarkerRows = rows;
+        const evidence = confirmations?.snapshot();
+        if (evidence) error.qualificationMarkerIdentityConfirmations = evidence;
       } catch { /* Name hints cannot replace the original process failure. */ }
       if (lease && error.result) {
         error.result.stdout = error.result.stdout.replaceAll(lease.marker, '<PUBLIC_AW_PROCESS_MARKER>');
@@ -79,6 +86,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
     options.signal?.removeEventListener('abort', abort);
     names?.stop();
     markerRows?.stop();
+    confirmations?.stop();
     stopFailureListener?.();
     observation?.dispose();
     try { await lease?.release(); }
@@ -88,6 +96,7 @@ export async function executePublicAw(launcher, args, options, processTree = {})
       releaseFailure.publicAwProcessDiagnostics = failure?.publicAwProcessDiagnostics ?? [];
       if (failure?.publicAwProcessNames) releaseFailure.publicAwProcessNames = failure.publicAwProcessNames;
       if (failure?.publicAwMarkerRows) releaseFailure.publicAwMarkerRows = failure.publicAwMarkerRows;
+      if (failure?.qualificationMarkerIdentityConfirmations) releaseFailure.qualificationMarkerIdentityConfirmations = failure.qualificationMarkerIdentityConfirmations;
       if (failure?.result) releaseFailure.result = failure.result;
       throw releaseFailure;
     }

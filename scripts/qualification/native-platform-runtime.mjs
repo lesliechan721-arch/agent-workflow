@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
+import { createMarkerIdentityConfirmationCapture } from './native-platform-marker-confirmations.mjs';
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -16,6 +17,7 @@ export const clients = {
   gemini: { version: '0.67.0', package: '@google/gemini-cli', bin: 'gemini', source: 'https://github.com/google-gemini/gemini-cli' },
   copilot: { version: '1.0.95', package: '@github/copilot', bin: 'copilot', source: 'https://docs.github.com/en/copilot/get-started/cli-quickstart' },
   grok: { version: '1.0.77', package: '@xai-official/grok', bin: 'grok', source: 'https://github.com/xai-org/grok-build' },
+  opencode: { version: '2.0.0', package: '@opencode/cli', bin: 'opencode', source: 'https://github.com/anomalyco/opencode/tree/v2.0.0' },
 };
 
 // Client processes receive no credentials, user configuration or NODE_OPTIONS.
@@ -81,24 +83,30 @@ export async function execute(launcher, args, options) {
     learnMarkerEnvironmentVariable: 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER',
     environmentProbe: createLinuxEnvironmentDiagnostic({ deadlineAt: Date.now() + (options.timeoutMs ?? 30_000) }),
   }) : undefined;
+  const confirmations = nativeLinux ? createMarkerIdentityConfirmationCapture() : undefined;
   try {
-    return await runProviderProcess({ executable: launcher.executable, args: [...launcher.prefix, ...args],
+    const result = await runProviderProcess({ executable: launcher.executable, args: [...launcher.prefix, ...args],
       cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs ?? 30_000,
       maxBufferBytes: 2 * 1024 * 1024, ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
     }, names || markerRows ? { onSpawn(handle) { names?.onSpawn(handle); markerRows?.onSpawn(handle); } } : {}, { containment: 'verified-observed',
       ...(windowsJobHelperPath ? { processTree: { windowsJobHelperPath } } : {}),
       ...(names ? { processTree: { execFile: names.execFile } } : {}),
-      ...(markerRows ? { processTree: { execFile: markerRows.execFile } } : {}),
+      ...(markerRows ? { processTree: { execFile: markerRows.execFile,
+        onLinuxMarkerIdentityConfirmation: confirmations.capture } } : {}),
     });
+    const markerIdentityConfirmations = confirmations?.snapshot();
+    return markerIdentityConfirmations ? { ...result, markerIdentityConfirmations } : result;
   } catch (error) {
     try {
       const observed = names?.snapshot(error?.processTreeDiagnostics);
       if (observed?.length) error.qualificationProcessNames = observed;
       const rows = markerRows?.snapshot(error?.processTreeDiagnostics);
       if (rows?.length) error.qualificationMarkerRows = rows;
+      const evidence = confirmations?.snapshot();
+      if (evidence) error.qualificationMarkerIdentityConfirmations = evidence;
     } catch { /* Private diagnostic data must not replace the original failure. */ }
     throw error;
-  } finally { names?.stop(); markerRows?.stop(); }
+  } finally { names?.stop(); markerRows?.stop(); confirmations?.stop(); }
 }
 
 export async function processManagementInfo() {
@@ -120,6 +128,17 @@ export async function resolveNpm() {
     if (await fs.stat(candidate).then((s) => s.isFile(), () => false)) return { executable: process.execPath, prefix: [candidate] };
   }
   throw new Error('npm-entry-unavailable');
+}
+
+// The parent bin is a postinstall placeholder. Select only the fixed official
+// optional native package; the Windows npm suffix is "windows", not "win32".
+export function getOpenCodeDistribution(parent, host = process) {
+  const system = { linux: 'linux', darwin: 'darwin', win32: 'windows' }[host.platform];
+  if (!system || !['x64', 'arm64'].includes(host.arch) || parent.name !== clients.opencode.package
+    || parent.version !== clients.opencode.version) throw new Error('official-client-distribution-unavailable');
+  const packageName = `${clients.opencode.package}-${system}-${host.arch}`;
+  if (parent.optionalDependencies?.[packageName] !== clients.opencode.version) throw new Error('official-client-distribution-unavailable');
+  return { packageName, version: clients.opencode.version, entry: `bin/opencode${host.platform === 'win32' ? '.exe' : ''}` };
 }
 
 export async function acquireClient(platform, root) {
@@ -150,7 +169,14 @@ export async function acquireClient(platform, root) {
   if (metadata.name !== client.package || metadata.version !== client.version) throw new Error('installed-package-identity-mismatch');
   let relative = typeof metadata.bin === 'string' ? metadata.bin : metadata.bin?.[client.bin];
   let executablePackage = client.package;
-  if (platform === 'codex' || platform === 'claude') {
+  if (platform === 'opencode') {
+    const distribution = getOpenCodeDistribution(metadata);
+    executablePackage = distribution.packageName;
+    packageRoot = path.join(prefix, 'node_modules', executablePackage);
+    metadata = JSON.parse(await fs.readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+    if (metadata.name !== executablePackage || metadata.version !== distribution.version) throw new Error('installed-package-identity-mismatch');
+    relative = distribution.entry;
+  } else if (platform === 'codex' || platform === 'claude') {
     // Resolve the native binary selected by the fixed official wrapper/installer.
     // Claude's top-level bin is a placeholder without postinstall; Codex's Node
     // wrapper uses execve, which can invalidate POSIX process-marker inspection.
@@ -178,13 +204,22 @@ export async function acquireClient(platform, root) {
   if (path.relative(realPackage, entry).startsWith('..') || path.isAbsolute(path.relative(realPackage, entry))) throw new Error('client-entry-outside-package');
   const bytes = await fs.readFile(entry);
   const node = /(?:^#!.*\bnode\b)|(?:\.[cm]?js$)/u.test(bytes.subarray(0, 160).toString('utf8')) || /\.[cm]?js$/u.test(entry);
-  const lock = JSON.parse(await fs.readFile(path.join(prefix, 'package-lock.json'), 'utf8'));
+  const lockBytes = await fs.readFile(path.join(prefix, 'package-lock.json'));
+  const lock = JSON.parse(lockBytes.toString('utf8'));
+  if (platform === 'opencode') {
+    if (node) throw new Error('official-client-native-entry-required');
+    for (const name of [client.package, executablePackage]) {
+      const record = lock.packages?.[`node_modules/${name}`];
+      if (record?.version !== client.version || !/^sha512-[A-Za-z0-9+/]+=*$/u.test(record?.integrity ?? '')) throw new Error('client-lock-integrity-missing');
+    }
+  }
   return { launcher: { executable: node ? process.execPath : entry, prefix: node ? [entry] : [] }, binDirectory: prefix,
     acquisition: { package: client.package, version: client.version, source: client.source,
       integrity: lock.packages?.[`node_modules/${client.package}`]?.integrity ?? null,
       executablePackage, executablePackageVersion: metadata.version,
       executablePackageIntegrity: lock.packages?.[`node_modules/${executablePackage}`]?.integrity ?? null,
-      lockSha256: sha256(JSON.stringify(lock)), entrySha256: sha256(bytes), scripts: 'disabled' } };
+      lockSha256: sha256(JSON.stringify(lock)), entrySha256: sha256(bytes), scripts: 'disabled',
+      ...(platform === 'opencode' ? { lockFileSha256: sha256(lockBytes), entrySelection: 'fixed-official-optional-native-package; parent-placeholder-not-executed' } : {}) } };
 }
 
 const bundleDirectories = ['packages/cli/dist', 'packages/cli/plugins-dist', 'packages/plugin-core/dist', 'packages/agent-skill-eval/dist', 'scripts/qualification'];
@@ -224,20 +259,21 @@ export async function renderPackage(ctx, revision) {
   const platform = ctx.platform;
   const renderScope = ['codex', 'claude', 'gemini', 'copilot'].includes(platform) ? 'user' : ctx.scope;
   const scope = renderScope === 'user' ? { kind: 'user' } : { kind: 'project', projectRoot: ctx.project };
+  const packageVersion = platform === 'opencode' ? revision === 1 ? '0.1.0' : '0.1.1' : `1.0.${revision}`;
   const binding = { id: 'qualification', platform,
-    plugin: { sourceId: 'qualification', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: `qualification/${ctx.pluginName}`, version: `1.0.${revision}` },
-    scope, route: { codex: 'codex-marketplace', claude: 'claude-marketplace', pi: 'pi-package', gemini: 'gemini-extension', copilot: 'copilot-marketplace', grok: ctx.scope === 'user' ? 'grok-cli' : 'grok-directory' }[platform],
+    plugin: { sourceId: 'qualification', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: `qualification/${ctx.pluginName}`, version: packageVersion },
+    scope, route: { codex: 'codex-marketplace', claude: 'claude-marketplace', pi: 'pi-package', gemini: 'gemini-extension', copilot: 'copilot-marketplace', opencode: 'opencode-directory', grok: ctx.scope === 'user' ? 'grok-cli' : 'grok-directory' }[platform],
     consumers: [], physicalKey: 'qualification', activationKey: 'qualification', renderUnitIds: ['qualification'],
   };
   // Explicit test candidate only. No production profile is changed or qualified by rendering.
   const capabilities = { schemaVersion: 1, platform, scope: renderScope, basis: 'profile',
     profileId: 'qualification-candidate:ordinary-skill-only', consumers: [], features: {},
     kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
-      { status: kind === 'skill' ? 'supported' : 'unverified', reasonCodes: kind === 'skill' ? [] : ['capability-unverified'], delivery: ['native-package'] }])) };
+      { status: kind === 'skill' ? 'supported' : 'unverified', reasonCodes: kind === 'skill' ? [] : ['capability-unverified'], delivery: [platform === 'opencode' ? 'native-extension' : 'native-package'] }])) };
   const projected = await projectPlatform({ cwd: ctx.project, env: ctx.env, stagingRoot: path.join(ctx.root, `stage-${revision}`) }, {
     binding, renderUnit: { id: 'qualification', physicalKey: 'qualification', renderScope: scope, output: 'package', kinds: ['skill'], consumers: [] },
     capabilities, components: [{ id: 'skill:qualification', kind: 'skill', name: ctx.skillName, content: { files: {
-      'SKILL.md': { text: `---\nname: ${ctx.skillName}\ndescription: AW qualification revision ${revision}\n---\nQualification fixture. No model request is required.\n` },
+      'SKILL.md': { text: `---\nname: ${ctx.skillName}\ndescription: AW qualification revision ${revision}\n---\n${platform === 'opencode' ? `Qualification fixture revision ${revision}.` : 'Qualification fixture.'} No model request is required.\n` },
     } } }], policy: { platform, permissions: [] }, resources: { resources: [], files: [], bundleFiles: [], commandResources: [], digest: 'qualification' },
   });
   if (!projected.bundle) throw new Error('candidate-package-missing');
@@ -253,7 +289,9 @@ export async function renderPackage(ctx, revision) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, descriptor.bytes);
   }
-  return { revision, contentDigest: projected.bundle.contentDigest, components: projected.components };
+  return { revision, contentDigest: projected.bundle.contentDigest, components: projected.components,
+    ...(platform === 'opencode' ? { version: packageVersion, projectionInput: { binding, renderScope: scope, capabilities },
+      nativePluginId: (await import('../../packages/cli/dist/src/platforms/layout.js')).getDeploymentResourceKey(binding.plugin) } : {}) };
 }
 
 export function hostInfo() {

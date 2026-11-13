@@ -13,12 +13,14 @@ import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assert
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
+import './native-platform-marker-confirmations.test.mjs';
 import './native-platform-copilot-skills.test.mjs';
 import './native-platform-gemini-skills.test.mjs';
 import './native-platform-linux-environment.test.mjs';
 import './native-platform-grok-bootstrap.test.mjs';
 import './native-platform-managed-trace.test.mjs';
 import './native-platform-public-state.test.mjs';
+import './native-platform-opencode.test.mjs';
 
 // Test Value Gate: local discovery can be observed or unavailable without
 // changing the result of required management and scope checks.
@@ -148,6 +150,7 @@ test('requires an explicit client acquisition mode and rejects ambiguous inputs'
   assert.throws(() => parseArgs(['--write-candidate', 'file', '--source-sha', 'abc', '--install']), /invalid-arguments/);
   assert.equal(parseArgs([...base, '--install']).install, true);
   assert.equal(parseArgs([...base, '--install', '--public-aw'])['public-aw'], true);
+  assert.equal(parseArgs(['--candidate', 'candidate.json', '--client', 'opencode', '--report', 'report.json', '--install']).client, 'opencode');
   assert.throws(() => parseArgs([...base, '--install', '--public-aw', '--public-aw']), /invalid-arguments/);
   assert.throws(() => parseArgs(['--write-candidate', 'file', '--source-sha', 'abc', '--public-aw']), /invalid-arguments/);
   assert.equal(versionFrom('codex-cli 0.167.0\n'), '0.167.0');
@@ -223,7 +226,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 test('uses actual AW projection bytes for both candidate revisions', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-qualification-projection-test-'));
   try {
-    for (const platform of ['codex', 'pi', 'claude', 'gemini', 'copilot', 'grok']) {
+    for (const platform of ['codex', 'pi', 'claude', 'gemini', 'copilot', 'grok', 'opencode']) {
       const current = path.join(root, platform); await fs.mkdir(current);
       const ctx = { root: current, platform, scope: 'user', project: current, env: await prepareEnvironment(current),
         pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
@@ -233,10 +236,20 @@ test('uses actual AW projection bytes for both candidate revisions', async () =>
       assert.notEqual(first.contentDigest, second.contentDigest);
       assert.match(await fs.readFile(path.join(ctx.bundle, 'skills/aw-qualification/SKILL.md'), 'utf8'), /revision 2/);
       const descriptor = { codex: '.codex-plugin/plugin.json', claude: '.claude-plugin/plugin.json',
-        pi: 'package.json', gemini: 'gemini-extension.json', copilot: 'plugin.json', grok: '.grok-plugin/plugin.json' }[platform];
+        pi: 'package.json', gemini: 'gemini-extension.json', copilot: 'plugin.json', grok: '.grok-plugin/plugin.json', opencode: 'package.json' }[platform];
       const manifest = JSON.parse(await fs.readFile(path.join(ctx.bundle, descriptor), 'utf8'));
       assert.equal(manifest.name, ctx.pluginName);
-      assert.equal(manifest.version, '1.0.2');
+      assert.equal(manifest.version, platform === 'opencode' ? '0.1.1' : '1.0.2');
+      if (platform === 'opencode') {
+        const { readOpenCodeFixture } = await import('./native-platform-opencode.mjs');
+        const before = await readOpenCodeFixture(ctx, second);
+        const third = await readOpenCodeFixture(ctx, await renderPackage(ctx, 3));
+        assert.equal(before.version, third.version);
+        assert.notEqual(before.bodySha256, third.bodySha256);
+        assert.notEqual(before.files['index.mjs'], third.files['index.mjs']);
+        assert.equal(third.evidence.projectionInput.renderScope.kind, 'user');
+        assert.equal(third.evidence.projectionInput.binding.route, 'opencode-directory');
+      }
       if (platform === 'claude') {
         const market = JSON.parse(await fs.readFile(path.join(ctx.marketplace, '.claude-plugin/marketplace.json'), 'utf8'));
         assert.equal(market.plugins[0].version, '1.0.2');
@@ -263,6 +276,22 @@ test('a real child version mismatch fails before public AW installation and clea
     assert.equal(data.token, undefined);
     await assert.rejects(fs.stat(data.home), { code: 'ENOENT' });
     assert.equal(JSON.stringify(report).includes(data.home), false);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+// Test Value Gate: a valid Native version does not authorize an unqualified
+// production OpenCode lifecycle. Public execution must defer before AW writes.
+test('OpenCode public AW remains unverified after a valid client version', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-opencode-public-defer-'));
+  const child = path.join(root, 'version.mjs');
+  try {
+    await fs.writeFile(child, "console.log('opencode v2.0.0');\n");
+    const report = await runScope('opencode', 'user', { executable: process.execPath, prefix: [child] }, { publicAw: true });
+    assert.equal(report.status, 'unverified');
+    assert.equal(report.reason, 'public-aw-opencode-profile-unverified');
+    assert.equal(report.cleanup, 'completed');
+    assert.equal(report.checks.length, 1);
+    assert(report.commands.every(command => JSON.stringify(command.args) === JSON.stringify(['--version'])));
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 

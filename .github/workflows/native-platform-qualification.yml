@@ -9,7 +9,7 @@ on:
         description: Fixed-version client to verify
         type: choice
         default: all
-        options: [all, codex, pi, claude, gemini, copilot, grok]
+        options: [all, codex, pi, claude, gemini, copilot, grok, opencode]
 
 permissions:
   contents: read

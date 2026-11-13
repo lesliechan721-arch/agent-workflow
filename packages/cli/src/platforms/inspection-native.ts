@@ -231,8 +231,12 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       break;
     case 'gemini-extension': {
       // Gemini stores exact local-source metadata separately from its human list.
-      // Read that metadata; never infer identity or absence by parsing list text.
-      await probe(ctx, binding, ['extensions', 'list']);
+      // Discovery confirms the client. The unused list output adds no evidence
+      // to these metadata and activation reads, and does not prove host loading.
+      ctx.signal?.throwIfAborted();
+      if (!binding.consumers.some((item) => item.entry?.kind === 'cli' && item.availability === 'available')) {
+        throw new Error('nativeEntryUnavailable');
+      }
       const { home, root } = geminiExtensionPaths(ctx);
       const directory = path.join(root, layout.nativeIdentity.packageId);
       try {

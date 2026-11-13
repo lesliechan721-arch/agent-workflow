@@ -1402,6 +1402,267 @@ describe('shared provider process behavior', () => {
     }
   })
 
+  // Test Value Gate: two live-looking bracketed marker rows need a later,
+  // independent identity result. Only a complete, anchored absence can pass.
+  it.each([
+    { postIdentity: 'absent', subject: 'root' },
+    { postIdentity: 'absent', subject: 'root', otherUnmarked: true, failure: 'lost its process marker' },
+    { postIdentity: 'absent', subject: 'new-child', throwDiagnostic: true },
+    { postIdentity: 'absent', subject: 'known-child', anchor: 'sentinel' },
+    { postIdentity: 'present', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'zombie', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'reused', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'query-error', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'empty', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'malformed', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'anchor-missing', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'anchor-missing', subject: 'known-child', anchor: 'sentinel', failure: 'process marker could not be read' },
+    { postIdentity: 'anchor-reused', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'deadline', subject: 'known-child', failure: 'process marker could not be read' },
+    { postIdentity: 'false-then-gone', subject: 'known-child', failure: 'lost its process marker' },
+    { postIdentity: 'departed-then-gone', subject: 'known-child', failure: 'left its initial process group' },
+    { postIdentity: 'departed-in-identity', subject: 'known-child', failure: 'left its initial process group' },
+    { postIdentity: 'absent', subject: 'known-child', later: 'unmarked-live', cleanupFailure: 'lost its process marker' },
+    { postIdentity: 'absent', subject: 'known-child', later: 'marked-live', cleanupFailure: 'all provider descendants must exit' },
+  ])('bounds Linux post-marker identity confirmation: $postIdentity / $subject / $anchor / $later / other=$otherUnmarked', async ({
+    postIdentity, subject, failure, later, cleanupFailure, throwDiagnostic, anchor, otherUnmarked,
+  }) => {
+    vi.useFakeTimers()
+    const marker = 'marker-value'
+    const rootStart = 'Fri Nov 13 08:00:00 2026'
+    const childStart = 'Fri Nov 13 08:00:01 2026'
+    const observerStart = 'Fri Nov 13 07:00:00 2026'
+    const markedCommand = `node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+    const child = { ppid: 100, pgid: 100, state: 'R', startTime: childStart, command: markedCommand }
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, state: 'R', startTime: rootStart, command: markedCommand }],
+      [200, { ppid: 1, pgid: 200, state: 'S', startTime: rootStart, command: 'foreign' }],
+      [process.pid, { ppid: 1, pgid: 0, state: 'S', startTime: observerStart, command: 'observer' }],
+    ])
+    const anchorPid = anchor === 'sentinel' ? 900_001 : process.pid
+    if (anchor === 'sentinel') {
+      processes.delete(process.pid)
+      processes.set(anchorPid, { ppid: 1, pgid: anchorPid, state: 'S', startTime: observerStart, command: markedCommand })
+    }
+    if (subject === 'known-child') processes.set(101, { ...child })
+    const candidatePid = subject === 'root' ? 100 : 101
+    let phase = 'normal'
+    let markerStartedAt = 0
+    let confirmationCallbackAt = 0
+    let identityTimeout = 0
+    let identityQueries = 0
+    const events: Array<{
+      pid: number, startTime: string, result: string,
+      queryStartedAt: number, queryCompletedAt: number, deadline: number,
+    }> = []
+    const signals: number[] = []
+    const render = (markerScan: boolean): string => [...processes].map(([pid, entry]) =>
+      `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}${markerScan ? ` ${entry.command}` : ''}`,
+    ).join('\n')
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceProcessMarker: true,
+      enforceCooperativeProcessGroup: later !== 'unmarked-live',
+      onLinuxMarkerIdentityConfirmation: (event: typeof events[number]): void => {
+        events.push(event)
+        if (throwDiagnostic) throw new Error('diagnostic consumer failed')
+      },
+      execFile: (
+        _command: string,
+        args: string[],
+        options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        const markerScan = args.some((arg) => arg.includes('command='))
+        if (markerScan && phase === 'suspect') {
+          markerStartedAt = Date.now()
+          processes.set(candidatePid, { ...(processes.get(candidatePid) ?? child), command: '[git]' })
+          if (otherUnmarked) processes.set(101, { ...child, command: 'git PATH=/usr/bin' })
+          phase = 'confirmation'
+          const output = render(true)
+          setTimeout(() => callback(null, output), 100)
+          return
+        }
+        if (markerScan && phase === 'confirmation') {
+          if (postIdentity === 'false-then-gone') processes.get(candidatePid)!.command = 'git PATH=/usr/bin'
+          if (postIdentity === 'departed-then-gone') processes.get(candidatePid)!.pgid = 300
+          const output = render(true)
+          phase = 'post-identity'
+          setTimeout(() => {
+            confirmationCallbackAt = Date.now()
+            callback(null, output)
+            if (postIdentity === 'false-then-gone' || postIdentity === 'departed-then-gone') processes.delete(candidatePid)
+          }, 100)
+          return
+        }
+        if (!markerScan && phase === 'post-identity') {
+          expect(confirmationCallbackAt).toBeGreaterThan(markerStartedAt)
+          phase = 'after-identity'
+          identityQueries += 1
+          identityTimeout = options.timeout
+          if (['absent', 'query-error', 'empty', 'malformed', 'anchor-missing', 'anchor-reused', 'deadline'].includes(postIdentity)) {
+            processes.delete(candidatePid)
+          }
+          if (postIdentity === 'reused') processes.set(candidatePid, {
+            ...child, ppid: 1, pgid: 200, startTime: 'Fri Nov 13 09:00:00 2026', command: 'replacement',
+          })
+          if (postIdentity === 'zombie') {
+            processes.get(candidatePid)!.state = 'Z'
+            // A Z leader does not exempt its still-live worker from this gate.
+            processes.set(102, { ...child, ppid: candidatePid, startTime: 'Fri Nov 13 08:00:02 2026' })
+          }
+          if (postIdentity === 'departed-in-identity') processes.get(candidatePid)!.pgid = 300
+          let output = render(false)
+          if (postIdentity === 'empty') output = ''
+          if (postIdentity === 'malformed') output += '\n101 100 100 R Fri Nov'
+          if (postIdentity === 'anchor-missing') output = output.split('\n').filter(line => !line.startsWith(`${anchorPid} `)).join('\n')
+          if (postIdentity === 'anchor-reused') output = output.replace(observerStart, 'Fri Nov 13 09:00:00 2026')
+          if (postIdentity === 'query-error') callback(new Error('identity scan failed'), '')
+          else if (postIdentity === 'deadline') setTimeout(() => callback(null, output), options.timeout)
+          else callback(null, output)
+          return
+        }
+        callback(null, render(markerScan))
+      },
+      kill: (pid: number, signal: string): void => {
+        signals.push(pid)
+        if (signal !== 'SIGKILL') return
+        for (const [candidate, entry] of processes) {
+          if (candidate === pid || pid < 0 && entry.pgid === -pid) processes.delete(candidate)
+        }
+      },
+    }
+    const observation = observeProcessTree(100, marker, dependencies, anchor === 'sentinel' ? {
+      marker, sentinel: { pid: anchorPid, startTime: observerStart }, release: async () => undefined,
+    } : undefined)
+    const onFailure = vi.fn()
+    observation.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      phase = 'suspect'
+      await vi.advanceTimersByTimeAsync(postIdentity === 'deadline' ? 3_000 : 1_200)
+      if (failure) expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining(failure) }))
+      else {
+        expect(onFailure).not.toHaveBeenCalled()
+        expect(observation.diagnostics).toEqual([])
+      }
+      if (postIdentity === 'false-then-gone' || postIdentity === 'departed-then-gone') {
+        expect(identityQueries).toBe(0)
+        expect(events).toEqual([])
+      } else {
+        expect(identityQueries).toBe(1)
+        expect(identityTimeout).toBe(1_800)
+        expect(events).toEqual([expect.objectContaining({
+          rootPid: 100, phase: 'post-marker-confirmation',
+          pid: candidatePid, startTime: subject === 'root' ? rootStart : childStart,
+          result: postIdentity === 'absent' ? 'absent'
+            : ['present', 'zombie', 'departed-in-identity'].includes(postIdentity) ? 'present' : 'unknown',
+          queryStartedAt: confirmationCallbackAt, deadline: markerStartedAt + 2_000,
+        })])
+        if (postIdentity === 'deadline') expect(events[0]!.queryCompletedAt).toBe(events[0]!.deadline)
+      }
+      phase = 'cleanup'
+      if (later) processes.set(101, {
+        ...child,
+        pgid: later === 'unmarked-live' ? 300 : 100,
+        command: later === 'unmarked-live' ? 'git PATH=/usr/bin' : markedCommand,
+      })
+      else if (processes.has(candidatePid) && postIdentity !== 'reused') {
+        processes.set(candidatePid, { ...processes.get(candidatePid)!, command: markedCommand })
+      }
+      const termination = terminateProcessTree(100, () => undefined, dependencies, {
+        observation, requireConfirmedCleanup: true, requireDescendantsExitedBeforeCompletion: later === 'marked-live',
+      }).then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      const error = await termination
+      if (failure || cleanupFailure) expect(error?.message).toContain(failure ?? cleanupFailure)
+      else expect(error).toBeNull()
+      if (later === 'unmarked-live') expect(observation.diagnostics[0]).toMatchObject({
+        reason: 'known-process-marker-missing',
+        processes: expect.arrayContaining([expect.objectContaining({ pid: 101, knownStartTime: childStart })]),
+      })
+      expect(signals).not.toContain(200)
+      expect(signals).not.toContain(-200)
+      if (postIdentity === 'reused') expect(signals).not.toContain(candidatePid)
+      expect(processes.has(200)).toBe(true)
+      expect(JSON.stringify(events)).not.toContain(marker)
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts Linux identity confirmation while an older shared identity query is still pending', async () => {
+    vi.useFakeTimers()
+    const started = 'Fri Nov 13 08:00:00 2026'
+    const observer = `${process.pid} 1 0 S ${started}`
+    const identityBeforeExit = `100 1 100 R ${started}\n200 1 200 S ${started}\n${observer}`
+    let initialIdentityCallback: ((error: Error | null, stdout: string) => void) | undefined
+    let identityQueries = 0
+    let cleanup = false
+    let secondAlive = true
+    const events: Array<{ rootPid: number, pid: number, result: string }> = []
+    const signals: number[] = []
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      enforceProcessMarker: true,
+      onLinuxMarkerIdentityConfirmation: (event: typeof events[number]): void => { events.push(event) },
+      execFile: (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        if (!args.some((arg) => arg.includes('command='))) {
+          identityQueries += 1
+          if (identityQueries === 1) initialIdentityCallback = callback
+          else callback(null, `${secondAlive ? `200 1 200 S ${started}\n` : ''}${observer}`)
+          return
+        }
+        callback(null, [
+          ...(!cleanup ? [`100 1 100 R ${started} [git]`] : []),
+          ...(secondAlive ? [`200 1 200 S ${started} node ${PROVIDER_PROCESS_MARKER_ENV}=second`] : []),
+          `${observer} observer`,
+        ].join('\n'))
+      },
+      kill: (pid: number, signal: string): void => {
+        signals.push(pid)
+        if ((pid === 200 || pid === -200) && signal === 'SIGKILL') secondAlive = false
+      },
+    }
+    const first = observeProcessTree(100, 'first', dependencies)
+    const second = observeProcessTree(200, 'second', dependencies)
+    const onFailure = vi.fn()
+    first.onFailure(onFailure)
+    second.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events).toEqual([expect.objectContaining({ rootPid: 100, pid: 100, result: 'absent' })])
+      expect(identityQueries).toBe(2)
+      expect(onFailure).not.toHaveBeenCalled()
+      // The older table remains observation evidence for the other observer.
+      // It cannot replace the direct query that proved this candidate absent.
+      initialIdentityCallback!(null, identityBeforeExit)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onFailure).not.toHaveBeenCalled()
+      cleanup = true
+      const termination = Promise.all([first, second].map((observation) => terminateProcessTree(
+        observation.pid, () => undefined, dependencies, { observation, requireConfirmedCleanup: true },
+      ))).then(() => null, (error: Error) => error)
+      await vi.runAllTimersAsync()
+      expect(await termination).toBeNull()
+      expect(signals).not.toContain(100)
+      expect(signals).not.toContain(-100)
+    } finally {
+      initialIdentityCallback?.(null, identityBeforeExit)
+      first.dispose()
+      second.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('confirms unreadable data for each observer sharing an initial scan', async () => {
     vi.useFakeTimers()
     let markerScans = 0

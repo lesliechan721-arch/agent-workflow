@@ -796,13 +796,16 @@ describe('platform inspection and native activation', () => {
     await fs.outputJson(metadataPath, { type: 'local', source: layout.packageRoot });
     await fs.outputJson(path.join(installed, 'gemini-extension.json'), { name: 'demo', version: '1.0.0' });
     await fs.outputJson(path.join(ctx.cwd, '.gemini/extensions/extension-enablement.json'), { demo: { overrides: [`!${geminiScopePattern(ctx.cwd)}`] } });
-    const runner = vi.fn(async () => ({ exitCode: 0, stdout: '✗ demo (1.0.0)', stderr: '' }));
+    const runner = vi.fn(async () => { throw new Error('Gemini metadata inspection must not start a client.'); });
     const observation = await inspectDeployment({ ...ctx, runner }, input.binding);
     expect(observation).toMatchObject({ registration: 'present', ownership: 'aw' });
     expect(observation.consumers[0]?.activation).toBe('unknown');
     expect(observation.diagnostics[0]?.code).toBe('nativeActivationScopeLimited');
     await fs.writeJson(metadataPath, { type: 'local', source: '/foreign' });
     expect((await inspectDeployment({ ...ctx, runner }, input.binding)).ownership).toBe('foreign');
+    await fs.writeFile(metadataPath, '{invalid');
+    expect((await inspectDeployment({ ...ctx, runner }, input.binding)).registration).toBe('unknown');
+    expect(runner).not.toHaveBeenCalled();
   });
 
   it('observes user Codex activation from a neutral directory instead of the calling project overlay', async () => {

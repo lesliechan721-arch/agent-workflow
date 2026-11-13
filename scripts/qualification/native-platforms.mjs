@@ -9,7 +9,7 @@ import { qualifyClient } from './native-platform-clients.mjs';
 import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 
-const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok> --report <file> (--install | --executable <absolute-path>) [--public-aw]';
+const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw]';
 class Unverified extends Error {}
 
 export function parseArgs(args) {
@@ -167,6 +167,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
     const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
       pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
       bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
+      recordCommand(command) { report.commands.push(redact(command, root, options.clientBin)); },
       async command(args, cwd = project, commandOptions = {}) {
         let result;
         try {
@@ -178,12 +179,14 @@ export async function runScope(platform, scope, launcher, options = {}) {
             ...(error?.qualificationProcessNames?.length || error?.publicAwProcessNames?.length
               ? { processNames: error.qualificationProcessNames ?? error.publicAwProcessNames } : {}),
             ...(error?.qualificationMarkerRows?.length ? { markerRows: error.qualificationMarkerRows } : {}),
+            ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
               terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
               cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
           throw error;
         }
         report.commands.push(redact({ args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           cancelled: result.cancelled, terminationReason: result.terminationReason,
           maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
           processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
@@ -199,6 +202,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           });
         } catch (error) {
           report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
+            ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
             cwd, processFailure: error?.message, processDiagnostics: error?.processTreeDiagnostics ?? [],
             ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
               terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
@@ -206,6 +210,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           throw error;
         }
         report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
+          ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           cwd, exitCode: result.exitCode, timedOut: result.timedOut, maxBufferExceeded: result.maxBufferExceeded,
           cancelled: result.cancelled, terminationReason: result.terminationReason, stderr: result.stderr }, root, options.clientBin));
         assertCommand(result);
@@ -241,12 +246,14 @@ export async function runScope(platform, scope, launcher, options = {}) {
             processDiagnostics: error?.publicAwProcessDiagnostics ?? [],
             ...(error?.publicAwProcessNames ? { processNames: error.publicAwProcessNames } : {}),
             ...(error?.publicAwMarkerRows ? { markerRows: error.publicAwMarkerRows } : {}),
+            ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
             ...(error?.result ? { exitCode: error.result.exitCode, terminationReason: error.result.terminationReason,
               stdout: error.result.stdout, stderr: error.result.stderr,
               failureSummary: publicAwFailureSummary(error.result.stdout) } : {}) }, root, options.clientBin));
           throw error;
         }
         report.commands.push(redact({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
           cancelled: result.cancelled, terminationReason: result.terminationReason,
           maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
@@ -288,9 +295,11 @@ export async function runScope(platform, scope, launcher, options = {}) {
       if (actual !== clients[platform].version) throw new Error('client-version-mismatch');
       return { version: actual };
     });
+    if (options.publicAw && platform === 'opencode') await ctx.defer('public-aw-opencode-profile-unverified');
     if (options.publicAw) await qualifyPublicAw(ctx);
     else {
-      await ctx.check('aw-candidate-projection', () => ctx.render(1));
+      const initialProjection = await ctx.check('aw-candidate-projection', () => ctx.render(1));
+      if (platform === 'opencode') ctx.initialProjection = initialProjection;
       await qualifyClient(ctx);
     }
     report.status = 'passed';
@@ -323,6 +332,8 @@ export async function run(options) {
         && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1' ? 'hosted-private-identity-ucomm' : 'disabled',
       nativeCopilotDarwinObservation: process.platform === 'darwin'
         ? 'observed-marker-and-identity-audit-not-provider-grading-or-os-containment' : 'not-applicable',
+      nativeOpenCodeObservation: process.platform === 'win32' ? 'existing-windows-job; actual-process-result-fields'
+        : 'authorized-observed-marker-PID-start-deadline-descendant-exit-cleanup; not-provider-grading-or-os-containment',
       publicAwNativeTrace: ['linux', 'darwin', 'win32'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
         && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
         ? 'node-import-trace-of-selected-client-entries-not-uninstrumented-performance-evidence' : 'disabled',
@@ -335,7 +346,7 @@ export async function run(options) {
     uncovered: ['public-aw-install-end-to-end', 'model-invocation', 'skill-invocation-controls', 'mcp-execution',
       'hook-execution', 'agents-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
       'antigravity', 'cursor', 'opencode'], clients: [],
-    uncoveredReasons: { opencode: 'standalone-process-group-and-activation-readiness-not-qualified',
+    uncoveredReasons: { opencode: 'public-aw-production-profile-unverified; private-native-results-recorded-separately',
       cursor: 'tested-workspace-hook-requires-authentication',
       antigravity: 'fixed-distribution-and-unauthenticated-interface-not-verified' },
   };

@@ -29,6 +29,23 @@ async function executable(ctx: ReadContext, name: string): Promise<void> {
   await fs.writeFile(file, 'controlled probe boundary'); await fs.chmod(file, 0o755);
 }
 
+async function geminiNpmFixture(windows = false) {
+  const ctx = await fixture();
+  const packageRoot = path.join(ctx.env!.PATH!, 'node_modules/@google/gemini-cli');
+  const entry = path.join(packageRoot, 'dist/index.js');
+  const metadata = { name: '@google/gemini-cli', version: '0.67.0', bin: { gemini: 'dist/index.js' } };
+  await fs.outputFile(entry, '#!/usr/bin/env node\n', { mode: 0o755 });
+  await fs.outputJson(path.join(packageRoot, 'package.json'), metadata);
+  if (windows) {
+    ctx.platform = 'win32';
+    // Simulate Windows home syntax while keeping npm and Gemini files in this host's isolated tree.
+    ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', GEMINI_CLI_HOME: ctx.cwd };
+    await fs.outputFile(path.join(ctx.env!.PATH!, 'gemini.cmd'),
+      renderNpmCmdShim('node_modules\\@google\\gemini-cli\\dist\\index.js'));
+  } else await fs.symlink(entry, path.join(ctx.env!.PATH!, 'gemini'));
+  return { ctx, packageRoot, entry: await fs.realpath(entry), metadata };
+}
+
 describe('read-only target discovery and production selection', () => {
   // Test Value Gate: a failed client probe must retain independent observations and all target IDs without changing preferences.
   it('retains available, unsupported, unknown, missing, and generic facts in the public list', async () => {
@@ -116,6 +133,64 @@ describe('read-only target discovery and production selection', () => {
     const found = await discoverPlatform('copilot', { ...ctx, runner: async () => ({ exitCode: 0, stdout: '1.0.95 unrelated utility', stderr: '' }) });
     expect(found.availability).toBe('unknown');
   });
+
+  // Test Value Gate: npm metadata can identify the actual JS entry without a
+  // second CLI startup, but every discovery still needs a fresh native version.
+  it.runIf(process.platform !== 'win32')('identifies a Gemini npm JS entry and reads its version again on the next discovery', async () => {
+    const item = await geminiNpmFixture();
+    const calls: string[] = [];
+    let version = '0.67.0';
+    item.ctx.runner = async ({ command, args }) => {
+      expect(command).toBe(process.execPath); expect(args[0]).toBe(item.entry);
+      calls.push(args.at(-1)!);
+      return { exitCode: 0, stdout: args.at(-1) === '--version' ? `${version}\n` : 'Gemini CLI', stderr: '' };
+    };
+    expect((await discoverPlatform('gemini', item.ctx)).installations[0]).toMatchObject({ availability: 'available', version: '0.67.0' });
+    version = '0.67.1'; item.metadata.version = version;
+    await fs.outputJson(path.join(item.packageRoot, 'package.json'), item.metadata);
+    expect((await discoverPlatform('gemini', item.ctx)).installations[0]).toMatchObject({ availability: 'available', version: '0.67.1' });
+    expect(calls).toEqual(['--version', '--version']);
+  });
+
+  it('binds Gemini metadata to the JS entry resolved from its Windows npm shim', async () => {
+    const item = await geminiNpmFixture(true);
+    const calls: string[] = [];
+    item.ctx.runner = async ({ command, args }) => {
+      expect(command).toBe(process.execPath); expect(args[0]).toBe(item.entry);
+      calls.push(args.at(-1)!);
+      return { exitCode: 0, stdout: args.at(-1) === '--version' ? '0.67.0\n' : 'Gemini CLI', stderr: '' };
+    };
+    const found = await discoverPlatform('gemini', item.ctx);
+    expect(found.availability, JSON.stringify(found)).toBe('available');
+    expect(calls).toEqual(['--version']);
+  });
+
+  // Invalid metadata must retain the existing independent help identity check.
+  it.runIf(process.platform !== 'win32').each(['missing', 'invalid', 'foreign', 'version-mismatch', 'bin-mismatch', 'escaping-bin'] as const)(
+    'keeps Gemini help identity confirmation for %s npm metadata', async (kind) => {
+      const item = await geminiNpmFixture();
+      const file = path.join(item.packageRoot, 'package.json');
+      if (kind === 'missing') await fs.remove(file);
+      else if (kind === 'invalid') await fs.writeFile(file, '{invalid');
+      else {
+        if (kind === 'foreign') item.metadata.name = 'foreign-cli';
+        if (kind === 'version-mismatch') item.metadata.version = '0.67.1';
+        if (kind === 'bin-mismatch') {
+          item.metadata.bin.gemini = 'dist/other.js';
+          await fs.outputFile(path.join(item.packageRoot, 'dist/other.js'), 'Different entry.');
+        }
+        if (kind === 'escaping-bin') item.metadata.bin.gemini = '../gemini-cli/dist/index.js';
+        await fs.outputJson(file, item.metadata);
+      }
+      const calls: string[] = [];
+      item.ctx.runner = async ({ args }) => {
+        calls.push(args.at(-1)!);
+        return { exitCode: 0, stdout: args.at(-1) === '--version' ? '0.67.0\n' : 'Gemini CLI', stderr: '' };
+      };
+      expect((await discoverPlatform('gemini', item.ctx)).availability).toBe('available');
+      expect(calls).toEqual(['--version', '--help']);
+    },
+  );
 
   // Test Value Gate: the official Copilot sentence punctuation must not hide its
   // version; only its complete branded line receives this normalization.

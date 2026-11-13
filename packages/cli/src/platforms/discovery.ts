@@ -182,6 +182,35 @@ export async function installationInvocation(product: ProductInstallation, ctx: 
   if (/\.(?:cmd|bat)$/iu.test(executable)) throw new Error('clientLauncherUnsupported');
   return { command: executable, args, cwd: ctx.cwd, env: ctx.env, signal: ctx.signal };
 }
+
+/** Metadata identifies the same npm JS entry; the version still comes from this probe. */
+async function geminiNpmIdentity(ctx: ReadContext, invocation: NativeCliInvocation, versionOutput: string): Promise<boolean> {
+  const entry = invocation.command === process.execPath && invocation.args.length === 2
+    && invocation.args[1] === '--version' ? invocation.args[0] : undefined;
+  const version = versionOutput.trim();
+  if (!entry || !path.isAbsolute(entry) || !entry.endsWith('.js')
+    || extractStrictSemVerTokenFromVersionOutput(version) !== version) return false;
+  try {
+    const actualEntry = await fs.realpath(entry);
+    // Official npm layouts place the entry at the package root or one directory below it.
+    for (const root of [path.dirname(actualEntry), path.dirname(path.dirname(actualEntry))]) {
+      const file = await containedFile(root, path.join(root, 'package.json'));
+      if (!file) continue;
+      const metadata: unknown = JSON.parse(await smallText(file));
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+      const pkg = metadata as { name?: unknown; version?: unknown; bin?: unknown };
+      if (pkg.name !== '@google/gemini-cli' || pkg.version !== version
+        || !pkg.bin || typeof pkg.bin !== 'object' || Array.isArray(pkg.bin)) return false;
+      const bin = (pkg.bin as Record<string, unknown>).gemini;
+      if (typeof bin !== 'string' || path.isAbsolute(bin)) return false;
+      const parts = bin.replace(/^\.\//u, '').split(/[/\\]/u);
+      if (!parts.length || parts.some((part) => !part || part === '.' || part === '..')) return false;
+      return await containedFile(root, path.join(root, ...parts)) === actualEntry;
+    }
+  } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
+  return false;
+}
+
 async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext): Promise<DiscoveryResult> {
   const profile = cliProfiles[platform];
   const products: ProductInstallation[] = [];
@@ -194,7 +223,8 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
     try {
       const invocation = await installationInvocation(product, ctx, ['--version']);
       const versionOutput = await probe(ctx, invocation.command, invocation.args);
-      if (!profile.identity.test(versionOutput)) {
+      if (!profile.identity.test(versionOutput)
+        && !(platform === 'gemini' && await geminiNpmIdentity(ctx, invocation, versionOutput))) {
         const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);
         if (!profile.identity.test(help)) {
           product.reasonCodes = ['clientIdentityUnconfirmed']; throw new Error('clientIdentityUnconfirmed');

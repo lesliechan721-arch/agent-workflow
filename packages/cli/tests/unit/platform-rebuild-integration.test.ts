@@ -15,6 +15,7 @@ import { createNoopReporter } from '../../src/output/reporter.js';
 import { createNoopDebugLogger } from '../../src/output/debug-log.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import type { ProductInstallation } from '../../src/platforms/contracts.js';
+import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 
 async function fixture() {
   const isolation = getCurrentSourceTestIsolation();
@@ -76,6 +77,134 @@ describe('frozen platform rebuild integration', () => {
       expect(await fs.pathExists(path.join(item.packageRoot, 'old.js'))).toBe(true);
       expect(result.deploymentReceipts).toBeUndefined();
     } finally { await item.context.platformRebuildSession?.dispose(); }
+  });
+});
+
+function evidenceReadGate() {
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const gate = { started: false, release, async read() { gate.started = true; await pending; } };
+  return gate;
+}
+
+async function nativeEvidenceFixture(platform: 'gemini' | 'copilot') {
+  const isolated = getCurrentSourceTestIsolation();
+  const root = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-source`);
+  const executable = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-client`);
+  await fs.outputFile(executable, 'controlled native entry');
+  await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), {
+    schemaVersion: 4, name: 'evidence-demo', version: '1.0.0', description: 'Native evidence boundary.',
+    platforms: [platform], marketplace: { category: 'development', strict: true,
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+  });
+  const plugin = await readPluginManifest(root, { mode: 'bundle' });
+  Object.assign(plugin, { sourceId: 'team', pluginId: 'team/evidence-demo', sourceIdentity: `sha256:${'d'.repeat(64)}` });
+  const reads: { discovery?: () => Promise<void>; inspection?: () => Promise<void> } = {};
+  const inventories = platform === 'gemini' ? ['extensions list'] : ['plugin marketplace list --json', 'plugin list --json'];
+  const runner = vi.fn(async (invocation: Parameters<RebuildExecutionContext['nativeCliRunner']>[0]) => {
+    if (!inventories.includes(invocation.args.join(' '))) throw new Error('Unexpected fixture native mutation.');
+    return { exitCode: 0, stdout: platform === 'copilot' ? '[]' : '', stderr: '' };
+  });
+  const context: RebuildExecutionContext = { env: isolated.env, nativeCliRunner: runner,
+    reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
+  const original = getAgentPluginAdapter(platform);
+  const adapter: typeof original = { ...original,
+    async discover(ctx) {
+      await reads.discovery?.();
+      return { platform, availability: 'available', diagnostics: [], installations: [{
+        id: `${platform}-evidence-client`, product: 'cli', version: platform === 'gemini' ? '0.67.0' : '1.0.95', availability: 'available', reasonCodes: [],
+        entry: { kind: 'cli', executable, configRoot: resolvePlatformConfigRoot(platform, ctx) },
+      }] };
+    },
+    async inspect(ctx, binding) { await reads.inspection?.(); return original.inspect(ctx, binding); },
+  };
+  context.platformRebuildSession = new PlatformRebuildSession(context, () => adapter);
+  const integration = createRebuildIntegration({ context });
+  const target = await integration.buildTarget({ plugin, platform, scope: 'user', cwd: isolated.layout.fixtureCwd,
+    command: 'sync', catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0', channel: 'latest' } });
+  expect(target.platformDeployment?.plans).toHaveLength(1);
+  await integration.sealMarketplaceGenerations([target]);
+  return { root, context, integration, target, reads, runner, inventories };
+}
+
+describe('native evidence checks', () => {
+  // Test Value Gate: slow CLI identity and inventory reads may overlap only
+  // within one check. Each verification must finish both fresh reads.
+  it.each(['gemini', 'copilot'] as const)('overlaps fresh discovery and inspection at each %s verification boundary', async (platform) => {
+    const item = await nativeEvidenceFixture(platform);
+    const gates: ReturnType<typeof evidenceReadGate>[] = [];
+    let pending: Promise<void> | undefined;
+    try {
+      for (let check = 0; check < 2; check++) {
+        const discovery = evidenceReadGate();
+        const inspection = evidenceReadGate();
+        gates.push(discovery, inspection);
+        item.reads.discovery = discovery.read;
+        item.reads.inspection = inspection.read;
+        let settled = false;
+        pending = item.target.platformDeployment!.verify();
+        void pending.then(() => { settled = true; }, () => { settled = true; });
+        await vi.waitFor(() => expect([discovery.started, inspection.started]).toEqual([true, true]));
+        discovery.release();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        inspection.release();
+        await pending;
+      }
+    } finally {
+      for (const gate of gates) gate.release();
+      await pending?.catch(() => undefined);
+      await item.context.platformRebuildSession!.dispose();
+    }
+  });
+
+  // Test Value Gate: concurrent failures must not hide immutable staleness or
+  // return before the other native read has completed.
+  it.each(['gemini', 'copilot'] as const)('waits for both %s reads and preserves stale and immutable error priority', async (platform) => {
+    const item = await nativeEvidenceFixture(platform);
+    const discovery = evidenceReadGate();
+    const inspection = evidenceReadGate();
+    let pending: Promise<void> | undefined;
+    try {
+      const changed = path.join(item.root, 'changed.txt');
+      await fs.outputFile(changed, 'Changed after preparation.');
+      const mutableError = new Error('Mutable evidence read failed.');
+      let inspectionStarted = false;
+      item.reads.discovery = discovery.read;
+      item.reads.inspection = async () => { inspectionStarted = true; throw mutableError; };
+      let settled = false;
+      pending = item.target.platformDeployment!.verify();
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      await vi.waitFor(() => expect([discovery.started, inspectionStarted]).toEqual([true, true]));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      discovery.release();
+      await expect(pending).rejects.toThrow('operationPlanStale');
+      item.reads.discovery = undefined;
+      item.reads.inspection = undefined;
+      const result = await executeRebuildOperation({ command: 'sync', target: item.target, driver: item.integration.driver });
+      expect(result).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('operationPlanStale') } });
+      expect(result.deploymentReceipts).toBeUndefined();
+      expect(item.runner.mock.calls.every(([invocation]) => item.inventories.includes(invocation.args.join(' ')))).toBe(true);
+      await fs.remove(changed);
+
+      const immutableError = new Error('Immutable evidence read failed.');
+      let immutableFailed = false;
+      item.reads.discovery = async () => { immutableFailed = true; throw immutableError; };
+      item.reads.inspection = async () => { await inspection.read(); throw mutableError; };
+      settled = false;
+      pending = item.target.platformDeployment!.verify();
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      await vi.waitFor(() => expect([inspection.started, immutableFailed]).toEqual([true, true]));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      inspection.release();
+      await expect(pending).rejects.toBe(immutableError);
+    } finally {
+      discovery.release(); inspection.release();
+      await pending?.catch(() => undefined);
+      await item.context.platformRebuildSession!.dispose();
+    }
   });
 });
 

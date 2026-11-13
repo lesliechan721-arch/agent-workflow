@@ -3,6 +3,7 @@ import { cp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs'
 import { readGeminiSkills } from './native-platform-gemini-skills.mjs'
+import { qualifyOpenCode } from './native-platform-opencode.mjs'
 
 const version = revision => `1.0.${revision}`
 const description = revision => `AW qualification revision ${revision}`
@@ -598,6 +599,7 @@ export async function qualifyClient(ctx) {
     gemini: qualifyGemini,
     grok: qualifyGrok,
     copilot: qualifyCopilot,
+    opencode: qualifyOpenCode,
   }
   const qualify = clients[ctx.platform]
   if (!qualify) {

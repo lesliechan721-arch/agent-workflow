@@ -83,11 +83,11 @@ generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有
 
 ### 3.1 只读观察
 
-状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。目录存在、同名 executable 或版本通过都不足以证明原生注册或组件可用。原生 registration、activation 与 trust 按对应路由的公开命令或配置观察；Codex private cache 不进入删除授权。
+状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。目录存在、同名 executable 或版本通过都不足以证明原生注册或组件可用。原生 registration、activation 与 trust 按对应路由的公开命令或配置观察；Codex private cache 不进入删除授权。 Gemini 在发现已确认客户端后，直接读取原生安装元数据、manifest 和 enablement 规则，保留格式、来源与归属校验；不额外启动结果未用于判定的清单命令。这些配置事实不宣称 Skill 已加载，平台有效 scope 资格仍须独立的新客户端查询。
 
 显式 `--observe-native` 允许原生 app-server 启动，因此可能创建 installation ID、日志、SQLite 状态和 cache，读取既有认证，并按宿主现有配置连接云端或远程环境。公开结果通过 `nativeObservationSideEffects` 同时向人类和 JSON 消费者披露；该选项不要求也不执行登录、模型或账号 RPC。普通 status、TUI 和复用观察 session 的其他消费者默认不启用此模式。
 
-同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。跨调用不缓存弱现场结论。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
+同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。Gemini 与 Copilot 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，仍逐次重新读取，并保留不可变输入失败与 stale 的优先级。跨调用不缓存弱现场结论。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
 
 ### 3.2 scope 与共享物理包
 
