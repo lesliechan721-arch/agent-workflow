@@ -32,6 +32,7 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
   - **Integration 入口**：运行普通 integration 与串行 `process-lifecycle`。
 - **Linux 插件环境**：Linux 插件测试执行独立的构建，并将构建出的 CLI 严格配置到 `PATH` 中。
 - **矩阵复合 Action**：插件测试由普通矩阵 job 调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64、macOS arm64 和 Windows x64。
+- **原生打包 smoke**：macOS arm64 的插件 job 和 Windows 插件分片 2 在插件合同完成后运行 `pnpm test:smoke:pack:cli`，复用该 job 的 Node、构建产物与 Windows native context，并保留失败诊断。Linux 的打包 smoke 继续由 release verification 执行；集成测试 job 不再串行等待打包测试。
 
 ### 2.2 Windows 独立测试分片与长时任务（CI1）
 
@@ -53,7 +54,7 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
   ```
   **必须使用 `list --shard --json` 检查，严禁使用 `list --filesOnly`**。
 - **分片 3 附加任务**：
-  除集成测试外，分片 3 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）、诊断回归以及 `pnpm test:smoke:pack:cli`。
+  除集成测试外，分片 3 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）与诊断回归。
 - **作业超时**：该集成测试 Job 超时上限设置为 60 分钟。
 
 #### 2.2.2 Windows 插件测试三路分片（Node File Shard）
@@ -68,6 +69,7 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
   Node 启动脚本按测试文件相对路径的字母顺序排序后轮流分配。分片绝不拆分单个测试文件。每个插件及其所选目标平台使用同一分片编号。
   新增或重命名的测试文件必须根据真实耗时测算平衡分配到各分片中；所有三个分片均属于发布前的必要检查项。
 - **分片 1 附加任务**：分片 1 额外承接真实文件占用与跨卷移动资格测试。
+- **分片 2 附加任务**：插件测试完成后运行 Windows x64 的 `pnpm test:smoke:pack:cli`，保留当前 source-candidate helper 和 native context。
 - **作业超时与诊断**：
   插件 Job 超时上限设置为 90 分钟（此为故障观察上限，非正常等待时长）。
   每个分片均启用命令阶段耗时、PowerShell 调用次数、累计耗时及最大耗时诊断。
