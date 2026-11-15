@@ -20,7 +20,7 @@ metadata:
 | --- | --- |
 | 理解或修改可见源码、职责和文字 | 使用源码及相关声明 |
 | 核对实际内容、调用 metadata 或注入资源 | 固定 platform/scope/config，复用当前 final；不足时按授权准备运行包 |
-| 导出标准 Agent Skills | 明确选择具体 Portable 平台，核对插件支持集合，再物化所选 Skill |
+| 导出标准 Agent Skills | 明确选择具体平台 profile，核对插件支持集合，再物化所选 Skill |
 
 完整运行包不以创建 Eval 为前提，源码分析不以构建或 Portable 导出为前提。
 

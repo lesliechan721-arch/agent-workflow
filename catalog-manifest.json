@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.70",
+  "catalogVersion": "0.1.0-beta.71",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "e7cc4ea7e2a53bc953b2522fbc278d3e46a173cb"
+    "sourceHead": "8207834eedf6fc2b91b0c578f7a1e13031a79913"
   },
   "entries": [
     {
@@ -44,20 +44,20 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.plugin-manifest.v3",
+            "aw.plugin-manifest.v4",
             "aw.plugin-skills.v1",
             "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:06e7d1d16520eaf6a3c4d24b5f37f97e3b9e2e005a1a2902175e5b4f484dd3d7",
-      "manifestDigest": "sha256:a55eb24f877ffc3f30420fb4f96640f282993204415a1acb47f82894016534d6",
-      "contentDigest": "sha256:d2d51a3ea9a2223b110c03e5daa952851345bd691a9da21afe5757b78fd31803"
+      "artifactDigest": "sha256:e67abed82ec7863bc64dbbeda034d6566a20697bc2ea457491ba067182b04691",
+      "manifestDigest": "sha256:808120e22bd38bc55a538077e0eb716407274522d95703d333d9f6aa9f4caaca",
+      "contentDigest": "sha256:86b11872727bb05bcdc74c698f7c198bf4e27e9405c1be73e2f3756f838d922c"
     },
     {
       "name": "agent-skill-toolkit",
@@ -80,7 +80,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.15",
+      "version": "0.1.0-beta.16",
       "dependencies": [
         "agent-content-toolkit"
       ],
@@ -88,14 +88,15 @@
         "aw": {
           "capabilities": [
             "aw.plugin-build-config.v1",
-            "aw.plugin-manifest.v3",
-            "aw.plugin-skills.v1"
+            "aw.plugin-manifest.v4",
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:b3894b573772bfe4bbb404a47ac5fb49a5a56f3874f3e2aa2a310cbf873b32e1",
-      "manifestDigest": "sha256:efc1a28986d071fb545292740d204039185271f807d0be81febf0cfa846013e1",
-      "contentDigest": "sha256:d9c4f9561083a5e361f20eefb683b38e8c49d53c5b21d3cfdcf1032c6ad94272"
+      "artifactDigest": "sha256:b56f6e81dcc48109902ed693f5a11dfe2ee4c2672390e4d5f6dfa33cb0d39247",
+      "manifestDigest": "sha256:ee718644a6dcf77d8c4b93aaa917535b918abf2dfff86ea0d2ecc0bdf88a683f",
+      "contentDigest": "sha256:fecca0235603f8c7b1541dc0f210c75e3db678e5d0a7c97b4de82eeae3a6cc38"
     },
     {
       "name": "agent-subagent",
@@ -124,16 +125,16 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
             "aw.cli-output.v1",
-            "aw.dynamic-artifacts.v2",
             "aw.installed-runtime-config.v2",
             "aw.managed-commands.v1",
             "aw.native-tools.v2",
+            "aw.platform-components.v3",
             "aw.plugin-build-config.v1",
             "aw.plugin-config-array.v1",
             "aw.plugin-config-summary.v1",
@@ -143,13 +144,14 @@
             "aw.plugin-config.v3",
             "aw.plugin-config.v4",
             "aw.plugin-config.v5",
-            "aw.plugin-manifest.v3"
+            "aw.plugin-manifest.v4",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:2bae74dc41758acda6feb4f91152701c5b48092d0fff871da7004294812fec15",
-      "manifestDigest": "sha256:f0561d343a9aeef99f45c05efcdaefbf06afb7ea8b4a4e7d60bc382a4d2a649a",
-      "contentDigest": "sha256:e70580cf12b90374e91ea80e25b309ce3aac752699bc61c866fbcadcaed379f3"
+      "artifactDigest": "sha256:12f38df2a4198ad5850f821892422663d530edae0651a28f4d04e09a4a51be98",
+      "manifestDigest": "sha256:eb413b7bb89ce761ef3f876f274757b0974842e824a4eedd2ef866fb408e099b",
+      "contentDigest": "sha256:0268eea035a1666fefde8e7e132c23a225be7c269dd2eb67a004bd9eaaa8d531"
     },
     {
       "name": "aw-development-toolkit",
@@ -172,7 +174,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.14",
+      "version": "0.1.0-beta.15",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -187,7 +189,7 @@
             "aw.cli-output.v1",
             "aw.managed-commands.v1",
             "aw.plugin-authoring.v2",
-            "aw.plugin-manifest.v3",
+            "aw.plugin-manifest.v4",
             "aw.plugin-skills.v1",
             "aw.portable-skills.v1",
             "aw.review-inspection.v3",
@@ -197,9 +199,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:c45a983fea9e5208464afd1ebe845c640a1e9af40c61591772d3b092a497288e",
-      "manifestDigest": "sha256:90a9fa19cb97f576bbee887d00eaa3a4ad5de1b28a76feb0ecf8904bcd38db02",
-      "contentDigest": "sha256:b624bd0a0e6f1b062a5173f052d5dd95d8f246bcca0fe587a3438404db76f461"
+      "artifactDigest": "sha256:fac82569da7edbbea4284b7517adc2fb4f7a561afa53391ce5e14d9d6490a039",
+      "manifestDigest": "sha256:c2e4b644b7e87116cee0da437616a6f02ad674fc93a6f6778638a37b736ed821",
+      "contentDigest": "sha256:910bff6849eca54c39100fac1aee0ee95307444d64670e4f6b12e1a74c28822e"
     },
     {
       "name": "aw-skill-eval-runner",
@@ -222,7 +224,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "dependencies": [
         "agent-skill-toolkit"
       ],
@@ -230,15 +232,16 @@
         "aw": {
           "capabilities": [
             "aw.cli-output.v1",
-            "aw.plugin-manifest.v3",
+            "aw.plugin-manifest.v4",
             "aw.plugin-skills.v1",
+            "aw.portable-skills.v1",
             "aw.skill-eval.v3"
           ]
         }
       },
-      "artifactDigest": "sha256:7d534c8efbc3d7f1a9c5244c49218bce847ef281510ac72515fc5e2c974e9c55",
-      "manifestDigest": "sha256:8fb7fd9ba529b1f070802c0bb00510af75fce7d22a93e7fb4119456846eec01e",
-      "contentDigest": "sha256:2f5d961764539ef70799576291ca868471bdf05cee62ff693e99f9ab15378617"
+      "artifactDigest": "sha256:b50da5fde893345a02661f628ee37c1ff903bf6792e3e42fd650eb2786de7149",
+      "manifestDigest": "sha256:10d9ebb97f2040f0cdbe346e8a712e5266af29805584bf2245a2451965536fb3",
+      "contentDigest": "sha256:00437c7d6aaf499a7dfc80fb25d57fc3a79ffdb1e24e6c1a31a6d426da13dee0"
     },
     {
       "name": "browser-use",
@@ -261,21 +264,21 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.plugin-manifest.v3",
+            "aw.plugin-manifest.v4",
             "aw.plugin-pre-apply.v1",
             "aw.plugin-skills.v1",
             "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:a90a78354943d71f58cbf330456f5e85028601758438c7203bc8e64cb99688ba",
-      "manifestDigest": "sha256:f19d0adfe22a0f83ad73e0c8089ed5610c91c5f55d950d8966527cc78a4e846e",
-      "contentDigest": "sha256:bc517a5cb20fc16337a623110e1609d4ff251b32b2d636db19e7fb1fd001aafb"
+      "artifactDigest": "sha256:d7d9db4ae2609138214db230b5af146bec764fe2b38ce196ee45e915aa66887b",
+      "manifestDigest": "sha256:79c833eafc9d059037a129dd201ac9f3e7ecc787ab472f40ae17b53c8d257a3f",
+      "contentDigest": "sha256:c96f798466753c463457e297e6c371fa597385d1ac7dcad126063aa0e2b61ff1"
     },
     {
       "name": "codex-enhance",
@@ -304,17 +307,18 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
         "products": [
+          "CLAUDE",
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.27",
+      "version": "0.2.0-beta.28",
       "dependencies": [
         "agent-subagent"
       ],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.dynamic-artifacts.v2",
+            "aw.platform-components.v3",
             "aw.plugin-config-array.v1",
             "aw.plugin-config-cross-plugin-value-ref.v1",
             "aw.plugin-config-summary.v1",
@@ -323,13 +327,14 @@
             "aw.plugin-config.v3",
             "aw.plugin-config.v4",
             "aw.plugin-config.v5",
-            "aw.plugin-manifest.v3"
+            "aw.plugin-manifest.v4",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:20346e280469c5a38ccec42b38c913c9ca4aeced47b6bcc0f4dad8ad55c0701a",
-      "manifestDigest": "sha256:cd2be0119a227fbff8e60b4b16fe49604d62dd9f1e53fbca0ae26528a92816a8",
-      "contentDigest": "sha256:4927003fde6b66956ca308fd68373f0e4cb6eef1c4bc394c1c68490ac93ade0d"
+      "artifactDigest": "sha256:52b043f069a87e41d20f741c5bf367b4a469e6a4e42d67939f36aafee422d2b8",
+      "manifestDigest": "sha256:f57bd5a423df8e90c76fdc8b5414ce6422a75458725deb577a01f255d679a1c8",
+      "contentDigest": "sha256:00c631ad699cc2c52516695b0b72961b80166e0e6df2ac8a484b9cbf401bab10"
     },
     {
       "name": "decision-kit",
@@ -352,22 +357,22 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.9",
+      "version": "0.1.0-beta.10",
       "dependencies": [
         "human-content"
       ],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.plugin-manifest.v3",
+            "aw.plugin-manifest.v4",
             "aw.plugin-skills.v1",
             "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:40b9e1b623f54f9024a386e6106b944499fdbda97630ea56311971abf44b601d",
-      "manifestDigest": "sha256:70c4878f5b756aab9588240b6c70a8b2db580dafc8438641d2ad0c0307c1e84f",
-      "contentDigest": "sha256:4002c03afa60d3b788dc3ab774138ba655abdff31326f04364f9e5c8380a853e"
+      "artifactDigest": "sha256:95278fee5755e4346cf129702e0d82df6a31b397fb83f0645bfd7162c28e6174",
+      "manifestDigest": "sha256:5df8d882fa4f477319cb459e9546ac8de5ccaf996a563f303f7f8e55596302af",
+      "contentDigest": "sha256:de46d0ab17b5f400e5a51e907cef91740a1e0729f886f5b03a033b6bb3dfd409"
     },
     {
       "name": "dev-workflow",
@@ -396,7 +401,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.20",
+      "version": "0.1.0-beta.21",
       "dependencies": [
         "decision-kit",
         "human-content"
@@ -405,14 +410,15 @@
         "aw": {
           "capabilities": [
             "aw.plugin-build-config.v1",
-            "aw.plugin-manifest.v3",
-            "aw.plugin-skills.v1"
+            "aw.plugin-manifest.v4",
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:54f560e650cd27ed9efd3206ca574a9bc0915efc48bf162fbdbda6c69b492312",
-      "manifestDigest": "sha256:febea64c91636059993317df5872ae2db523bf29a79c4ed629ef10279881869a",
-      "contentDigest": "sha256:8706bc16a87d9476f7d700c5109359d30fb24e976b25f343fc8e15ed8dc93546"
+      "artifactDigest": "sha256:42949fa855972d0979a03935064c8238d447736989248060f18f91ccf4d8dadb",
+      "manifestDigest": "sha256:d62f20f70fc67723954e6dcbfe85a2c6e70f7721ae5cd4f281e597f7f62ae74f",
+      "contentDigest": "sha256:24a8b495f1e902ad370965b6a6b76cfcd39cc68bd9200d15c80857625e12add4"
     },
     {
       "name": "frontend-design",
@@ -435,20 +441,20 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.plugin-manifest.v3",
+            "aw.plugin-manifest.v4",
             "aw.plugin-skills.v1",
             "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:64559369ada20be958fc3459d542e62a1e9693269e8a6f3df413513581fbb088",
-      "manifestDigest": "sha256:854448395b43c4a56fb1aa80798bd424b255bcbbd4d734c7e8b69bc674db9a7e",
-      "contentDigest": "sha256:546928a68d073b2024446a717cb185466497a9f204192fe4598fbd5037898d68"
+      "artifactDigest": "sha256:5d960bae7a4f82b45eb28378aeb5ac482c3eaf046fc854970d4f90b6283ca085",
+      "manifestDigest": "sha256:4d2f0af23bd64830cdf916e58eeda7a5cf46c67be2476b29c795a4d29503c52d",
+      "contentDigest": "sha256:7affed7448caa25ed354232bc6ba0e56f32c4f9967b674a88e1b5d1313d70467"
     },
     {
       "name": "git-toolkit",
@@ -478,19 +484,20 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.4",
+      "version": "0.1.0-beta.5",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.plugin-manifest.v3",
-            "aw.plugin-skills.v1"
+            "aw.plugin-manifest.v4",
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:a18526bae2deef9e5888176e60c17e63e5f9f7309983f7bf9913dee491a5164b",
-      "manifestDigest": "sha256:b0b2137d8d02e26e24aa27b10b1a6bbe99b9d317e63c25672e53455ab9c0aa91",
-      "contentDigest": "sha256:5d97ec553b091eda8ccf598a9bb5ce4a15822e6f8e45b3c12c78e0a1d14cebca"
+      "artifactDigest": "sha256:eb94bee4d8fa423180399f3496ac4e7ff42f61bc0db130bb314c7507d0b1c17d",
+      "manifestDigest": "sha256:33e1c074ddec66952d7ecf6b353278462c96786243365407f29730c02f5d99e6",
+      "contentDigest": "sha256:d4aa037a6efcb85a26d76c50b7a5998d2f987ab707786a779098a7e48f5e962d"
     },
     {
       "name": "human-content",
@@ -518,20 +525,20 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.5",
+      "version": "0.1.0-beta.6",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.plugin-manifest.v3",
+            "aw.plugin-manifest.v4",
             "aw.plugin-skills.v1",
             "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:6d840b6704f0db21d08a6cc070b318b0f83218ca14d3e748b4c77f5b0f1d635c",
-      "manifestDigest": "sha256:56d9a88a0b15cbb10078f6a80e67869ccbb5d6abf61d0124d7bf491e75d60284",
-      "contentDigest": "sha256:f81cc6d6d37f9e6c52eb1d0fc0143c8052b150cefed7b513781c446dd9932e26"
+      "artifactDigest": "sha256:46630614d3f3e59b68e65198dcb75dae2afc994604a640914ecb361536bd18e4",
+      "manifestDigest": "sha256:81ee89e9267d073058e68230630dd2a47975f6fcf2e22d31c0ba2bef95dfc27f",
+      "contentDigest": "sha256:608d7386a3c881ad36fc36199e96505fdd985f2a729656341885e4c39b291026"
     }
   ]
 }

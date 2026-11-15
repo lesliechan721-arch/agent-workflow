@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "aw-skill-eval-runner",
+    "version": "0.1.0-beta.10"
+  },
+  "requiredCapabilities": [
+    "aw.cli-output.v1",
+    "aw.plugin-manifest.v4",
+    "aw.plugin-skills.v1",
+    "aw.portable-skills.v1",
+    "aw.skill-eval.v3"
+  ],
+  "digest": "sha256:ab1908b034601bbd5522321fd33f0a8015a69e399a2612d548aca23d04e8a1f3"
+}

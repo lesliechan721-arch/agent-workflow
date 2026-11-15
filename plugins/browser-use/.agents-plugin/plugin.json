@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "browser-use",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
   "marketplace": {
     "category": "workflow",
@@ -19,6 +19,9 @@
     "cursor",
     "opencode",
     "pi",
+    "gemini",
+    "copilot",
+    "grok",
     "generic"
   ],
   "interface": {
@@ -36,7 +39,7 @@
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.plugin-manifest.v3",
+        "aw.plugin-manifest.v4",
         "aw.plugin-pre-apply.v1",
         "aw.plugin-skills.v1",
         "aw.portable-skills.v1"

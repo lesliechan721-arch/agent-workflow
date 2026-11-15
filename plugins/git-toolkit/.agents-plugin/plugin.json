@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "git-toolkit",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "description": "提供本地 Git 提交、worktree 隔离，以及需要协调双方意图的 Git merge 工作流。",
   "marketplace": {
     "category": "workflow",
@@ -21,7 +21,15 @@
   "skills": "./skills",
   "platforms": [
     "codex",
-    "claude"
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "gemini",
+    "copilot",
+    "grok",
+    "generic"
   ],
   "interface": {
     "displayName": "Git Toolkit",
@@ -34,8 +42,9 @@
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.plugin-manifest.v3",
-        "aw.plugin-skills.v1"
+        "aw.plugin-manifest.v4",
+        "aw.plugin-skills.v1",
+        "aw.portable-skills.v1"
       ]
     }
   }

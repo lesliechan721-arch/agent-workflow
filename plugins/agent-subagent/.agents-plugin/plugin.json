@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "agent-subagent",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "组织已授权的通用子代理委派、执行配置与外部执行。",
   "marketplace": {
     "category": "workflow",
@@ -20,10 +20,10 @@
     "aw": {
       "capabilities": [
         "aw.cli-output.v1",
-        "aw.dynamic-artifacts.v2",
         "aw.installed-runtime-config.v2",
         "aw.managed-commands.v1",
         "aw.native-tools.v2",
+        "aw.platform-components.v3",
         "aw.plugin-build-config.v1",
         "aw.plugin-config-array.v1",
         "aw.plugin-config-summary.v1",
@@ -33,13 +33,22 @@
         "aw.plugin-config.v3",
         "aw.plugin-config.v4",
         "aw.plugin-config.v5",
-        "aw.plugin-manifest.v3"
+        "aw.plugin-manifest.v4",
+        "aw.portable-skills.v1"
       ]
     }
   },
   "platforms": [
     "codex",
-    "claude"
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "gemini",
+    "copilot",
+    "grok",
+    "generic"
   ],
   "interface": {
     "displayName": "Agent Subagent",
@@ -50,7 +59,6 @@
     ]
   },
   "extensions": {
-    "instructions": [],
     "permissions": [
       {
         "name": "subagent-commands",
@@ -107,7 +115,15 @@
           }
         ],
         "agentOverrides": {
-          "claude": null
+          "claude": null,
+          "antigravity": null,
+          "cursor": null,
+          "opencode": null,
+          "pi": null,
+          "gemini": null,
+          "copilot": null,
+          "grok": null,
+          "generic": null
         }
       },
       {
@@ -165,12 +181,18 @@
           }
         ],
         "agentOverrides": {
-          "codex": null
+          "codex": null,
+          "antigravity": null,
+          "cursor": null,
+          "opencode": null,
+          "pi": null,
+          "gemini": null,
+          "copilot": null,
+          "grok": null,
+          "generic": null
         }
       }
-    ],
-    "hooks": [],
-    "agents": []
+    ]
   },
   "buildConfig": {
     "fileRules": {
@@ -2962,87 +2984,17 @@
     }
   },
   "artifacts": {
-    "targets": [
-      {
-        "id": "spawn-subagent-skill",
-        "platform": "codex",
-        "scopes": [
-          "user"
-        ],
-        "target": "codex.skill",
-        "kind": "skill",
-        "projectManagedKind": "skill",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "simpleTaskProfile",
-          "generalTaskProfile",
-          "complexTaskProfile",
-          "advancedTaskProfile",
-          "taskCustomProfiles",
-          "subagentCommands",
-          "subagentRetentionHours"
-        ],
-        "skillKey": "spawn-subagent",
-        "runtimeConfig": {
-          "keys": [
-            "subagentCommands",
-            "subagentRetentionHours"
-          ]
-        },
-        "sourceDirs": [
-          "./skills/spawn-subagent"
-        ]
-      },
-      {
-        "id": "subagent-role",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.agentRole",
-        "kind": "codexRole",
-        "projectManagedKind": "agent",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [],
-        "requiresCodexProjectConfig": true,
-        "roleKey": "subagent"
-      },
-      {
-        "id": "spawn-subagent-claude-skill",
-        "platform": "claude",
-        "scopes": [
-          "user"
-        ],
-        "target": "claude.skill",
-        "kind": "skill",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [
-          "simpleTaskProfile",
-          "generalTaskProfile",
-          "complexTaskProfile",
-          "advancedTaskProfile",
-          "taskCustomProfiles",
-          "subagentCommands",
-          "subagentRetentionHours"
-        ],
-        "skillKey": "spawn-subagent",
-        "runtimeConfig": {
-          "keys": [
-            "subagentCommands",
-            "subagentRetentionHours"
-          ]
-        },
-        "sourceDirs": [
-          "./skills/spawn-subagent"
-        ]
-      }
+    "configKeys": [
+      "simpleTaskProfile",
+      "generalTaskProfile",
+      "complexTaskProfile",
+      "advancedTaskProfile",
+      "taskCustomProfiles",
+      "subagentCommands",
+      "subagentRetentionHours"
+    ],
+    "sourceDirs": [
+      "./skills/spawn-subagent"
     ]
   },
   "managedCommands": {
@@ -3052,6 +3004,7 @@
         "set": "guide",
         "producer": {
           "kind": "artifact",
+          "platform": "codex",
           "artifactId": "spawn-subagent-skill"
         },
         "mode": "static",
@@ -3072,6 +3025,7 @@
         "set": "guide-communication",
         "producer": {
           "kind": "artifact",
+          "platform": "codex",
           "artifactId": "spawn-subagent-skill"
         },
         "mode": "static",
@@ -3092,6 +3046,7 @@
         "set": "guide-claude",
         "producer": {
           "kind": "artifact",
+          "platform": "claude",
           "artifactId": "spawn-subagent-claude-skill"
         },
         "mode": "static",
@@ -3112,6 +3067,7 @@
         "set": "guide-communication-claude",
         "producer": {
           "kind": "artifact",
+          "platform": "claude",
           "artifactId": "spawn-subagent-claude-skill"
         },
         "mode": "static",

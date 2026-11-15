@@ -1,0 +1,6 @@
+interface:
+  display_name: dev-simplify-code
+  short_description: "仅用户手动启动，在保持既有行为的前提下简化明确代码范围并验证"
+  default_prompt: "使用 $dev-simplify-code 处理指定代码；保持行为，遵守范围，报告实际简化和验证限制。"
+policy:
+  allow_implicit_invocation: false

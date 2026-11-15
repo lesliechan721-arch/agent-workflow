@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "aw-development-toolkit",
-  "version": "0.1.0-beta.14",
+  "version": "0.1.0-beta.15",
   "description": "处理 AW 插件及 Skill 的来源、开发、验证与物化，维护 Catalog，并通过手动入口发布。",
   "marketplace": {
     "category": "workflow",
@@ -21,7 +21,7 @@
         "aw.cli-output.v1",
         "aw.managed-commands.v1",
         "aw.plugin-authoring.v2",
-        "aw.plugin-manifest.v3",
+        "aw.plugin-manifest.v4",
         "aw.plugin-skills.v1",
         "aw.portable-skills.v1",
         "aw.review-inspection.v3",
@@ -38,7 +38,15 @@
   "skills": "./skills",
   "platforms": [
     "codex",
-    "claude"
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "gemini",
+    "copilot",
+    "grok",
+    "generic"
   ],
   "interface": {
     "displayName": "AW Development Toolkit",

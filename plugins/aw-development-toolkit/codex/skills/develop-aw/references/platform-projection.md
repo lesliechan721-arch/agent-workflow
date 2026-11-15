@@ -1,44 +1,39 @@
 # 平台投影与能力要求
 
-同一 Plugin 需要适配 Codex、Claude、Portable，或需要根据配置选择内容时读取。先判断差异来自哪里，再选择足够的机制；不要为静态差异建立动态状态。
+同一插件适配多个 Agent、按配置产生不同组件，或准备通用 Skills 导出时读取。先查当前 capabilities 的 manifest、platform-components、platform-capabilities surface；字段、合法取值和 schema 由 CLI/Core 提供。
 
-Skill 脚本需要读取本次安装生效的配置时，采用 组件方法（`references/plugin-components.md`） 中的安装态配置规则。下表处理产物本身的投影差异。
+## 选择足够的机制
 
-## 选择静态或动态机制
+| 差异 | 方法与核对 |
+| --- | --- |
+| 少量平台名称或静态文字 | templates.vars 与明确 include；只替换预期文件 |
+| 平台文件集合不同 | fileRules include/exclude；核对最终引用闭包 |
+| 同一角色、指令或 Hook 的平台字段差异 | 对应 agentOverrides；数组整体替换，null 明确不提供 |
+| 配置或平台能力决定类别、名称、数量 | renderer 返回完整组件集合，采用 Artifact renderer（references/aw-artifact-renderer.md） |
+| Skill 需要稳定脚本或权限入口 | 托管命令（references/managed-commands.md）；正文、权限和真实 producer 一起校验 |
 
-| 差异来源 | 优先方法 | 核对依据 |
-| --- | --- | --- |
-| 平台名称或少量静态文字替换 | `templates.vars` 与明确的 `templates.include` | 只替换预期文件，保留其他正文 |
-| 各平台需要不同文件 | `fileRules` 的平台 include/exclude | 最终文件集合及引用闭包 |
-| 平台 manifest 的专属字段 | 当前支持的 `manifestOverrides` | 对应平台公开字段和 validator |
-| Skill 调用与权限需要稳定命令 | 采用 托管命令（`references/managed-commands.md`），由 AW 解析逻辑引用 | 最终正文和权限指向同一命令，独立包使用 AW-owned surface |
-| 配置、scope 或状态决定实际 artifact | 声明 targets 并使用 renderer | 请求/输出、配置与状态边界 |
+作者不透传任意宿主 Manifest，也不指定安装命令、宿主路径或注册身份。平台不执行某字段的语义时应报告缺口，不能只保留字段就称支持。
 
-`manifestOverrides.claude` 只能使用当前公开支持的字段，不是任意对象合并入口。不要因另一个平台支持某字段就复制过去。renderer 的具体合同见 Artifact renderer（`references/aw-artifact-renderer.md`）。
+## 平台、scope 与能力
 
-## 区分 Native 与 Portable
+PlatformTarget 有 codex、claude、antigravity、cursor、opencode、pi、gemini、copilot、grok、generic。具体 Agent 使用原生包或原生扩展；generic 仅输出通用 Skills。平台允许范围来自 Manifest platforms，省略或空数组允许全部，未知和重复 ID 拒绝。声明允许不代表真实运行；依赖仍须覆盖消费者平台。
 
-`PlatformName` 仍为 Codex/Claude；公开 `PlatformTarget` 有 codex、claude、antigravity、cursor、opencode、pi、generic 七项。Manifest 顶层 platforms 是唯一支持集合：缺省或空数组表示全部，显式集合不可含未知或重复 ID。依赖支持集合须覆盖消费者，不能用本机选中交集绕过。不要写旧 products、distributions 或 delivery。
+静态与动态资源归一化为 Skills、MCP、Agents、Hooks、Instructions。同一正文只维护一份，平台负责包装和已核验字段映射。命令、模型、工具限制与权限均需实际等价；Pi Agents 只声明角色，由用户已有兼容消费者执行，不生成执行工具。
 
-统一 skills 来源按具体目标生成。Codex/Claude Skill 固定进入 Native 包；五个 Portable 目标使用标准 Skill 投影，允许 Portable-only 插件。skillRuntimeFiles 和 generatedSkillRuntimeFiles 用 platforms 选择实际平台，省略时覆盖插件支持平台；核对资源最终存在及引用闭包，不用源码存在代替产物验证。
+平台能力同时包含 kinds 和 features 的 supported/unsupported/unverified、交付方式、具体取值与原因。类别不足用派生 component.kind.<kind> 表达；它不增加默认调用行为。脚本只输出实际可支持部分，未满足部分保留具体 feature/values；不能将未知能力提升为支持。generic 不声称宿主调用或运行能力。
 
-配置定义 v5 的平台替换先作用于原始 definitions/fields，再展开 $ref；内容消费始终使用当前平台的 common/平台覆盖。Native shared-user 是物理包体身份，不把它转换为 common 或其它平台配置。Portable 声明、导出和限制见 Portable 分发（`references/portable-skills.md`）。
+实际 render scope 由固定物理布局决定，不能用 activation scope 替代。Codex/Claude/Gemini/Copilot 共享包固定 user；Codex 项目角色及独立项目包保留真实 project scope。artifacts.scopes、config、命令 producer 和 runtimeConfig 均按 render scope 解释。共享包采用所有实际消费者共同能力；同物理位置冲突须停止该组。
 
-## 维护 capabilities
+Config v5 先按平台替换原始 definitions/fields，再展开引用，值按 defaults < common < platforms[P] 解析；项目 scope 不新增配置存储层。
 
-安装兼容性使用当前 CLI/Core 计算的 requirements：
+## AW 运行要求与真实资格
 
-- declared：插件 manifest 自己声明的 AW 能力；
-- derived：按合同从运行 import 等结构推导的能力；
-- effective：declared 与 derived 的合并结果；
-- detected：静态扫描发现的提示，用于发现可能漏声明的要求。
+requires.aw.capabilities 描述 AW 的运行接口，不能与 Agent 组件能力互换。declared 是作者声明，derived 是结构推导，effective 是合并结果，detected 只是扫描提示。按真实依赖补要求，不给所有插件填能力全集。
 
-Detected 不提供完整运行证明。扫描只覆盖其支持的 SKILL shell 代码块和 manifest executable 等入口，不能穷尽 references、脚本或动态调用。缺少可推导声明时，按实际运行需求补充；不要为消除提示给所有插件添加能力全集。
+修改直接要求时查询 requirements 帮助，使用 add/remove。该操作不代替实际平台实现。共享资源传播按 构建与共享（references/build-and-sharing.md）。
 
-需要调整 manifest 的直接要求时，读取 `aw dev plugin requirements --help`，通过 `aw dev plugin requirements <plugin-dir> --add <capability> --json` 或对应 remove 操作维护。该入口只更新 requires，不替代代码、import 或目标平台的实现。共享资源的传播条件见 构建与共享（`references/build-and-sharing.md`）。
+作者准备可选择明确 profile，不要求本机装客户端，但须保留 basis=profile 及能力输入；unverified 仍未验证。资格候选、确定性测试和真实客户端加载分别报告。通用 Skills 导出按 Portable 分发（references/portable-skills.md），不能用某 Native final 代替另一 profile。
 
-## 验证选择的结果
+## 验证最终结果
 
-核对所选 surface 的最终正文、文件集合、调用 metadata、权限、配置和 capability 要求是否符合其平台声明。模板只替换预期正文，文件规则按声明选择文件；动态投影按 renderer 的实际请求核对。
-
-产物当前性、修改 owner、重建与跨 profile 证据使用 来源与运行包（`references/source-materialization.md`）。
+核对真实 final 的组件集合、正文、调用 metadata、权限、资源和命令闭包；同时核对 omitted、unmet 与部分覆盖。renderer 成功有意空、全部 unmet 与失败的撤销行为不同。按 来源与运行包（references/source-materialization.md）固定 source/profile/config 与字节证据，不从源码声明猜最终动态集合。

@@ -147,6 +147,38 @@
       }
     },
     {
+      "name": "codex-enhance",
+      "source": "./plugins/codex-enhance",
+      "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
+      "interface": {
+        "displayName": "Codex Enhance",
+        "shortDescription": "Codex 技术第二意见与只读事实调查",
+        "capabilities": [
+          "Skills",
+          "Agents"
+        ]
+      },
+      "category": "workflow",
+      "tags": [
+        "codex",
+        "subagent",
+        "explorer",
+        "research",
+        "reasoning",
+        "wait",
+        "advisor"
+      ],
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CLAUDE",
+          "CODEX"
+        ]
+      }
+    },
+    {
       "name": "decision-kit",
       "source": "./plugins/decision-kit",
       "description": "主题对齐、可体验决策与项目领域知识维护；按需组合，保留真实确认与清楚的独立职责。",

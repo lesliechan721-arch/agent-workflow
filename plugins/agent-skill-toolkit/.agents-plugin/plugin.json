@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "agent-skill-toolkit",
-  "version": "0.1.0-beta.15",
+  "version": "0.1.0-beta.16",
   "description": "创建和维护 Agent Skill；由用户启动单体、工作流和公开能力评审或简化，并独立审核 Skill Eval。",
   "marketplace": {
     "category": "workflow",
@@ -17,7 +17,15 @@
   "skills": "./skills",
   "platforms": [
     "codex",
-    "claude"
+    "claude",
+    "antigravity",
+    "cursor",
+    "opencode",
+    "pi",
+    "gemini",
+    "copilot",
+    "grok",
+    "generic"
   ],
   "interface": {
     "displayName": "Agent Skill Toolkit",
@@ -35,8 +43,9 @@
     "aw": {
       "capabilities": [
         "aw.plugin-build-config.v1",
-        "aw.plugin-manifest.v3",
-        "aw.plugin-skills.v1"
+        "aw.plugin-manifest.v4",
+        "aw.plugin-skills.v1",
+        "aw.portable-skills.v1"
       ]
     }
   }

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "browser-use",
+    "version": "0.1.0-beta.5"
+  },
+  "requiredCapabilities": [
+    "aw.plugin-manifest.v4",
+    "aw.plugin-pre-apply.v1",
+    "aw.plugin-skills.v1",
+    "aw.portable-skills.v1"
+  ],
+  "digest": "sha256:56884042d659dc03e97fcbfed24928ca3ef537e9919a2dff89b2a7a0394aff78"
+}

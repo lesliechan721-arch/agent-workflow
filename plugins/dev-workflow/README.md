@@ -9,6 +9,8 @@ aw target set codex claude
 aw plugin install dev-workflow --scope user
 ```
 
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。实际调用控制与客户端能力按目标核对，无法保留的组件语义会显示为未满足。
+
 安装同时提供 decision-kit 和 human-content，分别用于取得有效决定和组织可审阅的材料。
 
 四个流程入口由用户手动选择：`$dev-workflow`、`$dev-design`、`$dev-build`、`$dev-review-loop`。Codex 关闭这些入口的隐式调用，Claude Code 关闭模型自行调用。选择一个入口后，它在自身授权范围内采用完整的共享方法，不要求用户再次启动每个内部阶段。
