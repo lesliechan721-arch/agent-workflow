@@ -15,7 +15,9 @@ test('limits the approved agent observer to the fixed Hosted inventory query', (
   const options = { nativeClient: 'antigravity', nativeClientVersion: '1.3.4', antigravityAgentObservation: true };
   const host = { platform: 'linux', arch: 'x64' };
   assert(usesAntigravityAgentObservation(['agents'], options, host, 'true'));
-  for (const args of [['--agent'], ['agents', '--help'], ['plugin', 'list', '--json']]) {
+  assert(usesAntigravityAgentObservation(['agents', '--output-format', 'json'], options, host, 'true'));
+  for (const args of [['--agent'], ['agents', '--help'], ['agents', '--output-format', 'stream-json'],
+    ['agents', '--output-format', 'json', '--print'], ['plugin', 'list', '--json']]) {
     assert.equal(usesAntigravityAgentObservation(args, options, host, 'true'), false);
   }
   for (const patch of [{ nativeClient: 'cursor' }, { nativeClientVersion: '1.3.5' }, { antigravityAgentObservation: false }]) {

@@ -100,11 +100,13 @@ export async function probeAntigravityLocalManagement(context, command, renderPa
       } else {
         // Official CLI help documents this as an agent inventory, not a prompt.
         // Preserve raw results; no Agent/Skill qualification is inferred here.
-        const target = await run('project-agents-target', ['agents'], context.project);
-        const neutral = await run('project-agents-neutral', ['agents'], context.neutral);
-        item.agentInventory = { target: target.stdout, neutral: neutral.stdout, qualification: 'unverified; raw observation only' };
+        const agentArgs = ['agents', '--output-format', 'json'];
+        const target = await run('project-agents-target', agentArgs, context.project);
+        const neutral = await run('project-agents-neutral', agentArgs, context.neutral);
+        item.agentInventory = { format: 'json', target: target.stdout, neutral: neutral.stdout,
+          qualification: 'unverified; raw agent inventory alone does not establish plugin or Skill scope' };
         await fs.rm(projectDirectory, { recursive: true });
-        const removed = await run('project-agents-removed', ['agents'], context.project);
+        const removed = await run('project-agents-removed', agentArgs, context.project);
         item.agentInventory.removed = removed.stdout;
       }
       const removedTarget = exactRows(await run(`${scope}-removed-target-list`, ['plugin', 'list', '--json'], context.project), name);

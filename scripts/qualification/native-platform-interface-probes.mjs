@@ -144,8 +144,10 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     nativeQualification: 'unverified; interface observations do not qualify Native support' };
   let processFailed = false;
   async function command(id, args, cwd = context.project) {
+    const agentInventory = args[0] === 'agents' && (args.length === 1
+      || args.length === 3 && args[1] === '--output-format' && args[2] === 'json');
     const agentObservation = options.antigravityAgentObservation === true && platform === 'antigravity'
-      && report.commands[0]?.versionMatched === true && args.length === 1 && args[0] === 'agents';
+      && report.commands[0]?.versionMatched === true && agentInventory;
     const record = { id, args, cwd, executable: launcher.executable, prefix: launcher.prefix,
       stdin: 'EOF', timeoutMs: 30_000,
       ...(agentObservation ? { observation: 'approved Antigravity 1.3.4 Linux x64 agents inventory only; not Provider grading or OS containment' } : {}) };
@@ -203,6 +205,11 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     && report.commands.filter(entry => entry.id.endsWith('-plugin-list')).length === 2
     && report.commands.filter(entry => entry.id.endsWith('-plugin-list')).every(entry => entry.stdout.trim() === '[]')) {
     report.management = await probeAntigravityLocalManagement({ ...context, executable: launcher.executable }, command, renderPackage);
+    report.scope = {
+      status: report.management.scopes.every(scope => scope.scopeEvidence === 'observed') ? 'observed' : 'unverified',
+      reason: 'Candidate management ran; only the per-scope effective plugin inventories establish scope. Agent inventory alone does not qualify plugin or Skill scope.',
+      scopes: report.management.scopes.map(({ scope, scopeEvidence }) => ({ scope, status: scopeEvidence })),
+    };
     if (report.management.status !== 'observed') { report.status = 'failed'; report.reason = 'initial-management-or-scope-unverified'; }
   }
   report.authentication.failurePossible = report.commands.some(command => command.authenticationFailurePossible);
