@@ -69,11 +69,9 @@ export async function prepareEnvironment(root) {
 export const fixedClientVersion = platform => platform === 'antigravity' ? '1.3.4' : clients[platform].version;
 
 export function usesAntigravityAgentObservation(args, options, host = process, hosted = process.env.GITHUB_ACTIONS) {
-  const inventory = args[0] === 'agents' && (args.length === 1
-    || args.length === 3 && args[1] === '--output-format' && args[2] === 'json');
   return hosted === 'true' && host.platform === 'linux' && host.arch === 'x64'
     && options.nativeClient === 'antigravity' && options.nativeClientVersion === '1.3.4'
-    && options.antigravityAgentObservation === true && inventory;
+    && options.antigravityAgentObservation === true && args.length === 1 && args[0] === 'agents';
 }
 
 export async function execute(launcher, args, options) {

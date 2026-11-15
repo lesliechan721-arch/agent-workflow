@@ -144,10 +144,8 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     nativeQualification: 'unverified; interface observations do not qualify Native support' };
   let processFailed = false;
   async function command(id, args, cwd = context.project) {
-    const agentInventory = args[0] === 'agents' && (args.length === 1
-      || args.length === 3 && args[1] === '--output-format' && args[2] === 'json');
     const agentObservation = options.antigravityAgentObservation === true && platform === 'antigravity'
-      && report.commands[0]?.versionMatched === true && agentInventory;
+      && report.commands[0]?.versionMatched === true && args.length === 1 && args[0] === 'agents';
     const record = { id, args, cwd, executable: launcher.executable, prefix: launcher.prefix,
       stdin: 'EOF', timeoutMs: 30_000,
       ...(agentObservation ? { observation: 'approved Antigravity 1.3.4 Linux x64 agents inventory only; not Provider grading or OS containment' } : {}) };
@@ -207,7 +205,7 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
     report.management = await probeAntigravityLocalManagement({ ...context, executable: launcher.executable }, command, renderPackage);
     report.scope = {
       status: report.management.scopes.every(scope => scope.scopeEvidence === 'observed') ? 'observed' : 'unverified',
-      reason: 'Candidate management ran; only the per-scope effective plugin inventories establish scope. Agent inventory alone does not qualify plugin or Skill scope.',
+      reason: 'Candidate management ran; raw read-only Skill output must be interpreted before it can establish effective Project scope.',
       scopes: report.management.scopes.map(({ scope, scopeEvidence }) => ({ scope, status: scopeEvidence })),
     };
     if (report.management.status !== 'observed') { report.status = 'failed'; report.reason = 'initial-management-or-scope-unverified'; }
@@ -238,9 +236,9 @@ export async function runInterfaceProbes(options) {
     boundary: { hostedOnly: true, host: 'ubuntu-24.04 x64', qualification: 'unverified', scope: 'unverified',
       credentials: 'empty temporary runtime whitelist', stdin: 'EOF', sessions: 'none', models: 'none',
       network: 'blocking HTTP(S)/ALL proxies for client commands; not an OS firewall',
-      clientProcessContract: 'verified-observed except explicitly approved Antigravity 1.3.4 Linux x64 agents inventory observed mode; original deadlines, marker/identity and normal descendant exit/cleanup retained; not Provider or OS qualification',
+      clientProcessContract: 'verified-observed for every executed command, including the exact approved read-only /skills query; original deadlines, marker/identity and normal descendant exit/cleanup retained',
       autoUpdate: 'AGY_CLI_DISABLE_AUTO_UPDATE=true in the isolated whitelist; generic DISABLE_AUTOUPDATER is not sufficient for the pinned client',
-      localManagement: 'Antigravity Linux x64 candidate User management and Project effective-scope investigation; agents is an agent inventory observation only, never a substitute for effective plugin or Skill scope. No public AW or model session is run by this interface probe.' }, clients: [] };
+      localManagement: 'Antigravity Linux x64 candidate User management and Project ordinary Skill effective-scope investigation. Exact -p /skills --output-format json is explicitly approved as a local read-only command, not a natural language prompt or model turn. No Agent canary, public AW or model session is run.' }, clients: [] };
   try {
     if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || process.arch !== 'x64') throw new Error('hosted-linux-x64-required');
     report.candidate = await verifyCandidate(options.candidate);
@@ -276,7 +274,7 @@ export async function runInterfaceProbes(options) {
           client.projectSetup = commandEvidence(setup);
         }
         Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }, execute,
-          platform === 'antigravity' ? { localManagement: true, antigravityAgentObservation: true } : {}));
+          platform === 'antigravity' ? { localManagement: true } : {}));
         client.entriesAfter = await Promise.all(entries.map(async entry => ({
           path: entry.path, sha256: sha256(await fs.readFile(entry.path)),
         })));

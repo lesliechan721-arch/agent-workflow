@@ -39,7 +39,7 @@ export async function probeAntigravityLocalManagement(context, command, renderPa
   for (const scope of scopes) {
     const name = `aw-local-management-${scope}`;
     const root = path.join(context.root, `management-${scope}`);
-    const ctx = { ...context, root, platform: 'antigravity', scope, pluginName: name, observeAgent: scope === 'project',
+    const ctx = { ...context, root, platform: 'antigravity', scope, pluginName: name,
       skillName: 'management-check', bundle: path.join(root, name) };
     const item = { scope, status: 'unverified', name, scopeEvidence: 'unverified', revisions: [] };
     report.scopes.push(item);
@@ -98,16 +98,17 @@ export async function probeAntigravityLocalManagement(context, command, renderPa
         report.dynamicConsumerBytes = 'observed-at-native-inventory-path';
         await run('user-uninstall', ['plugin', 'uninstall', name], context.project);
       } else {
-        // Official CLI help documents this as an agent inventory, not a prompt.
-        // Preserve raw results; no Agent/Skill qualification is inferred here.
-        const agentArgs = ['agents', '--output-format', 'json'];
-        const target = await run('project-agents-target', agentArgs, context.project);
-        const neutral = await run('project-agents-neutral', agentArgs, context.neutral);
-        item.agentInventory = { format: 'json', target: target.stdout, neutral: neutral.stdout,
-          qualification: 'unverified; raw agent inventory alone does not establish plugin or Skill scope' };
+        // The fixed 1.3.4 changelog defines this exact slash command as a local
+        // read-only report without an agent turn. The user approved this query.
+        // Preserve raw results until the real response schema is established.
+        const skillArgs = ['-p', '/skills', '--output-format', 'json'];
+        const target = await run('project-skills-target', skillArgs, context.project);
+        const neutral = await run('project-skills-neutral', skillArgs, context.neutral);
+        item.skillInventory = { format: 'json', target: target.stdout, neutral: neutral.stdout,
+          qualification: 'unverified; raw Skill output has not established effective scope' };
         await fs.rm(projectDirectory, { recursive: true });
-        const removed = await run('project-agents-removed', agentArgs, context.project);
-        item.agentInventory.removed = removed.stdout;
+        const removed = await run('project-skills-removed', skillArgs, context.project);
+        item.skillInventory.removed = removed.stdout;
       }
       const removedTarget = exactRows(await run(`${scope}-removed-target-list`, ['plugin', 'list', '--json'], context.project), name);
       const removedNeutral = exactRows(await run(`${scope}-removed-neutral-list`, ['plugin', 'list', '--json'], context.neutral), name);

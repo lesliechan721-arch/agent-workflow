@@ -36,7 +36,10 @@ async function nativeFixture(ctx, { projectVisible = true, staleDynamic = false,
     }
     if (id === 'user-uninstall' && !retainOnUninstall) { installed = false; await fs.rm(cache, { recursive: true }); }
     const present = await fs.stat(projectDirectory).then(() => true, () => false);
-    if (args[0] === 'agents') return result(cwd === ctx.project && present ? 'management-observer (workspace plugin)' : 'Built-in agents only');
+    if (args[0] === '-p') {
+      assert.deepEqual(args, ['-p', '/skills', '--output-format', 'json']);
+      return result(JSON.stringify({ skills: cwd === ctx.project && present ? [{ name: 'management-check' }] : [] }));
+    }
     const rows = [];
     if (installed) {
       const manifest = JSON.parse(await fs.readFile(path.join(cache, '.antigravity-plugin/plugin.json'), 'utf8'));
@@ -103,15 +106,15 @@ test('stops immediately when the native process contract fails', async t => {
   assert.equal(observed.scopes.length, 1);
 });
 
-// Test Value Gate: neither successful publication nor raw agent output can
+// Test Value Gate: neither successful publication nor raw Skill output can
 // silently turn an unconfirmed effective plugin scope into a qualified scope.
 test('keeps a missing effective Project entry unverified', async t => {
   const ctx = await fixture(t); const fake = await nativeFixture(ctx, { projectVisible: false });
   const observed = await probeAntigravityLocalManagement(ctx, fake.command, renderPackage);
   assert.equal(observed.scopes[0].status, 'observed');
   assert.equal(observed.scopes[1].scopeEvidence, 'unverified');
-  assert(observed.scopes[1].agentInventory, JSON.stringify(observed));
-  assert.match(observed.scopes[1].agentInventory.target, /management-observer/u);
+  assert(observed.scopes[1].skillInventory, JSON.stringify(observed));
+  assert.match(observed.scopes[1].skillInventory.target, /management-check/u);
   assert.equal(observed.scopes[1].removed, true); assert.equal(observed.status, 'unverified');
 });
 
@@ -148,10 +151,10 @@ test('reads raw native paths internally and redacts the completed management rep
   assert.match(report.management.scopes[0].revisions[0].consumers[0].path, /<TEMP_ROOT>/u);
 });
 
-// Test Value Gate: the accepted independent-group observation must be recorded
-// without waiving timeout, cleanup, or strict management-command requirements.
-test('records the approved agents mode and retains its process failures', async t => {
-  for (const failed of [false, true]) await t.test(failed ? 'deadline remains failed' : 'inventory mode is disclosed', async sub => {
+// Test Value Gate: the exact approved read-only Skill query keeps the strict
+// observer; deadline failure and an observed-mode downgrade remain blocking.
+test('keeps the approved read-only Skill query strict and preserves failures', async t => {
+  for (const mode of ['success', 'deadline', 'wrong-mode']) await t.test(mode, async sub => {
     const ctx = await fixture(sub); const fake = await nativeFixture(ctx); let installs = 0;
     const completed = stdout => ({ stdout, stderr: '', exitCode: 0, signal: null, timedOut: false,
       cancelled: false, maxBufferExceeded: false, terminationReason: 'complete',
@@ -164,16 +167,18 @@ test('records the approved agents mode and retains its process failures', async 
         const id = args[1] === 'install' ? `user-install-${++installs}`
           : args[1] === 'uninstall' ? 'user-uninstall' : args.join('-');
         const result = completed((await fake.command(id, args, options.cwd)).stdout);
-        if (args[0] !== 'agents') { assert.equal(options.antigravityAgentObservation, undefined); return result; }
-        assert.equal(options.antigravityAgentObservation, true); assert.equal(options.nativeClientVersion, '1.3.4');
+        assert.equal(options.antigravityAgentObservation, undefined);
+        if (args[0] !== '-p') return result;
+        assert.deepEqual(args, ['-p', '/skills', '--output-format', 'json']);
         assert.equal(options.timeoutMs, 30_000); assert.equal(options.stdin, '');
-        return { ...result, containmentMode: 'observed', gradingEvidenceAccepted: false,
-          ...(failed ? { timedOut: true, terminationReason: 'timeout' } : {}) };
-      }, { localManagement: true, antigravityAgentObservation: true });
-    const inventories = report.commands.filter(command => command.args[0] === 'agents');
-    assert(inventories.length > 0); assert(inventories.every(command => command.observation));
-    assert.equal(report.status, failed ? 'failed' : 'observed');
-    if (failed) assert.equal(report.processContract, 'failed');
-    else assert.match(report.processContract, /approved agents inventories observed/u);
+        return { ...result,
+          ...(mode === 'wrong-mode' ? { containmentMode: 'observed', gradingEvidenceAccepted: false } : {}),
+          ...(mode === 'deadline' ? { timedOut: true, terminationReason: 'timeout' } : {}) };
+      }, { localManagement: true });
+    const inventories = report.commands.filter(command => command.args[0] === '-p');
+    assert(inventories.length > 0); assert(inventories.every(command => command.observation === undefined));
+    assert.equal(report.status, mode === 'success' ? 'observed' : 'failed');
+    if (mode !== 'success') assert.equal(report.processContract, 'failed');
+    else assert(inventories.every(command => command.processManagement.mode === 'verified-observed'));
   });
 });
