@@ -1,18 +1,20 @@
 import { Ajv2020, type ErrorObject } from 'ajv/dist/2020.js'
 
-import schema from '../schemas/plugin-manifest-v3.json' with { type: 'json' }
-import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
+import schema from '../schemas/plugin-manifest-v4.json' with { type: 'json' }
+import type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js'
 
-export type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
+export type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js'
 
-export const PLUGIN_MANIFEST_SCHEMA_VERSION = 3 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 19
+export const PLUGIN_MANIFEST_SCHEMA_VERSION = 4 as const
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 20
 
 const ajv = new Ajv2020({
   allErrors: true,
   strict: true,
+  // Reuse referenced validators to avoid expanding shared schemas during CLI startup.
+  inlineRefs: false,
 })
-const validateV3 = ajv.compile<PluginManifestSourceV3>(schema)
+const validateV4 = ajv.compile<PluginManifestSourceV4>(schema)
 
 export class PluginManifestStructureError extends Error {
   readonly issues: ErrorObject[]
@@ -37,39 +39,7 @@ function formatIssue(issue: ErrorObject): string {
 
 export function assertPluginManifestStructure(
   value: unknown,
-): asserts value is PluginManifestSourceV3 {
-  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    const manifest = value as Record<string, unknown>
-    if (Object.hasOwn(manifest, 'distributions')) {
-      throw new PluginManifestStructureError(
-        'pluginPlatformsMigrationRequired: Remove distributions.agentSkills, merge its Skills into ./skills, and declare supported canonical targets in platforms. Rebuild the plugin.',
-      )
-    }
-    const marketplace = manifest.marketplace as { policy?: unknown } | undefined
-    if (marketplace?.policy !== null && typeof marketplace?.policy === 'object'
-      && Object.hasOwn(marketplace.policy, 'products')) {
-      throw new PluginManifestStructureError(
-        'pluginPlatformsMigrationRequired: marketplace.policy.products has been removed. Declare supported canonical targets in platforms, then rebuild the plugin.',
-      )
-    }
-    const artifacts = manifest.artifacts as { targets?: unknown } | undefined
-    if (Array.isArray(artifacts?.targets) && artifacts.targets.some((entry) =>
-      entry !== null && typeof entry === 'object' && Object.hasOwn(entry, 'delivery'))) {
-      throw new PluginManifestStructureError(
-        'nativeSkillDeliveryMigrationRequired: Remove artifacts.targets[].delivery. codex.skill and claude.skill use Native shared-user delivery. Rebuild the plugin.',
-      )
-    }
-    const buildConfig = manifest.buildConfig as Record<string, unknown> | undefined
-    for (const selector of ['skillRuntimeFiles', 'generatedSkillRuntimeFiles']) {
-      const entries = buildConfig?.[selector]
-      if (Array.isArray(entries) && entries.some((entry) =>
-        entry !== null && typeof entry === 'object' && Object.hasOwn(entry, 'distributions'))) {
-        throw new PluginManifestStructureError(
-          `pluginPlatformsMigrationRequired: buildConfig.${selector}[].distributions has been removed. Use canonical target IDs in platforms, then rebuild the plugin.`,
-        )
-      }
-    }
-  }
+): asserts value is PluginManifestSourceV4 {
   if (
     value !== null
     && typeof value === 'object'
@@ -81,16 +51,8 @@ export function assertPluginManifestStructure(
       `Unsupported plugin manifest schemaVersion: expected ${PLUGIN_MANIFEST_SCHEMA_VERSION}.`,
     )
   }
-  if (!validateV3(value)) {
-    const issues = validateV3.errors ?? []
-    if (issues.some((issue) => issue.instancePath.endsWith('/runtimeConfig')
-      && issue.keyword === 'additionalProperties'
-      && ['resourceVersion', 'artifactIds'].includes(issue.params.additionalProperty))) {
-      throw new PluginManifestStructureError(
-        'runtimeConfigMigrationRequired: Remove runtimeConfig.resourceVersion and runtimeConfig.artifactIds; keep only keys and require aw.installed-runtime-config.v2. Rebuild, then sync or reinstall.',
-        issues,
-      )
-    }
+  if (!validateV4(value)) {
+    const issues = validateV4.errors ?? []
     throw new PluginManifestStructureError(
       `Invalid plugin manifest structure: ${issues.map(formatIssue).join('; ')}`,
       issues,
@@ -100,7 +62,7 @@ export function assertPluginManifestStructure(
 
 export function normalizePluginManifestSchemaVersion(
   value: unknown,
-): PluginManifestSourceV3 {
+): PluginManifestSourceV4 {
   assertPluginManifestStructure(value)
   return {
     ...value,
@@ -124,9 +86,12 @@ export * from './plugin-requirements.js'
 export * from './portable-skill-validation.js'
 export * from './skill-authoring.js'
 export * from './skill-frontmatter-capabilities.js'
-export * from './slash-commands.js'
 export * from './template-engine.js'
 export type * from './types.js'
 
 export * from './managed-commands.js';
 export * from './native-tools.js';
+
+export * from './plugin-components.js'
+
+export * from './hook-handlers.js';

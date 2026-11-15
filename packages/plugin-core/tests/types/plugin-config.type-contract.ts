@@ -5,9 +5,9 @@ import type {
   PluginConfigScalarField,
   PluginConfigStringFormat,
 } from '../../src/types.js'
-import type { PluginManifestSourceV3 } from '../../src/index.js'
+import type { PluginManifestSourceV4 } from '../../src/index.js'
 
-type GeneratedConfigFields = NonNullable<PluginManifestSourceV3['config']>['fields']
+type GeneratedConfigFields = NonNullable<PluginManifestSourceV4['config']>['fields']
 type GeneratedConfigField = NonNullable<GeneratedConfigFields[string]>
 type GeneratedFixedObjectField = Extract<GeneratedConfigField, { properties: object }>
 type GeneratedArrayField = Extract<GeneratedConfigField, { type: 'array' }>
@@ -144,14 +144,14 @@ export const fixedObjectChildWithDefault: PluginConfigObjectPropertyField = {
   default: 'safe',
 }
 
-export const sourceConfigV3: NonNullable<PluginManifestSourceV3['config']> = {
+export const sourceConfigV3: NonNullable<PluginManifestSourceV4['config']> = {
   schemaVersion: 3,
   definitions: { scalar: { type: 'string' }, profile: { type: 'object', properties: { model: { $ref: '#/config/definitions/scalar', required: true } } } },
   fields: { profile: { $ref: '#/config/definitions/profile', default: { model: 'local' } } },
   presentation: { summaries: { compact: { kind: 'join', parts: [{ path: '/model', format: 'raw' }], separator: '/', missing: 'unset' } }, fieldViews: { profile: { summary: 'compact' } } },
 }
 
-export const sourceRefCannotOverrideType: import('../../src/generated/plugin-manifest-v3.js').ConfigReference = {
+export const sourceRefCannotOverrideType: import('../../src/generated/plugin-manifest-v4.js').ConfigReference = {
   $ref: '#/config/definitions/scalar',
   // @ts-expect-error A reference cannot replace its definition type.
   type: 'number',
@@ -166,7 +166,7 @@ export const compiledConfigHasNoRefs: import('../../src/types.js').PluginConfigD
   },
 }
 
-export const sourceConfigV4: NonNullable<PluginManifestSourceV3['config']> = {
+export const sourceConfigV4: NonNullable<PluginManifestSourceV4['config']> = {
   schemaVersion: 4,
   fields: { commands: { type: 'array', items: { type: 'object', properties: {
     adapter: { type: 'string' },
@@ -206,7 +206,7 @@ export const sensitiveFieldRejectsConst: PluginConfigScalarField = {
   const: 'secret',
 }
 
-export const sourceConfigV5: NonNullable<PluginManifestSourceV3['config']> = {
+export const sourceConfigV5: NonNullable<PluginManifestSourceV4['config']> = {
   schemaVersion: 5,
   definitions: { profile: { type: 'object', properties: { executor: { type: 'string' } } } },
   fields: { profile: { $ref: '#/config/definitions/profile', default: { executor: 'native' } } },

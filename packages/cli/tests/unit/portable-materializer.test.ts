@@ -10,7 +10,6 @@ import {
   materializePortableSkillsFromCatalog,
 } from '../../src/portable/materializer.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
-import { getArtifactSourceBundleRelativePath } from '../../src/utils/artifact-sources.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import {
@@ -21,7 +20,7 @@ import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import * as processTree from '../../src/utils/process-tree.js';
-import * as sourceBinding from '../../src/review/source-binding.js';
+import * as pluginScripts from '../../src/utils/plugin-scripts.js';
 
 const roots: string[] = [];
 
@@ -33,7 +32,7 @@ async function tempRoot(label: string): Promise<string> {
 
 function baseManifest(name: string): PluginManifestSource {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     name,
     version: '0.1.0',
     description: `${name} fixture`,
@@ -64,10 +63,10 @@ async function pluginFixture(
   const rootDir = path.join(parent, manifest.name);
   const manifestPath = path.join(rootDir, '.agents-plugin', 'plugin.json');
   await fs.outputJson(manifestPath, manifest);
-  await fs.ensureDir(path.join(rootDir, 'skills'));
+  if (manifest.skills) await fs.ensureDir(path.join(rootDir, 'skills'));
   return {
     sourceId: 'fixture',
-    sourceIdentity: 'fixture-generation',
+    sourceIdentity: `sha256:${'1'.repeat(64)}`,
     pluginId: `fixture/${manifest.name}`,
     rootDir,
     manifestPath,
@@ -89,35 +88,31 @@ describe('portable materializer', () => {
       const marker = path.join(root, 'renderer-started');
       if (kind !== 'static') {
         manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
-        manifest.artifacts = { targets: [{
-          id: 'portable', platform: 'generic', distribution: 'agent-skills', target: 'agent-skills.skill',
-          kind: 'skill', scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'portable', sourceDirs: ['./skills/portable'],
-        }] };
+        manifest.skills = undefined;
+        manifest.artifacts = { configKeys: [], scopes: ['user'] };
       }
       const plugin = await pluginFixture(root, manifest);
-      await writeSkill(plugin.rootDir, 'portable');
+      if (kind === 'static') await writeSkill(plugin.rootDir, 'portable');
       if (kind !== 'static') {
         await fs.outputFile(path.join(plugin.rootDir, 'render.mjs'), `
           import fs from 'node:fs';
           fs.writeFileSync(${JSON.stringify(marker)}, 'started');
-          console.log(JSON.stringify({ version: 2, artifacts: [{
-            id: 'portable', platform: 'generic', distribution: 'agent-skills', target: 'agent-skills.skill',
-            kind: 'skill', state: 'present', refreshKeys: [], skillKey: 'portable',
+          console.log(JSON.stringify({ version: 3, components: [{
+            id: 'portable', kind: 'skill', name: 'portable',
             content: { files: {
-              'SKILL.md': '---\\nname: portable\\ndescription: Portable fixture.\\n---\\nBody.\\n',
-              'README.md': '# Portable\\n',
+              'SKILL.md': { text: '---\\nname: portable\\ndescription: Portable fixture.\\n---\\nBody.\\n' },
+              'README.md': { text: '# Portable\\n' },
             } },
-          }] }));
+          }], omitted: [], unmet: [] }));
         `);
       }
       const env = { ...process.env, AW_HOME: path.join(root, 'aw-home') };
-      // Keep real host paths during config resolution. Only simulate the native admission boundary.
-      const resolveConfig = sourceBinding.resolvePortablePluginProfileConfig;
+      // Simulate only Windows admission after the real host paths are resolved.
+      const prepareDirectories = pluginScripts.preparePluginScriptDirectories;
       let platform: ReturnType<typeof vi.spyOn> | undefined;
-      vi.spyOn(sourceBinding, 'resolvePortablePluginProfileConfig').mockImplementation(async (options) => {
-        const result = await resolveConfig(options);
+      vi.spyOn(pluginScripts, 'preparePluginScriptDirectories').mockImplementation(async (directory) => {
+        await prepareDirectories(directory);
         platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-        return result;
       });
       const prepare = vi.spyOn(processTree, 'prepareWindowsJobHelper').mockImplementation(async () => {
         platform?.mockRestore();
@@ -152,26 +147,23 @@ describe('portable materializer', () => {
       manifest.requires = { aw: { capabilities: ['aw.managed-commands.v1'] } };
       if (kind === 'dynamic') {
         manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
-        manifest.artifacts = { targets: [{
-          id: 'portable', platform: 'generic', distribution: 'agent-skills', target: 'agent-skills.skill',
-          kind: 'skill', scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'portable',
-        }] };
+        manifest.skills = undefined;
+        manifest.artifacts = { configKeys: [], scopes: ['user'] };
       }
       const plugin = await pluginFixture(root, manifest);
       if (kind === 'static') {
         await writeSkill(plugin.rootDir, 'portable', 'Use {{aw.command:tools/run}}.');
       } else {
-        await fs.ensureDir(path.join(plugin.rootDir, 'agent-skills', 'skills'));
+        await fs.ensureDir(path.join(plugin.rootDir, 'scripts'));
         await fs.outputFile(path.join(plugin.rootDir, 'render.mjs'), `
-          console.log(JSON.stringify({ version: 2, artifacts: [{
-            id: 'portable', platform: 'generic', distribution: 'agent-skills', target: 'agent-skills.skill',
-            kind: 'skill', state: 'present', refreshKeys: [], skillKey: 'portable',
+          console.log(JSON.stringify({ version: 3, components: [{
+            id: 'portable', kind: 'skill', name: 'portable',
             content: { files: {
-              'SKILL.md': '---\\nname: portable\\ndescription: Portable fixture.\\n---\\nBody.\\n',
-              'README.md': '# Portable\\n',
-              'references/command.md': 'Use {{aw.command:tools/run}}.',
+              'SKILL.md': { text: '---\\nname: portable\\ndescription: Portable fixture.\\n---\\nBody.\\n' },
+              'README.md': { text: '# Portable\\n' },
+              'references/command.md': { text: 'Use {{aw.command:tools/run}}.' },
             } },
-          }] }));
+          }], omitted: [], unmet: [] }));
         `);
       }
       const outputRoot = path.join(root, 'output');
@@ -180,7 +172,7 @@ describe('portable materializer', () => {
       platform: 'generic',
         plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root,
         env, outputRoot,
-      })).rejects.toThrow('managedCommandPortableUnsupported');
+      })).rejects.toThrow(/commandReferenceInvalid.*Generic Skills cannot bind native managed commands/u);
       await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
       await expect(fs.pathExists(path.join(env.AW_HOME, 'commands'))).resolves.toBe(false);
     },
@@ -190,7 +182,7 @@ describe('portable materializer', () => {
     const root = await tempRoot('aw-portable-catalog-wrapper-');
     const snapshotRoot = path.join(root, 'snapshot');
     await createCatalogSnapshotFixture(snapshotRoot, 'portable', [], 'portable\n', (manifest) => {
-      manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
+      manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.', coverage: ['main'] }] };
       manifest.platforms = ['generic']; manifest.skills = './skills';
     });
     await writeSkill(path.join(snapshotRoot, 'plugins', 'portable', 'generic'), 'catalog-skill');
@@ -286,7 +278,7 @@ describe('portable materializer', () => {
         schemaVersion: 1,
         kind: 'aw-plugin-requirements',
         plugin: { version: '0.1.0' },
-        requiredCapabilities: ['aw.plugin-manifest.v3', 'aw.plugin-skills.v1', 'aw.portable-skills.v1'],
+        requiredCapabilities: ['aw.plugin-manifest.v4', 'aw.plugin-skills.v1', 'aw.portable-skills.v1'],
         digest: expect.stringMatching(/^sha256:/u),
       });
     }
@@ -360,89 +352,40 @@ describe('portable materializer', () => {
     await materialized.cleanup();
   });
 
-  it('merges dynamic sources, static runtime files, and renderer overlay while omitting disabled targets', async () => {
+  it('publishes the explicit dynamic resource closure and omits disabled components', async () => {
     const root = await tempRoot('aw-portable-dynamic-');
     const manifest: PluginManifestSource = {
-      ...baseManifest('dynamic'),
+      ...baseManifest('dynamic'), skills: undefined,
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
-      artifacts: {
-        targets: [
-          {
-            id: 'enabled',
-            platform: 'generic', distribution: 'agent-skills',
-            target: 'agent-skills.skill',
-            kind: 'skill',
-            scopes: ['project'],
-            states: ['present'],
-            refreshKeys: [],
-            skillKey: 'owned',
-            sourceDirs: ['./skills/owned'],
-          },
-          {
-            id: 'disabled',
-            platform: 'generic', distribution: 'agent-skills',
-            target: 'agent-skills.skill',
-            kind: 'skill',
-            scopes: ['project'],
-            states: ['disabled'],
-            refreshKeys: [],
-            skillKey: 'disabled',
-          },
-        ],
-      },
+      artifacts: { configKeys: [], sourceDirs: ['./resources'], scopes: ['project'] },
     };
     const plugin = await pluginFixture(root, manifest);
-    await writeSkill(plugin.rootDir, 'owned', 'Static runtime input.');
-    await fs.outputFile(path.join(
-      plugin.rootDir,
-      'skills/owned',
-      'references',
-      'source.txt',
-    ), 'source');
-    await fs.outputFile(path.join(
-      plugin.rootDir,
-      'skills/owned',
-      'README.md',
-    ), '# Owned\n');
-    await fs.outputFile(
-      path.join(plugin.rootDir, 'scripts', 'render.mjs'),
-      `console.log(JSON.stringify({version:2,artifacts:[
-        {id:'enabled',platform:'generic',distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'present',skillKey:'owned',refreshKeys:[],content:{files:{'SKILL.md':'---\\nname: owned\\ndescription: rendered\\n---\\nRendered.\\n','references/source.txt':'overlay'}}},
-        {id:'disabled',platform:'generic',distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'disabled',skillKey:'disabled',refreshKeys:[]}
-      ]}))`,
-    );
-
+    await fs.outputFile(path.join(plugin.rootDir, 'resources', 'source.txt'), 'source');
+    await fs.outputFile(path.join(plugin.rootDir, 'resources', 'undeclared.txt'), 'must-not-copy');
+    const render = (authorOnly = false): string => `console.log(JSON.stringify({version:3,components:[
+      {id:'enabled',kind:'skill',name:'owned',content:{files:{
+        'SKILL.md':{text:'---\\nname: owned\\ndescription: rendered\\n---\\nRendered.\\n'},
+        'README.md':{text:'# Owned\\n'},
+        'references/source.txt':{source:{kind:'bundle',path:'resources/source.txt'}},
+        ${authorOnly ? "'evals/private.md':{text:'author-only'}," : ''}
+      }}}
+    ],omitted:[{id:'disabled',kind:'skill',reason:'config-disabled'}],unmet:[]}))`;
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'render.mjs'), render());
     const materialized = await materializePortableSkills({
-      platform: 'generic',
-      plugins: [plugin],
-      pluginId: plugin.pluginId!,
-      scope: 'project',
-      cwd: root,
+      platform: 'generic', plugins: [plugin], pluginId: plugin.pluginId!, scope: 'project', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home') },
     });
-    expect(materialized.candidates).toMatchObject([
-      { name: 'owned', description: 'rendered', dynamic: true },
-    ]);
-    expect(await fs.readFile(path.join(materialized.rootDir, 'skills', 'owned', 'references', 'source.txt'), 'utf8'))
-      .toBe('overlay');
+    expect(materialized.candidates).toMatchObject([{ name: 'owned', description: 'rendered', dynamic: true }]);
+    expect(await fs.readFile(path.join(materialized.rootDir, 'skills', 'owned', 'references', 'source.txt'), 'utf8')).toBe('source');
+    expect(await fs.pathExists(path.join(materialized.rootDir, 'skills', 'owned', 'undeclared.txt'))).toBe(false);
     expect(await fs.pathExists(path.join(materialized.rootDir, 'skills', 'disabled'))).toBe(false);
+    expect(materialized.preparation.flatMap((unit) => unit.omitted)).toContainEqual({ id: 'disabled', kind: 'skill', reason: 'config-disabled' });
     await materialized.cleanup();
-
-    await fs.outputFile(
-      path.join(plugin.rootDir, 'scripts', 'render.mjs'),
-      `console.log(JSON.stringify({version:2,artifacts:[
-        {id:'enabled',platform:'generic',distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'present',skillKey:'owned',refreshKeys:[],content:{files:{'evals/private.md':'author-only'}}},
-        {id:'disabled',platform:'generic',distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'disabled',skillKey:'disabled',refreshKeys:[]}
-      ]}))`,
-    );
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'render.mjs'), render(true));
     await expect(materializePortableSkills({
-      platform: 'generic',
-      plugins: [plugin],
-      pluginId: plugin.pluginId!,
-      scope: 'project',
-      cwd: root,
+      platform: 'generic', plugins: [plugin], pluginId: plugin.pluginId!, scope: 'project', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home-author-only') },
-    })).rejects.toThrow('renderer returned author-only path "evals/private.md"');
+    })).rejects.toThrow(/reserved Skill file.*evals\/private.md/u);
   });
 
   it('rejects name collisions, sensitive config leaks, and invalid portable SKILL.md', async () => {
@@ -485,7 +428,7 @@ describe('portable materializer', () => {
       plugins: [secret], pluginId: secret.pluginId!, scope: 'user', cwd: root,
       env: secretEnv,
     }).then(() => undefined, (error: unknown) => error);
-    expect(String(contentFailure)).toContain('portableSkillSensitiveConfigExposed');
+    expect(String(contentFailure)).toContain('componentSensitiveConfigExposed');
     expect(String(contentFailure)).not.toContain('plain-secret');
 
     await writeSkill(secret.rootDir, 'leak', 'Safe content.');
@@ -498,7 +441,7 @@ describe('portable materializer', () => {
       plugins: [secret], pluginId: secret.pluginId!, scope: 'user', cwd: root,
       env: secretEnv,
     }).then(() => undefined, (error: unknown) => error);
-    expect(String(pathFailure)).toContain('portableSkillSensitiveConfigExposed');
+    expect(String(pathFailure)).toContain('componentSensitiveConfigExposed');
     expect(String(pathFailure)).not.toContain('plain-secret');
 
     const receiptName = 'receipt-safe-secret';
@@ -563,121 +506,72 @@ describe('portable materializer', () => {
     })).rejects.toThrow('ASCII lowercase hyphen-case');
   });
 
-  it('uses only exact portable runtime projections for a dynamic owner', async () => {
+  it('uses only verified runtime imports and the declared resource closure for a dynamic owner', async () => {
     const root = await tempRoot('aw-portable-exact-projection-');
-    const providerManifest: PluginManifestSource = {
-      ...baseManifest('provider'),
-      skills: './skills',
-      buildConfig: { runtimeExports: [{
-        name: 'runtime', source: './runtime.txt',
-        requires: { aw: { capabilities: [] } },
-      }] },
-    };
-    const provider = await pluginFixture(root, providerManifest);
-    await fs.outputFile(path.join(provider.rootDir, 'skills', 'native', 'SKILL.md'), '---\nname: native\ndescription: native\n---\n');
-    await fs.outputFile(path.join(provider.rootDir, 'skills', 'native', 'README.md'), '# Native\n');
+    const provider = await pluginFixture(root, {
+      ...baseManifest('provider'), skills: undefined,
+      buildConfig: { runtimeExports: [{ name: 'runtime', source: './runtime.txt', requires: { aw: { capabilities: [] } } }] },
+    });
     await fs.outputFile(path.join(provider.rootDir, 'runtime.txt'), 'projected');
-    const consumerManifest: PluginManifestSource = {
-      ...baseManifest('consumer'),
-      skills: './skills',
+    const consumer = await pluginFixture(root, {
+      ...baseManifest('consumer'), skills: undefined,
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
-      artifacts: { targets: [{
-        id: 'owned', platform: 'generic', distribution: 'agent-skills', target: 'agent-skills.skill', kind: 'skill',
-        scopes: ['project'], states: ['present'], refreshKeys: [], skillKey: 'owned',
-        sourceDirs: ['./skills/owned'],
-        runtimeImports: [{ name: 'runtime', plugin: 'provider', export: 'runtime' }],
-      }] },
-      buildConfig: { skillRuntimeFiles: [{
-        skill: 'owned', target: 'references/runtime.txt', platforms: ['generic'],
-        import: { plugin: 'provider', export: 'runtime' },
-      }] },
-    };
-    const consumer = await pluginFixture(root, consumerManifest);
-    await fs.outputFile(path.join(consumer.rootDir, 'skills', 'native', 'SKILL.md'), '---\nname: native\ndescription: native\n---\n');
-    await fs.outputFile(path.join(consumer.rootDir, 'skills', 'native', 'README.md'), '# Native\n');
-    await writeSkill(consumer.rootDir, 'owned', 'Static file must not own the dynamic candidate.');
-    await fs.outputFile(path.join(consumer.rootDir, 'skills', 'owned', 'SKILL.md'), '---\nname: owned\ndescription: dynamic source\n---\nSource.\n');
-    await fs.outputFile(path.join(consumer.rootDir, 'skills', 'owned', 'README.md'), '# Owned\n');
+      artifacts: { configKeys: [], sourceDirs: ['./resources'], scopes: ['project'],
+        runtimeImports: [{ name: 'runtime', plugin: 'provider', export: 'runtime' }] },
+    });
+    await fs.outputFile(path.join(consumer.rootDir, 'resources', 'SKILL.md'), '---\nname: owned\ndescription: dynamic source\n---\nSource.\n');
+    await fs.outputFile(path.join(consumer.rootDir, 'resources', 'README.md'), '# Owned\n');
     await fs.outputFile(path.join(consumer.rootDir, 'scripts', 'render.mjs'), `import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
-if (process.env.AW_PLUGIN_PLATFORM !== 'generic' || process.env.AW_PLUGIN_DISTRIBUTION !== 'agent-skills') process.exit(2);
-if (context.runtimeImports[0]?.artifactId !== 'owned' || context.runtimeImports[0]?.providerPluginId !== 'provider') process.exit(3);
-console.log(JSON.stringify({version:2,artifacts:[{id:'owned',platform:'generic',distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'present',skillKey:'owned',refreshKeys:[],content:{files:{}}}]}));`);
+if (context.platform !== 'generic' || context.surface !== 'agent-plugin') process.exit(2);
+if (!context.resources.some(resource=>resource.kind==='runtime-import' && resource.name==='runtime')) process.exit(3);
+console.log(JSON.stringify({version:3,components:[{id:'owned',kind:'skill',name:'owned',content:{files:{
+  'SKILL.md':{source:{kind:'bundle',path:'resources/SKILL.md'}},
+  'README.md':{source:{kind:'bundle',path:'resources/README.md'}},
+  'references/runtime.txt':{source:{kind:'runtime-import',name:'runtime',path:'runtime'}}
+}}}],omitted:[],unmet:[]}));`);
     const bundleRoot = path.join(root, 'bundle');
-    await bundleLocalPlugin(consumer, bundleRoot, {
-      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
-    });
-    await fs.outputFile(path.join(bundleRoot, 'generic', 'skills', 'owned', 'undeclared.txt'), 'must-not-copy');
+    await bundleLocalPlugin(consumer, bundleRoot, { runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]) });
+    await fs.outputFile(path.join(bundleRoot, 'resources', 'undeclared.txt'), 'must-not-copy');
     const bundled = await readPluginManifest(bundleRoot, { mode: 'bundle' });
-    bundled.sourceId = 'fixture';
-    bundled.sourceIdentity = 'generation';
-    bundled.pluginId = 'fixture/consumer';
-    const materialized = await materializePortableSkills({
-      platform: 'generic',
-      plugins: [bundled], pluginId: bundled.pluginId, scope: 'project', cwd: root,
-      env: { ...process.env, AW_HOME: path.join(root, 'home') },
-      inputMode: 'bundle',
-    });
-    expect(await fs.readFile(path.join(materialized.rootDir, 'skills', 'owned', 'references', 'runtime.txt'), 'utf8'))
-      .toBe('projected');
+    Object.assign(bundled, { sourceId: 'fixture', sourceIdentity: `sha256:${'2'.repeat(64)}`, pluginId: 'fixture/consumer' });
+    const options = { platform: 'generic' as const, plugins: [bundled], pluginId: bundled.pluginId!, scope: 'project' as const,
+      cwd: root, env: { ...process.env, AW_HOME: path.join(root, 'home') }, inputMode: 'bundle' as const };
+    const materialized = await materializePortableSkills(options);
+    expect(materialized.candidates).toMatchObject([{ name: 'owned', providerPluginId: 'fixture/consumer', relation: 'requested', dynamic: true }]);
+    expect(await fs.readFile(path.join(materialized.rootDir, 'skills', 'owned', 'references', 'runtime.txt'), 'utf8')).toBe('projected');
     expect(await fs.pathExists(path.join(materialized.rootDir, 'skills', 'owned', 'undeclared.txt'))).toBe(false);
     await materialized.cleanup();
-
-    await fs.remove(path.join(bundleRoot, getArtifactSourceBundleRelativePath({ platform: 'generic', distribution: 'agent-skills', artifactId: 'owned', index: 0 }), 'SKILL.md'));
-    await expect(materializePortableSkills({
-      platform: 'generic',
-      plugins: [bundled], pluginId: bundled.pluginId, scope: 'project', cwd: root,
-      env: { ...process.env, AW_HOME: path.join(root, 'home-failure') },
-      inputMode: 'bundle',
-    })).rejects.toThrow('缺少 SKILL.md');
+    await fs.remove(path.join(bundleRoot, 'resources', 'SKILL.md'));
+    await expect(materializePortableSkills(options)).rejects.toThrow(/resource.*(?:missing|exist)|ENOENT/iu);
   });
 
-  it('excludes all dynamic keys from the static root while rendering only the selected scope', async () => {
+  it('renders only the selected scope without treating dynamic source files as static Skills', async () => {
     const root = await tempRoot('aw-portable-cross-scope-');
-    const manifest: PluginManifestSource = {
-      ...baseManifest('cross-scope'),
+    const plugin = await pluginFixture(root, {
+      ...baseManifest('cross-scope'), skills: undefined,
       scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
-      artifacts: { targets: (['project', 'user'] as const).map((scope) => ({
-        id: `${scope}-only`, platform: 'generic' as const, distribution: 'agent-skills' as const,
-        target: 'agent-skills.skill' as const, kind: 'skill' as const,
-        scopes: [scope], states: ['present' as const], refreshKeys: [], skillKey: `${scope}-only`,
-        sourceDirs: [`./skills/${scope}-only`],
-      })) },
-    };
-    const plugin = await pluginFixture(root, manifest);
-    await writeSkill(plugin.rootDir, 'project-only');
-    await writeSkill(plugin.rootDir, 'user-only');
+      artifacts: { configKeys: [], sourceDirs: ['./resources'] },
+    });
+    await fs.outputFile(path.join(plugin.rootDir, 'resources', 'unused.txt'), 'must-not-copy');
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'render.mjs'), `
+import fs from 'node:fs';
+const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+fs.appendFileSync(new URL('../render.log', import.meta.url), context.scope + '\\n');
+const key = context.scope + '-only';
+console.log(JSON.stringify({version:3,components:[{id:key,kind:'skill',name:key,content:{files:{
+  'SKILL.md':{text:'---\\nname: '+key+'\\ndescription: Selected scope.\\n---\\nBody.\\n'},
+  'README.md':{text:'# Selected scope\\n'}
+}}}],omitted:[],unmet:[]}));
+`);
     for (const scope of ['project', 'user'] as const) {
-      await fs.copy(
-        path.join(plugin.rootDir, 'skills', `${scope}-only`),
-        path.join(plugin.rootDir, getArtifactSourceBundleRelativePath({
-          platform: 'generic', distribution: 'agent-skills', artifactId: `${scope}-only`, index: 0,
-        })),
-      );
+      const materialized = await materializePortableSkills({ platform: 'generic', plugins: [plugin], pluginId: plugin.pluginId!, scope, cwd: root,
+        env: { ...process.env, AW_HOME: path.join(root, `home-${scope}`) } });
+      expect(materialized.candidates.map((candidate) => candidate.name)).toEqual([`${scope}-only`]);
+      expect(await fs.pathExists(path.join(materialized.rootDir, 'skills', `${scope}-only`, 'unused.txt'))).toBe(false);
+      expect(materialized.preparation.every((unit) => unit.renderScope === scope)).toBe(true);
+      await materialized.cleanup();
     }
-    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'render.mjs'), [
-      "import fs from 'node:fs';",
-      "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
-      "fs.appendFileSync(new URL('../render.log', import.meta.url), context.scope + '\\n');",
-      "const key = context.scope + '-only';",
-      "console.log(JSON.stringify({version:2,artifacts:[{id:key,platform:'generic',distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'present',skillKey:key,refreshKeys:[],content:{files:{}}}]}));",
-    ].join('\n'));
-    const renderLog = path.join(plugin.rootDir, 'render.log');
-
-    const project = await materializePortableSkills({
-      platform: 'generic',
-      plugins: [plugin], pluginId: plugin.pluginId!, scope: 'project', cwd: root,
-      env: { ...process.env, AW_HOME: path.join(root, 'home-project') },
-    });
-    expect(project.candidates.map((candidate) => candidate.name)).toEqual(['project-only']);
-    await project.cleanup();
-    const user = await materializePortableSkills({
-      platform: 'generic',
-      plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root,
-      env: { ...process.env, AW_HOME: path.join(root, 'home-user') },
-    });
-    expect(user.candidates.map((candidate) => candidate.name)).toEqual(['user-only']);
-    expect(await fs.pathExists(renderLog)).toBe(false);
-    await user.cleanup();
+    expect(await fs.pathExists(path.join(plugin.rootDir, 'render.log'))).toBe(false);
   });
 });

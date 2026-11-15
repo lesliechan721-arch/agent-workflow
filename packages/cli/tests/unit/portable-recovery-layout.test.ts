@@ -19,24 +19,18 @@ function fixture(platform: NodeJS.Platform, scope: 'user' | 'project') {
 }
 
 describe('Portable fixed target directories', () => {
-  // Test Value Gate: canonical consumer paths protect separate target configuration and native Skill boundaries.
+  // Test Value Gate: generic output uses the canonical root, and Native targets cannot use this writer.
   for (const platform of ['darwin', 'linux', 'win32'] as const) {
-    it.each(['user', 'project'] as const)(`uses all five ${platform} %s consumer directories`, (scope) => {
+    it.each(['user', 'project'] as const)(`uses the generic ${platform} %s directory and rejects Native targets`, (scope) => {
       const { context, home, cwd, paths, options } = fixture(platform, scope);
       const layout = portableRecoveryLayout(context, options);
       const root = scope === 'user' ? home : cwd;
-      const expected = scope === 'user' ? {
-        antigravity: ['.gemini', 'config', 'skills'], cursor: ['.cursor', 'skills'],
-        opencode: ['.config', 'opencode', 'skills'], pi: ['.pi', 'agent', 'skills'], generic: ['.agents', 'skills'],
-      } : { antigravity: ['.agents', 'skills'], cursor: ['.cursor', 'skills'],
-        opencode: ['.opencode', 'skills'], pi: ['.pi', 'skills'], generic: ['.agents', 'skills'] };
-      for (const [agent, directories] of Object.entries(expected)) {
-        expect(layout.targetPath(agent as 'cursor', 'test-skill')).toBe(paths.join(root, ...directories, 'test-skill'));
+      expect(layout.targetPath('generic', 'test-skill')).toBe(paths.join(root, '.agents', 'skills', 'test-skill'));
+      for (const invalid of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini',
+        'copilot', 'grok', 'claude-code', 'agent-skills']) {
+        expect(() => layout.targetPath(invalid as never, 'test-skill')).toThrow('portableInvalidAgentSelection');
       }
-      for (const invalid of ['codex', 'claude', 'claude-code', 'gemini', 'agent-skills']) {
-        expect(() => layout.targetPath(invalid as 'cursor', 'test-skill')).toThrow('portableInvalidAgentSelection');
-      }
-      expect(() => layout.targetPath('cursor', '../escape')).toThrow('portableSkillInvalid');
+      expect(() => layout.targetPath('generic', '../escape')).toThrow('portableSkillInvalid');
     });
     it(`rejects a changed ${platform} home and an ambiguous execution path`, () => {
       const { context, options } = fixture(platform, 'user');

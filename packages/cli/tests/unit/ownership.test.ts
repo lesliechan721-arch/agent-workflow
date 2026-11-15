@@ -49,6 +49,62 @@ afterEach(async () => {
 });
 
 describe('ownership marker and header', () => {
+  // Test Value Gate: force must not convert a native package path into deletion authority.
+  it('does not force-delete a native package without readable owner evidence', async () => {
+    const root = await makeTempRoot();
+    const packageRoot = path.join(root, 'review');
+    await fs.outputFile(path.join(packageRoot, 'plugin.json'), '{}');
+    const result = await cleanupOwnedComponents({ forceExclusive: true, components: [{
+      kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity: { ...userIdentity(), platform: 'opencode' },
+    }] });
+    expect(result.removed).toEqual([]);
+    expect(result.residual).toContain(packageRoot);
+    expect(await fs.pathExists(path.join(packageRoot, 'plugin.json'))).toBe(true);
+  });
+
+  // Test Value Gate: native package cleanup requires the exact platform owner and preserves foreign packages.
+  it('cleans an owned native directory without treating another platform marker as ownership', async () => {
+    const root = await makeTempRoot();
+    const packageRoot = path.join(root, 'review');
+    const identity: OwnerIdentity = { ...userIdentity(), platform: 'grok' };
+    await fs.outputFile(path.join(packageRoot, 'plugin.json'), '{}');
+    await writeSkillOwnerMarker({ skillRoot: packageRoot, allowedRoot: root, identity });
+    const component: OwnedComponent = {
+      kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity,
+    };
+    const foreign: OwnedComponent = { ...component, identity: { ...identity, platform: 'pi' } };
+    const refused = await cleanupOwnedComponents({ components: [foreign] });
+    expect(refused.removed).toEqual([]);
+    expect(refused.residual).toEqual([packageRoot]);
+    expect(await fs.pathExists(path.join(packageRoot, 'plugin.json'))).toBe(true);
+    const removed = await cleanupOwnedComponents({ components: [component] });
+    expect(removed.removed).toEqual([packageRoot]);
+    expect(removed.failures).toEqual([]);
+    expect(await fs.pathExists(packageRoot)).toBe(false);
+  });
+
+  // Test Value Gate: rebuilt source bindings cannot claim another deployment, while damaged weak projection data stays cleanable.
+  it('binds native projection to the exact source and keeps cleanup after projection metadata damage', async () => {
+    const root = await makeTempRoot();
+    const packageRoot = path.join(root, 'review');
+    const identity: OwnerIdentity = { ...userIdentity(), platform: 'cursor',
+      sourceIdentity: `sha256:${'a'.repeat(64)}`, physicalKey: `sha256:${'b'.repeat(64)}` };
+    await fs.outputFile(path.join(packageRoot, 'skills', 'review', 'SKILL.md'), '# Review');
+    await writeSkillOwnerMarker({ skillRoot: packageRoot, allowedRoot: root, identity,
+      nativeProjection: { physicalIdentity: { sourceIdentity: identity.sourceIdentity!, pluginId: identity.pluginId!, platform: identity.platform, route: 'cursor-workspace-hook', namespaceRoot: root, resourceKey: 'aw-team-review' }, components: [{ id: 'skill:review', nativeName: 'review', relativeOutputs: ['skills/review/SKILL.md'] }],
+        inputDigest: `sha256:${'c'.repeat(64)}`, contentDigest: `sha256:${'d'.repeat(64)}` } });
+    expect((await readSkillOwnerMarker({ skillRoot: packageRoot, allowedRoot: root, expectedIdentity: identity }))?.nativeProjection?.components[0]?.id).toBe('skill:review');
+    await expect(readSkillOwnerMarker({ skillRoot: packageRoot, allowedRoot: root,
+      expectedIdentity: { ...identity, sourceIdentity: `sha256:${'e'.repeat(64)}` } })).rejects.toThrow('identity');
+    const marker = await fs.readJson(path.join(packageRoot, SKILL_OWNER_MARKER));
+    marker.nativeProjection.components[0].relativeOutputs = ['../outside'];
+    await fs.writeJson(path.join(packageRoot, SKILL_OWNER_MARKER), marker);
+    expect((await readSkillOwnerMarker({ skillRoot: packageRoot, allowedRoot: root, expectedIdentity: identity }))?.nativeProjection).toBeUndefined();
+    const result = await cleanupOwnedComponents({ components: [{ kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity }] });
+    expect(result.removed).toEqual([packageRoot]);
+    expect(result.failures).toEqual([]);
+  });
+
   it('uses the v3 stable owner token and does not read a v2 token', () => {
     const identity = userIdentity();
     const token = createSharedOwnerToken(identity);

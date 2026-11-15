@@ -34,6 +34,7 @@ interface SkillFrontmatterFieldCapability {
   type: SkillFrontmatterFieldType;
   typeByProfile?: Partial<Record<SkillFrontmatterProfile, SkillFrontmatterFieldType>>;
   required?: boolean;
+  platformFeature?: string;
   profiles: SkillFrontmatterProfile[];
   acceptedValues?: string[];
   acceptedValuesByProfile?: Partial<Record<SkillFrontmatterProfile, string[]>>;

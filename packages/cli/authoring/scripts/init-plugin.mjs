@@ -70,7 +70,7 @@ function parseStrictSemVer(value, fieldName) {
 
 function buildPluginManifest(pluginName, version, description, displayName, shortDescription, opts) {
   const manifest = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     platforms: ['codex', 'claude'],
     name: pluginName,
     version,
@@ -83,9 +83,6 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
 
   if (opts.withMcp) {
     manifest.mcpServers = './.mcp.json';
-  }
-  if (opts.withApps) {
-    manifest.apps = './.app.json';
   }
 
   manifest.marketplace = {
@@ -100,7 +97,6 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
   const capabilities = [];
   if (!opts.noSkills) capabilities.push('Skills');
   if (opts.withMcp) capabilities.push('MCP Servers');
-  if (opts.withApps) capabilities.push('Apps');
 
   manifest.interface = {
     displayName,
@@ -117,6 +113,7 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
 
   if (opts.withConfigApi) {
     manifest.config = {
+      schemaVersion: 5,
       fields: {
         apiKey: {
           type: 'string',
@@ -164,17 +161,6 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
 function renderMcpJson() {
   return `{
   "mcpServers": {}
-}
-`;
-}
-
-function renderAppJson() {
-  return `{
-  "apps": {
-    "example": {
-      "id": "replace-with-real-connector-id"
-    }
-  }
 }
 `;
 }
@@ -281,7 +267,6 @@ Options:
   --workspace-root <path>            Workspace root. Default: current directory.
   --no-skills                   Create plugin without skills directory.
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
-  --with-apps                   Create minimal .app.json with an example connector id and add apps to manifest.
   --with-config-api             Add AW config schema, standard config helper, and Node script test.
   --with-pre-apply               Add an idempotent Node preApply environment check and test.
   -h, --help                    Show this help message.
@@ -315,7 +300,6 @@ function parseArgs(argv) {
     version: '0.1.0',
     repoRoot: '.',
     withMcp: false,
-    withApps: false,
     withConfigApi: false,
     withPreApply: false,
     noSkills: false,
@@ -334,9 +318,8 @@ function parseArgs(argv) {
       options.withMcp = true;
       continue;
     }
-    if (arg === '--with-apps') {
-      options.withApps = true;
-      continue;
+    if (arg === '--with-apps' || arg.startsWith('--with-apps=')) {
+      fail('Unknown option: --with-apps. Apps are not supported by Manifest v4.');
     }
     if (arg === '--with-config-api') {
       options.withConfigApi = true;
@@ -460,7 +443,6 @@ function main() {
     shortDescription,
     {
       withMcp: args.withMcp,
-      withApps: args.withApps,
       withConfigApi: args.withConfigApi,
       withPreApply: args.withPreApply,
       noSkills: args.noSkills,
@@ -477,7 +459,6 @@ function main() {
     pluginReadmePath,
     renderPluginReadme(pluginName, args.description, initialSkillName, {
       withMcp: args.withMcp,
-      withApps: args.withApps,
       withConfigApi: args.withConfigApi,
     }),
   );
@@ -537,11 +518,6 @@ function main() {
     const mcpPath = path.join(pluginRoot, '.mcp.json');
     writeText(mcpPath, renderMcpJson());
     createdPaths.push(mcpPath);
-  }
-  if (args.withApps) {
-    const appPath = path.join(pluginRoot, '.app.json');
-    writeText(appPath, renderAppJson());
-    createdPaths.push(appPath);
   }
   if (args.withConfigApi) {
     const helperTemplatePath = path.join(__dirname, '..', 'assets', 'aw-config.mjs');

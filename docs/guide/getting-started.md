@@ -9,7 +9,7 @@
 ### 环境要求
 
 - **Node.js**：`>= 22.0.0`
-- **支持平台**：Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Generic
+- **支持平台**：Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini、Copilot、Grok、Generic
 
 ### 全局安装 CLI
 
@@ -62,6 +62,8 @@ aw target set codex claude
 # 查看当前已启用的平台列表
 aw target list
 ```
+
+target list 同时显示是否选择与本机可用性。新增不可用目标时，普通 CLI 请求整体拒绝；明确保留该选择可用 --force。选择保存不代表插件已经安装。TUI 首次只默认勾选 available，generic 需手动选择；以后保留已存选择，刷新不会改写草稿。
 
 ### 两种需求范围 (User vs Project)
 

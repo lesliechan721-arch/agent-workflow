@@ -13,45 +13,44 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function manifest(): NormalizedPluginManifest {
   return {
-    schemaVersion: 3, name: 'demo', version: '1.0.0', description: 'demo', skills: './skills',
+    schemaVersion: 4, name: 'demo', version: '1.0.0', description: 'demo', skills: './skills',
     marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
   };
 }
 
 describe('scoped demand and execution context', () => {
-  it('uses Native skills on Codex and Claude and the AW writer on other targets', () => {
+  it('uses Native delivery on concrete Agents and the AW writer only on generic', () => {
     const plugin = manifest();
     for (const scope of ['user', 'project'] as const) {
-      expect(resolveDelivery(plugin, 'codex', scope)).toEqual({ kind: 'native', platform: 'codex' });
-      expect(resolveDelivery(plugin, 'claude', scope)).toEqual({ kind: 'native', platform: 'claude' });
-      expect(resolveDelivery(plugin, 'cursor', scope)).toEqual({
-        kind: 'agent-skills', provider: 'aw', agentId: 'cursor',
+      for (const platform of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok'] as const) {
+        expect(resolveDelivery(plugin, platform, scope)).toEqual({ kind: 'native', platform });
+      }
+      expect(resolveDelivery(plugin, 'generic', scope)).toEqual({
+        kind: 'agent-skills', provider: 'aw', agentId: 'generic',
       });
     }
-    plugin.slashCommands = './commands';
-    expect(resolveDelivery(plugin, 'codex', 'project')).toBeUndefined();
     plugin.platforms = ['codex', 'claude'];
     expect(resolveDelivery(plugin, 'cursor', 'project')).toBeUndefined();
   });
 
-  // Test Value Gate: capability checks must select the same concrete target and
-  // scope as materialization, without turning a disabled result into a new gate.
+  // Test Value Gate: render scope must not erase Native demand before the complete component set is prepared.
   it.each([
-    ['cursor', 'agent-skills.skill', 'user', 'present', 'user', true],
-    ['cursor', 'agent-skills.skill', 'user', 'present', 'project', false],
-    ['pi', 'agent-skills.skill', 'project', 'present', 'project', false],
-    ['codex', 'codex.skill', 'project', 'present', 'project', false],
-    ['cursor', 'agent-skills.skill', 'project', 'disabled', 'project', true],
-  ] as const)('matches Cursor delivery to %s %s %s/%s for %s (%s)', (
-    platform, target, declaredScope, state, scope, supported,
+    ['cursor', 'user', 'user', true],
+    ['cursor', 'user', 'project', true],
+    ['pi', 'project', 'project', false],
+    ['codex', 'project', 'project', false],
+    ['cursor', 'project', 'project', true],
+  ] as const)('resolves Cursor delivery for %s with %s rendering and %s activation (%s)', (
+    platform, declaredScope, scope, supported,
   ) => {
     const plugin = manifest();
     delete plugin.skills;
-    plugin.artifacts = { targets: [{ id: 'dynamic', platform, target,
-      scopes: [declaredScope], states: [state], refreshKeys: [], skillKey: 'dynamic' }] };
+    plugin.platforms = [platform];
+    plugin.artifacts = { configKeys: [], scopes: [declaredScope] };
+    plugin.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
 
     expect(resolveDelivery(plugin, 'cursor', scope)).toEqual(supported
-      ? { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' }
+      ? { kind: 'native', platform: 'cursor' }
       : undefined);
   });
 
@@ -60,15 +59,13 @@ describe('scoped demand and execution context', () => {
     const plugin = manifest();
     delete plugin.skills;
     plugin.platforms = ['claude'];
-    plugin.artifacts = { targets: [{
-      id: 'project-skill', platform: 'claude', scopes: ['project'], target: 'claude.skill',
-      states: ['present'], refreshKeys: ['mode'], skillKey: 'project-skill',
-    }] };
+    plugin.artifacts = { configKeys: [], scopes: ['project'] };
+    plugin.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
 
     const rootDir = getCurrentSourceTestIsolation().layout.fixtureCwd;
     const meta = { manifest: plugin, rootDir, manifestPath: path.join(rootDir, '.agents-plugin/plugin.json') };
     for (const declaredScope of ['project', 'user'] as const) {
-      plugin.artifacts.targets![0]!.scopes = [declaredScope];
+      plugin.artifacts.scopes = [declaredScope];
       for (const scope of ['user', 'project'] as const) {
         expect(resolveDelivery(plugin, 'claude', scope)).toEqual({ kind: 'native', platform: 'claude' });
         expect(pluginConfigTargetRenderScopes(meta, { pluginName: 'demo', platform: 'claude', scope }))
@@ -77,12 +74,12 @@ describe('scoped demand and execution context', () => {
     }
   });
 
-  it('does not treat Claude platform support as a deployable Native component', () => {
+  it('retains Claude Native demand before preparing an empty component set', () => {
     const plugin = manifest();
     delete plugin.skills;
     plugin.platforms = ['claude'];
 
-    expect(resolveDelivery(plugin, 'claude', 'user')).toBeUndefined();
+    expect(resolveDelivery(plugin, 'claude', 'user')).toEqual({ kind: 'native', platform: 'claude' });
   });
 
   it('retains source references with no Agents or available Catalog and uses a protocol-free Native view', async () => {

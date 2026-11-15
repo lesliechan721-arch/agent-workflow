@@ -1,19 +1,21 @@
 import { readAgentSettings, previewAgentSettings, saveAgentSettings } from './agent-settings.js';
-import { selectPluginConfigProfile, getPluginConfigReferenceChoices, PLATFORM_TARGETS, resolveSupportedPlatforms } from '@lesliechan721/aw-plugin-core';
+import { selectPluginConfigProfile, getPluginConfigReferenceChoices, PLATFORM_TARGETS, NATIVE_PLATFORM_TARGETS, resolveSupportedPlatforms } from '@lesliechan721/aw-plugin-core';
 import { configReferenceKey, configReferenceScalars, type ConfigReferenceContext } from './config-references.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { managedCommandRecoveryPlanChanges } from './operation-review-planner.js';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
 import { resolveWorkContext } from '../intent/work-context.js';
 import type { CatalogSourceResolution, PlatformName, PlatformTarget, PluginConfigSchema, PluginMeta, Scope } from '../types.js';
 import {
   flattenStatusTargets,
-  statusCommandV8,
   statusTargetHasLiveConfigConsumer,
   type StatusTargetRevision,
   type StatusScopedTarget,
   type StatusV8Target,
+  type StatusV8Payload,
+  type StatusV8PluginSummary,
 } from '../commands/status-v6.js';
 import {
   addCatalogSourceCommand,
@@ -50,7 +52,10 @@ import {
   resolveEffectivePluginConfigFromStores,
   resolvePluginConfigReferenceContext,
 } from '../utils/plugin-config.js';
-import { readRecoveryStatus } from '../recovery/status.js';
+import { readRecoveryStatus, type RecoveryStatus } from '../recovery/status.js';
+import { readJointDemand, type JointDemandSnapshot } from '../recovery/joint-demand.js';
+import type { RecoveryTarget } from '../recovery/receipt.js';
+import { catalogSourceErrorCode, sanitizeCatalogSourceError } from '../utils/catalog-public-error.js';
 import {
   activateRecoverySourcesAndReprepare,
   prepareRecovery,
@@ -66,7 +71,7 @@ import {
   resolveConfigPreApplyAuthorization,
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
-import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigTargets } from '../utils/plugin-config-impact.js';
+import { analyzePluginConfigMutationImpact, discoverPluginConfigManagedCommandPackages, pluginConfigTargetRenderScopes, pluginSharedNativeConfigRenderUnits } from '../utils/plugin-config-impact.js';
 import { collectPluginConfigReferenceEvidence, pluginConfigHasExternalReferences, resolvePluginConfigReferenceConsumers, resolvePluginConfigReferencePlugins } from '../utils/plugin-config-references.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
@@ -87,8 +92,6 @@ import {
 import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
 import {
   buildConfigPage,
-  hasActualScopeEvidence,
-  projectPlatformPlacement,
   type PlatformPlacementSummary,
   type PluginDependencyOverviewViewModel,
 } from './model.js';
@@ -195,12 +198,12 @@ async function loadPortablePluginIds(options: {
             ? [readPluginManifest(
                 path.join(item.resolution!.rootDir, 'plugins', entry.name),
                 { mode: 'bundle' },
-              ).then((plugin) => [...resolveSupportedPlatforms(plugin.manifest)].some((target) => target !== 'codex' && target !== 'claude')
+              ).then((plugin) => resolveSupportedPlatforms(plugin.manifest).has('generic')
                 ? formatPluginId({
                     sourceId: item.resolution!.sourceId,
                     pluginName: entry.name,
                   })
-                : null)]
+                : null).catch(() => { options.signal.throwIfAborted(); return null; })]
             : [];
         })
       : []))).filter((pluginId): pluginId is string => pluginId !== null),
@@ -286,6 +289,112 @@ export function configAffectedStatusTargets(
       .localeCompare(`${right.pluginId}\0${right.platform}\0${right.scope}`, 'en'));
 }
 
+interface CurrentConfigTarget {
+  pluginId: string;
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  observation?: RecoveryTarget;
+}
+
+function currentConfigTargets(status: RecoveryStatus, pluginId: string, configContext: Scope,
+  consumers: readonly string[] = [], platform?: PlatformTarget): CurrentConfigTarget[] {
+  const selected = new Set([pluginId, ...consumers]);
+  const observations = [...(status.observedTargets ?? []), ...(status.inventory ?? []).flatMap((root) => root.targetResults)];
+  return [...new Map((status.existingTargets ?? []).flatMap((target): CurrentConfigTarget[] => {
+    if (target.agent === 'generic' || !selected.has(target.pluginId)
+      || configContext === 'user' && target.scope !== 'user'
+      || platform && target.agent !== platform) return [];
+    return [{ pluginId: target.pluginId, pluginName: parsePluginId(target.pluginId).pluginName,
+      platform: target.agent, scope: target.scope,
+      observation: observations.find((item) => item.pluginId === target.pluginId
+        && item.agent === target.agent && item.scope === target.scope) }];
+  }).map((target) => [`${target.pluginId}\0${target.platform}\0${target.scope}`, target])).values()]
+    .sort((left, right) => `${left.pluginId}\0${left.platform}\0${left.scope}`.localeCompare(`${right.pluginId}\0${right.platform}\0${right.scope}`, 'en'));
+}
+
+function currentTargetFingerprint(status: RecoveryStatus, targets: readonly CurrentConfigTarget[]): string {
+  return digest({ intent: status.intent, selection: status.selection, targets: targets.map((target) => ({
+    pluginId: target.pluginId, platform: target.platform, scope: target.scope,
+    observation: target.observation ? { observation: target.observation.observation,
+      content: target.observation.content, blockers: target.observation.blockers,
+      expectedVersion: target.observation.expectedVersion, installedVersion: target.observation.installedVersion,
+      deployments: target.observation.deploymentObservations,
+      exclusions: target.observation.deploymentExclusions,
+      gaps: target.observation.componentGaps } : null,
+  })) });
+}
+
+function scopedCurrentStatus(status: RecoveryStatus, snapshot: JointDemandSnapshot, scope: Scope): RecoveryStatus {
+  const demand = scope === 'project' ? snapshot.project! : snapshot.user;
+  const inventory = demand.roots === null ? null : demand.roots.map((root) => ({
+    pluginId: root.pluginId, source: root.sourceId, sourceState: root.sourceState,
+    blockers: root.blockers.map((code) => ({ code, message: `来源需要处理：${code}。` })),
+    targetResults: (status.inventory ?? []).filter((entry) => entry.pluginId === root.pluginId)
+      .flatMap((entry) => entry.targetResults.filter((target) => target.scope === scope)),
+  }));
+  const targets = inventory?.flatMap((root) => root.targetResults) ?? [];
+  const counts = { blocked: targets.filter((target) => target.blockers.length > 0).length,
+    pending: targets.filter((target) => ['absent', 'drifted'].includes(target.content ?? '')).length,
+    unconfirmed: targets.filter((target) => target.content === 'unknown').length,
+    ready: targets.filter((target) => target.content === 'satisfied').length };
+  return { ...status, scope, intent: { state: demand.intent.state,
+    ...('digest' in demand.intent ? { digest: demand.intent.digest } : {}) }, inventory, counts,
+    extraObserved: status.extraObserved.filter((target) => target.scope === scope),
+    allSatisfied: counts.blocked || counts.pending ? false : counts.unconfirmed || inventory === null
+      || !['valid', 'absent'].includes(demand.intent.state) ? null : true };
+}
+
+interface CatalogViewSnapshot {
+  payload: StatusV8Payload;
+  pluginSummaries: StatusV8PluginSummary[];
+}
+
+/** Source metadata only. Actual installation facts are supplied by RecoveryStatus. */
+async function loadCatalogView(options: { context: CliExecutionContext; cliVersion: string; signal: AbortSignal;
+  catalogOperationContext?: CatalogOperationContext }): Promise<CatalogViewSnapshot> {
+  return withResolvedMultiSourceCatalog({ cliVersion: options.cliVersion, env: options.context.env,
+    signal: options.signal, operationContext: options.catalogOperationContext,
+    consume: async (catalog) => ({
+      payload: { schemaVersion: 8 as const, catalog: { primarySourceId: catalog.primarySourceId,
+        configDigest: catalog.configDigest, compositeDigest: catalog.compositeDigest,
+        ...(options.catalogOperationContext ? { generationSetDigest: options.catalogOperationContext.generationSetDigest } : {}),
+        sources: catalog.sources.map((item) => ({ id: item.sourceId,
+          identity: item.resolution?.sourceIdentity ?? '', type: item.resolution?.transport ?? 'path',
+          primary: item.sourceId === catalog.primarySourceId,
+          requestedRef: item.resolution?.requestedRef ?? 'AW channel',
+          ...(item.resolution ? { resolvedCommit: item.resolution.resolvedCommit,
+            catalogVersion: item.resolution.manifest.catalogVersion, channel: item.resolution.manifest.channel,
+            freshness: 'active' as const } : {}),
+          ...(item.error ? { error: sanitizeCatalogSourceError(item.error).message, errorCode: catalogSourceErrorCode(item.error) } : {}),
+        })) }, filters: { plugins: [], platform: 'both' as const, cwd: options.context.cwd }, targets: [], errors: [] },
+      pluginSummaries: (await Promise.all(catalog.sources.flatMap((item) => item.resolution
+        ? item.resolution.manifest.entries.map(async (entry): Promise<StatusV8PluginSummary> => {
+          const support = checkAwCapabilitySupport(entry.requires.aw.capabilities ?? [], IMPLEMENTED_AW_CAPABILITIES);
+          const metadata: StatusV8PluginSummary = { pluginName: entry.name,
+            pluginId: formatPluginId({ sourceId: item.sourceId, pluginName: entry.name }),
+            displayName: entry.interface?.displayName ?? entry.name, description: entry.description, version: entry.version };
+          // Future definitions may use a schema this CLI cannot parse. The source
+          // index is the boundary for deciding whether that definition can be read.
+          if (!support.supported) return { ...metadata, missingCapabilities: support.missing };
+          try {
+            const manifest = await readPluginManifest(path.join(item.resolution!.rootDir, 'plugins', entry.name), { mode: 'bundle' });
+            options.signal.throwIfAborted();
+            const platforms = [...resolveSupportedPlatforms(manifest.manifest)];
+            return { ...metadata, platforms, supportedTargets: Object.fromEntries(platforms.filter((platform) => platform !== 'generic')
+              .map((platform) => [platform, ['user', 'project']])),
+              configFieldCount: new Set(manifest.manifest.config ? [undefined, ...PLATFORM_TARGETS]
+                .flatMap((platform) => Object.keys(selectPluginConfigProfile(manifest.manifest.config!, platform).fields)) : []).size,
+              ...(manifest.manifest.config ? { configSchema: manifest.manifest.config.fields } : {}) };
+          } catch {
+            options.signal.throwIfAborted();
+            return { ...metadata, definitionUnavailable: true };
+          }
+        }) : []))),
+    }),
+  });
+}
+
 function configNeedsReferencePlugins(plugin: PluginMeta): boolean {
   return pluginConfigHasExternalReferences(plugin.manifest)
     || (plugin.manifest.config !== undefined && [undefined, ...PLATFORM_TARGETS].some((platform) =>
@@ -293,16 +402,16 @@ function configNeedsReferencePlugins(plugin: PluginMeta): boolean {
         .some((field) => field.type === 'array' && field.items.type === 'object')));
 }
 
-async function configRetrySharedNativeRenderTargets(
+async function configRetrySharedNativeRenderUnits(
   plugin: PluginMeta,
   targets: readonly { pluginName?: string; platform: PlatformName }[],
   env?: NodeJS.ProcessEnv,
   referencePlugins?: readonly PluginMeta[],
-): Promise<ReturnType<typeof pluginSharedNativeConfigTargets>> {
+): Promise<ReturnType<typeof pluginSharedNativeConfigRenderUnits>> {
   const plugins = await resolvePluginConfigReferenceConsumers({ plugin, env, plugins: referencePlugins });
-  return plugins.flatMap((consumer) => pluginSharedNativeConfigTargets(consumer).filter((shared) =>
+  return plugins.flatMap((consumer) => pluginSharedNativeConfigRenderUnits(consumer).filter((shared) =>
     targets.some((target) => (target.pluginName ?? plugin.manifest.name) === consumer.manifest.name
-      && target.platform === (shared.platform ?? 'codex'))));
+      && target.platform === shared.platform)));
 }
 
 async function configRetryStoreDigest(options: {
@@ -334,7 +443,7 @@ async function configRetryStoreDigest(options: {
 
 function configImpactVisibleTargets(
   pluginName: string,
-  targets: readonly StatusScopedTarget[],
+  targets: readonly { pluginName?: string; platform: PlatformName; scope: Scope }[],
 ) {
   return targets.map((target) => ({
     pluginName: target.pluginName ?? pluginName,
@@ -496,7 +605,8 @@ interface DependencyCatalogNode {
 async function loadDependencyOverviews(options: {
   context: CliExecutionContext;
   cliVersion: string;
-  status: Awaited<ReturnType<typeof statusCommandV8>>;
+  status: RecoveryStatus;
+  pluginSummaries: readonly StatusV8PluginSummary[];
   signal: AbortSignal;
   catalogOperationContext?: CatalogOperationContext;
 }): Promise<PluginDependencyOverviewViewModel[]> {
@@ -526,7 +636,7 @@ async function loadDependencyOverviews(options: {
       }),
     });
   const nodes = new Map(graph.nodes.map((node) => [node.pluginId, node]));
-  const summaryById = new Map(options.status.pluginSummaries.map((summary) => [summary.pluginId, summary]));
+  const summaryById = new Map(options.pluginSummaries.map((summary) => [summary.pluginId, summary]));
   const displayName = (pluginId: string): string => nodes.get(pluginId)?.displayName
     ?? parsePluginId(pluginId).pluginName;
   const reverse = new Map<string, string[]>();
@@ -535,71 +645,49 @@ async function loadDependencyOverviews(options: {
       reverse.set(dependency, [...(reverse.get(dependency) ?? []), node.pluginId]);
     }
   }
-  const targetsByPlugin = new Map<string, StatusScopedTarget[]>();
-  for (const target of flattenStatusTargets(options.status.payload.targets)) {
+  const targetsByPlugin = new Map<string, RecoveryTarget[]>();
+  for (const target of options.status.observedTargets ?? []) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }
-  const unsupportedPluginIds = new Set(options.status.pluginSummaries
-    .filter((summary) => (summary.missingCapabilities?.length ?? 0) > 0)
+  const unsupportedPluginIds = new Set(options.pluginSummaries.filter((summary) => (summary.missingCapabilities?.length ?? 0) > 0)
     .map((summary) => summary.pluginId));
-  const availableReferencesFor = (
-    consumerPluginId: string,
-    dependencyPluginId: string,
-  ): PluginDependencyOverviewViewModel['dependencies'][number]['availablePlacementReferences'] => {
-    const consumerSourceId = parsePluginId(consumerPluginId).sourceId;
-    const dependencySourceId = parsePluginId(dependencyPluginId).sourceId;
-    const consumerNode = nodes.get(consumerPluginId);
-    const dependencyNode = nodes.get(dependencyPluginId);
-    if (consumerSourceId !== dependencySourceId
-      || !nodes.get(consumerPluginId)?.dependencies.includes(dependencyPluginId)) return [];
-    return (targetsByPlugin.get(consumerPluginId) ?? []).flatMap((consumer) => {
-      if (!hasActualScopeEvidence(consumer)
-        || consumer.sourceId !== consumerSourceId
-        || consumer.sourceIdentity !== consumerNode?.sourceIdentity) return [];
-      return [...consumer.components, ...(consumer.sharedComponents ?? [])].flatMap((component) => {
-        if (component.kind !== 'dependency'
-          || component.key !== dependencyPluginId
-          || component.state !== 'ready') return [];
-        const platform = component.metadata?.platform;
-        const scope = component.metadata?.scope;
-        const project = component.metadata?.project;
-        if ((platform !== 'codex' && platform !== 'claude')
-          || (scope !== 'user' && scope !== 'project')
-          || project !== (scope === 'project' ? 'current' : 'none')) return [];
-        const dependency = (targetsByPlugin.get(dependencyPluginId) ?? []).find((target) =>
-          target.platform === platform
-          && target.scope === scope
-          && target.sourceId === dependencySourceId
-          && target.sourceIdentity === dependencyNode?.sourceIdentity
-          && target.sourceIdentity === consumer.sourceIdentity);
-        if (!dependency) return [];
-        return [{
-          consumer: {
-            pluginId: consumerPluginId,
-            platform: consumer.platform,
-            scope: consumer.scope,
-            project: consumer.scope === 'project' ? 'current' : null,
-          },
-          dependency: {
-            pluginId: dependencyPluginId,
-            platform,
-            scope,
-            project: scope === 'project' ? 'current' : null,
-          },
-        }];
+  const availableReferencesFor = (rootId: string, dependencyId: string): PluginDependencyOverviewViewModel['dependencies'][number]['availablePlacementReferences'] => {
+    const references = (targetsByPlugin.get(dependencyId) ?? []).flatMap((dependency) => {
+      if (dependency.agent === 'generic' || dependency.content !== 'satisfied' || dependency.observation !== 'verified'
+        || dependency.providerScope !== dependency.scope
+        || !options.status.existingTargets?.some((item) => item.pluginId === dependencyId
+          && item.agent === dependency.agent && item.scope === dependency.scope)) return [];
+      return (dependency.contributions ?? []).flatMap((contribution) => {
+        if (contribution.root !== rootId || contribution.path.at(-1) !== dependencyId || contribution.path.length < 2) return [];
+        const parentId = contribution.path.at(-2)!;
+        if (!nodes.get(parentId)?.dependencies.includes(dependencyId)
+          || nodes.get(parentId)?.sourceIdentity !== nodes.get(dependencyId)?.sourceIdentity) return [];
+        return (targetsByPlugin.get(parentId) ?? []).filter((consumer) => consumer.agent === dependency.agent
+          && consumer.providerScope === consumer.scope
+          && consumer.contributions?.some((entry) => entry.root === contribution.root && entry.scope === contribution.scope
+            && JSON.stringify(entry.path) === JSON.stringify(contribution.path.slice(0, -1)))
+          && options.status.existingTargets?.some((item) => item.pluginId === parentId && item.agent === consumer.agent && item.scope === consumer.scope))
+          .map((consumer) => ({ requirementScope: contribution.scope,
+            consumer: { pluginId: parentId, platform: dependency.agent as PlatformName, scope: consumer.scope,
+              project: consumer.scope === 'project' ? 'current' as const : null },
+            dependency: { pluginId: dependencyId, platform: dependency.agent as PlatformName, scope: dependency.scope,
+              project: dependency.scope === 'project' ? 'current' as const : null } }));
       });
     });
+    return [...new Map(references.map((reference) => [JSON.stringify(reference), reference])).values()];
   };
-  const placementsFor = (pluginId: string): PlatformPlacementSummary[] => {
-    const targets = targetsByPlugin.get(pluginId) ?? [];
-    if (targets.length > 0) {
-      return (['codex', 'claude'] as const).flatMap((platform) => {
-        const selected = targets.filter((target) => target.platform === platform);
-        return selected.length > 0 ? [projectPlatformPlacement(platform, selected)] : [];
-      });
-    }
-    return [];
-  };
+  const placementsFor = (pluginId: string): PlatformPlacementSummary[] =>
+    (targetsByPlugin.get(pluginId) ?? []).flatMap((target): PlatformPlacementSummary[] => {
+      if (target.agent === 'generic') return [];
+      const exists = options.status.existingTargets?.some((item) => item.pluginId === pluginId
+        && item.agent === target.agent && item.scope === target.scope);
+      if (!exists) return [{ platform: target.agent, state: 'notInstalled', supportedScopes: ['user', 'project'] }];
+      return [{ platform: target.agent, state: 'installed', scope: target.scope,
+        health: target.content === 'satisfied' && !target.blockers.length ? 'ready'
+          : target.blockers.length || target.content === 'conflict' ? 'error' : 'incomplete',
+        revision: { state: 'unknown', ...(target.expectedVersion ? { availableVersion: target.expectedVersion } : {}),
+          ...(target.installedVersion ? { installedVersion: target.installedVersion } : {}) }, relation: target.relation === 'dependency' ? 'dependency' : 'root' }];
+    });
   const aggregateFor = (pluginId: string, placements: PlatformPlacementSummary[]) => {
     const sourceId = parsePluginId(pluginId).sourceId;
     if (graph.sourceErrors.some((error) => error.sourceId === sourceId)
@@ -679,7 +767,7 @@ async function loadDependencyOverviews(options: {
       };
     });
     const targetBlockers = (targetsByPlugin.get(pluginId) ?? []).flatMap((target) =>
-      target.reasons.filter((error) => error.code.startsWith('dependency') || error.code === 'sourceChanged')
+      target.blockers.filter((error) => error.code.startsWith('dependency') || error.code === 'sourceChanged')
         .map((error) => ({
           code: error.code,
           title: '依赖关系需要处理',
@@ -689,8 +777,8 @@ async function loadDependencyOverviews(options: {
     const unsupportedDependency = dependencyItems.find((dependency) => {
       const dependencyTargets = summaryById.get(dependency.pluginId)?.supportedTargets;
       if (!consumerTargets || !dependencyTargets) return true;
-      return (['codex', 'claude'] as const).some((platform) =>
-        consumerTargets[platform].length > 0 && dependencyTargets[platform].length === 0);
+      return NATIVE_PLATFORM_TARGETS.some((platform) =>
+        (consumerTargets[platform]?.length ?? 0) > 0 && (dependencyTargets[platform]?.length ?? 0) === 0);
     });
     const sourceId = parsePluginId(pluginId).sourceId;
     const blockers = [
@@ -809,7 +897,8 @@ export function createTuiControllerDependencies(
   };
   const catalogOperationByEvidence = new WeakMap<OperationEvidence, CatalogOperationContext>();
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
-  let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV8>> | undefined;
+  let sessionStatusResult: CatalogViewSnapshot | undefined;
+  let sessionRecoveryStatus: RecoveryStatus | undefined;
   const sessionContextForPlugin = (pluginId: string): CatalogOperationContext | undefined => {
     const sourceId = parsePluginId(pluginId).sourceId;
     if (!sourceId || !sessionCatalogOperationContext) return undefined;
@@ -898,24 +987,22 @@ export function createTuiControllerDependencies(
       });
     if (catalogOperationContext) sessionCatalogOperationContext = catalogOperationContext;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const result = await statusCommandV8({
-        cwd: context.cwd,
-        env: context.env,
-        nativeCliRunner: context.nativeCliRunner,
-        cliVersion: packageInfo.version,
-        verbose: context.diagnostics.verbose,
-        ...(catalogOperationContext ? { catalogOperationContext } : {}),
-        inventoryCatalogSourceReferences: readInventory,
-      });
+      const result = await loadCatalogView({ context, cliVersion: packageInfo.version, signal,
+        ...(catalogOperationContext ? { catalogOperationContext } : {}) });
+      const snapshot = await readJointDemand({ cwd: context.cwd, env: context.env, signal, catalogOperationContext });
+      const current = await readRecoveryStatus({ cwd: context.cwd, env: context.env, signal,
+        cliVersion: packageInfo.version, nativeCliRunner: context.nativeCliRunner, catalogOperationContext }, snapshot);
       signal.throwIfAborted();
       const configured = await listCatalogSources({ env: context.env });
       signal.throwIfAborted();
       if (result.payload.catalog.configDigest !== configured.configDigest) continue;
       sessionStatusResult = result;
+      sessionRecoveryStatus = current;
       const dependencyOverviews = await loadDependencyOverviews({
         context,
         cliVersion: packageInfo.version,
-        status: result,
+        status: current,
+        pluginSummaries: result.pluginSummaries,
         signal,
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
       });
@@ -952,11 +1039,12 @@ export function createTuiControllerDependencies(
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       return {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
-        ...(result.projectRoot ? { projectRoot: result.projectRoot } : {}),
+        ...(current.coverage.projectRoot ? { projectRoot: current.coverage.projectRoot } : {}),
+        scopedRecovery: { user: { ...scopedCurrentStatus(current, snapshot, 'user'), dependencyOverviews },
+          ...(snapshot.project ? { project: { ...scopedCurrentStatus(current, snapshot, 'project'), dependencyOverviews } } : {}) },
         configuredSources: structuredClone(configured.sources),
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
-        targetRevisions: result.targetRevisions,
         dependencyOverviews,
         portablePluginIds,
         configStoreInventory,
@@ -1169,18 +1257,14 @@ export function createTuiControllerDependencies(
           '设置目标是特殊文件系统节点，不能自动重置。请手动移动后重试。',
         );
       }
-      const relevantTargets = sessionStatusResult
-        ? configAffectedStatusTargets(
-            sessionStatusResult.payload.targets,
+      const relevantTargets = sessionRecoveryStatus
+        ? currentConfigTargets(
+            sessionRecoveryStatus,
             intent.pluginId,
             intent.context ?? 'user',
             [], intent.platform,
           )
         : [];
-      const relevantRevisions = (sessionStatusResult?.targetRevisions ?? []).filter((revision) =>
-        relevantTargets.some((statusTarget) => statusTarget.platform === revision.platform
-          && statusTarget.scope === revision.scope
-          && statusTarget.pluginId === revision.pluginId));
       let selected: {
         source: OperationSourceEvidence;
         impact: Awaited<ReturnType<typeof analyzePluginConfigMutationImpact>>;
@@ -1223,7 +1307,7 @@ export function createTuiControllerDependencies(
         },
         ...(selected ? { source: selected.source } : {}),
         ...(sessionStatusResult ? {
-          targetFingerprint: statusTargetFingerprint(relevantTargets, relevantRevisions),
+          targetFingerprint: currentTargetFingerprint(sessionRecoveryStatus!, relevantTargets),
         } : {}),
         config: {
           scope: 'user', platform: intent.platform, context: intent.context ?? 'user',
@@ -1234,8 +1318,8 @@ export function createTuiControllerDependencies(
             ? { commandPackages: selected.impact.affectedCommandPackages } : {}),
           affectedTargets: (selected?.impact.affectedTargets
             ?? relevantTargets).map(({ platform, scope }) => ({ platform, scope })),
-          ...((selected?.impact.sharedNativeRenderTargets.length ?? 0) > 0
-            ? { sharedNativeRenderTargets: selected!.impact.sharedNativeRenderTargets }
+          ...((selected?.impact.sharedNativeRenderUnits.length ?? 0) > 0
+            ? { sharedNativeRenderUnits: selected!.impact.sharedNativeRenderUnits }
             : {}),
         },
         resetTarget: {
@@ -1679,14 +1763,15 @@ export function createTuiControllerDependencies(
                 impactState: 'known', affectedTargets: targets,
                 commandPackages: prepared.commandPackages,
                 applyEvidence: prepared.evidence, applyChanges: prepared.plan.changes,
+                commandReviewChanges: managedCommandRecoveryPlanChanges(prepared.plan),
                 applyWarnings: prepared.plan.warnings,
                 applyBlockers: [...new Map([
                   ...prepared.plan.receipt.blockers, ...prepared.plan.receipt.errors,
                   ...prepared.plan.receipt.targetResults.flatMap((target) => target.blockers),
                 ].map((item) => [`${item.code}\0${item.message}`, item])).values()],
                 preApplyAuthorization: prepared.preApplyAuthorization,
-                sharedNativeRenderTargets: await configRetrySharedNativeRenderTargets(plugin,
-                  targets.filter((target): target is typeof target & { platform: PlatformName } => target.platform === 'codex' || target.platform === 'claude'), context.env, referencePlugins),
+                sharedNativeRenderUnits: await configRetrySharedNativeRenderUnits(plugin,
+                  targets.filter((target): target is typeof target & { platform: PlatformName } => NATIVE_PLATFORM_TARGETS.includes(target.platform as PlatformName)), context.env, referencePlugins),
               },
             };
           } finally { await disposePluginConfigApply(prepared.plan); }
@@ -1719,8 +1804,9 @@ export function createTuiControllerDependencies(
           })).map((entry) => entry.pluginId ?? `${entry.sourceId}/${entry.manifest.name}`),
         })
       : [];
-    if (preparation && intent.kind === 'configSave') {
-      if (!sessionStatusResult || !catalogOperation) {
+    if (preparation && intent.kind === 'configSave'
+      && sessionRecoveryStatus?.scope === (intent.context ?? 'user')) {
+      if (!sessionStatusResult || !sessionRecoveryStatus || !catalogOperation) {
         throw operationReviewStale('当前 TUI session 没有可复用的设置证据。');
       }
       await preparation.reporter.emit('config');
@@ -1729,8 +1815,8 @@ export function createTuiControllerDependencies(
       if (configSnapshot.digest !== sessionStatusResult.payload.catalog.configDigest) {
         throw operationReviewStale('准备设置确认期间来源配置发生变化。');
       }
-      const relevantTargets = configAffectedStatusTargets(
-        sessionStatusResult.payload.targets,
+      const relevantTargets = currentConfigTargets(
+        sessionRecoveryStatus,
         intent.pluginId,
         intent.context ?? 'user',
         configReferencePluginIds,
@@ -1805,17 +1891,13 @@ export function createTuiControllerDependencies(
             preApplyAuthorization,
             retryStoreDigest: intent.retryApply ? await configRetryStoreDigest({ plugin, scope: intent.context ?? 'user', platform: intent.platform,
               targets: affectedTargets, commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env, plugins: referencePlugins }) : undefined,
-            sharedNativeRenderTargets: intent.retryApply
-              ? await configRetrySharedNativeRenderTargets(plugin, affectedTargets, context.env, referencePlugins)
-              : impact!.sharedNativeRenderTargets,
+            sharedNativeRenderUnits: intent.retryApply
+              ? await configRetrySharedNativeRenderUnits(plugin, affectedTargets, context.env, referencePlugins)
+              : impact!.sharedNativeRenderUnits,
           };
         },
       });
       signal?.throwIfAborted();
-      const relevantRevisions = (sessionStatusResult.targetRevisions ?? []).filter((revision) =>
-        relevantTargets.some((target) => target.platform === revision.platform
-          && target.scope === revision.scope
-          && target.pluginId === revision.pluginId));
       await preparation.reporter.emit('evidence');
       const evidence: OperationEvidence = {
         catalog: {
@@ -1824,7 +1906,7 @@ export function createTuiControllerDependencies(
           ...(catalogOperation ? { generationSetDigest: catalogOperation.generationSetDigest } : {}),
         },
         ...(selected.source ? { source: selected.source } : {}),
-        targetFingerprint: statusTargetFingerprint(relevantTargets, relevantRevisions),
+        targetFingerprint: currentTargetFingerprint(sessionRecoveryStatus!, relevantTargets),
         config: {
           scope: 'user', context: intent.context ?? 'user', platform: intent.platform,
           schemaIdentity: selected.schemaIdentity,
@@ -1838,8 +1920,8 @@ export function createTuiControllerDependencies(
           ...(selected.preApplyAuthorization.length > 0
             ? { preApplyAuthorization: selected.preApplyAuthorization }
             : {}),
-          ...(selected.sharedNativeRenderTargets.length > 0
-            ? { sharedNativeRenderTargets: selected.sharedNativeRenderTargets }
+          ...(selected.sharedNativeRenderUnits.length > 0
+            ? { sharedNativeRenderUnits: selected.sharedNativeRenderUnits }
             : {}),
         },
       };
@@ -1850,20 +1932,16 @@ export function createTuiControllerDependencies(
     await preparation?.reporter.emit('status');
     const statusCatalogOperation = catalogOperation
       ?? (!freshCatalog ? sessionCatalogOperationContext : undefined);
-    const status = await statusCommandV8({
-      plugins: [...new Set([intent.pluginId, ...configReferencePluginIds])],
-      ...(intent.context === 'project' ? {} : { scope: 'user' }),
-      cwd: context.cwd,
-      env: context.env,
-      nativeCliRunner: context.nativeCliRunner,
-      cliVersion: packageInfo.version,
+    const status = await readRecoveryStatus({
+      context: intent.context ?? 'user', cwd: context.cwd, env: context.env,
+      nativeCliRunner: context.nativeCliRunner, cliVersion: packageInfo.version,
+      ...(signal ? { signal } : {}),
       ...(statusCatalogOperation ? { catalogOperationContext: statusCatalogOperation } : {}),
-      inventoryCatalogSourceReferences: operationInventory,
     });
     signal?.throwIfAborted();
     const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
     signal?.throwIfAborted();
-    if (configSnapshot.digest !== status.payload.catalog.configDigest) {
+    if (statusCatalogOperation && configSnapshot.digest !== statusCatalogOperation.catalog.configDigest) {
       throw operationReviewStale('准备确认信息期间来源配置发生变化。');
     }
     if (catalogOperationError) throw catalogOperationError;
@@ -1878,7 +1956,7 @@ export function createTuiControllerDependencies(
     }
     await preparation?.reporter.emit('catalog');
     const configVisibleTargets = intent.kind === 'configSave'
-      ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.context ?? 'user', configReferencePluginIds, intent.platform)
+      ? currentConfigTargets(status, intent.pluginId, intent.context ?? 'user', configReferencePluginIds, intent.platform)
       : [];
     const selected = await withResolvedCatalogPlugin({
           selector: intent.pluginId,
@@ -1963,39 +2041,28 @@ export function createTuiControllerDependencies(
               retryStoreDigest: intent.kind === 'configSave' && intent.retryApply
                 ? await configRetryStoreDigest({ plugin, scope: intent.context ?? 'user', platform: intent.platform, targets: affectedTargets,
                   commandPackages, preApplyAuthorization, cwd: context.cwd, env: context.env, plugins: referencePlugins }) : undefined,
-              sharedNativeRenderTargets: intent.kind === 'configSave'
+              sharedNativeRenderUnits: intent.kind === 'configSave'
                 ? intent.retryApply
-                  ? await configRetrySharedNativeRenderTargets(plugin,
+                  ? await configRetrySharedNativeRenderUnits(plugin,
                     configImpactVisibleTargets(plugin.manifest.name, configVisibleTargets), context.env, referencePlugins)
-                  : impact!.sharedNativeRenderTargets
+                  : impact!.sharedNativeRenderUnits
                 : [],
             };
           },
         });
     await preparation?.reporter.emit('evidence');
     signal?.throwIfAborted();
-    const evidenceTargets = intent.kind === 'configSave'
-      ? configVisibleTargets
-      : flattenStatusTargets(status.payload.targets);
-    const evidenceRevisions = intent.kind === 'configSave'
-      ? (status.targetRevisions ?? []).filter((revision) =>
-          evidenceTargets.some((target) => target.platform === revision.platform
-            && target.scope === revision.scope
-            && target.pluginId === revision.pluginId))
-      : (status.targetRevisions ?? []);
+    const evidenceTargets = configVisibleTargets;
     const evidence: OperationEvidence = {
       catalog: {
-        configDigest: status.payload.catalog.configDigest,
-        compositeDigest: intent.kind === 'configSave' ? catalogOperation.catalog.compositeDigest : status.payload.catalog.compositeDigest,
+        configDigest: configSnapshot.digest,
+        compositeDigest: catalogOperation.catalog.compositeDigest,
         ...(catalogOperation
           ? { generationSetDigest: catalogOperation.generationSetDigest }
           : {}),
       },
       source: selected.source,
-      targetFingerprint: statusTargetFingerprint(
-        evidenceTargets,
-        evidenceRevisions,
-      ),
+      targetFingerprint: currentTargetFingerprint(status, evidenceTargets),
     };
     if (intent.kind === 'configSave') {
       const impact = 'impact' in selected ? selected.impact : undefined;
@@ -2012,9 +2079,9 @@ export function createTuiControllerDependencies(
           ? { commandPackages: selected.commandPackages } : {}),
         affectedTargets: (impact?.affectedTargets
           ?? evidenceTargets).map(({ pluginName, platform, scope }) => ({ pluginName, platform, scope })),
-        ...('sharedNativeRenderTargets' in selected
-          && selected.sharedNativeRenderTargets.length > 0
-          ? { sharedNativeRenderTargets: selected.sharedNativeRenderTargets }
+        ...('sharedNativeRenderUnits' in selected
+          && selected.sharedNativeRenderUnits.length > 0
+          ? { sharedNativeRenderUnits: selected.sharedNativeRenderUnits }
           : {}),
         ...('preApplyAuthorization' in selected
           && selected.preApplyAuthorization.length > 0
@@ -2052,24 +2119,16 @@ export function createTuiControllerDependencies(
           'Catalog 已变化。请按 H 重新加载，再检查清单。');
       }
       const catalogOperationContext = sessionCatalogOperationContext ?? currentCatalog;
-      let nativeSnapshot: Awaited<ReturnType<NonNullable<TuiControllerDependencies['loadScopedStatus']>>>['nativeSnapshot'] | undefined;
-      const status = await readRecoveryStatus({
-        scope, cwd: context.cwd, env: context.env, cliVersion: packageInfo.version,
-        nativeCliRunner: context.nativeCliRunner,
-        catalogOperationContext, signal,
-        onNativeStatus: async (native, demand) => {
-          signal.throwIfAborted();
-          const dependencyOverviews = await loadDependencyOverviews({ context,
-            cliVersion: packageInfo.version, status: native, signal,
-            catalogOperationContext: demand.catalogOperationContext,
-          });
-          nativeSnapshot = { payload: native.payload, pluginSummaries: native.pluginSummaries, targetRevisions: native.targetRevisions,
-            dependencyOverviews };
-        },
-      });
+      const snapshot = await readJointDemand({ scope, cwd: context.cwd, env: context.env, signal, catalogOperationContext });
+      const status = await readRecoveryStatus({ scope, cwd: context.cwd, env: context.env, cliVersion: packageInfo.version,
+        nativeCliRunner: context.nativeCliRunner, catalogOperationContext, signal }, snapshot);
       signal.throwIfAborted();
-      if (!nativeSnapshot) throw new Error('nativeObservationUnavailable');
-      return { ...status, nativeSnapshot };
+      sessionRecoveryStatus = status;
+      const source = sessionStatusResult ?? await loadCatalogView({ context, cliVersion: packageInfo.version, signal, catalogOperationContext });
+      const dependencyOverviews = await loadDependencyOverviews({ context, cliVersion: packageInfo.version, status,
+        pluginSummaries: source.pluginSummaries, signal, catalogOperationContext });
+      signal.throwIfAborted();
+      return { ...scopedCurrentStatus(status, snapshot, scope), dependencyOverviews };
     },
     async prepareScopedTask(request, signal) {
       signal.throwIfAborted();
@@ -2374,13 +2433,7 @@ export function createTuiControllerDependencies(
               ...(userStore.platforms ?? {}),
             },
             effectiveRawValues: effectiveRaw.values,
-            sharedNativeRefreshKeys: new Set(
-              (plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
-                (target.target === 'codex.skill' || target.target === 'claude.skill')
-                  && (!config.platform || target.platform === config.platform)
-                  ? target.refreshKeys
-                  : []),
-            ),
+            sharedNativeRefreshKeys: new Set(plugin.manifest.artifacts?.configKeys ?? []),
           });
           return { ...page, editEvidence: {
             platform: config.platform,
@@ -2903,7 +2956,7 @@ export function createTuiControllerDependencies(
                     }) : undefined;
                     const applyTargets = intent.apply
                       ? freshConfig.affectedTargets.filter((target): target is typeof target & { platform: PlatformName } =>
-                          target.platform === 'codex' || target.platform === 'claude').map((target) => ({
+                          NATIVE_PLATFORM_TARGETS.includes(target.platform as PlatformName)).map((target) => ({
                           pluginName: target.pluginName ?? plugin.manifest.name,
                           platform: target.platform,
                           scope: target.scope,
@@ -3041,7 +3094,7 @@ export function createTuiControllerDependencies(
                 }) : undefined;
                 const applyTargets = intent.retryApply || intent.apply
                   ? currentEvidence.config?.affectedTargets.filter((target): target is typeof target & { platform: PlatformName } =>
-                      target.platform === 'codex' || target.platform === 'claude').map((target) => ({
+                      NATIVE_PLATFORM_TARGETS.includes(target.platform as PlatformName)).map((target) => ({
                       pluginName: target.pluginName ?? plugin.manifest.name,
                       platform: target.platform,
                       scope: target.scope,

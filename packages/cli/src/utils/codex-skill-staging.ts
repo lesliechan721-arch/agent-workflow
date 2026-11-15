@@ -1,4 +1,3 @@
-import type { CodexSkillArtifact } from '../types.js';
 import {
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
@@ -8,7 +7,7 @@ import {
 export type CodexSkillStagingTree = DynamicSkillTree;
 
 export async function createCodexSkillExpectedTree(options: {
-  artifact: Pick<CodexSkillArtifact, 'target' | 'skillKey' | 'state' | 'content'>;
+  artifact: Parameters<typeof createDynamicSkillExpectedTree>[0]['artifact'] & { target: 'codex.skill' };
   sourceDirs?: string[];
   requireReadme?: boolean;
   requirementsReceipt?: Buffer;

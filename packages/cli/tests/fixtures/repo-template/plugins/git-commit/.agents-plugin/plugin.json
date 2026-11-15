@@ -1,15 +1,20 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "git-commit",
   "version": "0.1.0",
   "description": "在用户要求提交当前改动时自动触发 skill，引导 agent 按 Conventional Commits 规范完成 git 提交。",
-  "platforms": ["codex", "claude"],
+  "platforms": [
+    "codex",
+    "claude"
+  ],
   "skills": "./skills",
   "mcpServers": "./.mcp.json",
-  "apps": "./.app.json",
   "marketplace": {
     "category": "workflow",
-    "tags": ["git", "commit"],
+    "tags": [
+      "git",
+      "commit"
+    ],
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
@@ -19,7 +24,9 @@
   "interface": {
     "displayName": "Git Commit",
     "shortDescription": "自动触发的 Conventional Commits 提交流程",
-    "capabilities": ["Skills"]
+    "capabilities": [
+      "Skills"
+    ]
   },
   "extensions": {
     "instructions": [
@@ -27,21 +34,33 @@
         "name": "commit-policy",
         "title": "提交规范",
         "content": "所有提交都必须遵守 Conventional Commits，并在必要时补充 body 说明原因。",
-        "paths": ["src/**"]
+        "paths": [
+          "src/**"
+        ],
+        "coverage": [
+          "main"
+        ]
       }
     ],
     "permissions": [
       {
         "name": "git-ops",
-        "allow": ["git status", "git diff"],
-        "ask": ["git commit"]
+        "allow": [
+          "git status",
+          "git diff"
+        ],
+        "ask": [
+          "git commit"
+        ]
       }
     ],
     "hooks": [
       {
         "event": "before_tool",
         "matcher": "Bash",
-        "command": "echo git hook"
+        "command": "echo git hook",
+        "id": "commit-0",
+        "feedback": "notify"
       }
     ],
     "agents": [
@@ -49,7 +68,9 @@
         "name": "commit-reviewer",
         "description": "检查提交范围和信息是否匹配。",
         "prompt": "请检查这次提交是否符合提交规范，并指出 scope 是否准确。",
-        "tools": ["shell"]
+        "tools": [
+          "shell"
+        ]
       }
     ]
   }

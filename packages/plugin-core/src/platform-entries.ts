@@ -1,8 +1,8 @@
-import type { PlatformName } from './types.js';
+import type { PlatformTarget } from './types.js';
 
 export function applyPlatformOverride<
-  T extends { agentOverrides?: { claude?: Partial<T> | null; codex?: Partial<T> | null } },
->(entry: T, platform: PlatformName): T | null {
+  T extends { agentOverrides?: Partial<Record<PlatformTarget, Partial<T> | null>> },
+>(entry: T, platform: PlatformTarget): T | null {
   const override = entry.agentOverrides?.[platform];
   if (override === null) {
     return null;
@@ -20,8 +20,8 @@ export function applyPlatformOverride<
 }
 
 export function resolvePlatformEntries<
-  T extends { agentOverrides?: { claude?: Partial<T> | null; codex?: Partial<T> | null } },
->(entries: T[] | undefined, platform: PlatformName): T[] {
+  T extends { agentOverrides?: Partial<Record<PlatformTarget, Partial<T> | null>> },
+>(entries: T[] | undefined, platform: PlatformTarget): T[] {
   return (entries ?? [])
     .map((entry) => applyPlatformOverride(entry, platform))
     .filter((entry): entry is T => entry !== null);

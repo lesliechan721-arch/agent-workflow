@@ -29,23 +29,39 @@
       "owner": "agent-skills",
       "type": "string",
       "required": true,
-      "profiles": ["portable-agent-skills", "claude-2.1.88", "claude-current"]
+      "profiles": [
+        "portable-agent-skills",
+        "claude-2.1.88",
+        "claude-current"
+      ]
     },
     "description": {
       "owner": "agent-skills",
       "type": "string",
       "required": true,
-      "profiles": ["portable-agent-skills", "claude-2.1.88", "claude-current"]
+      "profiles": [
+        "portable-agent-skills",
+        "claude-2.1.88",
+        "claude-current"
+      ]
     },
     "license": {
       "owner": "agent-skills",
       "type": "string",
-      "profiles": ["portable-agent-skills", "claude-2.1.88", "claude-current"]
+      "profiles": [
+        "portable-agent-skills",
+        "claude-2.1.88",
+        "claude-current"
+      ]
     },
     "compatibility": {
       "owner": "agent-skills",
       "type": "string",
-      "profiles": ["portable-agent-skills", "claude-2.1.88", "claude-current"]
+      "profiles": [
+        "portable-agent-skills",
+        "claude-2.1.88",
+        "claude-current"
+      ]
     },
     "metadata": {
       "owner": "agent-skills",
@@ -53,7 +69,11 @@
       "typeByProfile": {
         "claude-current": "object"
       },
-      "profiles": ["portable-agent-skills", "claude-2.1.88", "claude-current"]
+      "profiles": [
+        "portable-agent-skills",
+        "claude-2.1.88",
+        "claude-current"
+      ]
     },
     "allowed-tools": {
       "owner": "agent-skills",
@@ -62,31 +82,50 @@
         "claude-2.1.88": "string-or-string-array",
         "claude-current": "string-or-string-array"
       },
-      "profiles": ["portable-agent-skills", "claude-2.1.88", "claude-current"]
+      "profiles": [
+        "portable-agent-skills",
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.tools"
     },
     "when_to_use": {
       "owner": "claude",
       "type": "string",
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.invocation.hint"
     },
     "argument-hint": {
       "owner": "claude",
       "type": "string",
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ]
     },
     "arguments": {
       "owner": "claude",
       "type": "string-or-string-array",
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.arguments"
     },
     "version": {
       "owner": "claude",
       "type": "string",
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ]
     },
     "disable-model-invocation": {
       "owner": "claude",
@@ -95,14 +134,30 @@
         "claude-2.1.88": "boolean-or-string"
       },
       "acceptedValuesByProfile": {
-        "claude-2.1.88": ["true", "false"],
-        "claude-current": ["true", "false", "yes", "no", "on", "off", "1", "0"]
+        "claude-2.1.88": [
+          "true",
+          "false"
+        ],
+        "claude-current": [
+          "true",
+          "false",
+          "yes",
+          "no",
+          "on",
+          "off",
+          "1",
+          "0"
+        ]
       },
       "acceptedValuesCaseInsensitiveByProfile": {
         "claude-current": true
       },
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.invocation.model"
     },
     "user-invocable": {
       "owner": "claude",
@@ -111,26 +166,49 @@
         "claude-2.1.88": "boolean-or-string"
       },
       "acceptedValuesByProfile": {
-        "claude-2.1.88": ["true", "false"],
-        "claude-current": ["true", "false", "yes", "no", "on", "off", "1", "0"]
+        "claude-2.1.88": [
+          "true",
+          "false"
+        ],
+        "claude-current": [
+          "true",
+          "false",
+          "yes",
+          "no",
+          "on",
+          "off",
+          "1",
+          "0"
+        ]
       },
       "acceptedValuesCaseInsensitiveByProfile": {
         "claude-current": true
       },
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.invocation.manual"
     },
     "disallowed-tools": {
       "owner": "claude",
       "type": "string-or-string-array",
       "introducedVersion": null,
-      "profiles": ["claude-current"]
+      "profiles": [
+        "claude-current"
+      ],
+      "platformFeature": "skill.tools"
     },
     "model": {
       "owner": "claude",
       "type": "string",
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.model"
     },
     "effort": {
       "owner": "claude",
@@ -140,21 +218,45 @@
       },
       "verifiedAtVersion": "2.1.88",
       "acceptedValuesByProfile": {
-        "claude-2.1.88": ["low", "medium", "high", "max"],
-        "claude-current": ["low", "medium", "high", "xhigh", "max"]
+        "claude-2.1.88": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "claude-current": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
       },
       "acceptedValuesCaseInsensitive": true,
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.effort"
     },
     "context": {
       "owner": "claude",
       "type": "string",
       "acceptedValuesByProfile": {
-        "claude-2.1.88": ["inline", "fork"],
-        "claude-current": ["fork"]
+        "claude-2.1.88": [
+          "inline",
+          "fork"
+        ],
+        "claude-current": [
+          "fork"
+        ]
       },
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.execution"
     },
     "agent": {
       "owner": "claude",
@@ -163,38 +265,69 @@
         "context": "fork"
       },
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.agent"
     },
     "background": {
       "owner": "claude",
       "type": "boolean-or-string-or-binary-number",
-      "acceptedValues": ["true", "false", "yes", "no", "on", "off", "1", "0"],
+      "acceptedValues": [
+        "true",
+        "false",
+        "yes",
+        "no",
+        "on",
+        "off",
+        "1",
+        "0"
+      ],
       "acceptedValuesCaseInsensitive": true,
       "requires": {
         "context": "fork"
       },
       "introducedVersion": "2.1.218",
-      "profiles": ["claude-current"]
+      "profiles": [
+        "claude-current"
+      ],
+      "platformFeature": "skill.background"
     },
     "hooks": {
       "owner": "claude",
       "type": "object",
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.hooks"
     },
     "paths": {
       "owner": "claude",
       "type": "string-or-string-array",
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.paths"
     },
     "shell": {
       "owner": "claude",
       "type": "string",
-      "acceptedValues": ["bash", "powershell"],
+      "acceptedValues": [
+        "bash",
+        "powershell"
+      ],
       "acceptedValuesCaseInsensitive": true,
       "verifiedAtVersion": "2.1.88",
-      "profiles": ["claude-2.1.88", "claude-current"]
+      "profiles": [
+        "claude-2.1.88",
+        "claude-current"
+      ],
+      "platformFeature": "skill.shell"
     }
   }
 }

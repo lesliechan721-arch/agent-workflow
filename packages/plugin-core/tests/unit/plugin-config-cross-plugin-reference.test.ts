@@ -40,7 +40,7 @@ const context = (values: Record<string, unknown> = { registry: [{ key: 'Remote',
   plugins: { provider: { definition: provider(), dependencies: [], values } },
 })
 const sourceManifest = (config: unknown = consumerConfig) => ({
-  schemaVersion: 3, name: 'consumer', version: '1.0.0', description: 'Consumer',
+  schemaVersion: 4, name: 'consumer', version: '1.0.0', description: 'Consumer',
   dependencies: ['provider'], mcpServers: './.mcp.json',
   marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
   config,

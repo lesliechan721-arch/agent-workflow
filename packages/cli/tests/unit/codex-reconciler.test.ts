@@ -17,6 +17,8 @@ function surface(kind: 'native' | 'mixed' | 'extension'): CodexSurfaceAnalysis {
   const extension = kind !== 'native';
   return {
     ok: true,
+    configInputs: [],
+    dynamicComponents: 'not-declared',
     nativeKinds: native ? ['skill'] : [],
     extensionKinds: extension ? ['instruction'] : [],
     unsupportedKinds: [],
@@ -190,7 +192,7 @@ describe('Codex desired-state reconciliation planner', () => {
     )));
     expect(plan.requirement).toMatchObject({
       scope: 'project',
-      minimumVersion: '0.151.0',
+      minimumVersion: '0.155.0',
     });
     expect(plan.activationActions.user[0]).toMatchObject({ action: 'disable', desired: false });
     expect(plan.activationActions.project[0]).toMatchObject({ action: 'enable', desired: true });

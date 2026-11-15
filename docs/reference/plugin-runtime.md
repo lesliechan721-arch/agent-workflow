@@ -1,10 +1,10 @@
 # 插件运行时与产物物化合同
 
-本文件是面向插件作者与运行时自动化实现的公开精确合同，定义插件资源声明、运行时配置读取、构建与导入、动态 Renderer、`preApply` 生命周期脚本以及 Native 与 Portable 平台投影合同。内部管线与编排实现参见[插件生命周期架构说明](../maintainers/architecture/lifecycle.md)。
+本文件是面向插件作者与运行时自动化实现的公开精确合同，定义插件资源声明、运行时配置读取、构建与导入、动态 Renderer、`preApply` 生命周期脚本以及原生平台与 generic 投影合同。内部管线与编排实现参见[插件生命周期架构说明](../maintainers/architecture/lifecycle.md)。
 
 ## 1. 资源声明与构建引入
 
-插件源码通过 Manifest v3 的 `skills`、`scripts`、`buildConfig` 和资源声明向构建管线与运行时公开能力。
+插件源码通过 Manifest v4 的 `skills`、`scripts`、`buildConfig` 和资源声明向构建管线与运行时公开能力。
 
 ### 1.1 静态资源与可执行位
 
@@ -29,6 +29,8 @@
   - 构建过程只向 CLI 提供的 staging 目录输出，仅读取声明的输入文件，绝不隐式安装外部工具或读取真实用户配置。
   - `buildImports` 仅在编译期生效，**绝不向下游传播 capability 依赖**。同一 Catalog 来源的运行时依赖必须在 Manifest `dependencies` 中显式声明。
   - Artifact 的 `runtimeImports` 是编译期复制到 bundle 内的本地输入。
+
+Catalog source bundle 保存 canonical 及各平台静态输入，不提前生成能力相关的 Hooks、Agents 或最终原生包。合法行为 metadata 保留到 prepare，由该 profile 的能力判定形成组件或 unmet；最终 generic 导出物仍须满足其能力与格式。
 
 ### 1.2 运行时引入与文件复用（buildConfig.skillRuntimeFiles）
 
@@ -88,146 +90,199 @@
 
 ## 2. 已安装配置读取合同
 
-当 Skill 需要在运行时读取用户配置且不希望引入整个 AW 外部环境时，可声明安装态配置读取。
+动态 Skill 的 runtimeConfig: { keys: string[] } 要求 aw.installed-runtime-config.v2。keys 必须非空、无重复，属于 artifacts.configKeys 的非敏感闭包，且本次平台 capability 支持该运行合同。具体 Native 平台的运行配置和命令闭包仍需独立资格。
 
-### 2.1 作者声明与能力门禁
+AW 在最终 Skill 目录注入保留文件 scripts/aw-runtime-config.mjs 与 .aw-runtime-config.json（schema 2），作者和 renderer 不得覆盖：
 
-- **仅限 Native Skill 目标**：在 Manifest 的 artifact targets 中，`runtimeConfig` **仅允许** 在 `codex.skill` 与 `claude.skill` 目标上声明，声明在其他任何 target（如动态命令、通用目标或 Portable 目标）上将被直接拒绝。
-- 声明结构：目标 target 声明 `runtimeConfig: { keys: ["<field>"] }`。
-- 必须在 Manifest 的 `requires.aw.capabilities` 声明 `aw.installed-runtime-config.v2`。
-- `keys` 必须非空、无重复，且必须属于该 target 的 `refreshKeys` 子集。
-- 严禁在 `runtimeConfig.keys` 中声明任何 `sensitive: true` 的字段或其校验依赖闭包。
-
-### 2.2 生成的运行时文件
-
-物化过程中，AW 在最终生成的 Skill 目录内注入以下两个保留文件（插件源码与 renderer 严禁提供同名文件）：
-- `scripts/aw-runtime-config.mjs`：配置读取辅助模块。
-- `.aw-runtime-config.json`：当前产物专用的安装态配置快照（schema 2）。
-
-### 2.3 运行时调用接口
-
-```javascript
+~~~js
 import { readRuntimeConfig } from './aw-runtime-config.mjs';
+const runtime = await readRuntimeConfig({ from: import.meta.url, keys: ['fieldA'] });
+// runtime.installedIdentity、runtime.effectiveValues、runtime.resourceRoot
+~~~
 
-const runtime = await readRuntimeConfig({
-  from: import.meta.url,
-  keys: ['fieldA', 'fieldB'],
-});
+reader 从当前物理产物核验来源、scope 和路径，只读取已应用配置，不依赖 AW_PLUGIN_CONTEXT、中央 Config Store 或其他产物。保存新配置不会改变旧产物返回值。缺失、损坏、未知格式、越权 keys 或身份冲突时拒绝并提示 sync/reinstall。此快照是可重建资源，不能授予 ownership、status 或 cleanup 权限。
 
-console.log(runtime.installedIdentity); // 产物专属安装身份
-console.log(runtime.effectiveValues);   // 获准字段的实际生效值
-console.log(runtime.resourceRoot);      // 产物资源根路径
-```
+schema 2 binding 通过 `originPath` 绑定独立的当前来源证据；旧 `nativeReceiptPath` 不作为兼容字段。固定保留文件 `.aw-runtime-native-receipt.json` 的当前内容为 `schemaVersion: 1`、`kind: 'aw-runtime-component-origin'`，包含 source 身份、platform、scope、configScope、`component: { id, kind: 'skill', name }` 和本次准备的 `inputDigest`。该文件不包含配置值、宿主绝对路径或旧 artifact targets。
 
-### 2.4 安全、隔离与弱状态边界
+reader 同时核对来源证据与 binding；原生产物所在包具有当前 nativeProjection owner 时，还须核对包身份、组件映射和实际相对输出路径。Review/Eval 的完整 Skill 快照携带相同的独立来源证据，因此可以复制后读取；只交换另一个 source 或 scope 的 binding 必须失败。来源快照仍不能作为删除或安装权限证明。
 
-- **无环境依赖**：调用 `readRuntimeConfig` 无需提供 `AW_PLUGIN_CONTEXT` 环境变量。
-- **产物自闭合**：直接从当前文件物理位置核验格式、来源、scope 和路径边界；不读取中央 Config Store，不遍历其他同名或不同名产物。
-- **未应用配置隔离**：用户已保存但尚未通过 `apply` 刷新的配置，绝不改变现有生效产物的返回值。
-- **独立性与弱状态**：每个产物独立工作，不声明跨 Skill 的一致性组；生效资源是可删除、可重建的弱状态现场证据，**不能升级为 ownership、status 或 cleanup 的真值判断**，也不负责核验 Skill 角色正文或资源树。
-- **升级与不兼容拒绝**：
-  - 旧版的 `resourceVersion`、`artifactIds`、v1 binding 与 `expectedRevision` 完全不兼容。
-  - 升级路径：必须先交付支持 v2 的 CLI，再通过正常的 `build`、`sync` 或 `reinstall` 更新已安装产物内的 helper 模块。
-  - 缺失或损坏的本产物配置、未知格式、越权 keys、不安全路径或可观察身份冲突时，reader 直接拒绝本次调用，并提示修正配置、`sync` 或 `reinstall` 恢复。
+## 3. 动态 Renderer 与 PlatformComponentPlan 合同
 
----
+动态 renderer 按平台、实际资源 scope 和能力输入生成五类组件的完整期望集合。Manifest 不预先枚举动态 ID；静态入口可以与动态集合组合。
 
-## 3. 动态 Renderer 与 ArtifactPlan 合同
+### 3.1 声明、单元与输入权限
 
-动态插件可通过自定义脚本在安装与物化期间根据目标平台与生效配置生成定制产物。
-
-### 3.1 声明与调用入口
-
-Manifest 在 `scripts.artifacts.render` 中声明动态渲染入口：
-
-```json
-{
-  "scripts": {
-    "artifacts": {
-      "render": {
-        "runner": "node",
-        "path": "./scripts/render-artifacts.mjs"
-      }
-    }
-  }
+~~~ts
+interface PluginArtifactsConfig {
+  configKeys: string[];
+  sourceDirs?: string[];
+  runtimeImports?: ArtifactRuntimeImportDefinition[];
+  scopes?: Array<'user' | 'project'>;
 }
-```
+// scripts.artifacts.render
+interface RenderEntry { runner: 'node'; path: string; args?: string[] }
+~~~
 
-AW 固定使用 Node 运行该脚本。Renderer 进程通过环境变量 `AW_PLUGIN_CONTEXT` 取得包含完整渲染上下文的 JSON 文件绝对路径。
+有 artifacts 必须有 render 入口。只有托管命令使用入口时可以没有 artifacts，并跳过五类组件请求。configKeys 必填、可为空，按编译后的 Config v5 profile 校验键及引用闭包。scopes 缺省两种，显式数组非空、无重复，匹配实际 **render scope**。共享包的 canonical scope 与项目 activation 分开，完整布局见[平台架构](../maintainers/architecture/platforms.md)。scope 不匹配表示该单元的动态组件有意不提供，不改变静态资源或共享 scope。
 
-### 3.2 渲染上下文（RendererContext）
+AW 在运行脚本前由固定平台布局确定 render units。每单元按权限调用同一入口：
 
-渲染脚本通过 `AW_PLUGIN_CONTEXT` 文件接收上下文参数：
-- `requestedArtifactIds`：本次请求必须返回的 target ID 列表（非空、无重复、按 Manifest 声明顺序规范化）。
-  - **同次 ID 唯一性**：任两个在同一 platform/AW surface 和 scope 内可被同次请求的 target 不能使用相同 ID。
-  - **Codex 共享投影全局唯一性**：Codex shared native projection 要求更为严格，所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内必须分别**全局唯一**，即使 scope 不重叠也不能复用。
-- `previousArtifacts`：只读且不可变的上一版产物快照，用于增量比对。
-- `config`：包含本次涉及 target 所声明 `refreshKeys` 的并集，提供 `schema`、`values`、`sources` 和 `issues`。配置 helper 仅消费已通过 Core 校验的 effective context。
-- `changedConfigKeys`：相对于上一版发生变化的配置键列表。
-- `artifactSources`：按 Manifest 顺序提供当前 surface/scope 下全部 Skill target 的真实 `sourceDirs`，即使该 Skill 未进入本次请求批次。Renderer 可据此复用静态模板资源，但不得借此读取额外配置或返回额外产物。
-- `commandSources`：在所有上下文中存在（缺省 `[]`），提供本次命令 target 所涉及包的已核验只读 `sourceDir`。
-- **托管命令 Surface**：托管命令 context 设置 `AW_PLUGIN_SURFACE=managed-commands`，不设置 `AW_PLUGIN_PLATFORM`。
-- **隔离环境**：执行 renderer 时，`HOME`、`USERPROFILE`、`AW_HOME` 及临时目录均重定向至本次请求专用的临时目录。该输入隔离**不是 OS 沙箱**，严禁依赖宿主真实用户目录。
+| 批次 | 可见配置 | 可输出类别 |
+| --- | --- | --- |
+| Skill | configKeys 的非敏感键及非敏感校验依赖 | skill |
+| 非 Skill | 获准键，可包含敏感字段 | mcp、agent、hook、instruction |
 
-### 3.3 敏感配置分批规则
+allowedOutputKinds 是单元可交付类别与批次类别的交集。交集为空不调用；否则每批最多一次，无输出也返回合法空数组。schema、values、sources、issues、changedConfigKeys 和历史身份同时裁剪，不通过其他字段把敏感信息带入 Skill 批次。changedConfigKeys 仅供优化，不能据此只返回变化项。配置、资源、renderer 权限或能力依据变化时重新准备完整集合，即使上次无组件。
 
-当同一 surface/scope 同时包含普通 Skill 和需要读取 `sensitive: true` 配置的非 Skill target 时，AW 将其切分为两次独立的上下文请求分别执行。两次请求读取相同的不可变 `previousArtifacts`，确保敏感信息不泄漏给普通静态技能。
+sourceDirs 是 bundle 内已验证相对目录；runtimeImports 使用既有具名 runtime export 与依赖来源合同。引用须经 realpath 和内容闭包校验；绝对路径、..、逃逸 symlink、未知 import 或闭包外文件均拒绝。资源入口不是输出位置。脚本使用隔离 HOME/USERPROFILE/AW_HOME/XDG 与受控进程收尾；这是输入隔离，不是 OS 沙箱。
 
-### 3.4 响应输出（ArtifactPlan v2）
+### 3.2 PlatformRenderContext v1
 
-Renderer 必须向 stdout 输出符合规范的 JSON `ArtifactPlan`（结构化 stdout 输出上限为 16 MiB，独立诊断摘要上限为 64 KiB）。
+AW_PLUGIN_CONTEXT 指向本次隔离 JSON 文件的绝对路径：
 
-以在 Manifest 中声明的动态 Skill 目标为例：
-
-```json
-{
-  "id": "example-skill",
-  "target": "codex.skill",
-  "platform": "codex",
-  "scopes": ["user"],
-  "states": ["present"],
-  "refreshKeys": [],
-  "skillKey": "example"
+~~~ts
+interface PlatformRenderContextV1 {
+  schemaVersion: 1;
+  surface: 'agent-plugin';
+  platform: PlatformId;
+  scope: 'user' | 'project';
+  plugin: { pluginId: string; name: string; version: string };
+  config: {
+    schema: PluginConfigDefinition;
+    values: Record<string, PluginConfigValue>;
+    sources: Record<string, 'default' | 'common' | 'platform' | 'missing'>;
+    issues: PluginConfigValidationIssue[];
+  };
+  changedConfigKeys: string[];
+  allowedOutputKinds: ComponentKind[];
+  platformCapabilities: PlatformCapabilitiesV1;
+  resources: Array<{ kind: 'bundle' | 'runtime-import'; name: string;
+    root: string; digest: string }>;
+  previousComponents: Array<{ id: string; kind: ComponentKind; name: string }>;
 }
-```
+~~~
 
-当上下文请求 `requestedArtifactIds: ["example-skill"]` 时，Renderer 输出的 ArtifactPlan 必须完整匹配该 declaration 的静态元数据：
+缺值保留 missing，不填 null。previousComponents 仅含同类别批次的已验证身份，不含正文、配置或宿主路径，也不授予删除权。renderer 不能改变 platform、scope、支持结论或输出宿主位置。
 
-```json
-{
-  "version": 2,
-  "artifacts": [
-    {
-      "id": "example-skill",
-      "platform": "codex",
-      "target": "codex.skill",
-      "kind": "skill",
-      "state": "present",
-      "refreshKeys": [],
-      "skillKey": "example",
-      "content": {
-        "files": {
-          "SKILL.md": "---\nname: example\ndescription: Example skill.\n---\nRun the requested task.\n",
-          "README.md": "# Example\n\nExample skill.\n"
-        }
-      }
-    }
-  ]
+### 3.3 平台能力与具体要求
+
+~~~ts
+type Support = 'supported' | 'unsupported' | 'unverified';
+interface CapabilityFact { status: Support; reasonCodes: string[] }
+interface PlatformCapabilitiesV1 {
+  schemaVersion: 1;
+  platform: PlatformId;
+  scope: 'user' | 'project';
+  basis: 'local' | 'profile';
+  profileId: string;
+  consumers: Array<{ id: string; product: 'cli' | 'app' | 'generic';
+    version: string | null;
+    agentConsumers?: Array<{ id: string; version: string | null;
+      enabled: 'yes' | 'no' | 'unknown';
+      packageAccess: 'allowed' | 'denied' | 'unknown';
+      scope?: 'user' | 'project';
+      trust?: 'trusted' | 'required' | 'blocked' | 'unknown';
+      settings?: { promptMode: 'host-default' | 'append' | 'replace' | 'unknown';
+        loadExtensions: 'yes' | 'no' | 'host-default' | 'unknown' };
+      configurationEvidence?: string }> }>;
+  kinds: Record<ComponentKind, CapabilityFact & {
+    delivery: Array<'native-package' | 'native-extension' |
+      'managed-host-resource' | 'generic-files'> }>;
+  features: Record<string, CapabilityFact & { values?: string[]; maxBytes?: number }>;
 }
-```
+~~~
 
-- **Skill 文件层级**：Skill 产物的文件必须放置在 `content.files` 对象中（顶层 `files` 仅适用于 `commandPackage` 产物类型）。
-- **字段必需性**：上述 `state: "present"` 的 Skill 产物示例中包含 `id`、`platform`、`target`、`kind: "skill"`、`state: "present"`、`refreshKeys`、`skillKey` 以及 `content: { files }`。对于 Skill 产物，`state: "disabled"` 时不要求提供 `content`；其它 target 按各自 union 字段约束（如 `codex.developerInstructionsBlock` 的 `content` 为文本且严禁包含 `skillKey`，`commandPackage` 无 `platform`/`skillKey`/`content`）。
-- 对 `requestedArtifactIds` 中的每一个 target ID，必须**精确返回一个** artifact 结果。
-- 严禁遗漏请求的 ID，严禁返回未请求的额外产物，严禁产物 ID 重复。
-- 产物计划中声明的文件写入路径必须严格限定在 target 专属根目录内。
+profile 固定版本、OS、安装接口与能力映射；basis=profile 的作者准备不证明本机安装。共享包使用全部实际消费者共同支持的值，单个消费者的限制仍分别显示。Pi inspect 的消费者身份、版本、scope、启用、trust、允许条件与相关配置进入能力及 stale 依据；无消费者只影响 Agents，不推定 Pi 未安装。
+
+feature registry 定义 ID、合法取值与默认 unsupported。至少覆盖：
+
+| Feature | 必需语义或取值 |
+| --- | --- |
+| `component.kind.<kind>` | 对应五类 kind 的基础门槛，无 values；支持状态与原因从 kinds 统一派生，不增加调用或执行承诺 |
+| skill.invocation.manual、skill.invocation.model、skill.visibility | 当前 Skill metadata 的调用与可见性控制 |
+| skill.runtime-config | AW 已安装配置合同版本 |
+| skill.tools | allowlist、denylist、none；对应实际工具限制 |
+| skill.model、skill.agent | 指定模型与角色的执行语义 |
+| skill.execution | isolated-context；对应 fork 独立上下文 |
+| skill.effort | low、medium、high、xhigh、max |
+| skill.background | true、false |
+| skill.hooks、skill.paths | Skill 局部 Hook 与路径条件 |
+| skill.shell | bash、powershell |
+| skill.invocation.hint、skill.arguments | when_to_use 的调用提示语义与 arguments 参数语义 |
+| mcp.transport | stdio、http、sse |
+| agent.execution | isolated-context 等已核验执行语义 |
+| agent.model、agent.tools | 模型选择；tools 的 allowlist、none |
+| agent.prompt-mode | host-default、append、replace |
+| agent.declaration-protocol | 已核验消费者协议 ID |
+| `hook.common.<event>`、`hook.native.<event>` | 对应登记事件的 notify、context、block |
+| hook.matcher | 已登记的 `<dialect>.<event>`，例如 `common.before_tool`、`native.PreToolUse`；仅表示该事件支持 matcher，不从 feedback 支持推定 |
+| instruction.coverage | main、plugin-agents、other-agents |
+| instruction.paths、instruction.after-compaction | 条件匹配与压缩后覆盖 |
+
+FeatureRequirement={feature:string,values?:string[]} 的 feature 和 values 必须已登记；values 若有须非空、无重复。满足要求须 status=supported 且包括全部必需值。内容自动推导要求，作者 requires 只能追加，不能撤销。Skill 中声明的工具限制、模型、fork、角色、后台、Hook 等行为字段也必须进入能力判断；仅复制 metadata 不算支持。未声明字段不增加默认执行语义，纯展示字段不增加行为门槛。例如 tools=[] 要求 none，Hook feedback=block 要求该事件的 block。合法但未支持的取值可以进入 unmet，未知 ID/取值则非法。
+
+公共 Hook 的合法 matcher 可以保留在源码中。准备时，声明 matcher 的组件自动要求对应 `hook.matcher` 事件值；目标不支持时，静态组件报告具体 unmet，独立组件继续。动态集合返回超出能力的 matcher 则拒绝该批。显式 Native 声明仍须符合该宿主事件的 matcher 语法与允许规则。
+
+稳定原因码包括 client-missing、version-unsupported、interface-unsupported、scope-unsupported、capability-unverified、consumer-missing、consumer-disabled、policy-blocked。AW 的 requires.aw.capabilities 与宿主组件能力不共用集合。
+
+### 3.4 PlatformComponentPlan v3 与资源
+
+~~~ts
+type ComponentKind = 'skill' | 'mcp' | 'agent' | 'hook' | 'instruction';
+type SourceRef = { kind: 'bundle'; path: string } |
+  { kind: 'runtime-import'; name: string; path: string };
+type ResourceFile = { text: string } | { source: SourceRef };
+type PluginComponent = { id: string; name: string;
+  requires?: FeatureRequirement[] } & (
+  | { kind: 'skill'; content: { files: Record<string, ResourceFile> };
+      runtimeConfig?: { keys: string[] } }
+  | { kind: 'mcp'; content: McpServerDefinition }
+  | { kind: 'agent'; content: AgentContent }
+  | { kind: 'hook'; content: HookContent }
+  | { kind: 'instruction'; content: InstructionContent }
+);
+interface PlatformComponentPlanV3 {
+  version: 3;
+  components: PluginComponent[];
+  omitted: Array<{ id: string; kind: ComponentKind;
+    reason: 'not-offered' | 'config-disabled' }>;
+  unmet: Array<{ id: string; kind: ComponentKind; name?: string;
+    componentId?: string; requiredFeatures: FeatureRequirement[]; reasonCode: string }>;
+}
+~~~
+
+Agent、Instructions、MCP 和静态声明见[Manifest](manifest-and-config.md#23-五类组件与静态扩展)。动态 HookContent 为 {dialect:'common'|'native',event,feedback,matcher?,command}；common event 使用登记的公共三事件，native 使用当前平台已登记事件。其反馈、资源闭包与静态 Hook 相同。
+
+Hook 的唯一公开 handler 真值可通过 aw dev plugin capabilities --surface hook-handlers --json 查询。getHookHandlerContract(platform,dialect,event) 同时返回 nativeEvent、matcherAllowed、qualification 与具体 protocol；protocol 规定 stdin-json 字段、来源、各 feedback 的 stdout/stderr/exitCode 及其他退出码行为。createHookHandlerResponse 按同一映射生成回应。protocol=null 或所需反馈没有映射时不能声明 supported。协议定义与真实客户端资格分别判断；旧事件校验入口也消费此 registry，不能维护不同 allowlist。
+
+三个数组必填且可为空，每批返回允许类别的完整集合。三组 ID 不得重叠，静态与动态身份共同唯一，动态 omitted 不能关闭静态组件。ID 非空且无路径分隔符，command-set.、command-package. 为保留前缀。Skill files 是组件根下相对路径，必须含有效 SKILL.md；宿主名称映射后也查冲突。来源、文件层级、秘密原值、类别与子能力越界都拒绝整批。
+
+unmet 的 requiredFeatures 保留具体缺失值及 componentId。例如 before_tool 只支持 notify 而要求 block，缺口为 {feature:'hook.common.before_tool',values:['block']}。Instructions 要求 main/plugin-agents 而只支持 main，则成功组件只含 main，关联缺口只含 plugin-agents。模型、工具限制与阻断不能静默删去。依赖或配置缺口可用空 requiredFeatures，能力缺口不能借此隐藏。reasonCode 必须与当前能力依据或登记的配置/依赖原因一致。
+
+stdout 只输出一个 JSON 对象，上限 16 MiB，独立诊断摘要上限 64 KiB。非零、超时、非法 JSON 或任一校验失败均没有有效集合，不能解释为空并删除旧输出。
+
+### 3.5 合并、命令闭包与冻结
+
+先取得同一部署的静态及全部动态批次，检查身份、宿主名和路径，再解析实际 Skill producer、渲染命令 set、校验引用/权限/nativeTools/运行资源，生成保留运行文件，最后投影原生包与补足并冻结。组件 renderer 不为命令再运行一次。agent-commands 与不带 platform 的 managed-commands 仍返回各自 v2 命令产物，精确合同见[托管命令](managed-commands.md#a3-renderer-请求与响应)。
+
+Hook/MCP 命令引用的本地文件须来自已允许的来源。准备阶段冻结显式文件及可静态解析的 Node imports，保留字节和执行位；投影绑定实际包位置，Pi/OpenCode 使用模块自身的位置，不依赖宿主 cwd。非 JavaScript 文件按显式资源交付，作者仍须声明其运行所需文件；AW 不承诺推导任意脚本或运行时文件读取。未知包根变量、来源逃逸及未声明的 runtime import 在写入前拒绝。
+
+Grok 包投影从同一 binding、同一 render scope 的完整集合组合 Agent Instructions 正文。修改或关闭 Instructions 时，同 scope 受影响的 Agent 包和规则补足一起重投影、Review 与冻结；组合输入失败不能当无正文继续发布。
+
+| 合并结果 | 维护语义 |
+| --- | --- |
+| 无组件且无 unmet | 有意空；新目标成功 no-op，旧输出的撤销须进 Review 并受归属/共享约束 |
+| 无组件但有 unmet | 能力仍期望提供，保留未完成项及恢复证据，不按空集卸载 |
+| 渲染失败 | 没有有效集合，不执行集合差异写入或清理，其他独立平台继续 |
+
+Review 冻结实际组件、资源字节、输出位置、删除候选、能力及输入证据。Execute 在唯一写锁内重查来源、配置、能力、入口和现场归属，变化返回 stale，重新准备和确认，不在确认后生成另一集合。status/list/inspect 不运行 renderer；有匹配的可重建物化证据时才显示当前配置不产生组件，否则显示动态期望待确认。物化证据和 previousComponents 均不授予删除权。
 
 ---
 
 <a id="preapply-contract"></a>
 ## 4. preApply 脚本合同
 
-Manifest v3 允许在 `scripts.preApply` 中声明安装前环境准备与校验脚本：
+Manifest v4 允许在 `scripts.preApply` 中声明安装前环境准备与校验脚本：
 
 ```json
 {
@@ -299,44 +354,19 @@ AW 固定使用 bundle 内的 Node entry 执行脚本，**以 bundle plugin root
 
 ---
 
-## 5. 平台投影合同：Native 与 Portable
+## 5. 平台投影与内容保护
 
-物化产物分为面向特定客户端的 Native 投影与平台中立的 Portable 投影。
+### 5.1 原生包与宿主补足
 
-### 5.1 Native 平台投影（Codex 与 Claude）
+具体 Agent 使用固定原生包或原生扩展，必要的 AW 宿主补足在计划中明确显示。安装失败不改用散文件 Skills 路径。包格式、真实产品面、scope、固定版本和路由由[平台架构](../maintainers/architecture/platforms.md)定义，作者只能提供组件与能力要求。
 
-- **投影归属与激活**：Codex 与 Claude 的静态和动态 Skill 固定投影为 Native。共享包体按用户物理身份物化，但分别读取各自平台的配置，项目的 activation 保持独立。
-- **动态渲染回执**：
-  - AW 为 Codex native 动态生成保留回执文件 `.agents-plugin/aw-codex-native-render.json`（schema 1）。源码与 renderer 严禁声明或生成该文件。
-  - 回执记录规范化身份、`configDigest` 与 `renderInputDigest`，不记录原始 config。
-  - **全局唯一性**：所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内必须分别**全局唯一**，即使 scopes 不重叠也不能复用。
-- **敏感依赖禁止**：所有 Skill 的 `refreshKeys` 均严禁包含敏感配置依赖；平台 target 按该平台的编译配置校验。动态与静态 Skill 名字冲突直接拒绝。
-- **闭包先行校验**：完整依赖闭包先于过滤进行校验；CLI 的 `--skill` 选项仅用于过滤最终输出的选择，不放宽闭包完整性要求。
+物理包、原生注册、scope 激活、组件观测与会话加载是独立事实。CLI/App 共用实际位置时只生成一次，并使用共同能力；不同位置分别准备。共享包固定 canonical render scope，项目激活不能用项目配置覆盖用户包。Instructions 直接注入正文，不能输出要求模型另读文件的指针。
 
-### 5.2 Portable 平台投影
+### 5.2 generic 与通用 Skills 导出
 
-- **跨平台中立目标**：声明 `agent-skills.skill` 的目标作为 Portable 技能处理。
-- **目标平台指定**：Portable 动态 target 必须显式指定五个 canonical platform 之一（`antigravity`、`cursor`、`opencode`、`pi`、`generic`）。Codex 与 Claude 的静态与动态 Skill 均固定走 Native 投影，严禁声明为 Portable target。
-- **声明示例**：
-  ```json
-  {
-    "id": "example-skill",
-    "target": "agent-skills.skill",
-    "platform": "cursor",
-    "distribution": "agent-skills",
-    "scopes": ["user"],
-    "states": ["present"],
-    "refreshKeys": [],
-    "skillKey": "example"
-  }
-  ```
-- **禁止降级**：Native 物化失败**绝不降级**为 Portable 投影。
-- **目录与文档规范**：Portable 产物输出目录中的每个直接子目录必须是一个完整的标准 Skill，且必须保留生产级的 `README.md`。
-- **Owner Marker 合同**：
-  - Portable 技能写入时附带专属的 owner marker 文件，其 schema 固定为 **`schemaVersion: 1`**，所有者标识固定为 `owner: "agent-workflows"`，类型固定为 **`kind: "portable-skill"`**。
-  - 核心属性包含：`pluginId`（如 `<sourceId>/<pluginName>`）、`logicalIdentity`（源工作区快照身份）、`platform`、`scope`、`skill`、`filesDigest` 以及 `configDigest`。
-  - 注意：`schemaVersion: 3` 是另一类 AW-owned artifact owner marker 格式，与 Portable 独立的 schema 1 owner 绝不混用。
-- **安全清理边界**：在离线 cleanup 或卸载阶段，若未找到合法匹配的 owner marker，或目录内容呈现 foreign/shared/unknown 状态，一律严禁删除。
+generic 是安装 target 的例外，只承诺通用 Skills 文件及归属，不要求客户端，不声称特定 Agent 加载。其 writer 继续检查精确 owner 和内容，保留 foreign/shared/unknown。通用 Skill 的每个直接子目录必须完整，保留生产 README.md。
+
+明确选择 profile 的通用 Skills 导出独立于安装机制；profile 准备不依赖本机客户端，不构成真实加载资格。不得以导出成功声明该 Agent 支持其余组件或本机命令运行。
 
 ### 5.3 敏感文本扫描合同
 

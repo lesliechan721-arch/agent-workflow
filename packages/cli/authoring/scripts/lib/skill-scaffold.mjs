@@ -80,7 +80,6 @@ export function renderPluginReadme(pluginName, description, skillName, options =
   const capabilities = [
     ...(skillName ? [`| Skill \`${skillName}\` | ${description.replace(/[。.]$/u, '')} | 自动或 \`$${skillName}\` |`] : []),
     ...(options.withMcp ? ['| MCP server | 提供插件声明的工具连接 | 安装后由平台使用 |'] : []),
-    ...(options.withApps ? ['| App | 提供插件声明的应用能力 | 安装后由平台使用 |'] : []),
     ...(options.withConfigApi ? ['| 配置 | 保存插件运行所需的用户配置 | 使用 AW 配置页或 `aw plugin config` |'] : []),
   ];
   return `# ${titleCaseSlug(pluginName)}

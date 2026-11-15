@@ -1,7 +1,7 @@
 import type { NativeToolClosure, NativeToolDefinition } from '../../src/manifest.js';
-import type { PluginManifestSourceV3 } from '../../src/index.js';
+import type { PluginManifestSourceV4 } from '../../src/index.js';
 
-type SourceDefinition = NonNullable<PluginManifestSourceV3['nativeTools']>['definitions'][number];
+type SourceDefinition = NonNullable<PluginManifestSourceV4['nativeTools']>['definitions'][number];
 
 export const sourceDefinition: SourceDefinition = { key: 'job', protocol: 'aw.windows-job.v1' };
 export const normalizedDefinition: NativeToolDefinition = sourceDefinition;

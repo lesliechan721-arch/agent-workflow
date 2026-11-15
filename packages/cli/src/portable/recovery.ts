@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { isPortablePlatformTarget, PORTABLE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
+import { isPortablePlatformTarget, PORTABLE_PLATFORM_TARGETS, type ComponentUnmet } from '@lesliechan721/aw-plugin-core';
 
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
@@ -43,7 +43,7 @@ export interface PortableTarget {
   observation: 'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown';
   contentState?: 'current' | 'stale' | 'damaged' | 'unknown';
   associatedAgents: string[];
-  disposition?: 'write' | 'remove';
+  disposition?: 'write' | 'remove' | 'retain';
   blocker?: string;
   ownerIdentity?: PortableOwnerIdentity;
   observationEvidence?: PortableSkillObservation;
@@ -51,6 +51,11 @@ export interface PortableTarget {
 export function normalizePortableSkillName(name: string): string {
   validatePortableSkillName(name);
   return name;
+}
+export interface PortableComponentGap extends ComponentUnmet {
+  providerPluginId: string;
+  agent: PortableAgent;
+  renderScope: 'user' | 'project';
 }
 export interface PortablePreparation {
   options: PortableRecoveryOptions;
@@ -61,6 +66,8 @@ export interface PortablePreparation {
   targets: PortableTarget[];
   blockers: string[];
   globalBlockers: string[];
+  unmet: PortableComponentGap[];
+  intentionalEmpty: boolean;
   evidenceDigest: string;
   bindingDigest?: string;
   mode?: 'deploy' | 'cleanup';
@@ -94,6 +101,7 @@ export interface PortableExecution {
   targets: PortableExecutionTarget[];
   blockers: string[];
   globalBlockers: string[];
+  unmet: PortableComponentGap[];
   execution: 'not-run' | 'no-op' | 'applied' | 'partial' | 'failed';
   outputsMayHaveChanged: boolean;
 }
@@ -125,7 +133,7 @@ function finalizePreparation(base: PortablePreparation): PortablePreparation {
   const blockers = [...new Set([...base.globalBlockers, ...base.targets.flatMap((target) => target.blocker ? [target.blocker] : [])])];
   return { ...base, blockers, evidenceDigest: portableJsonDigest({ mode: base.mode, binding: base.bindingDigest,
     agents: base.options.agents, excludedPluginIds: [...(base.options.excludedPluginIds ?? [])].sort(),
-    targets: base.targets, globalBlockers: base.globalBlockers,
+    targets: base.targets, globalBlockers: base.globalBlockers, unmet: base.unmet, intentionalEmpty: base.intentionalEmpty,
     ...(base.cleanupOptions ? { force: Boolean(base.cleanupOptions.force), retainedTargets: base.cleanupOptions.retainedTargets } : {}) }) };
 }
 
@@ -163,11 +171,13 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
   const layout = portableRecoveryLayout(options.context);
   if (options.scope !== layout.scope) throw new Error('portableEnvironmentUnsupported');
   const base: PortablePreparation = { options, root: options.selector, generation: '', generations: {}, logicalIdentity: '',
-    targets: [], blockers: [], globalBlockers: [], evidenceDigest: '', mode: 'deploy' };
+    targets: [], blockers: [], globalBlockers: [], unmet: [], intentionalEmpty: false, evidenceDigest: '', mode: 'deploy' };
   if (new Set(options.agents.map((agent) => layout.targetRoot(agent))).size !== options.agents.length) {
     return finalizePreparation({ ...base, globalBlockers: ['portableOutputConflict'] });
   }
   const bindings: Array<[PortableAgent, string]> = [];
+  let confirmedInputs = 0;
+  let expectedSkills = 0;
   for (const agent of options.agents) {
     options.signal?.throwIfAborted();
     let stage: PortablePreparationDiagnostic['stage'] = 'catalog-binding';
@@ -192,7 +202,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
         }
         stage = 'materialize';
         await materializePortableSkillsToDirectory({ ...options, platform: agent, cwd: layout.cwd,
-          out: generation, allowEmpty: true });
+          out: generation, allowEmpty: true, allowUnmet: true });
       }
       stage = 'materialization-read';
       const materialized = await readHistoricalPortableMaterialization({ generationRoot: layout.generationRoot,
@@ -206,6 +216,15 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
       bindings.push([agent, materialized.binding.finalDigest]);
       const candidates = materialized.marker.selectedSkills.filter((candidate) =>
         !options.excludedPluginIds?.includes(candidate.providerPluginId));
+      const gaps = materialized.binding.preparation.flatMap((unit): PortableComponentGap[] => {
+        const providerPluginId = `${materialized.binding.source.kind === 'catalog-snapshot' ? materialized.binding.source.sourceId : ''}/${unit.plugin}`;
+        if (options.excludedPluginIds?.includes(providerPluginId)) return [];
+        return unit.unmet.map((gap) => ({ ...gap, providerPluginId, agent, renderScope: unit.renderScope }));
+      });
+      base.unmet.push(...gaps);
+      expectedSkills += candidates.length;
+      confirmedInputs += 1;
+      if (gaps.length && !candidates.length) base.globalBlockers.push('portableComponentsUnmet');
       stage = 'skill-validation';
       if (new Set(candidates.map((candidate) => normalizePortableSkillName(candidate.name))).size !== candidates.length) {
         base.globalBlockers.push('portableOutputConflict'); continue;
@@ -236,6 +255,11 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
         const owner = observed.owner ?? observed.recoverableIdentity;
         if (!owner || !providers.has(owner.pluginId) || owner.logicalIdentity !== base.logicalIdentity
           || candidates.some((candidate) => candidate.name === owner.skill && candidate.providerPluginId === owner.pluginId)) continue;
+        if (gaps.some((gap) => gap.providerPluginId === owner.pluginId)) {
+          base.targets.push({ ...fromObservation(observed, agent, owner.pluginId, observed.owner?.filesDigest ?? ''),
+            ownerIdentity: owner, disposition: 'retain', blocker: 'portableComponentsUnmet' });
+          continue;
+        }
         base.targets.push({ ...fromObservation(observed, agent, owner.pluginId, observed.owner?.filesDigest ?? ''),
           disposition: 'remove', observation: observed.observation === 'satisfied' ? 'drifted' : observed.observation,
           contentState: observed.contentState === 'current' ? 'stale' : observed.contentState });
@@ -253,6 +277,8 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
   }
   base.globalBlockers = [...new Set(base.globalBlockers)];
   base.bindingDigest = portableJsonDigest(bindings);
+  base.intentionalEmpty = confirmedInputs === options.agents.length && confirmedInputs > 0
+    && expectedSkills === 0 && base.unmet.length === 0 && base.globalBlockers.length === 0;
   return finalizePreparation(base);
 }
 
@@ -280,7 +306,7 @@ export async function preparePortableCleanup(options: PortableCleanupOptions): P
   const agents = selectedAgents(options.agents ?? [...PORTABLE_PLATFORM_TARGETS]);
   const base: PortablePreparation = { options: { ...options, cliVersion: '', agents, env: options.context.env, cleanup: options },
     root: options.selector, generation: '', logicalIdentity: '', targets: [], blockers: [], globalBlockers: [],
-    evidenceDigest: '', mode: 'cleanup', cleanupOptions: { ...options, agents } };
+    unmet: [], intentionalEmpty: false, evidenceDigest: '', mode: 'cleanup', cleanupOptions: { ...options, agents } };
   try {
     const layout = portableRecoveryLayout(options.context);
     if (layout.scope !== options.scope) throw new Error('portableEnvironmentUnsupported');
@@ -320,7 +346,7 @@ export async function executePortableRecovery(options: {
     pair.skill === target.skill && pair.agent === target.agent);
   const failure = (code: string): PortableExecution => ({ targets: prepared.targets.filter(selected).map((target) => ({
     ...target, execution: 'not-run', blockers: [code] })), blockers: [code], globalBlockers: [code],
-  execution: 'not-run', outputsMayHaveChanged: false });
+  unmet: prepared.unmet, execution: 'not-run', outputsMayHaveChanged: false });
   const cleanup = options.action === 'cleanup' || options.action === 'uninstall';
   if (cleanup !== (prepared.mode === 'cleanup')) return failure('operationReviewStale');
   return withAwHomeMutationLock({ env: prepared.options.context.env, token: options.token,
@@ -335,7 +361,8 @@ export async function executePortableRecovery(options: {
           && target.ownership === 'aw')).map((footprint) => footprint.physicalPath));
       const unchanged = (value: PortablePreparation): string => portableJsonDigest({
         binding: value.bindingDigest, targets: value.targets.filter((target) => !completedPaths.has(target.physicalPath)),
-        blockers: value.globalBlockers, excludedPluginIds: value.options.excludedPluginIds,
+        blockers: value.globalBlockers, unmet: value.unmet, intentionalEmpty: value.intentionalEmpty,
+        excludedPluginIds: value.options.excludedPluginIds,
       });
       if (prepared.evidenceDigest !== current.evidenceDigest
         && (completedPaths.size === 0 || unchanged(prepared) !== unchanged(current))) return failure('operationReviewStale');
@@ -348,6 +375,10 @@ export async function executePortableRecovery(options: {
       const layout = portableRecoveryLayout(prepared.options.context);
       for (const target of current.targets.filter(selected)) {
         const blockers = target.blocker ? [target.blocker] : [];
+        if (!cleanup && target.disposition === 'retain') {
+          results.push({ ...target, execution: 'not-run', blockers: [...new Set([...blockers, 'portableComponentsUnmet'])] });
+          continue;
+        }
         if (!cleanup && (target.observation === 'drifted' || target.disposition === 'remove') && !options.authorizeUpdate) {
           blockers.push('portableUpdateAuthorizationRequired');
         }
@@ -386,10 +417,11 @@ export async function executePortableRecovery(options: {
             execution: 'failed', blockers: [code] });
         }
       }
-      const blockers = [...new Set([...current.globalBlockers, ...results.flatMap((target) => target.blockers)])];
+      const blockers = [...new Set([...current.globalBlockers, ...results.flatMap((target) => target.blockers),
+        ...(current.unmet.length ? ['portableComponentsUnmet'] : [])])];
       const succeeded = results.filter((target) => target.execution === 'applied' || target.execution === 'no-op').length;
       const ok = blockers.length === 0 && succeeded === results.length;
-      return { targets: results, blockers, globalBlockers: current.globalBlockers, outputsMayHaveChanged,
+      return { targets: results, blockers, globalBlockers: current.globalBlockers, unmet: current.unmet, outputsMayHaveChanged,
         execution: ok ? results.some((target) => target.execution === 'applied') ? 'applied' : 'no-op'
           : succeeded > 0 ? 'partial' : outputsMayHaveChanged ? 'failed' : 'not-run' };
     } });

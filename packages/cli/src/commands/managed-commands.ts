@@ -118,7 +118,10 @@ function finish(receipt: CommandManagementResult): CommandManagementResult {
 }
 function render(receipt: CommandManagementResult): string {
   const lines = [`${receipt.command}: ${receipt.overallState}`];
-  for (const command of receipt.commands) lines.push(`${command.id}\t${command.name}\t${command.availability}`, ...(receipt.command === 'command.show' ? [JSON.stringify({ owner: command.owner, resourceRoot: command.resourceRoot, launch: command.launch }, null, 2)] : []));
+  for (const command of receipt.commands) {
+    const placement = command.owner.kind === 'plugin' ? command.owner.producer.placementKey : null;
+    lines.push(`${command.id}\t${command.name}\t${command.availability}${placement ? `\t${placement}` : ''}`, ...(receipt.command === 'command.show' ? [JSON.stringify({ owner: command.owner, resourceRoot: command.resourceRoot, launch: command.launch }, null, 2)] : []));
+  }
   for (const change of receipt.nativeToolChanges ?? []) for (const phase of ['before', 'after'] as const) if (change[phase]) lines.push(...describeNativeToolClosure(change[phase]!).map((description) => `原生工具 ${change.producer.sourceId}/${change.producer.pluginName} ${phase}: ${description}`));
   for (const pkg of receipt.packages) lines.push(`${pkg.id}\t${pkg.producer.sourceId}/${pkg.producer.pluginName}/${pkg.producer.key}\t${pkg.availability}`);
   for (const change of receipt.changes) lines.push(`${change.action}\t${change.id}`);

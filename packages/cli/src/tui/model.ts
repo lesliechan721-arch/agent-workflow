@@ -1,7 +1,10 @@
+import { agentLabel } from './glossary.js';
+import type { RecoveryTarget } from '../recovery/receipt.js';
 import { configObjectHasSensitiveChild, presentConfigValue, safeConfigText } from './config-value-presentation.js';
 export { configObjectHasSensitiveChild } from './config-value-presentation.js';
 import {
   matchPluginConfigPreset,
+  NATIVE_PLATFORM_TARGETS,
   resolvePluginConfigObjectProperties,
   stablePluginConfigStringify,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -353,6 +356,8 @@ export interface DependencyPlacementDescriptorViewModel {
 }
 
 export interface DependencyPlacementReferenceViewModel {
+  /** The root requirement whose current-scope observation confirms this edge. */
+  requirementScope?: Scope;
   consumer: DependencyPlacementDescriptorViewModel & { pluginId: string };
   dependency: DependencyPlacementDescriptorViewModel & { pluginId: string };
 }
@@ -2094,7 +2099,7 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
         || compareText(left.scope, right.scope));
     const projected = rootEntity && !direct ? {
       ...primary,
-      title: `${rootEntity.pluginId} · ${rootEntity.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${primary.category === 'artifactCollision' ? '输出冲突' : primary.title.split(' · ').at(-1) ?? primary.title}`,
+      title: `${rootEntity.pluginId} · ${agentLabel(rootEntity.platform)} · ${primary.category === 'artifactCollision' ? '输出冲突' : primary.title.split(' · ').at(-1) ?? primary.title}`,
       entity: { kind: 'plugin' as const, id: rootEntity.pluginId },
       pluginId: rootEntity.pluginId,
       platform: rootEntity.platform,
@@ -2113,10 +2118,66 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
   });
 }
 
+/** Project current read-only target facts. Source summaries contain no installation facts. */
+function recoveryTargetIssues(targets: readonly RecoveryTarget[]): UserIssueDraft[] {
+  const current = new Map(targets.map((target) => [`${target.pluginId}\0${target.agent}\0${target.scope}`, target]));
+  return [...current.values()].flatMap((target): UserIssueDraft[] => {
+    if (target.agent === 'generic' || target.content === 'satisfied' && target.blockers.length === 0) return [];
+    const platform = target.agent;
+    const entity = { pluginId: target.pluginId, platform, scope: target.scope };
+    const consumers = [...new Map((target.contributions ?? []).flatMap((contribution) => {
+      if (contribution.path.length < 2 || contribution.path[0] !== contribution.root
+        || contribution.path.at(-1) !== target.pluginId || contribution.root === target.pluginId) return [];
+      const consumer = current.get(`${contribution.root}\0${platform}\0${contribution.scope}`);
+      return consumer ? [[`${consumer.pluginId}\0${consumer.agent}\0${consumer.scope}`, {
+        pluginId: consumer.pluginId, platform, scope: consumer.scope, relationship: 'consumer' as const,
+      }] as const] : [];
+    })).values()];
+    const conflict = target.content === 'conflict';
+    const missing = target.content === 'absent' || target.observation === 'missing'
+      || target.deploymentObservations?.some(({ after }) => after.components.some((component) => component.presence === 'absent')) === true;
+    const incomplete = missing || target.content === 'drifted';
+    const dependency = consumers.length > 0;
+    const category = conflict ? 'artifactCollision' : dependency ? missing ? 'dependencyMissing' : 'dependencyNotReady'
+      : incomplete ? 'incompleteInstallation' : 'diagnostic';
+    const explicitRoot = target.contributions?.some((contribution) => contribution.path.length === 1
+      && contribution.root === target.pluginId && contribution.scope === target.scope) === true;
+    const relationship = conflict || !dependency || explicitRoot ? 'direct' : 'consumer';
+    const explanation = conflict ? '当前目标位置含有未确认归属的内容。'
+      : incomplete ? '当前目标缺少已声明的内容，或现场内容与当前需求不同。'
+        : '当前目标的满足状态尚未确认。';
+    const details = [...target.blockers, ...(target.reasons ?? [])].map(({ code, message }) => ({ code, message }));
+    if (dependency) details.push({ code: missing ? 'dependencyMissing' : 'dependencyNotReady',
+      message: '当前依赖尚未满足其实际使用位置，关联的根插件需要恢复。' });
+    const affectedTargets = [...(relationship === 'direct' ? [{ ...entity, relationship: 'direct' as const }] : []), ...consumers];
+    const recover = !conflict ? [
+      ...(relationship === 'direct' ? [entity] : []), ...consumers,
+    ].flatMap((consumer) => [{ id: 'sync' as const, label: '同步', ...consumer, writeAction: 'sync' as const },
+      { id: 'reinstall' as const, label: '重新安装', ...consumer, writeAction: 'reinstall' as const }]) : [];
+    return [{
+      issueId: dependency || conflict ? `${category}:${target.pluginId}:${platform}:${target.scope}`
+        : `recovery:${target.pluginId}:${platform}:${target.scope}`,
+      category, title: `${target.pluginId} · ${agentLabel(platform)} · ${target.scope === 'project' ? '当前项目' : '所有项目'}`,
+      explanation, impact: ['该位置尚不能确认满足当前插件需求。'],
+      entity: { kind: 'plugin', id: target.pluginId }, ...entity,
+      sourceId: target.pluginId.split('/')[0],
+      rootCode: conflict ? 'artifactCollision' : dependency ? missing ? 'dependencyMissing' : 'dependencyNotReady'
+        : incomplete ? 'partial' : 'targetDiagnostic',
+      relationship, rootEntity: entity, affectedTargets, mergeEligible: false,
+      actions: [...recover,
+        ...(dependency ? [{ id: 'viewDependencyIssue' as const, label: '查看依赖插件问题', pluginId: target.pluginId }] : []),
+        { id: 'viewTechnical', label: '查看技术详情' }],
+      technicalDetails: details.length ? details : [{ code: `targetContent:${target.content ?? 'unknown'}`, message: explanation }],
+    }];
+  });
+}
+
 export function buildTuiViewModel(options: {
   status: StatusV8Payload;
   pluginSummaries: StatusV8PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
+  recoveryTargets?: readonly RecoveryTarget[];
+  retainedNativePluginIds?: readonly string[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
   catalogFreshness?: ReadonlyMap<string, CatalogSourceFreshnessViewModel>;
@@ -2145,6 +2206,7 @@ export function buildTuiViewModel(options: {
     scopes.add(store.scope);
     configScopesByPlugin.set(store.pluginId, scopes);
   }
+  const retainedNativeIds = new Set(options.retainedNativePluginIds ?? []);
   const retainedStatusIds = new Set([...targetsByPlugin].flatMap(([pluginId, targets]) =>
     targets.some((target) => target.state !== 'absent'
       || statusTargetIntent(target).enabled
@@ -2153,6 +2215,7 @@ export function buildTuiViewModel(options: {
   const pluginIds = new Set([
     ...summaryById.keys(),
     ...retainedStatusIds,
+    ...retainedNativeIds,
     ...configScopesByPlugin.keys(),
   ]);
   const plugins = [...pluginIds].map((pluginId): PluginListItemViewModel => {
@@ -2162,10 +2225,10 @@ export function buildTuiViewModel(options: {
     const sourceId = targets[0]?.sourceId ?? pluginId.slice(0, pluginId.indexOf('/'));
     const savedConfigScopes = [...(configScopesByPlugin.get(pluginId) ?? [])]
       .sort((left, right) => (left === 'user' ? 0 : 1) - (right === 'user' ? 0 : 1));
-    const configOnly = summary === undefined && targets.length === 0 && savedConfigScopes.length > 0;
-    const removedPluginCleanupRequired = targets.some((target) =>
+    const configOnly = summary === undefined && targets.length === 0 && savedConfigScopes.length > 0 && !retainedNativeIds.has(pluginId);
+    const removedPluginCleanupRequired = summary === undefined && retainedNativeIds.has(pluginId) || targets.some((target) =>
       target.reasons.some((reason) => reason.code === 'removedPluginCleanupRequired'));
-    const placements = (['codex', 'claude'] as const).flatMap((platform) => {
+    const placements = NATIVE_PLATFORM_TARGETS.flatMap((platform) => {
       const platformTargets = targets.filter((target) => target.platform === platform);
       const aggregateConflict = platform === 'codex' && options.status.targets.some((target) =>
         target.pluginId === pluginId
@@ -2192,7 +2255,9 @@ export function buildTuiViewModel(options: {
         && (placement.health !== 'ready' || placement.blockingReason !== undefined)));
     const installed = placements.some((placement) =>
       placement.state === 'installed' || placement.state === 'scopeConflict');
-    const sourceUnavailable = options.sourceHealth?.get(sourceId)?.state === 'unavailable'
+    const sourceUnavailable = summary === undefined && retainedNativeIds.has(pluginId)
+      || summary?.definitionUnavailable === true
+      || options.sourceHealth?.get(sourceId)?.state === 'unavailable'
       || sourceById.get(sourceId)?.error !== undefined;
     const capabilityTargets = targets.filter((target) => target.reasons.some((reason) =>
       reason.code === 'awCapabilityUnsupported'));
@@ -2222,13 +2287,12 @@ export function buildTuiViewModel(options: {
         ?? Object.keys(summary?.configSchema ?? {}).length,
       sourceLabel: sourceId,
       supportedPlatforms: summary?.supportedTargets
-        ? (['codex', 'claude'] as const).filter((platform) =>
-            summary.supportedTargets![platform].length > 0)
+        ? NATIVE_PLATFORM_TARGETS.filter((platform) =>
+            (summary.supportedTargets![platform]?.length ?? 0) > 0)
         : placements.map((placement) => placement.platform),
-      ...(summary?.supportedTargets ? { supportedScopes: {
-        codex: [...summary.supportedTargets.codex],
-        claude: [...summary.supportedTargets.claude],
-      } } : {}),
+      ...(summary?.supportedTargets ? { supportedScopes: Object.fromEntries(
+        NATIVE_PLATFORM_TARGETS.map((platform) => [platform, [...(summary.supportedTargets![platform] ?? [])]]),
+      ) } : {}),
       installedPlacements: placements,
       aggregateStatus: unavailable ? 'unavailable' : attention ? 'needsAttention' : installed ? 'installed' : 'available',
       portableSkills: options.portablePluginIds?.includes(pluginId) ?? false,
@@ -2305,7 +2369,10 @@ export function buildTuiViewModel(options: {
   const sourceRootIds = new Set([...(options.sourceHealth?.values() ?? [])]
     .filter((health) => health.state === 'unavailable')
     .map((health) => health.sourceId));
-  const allTargetIssues = targetIssues(options.status, options.targetRevisions);
+  const currentTargets = options.recoveryTargets ?? [];
+  const allTargetIssues = targetIssues(options.status, options.targetRevisions).filter((issue) =>
+    !currentTargets.some((target) => target.pluginId === issue.pluginId && target.agent === issue.platform
+      && (issue.scope === undefined || target.scope === issue.scope)));
   const mergedTargetIssues = new Map<string, UserIssueDraft[]>();
   for (const issue of allTargetIssues) {
     if (!issue.mergeEligible || !issue.sourceId || !sourceRootIds.has(issue.sourceId)) continue;
@@ -2313,6 +2380,7 @@ export function buildTuiViewModel(options: {
   }
   const sourceDetails = new Map((options.sourceDetails ?? []).map((detail) => [detail.id, detail]));
   const issueDrafts = [
+    ...recoveryTargetIssues(options.recoveryTargets ?? []),
     ...allTargetIssues.filter((issue) => !issue.mergeEligible
       || !issue.sourceId || !sourceRootIds.has(issue.sourceId)),
     ...statusIssues(options.status),

@@ -19,6 +19,7 @@ export interface ReviewProfile {
   platform: ReviewPlatform
   scope: Scope
   inputDigest: string
+  requestedSkills: string[]
   config: ReviewProfileConfig
 }
 
@@ -61,6 +62,8 @@ export interface ReviewResolvedProfile {
   platform: ReviewPlatform
   scope: Scope
   skills: ReviewSelectedSkill[]
+  dynamicPlugins: PluginMeta[]
+  requestedSkills: string[]
   pluginConfigs: ReviewPluginProfileConfig[]
   sources: string[]
 }

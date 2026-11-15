@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "browser-use",
   "version": "0.1.0",
   "description": "以精简的浏览器技能完成网页预览、浏览、交互、截图和按需调试。",
@@ -10,6 +10,9 @@
     "cursor",
     "opencode",
     "pi",
+    "gemini",
+    "copilot",
+    "grok",
     "generic"
   ],
   "skills": "./skills",

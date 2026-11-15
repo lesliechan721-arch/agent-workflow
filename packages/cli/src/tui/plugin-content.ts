@@ -4,24 +4,15 @@ import type { Stats } from 'node:fs';
 import { stripVTControlCharacters } from 'node:util';
 
 import fs from 'fs-extra';
-import YAML from 'yaml';
 
-import type { PluginMeta } from '../types.js';
+import type { PluginMeta, PlatformTarget } from '../types.js';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core';
+import { TARGET_DISPLAY_NAMES } from '../platforms/discovery.js';
 import { parseSkillFrontmatter } from '../utils/skill-validation.js';
 import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 
-export type PluginContentType =
-  | 'skill'
-  | 'agent'
-  | 'role'
-  | 'instruction'
-  | 'permission'
-  | 'hook'
-  | 'command'
-  | 'mcpServer'
-  | 'app';
-
-export type PluginContentTool = 'Codex' | 'Claude Code' | 'Agent Skills';
+export type PluginContentType = 'skill' | 'agent' | 'instruction' | 'permission' | 'hook' | 'mcpServer' | 'renderer';
+export type PluginContentTool = (typeof TARGET_DISPLAY_NAMES)[PlatformTarget];
 
 export interface PluginContentIssue {
   code: 'unsafePath' | 'unreadable' | 'invalidMetadata' | 'incompleteList';
@@ -51,7 +42,7 @@ export interface PluginContentOverview {
 }
 
 const MAX_FRONTMATTER_BYTES = 16 * 1024;
-const TOOL_ORDER: PluginContentTool[] = ['Codex', 'Claude Code', 'Agent Skills'];
+const TOOL_ORDER = Object.values(TARGET_DISPLAY_NAMES);
 
 function safeSummary(description: string, short: boolean): string | null {
   const safeDescription = stripVTControlCharacters(description)
@@ -185,576 +176,90 @@ async function readFrontmatterDescription(
   }
 }
 
-async function readCodexCommandDescription(
-  root: string,
-  skillRoot: string,
-): Promise<{ description: string | null; issue?: PluginContentIssue }> {
-  const metadataFile = path.join(skillRoot, 'agents', 'openai.yaml');
-  const safeFile = await regularPathWithin(root, metadataFile, 'file');
-  if (!safeFile) {
-    const code = await unconfirmedPathCode(root, metadataFile);
-    return { description: null, issue: {
-      code, message: 'Slash command 简介文件不可安全确认。请检查内容目录。',
-    } };
-  }
-  let handle;
-  try {
-    handle = await open(safeFile, 'r');
-  } catch {
-    return { description: null, issue: {
-      code: 'unreadable', message: 'Slash command 简介文件无法读取。请检查内容目录。',
-    } };
-  }
-  try {
-    const size = (await handle.stat()).size;
-    if (size > MAX_FRONTMATTER_BYTES) return { description: null, issue: {
-      code: 'invalidMetadata', message: 'Slash command 简介元信息超过读取预算。请检查内容文件。',
-    } };
-    const buffer = Buffer.alloc(size);
-    let total = 0;
-    while (total < size) {
-      const { bytesRead } = await handle.read(buffer, total, size - total, total);
-      if (bytesRead === 0) return { description: null, issue: {
-        code: 'unreadable', message: 'Slash command 简介文件无法完整读取。请检查内容目录。',
-      } };
-      total += bytesRead;
-    }
-    let metadata: unknown;
-    try {
-      const document = YAML.parseDocument(buffer.toString('utf8'), { prettyErrors: false });
-      if (document.errors.length > 0) throw new Error('Invalid YAML');
-      metadata = document.toJS({ maxAliasCount: 0 });
-    } catch {
-      return { description: null, issue: {
-        code: 'invalidMetadata', message: 'Slash command 简介元信息无法解析。请检查内容文件。',
-      } };
-    }
-    if (!isRecord(metadata) || (metadata.interface !== undefined && !isRecord(metadata.interface))) {
-      return { description: null, issue: {
-        code: 'invalidMetadata', message: 'Slash command 简介元信息无效。请检查内容文件。',
-      } };
-    }
-    const short = isRecord(metadata.interface) ? metadata.interface.short_description : undefined;
-    if (short === undefined) return { description: null };
-    if (typeof short !== 'string' || !short.trim()) return { description: null, issue: {
-      code: 'invalidMetadata', message: 'Slash command 简短用途元信息无效。请检查内容文件。',
-    } };
-    const description = safeSummary(short, true);
-    return description ? { description } : { description: null, issue: {
-      code: 'invalidMetadata', message: 'Slash command 简短用途元信息无效。请检查内容文件。',
-    } };
-  } catch {
-    return { description: null, issue: {
-      code: 'unreadable', message: 'Slash command 简介文件无法读取。请检查内容目录。',
-    } };
-  } finally {
-    await handle.close();
-  }
+function addItem(items: Map<string, PluginContentItem>, item: PluginContentItem): void {
+  items.set(item.id, { ...item, tools: sortTools(item.tools) });
 }
 
-function addItem(
-  items: Map<string, PluginContentItem>,
-  item: PluginContentItem,
-): void {
-  const key = `${item.type}:${item.name}`;
-  const current = items.get(key);
-  if (!current) {
-    items.set(key, item);
-    return;
-  }
-  current.tools = sortTools([...current.tools, ...item.tools]);
-  if (current.description === null && item.description !== null) current.description = item.description;
-  if (item.issue) {
-    current.descriptionState = 'issue';
-    current.issue = item.issue;
-  } else if (current.descriptionState !== 'issue' && current.description !== null) {
-    current.descriptionState = 'available';
-  }
-}
-
-function addCoverageIssue(issues: PluginContentIssue[], issue: PluginContentIssue): void {
-  issues.push(issue);
-}
-
-async function addSkillDirectory(options: {
-  root: string;
-  relativePath: string;
-  tool: PluginContentTool;
-  items: Map<string, PluginContentItem>;
-  coverageIssues: PluginContentIssue[];
-  type?: 'skill' | 'command';
-  readDescription?: boolean;
-  checkClaudeCommand?: boolean;
-}): Promise<void> {
-  const directory = await regularPathWithin(options.root, path.join(options.root, options.relativePath), 'directory');
+async function addSkills(root: string, relativePath: string, tools: PluginContentTool[], items: Map<string, PluginContentItem>, issues: PluginContentIssue[]): Promise<void> {
+  const requested = path.join(root, relativePath);
+  const directory = await regularPathWithin(root, requested, 'directory');
   if (!directory) {
-    const code = await unconfirmedPathCode(options.root, path.join(options.root, options.relativePath));
-    addCoverageIssue(options.coverageIssues, {
-      code, message: `${options.tool} Skill 清单无法确认。请检查目录。`,
-    });
+    issues.push({ code: await unconfirmedPathCode(root, requested), message: '静态 Skill 清单无法安全确认。请检查来源目录。' });
     return;
   }
-  let entries;
-  try {
-    entries = await fs.readdir(directory, { withFileTypes: true });
-  } catch {
-    addCoverageIssue(options.coverageIssues, {
-      code: 'unreadable', message: `${options.tool} Skill 清单无法读取。请检查目录后重试。`,
-    });
-    return;
-  }
+  const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => undefined);
+  if (!entries) { issues.push({ code: 'unreadable', message: '静态 Skill 清单无法读取。' }); return; }
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (entry.isSymbolicLink()) {
-      addCoverageIssue(options.coverageIssues, {
-        code: 'unsafePath', message: `${options.tool} Skill 清单含不安全路径。请检查目录。`,
-      });
-      continue;
+      issues.push({ code: 'unsafePath', message: '静态 Skill 目录含不安全的符号链接。' }); continue;
     }
     if (!entry.isDirectory()) continue;
-    const skillRoot = await regularPathWithin(options.root, path.join(directory, entry.name), 'directory');
-    if (!skillRoot) {
-      const code = await unconfirmedPathCode(options.root, path.join(directory, entry.name));
-      addCoverageIssue(options.coverageIssues, {
-        code, message: `${options.tool} Skill 清单含无法确认的条目。请检查目录。`,
-      });
-      continue;
-    }
-    if (options.tool === 'Codex'
-      && options.items.get(`command:${entry.name}`)?.tools.includes('Codex')) continue;
-    const skillFile = path.join(skillRoot, 'SKILL.md');
-    const hasClaudeCommand = options.items.has(`command:${entry.name}`);
-    const hasClaudeSkill = options.checkClaudeCommand
-      && options.items.get(`skill:${entry.name}`)?.tools.includes('Claude Code')
-      && await regularPathWithin(options.root,
-        path.join(options.root, 'claude', 'skills', entry.name, 'SKILL.md'), 'file');
-    const uncertainSource = options.checkClaudeCommand && !hasClaudeCommand && !hasClaudeSkill;
-    const skill = options.readDescription === false || (uncertainSource && options.type !== 'command')
-      ? { exists: Boolean(await regularPathWithin(options.root, skillFile, 'file')), description: null }
-      : await readFrontmatterDescription(options.root, skillFile);
+    const skillFile = path.join(directory, entry.name, 'SKILL.md');
+    const skill = await readFrontmatterDescription(root, skillFile);
     let issue = skill.issue;
     if (!skill.exists) {
-      const code = await unconfirmedPathCode(options.root, skillFile);
-      if (code === 'incompleteList') {
-        addCoverageIssue(options.coverageIssues, {
-          code, message: `${options.tool} Skill 清单有无法确认的条目。请检查目录。`,
-        });
-        continue;
-      }
-      issue = { code, message: 'Skill 元信息文件不可安全读取。请检查内容目录后重试。' };
+      const code = await unconfirmedPathCode(root, skillFile);
+      if (code === 'incompleteList') { issues.push({ code, message: '静态 Skill 目录存在未完成的条目。' }); continue; }
+      issue = { code, message: 'Skill 元信息文件不可安全读取。请检查来源目录。' };
     }
-    const type = options.type === 'command' && issue?.code === 'unsafePath'
-      ? 'skill' : options.type ?? 'skill';
-    if (uncertainSource) {
-      addCoverageIssue(options.coverageIssues, {
-        code: 'incompleteList',
-        message: options.type === 'command'
-          ? 'Slash command 的 Claude Code 组件无法确认。请检查内容目录。'
-          : 'Codex 内容名称已确认，但缺少可安全确认的 Claude Code 对应项，不能区分普通 Skill 与 Slash command。请检查内容目录。',
-      });
-    }
-    const command = type === 'command' && skill.exists
-      ? await readCodexCommandDescription(options.root, skillRoot) : undefined;
-    issue ??= command?.issue;
-    const description = command?.description ?? skill.description;
-    addItem(options.items, {
-      id: `${type}:${entry.name}`,
-      name: entry.name,
-      type,
-      description,
-      tools: [options.tool],
-      descriptionState: issue ? 'issue' : description ? 'available' : 'absent',
-      ...(issue ? { issue } : {}),
-    });
+    addItem(items, { id: `skill:${entry.name}`, name: entry.name, type: 'skill', description: skill.description, tools,
+      descriptionState: issue ? 'issue' : skill.description ? 'available' : 'absent', ...(issue ? { issue } : {}) });
   }
 }
 
-async function addJsonComponents(options: {
-  root: string;
-  relativePath: string;
-  property: 'mcpServers' | 'apps';
-  type: 'mcpServer' | 'app';
-  tool: PluginContentTool;
-  items: Map<string, PluginContentItem>;
-  coverageIssues: PluginContentIssue[];
-}): Promise<void> {
-  const file = await regularPathWithin(options.root, path.join(options.root, options.relativePath), 'file');
-  if (!file) {
-    const code = await unconfirmedPathCode(options.root, path.join(options.root, options.relativePath));
-    addCoverageIssue(options.coverageIssues, {
-      code, message: `${options.tool} ${options.type} 清单无法确认。请检查目录。`,
-    });
-    return;
+async function addMcp(root: string, relativePath: string, tools: PluginContentTool[], items: Map<string, PluginContentItem>, issues: PluginContentIssue[]): Promise<void> {
+  const requested = path.join(root, relativePath);
+  const file = await regularPathWithin(root, requested, 'file');
+  if (!file) { issues.push({ code: await unconfirmedPathCode(root, requested), message: '静态 MCP 清单无法安全确认。' }); return; }
+  const value: unknown = await fs.readJson(file).catch(() => undefined);
+  if (!isRecord(value) || !isRecord(value.mcpServers)) {
+    issues.push({ code: 'invalidMetadata', message: '静态 MCP 清单无法读取或格式无效。' }); return;
   }
-  let value: unknown;
-  try {
-    value = await fs.readJson(file);
-  } catch {
-    addCoverageIssue(options.coverageIssues, {
-      code: 'unreadable', message: `${options.tool} ${options.type} 清单无法读取。请检查内容文件。`,
-    });
-    return;
-  }
-  const collection = isRecord(value) ? value[options.property] : undefined;
-  if (!isRecord(collection)) {
-    addCoverageIssue(options.coverageIssues, {
-      code: 'incompleteList', message: `${options.tool} ${options.type} 清单格式无效。请检查内容文件。`,
-    });
-    return;
-  }
-  const entries = Object.keys(collection).sort();
-  for (const name of entries) {
-    addItem(options.items, {
-      id: `${options.type}:${name}`,
-      name,
-      type: options.type,
-      description: null,
-      tools: [options.tool],
-      descriptionState: 'absent',
-    });
-  }
+  for (const name of Object.keys(value.mcpServers).sort()) addItem(items, { id: `mcpServer:${name}`, name,
+    type: 'mcpServer', description: null, tools, descriptionState: 'absent' });
 }
 
-async function addSlashCommands(options: {
-  root: string;
-  hasCodex: boolean;
-  items: Map<string, PluginContentItem>;
-  coverageIssues: PluginContentIssue[];
-}): Promise<void> {
-  const directory = await regularPathWithin(
-    options.root,
-    path.join(options.root, 'claude', 'commands'),
-    'directory',
-  );
-  if (!directory) {
-    const code = await unconfirmedPathCode(options.root, path.join(options.root, 'claude', 'commands'));
-    addCoverageIssue(options.coverageIssues, {
-      code, message: 'Slash command 清单无法确认。请检查目录。',
-    });
-    return;
-  }
-  let entries;
-  try {
-    entries = await fs.readdir(directory, { withFileTypes: true });
-  } catch {
-    addCoverageIssue(options.coverageIssues, {
-      code: 'unreadable', message: 'Slash command 清单无法读取。请检查目录后重试。',
-    });
-    return;
-  }
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (path.extname(entry.name) !== '.md') continue;
-    if (entry.isSymbolicLink() || !entry.isFile()) {
-      addCoverageIssue(options.coverageIssues, {
-        code: 'unsafePath', message: 'Slash command 清单含无法确认的条目。请检查目录。',
-      });
-      continue;
-    }
-    if (!await regularPathWithin(options.root, path.join(directory, entry.name), 'file')) {
-      addCoverageIssue(options.coverageIssues, {
-        code: 'unsafePath', message: 'Slash command 清单含不安全路径。请检查目录。',
-      });
-      continue;
-    }
-    const name = path.basename(entry.name, '.md');
-    const tools: PluginContentTool[] = ['Claude Code'];
-    const codexSkillFile = path.join(options.root, 'codex', 'skills', name, 'SKILL.md');
-    const codexCommand = options.hasCodex
-      && await regularPathWithin(options.root, codexSkillFile, 'file');
-    if (options.hasCodex && !codexCommand) {
-      const code = await unconfirmedPathCode(options.root, codexSkillFile);
-      addCoverageIssue(options.coverageIssues, {
-        code, message: 'Slash command 的 Codex 组件无法安全确认。请检查内容目录。',
-      });
-    }
-    if (options.hasCodex && !codexCommand && await fs.lstat(codexSkillFile).catch(() => undefined)) {
-      if (await regularPathWithin(options.root, path.dirname(codexSkillFile), 'directory')) {
-        addItem(options.items, {
-          id: `skill:${name}`,
-          name,
-          type: 'skill',
-          description: null,
-          tools: ['Codex'],
-          descriptionState: 'issue',
-          issue: { code: 'unsafePath', message: 'Skill 元信息文件不可安全读取。请检查内容目录后重试。' },
-        });
-      }
-    }
-    const command = await readFrontmatterDescription(options.root, path.join(directory, entry.name));
-    const codexDescription = codexCommand
-      ? await readCodexCommandDescription(options.root, path.dirname(codexSkillFile)) : undefined;
-    const description = codexDescription?.description ?? command.description;
-    const issue = codexDescription?.issue ?? command.issue;
-    if (codexCommand) tools.unshift('Codex');
-    addItem(options.items, {
-      id: `command:${name}`,
-      name,
-      type: 'command',
-      description,
-      tools,
-      descriptionState: issue ? 'issue' : description ? 'available' : 'absent',
-      ...(issue ? { issue } : {}),
-    });
-  }
+function declaredTools(platforms: readonly PlatformTarget[], overrides?: Partial<Record<PlatformTarget, unknown>>): PluginContentTool[] {
+  return platforms.filter((platform) => overrides?.[platform] !== null).map((platform) => TARGET_DISPLAY_NAMES[platform]);
 }
 
-function targetTool(target: string): PluginContentTool | null {
-  if (target.startsWith('codex.')) return 'Codex';
-  if (target.startsWith('claude.')) return 'Claude Code';
-  if (target.startsWith('agent-skills.')) return 'Agent Skills';
-  return null;
-}
-
-function targetType(target: string): PluginContentType | null {
-  if (target.endsWith('.skill')) return 'skill';
-  if (target === 'codex.agentRole') return 'role';
-  if (target === 'codex.developerInstructionsBlock') return 'instruction';
-  return null;
-}
-
-function toolsForOverrides(
-  tools: PluginContentTool[],
-  overrides?: { codex?: unknown; claude?: unknown },
-): PluginContentTool[] {
-  return tools.filter((tool) => {
-    if (tool === 'Codex') return overrides?.codex !== null;
-    if (tool === 'Claude Code') return overrides?.claude !== null;
-    return true;
-  });
-}
-
-async function projectedPlatforms(root: string): Promise<PluginContentTool[]> {
-  const tools: PluginContentTool[] = [];
-  if (await regularPathWithin(root, path.join(root, '.codex-plugin', 'plugin.json'), 'file')) tools.push('Codex');
-  if (await regularPathWithin(root, path.join(root, '.claude-plugin', 'plugin.json'), 'file')) tools.push('Claude Code');
-  return tools;
-}
-
+/** Catalog content describes source declarations. Native package output is prepared per client and configuration. */
 export async function projectPluginContentOverview(options: {
-  pluginId: string;
-  catalogVersion: string;
-  plugin: PluginMeta;
+  pluginId: string; catalogVersion: string; plugin: PluginMeta;
 }): Promise<PluginContentOverview> {
-  let root: string;
-  try {
-    root = await fs.realpath(options.plugin.rootDir);
-  } catch {
-    const message = '当前无法安全读取这个插件的目录内容。请检查来源状态后重试。';
-    return {
-      pluginId: options.pluginId,
-      pluginVersion: options.plugin.manifest.version,
-      catalogVersion: options.catalogVersion,
-      evidence: 'unavailable',
-      items: [],
-      notices: [message],
-      coverage: 'unavailable',
-      coverageIssue: { code: 'unreadable', message },
-    };
+  const root = await fs.realpath(options.plugin.rootDir).catch(() => undefined);
+  if (!root) {
+    const message = '当前无法安全读取这个插件的来源内容。请检查来源状态后重试。';
+    return { pluginId: options.pluginId, pluginVersion: options.plugin.manifest.version, catalogVersion: options.catalogVersion,
+      evidence: 'unavailable', items: [], notices: [message], coverage: 'unavailable', coverageIssue: { code: 'unreadable', message } };
   }
+  const manifest = options.plugin.manifest;
+  const platforms = [...resolveSupportedPlatforms(manifest)];
+  const tools = declaredTools(platforms);
   const items = new Map<string, PluginContentItem>();
-  const coverageIssues: PluginContentIssue[] = [];
-  const platforms = await projectedPlatforms(root);
-  const supportedPlatforms = resolveSupportedPlatforms(options.plugin.manifest);
-  for (const [platform, tool] of [
-    ['codex', 'Codex'], ['claude', 'Claude Code'],
-  ] as const) {
-    if (!supportedPlatforms.has(platform) || platforms.includes(tool)) continue;
-    const marker = path.join(root, `.${platform}-plugin`, 'plugin.json');
-    const code = await unconfirmedPathCode(root, marker);
-    addCoverageIssue(coverageIssues, {
-      code, message: `${tool} 平台清单无法安全确认。请检查目录。`,
-    });
+  const issues: PluginContentIssue[] = [];
+  if (manifest.skills) await addSkills(root, manifest.skills, tools, items, issues);
+  if (manifest.mcpServers) await addMcp(root, manifest.mcpServers, tools, items, issues);
+  for (const agent of manifest.extensions?.agents ?? []) addItem(items, { id: `agent:${agent.name}`, name: agent.name, type: 'agent',
+    description: safeSummary(agent.description, true), tools: declaredTools(platforms, agent.agentOverrides), descriptionState: agent.description.trim() ? 'available' : 'absent' });
+  for (const instruction of manifest.extensions?.instructions ?? []) addItem(items, { id: `instruction:${instruction.name}`,
+    name: instruction.title, type: 'instruction', description: null, tools: declaredTools(platforms, instruction.agentOverrides), descriptionState: 'absent' });
+  for (const permission of manifest.extensions?.permissions ?? []) addItem(items, { id: `permission:${permission.name}`, name: permission.name,
+    type: 'permission', description: null, tools: declaredTools(platforms, permission.agentOverrides), descriptionState: 'absent' });
+  for (const hook of manifest.extensions?.hooks ?? []) addItem(items, { id: `hook:${hook.id}`, name: hook.matcher ? `${hook.event} · ${hook.matcher}` : hook.event,
+    type: 'hook', description: null, tools: declaredTools(platforms, hook.agentOverrides), descriptionState: 'absent' });
+  for (const [platform, hooks] of Object.entries(manifest.extensions?.nativeHooks ?? {})) {
+    if (!isPlatformTarget(platform) || !platforms.includes(platform)) continue;
+    for (const hook of hooks ?? []) addItem(items, { id: `hook:${platform}:${hook.id}`, name: hook.matcher ? `${hook.event} · ${hook.matcher}` : hook.event,
+      type: 'hook', description: null, tools: [TARGET_DISPLAY_NAMES[platform]], descriptionState: 'absent' });
   }
-  const codexOnlyCommands = Boolean(options.plugin.manifest.slashCommands)
-    && platforms.includes('Codex') && !platforms.includes('Claude Code');
-  const mixedCodexSkills = Boolean(options.plugin.manifest.slashCommands)
-    && platforms.includes('Codex')
-    && Boolean(options.plugin.manifest.skills || options.plugin.manifest.buildConfig?.fileRules?.codex);
-
-  if (mixedCodexSkills && codexOnlyCommands) {
-    addCoverageIssue(coverageIssues, {
-      code: 'incompleteList',
-      message: 'Codex 内容名称已确认，但当前目录不能安全区分普通 Skill 与 Slash command。请查看来源定义。',
-    });
+  if (manifest.scripts?.artifacts?.render) {
+    addItem(items, { id: 'renderer:components', name: '动态组件', type: 'renderer', tools,
+      description: '组件名称、类别和数量由配置及平台能力决定；准备安装后可查看本次实际集合。', descriptionState: 'available' });
+    issues.push({ code: 'incompleteList', message: '此列表只显示静态声明。动态组件集合尚未准备，不能据此判断完整组件数量。' });
   }
-
-  if (options.plugin.manifest.slashCommands && platforms.includes('Claude Code')) {
-    await addSlashCommands({
-      root,
-      hasCodex: platforms.includes('Codex'),
-      items,
-      coverageIssues,
-    });
-  }
-
-  if (options.plugin.manifest.skills) {
-    if (platforms.includes('Claude Code')) {
-      await addSkillDirectory({
-        root, relativePath: 'claude/skills', tool: 'Claude Code', items, coverageIssues,
-      });
-    }
-    if (platforms.includes('Codex')) {
-      await addSkillDirectory({
-        root, relativePath: 'codex/skills', tool: 'Codex', items, coverageIssues,
-        ...(codexOnlyCommands ? { readDescription: false } : {}),
-        checkClaudeCommand: Boolean(options.plugin.manifest.slashCommands)
-          && platforms.includes('Claude Code'),
-      });
-    }
-  }
-  if (codexOnlyCommands && !options.plugin.manifest.skills) {
-    await addSkillDirectory({
-      root, relativePath: 'codex/skills', tool: 'Codex', items, coverageIssues,
-      type: mixedCodexSkills ? 'skill' : 'command',
-      readDescription: false,
-    });
-  }
-  if (options.plugin.manifest.slashCommands && platforms.includes('Codex')
-    && platforms.includes('Claude Code') && !options.plugin.manifest.skills) {
-    await addSkillDirectory({
-      root, relativePath: 'codex/skills', tool: 'Codex', items, coverageIssues,
-      type: mixedCodexSkills ? 'skill' : 'command',
-      readDescription: false,
-      checkClaudeCommand: true,
-    });
-  }
-  for (const target of resolveSupportedPlatforms(options.plugin.manifest)) {
-    if (target === 'codex' || target === 'claude') continue;
-    if (options.plugin.manifest.skills) await addSkillDirectory({
-      root, relativePath: `${target}/skills`, tool: 'Agent Skills', items, coverageIssues,
-    });
-  }
-  if (options.plugin.manifest.mcpServers) {
-    for (const tool of platforms) {
-      await addJsonComponents({
-        root,
-        relativePath: `${tool === 'Codex' ? 'codex' : 'claude'}/${options.plugin.manifest.mcpServers.replace(/^\.\//u, '')}`,
-        property: 'mcpServers',
-        type: 'mcpServer',
-        tool,
-        items,
-        coverageIssues,
-      });
-    }
-  }
-  if (options.plugin.manifest.apps && platforms.includes('Codex')) {
-    await addJsonComponents({
-      root,
-      relativePath: `codex/${options.plugin.manifest.apps.replace(/^\.\//u, '')}`,
-      property: 'apps',
-      type: 'app',
-      tool: 'Codex',
-      items,
-      coverageIssues,
-    });
-  }
-  for (const agent of options.plugin.manifest.extensions?.agents ?? []) {
-    addItem(items, {
-      id: `agent:${agent.name}`,
-      name: agent.name,
-      type: 'agent',
-      description: agent.description.trim() || null,
-      tools: toolsForOverrides(platforms, agent.agentOverrides),
-      descriptionState: agent.description.trim() ? 'available' : 'absent',
-    });
-  }
-  for (const instruction of options.plugin.manifest.extensions?.instructions ?? []) {
-    addItem(items, {
-      id: `instruction:${instruction.name}`,
-      name: instruction.title,
-      type: 'instruction',
-      description: null,
-      tools: toolsForOverrides(platforms, instruction.agentOverrides),
-      descriptionState: 'absent',
-    });
-  }
-  for (const permission of options.plugin.manifest.extensions?.permissions ?? []) {
-    addItem(items, {
-      id: `permission:${permission.name}`,
-      name: permission.name,
-      type: 'permission',
-      description: null,
-      tools: toolsForOverrides(platforms, permission.agentOverrides),
-      descriptionState: 'absent',
-    });
-  }
-  for (const hook of options.plugin.manifest.extensions?.hooks ?? []) {
-    const name = hook.matcher ? `${hook.event} · ${hook.matcher}` : hook.event;
-    addItem(items, {
-      id: `hook:${hook.event}:${hook.matcher ?? ''}`,
-      name,
-      type: 'hook',
-      description: null,
-      tools: toolsForOverrides(platforms, hook.agentOverrides),
-      descriptionState: 'absent',
-    });
-  }
-  for (const [platform, hooks] of Object.entries(options.plugin.manifest.extensions?.nativeHooks ?? {})) {
-    const tool = platform === 'codex' ? 'Codex' : 'Claude Code';
-    for (const hook of hooks ?? []) {
-      const name = hook.matcher ? `${hook.event} · ${hook.matcher}` : hook.event;
-      addItem(items, {
-        id: `hook:${platform}:${hook.event}:${hook.matcher ?? ''}`,
-        name,
-        type: 'hook',
-        description: null,
-        tools: [tool],
-        descriptionState: 'absent',
-      });
-    }
-  }
-
-  for (const target of options.plugin.manifest.artifacts?.targets ?? []) {
-    const tool = targetTool(target.target);
-    const type = targetType(target.target);
-    if (!tool || !type) continue;
-    const name = target.skillKey ?? target.roleKey ?? target.id;
-    let description: string | null = null;
-    let issue: PluginContentIssue | undefined;
-    if (type === 'skill' && target.platform) {
-      const skill = await readFrontmatterDescription(root, path.join(
-        root,
-        '.agents-plugin',
-        'artifact-sources',
-        target.platform,
-        target.id,
-        '0',
-        'SKILL.md',
-      ));
-      description = skill.description;
-      issue = skill.issue;
-      if (!skill.exists) {
-        const code = await unconfirmedPathCode(root, path.join(
-          root, '.agents-plugin', 'artifact-sources', target.platform, target.id, '0', 'SKILL.md',
-        ));
-        if (code !== 'incompleteList') issue = {
-          code, message: '简介文件不可安全读取。请检查内容目录。',
-        };
-      }
-    }
-    addItem(items, {
-      id: `artifact:${target.id}`,
-      name,
-      type,
-      description,
-      tools: [tool],
-      descriptionState: issue ? 'issue' : description ? 'available' : 'absent',
-      ...(issue ? { issue } : {}),
-    });
-  }
-
-  const result = [...items.values()].sort((left, right) =>
-    left.type.localeCompare(right.type) || left.name.localeCompare(right.name));
-  const coverage = coverageIssues.length === 0
-    ? 'complete' : result.length > 0 ? 'partial' : 'unavailable';
-  const notices = [...new Set(coverageIssues.map((issue) => issue.message))];
-  return {
-    pluginId: options.pluginId,
-    pluginVersion: options.plugin.manifest.version,
-    catalogVersion: options.catalogVersion,
-    evidence: 'catalogBundle',
-    items: result,
-    notices,
-    coverage,
-    ...(coverageIssues[0] ? { coverageIssue: coverageIssues[0] } : {}),
-  };
+  const result = [...items.values()].sort((left, right) => left.type.localeCompare(right.type) || left.name.localeCompare(right.name));
+  return { pluginId: options.pluginId, pluginVersion: manifest.version, catalogVersion: options.catalogVersion, evidence: 'catalogBundle',
+    items: result, notices: ['内容来自作者静态声明；平台标签不证明客户端已安装或已加载。', ...new Set(issues.map((issue) => issue.message))],
+    coverage: issues.length ? result.length ? 'partial' : 'unavailable' : 'complete', ...(issues[0] ? { coverageIssue: issues[0] } : {}) };
 }

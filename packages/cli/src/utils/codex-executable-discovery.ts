@@ -30,6 +30,8 @@ export interface CodexExecutableDiscovery {
   candidates: CodexExecutableCandidate[];
   diagnostics: string[];
   foundEntry: boolean;
+  appsWithoutExecutable?: string[];
+  appExecutables?: string[];
 }
 
 type CodexDiscoveryTestOverrides = Pick<CodexExecutableDiscoveryOptions, 'macApplicationsDirectories' | 'queryRunner'>;
@@ -106,25 +108,26 @@ function executableNames(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): str
   ].map((extension) => `codex${extension}`).concat('codex');
 }
 
-async function windowsNpmCandidate(shimPath: string): Promise<CodexExecutableCandidate> {
-  const prefixRoot = path.dirname(shimPath);
-  const packageRoot = path.join(prefixRoot, 'node_modules', '@openai', 'codex');
+async function codexNpmLauncher(packageRoot: string): Promise<{
+  packageRoot: string;
+  launcher: string;
+  version: string;
+}> {
   const packageJsonPath = path.join(packageRoot, 'package.json');
   const launcherPath = path.join(packageRoot, 'bin', 'codex.js');
-  const [shimStats, packageStats, metadataStats, launcherStats] = await Promise.all([
-    fs.lstat(shimPath), fs.lstat(packageRoot), fs.lstat(packageJsonPath), fs.lstat(launcherPath),
+  const [packageStats, metadataStats, launcherStats] = await Promise.all([
+    fs.lstat(packageRoot), fs.lstat(packageJsonPath), fs.lstat(launcherPath),
   ]);
   if (
-    !shimStats.isFile() || shimStats.isSymbolicLink()
-    || !packageStats.isDirectory() || packageStats.isSymbolicLink()
+    !packageStats.isDirectory() || packageStats.isSymbolicLink()
     || !metadataStats.isFile() || metadataStats.isSymbolicLink()
     || !launcherStats.isFile() || launcherStats.isSymbolicLink()
   ) throw new Error('Invalid npm file tree.');
-  const [prefix, packagePath, metadata, launcher] = await Promise.all([
-    fs.realpath(prefixRoot), fs.realpath(packageRoot),
+  const [packagePath, metadata, launcher] = await Promise.all([
+    fs.realpath(packageRoot),
     fs.realpath(packageJsonPath), fs.realpath(launcherPath),
   ]);
-  if (!inside(prefix, packagePath) || !inside(packagePath, metadata) || !inside(packagePath, launcher)) {
+  if (!inside(packagePath, metadata) || !inside(packagePath, launcher)) {
     throw new Error('Invalid npm path boundary.');
   }
   const value: unknown = await fs.readJson(metadata);
@@ -137,7 +140,31 @@ async function windowsNpmCandidate(shimPath: string): Promise<CodexExecutableCan
     || !bin || typeof bin !== 'object' || Array.isArray(bin)
     || (bin as Record<string, unknown>).codex !== 'bin/codex.js'
   ) throw new Error('Invalid npm launcher contract.');
-  return { manager: manager(process.execPath, 'system', [launcher]), expectedVersion: record.version };
+  return { packageRoot: packagePath, launcher, version: record.version };
+}
+
+async function windowsNpmCandidate(shimPath: string): Promise<CodexExecutableCandidate> {
+  const shimStats = await fs.lstat(shimPath);
+  if (!shimStats.isFile() || shimStats.isSymbolicLink()) throw new Error('Invalid npm file tree.');
+  const prefixRoot = path.dirname(shimPath);
+  const npm = await codexNpmLauncher(path.join(prefixRoot, 'node_modules', '@openai', 'codex'));
+  if (!inside(await fs.realpath(prefixRoot), npm.packageRoot)) throw new Error('Invalid npm path boundary.');
+  return { manager: manager(process.execPath, 'system', [npm.launcher]), expectedVersion: npm.version };
+}
+
+async function posixPathCandidate(canonical: string): Promise<CodexExecutableCandidate> {
+  if (path.basename(canonical) === 'codex.js' && path.basename(path.dirname(canonical)) === 'bin') {
+    try {
+      const npm = await codexNpmLauncher(path.dirname(path.dirname(canonical)));
+      if (npm.launcher === canonical) {
+        return { manager: manager(process.execPath, 'system', [npm.launcher]), expectedVersion: npm.version };
+      }
+    } catch (error) {
+      rethrowFatalError(error);
+      // An unverified or custom launcher retains its original direct invocation.
+    }
+  }
+  return { manager: manager(canonical, 'system') };
 }
 
 async function discoverPath(
@@ -165,7 +192,9 @@ async function discoverPath(
             throw new Error('Unsupported batch launcher.');
           }
           if (platform !== 'win32') await fs.access(candidate, fsConstants.X_OK);
-          discovery.candidates.push({ manager: manager(await fs.realpath(candidate), 'system') });
+          const canonical = await fs.realpath(candidate);
+          discovery.candidates.push(platform === 'win32'
+            ? { manager: manager(canonical, 'system') } : await posixPathCandidate(canonical));
         }
       } catch (error) {
         rethrowFatalError(error);
@@ -208,12 +237,17 @@ async function discoverMacApps(
         });
         if (result.exitCode !== 0) throw new Error('Bundle identity query failed.');
         if (result.stdout.trim() !== 'com.openai.codex') continue;
+        discovery.foundEntry = true;
         const executable = path.join(bundle, 'Contents', 'Resources', 'codex');
-        if (!(await statIfPresent(executable))?.isFile()) continue;
+        if (!(await statIfPresent(executable))?.isFile()) {
+          (discovery.appsWithoutExecutable ??= []).push(bundle);
+          continue;
+        }
         discovery.foundEntry = true;
         const canonical = await fs.realpath(executable);
         if (!inside(bundle, canonical)) throw new Error('Bundle executable escapes its root.');
         await fs.access(canonical, fsConstants.X_OK);
+        (discovery.appExecutables ??= []).push(canonical);
         discovery.candidates.push({ manager: manager(canonical, 'app') });
       } catch (error) {
         rethrowFatalError(error);
@@ -364,6 +398,8 @@ async function discoverWindowsApps(
       const root = await fs.realpath(item.root);
       if (roots.has(root)) continue;
       roots.add(root);
+      discovery.foundEntry = true;
+      const candidateCount = discovery.candidates.length;
       const pending = [{ directory: root, depth: 0 }];
       while (pending.length > 0) {
         options.signal?.throwIfAborted();
@@ -396,6 +432,7 @@ async function discoverWindowsApps(
             discovery.foundEntry = true;
             try {
               await assertWindowsPath(target, 'file', options);
+              (discovery.appExecutables ??= []).push(canonical);
               discovery.candidates.push({ manager: manager(canonical, 'app') });
             } catch (error) {
               rethrowFatalError(error);
@@ -403,6 +440,9 @@ async function discoverWindowsApps(
             }
           }
         }
+      }
+      if (discovery.candidates.length === candidateCount) {
+        (discovery.appsWithoutExecutable ??= []).push(root);
       }
     } catch (error) {
       rethrowFatalError(error);

@@ -28,7 +28,7 @@ import {
 
 export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.cli-output.v1',
-  'aw.plugin-manifest.v3',
+  'aw.plugin-manifest.v4',
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
   'aw.plugin-config.v2',
@@ -41,7 +41,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-config-cross-plugin-value-ref.v1',
   'aw.plugin-config-summary.v1',
   'aw.plugin-pre-apply.v1',
-  'aw.dynamic-artifacts.v2',
+  'aw.platform-components.v3',
   'aw.managed-commands.v1',
   'aw.native-tools.v2',
   'aw.claude.sandbox-exclusions.v1',

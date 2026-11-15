@@ -1,10 +1,10 @@
 import os from 'node:os';
-import { prepareWindowsJobHelper } from './process-tree.js';
 import path from 'node:path';
 
 import fs from 'fs-extra';
 import {
   getCommandPackageId,
+  canonicalizeIdentityValue,
   getNativeToolConsumerClosure,
   loadPluginNativeToolClosure,
   materializeNativeToolClosureFiles,
@@ -22,9 +22,10 @@ import {
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { CommandProducerResult, PlatformName, PluginMeta, ReceiptTargetIdentity, Scope } from '../types.js';
+import type { RenderUnit } from '../platforms/contracts.js';
 import { resolveArtifactRenderConfig, runArtifactRenderer } from './artifact-renderer.js';
 import { resolveCommandSourceDirectory } from './artifact-sources.js';
-import { validateArtifactPlan, type ValidatedArtifactPlanArtifact } from './artifact-plan.js';
+import type { ValidatedArtifactPlanArtifact } from './artifact-plan.js';
 import type { DynamicSkillTree } from './dynamic-skill-tree.js';
 import {
   inspectManagedCommand,
@@ -129,12 +130,14 @@ function sameProducer(left: ProducerIdentity, right: ProducerIdentity): boolean 
 }
 
 export async function managedCommandProducerIdentity(options: {
-  plugin: PluginMeta; producer: ManagedCommandProducerRef; platform?: PlatformName; scope: Scope; cwd: string;
+  plugin: PluginMeta; producer: ManagedCommandProducerRef; scope: Scope; cwd: string;
+  renderUnit?: Pick<RenderUnit, 'physicalKey' | 'renderScope'>;
 }): Promise<ProducerIdentity> {
   const { plugin, producer } = options;
   if (!plugin.sourceId || !plugin.sourceIdentity) throw new Error('commandReferenceInvalid: managed commands require verified source identity.');
   let scope = options.scope;
-  let platform = options.platform ?? null;
+  let platform: PlatformName | null = null;
+  let placementKey: string | null = null;
   let key: string;
   if (producer.kind === 'package') {
     const declaration = plugin.manifest.managedCommands?.packages.find((entry) => entry.key === producer.packageKey);
@@ -142,24 +145,22 @@ export async function managedCommandProducerIdentity(options: {
     key = declaration.key;
     scope = declaration.scope;
     platform = null;
-  } else if (producer.kind === 'static-skill') {
-    key = producer.skillKey;
-    platform = producer.platform;
-    scope = 'user';
   } else {
-    key = producer.artifactId;
-    const declaration = plugin.manifest.artifacts?.targets?.find((entry) => entry.id === producer.artifactId);
-    if (!declaration?.platform) throw new Error('commandReferenceInvalid: command artifact is not declared.');
-    if (declaration.platform !== 'codex' && declaration.platform !== 'claude') throw new Error('commandReferenceInvalid: command artifacts require a Native Skill.');
-    platform = declaration.platform;
-    if (declaration.target === 'codex.skill' || declaration.target === 'claude.skill') scope = 'user';
+    if (!options.renderUnit) throw new Error('commandReferenceInvalid: a Skill producer requires its verified render unit.');
+    key = producer.kind === 'static-skill' ? producer.skillKey : producer.artifactId;
+    platform = producer.platform;
+    scope = options.renderUnit.renderScope.kind;
+    placementKey = options.renderUnit.physicalKey;
   }
   let projectRoot: string | null = null;
   if (scope === 'project') {
-    projectRoot = path.normalize(await fs.realpath(await resolveCanonicalRepoProjectKey(options.cwd)));
+    const root = producer.kind === 'package' ? await resolveCanonicalRepoProjectKey(options.cwd)
+      : options.renderUnit!.renderScope.kind === 'project' ? options.renderUnit!.renderScope.projectRoot : undefined;
+    if (!root) throw new Error('commandReferenceInvalid: a project producer requires its canonical project root.');
+    projectRoot = path.normalize(await fs.realpath(root));
     if (process.platform === 'win32') projectRoot = projectRoot.replace(/^[a-z]:/u, (drive) => drive.toUpperCase());
   }
-  return normalizeProducerIdentity({ sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name, kind: producer.kind, key, platform, scope, projectRoot });
+  return normalizeProducerIdentity({ sourceId: plugin.sourceId, sourceIdentity: plugin.sourceIdentity, pluginName: plugin.manifest.name, kind: producer.kind, key, platform, scope, projectRoot, placementKey });
 }
 
 export function commandSetsForProducer(options: {
@@ -168,7 +169,7 @@ export function commandSetsForProducer(options: {
   previousSets?: readonly InstalledCommandSet[];
 }): InstalledCommandSet[] {
   const requested = (options.plugin.manifest.managedCommands?.sets ?? []).filter((set) =>
-    JSON.stringify(set.producer) === JSON.stringify(options.producer)
+    canonicalizeIdentityValue(set.producer) === canonicalizeIdentityValue(options.producer)
     && (options.requestedSetNames === undefined || options.requestedSetNames.has(set.set))).map((set): InstalledCommandSet => {
       if (set.mode === 'static') return { set: set.set, state: 'present', entries: set.entries };
       const artifact = options.artifacts?.find((entry) => entry.target === 'aw.command-set' && entry.id === `command-set.${set.set}`);
@@ -259,9 +260,8 @@ export async function prepareManagedCommandPackage(options: {
   let artifacts: ValidatedArtifactPlanArtifact[] = [];
   let generatedFiles: Record<string, string> = {};
   if (targets.length > 0) {
-    if (process.platform === 'win32') await prepareWindowsJobHelper();
     const rendered = await runArtifactRenderer({ plugin: options.plugin, referencePlugins: options.referencePlugins, event: options.event ?? 'install', platform: 'managed-commands', scope: declaration.scope, cwd: options.cwd, commandEnv: options.env, requestedArtifactIds: targets.map((target) => target.id), signal: options.signal, scriptTimeoutMs: options.scriptTimeoutMs, ...(options.event === 'refresh' ? { changedConfigKeys: options.changedConfigKeys ?? [] } : {}) });
-    artifacts = validateArtifactPlan({ manifest: options.plugin.manifest, plan: rendered.plan, platform: 'managed-commands', scope: declaration.scope, requestedArtifactIds: rendered.context.requestedArtifactIds, renderConfig: rendered.context.config, rendererDigest: rendered.target.rendererDigest, manifestDigest: rendered.target.manifestDigest }).artifacts;
+    artifacts = rendered.plan.artifacts;
     for (const artifact of artifacts) if (artifact.target === 'aw.command-package') generatedFiles = artifact.files;
   }
   const sets = commandSetsForProducer({ plugin: options.plugin, producer: producerRef, artifacts, ...(requestedSetNames ? { requestedSetNames, previousSets: previous?.sets } : {}) });
@@ -360,34 +360,41 @@ export async function discoverInstalledPluginManagedCommandPackages(options: {
 
 export async function createManagedCommandReferenceResolver(options: {
   plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; env: NodeJS.ProcessEnv;
+  renderUnit: Pick<RenderUnit, 'physicalKey' | 'renderScope'>;
   candidates?: readonly ManagedCommandCandidate[];
+  unavailableProducers?: readonly ProducerIdentity[];
 }): Promise<(reference: ManagedCommandReference) => string> {
   const resolved = new Map<string, string>();
   for (const set of options.plugin.manifest.managedCommands?.sets ?? []) {
-    if (set.producer.kind === 'static-skill' && set.producer.platform !== options.platform) continue;
+    if (set.producer.kind !== 'package' && set.producer.platform !== options.platform) continue;
     if (set.producer.kind === 'package') {
       const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => set.producer.kind === 'package' && entry.key === set.producer.packageKey);
       if (!declaration?.platforms.includes(options.platform) || (options.scope === 'user' && declaration.scope === 'project')) continue;
-    } else if (set.producer.kind === 'artifact') {
-      const declaration = options.plugin.manifest.artifacts?.targets?.find((entry) => set.producer.kind === 'artifact' && entry.id === set.producer.artifactId);
-      if (declaration?.platform !== options.platform) continue;
     }
     const producer = await managedCommandProducerIdentity({ ...options, producer: set.producer });
+    if (options.unavailableProducers?.some((unavailable) => sameProducer(unavailable, producer))) continue;
     if (producer.platform && producer.platform !== options.platform) continue;
     if (options.scope === 'user' && producer.scope === 'project') continue;
     if (set.producer.kind === 'package') {
       const declaration = options.plugin.manifest.managedCommands?.packages.find((entry) => entry.key === producer.key);
       if (!declaration?.platforms.includes(options.platform)) continue;
     }
-    const candidate = [...(options.candidates ?? [])].reverse().find((entry) => sameProducer(entry.producer, producer));
+    const candidates = (options.candidates ?? []).filter((entry) => sameProducer(entry.producer, producer));
+    const candidateContent = (candidate: ManagedCommandCandidate): string => canonicalizeIdentityValue({ producer: candidate.producer, sets: candidate.sets, nativeTools: candidate.nativeTools ?? null });
+    if (candidates.some((entry) => candidateContent(entry) !== candidateContent(candidates[0]!))) throw new Error('commandReferenceInvalid: conflicting candidates identify the same command producer.');
+    const candidate = candidates[0];
     const entries = candidate?.sets.find((entry) => entry.set === set.set);
     if (candidate) {
       if (entries?.state !== 'present') continue;
-      for (const entry of entries.entries) resolved.set(`${set.set}/${entry.key}/${entry.variant}`, getPluginCommandId({ schemaVersion: 1, producer, set: set.set, key: entry.key, variant: entry.variant }));
+      for (const entry of entries.entries) resolved.set(`${set.set}/${entry.key}/${entry.variant}`, getPluginCommandId({ schemaVersion: 2, producer, set: set.set, key: entry.key, variant: entry.variant }));
     } else if (set.mode === 'static') {
       for (const entry of set.entries) {
-        const id = getPluginCommandId({ schemaVersion: 1, producer, set: set.set, key: entry.key, variant: entry.variant });
-        if ((await inspectManagedCommand(id, options.env)).availability === 'ready') resolved.set(`${set.set}/${entry.key}/${entry.variant}`, id);
+        const id = getPluginCommandId({ schemaVersion: 2, producer, set: set.set, key: entry.key, variant: entry.variant });
+        try {
+          if ((await inspectManagedCommand(id, options.env)).availability === 'ready') resolved.set(`${set.set}/${entry.key}/${entry.variant}`, id);
+        } catch (error) {
+          if (!(error instanceof ManagedCommandError) || error.code !== 'commandNotFound') throw error;
+        }
       }
     } else {
       const installed = await listManagedCommands(options.env);

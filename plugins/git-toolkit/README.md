@@ -11,6 +11,8 @@ aw target set codex claude
 aw plugin install git-toolkit --scope user
 ```
 
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。实际调用控制与客户端能力按目标核对，无法保留的组件语义会显示为未满足。
+
 ## 包含的 Skill
 
 | Skill | 什么时候使用 |

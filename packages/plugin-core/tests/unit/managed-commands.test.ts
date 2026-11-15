@@ -16,12 +16,12 @@ import {
 
 const producer: ProducerIdentity = {
   sourceId: 'official', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'example-plugin',
-  kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null,
+  kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null,
 };
-const identity: CommandIdentity = { schemaVersion: 1, producer, set: 'tools', key: 'check', variant: 'default' };
+const identity: CommandIdentity = { schemaVersion: 2, producer, set: 'tools', key: 'check', variant: 'default' };
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: 3, name: 'example-plugin', version: '1.0.0', description: 'Test',
+    schemaVersion: 4, name: 'example-plugin', version: '1.0.0', description: 'Test',
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
     ...overrides,
   };
@@ -94,26 +94,26 @@ describe('managed commands author contract', () => {
       for (const platforms of [['codex'], undefined]) {
         const normalized = await validateSourcePluginManifest(root, { ...raw, platforms });
         expect(getManagedCommandArtifactTargets(normalized)).toMatchObject(mode === 'static' ? [] : [
-          { id: 'command-set.review', platform: 'codex', surface: { kind: 'platform', platform: 'codex' }, scopes: ['user'] },
+          { id: 'command-set.review', platform: 'codex', surface: { kind: 'platform', platform: 'codex' }, scopes: ['user', 'project'] },
         ]);
       }
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
-  it('uses shared user requests for static and dynamic Native Skill command sets', () => {
+  it('defers dynamic producer identity and actual render scope to component preparation', () => {
     const normalized = validatePluginManifest('/test/plugin', manifest({
       skills: './skills',
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-      artifacts: { targets: [{ id: 'owned', platform: 'claude', target: 'claude.skill', skillKey: 'owned', scopes: ['project'], states: ['present'], refreshKeys: [] }] },
+      artifacts: { configKeys: [], scopes: ['project'] },
       managedCommands: { sets: [
         ...(['codex', 'claude'] as const).map((platform) => ({ set: `${platform}-native`, producer: { kind: 'static-skill', platform, skillKey: 'review' }, mode: 'dynamic', refreshKeys: [] })),
-        { set: 'owned', producer: { kind: 'artifact', artifactId: 'owned' }, mode: 'dynamic', refreshKeys: [] },
+        { set: 'owned', producer: { kind: 'artifact', platform: 'claude', artifactId: 'owned' }, mode: 'dynamic', refreshKeys: [] },
       ] },
     }));
     expect(getManagedCommandArtifactTargets(normalized)).toMatchObject([
-      { id: 'command-set.codex-native', platform: 'codex', scopes: ['user'] },
-      { id: 'command-set.claude-native', platform: 'claude', scopes: ['user'] },
-      { id: 'command-set.owned', platform: 'claude', scopes: ['user'] },
+      { id: 'command-set.codex-native', platform: 'codex', scopes: ['user', 'project'] },
+      { id: 'command-set.claude-native', platform: 'claude', scopes: ['user', 'project'] },
+      { id: 'command-set.owned', platform: 'claude', scopes: ['project'] },
     ]);
   });
 
@@ -125,8 +125,7 @@ describe('managed commands author contract', () => {
         claude: { fields: { platformOnly: { type: 'boolean' } } },
       } },
       scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
-      artifacts: { targets: [{ id: 'native', platform: 'codex', target: 'codex.skill', skillKey: 'owned',
-        scopes: ['user'], states: ['present'], refreshKeys: [] }] },
+      artifacts: { configKeys: [] },
     });
     expect(() => validatePluginManifest('/test/plugin', { ...raw, managedCommands: {
       packages: [{ ...packages[0], render: true, refreshKeys: ['option'] }], sets: [
@@ -136,7 +135,7 @@ describe('managed commands author contract', () => {
     } })).not.toThrow();
     for (const producer of [
       { kind: 'static-skill', platform: 'codex', skillKey: 'review' },
-      { kind: 'artifact', artifactId: 'native' },
+      { kind: 'artifact', platform: 'codex', artifactId: 'native' },
     ]) {
       expect(() => validatePluginManifest('/test/plugin', { ...raw, managedCommands: { sets: [{
         set: 'sensitive', producer, mode: 'dynamic', refreshKeys: ['option'],
@@ -179,19 +178,29 @@ describe('managed commands author contract', () => {
 
   it('uses the first 64 hash bits and preserves source, scope and key case distinctions', () => {
     // Golden values were computed independently from the normative canonical JSON with Python hashlib.
-    expect(getPluginCommandId(identity)).toBe('cmdp_3b4519b3e3a1a542');
-    expect(isManagedCommandId('cmdp_3b4519b3e3a1a542')).toBe(true);
+    expect(getPluginCommandId(identity)).toBe('cmdp_fef82b56d2543a37');
+    expect(isManagedCommandId('cmdp_fef82b56d2543a37')).toBe(true);
     for (const invalid of ['cmdp_3B4519B3E3A1A542', `cmdp_${'a'.repeat(15)}`, `cmdp_${'a'.repeat(17)}`, `cmdp_${'a'.repeat(64)}`]) {
       expect(isManagedCommandId(invalid)).toBe(false);
     }
-    expect(getCommandPackageId(producer)).toBe('pkg_32d3b599e9e009f6dccdbab521941d838d1ec5ae75ba3fc2a7b8b3a7ad68e6c4');
-    expect(getPluginCommandId({ variant: 'default', key: 'check', set: 'tools', producer: { ...producer }, schemaVersion: 1 })).toBe(getPluginCommandId(identity));
+    expect(getCommandPackageId(producer)).toBe('pkg_fda51f26c0c5ddef27300f9fa40c6d0312eac043f6d41c55a68b2aea8c1a154f');
+    expect(getPluginCommandId({ variant: 'default', key: 'check', set: 'tools', producer: { ...producer }, schemaVersion: 2 })).toBe(getPluginCommandId(identity));
     for (const changed of [{ ...producer, sourceId: 'renamed' }, { ...producer, sourceIdentity: `sha256:${'b'.repeat(64)}` }, { ...producer, scope: 'project' as const, projectRoot: path.resolve('/project') }]) {
       expect(getPluginCommandId({ ...identity, producer: changed })).not.toBe(getPluginCommandId(identity));
     }
     expect(getPluginCommandId({ ...identity, key: 'Check' })).not.toBe(getPluginCommandId(identity));
     expect(() => normalizeCommandIdentity({ ...identity, version: '2.0.0' })).toThrow(/unknown/u);
     expect(() => normalizeCommandIdentity({ ...identity, variant: undefined })).toThrow();
+  });
+
+  it('binds Skill command identity to its physical placement and rejects incomplete identities', () => {
+    const skillProducer: ProducerIdentity = { ...producer, kind: 'artifact', key: 'skill-id', platform: 'codex', placementKey: `sha256:${'b'.repeat(64)}` };
+    const first: CommandIdentity = { ...identity, producer: skillProducer };
+    const second: CommandIdentity = { ...identity, producer: { ...skillProducer, placementKey: `sha256:${'c'.repeat(64)}` } };
+    expect(getPluginCommandId(first)).not.toBe(getPluginCommandId(second));
+    expect(() => normalizeCommandIdentity({ ...first, schemaVersion: 1 })).toThrow();
+    expect(() => normalizeCommandIdentity({ ...first, producer: { ...skillProducer, placementKey: null } })).toThrow();
+    expect(() => normalizeCommandIdentity({ ...identity, producer: { ...producer, placementKey: skillProducer.placementKey } })).toThrow();
   });
 
   it('parses and expands the only placeholder grammar with normalized references', () => {

@@ -41,8 +41,8 @@ describe('TUI on-demand plugin content runtime', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'content-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
-      { name: 'first' },
-      { name: 'second' },
+      { name: 'first', configureManifest: (manifest) => { manifest.schemaVersion = 4; delete manifest.extensions; } },
+      { name: 'second', configureManifest: (manifest) => { manifest.schemaVersion = 4; delete manifest.extensions; } },
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     const configured = await replaceCatalogSourcesConfig({

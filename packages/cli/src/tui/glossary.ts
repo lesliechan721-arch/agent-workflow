@@ -1,5 +1,7 @@
 import type { PlatformName, Scope } from '../types.js';
 import type { StatusSharedNativeProjection } from '../commands/status-v6.js';
+import { TARGET_DISPLAY_NAMES } from '../platforms/discovery.js';
+import { isPlatformTarget } from '@lesliechan721/aw-plugin-core';
 
 export const productTerms = {
   catalog: '插件目录',
@@ -21,13 +23,11 @@ export const productTerms = {
 } as const;
 
 export function platformLabel(platform: PlatformName): string {
-  return platform === 'codex' ? 'Codex' : 'Claude Code';
+  return TARGET_DISPLAY_NAMES[platform];
 }
 
 export function agentLabel(agent: string): string {
-  return agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude Code'
-    : agent === 'cursor' ? 'Cursor' : agent === 'antigravity' ? 'Antigravity'
-      : agent === 'opencode' ? 'OpenCode' : agent === 'pi' ? 'Pi' : agent === 'generic' ? 'Generic' : agent;
+  return isPlatformTarget(agent) ? TARGET_DISPLAY_NAMES[agent] : agent;
 }
 
 export function scopeLabel(scope: Scope): string {

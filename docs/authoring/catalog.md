@@ -1,6 +1,6 @@
 # AW Catalog Workspace 作者指南
 
-本指南面向创建、维护与分发自定义 Catalog（插件市场）的作者。当前支持的合同为 **Plugin Manifest v3**、**Catalog snapshot schema 7** 与 **Catalog Sources Config schema 2**。
+本指南面向创建、维护与分发自定义 Catalog（插件市场）的作者。当前支持的合同为 **Plugin Manifest v4**、**Catalog snapshot schema 7** 与 **Catalog Sources Config schema 2**。
 
 > [!TIP]
 > **第三方 Catalog 作者无需检出本 monorepo，无需执行官方 CI 或五包发布流程**。使用标准安装的 `aw` CLI 即可完成独立 Catalog 的初始化、聚合构建、本地调试与远端发布。本仓库官方发版请参阅 [官方发布与失败恢复指南](../maintainers/release.md)。

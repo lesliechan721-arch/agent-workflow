@@ -23,6 +23,25 @@ async function invoke(args: string[], options: Parameters<typeof runCli>[1] = {}
 }
 
 describe('public CLI result boundary', () => {
+  // Test Value Gate: the explicit status mode must be accepted and disclose native startup effects in both outputs.
+  it.each([false, true])('keeps user-only status free of app-server startup (observeNative=%s)', async (observeNative) => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const calls: string[][] = [];
+    const output = await invoke(['plugin', 'status', '--context', 'user', ...(observeNative ? ['--observe-native'] : []), '--json'], {
+      cwd: layout.fixtureCwd, env,
+      nativeCliRunner: async (invocation) => {
+        calls.push(invocation.args);
+        throw new Error('No native client is needed without a requirement.');
+      },
+    });
+    const result = JSON.parse(output.stdout);
+    expect(result.command).toBe('plugin.status');
+    expect(result.diagnostics.some((entry: { code: string }) => entry.code === 'nativeObservationSideEffects')).toBe(observeNative);
+    expect(output.stderr.includes('nativeObservationSideEffects')).toBe(observeNative);
+    expect(calls.some((args) => args.includes('app-server'))).toBe(false);
+    expect(output.prompts).toBe(0);
+  });
+
   // Protect useful local evidence when a separate read-only remote probe fails.
   it('keeps local source facts and partial status when the remote path goes offline', async () => {
     const { env, layout } = getCurrentSourceTestIsolation();

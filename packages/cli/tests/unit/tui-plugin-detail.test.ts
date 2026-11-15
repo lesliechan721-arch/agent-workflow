@@ -147,18 +147,18 @@ describe('unified plugin detail subject', () => {
         reasons: [], recoveryActions: [] });
       const revision = (scope: 'user' | 'project', version: string) => ({ pluginId, platform: 'claude' as const,
         scope, revision: { state: 'current' as const, availableVersion: version, installedVersion: version } });
-      const summaries = [{ pluginId, pluginName: 'demo', displayName: 'Initial', description: 'initial', version: '2.0.0' }];
+      const summaries = [{ pluginId, pluginName: 'demo', displayName: 'Current', description: 'current source', version: '3.0.0' }];
       const loaded: TuiStatusLoadResult = { payload: payload([target('user'), target('project')]),
         pluginSummaries: summaries, targetRevisions: [revision('user', '2.0.0'), revision('project', '2.0.0')] };
       const current: ScopedInventoryLoadResult = { scope: 'user', intent: { state: 'valid' },
         selection: { agents: ['claude'], preferences: 'valid' }, inventory: [], extraObserved: [],
-        errors: [], allSatisfied: true, nativeSnapshot: { payload: payload(change === 'removed' ? [] : [target('user')]),
-          pluginSummaries: [{ ...summaries[0]!, displayName: 'Current', version: '3.0.0' }],
-          targetRevisions: change === 'updated' ? [revision('user', '3.0.0')] : [], dependencyOverviews: [] } };
+        errors: [], allSatisfied: true, dependencyOverviews: [], existingTargets: [] };
       if (change !== 'removed') current.extraObserved = [{ pluginId, agent: 'claude', scope: 'user',
-        delivery: { kind: 'native', platform: 'claude' },
+        delivery: { kind: 'native', platform: 'claude' }, expectedVersion: '3.0.0',
+        ...(change === 'updated' ? { installedVersion: '3.0.0' } : {}),
         observation: change === 'updated' ? 'verified' : 'unknown',
         content: change === 'updated' ? 'satisfied' : change }];
+      if (change === 'updated') current.existingTargets = [{ pluginId, agent: 'claude', scope: 'user' }];
       const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded),
         loadScopedStatus: vi.fn().mockResolvedValue(current) });
       await controller.load();
@@ -208,8 +208,7 @@ describe('unified plugin detail subject', () => {
     const loadScopedStatus = vi.fn(async (scope: 'user' | 'project'): Promise<ScopedInventoryLoadResult> => ({
       scope, intent: { state: 'valid' }, selection: { agents: [], preferences: 'valid' },
       inventory: [], extraObserved: [], errors: [], allSatisfied: true,
-      nativeSnapshot: { payload: payload(), pluginSummaries: loaded.pluginSummaries,
-        targetRevisions: [], dependencyOverviews: graph([]) },
+      dependencyOverviews: graph([]),
     }));
     const controller = new TuiController({ loadStatus: vi.fn().mockResolvedValue(loaded), loadScopedStatus });
     await controller.load();

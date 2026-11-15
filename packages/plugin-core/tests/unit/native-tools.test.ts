@@ -29,7 +29,7 @@ const nativeTools = {
 };
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schemaVersion: 3, name: 'example-plugin', version: '1.0.0', description: 'Example',
+    schemaVersion: 4, name: 'example-plugin', version: '1.0.0', description: 'Example',
     marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
     managedCommands: {
       packages: [{ key: 'tools', scope: 'user', platforms: ['codex'], sourceDir: './tools' }],
@@ -51,9 +51,9 @@ async function fixture(run: (root: string) => Promise<void>): Promise<void> {
 }
 
 describe('native tool author and installed closure contracts', () => {
-  it('normalizes a schema 3 declaration and derives its required capability', () => {
+  it('normalizes a schema 4 declaration and derives its required capability', () => {
     const normalized = validatePluginManifest('/plugin', manifest());
-    expect(normalized.schemaVersion).toBe(3);
+    expect(normalized.schemaVersion).toBe(4);
     expect(normalized.nativeTools).toEqual({ ...nativeTools, reader: './.aw/native-tool-reader.mjs' });
     expect(deriveAwCapabilitiesFromManifest(normalized)).toContain('aw.native-tools.v2');
   });
@@ -91,7 +91,7 @@ describe('native tool author and installed closure contracts', () => {
       const copied = await copyNativeToolClosureFiles({ sourceRoot: root, destinationRoot: resource, closure: selected });
       expect(copied).toEqual(materializeNativeToolClosureFiles(selected).closure);
       const record = { schemaVersion: 1, producer: {
-        sourceId: 'third-party', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'example-plugin', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null,
+        sourceId: 'third-party', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'example-plugin', kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null,
       }, sets: [{ set: 'guide', state: 'present', entries: [] }], nativeTools: copied };
       expect(normalizeInstalledCommandProducer(record).nativeTools).toEqual(copied);
       await fs.unlink(path.join(root, '.agents-plugin', 'plugin.json'));

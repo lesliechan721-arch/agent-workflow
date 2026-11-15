@@ -17,6 +17,8 @@ import type { Confirmation } from '../output/public-result.js';
 import { validateExclusions } from '../recovery/joint-demand.js';
 import { intentReceipt } from './intent-command.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
+import { discoverPlatforms, requiresTargetConfirmation, targetAvailabilityViews,
+  type ReadContext, type TargetAvailabilityView } from '../platforms/discovery.js';
 
 interface TargetsCommandOptions {
   cwd: string;
@@ -26,11 +28,16 @@ interface TargetsCommandOptions {
   yes?: boolean;
   cliVersion?: string;
   runtime?: RebuildCommandRuntime;
+  force?: boolean;
+  discovery?: Omit<ReadContext, 'cwd' | 'env'>;
 }
 interface TargetsCommandReceipt extends RecoveryReceipt {
   policy?: DeploymentPreferences;
   apply?: RecoveryReceipt;
   confirmation?: Confirmation;
+  availability?: TargetAvailabilityView[];
+  forceRetry?: string[];
+  warnings?: Array<{ code: string; message: string }>;
 }
 
 function failure(error: unknown) {
@@ -60,7 +67,9 @@ async function applySavedPolicy(options: TargetsCommandOptions, saved: TargetsCo
       policy: saved.policy, apply: applied };
   } catch (error) {
     const issue = failure(error);
-    return { ...saved, ok: false, errors: [issue], blockers: [issue] };
+    const apply: RecoveryReceipt = { ...saved, command: 'sync', ok: false, preferencesChanged: false,
+      errors: [issue], blockers: [issue] };
+    return { ...saved, ok: false, errors: [issue], blockers: [issue], apply };
   }
 }
 
@@ -112,13 +121,49 @@ export async function targetsSet(options: TargetsCommandOptions & {
   targets: readonly string[];
 }): Promise<TargetsCommandReceipt> {
   try {
-    const targets = normalizeAgents(options.targets);
+    let targets: ReturnType<typeof normalizeAgents>;
+    try { targets = normalizeAgents(options.targets); }
+    catch { throw new Error('invalidArguments: Unknown target ID. Use aw target list.'); }
     await resolveWorkContext(options);
+    const discovery = await discoverPlatforms({ cwd: options.cwd, env: options.env,
+      runner: options.runtime?.nativeCliRunner, ...options.discovery });
+    const forceRetry = ['aw', 'target', 'set', ...(targets.length ? targets : ['--none']), '--force',
+      ...(options.context ? ['--context', options.context] : []), ...(options.apply ? ['--apply'] : []), ...(options.yes ? ['--yes'] : [])];
+    const availabilityIssues = (blocked: typeof discovery) => blocked.map((item) => ({ code: 'targetUnavailable',
+      message: `${item.platform}: ${item.availability}. ${item.installations.flatMap((product) => product.reasonCodes).join(', ') || 'clientNotFound'}. Repeat with --force to save this selection.` }));
+    const decorate = (selected: TargetsCommandReceipt, blocked = false): TargetsCommandReceipt => {
+      const availability = targetAvailabilityViews(discovery, selected.policy?.targets ?? []);
+      const warnings = availability.filter((item) => item.selected && requiresTargetConfirmation(item.availability))
+        .map((item) => ({ code: 'selectedTargetUnavailable', message: `${item.displayName}: ${item.availability}. The saved selection does not bypass installation requirements.` }));
+      return { ...selected, availability, warnings, ...(blocked ? { forceRetry } : {}) };
+    };
     if (options.apply && options.runtime?.directCli) {
-      return await applyCandidatePolicy(options, 'targets:set', (current) => ({ ...current, targets }));
+      let blocked: typeof discovery = [];
+      try {
+        const applied = await applyCandidatePolicy(options, 'targets:set', (current) => {
+          blocked = discovery.filter((item) => targets.includes(item.platform)
+            && !current.targets.includes(item.platform) && requiresTargetConfirmation(item.availability));
+          if (blocked.length && !options.force) throw new Error('targetUnavailable');
+          return { ...current, targets };
+        });
+        return decorate(applied);
+      } catch (error) {
+        if (blocked.length && !options.force) return decorate(await receipt(options, 'targets:set', false, availabilityIssues(blocked)), true);
+        throw error;
+      }
     }
-    const saved = await setTargets({ ...options, scope: 'user' }, targets);
-    return applySavedPolicy(options, await receipt(options, 'targets:set', saved.changed, []));
+    const saved = await withAwHomeMutationLock({ env: options.env, action: async (token) => {
+      const location = { ...options, token, scope: 'user' as const };
+      const current = await observePreferences(location);
+      if (current.state !== 'valid' && current.state !== 'absent') throw new Error('deploymentPreferencesInvalid');
+      const previous = current.state === 'valid' ? current.value.targets : [];
+      const unavailable = discovery.filter((item) => targets.includes(item.platform)
+        && !previous.includes(item.platform) && requiresTargetConfirmation(item.availability));
+      if (unavailable.length && !options.force) return { blocked: unavailable, changed: false };
+      return { blocked: [], ...await setTargets(location, targets) };
+    } });
+    const selected = await receipt(options, 'targets:set', saved.changed, availabilityIssues(saved.blocked));
+    return decorate(await applySavedPolicy(options, selected), saved.blocked.length > 0);
   } catch (error) {
     return receipt(options, 'targets:set', false, [failure(error)]);
   }
@@ -157,6 +202,9 @@ export async function targetsChangeExclusion(options: TargetsCommandOptions & {
 
 export async function targetsList(options: TargetsCommandOptions): Promise<TargetsCommandReceipt> {
   const observation = await observePreferences({ ...options, scope: 'user' });
-  return receipt(options, 'targets:list', false,
+  const selected = await receipt(options, 'targets:list', false,
     observation.state === 'valid' || observation.state === 'absent' ? [] : [failure(new Error(observation.code))]);
+  const discovery = await discoverPlatforms({ cwd: options.cwd, env: options.env,
+    runner: options.runtime?.nativeCliRunner, ...options.discovery });
+  return { ...selected, availability: targetAvailabilityViews(discovery, selected.policy?.targets ?? []) };
 }

@@ -48,8 +48,8 @@ flowchart TD
 
 1. **物理路径安全校验**：通过 `resolvePhysicalPath` 解析物理真实路径，检查路径链上的每个祖先节点；若发现任何符号链接（symlink），立即抛出 `unsafeOutput` 错误并退出码 2。
 2. **临时环境隔离**：通过 `createIsolatedSkillEnv` 为被测插件构建临时的、由 AW 托管的 `HOME` 与工作目录，确保配置仅由平台 manifest defaults 与传入的 `--config <file>`（注意 Review 使用 `--config`，而非 `--config-file`）决定，**绝不读取用户本地真实配置 Store**。
-3. **构建与物化执行**：调用 `prepareSkillPluginBundle`，在 staging 目录中生成 bundle 与各平台投影产物，并对每个产物计算 sha256 digest。
-4. **生成 Source Binding v2**：调用 `writeAwSourceBinding`，在审核输出根目录下写入 `aw-source-binding.json`（schema 2），精确绑定 Workspace 身份、Profile 输入（Review profile 的 `id` 规范化为 `${platform}-${scope}` 如 `codex-user`）和生成的所有产物摘要。
+3. **构建与物化执行**：调用 `prepareSkillPluginBundle`，在 staging 生成 bundle；随后复用安装链的 `preparePlatformComponents`、命令 producer 收束与固定 adapter project。作者入口使用显式固定 profile，不读取本机客户端可用性；未核验能力保留 unmet。准备失败与合法空集合分别处理。
+4. **生成 Source Binding v2**：调用 `writeAwSourceBinding`，在审核输出根目录下写入 `aw-source-binding.json`（schema 2），精确绑定 Workspace 身份、Profile 输入（Review profile 的 `id` 规范化为 `${platform}-${scope}` 如 `codex-user`）和生成的所有产物摘要。绑定同时保存完整组件集合、能力、资源与投影的准备摘要。inspect 只重算来源/profile/config 并校验产物，不重新运行脚本。
 5. **原子提交通知**：全部产物和绑定校验通过后，原子移动至目标 `--out` 目录；若准备失败，仅清理内部 staging 目录，保留已产生的错误日志。后续 inspect 通过原源目标结合 `--materialization <new-dir>/aw-source-binding.json` 进行闭环核验。
 
 <a id="12-快照复用与锁内执行隔离"></a>
@@ -118,11 +118,15 @@ Eval 引擎通过内部 Provider 注册表调度不同的执行后端：
 
 - **实现职责分工**：
   - `eval-process-management.ts`：负责执行运行前置预检（Codex permission profile、macOS keychain、进程树检查可用性与 Windows Job helper 准备），并返回受管元数据（`processManagement`）；
-  - `process-tree.ts`：负责扫描系统进程表、验证 PPID 链与环境变量 marker、在单次预算内执行复查并判定三值语义（`markerMatches: true | false | null`）；
+  - `process-tree.ts`：负责扫描系统进程表、验证 PPID 链与启动 marker、按平台识别不可读形式、在单次预算内执行复查并判定三值语义（`markerMatches: true | false | null`）；
   - 进程生命周期、信号分发与直接子进程收尾的实际执行入口由各 Provider 运行时组件（`process.ts`、`custom-process.ts`、`codex-eval-process-tree.ts`）负责。
+- **内部显式收尾条件**：`requireDescendantsExitedBeforeCompletion` 独立于共享进程组要求。显式请求该条件时，即使后代最后已被清理，正常完成时仍存活的已归属后代也使请求失败；root 和 zombie 不算活后代。此内部选项不改变 custom-process 必须共享初始组的公开协议。公开 AW 兼容性探针使用独立组观察的边界见 [CI 无认证资格](../ci.md#6-无认证-native-客户端资格)。
+  终止开始、升级信号及最终核验均立即发起本阶段的新查询，不复用边界前启动的共享查询作为完成或清理事实。marker 模式的身份表、匹配和不可读集合来自同一次查询，但不构成内核原子快照。Linux 仅在运行期 `observation` 的一次 marker 复查后，为仍不可读的原身份候选直接启动一次新身份查询；完整解析和受控身份锚点有效时，只将原 PID 完全缺失的候选排除出本次 marker 失败谓词。此局部结果不覆盖 marker 表、不删 known identity；其他结果继续失败，离组事实与已锁存失败仍保留。该查询使用 `min(markerScanStartedAt + 2000, callerDeadline)` 的剩余预算，查询前及解析后检查同一截止，不增加宽限。可选诊断回调只传有限 PID/启动身份、阶段、毫秒查询时间与 `absent | present | unknown`，异常不改变门禁，成功事件不进入失败诊断首尾队列。终止开始时，已在途的 identity/marker delivery 与新查询并行完成；在阶段预算内，观察器保持活动以保留旧 delivery 中的运行期违规，完成或超时后停止。旧活表仅能用于运行期观察，不能单独证明完成时后代仍活。等待、新查询、一次 marker 复查及 macOS 启动字符串补证共用本阶段2秒绝对预算，超时不退回旧表、不取消或缩短其他观察器的共享查询；外层清理截止保持不变。
 - **公共协议与收敛链接**：
   面向外部 Provider 与运行期的完整协议规范（包含原生 Codex 进程树监控、`custom-process` 协作式协议硬约束、Marker 检查三值语义、单次复查、僵尸豁免、Fail-closed 保护、以及 `--allow-unmanaged-processes` 直接子进程收尾与 `descendantCleanupGuaranteed: false` 边界）统一收敛于[Review 取证与 Eval 评估合同 §7.1 内置 Provider 与 custom-process 外部协议](../../reference/review-and-eval.md#provider-process-contract)。
 - **失败证据保留实现**：
+  `ProviderProcessCleanupError.processTreeDiagnostics` 保留 verified-observed 首次与末次观察器诊断，最多两项；只含既有 PID、启动身份、进程状态和 marker 匹配元数据，不含命令、环境或 marker 值。清理错误重包装及随后 lease 释放失败时仍保留这些诊断，不能由其存在推定清理成功。
+  完成前活后代失败使用触发时的 `termination-start` 快照，并列出实际匹配的活后代 PID。离组失败若由身份扫描触发，保存该次身份表中的 PID、PPID、PGID、启动时间和状态；该表未同时验证 marker，因此 `markerMatches` 和 `markerLookupSucceeded` 保持 `null`，不补用较早的 marker 扫描。随后空清理快照不能覆盖首次失败。
   运行或清理失败时在 `outputDir` 中安全持久化脱敏证据（`provider-evidence.json` 与 `provider-trace.json`）并清理符号链接的具体实现与脱敏边界，统一收敛于[Review 取证与 Eval 评估合同 §6.4 失败证据保留与 outputDir 安全清理](../../reference/review-and-eval.md#64-失败证据保留与-outputdir-安全清理)。
 
 <a id="32-windows-原生-job-隔离"></a>

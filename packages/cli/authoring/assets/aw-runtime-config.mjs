@@ -49,13 +49,13 @@ function validateBinding(binding) {
   if (!isRecord(binding) || binding.schemaVersion !== 2 || binding.kind !== 'aw-runtime-config') {
     fail('runtimeConfigVersionUnsupported', 'Expected installed runtime config schemaVersion 2. Rebuild old runtime resources before installing them.');
   }
-  if (['definition', 'sources', 'resourceVersion', 'revision', 'digest', 'resources', 'consistencyGroup', 'peerLocators']
+  if (['definition', 'sources', 'resourceVersion', 'revision', 'digest', 'resources', 'consistencyGroup', 'peerLocators', 'nativeReceiptPath']
     .some((key) => Object.hasOwn(binding, key))) {
     fail('runtimeConfigMigrationRequired', 'Remove v1 runtime metadata and regenerate the schemaVersion 2 binding.');
   }
   const identity = binding.installedIdentity;
   if (!isRecord(identity) || !isRecord(binding.effectiveValues)
-    || Object.keys(binding).some((key) => !['schemaVersion', 'kind', 'installedIdentity', 'allowedKeys', 'effectiveValues', 'nativeReceiptPath'].includes(key))
+    || Object.keys(binding).some((key) => !['schemaVersion', 'kind', 'installedIdentity', 'allowedKeys', 'effectiveValues', 'originPath'].includes(key))
     || !Array.isArray(binding.allowedKeys) || binding.allowedKeys.length === 0
     || binding.allowedKeys.some((key) => typeof key !== 'string' || !key)
     || new Set(binding.allowedKeys).size !== binding.allowedKeys.length
@@ -63,7 +63,7 @@ function validateBinding(binding) {
   for (const key of ['sourceId', 'sourceIdentity', 'pluginId', 'pluginName', 'pluginVersion', 'artifactId', 'skillKey']) {
     if (typeof identity[key] !== 'string' || !identity[key]) fail('runtimeConfigIdentityMismatch');
   }
-  if (!['codex', 'claude'].includes(identity.platform) || !['user', 'project'].includes(identity.scope)
+  if (!['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok'].includes(identity.platform) || !['user', 'project'].includes(identity.scope)
     || !['user', 'project'].includes(identity.configScope)
     || identity.pluginId !== `${identity.sourceId}/${identity.pluginName}`
     || !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(identity.skillKey)
@@ -75,42 +75,61 @@ function validateBinding(binding) {
   if (Object.keys(binding.effectiveValues).some((key) => !binding.allowedKeys.includes(key))) fail('runtimeConfigKeyDenied');
   return binding;
 }
-async function checkOwner(root, identity) {
-  const ownerPath = path.join(root, '.agent-workflows-owner.json');
+async function readOrigin(root, binding) {
+  if (binding.originPath === undefined) return false;
+  if (binding.originPath !== '.aw-runtime-native-receipt.json') fail('runtimeConfigPathUnsafe');
+  const originFile = await regularFile(root, binding.originPath);
+  let origin;
+  try { origin = JSON.parse(await fs.readFile(originFile, 'utf8')); }
+  catch { fail('runtimeConfigBindingInvalid'); }
+  if (!isRecord(origin) || origin.schemaVersion !== 1 || origin.kind !== 'aw-runtime-component-origin'
+    || Object.keys(origin).some((key) => !['schemaVersion', 'kind', 'source', 'platform', 'scope', 'configScope', 'component', 'inputDigest'].includes(key))
+    || !isRecord(origin.source) || !isRecord(origin.component)
+    || !/^sha256:[0-9a-f]{64}$/u.test(origin.inputDigest ?? '')) fail('runtimeConfigVersionUnsupported');
+  const identity = binding.installedIdentity;
+  const sourceKeys = ['sourceId', 'sourceIdentity', 'logicalIdentity', 'pluginId', 'pluginName', 'pluginVersion'];
+  if (Object.keys(origin.source).some((key) => !sourceKeys.includes(key))
+    || sourceKeys.some((key) => origin.source[key] !== identity[key])
+    || origin.platform !== identity.platform || origin.scope !== identity.scope || origin.configScope !== identity.configScope
+    || Object.keys(origin.component).some((key) => !['id', 'kind', 'name'].includes(key))
+    || origin.component.kind !== 'skill' || origin.component.id !== identity.artifactId
+    || origin.component.name !== identity.skillKey) fail('runtimeConfigIdentityMismatch');
+  return true;
+}
+
+async function checkNativePackage(root, identity) {
+  // Every current Native projection places Skills directly under its package's skills/ directory.
+  // Other ancestors, including a Review workspace's owner, are not this Skill's origin.
+  if (path.basename(path.dirname(root)) !== 'skills') return false;
+  const packageRoot = path.dirname(path.dirname(root));
+  const ownerPath = path.join(packageRoot, '.agent-workflows-owner.json');
   const stat = await fs.lstat(ownerPath).catch(() => null);
-  if (!stat) return;
+  if (!stat) return false;
   if (!stat.isFile() || stat.isSymbolicLink()) fail('runtimeConfigIdentityMismatch');
   let owner;
-  try { owner = JSON.parse(await fs.readFile(ownerPath, 'utf8')); } catch { fail('runtimeConfigIdentityMismatch'); }
-  if (!isRecord(owner) || owner.schemaVersion !== 3 || owner.owner !== 'agent-workflows'
-    || owner.sourceId !== identity.sourceId || owner.pluginId !== identity.pluginId
-    || owner.plugin !== identity.pluginName || owner.artifactKey !== identity.skillKey
-    || owner.platform !== identity.platform || owner.scope !== identity.scope) fail('runtimeConfigIdentityMismatch');
-}
-async function checkNativeReceipt(root, binding) {
-  if (binding.nativeReceiptPath === undefined) return;
-  if (typeof binding.nativeReceiptPath !== 'string'
-    || (binding.nativeReceiptPath !== '.aw-runtime-native-receipt.json'
-      && !/^(?:\.\.\/)+\.agents-plugin\/aw-(?:codex|claude)-native-render\.json$/u.test(binding.nativeReceiptPath))) {
-    fail('runtimeConfigPathUnsafe');
-  }
-  const receiptFile = await assertPathSafe(path.resolve(root, binding.nativeReceiptPath));
-  const stat = await fs.lstat(receiptFile);
-  if (!stat.isFile()) fail('runtimeConfigPathUnsafe');
-  let receipt;
-  try { receipt = JSON.parse(await fs.readFile(receiptFile, 'utf8')); }
-  catch { fail('runtimeConfigBindingInvalid'); }
-  const identity = binding.installedIdentity;
-  if (!isRecord(receipt) || receipt.schemaVersion !== 1 || !['aw-codex-native-render', 'aw-claude-native-render'].includes(receipt.kind)) {
-    fail('runtimeConfigVersionUnsupported');
-  }
-  if (receipt.kind !== `aw-${identity.platform}-native-render` || identity.scope !== 'user' || identity.configScope !== 'user'
-    || receipt.logicalPluginId !== identity.pluginId || receipt.sourceIdentity !== identity.sourceIdentity
-    || receipt.pluginVersion !== identity.pluginVersion || receipt.strategy !== 'shared-user'
-    || !Array.isArray(receipt.targets) || !receipt.targets.some((target) => isRecord(target)
-      && target.id === identity.artifactId && target.skillKey === identity.skillKey)) {
+  try { owner = JSON.parse(await fs.readFile(ownerPath, 'utf8')); }
+  catch { fail('runtimeConfigIdentityMismatch'); }
+  if (!isRecord(owner) || !Object.hasOwn(owner, 'nativeProjection')) return false;
+  const projection = owner.nativeProjection;
+  if (!isRecord(projection) || !Array.isArray(projection.components) || !isRecord(projection.physicalIdentity)
+    || !/^sha256:[0-9a-f]{64}$/u.test(projection.inputDigest ?? '')
+    || !/^sha256:[0-9a-f]{64}$/u.test(projection.contentDigest ?? '')) {
     fail('runtimeConfigIdentityMismatch');
   }
+  const relativeOutput = `${path.relative(packageRoot, root).split(path.sep).join('/')}/SKILL.md`;
+  const component = projection.components.find((entry) => isRecord(entry)
+    && Array.isArray(entry.relativeOutputs) && entry.relativeOutputs.includes(relativeOutput));
+  if (!component) return false;
+  const physical = projection.physicalIdentity;
+  if (owner.schemaVersion !== 3 || owner.owner !== 'agent-workflows'
+    || owner.sourceId !== identity.sourceId || owner.sourceIdentity !== identity.sourceIdentity
+    || owner.pluginId !== identity.pluginId || owner.plugin !== identity.pluginName
+    || owner.platform !== identity.platform || owner.scope !== identity.scope || owner.scope !== identity.configScope
+    || physical.sourceIdentity !== identity.sourceIdentity || physical.pluginId !== identity.pluginId
+    || physical.platform !== identity.platform
+    || component.id !== identity.artifactId || component.nativeName !== path.basename(root)
+    || component.nativeName !== identity.skillKey) fail('runtimeConfigIdentityMismatch');
+  return true;
 }
 
 /** Read this Skill's installed effective values from its actual calling resource. */
@@ -146,13 +165,13 @@ export async function readRuntimeConfig(options = {}) {
       if (parent === root) fail('runtimeConfigBindingMissing');
       root = parent;
     }
-    if (path.basename(root) !== binding.installedIdentity.skillKey) fail('runtimeConfigIdentityMismatch');
     await regularFile(root, path.relative(root, caller).split(path.sep).join('/'));
     await regularFile(root, READER);
     await regularFile(root, 'SKILL.md');
     if (keys.some((key) => !binding.allowedKeys.includes(key))) fail('runtimeConfigKeyDenied');
-    await checkOwner(root, binding.installedIdentity);
-    await checkNativeReceipt(root, binding);
+    const origin = await readOrigin(root, binding);
+    const installed = await checkNativePackage(root, binding.installedIdentity);
+    if (!origin && !installed) fail('runtimeConfigIdentityMismatch');
     return {
       installedIdentity: structuredClone(binding.installedIdentity),
       effectiveValues: Object.fromEntries(keys.filter((key) => Object.hasOwn(binding.effectiveValues, key))

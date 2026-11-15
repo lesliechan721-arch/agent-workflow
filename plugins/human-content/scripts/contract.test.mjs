@@ -20,10 +20,10 @@ if (process.env.AW_PLUGIN_CONTEXT) {
 
 test('public package and self-contained reading resources are present', async () => {
   const m = JSON.parse(await readFile(path.join(manifestRoot, '.agents-plugin/plugin.json'), 'utf8'));
-  assert.equal(m.schemaVersion, 3);
+  assert.equal(m.schemaVersion, 4);
   assert.equal(m.name, 'human-content');
   assert.equal(m.skills, './skills');
-  assert.deepEqual(m.platforms, ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic']);
+  assert.deepEqual(m.platforms, ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic']);
   assert.equal(Object.hasOwn(m, 'distributions'), false);
   const runtimeRoots = bundled ? m.platforms.map((platform) => path.join(manifestRoot, platform, 'skills'))
     : [path.resolve(manifestRoot, m.skills)];

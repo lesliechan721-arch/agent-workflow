@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { runRecovery } from '../../src/recovery/coordinator.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/utils/codex-config.js';
@@ -16,7 +16,9 @@ import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
+import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import type { PluginMeta } from '../../src/types.js';
+import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 
 async function replaceCatalogSourcesConfig(
   options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
@@ -69,10 +71,19 @@ async function createNativeRuntime(isolation: ReturnType<typeof getCurrentSource
   await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
     schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['codex'], exclusions: [],
   });
-  return { env: isolation.env, ...native };
+  const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+  const layouts = new Map(await Promise.all(configured.config.sources.map(async (source) => [source.id,
+    await getNativeTestLayout({ platform: 'codex', sourceId: source.id, pluginId: `${source.id}/demo`,
+      sourceIdentity: await calculateCatalogSourceIdentity(source), cwd: nativeProjectCwd, env: isolation.env }),
+  ] as const)));
+  return { env: isolation.env, ...native,
+    registrationId: (name: string, sourceId = 'team') => `${name}@${layouts.get(sourceId)!.marketplaceName}`,
+    packageRoot: (name: string, sourceId = 'team') => path.join(layouts.get(sourceId)!.marketplaceRoot!, 'plugins', name),
+  };
 }
 
 describe('Codex source-qualified native identity', () => {
+  beforeEach(() => { installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true }); });
   // Test Value Gate: a selected User root cannot replace a sibling shared package or read caller project state.
   it('keeps a sibling package and ignores poisoned caller project state during User recovery', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -90,7 +101,7 @@ describe('Codex source-qualified native identity', () => {
       cliVersion: '1.0.0', yes: true };
     const installed = await runRecovery('install', ['team/alpha', 'team/beta'], options, runtime);
     expect(installed.ok, JSON.stringify(installed)).toBe(true);
-    const betaCache = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins', 'beta');
+    const betaCache = runtime.packageRoot('beta');
     const betaManifest = path.join(betaCache, '.codex-plugin', 'plugin.json');
     const betaBytes = await fs.readFile(betaManifest);
     const userIntentPath = path.join(isolation.env.AW_HOME!, 'plugin-intents.json');
@@ -105,8 +116,8 @@ describe('Codex source-qualified native identity', () => {
     expect(cleaned.ok, JSON.stringify(cleaned.targetResults)).toBe(true);
     expect(await fs.readFile(betaManifest)).toEqual(betaBytes);
     const afterCleanup = (await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'))).snapshot;
-    expect(afterCleanup.plugins['alpha@aw']?.enabled).not.toBe(true);
-    expect(afterCleanup.plugins['beta@aw']?.enabled).toBe(true);
+    expect(afterCleanup.plugins[runtime.registrationId('alpha')]?.enabled).not.toBe(true);
+    expect(afterCleanup.plugins[runtime.registrationId('beta')]?.enabled).toBe(true);
     expect(await fs.readFile(userIntentPath)).toEqual(userIntentBytes);
     const pluginCalls = runtime.nativeCliRunner.mock.calls.filter(([call]) => call.args.includes('plugin'));
     expect(pluginCalls.length).toBeGreaterThan(0);
@@ -139,29 +150,28 @@ describe('Codex source-qualified native identity', () => {
     expect(await fs.readJson(strongPaths[2]!)).toEqual({ schemaVersion: 2,
       kind: 'aw-deployment-preferences', targets: ['codex'], exclusions: [] });
     const strongBytes = await Promise.all(strongPaths.map((file) => fs.readFile(file).catch(() => null)));
-    const cacheManifest = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins', 'demo',
-      '.codex-plugin', 'plugin.json');
+    const cacheManifest = path.join(runtime.packageRoot('demo'), '.codex-plugin', 'plugin.json');
     const packageBytes = await fs.readFile(cacheManifest);
     const projectConfigPath = path.join(cwd, '.codex', 'config.toml');
     // Both activations can exist on disk even when user demand satisfies the project.
-    await applyCodexConfigTransactionFile(projectConfigPath, { upsertPluginActivations: { 'demo@aw': true } });
+    await applyCodexConfigTransactionFile(projectConfigPath, { upsertPluginActivations: { [runtime.registrationId('demo')]: true } });
     const projectCleanup = await runRecovery('cleanup', ['team/demo'], { ...options('project'), targets: ['codex'] }, runtime);
     expect(projectCleanup.ok, JSON.stringify(projectCleanup.targetResults)).toBe(true);
-    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw']?.enabled).not.toBe(true);
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins[runtime.registrationId('demo')]?.enabled).not.toBe(true);
     expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins['demo@aw']?.enabled).toBe(true);
+      .snapshot.plugins[runtime.registrationId('demo')]?.enabled).toBe(true);
     expect(await fs.readFile(cacheManifest)).toEqual(packageBytes);
     expect(await Promise.all(strongPaths.map((file) => fs.readFile(file).catch(() => null))))
       .toEqual(strongBytes);
 
-    await applyCodexConfigTransactionFile(projectConfigPath, { upsertPluginActivations: { 'demo@aw': true } });
-    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw']?.enabled).toBe(true);
+    await applyCodexConfigTransactionFile(projectConfigPath, { upsertPluginActivations: { [runtime.registrationId('demo')]: true } });
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins[runtime.registrationId('demo')]?.enabled).toBe(true);
     const userCleanup = await runRecovery('cleanup', ['team/demo'], { ...options('user'), targets: ['codex'] }, runtime);
     expect(userCleanup.ok, JSON.stringify(userCleanup.targetResults)).toBe(true);
     expect((await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')))
-      .snapshot.plugins['demo@aw']?.enabled).not.toBe(true);
-    expect(runtime.installed.has('demo@aw')).toBe(true);
-    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins['demo@aw']?.enabled).toBe(true);
+      .snapshot.plugins[runtime.registrationId('demo')]?.enabled).not.toBe(true);
+    expect(runtime.installed.has(runtime.registrationId('demo'))).toBe(true);
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins[runtime.registrationId('demo')]?.enabled).toBe(true);
     expect(await fs.readFile(cacheManifest)).toEqual(packageBytes);
     expect(await Promise.all(strongPaths.map((file) => fs.readFile(file).catch(() => null))))
       .toEqual(strongBytes);
@@ -200,8 +210,8 @@ describe('Codex source-qualified native identity', () => {
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
         plugins: {
-          'demo@aw-first': { enabled: true },
-          'demo@aw-second': { enabled: true },
+          [runtime.registrationId('demo', 'first')]: { enabled: true },
+          [runtime.registrationId('demo', 'second')]: { enabled: true },
         },
       },
     });
@@ -224,8 +234,8 @@ describe('Codex source-qualified native identity', () => {
     await expect(readCodexConfigFile(configPath)).resolves.toMatchObject({
       snapshot: {
         plugins: {
-          'demo@aw-first': { enabled: true },
-          'demo@aw-second': { enabled: true },
+          [runtime.registrationId('demo', 'first')]: { enabled: true },
+          [runtime.registrationId('demo', 'second')]: { enabled: true },
         },
       },
     });
@@ -290,8 +300,8 @@ describe('Codex source-qualified native identity', () => {
     expect(synced.ok, JSON.stringify(synced.targetResults)).toBe(true);
     expect(synced.requestedRoots).toEqual(['second/demo']);
     const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
-    expect(config.snapshot.plugins['demo@aw-first']?.enabled).toBe(true);
-    expect(config.snapshot.plugins['demo@aw-second']?.enabled).toBe(true);
+    expect(config.snapshot.plugins[runtime.registrationId('demo', 'first')]?.enabled).toBe(true);
+    expect(config.snapshot.plugins[runtime.registrationId('demo', 'second')]?.enabled).toBe(true);
     await expect(observeIntent(intentLocation)).resolves.toMatchObject({
       state: 'valid', value: { roots: [{ pluginId: 'second/demo' }] },
     });
@@ -353,8 +363,8 @@ describe('Codex source-qualified native identity', () => {
     expect(synced.ok, JSON.stringify(synced.targetResults)).toBe(true);
     expect(synced.requestedRoots).toEqual(['first/demo']);
     const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
-    expect(config.snapshot.plugins['demo@aw']?.enabled).toBe(true);
-    expect(config.snapshot.plugins['demo@aw-first']).toBeUndefined();
+    expect(config.snapshot.plugins[runtime.registrationId('demo', 'first')]?.enabled).toBe(true);
+    expect(config.snapshot.plugins[runtime.registrationId('demo', 'second')]).toBeUndefined();
     await expect(observeIntent(intentLocation)).resolves.toMatchObject({
       state: 'valid', value: { roots: [{ pluginId: 'first/demo' }] },
     });

@@ -24,10 +24,10 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
   }
 }
 
-describe('plugin manifest v3 structure', () => {
-  it('requires explicit v3 and accepts unknown valid capability IDs', () => {
+describe('plugin manifest v4 structure', () => {
+  it('requires explicit v4 and accepts unknown valid capability IDs', () => {
     const explicit = manifest({
-      schemaVersion: 3,
+      schemaVersion: 4,
       requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
     })
     expect(() => assertPluginManifestStructure(explicit)).not.toThrow()
@@ -40,12 +40,12 @@ describe('plugin manifest v3 structure', () => {
   it('rejects unknown versions and invalid structures', () => {
     expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 2 })))
       .toThrow(/Unsupported plugin manifest schemaVersion/u)
-    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 3, unexpected: true })))
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 4, unexpected: true })))
       .toThrow(PluginManifestStructureError)
-    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 3, marketplace: [] })))
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 4, marketplace: [] })))
       .toThrow(/Invalid plugin manifest structure/u)
     expect(() => assertPluginManifestStructure(manifest({
-      schemaVersion: 3,
+      schemaVersion: 4,
       requires: { aw: { capabilities: ['future-feature'] } },
     }))).toThrow(/capabilities/u)
   })
@@ -173,14 +173,14 @@ describe('plugin manifest v3 structure', () => {
     }],
   ])('rejects invalid Config v2 structure: %s', (_label, config) => {
     expect(() => assertPluginManifestStructure(manifest({
-      schemaVersion: 3,
+      schemaVersion: 4,
       config,
     }))).toThrow(PluginManifestStructureError)
   })
 
   it('accepts custom Config v2 choices without presets', () => {
     expect(() => assertPluginManifestStructure(manifest({
-      schemaVersion: 3,
+      schemaVersion: 4,
       config: {
         fields: {
           value: { type: 'string', choices: { allowCustom: true, presets: [] } },
@@ -191,123 +191,34 @@ describe('plugin manifest v3 structure', () => {
 
   it.each(['path', 'file', 'directory'])('rejects removed %s string validation format', (format) => {
     expect(() => assertPluginManifestStructure(manifest({
-      schemaVersion: 3,
+      schemaVersion: 4,
       config: { fields: { value: { type: 'string', validation: { format } } } },
     }))).toThrow(PluginManifestStructureError)
   })
 
-  it('requires artifact IDs to be unique only within overlapping surface scopes', () => {
-    const codexInstruction = {
-      id: 'shared-id', platform: 'codex', scopes: ['user'],
-      target: 'codex.developerInstructionsBlock', states: ['present'], refreshKeys: [],
-    }
-    const codexRole = {
-      id: 'shared-id', platform: 'codex', scopes: ['user'],
-      target: 'codex.agentRole', states: ['present'], refreshKeys: [], roleKey: 'shared-role',
-    }
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
-      marketplace: {
-        category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      },
-      artifacts: { targets: [codexInstruction, codexRole] },
-    }))).toThrow(/duplicate artifact id "shared-id" for surface\/scope "codex:user"/u)
-
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
-      marketplace: {
-        category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      },
-      artifacts: { targets: [
-        codexInstruction,
-        {
-          id: 'shared-id', platform: 'claude', scopes: ['user'],
-          target: 'claude.skill', states: ['present'], refreshKeys: [], skillKey: 'shared-skill',
-        },
-      ] },
-    }))).not.toThrow()
-  })
-
-  it('requires codex-native IDs and Skill keys to be globally unique across scopes', () => {
-    const nativeTarget = {
-      id: 'native-id', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-
-      states: ['present'], refreshKeys: [], skillKey: 'native-skill',
-    }
-    const nativeManifest = (
-      second: Record<string, unknown>,
-      secondScopes: string[] = ['project'],
-    ) => manifest({
-      schemaVersion: 3,
-      marketplace: {
-        category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      },
-      artifacts: { targets: [nativeTarget, { ...nativeTarget, scopes: secondScopes, ...second }] },
-    })
-    expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({ skillKey: 'other-skill' })))
-      .toThrow(/duplicate artifact id "native-id"/u)
-    expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({ id: 'other-id' })))
-      .toThrow(/duplicate dynamic skill owner "codex:user:native-skill"/u)
-    expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({
-      id: 'other-id', skillKey: 'other-skill',
-    }, ['user']))).not.toThrow()
-  })
-
   it.each([
-    ['codex-native', {
-      id: 'native-id', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-
-      states: ['present'], refreshKeys: ['secret'], skillKey: 'native-skill',
-    }, 'codexNativeRenderSensitiveRefreshKey'],
-    ['Codex AW extension', {
-      id: 'codex-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-      states: ['present'], refreshKeys: ['secret'],
-      skillKey: 'codex-skill',
-    }, 'codexNativeRenderSensitiveRefreshKey'],
-    ['Claude', {
-      id: 'claude-skill', platform: 'claude', scopes: ['user'], target: 'claude.skill',
-      states: ['present'], refreshKeys: ['secret'], skillKey: 'claude-skill',
-    }, 'skillRenderSensitiveRefreshKey'],
-    ['portable', {
-      id: 'portable-skill', platform: 'generic', distribution: 'agent-skills', scopes: ['user'],
-      target: 'agent-skills.skill', states: ['present'], refreshKeys: ['secret'],
-      skillKey: 'portable-skill',
-    }, 'skillRenderSensitiveRefreshKey'],
-  ] as const)('rejects sensitive refresh keys for %s Skill targets', (_label, target, errorCode) => {
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
-      marketplace: {
-        category: 'workflow', strict: true,
-        policy: {
-          installation: 'AVAILABLE', authentication: 'ON_INSTALL',
-        },
-      },
-      config: { fields: { secret: { type: 'string', sensitive: true } } },
-      artifacts: { targets: [target] },
-    }))).toThrow(new RegExp(`^${errorCode}:`, 'u'))
+    { slashCommands: './commands' }, { apps: './.app.json' }, { artifacts: { targets: [] } },
+    { buildConfig: { manifestOverrides: { claude: { outputStyles: './styles' } } } },
+    { extensions: { agents: [{ name: 'role', description: 'Role', prompt: 'Read.', extra: true }] } },
+    { extensions: { hooks: [{ id: 'guard', event: 'before_tool', feedback: 'block', command: 'node guard.mjs', agentOverrides: { codex: { id: 'other' } } }] } },
+  ])('rejects deleted author fields and unknown overrides %#', (fields) => {
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 4, ...fields }))).toThrow(PluginManifestStructureError)
   })
 
-  it('allows a non-Skill target to refresh from sensitive config', () => {
-    expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
-      marketplace: {
-        category: 'workflow', strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      },
-      config: { fields: { secret: { type: 'string', sensitive: true } } },
-      artifacts: { targets: [{
-        id: 'role-id', platform: 'codex', scopes: ['user'], target: 'codex.agentRole',
-        states: ['present'], refreshKeys: ['secret'], roleKey: 'sensitive-role',
-      }] },
-    }))).not.toThrow()
+  it('rejects Manifest v3 and accepts renderer-wide permissions for all ten platforms', () => {
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 3 }))).toThrow(/expected 4/u)
+    const raw = manifest({ schemaVersion: 4, platforms: ['gemini', 'copilot', 'grok'], artifacts: { configKeys: ['token'], scopes: ['project'] },
+      config: { schemaVersion: 5, fields: { token: { type: 'string', sensitive: true } } },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+      extensions: { agents: [{ name: 'role', description: 'Role', prompt: 'Read.', model: 'chosen', tools: [], promptMode: 'replace', agentOverrides: { gemini: { model: 'other' }, copilot: null } }] },
+    })
+    expect(validatePluginManifest('/tmp/plugin', raw).artifacts).toEqual({ configKeys: ['token'], scopes: ['project'] })
+    expect(() => validatePluginManifest('/tmp/plugin', { ...raw, scripts: undefined })).toThrow(/render/u)
   })
 
   it('fails closed for reserved imports and accepts only injected exports', () => {
     const withImport = (exportName: string) => manifest({
-      schemaVersion: 3,
+      schemaVersion: 4,
       buildConfig: {
         buildImports: [{
           plugin: '@host/runtime',
@@ -333,22 +244,6 @@ describe('plugin manifest v3 structure', () => {
 
   it.each([
     ['MCP file', { mcpServers: './nested/.git/mcp.json' }],
-    ['App file', {
-      apps: './nested/node_modules/app.json',
-      marketplace: {
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-
-        },
-      },
-    }],
-    ['portable Skill collection', {
-      mcpServers: './mcp.json',
-      skills: './skills/.git/skills',
-    }],
     ['plugin script', {
       scripts: { node: { build: { runner: 'node', path: './tools/node_modules/build.mjs' } } },
     }],
@@ -362,7 +257,7 @@ describe('plugin manifest v3 structure', () => {
     }],
   ])('rejects ignored source segments in a %s declaration', (_label, override) => {
     expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 3,
+      schemaVersion: 4,
       ...override,
     }))).toThrow(/source paths must not enter (?:\.git|node_modules)/u)
   })

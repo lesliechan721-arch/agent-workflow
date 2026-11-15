@@ -9,14 +9,11 @@ import {
   readCatalogExecutableFiles,
 } from '@lesliechan721/aw-plugin-core';
 
-import type { CatalogManifestEntry, PluginManifestSource } from '../types.js';
 import {
   normalizeManifestDigestInput,
   readPluginManifest,
 } from './manifest.js';
 import { calculateFileDigest } from './bundle-integrity.js';
-import { CODEX_NATIVE_RENDER_RECEIPT_PATH } from './codex-native-render-receipt.js';
-import { CLAUDE_NATIVE_RENDER_RECEIPT_PATH } from './claude-native-render-receipt.js';
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -109,7 +106,7 @@ async function calculateContentPathDigest(
 }
 
 export function calculateCatalogEntryManifestDigest(
-  manifest: PluginManifestSource | CatalogManifestEntry,
+  manifest: Parameters<typeof normalizeManifestDigestInput>[0],
 ): string {
   return createSha256Digest(normalizeManifestDigestInput(manifest));
 }
@@ -153,51 +150,6 @@ export async function calculateCatalogEntryContentDigest(
   );
 
   return createSha256Digest(stableStringify(fileEntries));
-}
-
-async function calculateCodexPayloadDigest(
-  pluginRoot: string,
-  canonicalizeSkills: boolean,
-): Promise<string> {
-  const files = (await listFilesRecursively(pluginRoot)).filter((relativePath) =>
-    relativePath !== CODEX_NATIVE_RENDER_RECEIPT_PATH
-    && relativePath !== CLAUDE_NATIVE_RENDER_RECEIPT_PATH
-    && path.posix.basename(relativePath) !== '.agent-workflows-owner.json');
-  const fileEntries = await Promise.all(
-    files.map(async (relativePath): Promise<CatalogDigestPathRecord> => {
-      const filePath = path.join(pluginRoot, relativePath);
-      const node = await resolveCatalogDigestNode(filePath);
-      let digest: string;
-      if (relativePath === '.codex-plugin/plugin.json' && node.kind === 'file') {
-        const manifest = await fs.readJson(filePath) as Record<string, unknown>;
-        digest = createSha256Digest(stableStringify({
-          ...manifest,
-          version: '<plugin-version>',
-          ...(canonicalizeSkills ? { skills: '<native-managed>' } : {}),
-        }));
-      } else {
-        digest = await calculateContentPathDigest(pluginRoot, relativePath, node);
-      }
-      return { path: relativePath, kind: node.kind, mode: node.mode, digest };
-    }),
-  );
-  return createSha256Digest(stableStringify(fileEntries));
-}
-
-/**
- * Static shared-native digest. Codex can rewrite the manifest Skill projection,
- * so both plugin version and skills remain canonicalized for compatibility.
- */
-export function calculateCodexSharedNativePayloadDigest(pluginRoot: string): Promise<string> {
-  return calculateCodexPayloadDigest(pluginRoot, true);
-}
-
-/**
- * Receipt-backed dynamic projection digest. The version is transport metadata,
- * but the renderer-produced Skill projection is part of the payload identity.
- */
-export function calculateCodexNativeRenderPayloadDigest(pluginRoot: string): Promise<string> {
-  return calculateCodexPayloadDigest(pluginRoot, false);
 }
 
 export async function calculateCatalogEntryDigestsFromRoot(

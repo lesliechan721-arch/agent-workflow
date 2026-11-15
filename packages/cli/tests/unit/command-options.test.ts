@@ -71,6 +71,15 @@ describe('write command options', () => {
       .toEqual(normalized.dependencyScopeOverrides);
   });
 
+  // Test Value Gate: native recovery must reach every registered concrete platform, while generic keeps its own writer.
+  it('accepts concrete Agents as rebuild platforms and rejects generic', () => {
+    for (const platform of ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok']) {
+      expect(normalizeInstallCommandOptions({ platform }).platform).toBe(platform);
+    }
+    expect(() => normalizeInstallCommandOptions({ platform: 'generic' })).toThrow('Unsupported platform');
+    expect(() => normalizeInstallCommandOptions({ platform: 'unknown' })).toThrow('Unsupported platform');
+  });
+
   it('fails closed for conflicting or invalid dependency scope selectors', () => {
     expect(() => parseDependencyScopeOverrides([
       'team/policy=user',

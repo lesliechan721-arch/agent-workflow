@@ -1,17 +1,14 @@
 export type * from '@lesliechan721/aw-plugin-core/manifest';
 import type {
   ArtifactState,
-  ArtifactTarget,
   CatalogChannel,
   CatalogManifestV7,
   CatalogSourceId,
   CliVersion,
   DistributionName,
-  DynamicArtifactKind,
   ManagedArtifactId,
   PlatformName,
   PlatformTarget,
-  PortablePlatformTarget,
   ProducerIdentity,
   PluginId,
   PluginVersion,
@@ -482,83 +479,12 @@ export interface PortableSkillCandidate {
   configDigest?: string;
 }
 
-export interface ArtifactPlanBase {
+export interface ArtifactPlan {
   version: 2;
   artifacts: ArtifactPlanArtifact[];
 }
 
-export type ArtifactPlan = ArtifactPlanBase;
-
-export interface ArtifactPlanArtifactBase {
-  id: ManagedArtifactId;
-  platform?: PlatformTarget;
-  distribution?: DistributionName;
-  target: ArtifactTarget;
-  kind: DynamicArtifactKind;
-  state: ArtifactState;
-  refreshKeys: string[];
-  disabledReason?: string;
-}
-
-export interface DeveloperInstructionsBlockArtifact extends ArtifactPlanArtifactBase {
-  target: 'codex.developerInstructionsBlock';
-  kind: 'instruction';
-  content?: string;
-}
-
-export interface CodexAgentRoleArtifact extends ArtifactPlanArtifactBase {
-  target: 'codex.agentRole';
-  kind: 'codexRole';
-  roleKey?: string;
-  content?: {
-    registration?: {
-      description?: string;
-    };
-    roleFile?: {
-      name?: string;
-      description?: string;
-      developer_instructions?: string;
-      model?: string;
-      model_reasoning_effort?: string;
-    };
-  };
-}
-
-export interface CodexSkillArtifact extends ArtifactPlanArtifactBase {
-  target: 'codex.skill';
-  kind: 'skill';
-  skillKey?: string;
-  content?: {
-    files?: Record<string, string>;
-  };
-}
-
-export interface ClaudeSkillArtifact extends ArtifactPlanArtifactBase {
-  target: 'claude.skill';
-  kind: 'skill';
-  skillKey?: string;
-  content?: {
-    files?: Record<string, string>;
-  };
-}
-
-export interface AgentSkillsSkillArtifact extends ArtifactPlanArtifactBase {
-  platform: PortablePlatformTarget;
-  distribution: 'agent-skills';
-  target: 'agent-skills.skill';
-  kind: 'skill';
-  skillKey: string;
-  content?: {
-    files?: Record<string, string>;
-  };
-}
-
 export type ArtifactPlanArtifact =
-  | DeveloperInstructionsBlockArtifact
-  | CodexAgentRoleArtifact
-  | CodexSkillArtifact
-  | ClaudeSkillArtifact
-  | AgentSkillsSkillArtifact
   | import('@lesliechan721/aw-plugin-core/manifest').CommandSetArtifact
   | import('@lesliechan721/aw-plugin-core/manifest').CommandPackageArtifact;
 
@@ -570,7 +496,7 @@ export interface GeneratedArtifact {
   artifactKey?: string;
   hookGroups?: TrackedHookGroupIdentity[];
   id?: ManagedArtifactId;
-  target?: ArtifactTarget;
+  target?: ArtifactPlanArtifact['target'];
   state?: ArtifactState;
   disabledReason?: string;
   refreshKeys?: string[];

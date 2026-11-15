@@ -14,6 +14,10 @@ export async function stubCodexFileSelectionForNativeFixture(pluginRoot: string)
     'export const assertNativeSelectionReadable = fail;',
     '',
   ].join('\n'));
+  const profilePath = path.join(pluginRoot, 'skills/spawn-subagent/scripts/adapters/codex-profile.mjs');
+  const profile = await fs.readFile(profilePath, 'utf8');
+  await fs.writeFile(profilePath, profile.replace("import { parse, stringify } from 'smol-toml';",
+    "function parse() { throw new Error('TOML parsing is outside the native ownership fixture.'); }\nconst stringify = parse;"));
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest: { scripts?: { node?: unknown }; buildConfig?: { cacheable?: boolean } } =
     await fs.readJson(manifestPath);

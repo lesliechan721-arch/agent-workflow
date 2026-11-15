@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import { render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { expect, vi } from 'vitest';
+import { PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
 
 import {
   TuiController,
@@ -126,7 +127,7 @@ export async function chooseConfigProfile(
   value: TuiController,
   profile: ConfigProfileKey,
 ): Promise<void> {
-  for (let index = 0; index < 8; index += 1) {
+  for (let index = 0; index < PLATFORM_TARGETS.length + 1; index += 1) {
     const route = value.snapshot.router.current.route;
     expect(route.name).toBe('configFields');
     if (route.name === 'configFields' && route.layer.profile === profile) return;

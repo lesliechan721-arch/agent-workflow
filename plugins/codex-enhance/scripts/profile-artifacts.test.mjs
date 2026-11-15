@@ -1,27 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { CONFIG_KEYS, SKILL_CONFIG_KEYS, renderArtifactPlan } from './render-artifacts.mjs';
+import { CONFIG_KEYS, renderArtifactPlan } from './render-artifacts.mjs';
 
-const root = fileURLToPath(new URL('../', import.meta.url));
+import { root, context as renderContext, component as artifact, resourceText } from './render-test-context.mjs';
 const ids = ['codex-explore-skill', 'codex-advisor-skill'];
-const sourceManifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
-const defaultValues = Object.fromEntries(Object.entries(sourceManifest.config.fields)
-  .filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default]));
-function context(values = {}) {
-  return { platform: 'codex', scope: 'user', requestedArtifactIds: ids,
-    config: { values: { ...structuredClone(defaultValues), ...values } },
-    artifactSources: ids.map((id) => {
-      const staged = path.join(root, '.agents-plugin/artifact-sources/codex', id, '0');
-      return { id, target: 'codex.skill', sourceDirs: [existsSync(staged) ? staged : path.join(root, 'skills', id.replace(/-skill$/, ''))] };
-    }) };
-}
-function artifact(plan, id) { return plan.artifacts.find((item) => item.id === id); }
+function context(values = {}) { return renderContext(values, 'codex', ['skill']); }
 function rows(plan, id, prefix = '| 档位 |') {
-  const lines = artifact(plan, id).content.files['SKILL.md'].split('\n');
+  const lines = artifact(plan, id).content.files['SKILL.md'].text.split('\n');
   const start = lines.findIndex((line) => line.startsWith(prefix));
   const result = [];
   for (const line of lines.slice(start + 2)) {
@@ -37,7 +24,9 @@ function rows(plan, id, prefix = '| 档位 |') {
 test('keeps specialist native requirements and same-source provider references', async () => {
   const manifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
   assert.equal(manifest.config.schemaVersion, 5);
-  assert.deepEqual(manifest.platforms, ['codex']);
+  assert.equal(manifest.schemaVersion, 4);
+  assert.ok(manifest.platforms.includes('pi'));
+  assert.ok(manifest.platforms.includes('grok'));
   assert.equal(Object.hasOwn(manifest.marketplace.policy, 'products'), false);
   assert.deepEqual(manifest.dependencies, ['agent-subagent']);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.plugin-config-cross-plugin-value-ref.v1'));
@@ -58,9 +47,9 @@ test('keeps specialist native requirements and same-source provider references',
   }
   assert.equal(manifest.managedCommands, undefined);
   assert.equal(manifest.nativeTools, undefined);
-  assert.deepEqual(manifest.artifacts.targets.map((target) => target.id),
-    ['codex-explore-skill', 'codex-explore-role', 'codex-advisor-skill', 'codex-advisor-role']);
-  for (const target of manifest.artifacts.targets) assert.equal(Object.hasOwn(target, 'delivery'), false);
+  assert.deepEqual(new Set(manifest.artifacts.configKeys), new Set(CONFIG_KEYS));
+  assert.deepEqual(manifest.artifacts.sourceDirs, ['./skills/codex-explore', './skills/codex-advisor']);
+  assert.equal(Object.hasOwn(manifest.artifacts, 'targets'), false);
 });
 
 // Test Value Gate: rendering must preserve optional external settings and custom ordering without exposing provider config.
@@ -78,18 +67,17 @@ test('renders only specialist profiles and preserves optional external fields', 
     [[applicability, 'external', '后端默认', '后端默认'], ['第二项', 'native', 'custom', 'max']]);
   for (const id of ids) {
     const item = artifact(plan, id);
-    assert.deepEqual(item.refreshKeys, SKILL_CONFIG_KEYS[item.skillKey]);
     assert.equal(Object.hasOwn(item.content.files, 'scripts/aw-runtime-config.mjs'), false);
     assert.equal(Object.hasOwn(item.content.files, '.aw-runtime-config.json'), false);
     // Static contract exception: Codex consumes the Skill invocation metadata directly; behavior test is not suitable without a real Codex host.
-    assert.match(item.content.files['agents/openai.yaml'], /allow_implicit_invocation:\s*true/);
-    assert.equal(item.content.files['SKILL.md'].match(/^name: (.+)$/m)?.[1], item.skillKey);
+    assert.match(await resourceText(item.content.files['agents/openai.yaml']), /allow_implicit_invocation:\s*true/);
+    assert.equal(item.content.files['SKILL.md'].text.match(/^name: (.+)$/m)?.[1], item.name);
   }
   for (const advisorAdvancedProfile of [{}, { model: 'incomplete' }, null]) {
     await assert.rejects(renderArtifactPlan(context({ advisorAdvancedProfile })));
   }
   await assert.rejects(renderArtifactPlan({ ...context(), platform: undefined }));
-  await assert.rejects(renderArtifactPlan({ ...context(), platform: 'claude' }));
+  assert.equal((await renderArtifactPlan(renderContext({}, 'claude', ['skill']))).unmet.length, 2);
   const incomplete = context();
   delete incomplete.config.values.advisorGeneralProfile;
   await assert.rejects(renderArtifactPlan(incomplete), /Missing resolved config value: advisorGeneralProfile/);

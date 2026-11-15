@@ -17,11 +17,6 @@ import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.
 import { focusAction, input, nextTurn, chooseConfigSave, openConfigSave, escape } from '../helpers/tui-console-app-input.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-const mocks = vi.hoisted(() => ({ status: vi.fn() }));
-vi.mock('../../src/commands/status-v6.js', async (original) => ({
-  ...await original<typeof import('../../src/commands/status-v6.js')>(),
-  statusCommandV8: (...args: unknown[]) => mocks.status(...args),
-}));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const ref = { type: 'string', valueRef: { field: 'registry', key: 'key', label: 'label', include: ['native'] } };
 const entry = (key: string, label = 'Same') => ({ key, label });
@@ -51,6 +46,7 @@ async function setup(initial: Partial<Record<ConfigProfileKey, Record<string, Pl
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'references');
   const config = definition(external ? 'provider' : undefined);
   await createCatalogSnapshotFixture(sourceRoot, 'refs', [], 'reference fixture', (manifest) => {
+    manifest.interface = { displayName: '引用测试' };
     manifest.config = config;
     if (external) manifest.dependencies = ['provider'];
   });
@@ -58,6 +54,7 @@ async function setup(initial: Partial<Record<ConfigProfileKey, Record<string, Pl
   if (external) {
     const providerRoot = `${sourceRoot}-provider`;
     await createCatalogSnapshotFixture(providerRoot, 'provider', [], 'provider fixture', (manifest) => {
+      manifest.interface = { displayName: '来源插件' };
       manifest.config = normalizePluginConfigDefinition({ schemaVersion: 5, fields: { registry: config.fields.registry } });
     });
     await fs.copy(path.join(providerRoot, 'plugins/provider'), path.join(sourceRoot, 'plugins/provider'));
@@ -82,14 +79,6 @@ async function setup(initial: Partial<Record<ConfigProfileKey, Record<string, Pl
   ] }, expectedDigest: snapshot.digest, env: isolation.env });
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
   if (external) await syncCatalogSourceGeneration({ sourceId: 'other', cliVersion: '1.0.0', env: isolation.env });
-  mocks.status.mockResolvedValue({
-    payload: { schemaVersion: 8, catalog: { configDigest: (await readCatalogSourcesConfigSnapshot(isolation.env)).digest, compositeDigest: 'sha256:composite', primarySourceId: 'team', sources: [] }, filters: { plugins: [], platform: 'both', cwd: isolation.layout.fixtureCwd }, targets: [], errors: [] },
-    pluginSummaries: [
-      { pluginId: 'team/refs', pluginName: 'refs', sourceId: 'team', displayName: '引用测试', version: '1.0.0', configFieldCount: 7, supportedTargets: { codex: ['user', 'project'], claude: ['user', 'project'] } },
-      ...(external ? [{ pluginId: 'team/provider', pluginName: 'provider', sourceId: 'team', displayName: '来源插件', version: '1.0.0', configFieldCount: 1, supportedTargets: { codex: ['user' as const, 'project' as const], claude: ['user' as const, 'project' as const] } }] : []),
-    ],
-    targetRevisions: [], projectIntentObservation: { state: 'absent' },
-  });
   const dependencies = createTuiControllerDependencies(createCliExecutionContext({ cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false }));
   const evidence = await dependencies.captureEvidence({ kind: 'configSaveBatch', pluginId: 'team/refs', apply: false, groups: [{ scope: 'user', updates: { registry: [] } }] });
   const storeOptions = { sourceId: 'team', sourceIdentity: evidence.source!.sourceIdentity, logicalIdentity: evidence.source!.logicalIdentity, pluginName: 'refs', cwd: isolation.layout.fixtureCwd, env: isolation.env };
@@ -99,17 +88,26 @@ async function setup(initial: Partial<Record<ConfigProfileKey, Record<string, Pl
   await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
     schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['codex'], exclusions: [],
   });
-  let pendingReferences = 0;
-  const readReferences = dependencies.getConfigReferenceContext!;
-  dependencies.getConfigReferenceContext = async (...args) => {
-    pendingReferences += 1;
-    try { return await readReferences(...args); }
-    finally { pendingReferences -= 1; }
+  // Ink can restore a route before its config and reference reads finish.
+  const pendingConfigReads = new Set<Promise<unknown>>();
+  const trackConfigRead = <T,>(promise: Promise<T>): Promise<T> => {
+    pendingConfigReads.add(promise);
+    void promise.then(
+      () => pendingConfigReads.delete(promise),
+      () => pendingConfigReads.delete(promise),
+    );
+    return promise;
   };
-  const waitReferences = async () => {
+  const readConfigPage = dependencies.getConfigPage!;
+  const readReferences = dependencies.getConfigReferenceContext!;
+  dependencies.getConfigPage = (...args) => trackConfigRead(readConfigPage(...args));
+  dependencies.getConfigReferenceContext = (...args) => trackConfigRead(readReferences(...args));
+  const waitConfigReads = async () => {
     await nextTurn(4);
-    await vi.waitFor(() => expect(pendingReferences).toBe(0), { timeout: 5000 });
-    await nextTurn(4);
+    while (pendingConfigReads.size > 0) {
+      await Promise.allSettled([...pendingConfigReads]);
+      await nextTurn(4);
+    }
   };
   const captured: OperationIntent[] = [];
   const prepare = dependencies.prepareReviewEvidence!;
@@ -118,12 +116,13 @@ async function setup(initial: Partial<Record<ConfigProfileKey, Record<string, Pl
   await controller.load();
   controller.push({ name: 'configFields', pluginId: 'team/refs', layer: { profile: 'common' } });
   const ui = render(<ConsoleAppV4 controller={controller} size={{ columns: 100, rows: 36 }} />);
-  await vi.waitFor(() => expect(ui.lastFrame()).toContain('引用列表'));
+  await waitConfigReads();
+  await vi.waitFor(() => expect(ui.lastFrame()).toContain('引用列表'), { timeout: 5000 });
   const open = async (fieldKey: string, profile: ConfigProfileKey) => {
     controller.push({ name: 'configFieldEditor', pluginId: 'team/refs', layer: { profile }, fieldKey, editor: config.fields[fieldKey]!.type }, { focusIndex: 0, scrollOffset: 0 });
     await vi.waitFor(() => expect(controller.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', layer: { profile } }));
     await vi.waitFor(() => expect(ui.lastFrame()?.split('\n')[0]?.trim()).toBe(`AW / 引用测试 / 设置 / ${config.fields[fieldKey]!.title}`));
-    await waitReferences();
+    await waitConfigReads();
     await vi.waitFor(() => {
       expect(ui.lastFrame()).not.toContain('正在读取');
       expect(ui.lastFrame()).not.toContain('仅可删除旧值');
@@ -139,14 +138,14 @@ async function setup(initial: Partial<Record<ConfigProfileKey, Record<string, Pl
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
   };
   const save = async () => {
-    await waitReferences();
+    await waitConfigReads();
     await openConfigSave(ui, controller);
     await chooseConfigSave(ui, controller, 'only');
   };
   const profileOptions = (profile: ConfigProfileKey) => profile === 'common' ? {} : { platform: profile };
   const context = async (profile: ConfigProfileKey, updates: Record<string, PluginConfigValue> = {}, removes: string[] = []) =>
     controller.getConfigReferenceContext('team/refs', profileOptions(profile), { updates, removes });
-  return { ui, controller, open, choose, context, captured, config, stageSource, save, waitReferences,
+  return { ui, controller, open, choose, context, captured, config, stageSource, save, waitConfigReads,
     writeProvider: (values: Record<string, PluginConfigValue>) => writePluginConfigStore({ ...storeOptions, pluginName: 'provider', scope: 'user', values }),
     store: (profile: ConfigProfileKey) => readPluginConfigStore({ ...storeOptions, scope: 'user', ...profileOptions(profile) }) };
 
@@ -186,7 +185,7 @@ describe('profile-aware value reference choices', () => {
   });
 
   it('revalidates restored nested working values and rejects a confirmed draft after provider keys disappear', async () => {
-    const { ui, controller, open, choose, writeProvider, captured, store } = await setup({}, true);
+    const { ui, controller, open, choose, writeProvider, captured, store, waitConfigReads } = await setup({}, true);
     await open('selected', 'common');
     await choose('Same (A)');
     await open('branch', 'common');
@@ -203,6 +202,7 @@ describe('profile-aware value reference choices', () => {
     await escape(ui);
     await escape(ui);
     await vi.waitFor(() => expect(controller.snapshot.router.currentFrameId).toBe(anchor));
+    await waitConfigReads();
     await vi.waitFor(() => expect(ui.lastFrame()).toContain('已失效'));
     expect(ui.lastFrame()).toContain('provider.registry');
     await escape(ui);
@@ -231,14 +231,14 @@ describe('profile-aware value reference choices', () => {
   });
 
   it('saves common references while preserving the platform override', async () => {
-    const { ui, controller, open, choose, captured, store, waitReferences } = await setup({ common: { registry: [entry('A'), entry('a')] }, codex: { registry: [entry('P')], selected: 'P' } });
+    const { ui, controller, open, choose, captured, store, waitConfigReads } = await setup({ common: { registry: [entry('A'), entry('a')] }, codex: { registry: [entry('P')], selected: 'P' } });
     await open('selected', 'common');
     expect(ui.lastFrame()).toContain('Same (A)');
     expect(ui.lastFrame()).toContain('Same (a)');
     expect(ui.lastFrame()).not.toContain('Same (P)');
     await choose('Same (a)');
     expect(controller.snapshot.router.current.route.name).toBe('configFields');
-    await waitReferences();
+    await waitConfigReads();
     await openConfigSave(ui, controller);
     expect(captured.at(-1)).toMatchObject({ groups: [{ scope: 'user', updates: { selected: 'a' } }] });
     await chooseConfigSave(ui, controller, 'only');
@@ -247,7 +247,7 @@ describe('profile-aware value reference choices', () => {
   });
 
   it('uses cross-plugin selectors in scalar arrays, KV values, object arrays and branch leaves', async () => {
-    const { ui, controller, open, choose, captured, waitReferences } = await setup({}, true);
+    const { ui, controller, open, choose, captured, waitConfigReads } = await setup({}, true);
     await open('list', 'codex');
     await input(ui, '\r');
     await choose('Same (A)');
@@ -279,7 +279,7 @@ describe('profile-aware value reference choices', () => {
     await choose('Same (A)');
     await input(ui, 'c', 'c');
     await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('configFields'));
-    await waitReferences();
+    await waitConfigReads();
     await openConfigSave(ui, controller);
     expect(captured.at(-1)).toMatchObject({ groups: [{ updates: {
       list: ['A'], map: { primary: 'A' }, records: [{ selected: 'A' }],

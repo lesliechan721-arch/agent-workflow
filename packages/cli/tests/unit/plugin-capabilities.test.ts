@@ -25,7 +25,7 @@ describe('plugin capabilities command', () => {
     expect(result).toMatchObject({
       awVersion: expect.any(String), coreVersion: expect.any(String), surface: 'manifest',
     });
-    expect(Object.keys(result.capabilities)).toEqual(['manifest']);
+    expect(Object.keys(result.capabilities).sort()).toEqual(['manifest']);
     expect(result.capabilities.manifest).toEqual(expect.arrayContaining([
       expect.objectContaining({
         field: 'marketplace.policy.installation', type: 'enum', required: true,
@@ -42,9 +42,9 @@ describe('plugin capabilities command', () => {
       }),
       expect.objectContaining({
         field: 'platforms',
-        acceptedValues: ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic'],
-        profiles: 'codex, claude, antigravity, cursor, opencode, pi, generic',
-        requires: expect.stringContaining('all seven canonical targets'),
+        acceptedValues: ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'],
+        profiles: 'codex, claude, antigravity, cursor, opencode, pi, gemini, copilot, grok, generic',
+        requires: expect.stringContaining('all ten canonical targets'),
       }),
       expect.objectContaining({
         field: 'skills',
@@ -63,10 +63,10 @@ describe('plugin capabilities command', () => {
     expect(await runCli(['dev', 'plugin', 'capabilities', '--json'], { io: output.io })).toBe(0);
     const result = JSON.parse(output.stdout()).data;
     expect(result.surface).toBeNull();
-    expect(Object.keys(result.capabilities)).toEqual([
-      'manifest', 'build-config', 'extensions', 'slash-commands',
-      'mcp-apps', 'config', 'pre-apply', 'managed-commands', 'native-tools', 'artifacts',
-    ]);
+    expect(Object.keys(result.capabilities).sort()).toEqual([
+      'manifest', 'build-config', 'extensions', 'mcp', 'config', 'pre-apply',
+      'managed-commands', 'native-tools', 'artifacts', 'platform-components', 'platform-capabilities', 'hook-handlers',
+    ].sort());
     expect(output.stderr()).toBe('');
   });
 
@@ -87,19 +87,14 @@ describe('plugin capabilities command', () => {
       io: output.io,
     })).toBe(0);
     const result = JSON.parse(output.stdout()).data;
-    expect(result.capabilities.artifacts).toContainEqual(expect.objectContaining({
-      field: 'rendererContext.requestedArtifactIds',
-      required: true,
-      requires: 'Return exactly these declared artifacts and no other artifacts.',
-    }));
     expect(result.capabilities.artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig', owner: 'core', required: false,
-        requires: expect.stringContaining('aw.installed-runtime-config.v2') }),
-      expect.objectContaining({ field: 'artifacts.targets[].runtimeConfig.keys', required: 'with runtimeConfig' }),
+      expect.objectContaining({ field: 'artifacts.configKeys', required: true }),
+      expect.objectContaining({ field: 'rendererContext.allowedOutputKinds', required: true,
+        acceptedValues: ['skill', 'mcp', 'agent', 'hook', 'instruction'] }),
+      expect.objectContaining({ field: 'rendererContext.platformCapabilities', required: true }),
     ]));
     expect(result.capabilities.artifacts.map((entry: { field: string }) => entry.field)).not.toEqual(expect.arrayContaining([
-      'rendererContext.runtimeConfig', 'artifacts.targets[].runtimeConfig.resourceVersion', 'artifacts.targets[].runtimeConfig.artifactIds',
-      'artifacts.targets[].delivery', 'artifacts.targets[].delivery.mode', 'artifacts.targets[].delivery.identity', 'artifacts.targets[].delivery.renderProfile',
+      'artifacts.targets', 'rendererContext.requestedArtifactIds', 'rendererContext.previousArtifacts',
     ]));
   });
 

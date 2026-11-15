@@ -6,18 +6,73 @@ import { AgentManagement } from '../../src/tui/agent-management.js';
 import type { AgentSettings, AgentSettingsPreview } from '../../src/tui/agent-settings.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { createEmptyPreferences } from '../../src/intent/deployment-preferences.js';
+import { targetAvailabilityViews, TargetSelectionConfirmationRequiredError, type Availability } from '../../src/platforms/discovery.js';
 import { controller, deferred, agentSettings } from '../helpers/tui-console-app-fixture.js';
 import { input, escape, nextTurn, focusAction, acceptanceTraceStep, writeAcceptanceTrace } from '../helpers/tui-console-app-input.js';
 
 afterEach(cleanup);
-const agentNames = ['Codex', 'Claude Code', 'Antigravity', 'Cursor', 'OpenCode', 'Pi', 'Generic'];
+const agentNames = ['Codex', 'Claude Code', 'Antigravity', 'Cursor', 'OpenCode', 'Pi', 'Gemini CLI', 'GitHub Copilot CLI', 'Grok Build', 'Generic'];
 const empty = (): AgentSettings => ({ preferences: createEmptyPreferences(), revision: 'absent',
+  availability: agentSettings().availability,
   context: 'user', plugins: [{ pluginId: 'local/demo', scopes: ['user'], supportedTargets: ['codex', 'cursor'] }] });
+const observed = (states: Partial<Record<string, Availability>>, targets: AgentSettings['preferences']['targets'] = []): AgentSettings => ({ ...empty(),
+  preferences: { ...createEmptyPreferences(), targets },
+  availability: targetAvailabilityViews(PLATFORM_TARGETS.map((platform) => ({ platform,
+    availability: states[platform] ?? (platform === 'generic' ? 'notApplicable' : 'missing'), installations: [], diagnostics: [] })), targets) });
 const preview: AgentSettingsPreview = { blocked: false, reasons: [], conflicts: [], counts: { codex: 1 } };
 const callbacks = () => ({ onBack: vi.fn(), onExit: vi.fn(), onSaved: vi.fn(), onSync: vi.fn() });
 
 describe('Agent management interaction', () => {
-  it('keeps all seven selected Agents and the project visible at the minimum size', async () => {
+  // Test Value Gate: initialization must remain a draft; generic is manual and unavailable clients require a default-cancel confirmation.
+  it('preselects only available clients once and confirms new unavailable choices', async () => {
+    const settings = observed({ codex: 'available' });
+    const inspect = vi.fn(async () => preview); const save = vi.fn(async () => settings);
+    const value = controller({ previewAgentSettings: inspect, saveAgentSettings: save });
+    const instance = render(<AgentManagement controller={value} settings={settings} columns={80} rows={24} {...callbacks()} />);
+    await nextTurn(5);
+    expect(inspect.mock.calls.at(-1)?.[0].targets).toEqual(['codex']); expect(save).not.toHaveBeenCalled();
+    await input(instance, ' '); await nextTurn(3);
+    expect(inspect.mock.calls.at(-1)?.[0].targets).toEqual([]);
+    await input(instance, '\u001b[B', ' '); await nextTurn(3);
+    expect(inspect.mock.calls.at(-1)?.[0].targets).toEqual(['generic']);
+    await input(instance, '\u001b[B', ' '); expect(instance.lastFrame()).toContain('› 取消');
+    await input(instance, '\r'); await nextTurn(3);
+    expect(inspect.mock.calls.at(-1)?.[0].targets).toEqual(['generic']);
+    await input(instance, ' ', '\u001b[B', '\r'); await nextTurn(3);
+    expect(inspect.mock.calls.at(-1)?.[0].targets).toEqual(['claude', 'generic']);
+    value.dispose();
+  });
+
+  // Test Value Gate: reordered probe results cannot change the selected draft or move keyboard focus to another client.
+  it('keeps the draft and focused target when refresh reorders availability', async () => {
+    const initial = observed({ codex: 'available', cursor: 'available' });
+    const refreshed = observed({ codex: 'available' });
+    const inspect = vi.fn(async () => preview);
+    const value = controller({ previewAgentSettings: inspect, readAgentSettings: vi.fn(async () => refreshed) });
+    const instance = render(<AgentManagement controller={value} settings={initial} columns={80} rows={24} {...callbacks()} />);
+    await nextTurn(5); await input(instance, '\u001b[B', 'r'); await nextTurn(5);
+    expect(instance.lastFrame()).toContain('› ◆ Cursor');
+    expect(inspect.mock.calls.at(-1)?.[0].targets).toEqual(['codex', 'cursor']);
+    await input(instance, ' '); await nextTurn(3);
+    expect(inspect.mock.calls.at(-1)?.[0].targets).toEqual(['codex']); value.dispose();
+  });
+
+  // Test Value Gate: a client that deteriorates before saving needs an additional confirmation and cannot write on default Enter.
+  it('asks again when the save-time client check deteriorates', async () => {
+    const initial = observed({ codex: 'available' });
+    const deteriorated = observed({ codex: 'unknown' });
+    const save = vi.fn().mockRejectedValueOnce(new TargetSelectionConfirmationRequiredError([deteriorated.availability.find((item) => item.id === 'codex')!]))
+      .mockResolvedValue({ ...initial, revision: 'saved', preferences: { ...initial.preferences, targets: ['codex'] } });
+    const value = controller({ previewAgentSettings: vi.fn(async () => preview), saveAgentSettings: save });
+    const handlers = callbacks();
+    const instance = render(<AgentManagement controller={value} settings={initial} columns={80} rows={24} {...handlers} />);
+    await nextTurn(5); await input(instance, 's'); await nextTurn(5);
+    expect(instance.lastFrame()).toContain('Codex：无法确认'); expect(instance.lastFrame()).toContain('› 取消');
+    await input(instance, '\u001b[B', '\r'); await nextTurn(5);
+    expect(save.mock.calls.at(-1)?.[0].confirmedUnavailableTargets).toEqual(['codex']);
+    expect(handlers.onSaved).toHaveBeenCalledOnce(); expect(instance.lastFrame()).toContain('已保存，是否同步'); value.dispose();
+  });
+  it('keeps all selected Agents and the project visible at the minimum size', async () => {
     const value = controller({ readAgentSettings: vi.fn(async () => agentSettings([...PLATFORM_TARGETS])) });
     await value.load();
     const size = { columns: 60, rows: 18 };
@@ -58,7 +113,7 @@ describe('Agent management interaction', () => {
       columns={columns} rows={rows} {...callbacks()} />;
     const instance = render(component(60, 18));
     await nextTurn(8);
-    for (let index = 0; index < 8; index++) await input(instance, '\u001b[B');
+    for (let index = 0; index < PLATFORM_TARGETS.length + 1; index++) await input(instance, '\u001b[B');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('影响插件：demo');
     expect(instance.lastFrame()).not.toContain('/test/home');
@@ -80,7 +135,7 @@ describe('Agent management interaction', () => {
       columns={c} rows={r} {...handlers} />;
     const instance = render(component(columns, rows)); await nextTurn(5);
     for (const name of agentNames) {
-      expect(instance.lastFrame()).toContain(`› ◇ ${name}`);
+      expect(instance.lastFrame()).toContain(`› ${name === 'Generic' ? '◇' : '◆'} ${name}`);
       await input(instance, '\u001b[B');
     }
     expect(instance.lastFrame()).toContain('› 保存');
@@ -125,7 +180,7 @@ describe('Agent management interaction', () => {
   it('keeps session keys available and confirms navigation before discarding changes', async () => {
     const value = controller({ previewAgentSettings: vi.fn(async () => preview) });
     const handlers = { ...callbacks(), onHome: vi.fn(), onReload: vi.fn(), onHelp: vi.fn() };
-    const instance = render(<AgentManagement controller={value} settings={empty()}
+    const instance = render(<AgentManagement controller={value} settings={observed({}, ['codex'])}
       columns={60} rows={18} {...handlers} />);
     await nextTurn(5); await input(instance, '?', 'H', 'q');
     expect(handlers.onHelp).toHaveBeenCalledOnce(); expect(handlers.onReload).toHaveBeenCalledOnce();

@@ -8,13 +8,11 @@ import type {
 } from './types.js';
 
 export const PLATFORM_TARGETS = [
-  'codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'generic',
+  'codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic',
 ] as const satisfies readonly PlatformTarget[];
 
-export const NATIVE_PLATFORM_TARGETS = ['codex', 'claude'] as const satisfies readonly PlatformName[];
-export const PORTABLE_PLATFORM_TARGETS = [
-  'antigravity', 'cursor', 'opencode', 'pi', 'generic',
-] as const satisfies readonly PortablePlatformTarget[];
+export const NATIVE_PLATFORM_TARGETS = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok'] as const satisfies readonly PlatformName[];
+export const PORTABLE_PLATFORM_TARGETS = ['generic'] as const satisfies readonly PortablePlatformTarget[];
 
 export function isPlatformTarget(value: unknown): value is PlatformTarget {
   return typeof value === 'string' && (PLATFORM_TARGETS as readonly string[]).includes(value);

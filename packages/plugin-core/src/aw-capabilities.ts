@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 
 export const AW_CAPABILITY_IDS = [
   'aw.cli-output.v1',
-  'aw.plugin-manifest.v3',
+  'aw.plugin-manifest.v4',
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
   'aw.plugin-config.v2',
@@ -15,7 +15,7 @@ export const AW_CAPABILITY_IDS = [
   'aw.plugin-config-cross-plugin-value-ref.v1',
   'aw.plugin-config-summary.v1',
   'aw.plugin-pre-apply.v1',
-  'aw.dynamic-artifacts.v2',
+  'aw.platform-components.v3',
   'aw.managed-commands.v1',
   'aw.native-tools.v2',
   'aw.claude.sandbox-exclusions.v1',
@@ -106,7 +106,7 @@ export function createAwPluginRequirementsReceipt(
   return {
     schemaVersion: 1,
     kind: 'aw-plugin-requirements',
-    plugin,
+    plugin: { name: plugin.name, version: plugin.version },
     requiredCapabilities: normalized,
     digest: computeAwCapabilitySetDigest(normalized),
   }

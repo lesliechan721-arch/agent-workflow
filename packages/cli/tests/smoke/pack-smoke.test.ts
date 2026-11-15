@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, type TestContext
 import { getCurrentSourceTestIsolation, registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { createTestPnpmInvocation } from '../helpers/pnpm.js';
-import { TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
+import { TestCommandDiagnostics, sanitizeTestDiagnostic } from '../helpers/test-command-diagnostics.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import {
@@ -46,12 +46,19 @@ function smokeCase(body: () => Promise<void>) {
   return (_context: TestContext): Promise<void> => commands.run(body);
 }
 
-async function execFileAsync(command: string, args: string[], options: ExecFileOptions = {}) {
+type CapturedExecFileOptions = ExecFileOptions & {
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
+};
+
+async function execFileAsync(command: string, args: string[], options: CapturedExecFileOptions = {}) {
   return commands.command(command, args, {
     cwd: typeof options.cwd === 'string' ? options.cwd : undefined,
     env: options.env,
     timeoutMs: options.timeout,
     maxBuffer: options.maxBuffer,
+    onStdout: options.onStdout,
+    onStderr: options.onStderr,
   });
 }
 
@@ -314,10 +321,11 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     "const fs = require('node:fs');",
     "const path = require('node:path');",
     "const args = process.argv.slice(2);",
+    "if (process.env.AW_PACK_NATIVE_CALL_LOG) fs.appendFileSync(process.env.AW_PACK_NATIVE_CALL_LOG, JSON.stringify({ platform: 'claude', args, cwd: process.cwd() }) + '\\n');",
     "const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };",
     "const writeJson = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\\n'); };",
     "const home = process.env.CLAUDE_CONFIG_DIR;",
-    "if (args[0] === '--version') { console.log('2.1.88'); process.exit(0); }",
+    "if (args[0] === '--version') { console.log('2.1.292 (Claude Code)'); process.exit(0); }",
     "if (!home) { console.error('CLAUDE_CONFIG_DIR is required'); process.exit(2); }",
     "const scope = args.includes('--scope') ? args[args.indexOf('--scope') + 1] : 'user';",
     // Native realpath removes Windows namespace prefixes from the child cwd.
@@ -362,7 +370,8 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     "const fs = require('node:fs');",
     "const path = require('node:path');",
     "const args = process.argv.slice(2);",
-    "if (args[0] === '--version') { console.log('codex-cli 0.151.0'); process.exit(0); }",
+    "if (process.env.AW_PACK_NATIVE_CALL_LOG) fs.appendFileSync(process.env.AW_PACK_NATIVE_CALL_LOG, JSON.stringify({ platform: 'codex', args, cwd: process.cwd() }) + '\\n');",
+    "if (args[0] === '--version') { console.log('codex-cli 0.167.0'); process.exit(0); }",
     "if (args[0] === 'plugin' && args[1] === '--help') { console.log('plugin help'); process.exit(0); }",
     "const home = process.env.CODEX_HOME;",
     "if (!home) { console.error('CODEX_HOME is required'); process.exit(2); }",
@@ -433,7 +442,7 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     "  const state = readJson(statePath, { marketplaces: {}, plugins: {} });",
     "  const marketplaceRoot = state.marketplaces[marketplaceName];",
     "  const sourceRoot = path.join(marketplaceRoot, 'plugins', pluginName);",
-    "  const manifest = readJson(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), {});",
+    "  const manifest = readJson(path.join(sourceRoot, '.codex-plugin', 'plugin.json'), {});",
     "  const cacheRoot = path.join(home, 'plugins', 'cache', marketplaceName, pluginName, manifest.version);",
     "  fs.rmSync(cacheRoot, { recursive: true, force: true });",
     "  fs.mkdirSync(path.dirname(cacheRoot), { recursive: true });",
@@ -470,7 +479,7 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
       fs.writeFile(claudeLauncher, `${claudeScript}\n`, 'utf8'),
       fs.writeJson(path.join(claudePackageRoot, 'package.json'), {
         name: '@anthropic-ai/claude-code',
-        version: '2.1.88',
+        version: '2.1.292',
         bin: { claude: 'cli.js' },
       }),
       fs.writeFile(
@@ -485,7 +494,7 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
       ),
       fs.writeJson(path.join(codexPackageRoot, 'package.json'), {
         name: '@openai/codex',
-        version: '0.151.0',
+        version: '0.167.0',
         bin: { codex: 'bin/codex.js' },
       }),
       fs.writeFile(codexLauncher, `${codexScript}\n`, 'utf8'),
@@ -635,6 +644,7 @@ describe('pack smoke', () => {
       AW_HOME: path.join(tempRoot, 'external-aw-home'),
       CODEX_HOME: path.join(tempRoot, 'external-codex-home'),
       CLAUDE_CONFIG_DIR: path.join(tempRoot, 'external-claude-home'),
+      AW_PACK_NATIVE_CALL_LOG: path.join(tempRoot, 'external-native-calls.jsonl'),
       PATH: childToolPath.join(path.delimiter),
     };
     await Promise.all([
@@ -665,16 +675,21 @@ describe('pack smoke', () => {
     const installedDiscoveryImport = pathToFileURL(path.join(
       installedCliRoot, 'dist', 'src', 'utils', 'codex-executable-discovery.js',
     )).href;
+    // Fixture children keep the isolated homes without importing the CLI discovery graph.
     await fs.outputFile(discoveryPrelude, [
-      `import { setCodexDiscoveryOverridesForTests } from ${JSON.stringify(installedDiscoveryImport)};`,
-      'setCodexDiscoveryOverridesForTests({',
-      '  macApplicationsDirectories: [],',
-      "  queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }),",
-      '});',
+      "import path from 'node:path';",
+      `const awEntries = ${JSON.stringify([path.resolve(awBin), installedAwEntry])};`,
+      'if (process.argv[1] && awEntries.includes(path.resolve(process.argv[1]))) {',
+      `  const { setCodexDiscoveryOverridesForTests } = await import(${JSON.stringify(installedDiscoveryImport)});`,
+      '  setCodexDiscoveryOverridesForTests({',
+      '    macApplicationsDirectories: [],',
+      "    queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }),",
+      '  });',
+      '}',
     ].join('\n'));
     const discoveryPreludeImport = pathToFileURL(discoveryPrelude).href;
     await expect(fs.pathExists(awBin)).resolves.toBe(true);
-    const execAw = async (args: string[], options: ExecFileOptions): Promise<{ stdout: string; stderr: string }> => {
+    const execAw = async (args: string[], options: CapturedExecFileOptions): Promise<{ stdout: string; stderr: string }> => {
       const stage = `aw ${args.slice(0, 3).join(' ')}`;
       markStage(`${stage} start`);
       const commandEnv = options.env ?? process.env;
@@ -805,7 +820,7 @@ describe('pack smoke', () => {
       missingCalls: unknown[];
     };
     expect(installedManager).toMatchObject({
-      manager: { kind: 'system', version: '0.151.0' },
+      manager: { kind: 'system', version: '0.167.0' },
       missingCode: 'codexCliNotFound', missingCalls: [],
     });
     const localEntry = installedManager.manager.command === process.execPath
@@ -876,6 +891,8 @@ describe('pack smoke', () => {
     const packedPluginRoot = path.join(standaloneWorkspace, packedPluginDirectory);
     const packedManifestPath = path.join(packedPluginRoot, '.agents-plugin', 'plugin.json');
     const packedManifest = await fs.readJson(packedManifestPath);
+    expect(await fs.readJson(path.join(packedPluginRoot, '.mcp.json'))).toEqual({ mcpServers: {} });
+    packedManifest.skills = './skills';
     packedManifest.requires = { aw: { capabilities: ['aw.managed-commands.v1', 'aw.native-tools.v2'] } };
     packedManifest.managedCommands = {
       packages: [{ key: 'native-tool', scope: 'user', platforms: ['codex', 'claude'], sourceDir: './command' }],
@@ -892,6 +909,11 @@ describe('pack smoke', () => {
     packedManifest.scripts = { tests: { node: ['./scripts/native.test.mjs'] } };
     await Promise.all([
       fs.writeJson(packedManifestPath, packedManifest, { spaces: 2 }),
+      fs.outputFile(path.join(packedPluginRoot, 'skills', 'packed-native', 'SKILL.md'),
+        '---\nname: packed-native\ndescription: Installed tarball native Skill fixture.\n---\nUse this native Skill fixture.\n'),
+      fs.outputFile(path.join(packedPluginRoot, 'skills', 'packed-native', 'README.md'), '# Native Skill fixture\n'),
+      fs.outputFile(path.join(packedPluginRoot, 'skills', 'packed-native', 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n'),
       fs.outputFile(path.join(packedPluginRoot, 'command', 'entry.mjs'), [
         "import { readNativeTool } from './native-reader.mjs';",
         "if (process.platform === 'win32') readNativeTool('job', 'aw.windows-job.v1');",
@@ -954,15 +976,38 @@ describe('pack smoke', () => {
     await execAw(['target', 'set', 'codex', '--json'], {
       cwd: standaloneWorkspace, env: externalAuthoringEnv,
     });
-    const projectInstallBeforeTrust = await execAw([
-      'plugin', 'install', `${developmentSourceId}/packed-build`, '--scope', 'project', '--yes', '--json',
-    ], {
-      cwd: standaloneWorkspace,
-      env: externalAuthoringEnv,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    expect(readCommandResult(projectInstallBeforeTrust.stdout, 'plugin.install')).toMatchObject({
-      status: 'success',
+    // The fixed Codex fixture has plain Skill qualification on the six supported hosts.
+    const codexSkillQualified = ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch);
+    const privateCacheFile = path.join(externalAuthoringEnv.CODEX_HOME, 'plugins', 'cache', 'foreign', 'keep.txt');
+    await fs.outputFile(privateCacheFile, 'Keep private client content.\n');
+    const installNative = async () => {
+      let rawStdout = '';
+      let rawStderr = '';
+      const output = await execAw([
+        'plugin', 'install', `${developmentSourceId}/packed-build`, '--scope', 'project', '--yes', '--json',
+      ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024,
+        onStdout: (chunk) => { rawStdout += chunk; }, onStderr: (chunk) => { rawStderr += chunk; } }).then(
+        (value) => ({ ...value, exitCode: 0 }),
+        (error: unknown) => {
+          const failure = error as { code?: unknown };
+          if (typeof failure.code !== 'number' || !rawStdout) throw error;
+          return { exitCode: failure.code, stdout: rawStdout, stderr: rawStderr };
+        },
+      );
+      const receipt = readCommandResult(output.stdout, 'plugin.install');
+      const nativeCalls = (await fs.readFile(externalAuthoringEnv.AW_PACK_NATIVE_CALL_LOG, 'utf8')).trim().split('\n')
+        .map((line) => JSON.parse(line));
+      return { ...output, receipt, diagnostic: sanitizeTestDiagnostic(JSON.stringify({ receipt, nativeCalls }, null, 2), externalAuthoringEnv) };
+    };
+    const nativeStatePath = path.join(externalAuthoringEnv.CODEX_HOME, 'fake-plugin-state.json');
+    const readNativeState = async (): Promise<{
+      marketplaces: Record<string, string>;
+      plugins: Record<string, { pluginName: string; marketplaceName: string; version: string; path: string }>;
+    }> => await fs.pathExists(nativeStatePath) ? fs.readJson(nativeStatePath) : { marketplaces: {}, plugins: {} };
+    const projectInstallBeforeTrust = await installNative();
+    expect(projectInstallBeforeTrust.exitCode, projectInstallBeforeTrust.diagnostic).toBe(4);
+    expect(projectInstallBeforeTrust.receipt, projectInstallBeforeTrust.diagnostic).toMatchObject({
+      status: 'partial',
       data: {
         request: { scope: 'project', targets: ['codex'], targetOrigin: 'preference' },
         requirements: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
@@ -971,16 +1016,54 @@ describe('pack smoke', () => {
           pluginId: `${developmentSourceId}/packed-build`,
           target: 'codex',
           delivery: { kind: 'native', platform: 'codex' },
-          observation: 'verified',
+          observation: 'unknown',
         })]),
       },
     });
-    const projectConfigBeforeTrust = await fs.readFile(
-      path.join(standaloneWorkspace, '.codex', 'config.toml'),
-      'utf8',
-    );
-    expect(projectConfigBeforeTrust).toContain('[plugins."packed-build@aw"]');
-    expect(projectConfigBeforeTrust).toContain('enabled = true');
+    const codexBeforeTrust = projectInstallBeforeTrust.receipt.data.targetResults.find((target: { target: string }) => target.target === 'codex');
+    const nativeBeforeTrust = await readNativeState();
+    const installedNativeEntry = Object.entries(nativeBeforeTrust.plugins);
+    let nativePluginId: string | undefined;
+    let nativePackageRoot: string | undefined;
+    let nativePackageFiles: string[] | undefined;
+    if (codexSkillQualified) {
+      expect(installedNativeEntry).toHaveLength(1);
+      const [id, nativePlugin] = installedNativeEntry[0]!;
+      nativePluginId = id;
+      nativePackageRoot = nativePlugin.path;
+      expect(id).toBe(`packed-build@${nativePlugin.marketplaceName}`);
+      expect(nativePlugin.marketplaceName).toMatch(new RegExp(`^aw-${developmentSourceId}-[a-f0-9]{12}$`, 'u'));
+      expect(nativePackageRoot).toBe(path.join(nativeBeforeTrust.marketplaces[nativePlugin.marketplaceName]!, 'plugins', 'packed-build'));
+      expect(codexBeforeTrust, projectInstallBeforeTrust.diagnostic).toMatchObject({ execution: 'partial', deploymentReceipts: expect.arrayContaining([
+        expect.objectContaining({ after: expect.objectContaining({ package: 'present', registration: 'present', ownership: 'aw',
+          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', trust: 'unknown' })]) }) }),
+      ]) });
+      expect(await fs.readJson(path.join(nativePackageRoot, '.agent-workflows-owner.json'))).toMatchObject({
+        schemaVersion: 3, owner: 'agent-workflows', sourceId: developmentSourceId,
+        pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'user',
+        sourceIdentity: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        physicalKey: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        nativeProjection: { components: expect.arrayContaining([expect.objectContaining({
+          id: 'skill:packed-native', nativeName: 'packed-native',
+          relativeOutputs: expect.arrayContaining(['skills/packed-native/SKILL.md']),
+        })]) },
+      });
+      expect(await fs.readJson(path.join(nativePackageRoot, '.codex-plugin', 'plugin.json'))).toMatchObject({ name: 'packed-build', version: '0.1.0' });
+      const projectConfigBeforeTrust = await fs.readFile(path.join(standaloneWorkspace, '.codex', 'config.toml'), 'utf8');
+      expect(projectConfigBeforeTrust).toContain(`[plugins.${JSON.stringify(id)}]`);
+      expect(projectConfigBeforeTrust).toContain('enabled = true');
+      nativePackageFiles = await listFilesRecursively(nativePackageRoot);
+    } else {
+      expect(installedNativeEntry).toEqual([]);
+      expect(codexBeforeTrust).toMatchObject({ execution: 'not-run', blockerCodes: ['noSupportedComponents'] });
+      expect(codexBeforeTrust).not.toHaveProperty('deploymentReceipts');
+      expect(codexBeforeTrust.deploymentPlans).toEqual(expect.arrayContaining([
+        expect.objectContaining({ effects: [], expected: expect.objectContaining({ components: [], unmet: expect.arrayContaining([
+          expect.objectContaining({ id: 'skill:packed-native', kind: 'skill', reasonCode: 'capability-unverified' }),
+        ]) }) }),
+      ]));
+      expect(await fs.pathExists(path.join(standaloneWorkspace, '.codex', 'config.toml'))).toBe(false);
+    }
     await fs.appendFile(path.join(externalAuthoringEnv.CODEX_HOME, 'config.toml'), [
       '',
       `[projects.${JSON.stringify(await fs.realpath(standaloneWorkspace))}]`,
@@ -990,19 +1073,10 @@ describe('pack smoke', () => {
     await execAw(['target', 'set', 'codex', 'claude', '--json'], {
       cwd: standaloneWorkspace, env: externalAuthoringEnv,
     });
-    const externalInstall = await execAw([
-      'plugin', 'install', `${developmentSourceId}/packed-build`,
-      '--scope', 'project', '--yes', '--json',
-    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch(async (error: unknown) => {
-      const failure = error as { stdout?: string; stderr?: string };
-      const claudeInstalled = await fs.readJson(path.join(
-        externalAuthoringEnv.CLAUDE_CONFIG_DIR, 'plugins', 'installed_plugins.json',
-      )).catch(() => null);
-      const projectPath = await fs.realpath(standaloneWorkspace);
-      throw new Error(`Packed project install failed. stdout=${failure.stdout ?? ''} stderr=${failure.stderr ?? ''} fixture=${JSON.stringify({ projectPath, claudeInstalled })}`);
-    });
-    expect(readCommandResult(externalInstall.stdout, 'plugin.install')).toMatchObject({
-      status: 'success',
+    const externalInstall = await installNative();
+    expect(externalInstall.exitCode, externalInstall.diagnostic).toBe(codexSkillQualified ? 4 : 3);
+    expect(externalInstall.receipt, externalInstall.diagnostic).toMatchObject({
+      status: codexSkillQualified ? 'partial' : 'blocked',
       data: {
         request: { scope: 'project', targets: expect.arrayContaining(['codex', 'claude']), targetOrigin: 'preference' },
         requirements: { state: 'valid', roots: [`${developmentSourceId}/packed-build`] },
@@ -1010,34 +1084,51 @@ describe('pack smoke', () => {
         targetResults: expect.arrayContaining([
           expect.objectContaining({
             pluginId: `${developmentSourceId}/packed-build`, target: 'codex',
-            delivery: { kind: 'native', platform: 'codex' }, observation: 'verified',
+            delivery: { kind: 'native', platform: 'codex' }, observation: codexSkillQualified ? 'verified' : 'unknown',
           }),
           expect.objectContaining({
             pluginId: `${developmentSourceId}/packed-build`, target: 'claude',
-            delivery: { kind: 'native', platform: 'claude' }, observation: 'verified',
+            delivery: { kind: 'native', platform: 'claude' }, observation: 'unknown',
+            execution: 'not-run', blockerCodes: ['noSupportedComponents'],
+            deploymentPlans: expect.arrayContaining([expect.objectContaining({ effects: [],
+              expected: expect.objectContaining({ components: [], unmet: expect.arrayContaining([expect.objectContaining({ id: 'skill:packed-native', kind: 'skill',
+                reasonCode: 'capability-unverified', requiredFeatures: [{ feature: 'component.kind.skill' }] })]),
+              }),
+            })]),
           }),
         ]),
       },
     });
-    const projectCodexConfig = await fs.readFile(
-      path.join(standaloneWorkspace, '.codex', 'config.toml'),
-      'utf8',
-    );
-    expect(projectCodexConfig).toContain('[plugins."packed-build@aw"]');
-    expect(projectCodexConfig).not.toContain('mcp_servers');
+    expect(externalInstall.receipt.data.targetResults.find((target: { target: string }) => target.target === 'claude'))
+      .not.toHaveProperty('deploymentReceipts');
+    if (codexSkillQualified) {
+      const projectCodexConfig = await fs.readFile(path.join(standaloneWorkspace, '.codex', 'config.toml'), 'utf8');
+      expect(projectCodexConfig).toContain(`[plugins.${JSON.stringify(nativePluginId)}]`);
+      expect(projectCodexConfig).not.toContain('mcp_servers');
+      expect(await listFilesRecursively(nativePackageRoot!)).toEqual(nativePackageFiles);
+      expect((await readNativeState()).plugins[nativePluginId!]?.path).toBe(nativePackageRoot);
+    } else {
+      expect((await readNativeState()).plugins).toEqual({});
+      expect(await fs.pathExists(path.join(standaloneWorkspace, '.codex', 'config.toml'))).toBe(false);
+    }
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.codex', 'hooks.json')))
       .resolves.toBe(false);
-    await expect(fs.pathExists(path.join(
-      externalAuthoringEnv.CODEX_HOME,
-      'plugins',
-      'cache',
-      'aw',
-      'packed-build',
-      '0.1.0',
-      '.codex-plugin',
-      'plugin.json',
-    ))).resolves.toBe(true);
-    await expect(fs.pathExists(path.join(standaloneWorkspace, '.claude', 'settings.json'))).resolves.toBe(true);
+    expect(await fs.readFile(privateCacheFile, 'utf8')).toBe('Keep private client content.\n');
+    for (const file of [path.join(standaloneWorkspace, '.claude', 'settings.json'),
+      path.join(standaloneWorkspace, '.claude', 'settings.local.json'),
+      path.join(externalAuthoringEnv.CLAUDE_CONFIG_DIR, 'plugins', 'installed_plugins.json'),
+      path.join(externalAuthoringEnv.CLAUDE_CONFIG_DIR, 'plugins', 'known_marketplaces.json')]) {
+      expect(await fs.pathExists(file), file).toBe(false);
+    }
+    const nativeCalls = (await fs.readFile(externalAuthoringEnv.AW_PACK_NATIVE_CALL_LOG, 'utf8')).trim().split('\n')
+      .map((line) => JSON.parse(line) as { platform: string; args: string[]; cwd: string });
+    expect(nativeCalls.filter((call) => call.platform === 'claude' && call.args[0] === 'plugin' && call.args[1] !== 'list')).toEqual([]);
+    if (codexSkillQualified) {
+      expect(nativeCalls).toContainEqual(expect.objectContaining({ platform: 'codex', args: ['plugin', 'add', nativePluginId] }));
+    } else {
+      expect(nativeCalls.filter((call) => call.platform === 'codex' && call.args[0] === 'plugin'
+        && !['list', '--help'].includes(call.args[1]!))).toEqual([]);
+    }
     await expect(fs.readJson(path.join(externalAuthoringEnv.AW_HOME, 'catalog-sources.json')))
       .resolves.toMatchObject({
         schemaVersion: 2,
@@ -1047,14 +1138,25 @@ describe('pack smoke', () => {
           managedBy: expect.objectContaining({ kind: 'catalog-workspace' }),
         })]),
       });
-    const claudeInstalledPlugins = await fs.readJson(
-      path.join(externalAuthoringEnv.CLAUDE_CONFIG_DIR, 'plugins', 'installed_plugins.json'),
-    ) as { plugins: Record<string, Array<Record<string, unknown>>> };
-    expect(Object.values(claudeInstalledPlugins.plugins).flat()).toContainEqual(expect.objectContaining({
-      name: 'packed-build',
-      scope: 'project',
-      projectPath: await fs.realpath(standaloneWorkspace),
-    }));
+    // Independent command packages do not require a qualified Native component.
+    const nativePackageSync = await execAw([
+      'command', 'package', 'sync', `${developmentSourceId}/packed-build`, 'native-tool',
+      '--scope', 'user', '--yes', '--json',
+    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    expect(readCommandResult(nativePackageSync.stdout, 'command.package.sync')).toMatchObject({ status: 'success' });
+    const commandList = await execAw(['command', 'list', '--json'], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    const managedCommands = readCommandResult(commandList.stdout, 'command.list');
+    const nativeCommand = managedCommands.data.commands.find((command: { name: string }) => command.name === 'native-tools/run/default');
+    expect(nativeCommand).toMatchObject({ availability: 'ready', owner: { kind: 'plugin', producer: {
+      kind: 'package', key: 'native-tool', sourceId: developmentSourceId, pluginName: 'packed-build', scope: 'user', platform: null,
+    } } });
+    expect(await fs.pathExists(path.join(nativeCommand.resourceRoot, 'native-reader.mjs'))).toBe(true);
+    const commandRun = await execAw(['command', 'run', nativeCommand.id, '--', 'packed-argument'], {
+      cwd: standaloneWorkspace, env: externalAuthoringEnv,
+    });
+    expect(JSON.parse(commandRun.stdout)).toEqual(['packed-argument']);
+    const nativeStateBeforeDeactivate = await readNativeState();
+    const nativeCommandBeforeDeactivate = await fs.readFile(path.join(nativeCommand.resourceRoot, 'entry.mjs'));
     const developmentSourceRemoval = await execAw([
       'dev', 'source', 'deactivate', '--workspace-root', standaloneWorkspace, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
@@ -1076,6 +1178,9 @@ describe('pack smoke', () => {
         },
       },
     });
+    expect(await readNativeState()).toEqual(nativeStateBeforeDeactivate);
+    expect(await fs.readFile(path.join(nativeCommand.resourceRoot, 'entry.mjs'))).toEqual(nativeCommandBeforeDeactivate);
+    expect(await fs.readFile(privateCacheFile, 'utf8')).toBe('Keep private client content.\n');
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.aw', 'catalog'))).resolves.toBe(true);
     const packedCatalogRemote = path.join(tempRoot, 'packed-catalog.git');
     registerSmokeWritableRoot(packedCatalogRemote, 'packed CLI Catalog publication remote');
@@ -1162,17 +1267,39 @@ describe('pack smoke', () => {
       data: { request: { scope: 'user', mode: 'requirements-only' }, requirements: { roots: ['packed/packed-build'] }, targetResults: [] },
     });
     expect(await fs.readFile(projectIntentPath, 'utf8')).toBe(projectIntentBeforeUserRecovery);
+    let consumedStatusStdout = '';
+    let consumedStatusStderr = '';
     const consumedStatus = await execAw([
       'plugin', 'status', '--context', 'user', '--json',
-    ], { cwd: tempRoot, env: packedConsumerEnv });
-    expect(readCommandResult(consumedStatus.stdout, 'plugin.status')).toMatchObject({
-      status: 'success',
+    ], { cwd: tempRoot, env: packedConsumerEnv,
+      onStdout: (chunk) => { consumedStatusStdout += chunk; },
+      onStderr: (chunk) => { consumedStatusStderr += chunk; } }).then(
+      (value) => ({ ...value, exitCode: 0 }),
+      (error: unknown) => {
+        const failure = error as { code?: unknown };
+        if (typeof failure.code !== 'number' || !consumedStatusStdout) throw error;
+        return { exitCode: failure.code, stdout: consumedStatusStdout, stderr: consumedStatusStderr };
+      },
+    );
+    expect(consumedStatus.exitCode).toBe(codexSkillQualified ? 0 : 3);
+    const consumedStatusReceipt = readCommandResult(consumedStatus.stdout, 'plugin.status');
+    expect(consumedStatusReceipt).toMatchObject({
+      status: codexSkillQualified ? 'success' : 'blocked',
       data: {
         context: 'user', requirements: { state: 'valid' },
         inventory: expect.arrayContaining([expect.objectContaining({ pluginId: 'packed/packed-build' })]),
       },
     });
-    expect(consumedStatus.stderr).toBe('');
+    if (!codexSkillQualified) {
+      expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
+      expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({
+        code: 'nativeTrustUnconfirmed', severity: 'warning',
+        subject: { pluginId: 'packed/packed-build', target: 'codex', scope: 'user' },
+      }));
+    }
+    expect(consumedStatus.stderr).toBe(codexSkillQualified ? ''
+      : 'capability-unverified: The operation could not complete (capability-unverified).\n'
+        + 'nativeTrustUnconfirmed: The native client effective trust state could not be observed. Registration and activation do not establish trust.\n');
     const packedRemoval = await execAw([
       'dev', 'plugin', 'remove', 'packed-build',
       '--workspace-root', standaloneWorkspace, '--yes', '--json',
@@ -1216,7 +1343,7 @@ describe('pack smoke', () => {
     const portablePluginRoot = path.join(authorRepo, 'plugins', 'validate-fixture');
     const portableManifestPath = path.join(portablePluginRoot, '.agents-plugin', 'plugin.json');
     const portableManifest = await fs.readJson(portableManifestPath);
-    portableManifest.platforms = ['cursor'];
+    portableManifest.platforms = ['generic'];
     portableManifest.skills = './skills';
     delete portableManifest.extensions;
     await fs.writeJson(portableManifestPath, portableManifest, { spaces: 2 });
@@ -1240,11 +1367,11 @@ describe('pack smoke', () => {
     const portableCatalog = path.join(tempRoot, 'portable-path-catalog');
     await Promise.all([
       fs.outputFile(
-        path.join(portableCatalog, 'plugins', 'portable-pack', 'cursor', 'skills', 'packed-portable', 'SKILL.md'),
+        path.join(portableCatalog, 'plugins', 'portable-pack', 'generic', 'skills', 'packed-portable', 'SKILL.md'),
         '---\nname: packed-portable\ndescription: Installed tarball command fixture.\n---\n\n# Packed portable\n',
       ),
       fs.outputFile(
-        path.join(portableCatalog, 'plugins', 'portable-pack', 'cursor', 'skills', 'packed-portable', 'README.md'),
+        path.join(portableCatalog, 'plugins', 'portable-pack', 'generic', 'skills', 'packed-portable', 'README.md'),
         '# Installed tarball command fixture\n',
       ),
     ]);
@@ -1254,7 +1381,7 @@ describe('pack smoke', () => {
       [],
       '# Portable pack plugin\n',
       (manifest) => {
-        manifest.platforms = ['cursor'];
+        manifest.platforms = ['generic'];
         manifest.skills = './skills';
       },
     );
@@ -1263,7 +1390,7 @@ describe('pack smoke', () => {
     await fs.outputJson(
       path.join(
         catalogPortablePluginRoot,
-        'cursor',
+        'generic',
         'skills',
         'packed-portable',
         'aw-plugin-requirements.json',
@@ -1309,19 +1436,19 @@ describe('pack smoke', () => {
     expect(portableSourceSync.stderr).toBe('');
     await execAw([
       'dev', 'skill', 'export', 'local/portable-pack',
-      '--platform', 'cursor', '--scope', 'project', '--out', materializedOut,
+      '--platform', 'generic', '--scope', 'project', '--out', materializedOut,
     ], { cwd: portableCwd, env: portableEnv });
     await expect(fs.readJson(path.join(materializedOut, '.aw-materialization.json')))
       .resolves.toMatchObject({
         schemaVersion: 1,
         plugin: { id: 'local/portable-pack', version: '1.0.0' },
         scope: 'project',
-        platform: 'cursor',
+        platform: 'generic',
       });
 
-    // Keep the installed tarball's real Portable writer in the external smoke boundary.
+    // Keep the installed tarball's real generic Skill writer in the external smoke boundary.
     await execFileAsync('git', ['init'], { cwd: portableCwd, env: portableEnv });
-    await execAw(['target', 'set', 'cursor', '--context', 'user', '--json'], {
+    await execAw(['target', 'set', 'generic', '--context', 'user', '--json'], {
       cwd: portableCwd, env: portableEnv,
     });
     const portableInstall = await execAw([
@@ -1330,17 +1457,17 @@ describe('pack smoke', () => {
     expect(readCommandResult(portableInstall.stdout, 'plugin.install')).toMatchObject({
       status: 'success',
       data: {
-        request: { scope: 'project', targets: ['cursor'], targetOrigin: 'preference' },
+        request: { scope: 'project', targets: ['generic'], targetOrigin: 'preference' },
         requirements: { state: 'valid', roots: ['local/portable-pack'] },
         targetResults: expect.arrayContaining([expect.objectContaining({
-          pluginId: 'local/portable-pack', target: 'cursor', scope: 'project',
-          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'cursor' },
+          pluginId: 'local/portable-pack', target: 'generic', scope: 'project',
+          delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
           observation: 'verified',
         })]),
       },
     });
     expect(portableInstall.stderr).toBe('');
-    const installedPortableRoot = path.join(portableCwd, '.cursor', 'skills', 'packed-portable');
+    const installedPortableRoot = path.join(portableCwd, '.agents', 'skills', 'packed-portable');
     expect((await fs.lstat(installedPortableRoot)).isSymbolicLink()).toBe(false);
     expect(await fs.readFile(path.join(installedPortableRoot, 'SKILL.md'), 'utf8'))
       .toBe(await fs.readFile(path.join(materializedOut, 'skills', 'packed-portable', 'SKILL.md'), 'utf8'));
@@ -1627,42 +1754,41 @@ describe('pack smoke', () => {
     })).resolves.toMatchObject({ stdout: `${packageManager}\n`, stderr: '' });
   }));
 
-  it('bundles public slashCommands correctly from the unpacked tarball runtime', smokeCase(async () => {
+  it('bundles manually invoked Skills from the unpacked tarball runtime', smokeCase(async () => {
     const root = repoRoot();
     const packageRoot = path.join(root, 'packages', 'cli');
     const { packageRoot: unpackedPackageRoot, tempRoot } = await preparePackedCli();
     const tempRepo = path.join(tempRoot, 'repo');
     const outputRoot = path.join(tempRoot, 'plugins-dist');
-    registerSmokeWritableRoot(tempRepo, 'pack smoke slash commands repo root');
-    registerSmokeWritableRoot(outputRoot, 'pack smoke slash commands output root');
+    registerSmokeWritableRoot(tempRepo, 'pack smoke manual Skill repo root');
+    registerSmokeWritableRoot(outputRoot, 'pack smoke manual Skill output root');
     await fs.copy(fixturePath('repo-template'), tempRepo);
-    await fs.copy(
-      fixturePath('codex-project-repo-managed', 'plugins', 'slashCommands-only'),
-      path.join(tempRepo, 'plugins', 'slash-commands-only'),
-    );
+    const sourceRoot = path.join(tempRepo, 'plugins', 'manual-review-only');
+    await fs.outputJson(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 4, name: 'manual-review-only', version: '1.0.0', description: 'A manually invoked review Skill.',
+      platforms: ['codex', 'claude'], skills: './skills',
+      marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+    });
+    const skill = '---\nname: review\ndescription: Review the caller request.\ndisable-model-invocation: true\n---\nReview the caller request.\n';
+    await fs.outputFile(path.join(sourceRoot, 'README.md'), '# Manual Review\n');
+    await fs.outputFile(path.join(sourceRoot, 'skills/review/SKILL.md'), skill);
+    await fs.outputFile(path.join(sourceRoot, 'skills/review/README.md'), '# Manual Review\n');
+    await fs.outputFile(path.join(sourceRoot, 'skills/review/agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n');
 
     await installDeclaredDependencyOnlyView(unpackedPackageRoot, packageRoot);
     await installCurrentSmokeDistIsolationBridge(unpackedPackageRoot);
-
     const { bundlePlugins } = (await import(
       pathToFileURL(path.join(unpackedPackageRoot, 'dist', 'scripts', 'bundle-plugins.js')).href
     )) as { bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown> };
     await bundlePlugins({ repoRoot: tempRepo, outputRoot });
 
-    const pluginRoot = path.join(outputRoot, 'plugins', 'slash-commands-only');
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'claude', 'commands', 'review.md')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'codex', 'skills', 'review', 'agents', 'openai.yaml')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'slash-commands', 'review.md')),
-    ).resolves.toBe(false);
-    await expect(
-      fs.readFile(path.join(pluginRoot, 'codex', 'skills', 'review', 'SKILL.md'), 'utf8'),
-    ).resolves.not.toContain('$ARGUMENTS');
-
+    const pluginRoot = path.join(outputRoot, 'plugins', 'manual-review-only');
+    for (const platform of ['claude', 'codex']) {
+      await expect(fs.readFile(path.join(pluginRoot, platform, 'skills/review/SKILL.md'), 'utf8')).resolves.toBe(skill);
+      await expect(fs.readFile(path.join(pluginRoot, platform, 'skills/review/agents/openai.yaml'), 'utf8'))
+        .resolves.toContain('allow_implicit_invocation: false');
+    }
+    await expect(fs.readFile(path.join(pluginRoot, 'skills/review/SKILL.md'), 'utf8')).resolves.toBe(skill);
     const { validateBundleLayout } = (await import(
       pathToFileURL(path.join(unpackedPackageRoot, 'dist', 'src', 'utils', 'bundle-layout.js')).href
     )) as { validateBundleLayout: (rootDir: string) => Promise<void> };

@@ -1,0 +1,421 @@
+#!/usr/bin/env node
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { clients, repoRoot, sha256, prepareEnvironment, execute, assertCommand,
+  acquireClient, renderPackage, verifyCandidate, writeCandidate, hostInfo, processManagementInfo, fixedClientVersion } from './native-platform-runtime.mjs';
+import { qualifyClient } from './native-platform-clients.mjs';
+import { qualifyPublicAw } from './native-platform-public-aw.mjs';
+import { executePublicAw } from './native-platform-public-process.mjs';
+
+const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw]';
+class Unverified extends Error {}
+
+export function parseArgs(args) {
+  const options = {};
+  const names = new Set(['candidate', 'client', 'report', 'executable', 'write-candidate', 'source-sha']);
+  for (let index = 0; index < args.length; index++) {
+    const key = args[index].replace(/^--/u, '');
+    if (!args[index].startsWith('--') || Object.hasOwn(options, key)) throw new Error('invalid-arguments');
+    if (key === 'install' || key === 'public-aw') { options[key] = true; continue; }
+    if (!names.has(key) || !args[index + 1] || args[index + 1].startsWith('--')) throw new Error('invalid-arguments');
+    options[key] = args[++index];
+  }
+  if (options['write-candidate']) {
+    if (Object.keys(options).length !== 2 || !options['source-sha']) throw new Error('invalid-arguments');
+    return options;
+  }
+  if (!options.candidate || !options.report || !(options.client === 'all' || Object.hasOwn(clients, options.client))
+    || Boolean(options.install) === Boolean(options.executable)
+    || options.executable && (options.client === 'all' || !path.isAbsolute(options.executable))
+    || Object.keys(options).some((key) => ['write-candidate', 'source-sha'].includes(key))) throw new Error('invalid-arguments');
+  return options;
+}
+
+export function redact(value, root, clientBin) {
+  const replace = (text) => {
+    for (const [directory, label] of [[root, '<TEMP_ROOT>'], [clientBin, '<CLIENT_BIN>'], [os.homedir(), '<HOST_HOME>']]) {
+      if (!directory) continue;
+      const escaped = JSON.stringify(directory).slice(1, -1);
+      for (const spelling of [directory, directory.replaceAll('\\', '/'), escaped, JSON.stringify(escaped).slice(1, -1)]) {
+        text = text.replaceAll(spelling, label);
+      }
+    }
+    return text;
+  };
+  if (typeof value === 'string') return replace(value).slice(0, 4000);
+  if (Array.isArray(value)) return value.map((item) => redact(item, root, clientBin));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redact(item, root, clientBin)]));
+  return value;
+}
+
+export function versionFrom(output) {
+  return /(?:^|\s)v?(\d+\.\d+\.\d+)(?=$|\s|\(|\.(?:\s|$))/u.exec(output.trim())?.[1] ?? null;
+}
+
+export function aggregateQualificationStatus(statuses) {
+  const required = statuses.filter(status => status !== 'excluded');
+  if (!required.length) return statuses.length ? 'excluded' : 'unverified';
+  if (required.some(status => status === 'failed')) return 'failed';
+  return required.every(status => status === 'passed') ? 'passed' : 'unverified';
+}
+
+// Discovery observations do not grade management, consumer content or scope.
+// Their commands retain the same process safety gates as required checks.
+export async function observeQualification(report, id, action, root, clientBin) {
+  const observation = { id, status: 'failed' };
+  report.observations.push(observation);
+  const start = report.commands.length;
+  const processFailed = () => report.commands.slice(start).some(command =>
+    Object.hasOwn(command, 'processFailure') || command.timedOut || command.maxBufferExceeded
+    || command.cancelled || command.terminationReason && command.terminationReason !== 'complete');
+  try {
+    const evidence = await action() ?? {};
+    if (processFailed()) throw new Error('observation-process-failed');
+    observation.evidence = redact(evidence, root, clientBin);
+    observation.status = 'observed';
+    return { status: observation.status, evidence: observation.evidence };
+  } catch (error) {
+    observation.reason = redact(error?.message ?? 'observation-unverified', root, clientBin);
+    if (processFailed() || error && typeof error === 'object'
+      && ['processTreeDiagnostics', 'publicAwProcessDiagnostics'].some(key => Object.hasOwn(error, key))) {
+      if (error instanceof Unverified) throw new Error('observation-process-failed', { cause: error });
+      throw error;
+    }
+    observation.status = 'unverified';
+    return { status: observation.status, reason: observation.reason };
+  }
+}
+
+// The raw command preview remains bounded. Preserve selected failure facts from
+// the complete public JSON before that preview truncates a deployment receipt.
+export function publicAwFailureSummary(stdout) {
+  let value;
+  try { value = JSON.parse(stdout); } catch { return { state: 'invalid-json' }; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { state: 'invalid-json' };
+  const list = (items, limit) => Array.isArray(items) ? items.slice(0, limit) : [];
+  const fields = (item, keys) => Object.fromEntries(keys.filter((key) => typeof item?.[key] === 'string')
+    .map((key) => [key, item[key]]));
+  const diagnostics = (items) => list(items, 8).map((item) => fields(item, ['code', 'severity', 'message']));
+  return { state: 'parsed', ...fields(value, ['command', 'status']), diagnostics: diagnostics(value.diagnostics),
+    targets: list(value.data?.targetResults, 4).map((target) => ({
+      ...fields(target, ['pluginId', 'target', 'scope', 'execution', 'observation', 'content']),
+      blockerCodes: list(target?.blockerCodes, 8).filter((item) => typeof item === 'string'),
+      receipts: list(target?.deploymentReceipts, 4).map((receipt) => ({
+        after: { ...fields(receipt?.after, ['package', 'registration', 'ownership']),
+          nativeIdentity: fields(receipt?.after?.nativeIdentity, ['route', 'packageId', 'registrationId', 'sourceLocation']) },
+        diagnostics: diagnostics(receipt?.diagnostics),
+        effects: list(receipt?.effects, 8).map((effect) => ({ ...fields(effect, ['id', 'status', 'mutation']),
+          diagnostics: diagnostics(effect?.diagnostics) })),
+      })),
+    })),
+  };
+}
+
+async function readManagedTrace(file) {
+  if (!file) return undefined;
+  const records = [];
+  try {
+    if ((await fs.stat(file)).size > 256 * 1024) return { state: 'over-limit', records };
+    const lines = (await fs.readFile(file, 'utf8')).split('\n').filter((line) => line.trim());
+    if (lines.length > 256) return { state: 'over-limit', records };
+    for (const line of lines) {
+      try { records.push(JSON.parse(line)); }
+      catch { return { state: 'partial-or-invalid-jsonl', records }; }
+    }
+    return { state: 'captured', records };
+  } catch (error) { return { state: error.code === 'ENOENT' ? 'not-created' : 'unavailable', records }; }
+}
+
+// Observe only this isolated fixture's generated marketplace entries, using
+// the same parser as ownership inspection. Never retain the complete config.
+export async function readQualificationCodexSources(home) {
+  const sources = [];
+  if (typeof home !== 'string' || !path.isAbsolute(home)) return { state: 'invalid-path', sources };
+  try {
+    const file = path.join(home, 'config.toml');
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) return { state: 'unavailable', sources };
+    if (stat.size > 1024 * 1024) return { state: 'over-limit', sources };
+    const { readCodexConfigFile } = await import('../../packages/cli/dist/src/utils/codex-config.js');
+    const { snapshot } = await readCodexConfigFile(file);
+    const selected = Object.entries(snapshot.marketplaces).filter(([name]) => /^aw-qualification-[a-f0-9]{12}$/u.test(name));
+    for (const [name, value] of selected.slice(0, 4)) {
+      const absolute = typeof value.source === 'string' && path.isAbsolute(value.source);
+      sources.push({ name, source: absolute ? value.source.slice(0, 2048) : null,
+        sourceFormat: absolute ? 'absolute' : typeof value.source === 'string' ? 'other' : 'absent',
+        sourceType: typeof value.sourceType === 'string' ? value.sourceType.slice(0, 64) : null,
+        sourcePointsToManifest: value.sourcePointsToManifest });
+    }
+    return { state: 'captured-parser-projection', sources, omitted: Math.max(0, selected.length - 4) };
+  } catch (error) { return { state: error.code === 'ENOENT' ? 'missing' : 'unavailable', sources }; }
+}
+
+export async function runScope(platform, scope, launcher, options = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
+  const report = { scope, input: options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate', status: 'failed', checks: [], observations: [], commands: [], cleanup: 'pending' };
+  try {
+    const env = await prepareEnvironment(root);
+    const project = path.join(root, 'project');
+    const neutral = path.join(root, 'neutral');
+    const marketplace = path.join(root, 'source');
+    await fs.mkdir(project);
+    assertCommand(await execute({ executable: 'git', prefix: [] },
+      ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env }));
+    await fs.mkdir(neutral);
+    const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
+      pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
+      bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
+      recordCommand(command) { report.commands.push(redact(command, root, options.clientBin)); },
+      async command(args, cwd = project, commandOptions = {}) {
+        let result;
+        try {
+          result = await execute(launcher, args, { cwd, env, stdin: commandOptions.input,
+            nativeClient: platform, captureProcessNames: platform === 'copilot' });
+        } catch (error) {
+          report.commands.push(redact({ args, cwd, processFailure: error?.message,
+            processDiagnostics: error?.processTreeDiagnostics ?? error?.publicAwProcessDiagnostics ?? [],
+            ...(error?.qualificationProcessNames?.length || error?.publicAwProcessNames?.length
+              ? { processNames: error.qualificationProcessNames ?? error.publicAwProcessNames } : {}),
+            ...(error?.qualificationMarkerRows?.length ? { markerRows: error.qualificationMarkerRows } : {}),
+            ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
+            ...(error?.publicAwProcessQueryTimings ? { processQueryTimings: error.publicAwProcessQueryTimings } : {}),
+            ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
+              terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
+              cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
+          throw error;
+        }
+        report.commands.push(redact({ args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
+          ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
+          cancelled: result.cancelled, terminationReason: result.terminationReason,
+          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
+          processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
+            descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
+        if (!commandOptions.allowFailure) assertCommand(result);
+        return result;
+      },
+      async rpc(cwd = project) {
+        let result;
+        try {
+          result = await execute({ executable: process.execPath, prefix: [path.join(repoRoot, 'scripts/qualification/native-platform-rpc.mjs')] }, [], {
+            cwd, env, timeoutMs: 25_000, stdin: JSON.stringify({ platform, launcher, cwd }),
+          });
+        } catch (error) {
+          report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
+            ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
+            cwd, processFailure: error?.message, processDiagnostics: error?.processTreeDiagnostics ?? [],
+            ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
+              terminationReason: error.result.terminationReason, timedOut: error.result.timedOut,
+              cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
+          throw error;
+        }
+        report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
+          ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
+          cwd, exitCode: result.exitCode, timedOut: result.timedOut, maxBufferExceeded: result.maxBufferExceeded,
+          cancelled: result.cancelled, terminationReason: result.terminationReason, stderr: result.stderr }, root, options.clientBin));
+        assertCommand(result);
+        return JSON.parse(result.stdout);
+      },
+      async aw(args, cwd = project, commandOptions = {}) {
+        const expectedExitCode = commandOptions.expectedExitCode ?? 0;
+        const expectedStatus = commandOptions.expectedStatus ?? 'success';
+        const bootstrapArgs = ['plugin', 'install', `qualification/${ctx.pluginName}`, '--scope', 'user', '--target', 'grok', '--yes'];
+        const trustBootstrap = options.publicAw && platform === 'grok' && scope === 'user'
+          && expectedExitCode === 4 && expectedStatus === 'partial'
+          && args.length === bootstrapArgs.length && args.every((arg, index) => arg === bootstrapArgs[index]);
+        if ((expectedExitCode !== 0 || expectedStatus !== 'success') && !trustBootstrap) {
+          throw new Error('public-aw-unexpected-command-expectation');
+        }
+        const trace = ['linux', 'darwin', 'win32'].includes(process.platform) && ['codex', 'pi', 'claude', 'gemini', 'copilot'].includes(platform)
+          && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
+        const traceFile = trace ? path.join(root, `managed-native-${report.commands.length}.jsonl`) : undefined;
+        const sourceDiagnostic = trace && platform === 'codex' && process.platform === 'win32';
+        const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
+          AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform,
+          AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
+          AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([launcher.prefix[0] ?? launcher.executable, ctx.publicClientEntry].filter(Boolean)) } : env;
+        let result;
+        try {
+          result = await executePublicAw({ executable: process.execPath, prefix: [
+            ...(trace ? ['--import', pathToFileURL(path.join(repoRoot, 'scripts/qualification/native-platform-managed-trace.mjs')).href] : []),
+            path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 60_000 });
+        } catch (error) {
+          report.commands.push(redact({ aw: args, cwd, processFailure: error?.message,
+            ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
+            ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}),
+            processDiagnostics: error?.publicAwProcessDiagnostics ?? [],
+            ...(error?.publicAwProcessNames ? { processNames: error.publicAwProcessNames } : {}),
+            ...(error?.publicAwMarkerRows ? { markerRows: error.publicAwMarkerRows } : {}),
+            ...(error?.publicAwProcessQueryTimings ? { processQueryTimings: error.publicAwProcessQueryTimings } : {}),
+            ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
+            ...(error?.result ? { exitCode: error.result.exitCode, terminationReason: error.result.terminationReason,
+              stdout: error.result.stdout, stderr: error.result.stderr,
+              failureSummary: publicAwFailureSummary(error.result.stdout) } : {}) }, root, options.clientBin));
+          throw error;
+        }
+        report.commands.push(redact({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
+          ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
+          ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
+          cancelled: result.cancelled, terminationReason: result.terminationReason,
+          maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
+          ...(result.exitCode !== 0 || result.timedOut || result.maxBufferExceeded
+            ? { failureSummary: publicAwFailureSummary(result.stdout),
+              ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}) } : {}),
+          processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
+            descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
+        if (trustBootstrap) {
+          if (result.timedOut) throw new Error('command-timeout');
+          if (result.maxBufferExceeded) throw new Error('command-output-limit');
+          if (result.exitCode !== expectedExitCode) throw new Error('public-aw-unexpected-exit-code');
+        } else assertCommand(result);
+        if (result.cancelled || result.terminationReason !== 'complete') throw new Error('public-aw-command-incomplete');
+        const value = JSON.parse(result.stdout);
+        if (value.schemaVersion !== 1 || value.status !== expectedStatus) throw new Error('public-aw-command-not-successful');
+        return value;
+      },
+      async check(id, action) {
+        const check = { id, status: 'failed' }; report.checks.push(check);
+        try {
+          const evidence = await action() ?? {};
+          check.evidence = redact(evidence, root, options.clientBin);
+          check.status = 'passed';
+          return evidence;
+        }
+        catch (error) { check.reason = redact(error?.message ?? 'check-failed', root, options.clientBin); throw error; }
+      },
+      async observe(id, action) { return observeQualification(report, id, action, root, options.clientBin); },
+      async defer(reason) { throw new Unverified(reason); },
+      async render(revision) {
+        return revision === 1 ? renderPackage(ctx, revision)
+          : ctx.check('aw-candidate-refresh-projection', () => renderPackage(ctx, revision));
+      },
+    };
+    await ctx.check('client-version', async () => {
+      const result = await ctx.command(['--version']);
+      const actual = versionFrom(result.stdout);
+      if (actual !== fixedClientVersion(platform)) throw new Error('client-version-mismatch');
+      return { version: actual };
+    });
+    if (options.publicAw) await qualifyPublicAw(ctx);
+    else {
+      const initialProjection = await ctx.check('aw-candidate-projection', () => ctx.render(1));
+      if (platform === 'opencode') ctx.initialProjection = initialProjection;
+      await qualifyClient(ctx);
+    }
+    report.status = 'passed';
+  } catch (error) {
+    report.status = error instanceof Unverified ? 'unverified' : 'failed';
+    report.reason = redact(error?.message ?? 'qualification-failed', root, options.clientBin);
+    report.remaining = 'not-run-after-incomplete-scenario';
+  } finally {
+    try { await fs.rm(root, { recursive: true, force: true }); report.cleanup = 'completed'; }
+    catch (error) {
+      report.cleanup = 'failed'; report.status = 'failed';
+      report.cleanupError = redact({ code: error?.code, syscall: error?.syscall, path: error?.path }, root, options.clientBin);
+    }
+  }
+  return report;
+}
+
+export async function run(options) {
+  const report = { schemaVersion: 2, kind: 'aw-native-hosted-qualification', status: 'failed',
+    acceptancePolicy: { id: 'management-content-scope-v1',
+      required: ['management', 'dynamic-consumer-content', 'scope-isolation', 'process-safety', 'cleanup'],
+      nonBlocking: ['skill-loading', 'model-adoption'],
+      excluded: 'official-client-distribution-unavailable' },
+    createdAt: new Date().toISOString(), environment: hostInfo(),
+    run: { id: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
+    boundary: { credentials: 'not-provided', modelRequests: 'none', clients: 'real',
+      input: 'current-aw-projection-candidate', productionQualificationChanged: false,
+      publicAwRequested: Boolean(options['public-aw']),
+      processNameDiagnostics: ['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
+        && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1' ? 'hosted-private-identity-ucomm' : 'disabled',
+      nativeCopilotDarwinObservation: process.platform === 'darwin'
+        ? 'observed-marker-and-identity-audit-not-provider-grading-or-os-containment' : 'not-applicable',
+      nativeOpenCodeObservation: process.platform === 'win32' ? 'existing-windows-job; actual-process-result-fields'
+        : 'authorized-observed-marker-PID-start-deadline-descendant-exit-cleanup; not-provider-grading-or-os-containment',
+      publicAwNativeTrace: ['linux', 'darwin', 'win32'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
+        && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1'
+        ? 'node-import-trace-of-selected-client-entries-not-uninstrumented-performance-evidence' : 'disabled',
+      publicAwProcessManagement: process.platform === 'win32' ? 'windows-job'
+        : 'observed-marker-and-identity-audit-not-provider-grading-or-os-containment',
+      runtimeNetwork: 'blocked-proxy-not-os-firewall', installNetwork: options.install ? 'public-npm' : 'none',
+      processManagement: process.platform === 'win32'
+        ? 'client-windows-job-download-bounded-child'
+        : 'client-verified-observed-download-bounded-child-not-os-containment' },
+    uncovered: ['public-aw-install-end-to-end', 'model-invocation', 'skill-invocation-controls', 'mcp-execution',
+      'hook-execution', 'agents-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
+      'antigravity', 'cursor'], clients: [],
+    uncoveredReasons: { cursor: 'tested-workspace-hook-requires-authentication',
+      antigravity: 'fixed-distribution-and-unauthenticated-interface-not-verified' },
+  };
+  try {
+    report.candidate = await verifyCandidate(options.candidate);
+    report.processManagement = await processManagementInfo();
+    report.harnessSha256 = sha256(await fs.readFile(fileURLToPath(import.meta.url)));
+    for (const platform of options.client === 'all' ? Object.keys(clients) : [options.client]) {
+      const result = { platform, requiredVersion: clients[platform].version, status: 'failed', scopes: [] };
+      report.clients.push(result);
+      if (platform === 'grok' && (process.platform === 'darwin' && process.arch === 'x64'
+        || process.platform === 'win32' && process.arch === 'arm64')) {
+        result.status = 'excluded'; result.reason = 'official-client-distribution-unavailable'; continue;
+      }
+      let installRoot;
+      try {
+        let launcher;
+        let clientBin;
+        if (options.install) {
+          installRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-client-')));
+          const acquired = await acquireClient(platform, installRoot);
+          launcher = acquired.launcher; clientBin = acquired.binDirectory; result.acquisition = acquired.acquisition;
+        } else {
+          const entry = await fs.realpath(options.executable);
+          launcher = { executable: entry, prefix: [] };
+          result.acquisition = { method: 'provided-executable', entrySha256: sha256(await fs.readFile(entry)) };
+        }
+        for (const scope of ['user', 'project']) result.scopes.push(await runScope(platform, scope, launcher));
+        if (options['public-aw']) {
+          result.publicAw = [];
+          for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin }));
+        }
+        const scopes = [...result.scopes, ...(result.publicAw ?? [])];
+        result.status = aggregateQualificationStatus(scopes.map(scope => scope.status));
+      } catch (error) {
+        result.reason = /^[a-z][a-z-]+$/u.test(error?.message ?? '') ? error.message : 'client-acquisition-or-execution-failed';
+        if (error.evidence && installRoot) result.evidence = redact(error.evidence, installRoot);
+      } finally {
+        if (installRoot) {
+          try { await fs.rm(installRoot, { recursive: true, force: true }); result.acquisitionCleanup = 'completed'; }
+          catch (error) {
+            result.acquisitionCleanup = 'failed'; result.status = 'failed';
+            result.acquisitionCleanupError = redact({ code: error?.code, syscall: error?.syscall, path: error?.path }, installRoot);
+          }
+        }
+      }
+    }
+    report.status = aggregateQualificationStatus(report.clients.map(client => client.status));
+  } catch (error) {
+    report.reason = /^[a-z][a-z-]+$/u.test(error?.message ?? '') ? error.message : 'candidate-or-harness-failed';
+  }
+  await fs.mkdir(path.dirname(path.resolve(options.report)), { recursive: true });
+  await fs.writeFile(options.report, JSON.stringify(report, null, 2) + '\n');
+  return report;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const options = parseArgs(process.argv.slice(2));
+    if (options['write-candidate']) await writeCandidate(options['write-candidate'], options['source-sha']);
+    else {
+      const report = await run(options);
+      console.log(JSON.stringify({ status: report.status, clients: report.clients.map(({ platform, status }) => ({ platform, status })) }));
+      process.exitCode = ['passed', 'excluded'].includes(report.status) ? 0 : 1;
+    }
+  } catch (error) {
+    console.error(`${error?.message === 'invalid-arguments' ? usage : 'Qualification setup failed.'}`);
+    process.exitCode = 1;
+  }
+}

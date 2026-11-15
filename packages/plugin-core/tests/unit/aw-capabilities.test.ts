@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   AW_CAPABILITY_IDS,
+  createAwPluginRequirementsReceipt,
+  NATIVE_PLATFORM_TARGETS,
   checkAwCapabilitySupport,
   computeAwCapabilitySetDigest,
   deriveAwCapabilitiesFromManifest,
@@ -25,7 +27,7 @@ afterEach(async () => {
 
 function manifest(overrides: Record<string, unknown> = {}): NormalizedPluginManifest {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     name: 'example',
     version: '1.0.0',
     description: 'Example.',
@@ -64,6 +66,15 @@ describe('AW capability contracts', () => {
     ]))
   })
 
+  it('derives Portable support only for generic and projects exact receipt plugin identity', () => {
+    for (const platform of NATIVE_PLATFORM_TARGETS) expect(deriveAwCapabilitiesFromManifest(manifest({ platforms: [platform] }))).not.toContain('aw.portable-skills.v1')
+    expect(deriveAwCapabilitiesFromManifest(manifest({ platforms: ['generic'] }))).toContain('aw.portable-skills.v1')
+    const source = manifest({ config: { fields: { secret: { type: 'string', sensitive: true } } } })
+    const receipt = createAwPluginRequirementsReceipt(source, [])
+    expect(receipt.plugin).toEqual({ name: source.name, version: source.version })
+    expect(() => parseAwPluginRequirementsReceipt(receipt)).not.toThrow()
+  })
+
   it('accepts unknown valid capabilities as exchange data and validates receipt digests', () => {
     expect(checkAwCapabilitySupport(
       ['aw.future-feature.v3', 'aw.plugin-skills.v1'],
@@ -98,12 +109,12 @@ describe('AW capability contracts', () => {
       },
       config: { fields: {} },
       scripts: { preApply: { path: './scripts/pre-apply.mjs' } },
-      artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', platform: 'codex', states: ['present'], refreshKeys: [] }] },
+      artifacts: { configKeys: [] },
     }))).toEqual([
-      'aw.dynamic-artifacts.v2',
+      'aw.platform-components.v3',
       'aw.plugin-build-config.v1',
       'aw.plugin-config.v2',
-      'aw.plugin-manifest.v3',
+      'aw.plugin-manifest.v4',
       'aw.plugin-pre-apply.v1',
       'aw.plugin-skills.v1',
       'aw.portable-skills.v1',
@@ -111,19 +122,11 @@ describe('AW capability contracts', () => {
     ])
   })
 
-  // Test Value Gate: a v2 runtime consumer requires a CLI with the new reader contract.
-  it('derives v2 installed runtime capability and rejects v1-only support', () => {
-    const capabilities = deriveAwCapabilitiesFromManifest(manifest({
-      config: { fields: { displayStyle: { type: 'string' } } },
-      artifacts: { targets: [{ id: 'tool', scopes: ['user'], platform: 'codex', target: 'codex.skill',
-        skillKey: 'tool', states: ['present'], refreshKeys: ['displayStyle'],
-        runtimeConfig: { keys: ['displayStyle'] },
-      }] },
-    }))
-    expect(capabilities).toContain('aw.installed-runtime-config.v2')
-    expect(capabilities).not.toContain('aw.installed-runtime-config.v1')
-    expect(checkAwCapabilitySupport(capabilities, capabilities.filter((capability) => capability !== 'aw.installed-runtime-config.v2')
-      .concat(['aw.installed-runtime-config.v1']))).toEqual({ supported: false, missing: ['aw.installed-runtime-config.v2'] })
+  it('keeps installed runtime configuration as an explicit dynamic component permission', () => {
+    const required = deriveAwCapabilitiesFromManifest(manifest({ requires: { aw: { capabilities: ['aw.installed-runtime-config.v2'] } }, artifacts: { configKeys: [] } }))
+    expect(required).toContain('aw.platform-components.v3')
+    expect(required).not.toContain('aw.installed-runtime-config.v2')
+    // Dynamic runtimeConfig is checked when the actual complete Skill collection is available.
   })
 
   it('scans only shell fences in actual Skill mains and static Manifest executables', async () => {
@@ -359,13 +362,13 @@ describe('AW capability contracts', () => {
         skills: './skills',
         requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
       }),
-      implementedCapabilities: ['aw.plugin-manifest.v3', 'aw.plugin-skills.v1'],
+      implementedCapabilities: ['aw.plugin-manifest.v4', 'aw.plugin-skills.v1'],
     })
 
     expect(result.detected).toEqual(['aw.catalog-publication.v2', 'aw.cli-output.v1'])
     expect(result.effective).toEqual([
       'aw.future-feature.v3',
-      'aw.plugin-manifest.v3',
+      'aw.plugin-manifest.v4',
       'aw.plugin-skills.v1',
     ])
     expect(result.unsupportedByCurrentAw).toEqual(['aw.future-feature.v3'])

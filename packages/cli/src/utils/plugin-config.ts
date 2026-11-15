@@ -63,15 +63,6 @@ export type PluginConfigIssueType =
   | 'invalid-config';
 type PluginConfigStorePathAccess = 'read' | 'write';
 
-export function codexNativeRefreshKeys(
-  manifest: NormalizedPluginManifest,
-): ReadonlySet<string> {
-  return new Set((manifest.artifacts?.targets ?? []).flatMap((target) =>
-    target.platform === 'codex'
-      && target.target === 'codex.skill'
-      ? target.refreshKeys
-      : []));
-}
 
 export interface PluginConfigIssue {
   type: PluginConfigIssueType;
@@ -1688,7 +1679,6 @@ export async function resolveProjectArtifactRenderConfig(options: {
   manifest: NormalizedPluginManifest;
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  refreshKeys?: readonly string[];
 }): Promise<ResolvedProjectArtifactRenderConfig> {
   if (!options.manifest.config?.fields) {
     const pluginName = assertSafePluginConfigSegment(options.pluginName ?? options.manifest.name);

@@ -13,10 +13,9 @@ import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('Portable scope capability through Catalog recovery', () => {
-  // Test Value Gate: the public recovery result must retain a complete unsupported
-  // dependency path, save Intent, and leave every renderer and output untouched.
+  // Test Value Gate: an out-of-scope renderer contributes no component; in-scope consumers still install and status stays read-only.
   it.each(['root', 'dependency'] as const)(
-    'reports a user-only dynamic %s as unsupported for a project requirement', async (unsupported) => {
+    'omits a user-only dynamic %s from a generic project requirement', async (unsupported) => {
       const isolation = getCurrentSourceTestIsolation();
       const cwd = isolation.layout.fixtureCwd;
       const env = isolation.env;
@@ -25,20 +24,23 @@ describe('Portable scope capability through Catalog recovery', () => {
       const names = unsupported === 'dependency' ? ['root', 'leaf'] : ['root'];
       const renderMarker = path.join(cwd, 'renderer-started');
       for (const name of names) {
+        const plan = { version: 3, components: [{ id: 'skill', kind: 'skill', name,
+          content: { files: { 'SKILL.md': { text: `---\nname: ${name}\ndescription: Test skill\n---\nUse ${name}.\n` },
+            'README.md': { text: `Use ${name}.\n` } } } }],
+        omitted: [], unmet: [] };
         await fs.outputFile(path.join(sourceRoot, 'plugins', name, 'render.mjs'),
-          `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(renderMarker)}, ${JSON.stringify(name)});\n`
-          + 'throw new Error("Unsupported project closure must not render");\n');
+          `import fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(renderMarker)}, ${JSON.stringify(name + '\n')});\n`
+          + `console.log(${JSON.stringify(JSON.stringify(plan))});\n`);
       }
       await createDependencyCatalogSnapshotFixture(sourceRoot, names.map((name) => ({
         name,
         dependencies: name === 'root' && unsupported === 'dependency' ? ['leaf'] : [],
         configureManifest: (manifest) => {
-          manifest.platforms = ['cursor'];
+          manifest.platforms = ['generic'];
           delete manifest.extensions;
           manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
-          manifest.artifacts = { targets: [{ id: name, platform: 'cursor', distribution: 'agent-skills',
-            target: 'agent-skills.skill', scopes: [name === 'root' && unsupported === 'dependency' ? 'project' : 'user'],
-            states: ['present'], refreshKeys: [], skillKey: name }] };
+          manifest.artifacts = { configKeys: [],
+            scopes: [name === 'root' && unsupported === 'dependency' ? 'project' : 'user'] };
         },
       })));
       const current = await readCatalogSourcesConfigSnapshot(env);
@@ -48,7 +50,7 @@ describe('Portable scope capability through Catalog recovery', () => {
       await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
       const options = { cwd, env, cliVersion: '1.0.0', context: 'project' as const,
         scope: 'project' as const, yes: true };
-      await setTargets(options, ['cursor']);
+      await setTargets(options, ['generic']);
       const preferencesPath = await resolvePreferencesPath(options);
       const preferences = await fs.readFile(preferencesPath);
 
@@ -56,29 +58,35 @@ describe('Portable scope capability through Catalog recovery', () => {
 
       expect(result, JSON.stringify(result)).toMatchObject({ ok: true, allSatisfied: true,
         declarationChanged: true, preferencesChanged: false, configChanged: false,
-        outputsMayHaveChanged: false, remainingTargets: [], blockers: [], errors: [] });
+        outputsMayHaveChanged: unsupported === 'dependency', remainingTargets: [], blockers: [], errors: [] });
       const target = result.targetResults.find((entry) => entry.pluginId === 'team/root');
-      expect(target).toMatchObject({ agent: 'cursor', scope: 'project', delivery: null,
-        satisfaction: 'unsupported', execution: 'no-op', observation: 'verified', blockers: [] });
-      const reason = target?.reasons?.find((entry) => entry.code === 'deliveryUnsupported');
-      const dependencyPath = unsupported === 'dependency' ? 'team/root → team/leaf' : 'team/root';
-      expect(reason?.message).toContain(dependencyPath);
-      expect(reason?.message).toContain('project');
-      expect(reason?.message).toContain('cursor');
+      expect(target).toMatchObject({ agent: 'generic', scope: 'project',
+        delivery: { kind: 'agent-skills', provider: 'aw', agentId: 'generic' },
+        content: 'satisfied', execution: unsupported === 'dependency' ? 'applied' : 'no-op',
+        observation: 'verified', blockers: [] });
       expect(result.recoveryActions.some((action) => action.includes('plugin sync'))).toBe(false);
       const savedIntent = await observeIntent(options);
       expect(savedIntent).toMatchObject({ state: 'valid', value: { roots: [{ pluginId: 'team/root' }] } });
 
+      const rendered = await fs.readFile(renderMarker, 'utf8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return '';
+        throw error;
+      });
+      expect(rendered).toBe(unsupported === 'dependency' ? 'root\n' : '');
       const status = await readRecoveryStatus(options);
 
       expect(status).toMatchObject({ allSatisfied: true, errors: [] });
       const observed = status.inventory?.find((entry) => entry.pluginId === 'team/root')?.targetResults[0];
-      expect(observed).toMatchObject({ satisfaction: 'unsupported', blockers: [], reasons: [reason] });
+      expect(observed).toMatchObject({ content: 'satisfied', blockers: [] });
       expect(await observeIntent(options)).toEqual(savedIntent);
       expect(await fs.readFile(preferencesPath)).toEqual(preferences);
-      expect(await fs.pathExists(renderMarker)).toBe(false);
-      expect(await fs.pathExists(path.join(cwd, '.cursor', 'skills'))).toBe(false);
-      expect(await fs.pathExists(path.join(env.HOME!, '.cursor', 'skills'))).toBe(false);
+      expect(await fs.readFile(renderMarker, 'utf8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return '';
+        throw error;
+      })).toBe(rendered);
+      expect(await fs.pathExists(path.join(cwd, '.agents', 'skills', 'root', 'SKILL.md'))).toBe(unsupported === 'dependency');
+      expect(await fs.pathExists(path.join(cwd, '.agents', 'skills', 'leaf'))).toBe(false);
+      expect(await fs.pathExists(path.join(env.HOME!, '.agents', 'skills'))).toBe(false);
     }, 30_000,
   );
 });

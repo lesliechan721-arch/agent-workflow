@@ -1,15 +1,15 @@
-import crypto from 'node:crypto'
-import os from 'node:os'
-import path from 'node:path'
+import crypto from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 
-import fs from 'fs-extra'
-import { afterEach, describe, expect, it } from 'vitest'
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   canonicalJson,
   computeEvalProviderDigest,
   type SelectedCasesDocument,
-} from '@lesliechan721/agent-skill-eval'
-import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core'
+} from '@lesliechan721/agent-skill-eval';
+import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core';
 
 import {
   readAwSourceBinding,
@@ -18,76 +18,104 @@ import {
   validateAwSourceBindingForWorkspace,
   writeAwSourceBinding,
   type AwSourceBindingWorkspaceValidationContext,
-} from '../../src/review/source-binding.js'
-import type { PluginMeta } from '../../src/types.js'
+} from '../../src/review/source-binding.js';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
+import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
+import type { PluginMeta } from '../../src/types.js';
 
-const roots: string[] = []
-const digest = `sha256:${'a'.repeat(64)}`
+const roots: string[] = [];
+const digest = `sha256:${'a'.repeat(64)}`;
 
 async function tempRoot(): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-source-binding-'))
-  roots.push(root)
-  return root
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-source-binding-'));
+  roots.push(root);
+  return root;
 }
 
 const unusedContext = {
   workspace: {},
   source: { kind: 'workspace', workspaceIdentity: 'unused', sourceIdentity: digest },
-} as AwSourceBindingWorkspaceValidationContext
+} as AwSourceBindingWorkspaceValidationContext;
+
+function preparation() {
+  const capabilities = getAuthoringPlatformCapabilities('generic', 'project');
+  return [{
+plugin: 'fixture', platform: 'generic' as const, renderScope: 'project' as const, profileId: capabilities.profileId,
+    capabilitiesDigest: artifactValueDigest(capabilities), expectedDigest: digest, resourceDigest: digest, renderInputDigest: digest, outputs: [],
+    components: [{ id: 'skill:fixture', kind: 'skill' as const, name: 'fixture', source: 'static' as const }], omitted: [], unmet: []
+}];
+}
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => fs.remove(root)))
-})
+  await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+});
 
 describe('AW source binding', () => {
   it('accepts explicit config for same-source Eval dependencies and binds their defaults', () => {
-    const marketplace = { category: 'test', strict: true,
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }
-    const consumer = { rootDir: '/consumer', manifestPath: '/consumer/.agents-plugin/plugin.json', manifest: {
-      name: 'consumer', platforms: ['codex'], marketplace, dependencies: ['provider'], config: normalizePluginConfigDefinition({
-        schemaVersion: 4, fields: { selected: { type: 'string', default: 'native',
-          valueRef: { plugin: 'provider', field: 'registry', key: 'key', include: ['native'] } } },
-      }, 'config', { plugin: 'consumer', dependencies: ['provider'] }),
-    } } as PluginMeta
-    const provider = { rootDir: '/provider', manifestPath: '/provider/.agents-plugin/plugin.json', manifest: {
-      name: 'provider', platforms: ['codex'], marketplace, config: normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
-        registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
-          type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
-        } },
-      } }), artifacts: { targets: [{ id: 'native', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-        refreshKeys: ['registry'] }] },
-    } } as PluginMeta
-    const profile = { id: 'cross-reference', platform: 'codex' as const, scope: 'project' as const, plugins: [{ name: 'consumer', config: {} }] }
-    const defaults = resolveEvalProfileBindingInput(profile, [consumer, provider])
+    const marketplace = {
+      category: 'test', strict: true,
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' }
+    };
+    const consumer = {
+      rootDir: '/consumer', manifestPath: '/consumer/.agents-plugin/plugin.json', manifest: {
+        name: 'consumer', platforms: ['codex'], marketplace, dependencies: ['provider'], config: normalizePluginConfigDefinition({
+          schemaVersion: 5, fields: {
+            selected: {
+              type: 'string', default: 'native',
+              valueRef: { plugin: 'provider', field: 'registry', key: 'key', include: ['native'] }
+            }
+          },
+        }, 'config', { plugin: 'consumer', dependencies: ['provider'] }),
+      }
+    } as PluginMeta;
+    const provider = {
+      rootDir: '/provider', manifestPath: '/provider/.agents-plugin/plugin.json', manifest: {
+        name: 'provider', platforms: ['codex'], marketplace, config: normalizePluginConfigDefinition({
+          schemaVersion: 5, fields: {
+            registry: {
+              type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
+                type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
+              }
+            },
+          }
+        }), artifacts: { configKeys: ['registry'] },
+      }
+    } as PluginMeta;
+    const profile = { id: 'cross-reference', platform: 'codex' as const, scope: 'project' as const, plugins: [{ name: 'consumer', config: {} }] };
+    const defaults = resolveEvalProfileBindingInput(profile, [consumer, provider]);
     expect(() => resolveEvalProfileBindingInput(profile, [consumer, provider], { consumer: { selected: 'remote' } }))
-      .toThrow(/provider\/registry/u)
-    const config = { consumer: { selected: 'remote' }, provider: { registry: [{ key: 'remote' }] } }
-    const resolved = resolveEvalProfileBindingInput(profile, [consumer, provider], config)
-    expect(resolved.profile).toMatchObject({ config })
+      .toThrow(/provider\/registry/u);
+    const config = { consumer: { selected: 'remote' }, provider: { registry: [{ key: 'remote' }] } };
+    const resolved = resolveEvalProfileBindingInput(profile, [consumer, provider], config);
+    expect(resolved.profile).toMatchObject({ config });
     expect(resolved.materializationProfile.plugins).toContainEqual({
-      name: 'provider', configByScope: { user: config.provider },
-    })
+      name: 'provider', configByScope: { user: config.provider, project: config.provider },
+    });
     expect(() => resolveEvalProfileBindingInput(profile, [consumer, provider], { foreign: { key: 'remote' } }))
-      .toThrow(/dependency closure/u)
-    const changed = structuredClone(provider)
-    changed.manifest.config!.fields.registry!.default = [{ key: 'new-default' }]
+      .toThrow(/dependency closure/u);
+    const changed = structuredClone(provider);
+    changed.manifest.config!.fields.registry!.default = [{ key: 'new-default' }];
     expect(resolveEvalProfileBindingInput(profile, [consumer, changed]).profile.inputDigest)
-      .not.toBe(defaults.profile.inputDigest)
-  })
+      .not.toBe(defaults.profile.inputDigest);
+  });
 
-  it('binds one effective author config for the explicit platform and selected profile scope', () => {
+  it('binds each fixed physical render scope without replacing shared user config with project config', () => {
     const plugin = {
       rootDir: '/fixture', manifestPath: '/fixture/.agents-plugin/plugin.json',
       manifest: {
         name: 'fixture', platforms: ['codex'],
-        marketplace: { category: 'test', strict: true,
-          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-        config: { fields: {
-          common: { type: 'string', required: true }, selected: { type: 'string', required: true },
-          settings: { type: 'object', properties: { first: { type: 'string' }, second: { type: 'string' } }, additionalProperties: false },
-        } },
+        marketplace: {
+          category: 'test', strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' }
+        },
+        config: {
+          fields: {
+            common: { type: 'string', required: true }, selected: { type: 'string', required: true },
+            settings: { type: 'object', properties: { first: { type: 'string' }, second: { type: 'string' } }, additionalProperties: false },
+          }
+        },
       },
-    } as PluginMeta
+    } as PluginMeta;
     const profile = {
       id: 'selected', platform: 'codex' as const, scope: 'project' as const,
       plugins: [{ name: 'fixture', config: { common: 'base', selected: 'base', settings: { first: 'base', second: 'base' } } }],
@@ -95,24 +123,28 @@ describe('AW source binding', () => {
         project: [{ name: 'fixture', config: { selected: 'project', settings: { first: 'project' } } }],
         user: [{ name: 'fixture', config: { selected: 'user' } }],
       },
-    }
-    const first = resolveEvalProfileBindingInput(profile, [plugin])
+    };
+    const first = resolveEvalProfileBindingInput(profile, [plugin]);
     expect(first.materializationProfile).toEqual({
       id: 'selected', platform: 'codex', scope: 'project',
-      plugins: [{ name: 'fixture', configByScope: { user: {
-        common: 'base', selected: 'project', settings: { first: 'project' },
-      } } }],
-    })
-    const shadowed = structuredClone(profile)
-    shadowed.configByScope.user[0]!.config.selected = 'changed-user'
-    expect(resolveEvalProfileBindingInput(shadowed, [plugin]).profile.inputDigest).toBe(first.profile.inputDigest)
-    const changed = resolveEvalProfileBindingInput(profile, [plugin], { fixture: { selected: 'explicit' } })
-    expect(changed.profile.inputDigest).not.toBe(first.profile.inputDigest)
-    expect(changed.materializationProfile.plugins[0]!.configByScope.user!.selected).toBe('explicit')
-  })
+      plugins: [{
+        name: 'fixture', configByScope: {
+          user: {
+            common: 'base', selected: 'user', settings: { first: 'base', second: 'base' },
+          }, project: { common: 'base', selected: 'project', settings: { first: 'project' } }
+        }
+      }],
+    });
+    const shadowed = structuredClone(profile);
+    shadowed.configByScope.user[0]!.config.selected = 'changed-user';
+    expect(resolveEvalProfileBindingInput(shadowed, [plugin]).profile.inputDigest).not.toBe(first.profile.inputDigest);
+    const changed = resolveEvalProfileBindingInput(profile, [plugin], { fixture: { selected: 'explicit' } });
+    expect(changed.profile.inputDigest).not.toBe(first.profile.inputDigest);
+    expect(changed.materializationProfile.plugins[0]!.configByScope.user!.selected).toBe('explicit');
+  });
 
   it('reports a missing legacy receipt as incomplete', async () => {
-    const root = await tempRoot()
+    const root = await tempRoot();
     await expect(validateAwSourceBindingForWorkspace({
       bindingPath: path.join(root, 'aw-source-binding.json'),
       context: unusedContext,
@@ -122,49 +154,51 @@ describe('AW source binding', () => {
       binding: null,
       outputs: [],
       issues: [{ code: 'sourceBindingMissing', message: 'AW source binding receipt is missing.' }],
-    })
-  })
+    });
+  });
 
   it('rejects artifact paths outside the materialization root', async () => {
-    const root = await tempRoot()
+    const root = await tempRoot();
     await expect(writeAwSourceBinding({
       rootDir: root,
+      preparation: preparation(),
       source: { kind: 'workspace', workspaceIdentity: 'fixture', sourceIdentity: digest },
       subject: { plugin: 'fixture' },
       profile: {
         kind: 'portable', id: 'generic-project', platform: 'generic', scope: 'project', inputDigest: digest,
       },
       artifacts: [{ kind: 'portable-skill', plugin: 'fixture', skill: 'fixture', path: '../outside' }],
-    })).rejects.toThrow('safe relative POSIX path')
-    await expect(fs.pathExists(path.join(root, 'aw-source-binding.json'))).resolves.toBe(false)
-  })
+    })).rejects.toThrow('safe relative POSIX path');
+    await expect(fs.pathExists(path.join(root, 'aw-source-binding.json'))).resolves.toBe(false);
+  });
 
   it('rejects a v1 receipt and tells the user to materialize it again', async () => {
-    const root = await tempRoot()
+    const root = await tempRoot();
     await fs.outputFile(
       path.join(root, 'skills', 'fixture', 'SKILL.md'),
       '---\nname: fixture\ndescription: fixture\n---\nBody.\n',
-    )
+    );
     const written = await writeAwSourceBinding({
       rootDir: root,
+      preparation: preparation(),
       source: { kind: 'workspace', workspaceIdentity: 'fixture', sourceIdentity: digest },
       subject: { plugin: 'fixture' },
       profile: {
         kind: 'portable', id: 'generic-project', platform: 'generic', scope: 'project', inputDigest: digest,
       },
       artifacts: [{ kind: 'portable-skill', plugin: 'fixture', skill: 'fixture', path: 'skills/fixture' }],
-    })
-    const receipt = await fs.readJson(written.bindingPath)
-    expect(receipt.schemaVersion).toBe(2)
-    receipt.schemaVersion = 1
-    const unsigned = { ...receipt }
-    delete unsigned.finalDigest
-    receipt.finalDigest = `sha256:${crypto.createHash('sha256').update(canonicalJson(unsigned)).digest('hex')}`
-    await fs.writeJson(written.bindingPath, receipt)
+    });
+    const receipt = await fs.readJson(written.bindingPath);
+    expect(receipt.schemaVersion).toBe(2);
+    receipt.schemaVersion = 1;
+    const unsigned = { ...receipt };
+    delete unsigned.finalDigest;
+    receipt.finalDigest = `sha256:${crypto.createHash('sha256').update(canonicalJson(unsigned)).digest('hex')}`;
+    await fs.writeJson(written.bindingPath, receipt);
 
     await expect(readAwSourceBinding(written.bindingPath)).rejects.toThrow(
       'schema version 1 is unsupported. Run "aw dev eval prepare" or "aw dev skill export" again.',
-    )
+    );
     await expect(validateAwSourceBindingForWorkspace({
       bindingPath: written.bindingPath,
       context: unusedContext,
@@ -177,27 +211,28 @@ describe('AW source binding', () => {
         message: 'AW source binding schema version 1 is unsupported. '
           + 'Run "aw dev eval prepare" or "aw dev skill export" again.',
       }],
-    })
-  })
+    });
+  });
 
   it('does not accept editable approval fields in a receipt', async () => {
-    const root = await tempRoot()
+    const root = await tempRoot();
     await fs.outputFile(
       path.join(root, 'skills', 'fixture', 'SKILL.md'),
       '---\nname: fixture\ndescription: fixture\n---\nBody.\n',
-    )
+    );
     const written = await writeAwSourceBinding({
       rootDir: root,
+      preparation: preparation(),
       source: { kind: 'workspace', workspaceIdentity: 'fixture', sourceIdentity: digest },
       subject: { plugin: 'fixture' },
       profile: {
         kind: 'portable', id: 'generic-project', platform: 'generic', scope: 'project', inputDigest: digest,
       },
       artifacts: [{ kind: 'portable-skill', plugin: 'fixture', skill: 'fixture', path: 'skills/fixture' }],
-    })
-    const receipt = await fs.readJson(written.bindingPath)
-    receipt.approved = true
-    await fs.writeJson(written.bindingPath, receipt)
+    });
+    const receipt = await fs.readJson(written.bindingPath);
+    receipt.approved = true;
+    await fs.writeJson(written.bindingPath, receipt);
     await expect(validateAwSourceBindingForWorkspace({
       bindingPath: written.bindingPath,
       context: unusedContext,
@@ -206,14 +241,14 @@ describe('AW source binding', () => {
       state: 'invalid',
       binding: null,
       issues: [{ code: 'sourceBindingInvalid' }],
-    })
-  })
+    });
+  });
 
   it('binds pathPrepend fixture bytes without storing fixture details', async () => {
-    const root = await tempRoot()
-    const evalRoot = path.join(root, 'plugins', 'fixture', 'skills', 'fixture', 'evals')
-    const manifestPath = path.join(evalRoot, 'manifest.json')
-    const fixturePath = path.join(evalRoot, 'fixtures', 'bin', 'fixture-tool')
+    const root = await tempRoot();
+    const evalRoot = path.join(root, 'plugins', 'fixture', 'skills', 'fixture', 'evals');
+    const manifestPath = path.join(evalRoot, 'manifest.json');
+    const fixturePath = path.join(evalRoot, 'fixtures', 'bin', 'fixture-tool');
     const cases: SelectedCasesDocument = {
       version: 1,
       suite: {
@@ -229,13 +264,13 @@ describe('AW source binding', () => {
         assertions: ['Uses the fixture.'],
         input: { pathPrepend: ['fixtures/bin'] },
       }],
-    }
+    };
     await Promise.all([
       fs.outputJson(manifestPath, { version: 1 }),
       fs.outputJson(path.join(evalRoot, 'cases.json'), cases),
       fs.outputFile(fixturePath, '#!/bin/sh\necho first\n'),
-    ])
-    await fs.chmod(fixturePath, 0o755)
+    ]);
+    await fs.chmod(fixturePath, 0o755);
     const options = {
       workspaceRoot: root,
       evalRoot,
@@ -246,12 +281,12 @@ describe('AW source binding', () => {
       corpusPaths: ['cases.json'],
       selection: { caseIds: ['selected'] },
       providerDigest: computeEvalProviderDigest('codex-conversation'),
-    }
-    const first = await resolveEvalSourceBindingInput(options)
-    await fs.writeFile(fixturePath, '#!/bin/sh\necho second\n')
-    const second = await resolveEvalSourceBindingInput(options)
-    expect(second.input.fixturesDigest).not.toBe(first.input.fixturesDigest)
-    expect(second.input.selectedCasesDigest).toBe(first.input.selectedCasesDigest)
-    expect(Object.keys(first.input)).not.toContain('fixtures')
-  })
-})
+    };
+    const first = await resolveEvalSourceBindingInput(options);
+    await fs.writeFile(fixturePath, '#!/bin/sh\necho second\n');
+    const second = await resolveEvalSourceBindingInput(options);
+    expect(second.input.fixturesDigest).not.toBe(first.input.fixturesDigest);
+    expect(second.input.selectedCasesDigest).toBe(first.input.selectedCasesDigest);
+    expect(Object.keys(first.input)).not.toContain('fixtures');
+  });
+});

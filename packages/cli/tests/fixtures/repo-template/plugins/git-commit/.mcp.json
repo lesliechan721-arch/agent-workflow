@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "git-commit": {
+      "type": "stdio",
       "command": "git",
       "args": ["status"]
     }

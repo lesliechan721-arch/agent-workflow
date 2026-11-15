@@ -7,7 +7,7 @@ describe('buildConfig validation', () => {
     name: 'demo',
     version: '0.1.0',
     description: 'demo',
-    schemaVersion: 3,
+    schemaVersion: 4,
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -18,106 +18,29 @@ describe('buildConfig validation', () => {
     },
   } as const;
 
-  it('accepts templates, file rules and Claude manifest overrides', () => {
+  it('accepts templates and file rules for current concrete targets', () => {
     const manifest = validatePluginManifest('/tmp/plugin', {
-      schemaVersion: 3,
-      name: 'demo',
-      version: '0.1.0',
-      description: 'demo',
-      slashCommands: './slash-commands',
-      marketplace: {
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-      },
+      ...baseManifest,
       buildConfig: {
-        templates: {
-          vars: {
-            agent_name: {
-              claude: 'Claude Code',
-              codex: 'Codex',
-            },
-          },
-          include: ['skills/**/*.md'],
-        },
-        fileRules: {
-          claude: {
-            include: ['skills/**', 'output-styles/**'],
-            exclude: [],
-          },
-          codex: {
-            include: ['skills/**'],
-            exclude: ['output-styles/**'],
-          },
-        },
-        manifestOverrides: {
-          claude: {
-            outputStyles: './output-styles',
-            lspServers: ['./config/lsp.json', { name: 'inline' }],
-          },
-          codex: {},
-        },
+        templates: { vars: { agent_name: { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' } }, include: ['skills/**/*.md'] },
+        fileRules: { claude: { include: ['skills/**', 'assets/claude/**'], exclude: [] },
+          codex: { include: ['skills/**'], exclude: ['assets/claude/**'] },
+          gemini: { include: ['skills/**'], exclude: [] } },
       },
     });
-
-    expect(manifest.buildConfig?.manifestOverrides?.claude?.outputStyles).toBe('./output-styles');
-    expect(manifest.buildConfig?.fileRules?.codex?.exclude).toEqual(['output-styles/**']);
+    expect(manifest.buildConfig?.fileRules?.codex?.exclude).toEqual(['assets/claude/**']);
+    expect(manifest.buildConfig?.templates?.vars.agent_name).toMatchObject({ gemini: 'Gemini CLI' });
   });
 
-  it('rejects deprecated Claude commands authoring entries', () => {
-    expect(() =>
-      validatePluginManifest('/tmp/plugin', {
-        schemaVersion: 3,
-        name: 'demo',
-        version: '0.1.0',
-        description: 'demo',
-        marketplace: {
-          category: 'workflow',
-          strict: true,
-          policy: {
-            installation: 'AVAILABLE',
-            authentication: 'ON_INSTALL',
-          },
-        },
-        buildConfig: {
-          manifestOverrides: {
-            claude: {
-              commands: './commands',
-            },
-          },
-        },
-      }),
-    ).toThrow('use "slashCommands" instead');
+  it('rejects removed host manifest overrides without an alias', () => {
+    expect(() => validatePluginManifest('/tmp/plugin', { ...baseManifest,
+      buildConfig: { manifestOverrides: { claude: { commands: './commands' } } },
+    })).toThrow('/buildConfig must NOT have additional properties');
   });
 
-  it('rejects legacy Claude commands file rules', () => {
-    expect(() =>
-      validatePluginManifest('/tmp/plugin', {
-        schemaVersion: 3,
-        name: 'demo',
-        version: '0.1.0',
-        description: 'demo',
-        marketplace: {
-          category: 'workflow',
-          strict: true,
-          policy: {
-            installation: 'AVAILABLE',
-            authentication: 'ON_INSTALL',
-          },
-        },
-        buildConfig: {
-          fileRules: {
-            claude: {
-              include: ['commands/**'],
-              exclude: [],
-            },
-          },
-        },
-      }),
-    ).toThrow('legacy "commands/**"');
+  it('rejects the removed independent slash command author entry', () => {
+    expect(() => validatePluginManifest('/tmp/plugin', { ...baseManifest, slashCommands: './commands' }))
+      .toThrow('must NOT have additional properties');
   });
 
   it('normalizes the catalog runtime projection contract', () => {
@@ -232,18 +155,16 @@ describe('buildConfig validation', () => {
     expect(portable.buildConfig?.skillRuntimeFiles?.[0]?.platforms).toEqual(['generic']);
   });
 
-  it('requires a concrete Portable platform on a dynamic Skill target', () => {
-    const target = { id: 'portable', distribution: 'agent-skills', target: 'agent-skills.skill',
-      scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: 'portable' };
-    expect(() => validatePluginManifest('/tmp/plugin', {
-      ...baseManifest, platforms: ['generic'], artifacts: { targets: [target] },
-    })).toThrow('/artifacts/targets/0');
-    expect(validatePluginManifest('/tmp/plugin', {
-      ...baseManifest, platforms: ['generic'], artifacts: { targets: [{ ...target, platform: 'generic' }] },
-    }).artifacts?.targets?.[0]?.platform).toBe('generic');
+  it('declares renderer input permissions without fixed dynamic component targets', () => {
+    const input = { ...baseManifest, platforms: ['generic'],
+      artifacts: { configKeys: [], sourceDirs: ['./templates'], scopes: ['user'] },
+      scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } } };
+    expect(validatePluginManifest('/tmp/plugin', input).artifacts).toEqual(input.artifacts);
+    expect(() => validatePluginManifest('/tmp/plugin', { ...input, artifacts: { ...input.artifacts, targets: [] } }))
+      .toThrow('/artifacts must NOT have additional properties');
   });
 
-  it('accepts a Portable-only declaration without Native inventory', () => {
+  it('accepts a concrete target without a precomputed Native inventory', () => {
     expect(validatePluginManifest('/tmp/plugin', {
       ...baseManifest, platforms: ['cursor'], skills: './skills',
     }).platforms).toEqual(['cursor']);
@@ -261,10 +182,10 @@ describe('buildConfig validation', () => {
   it('rejects removed Portable roots and unsafe unified Skill paths', () => {
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...baseManifest, distributions: { agentSkills: { skills: './portable-skills' } },
-    })).toThrow('Remove distributions.agentSkills');
+    })).toThrow('must NOT have additional properties');
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...baseManifest, platforms: ['generic'], skills: '../skills',
-    })).toThrow('/skills must match pattern');
+    })).toThrow('/skills must be equal to constant');
   });
 
   it('accepts only an explicit deterministic build cache declaration with a Node build', () => {

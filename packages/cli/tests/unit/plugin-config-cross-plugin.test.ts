@@ -19,23 +19,20 @@ async function fixture() {
   const create = (name: string, fields: Record<string, unknown>, dependencies: string[] = []): PluginMeta => ({
     rootDir: path.join(cwd, name), manifestPath: path.join(cwd, name, '.agents-plugin/plugin.json'),
     sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`, catalogLogicalIdentity: 'team/catalog', pluginId: `team/${name}`,
-    manifest: { schemaVersion: 3, name, version: '1.0.0', description: 'Config reference fixture', dependencies,
+    manifest: { schemaVersion: 4, name, version: '1.0.0', description: 'Config reference fixture', dependencies,
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-      config: normalizePluginConfigDefinition({ schemaVersion: 4, fields }) },
+      config: normalizePluginConfigDefinition({ schemaVersion: 5, fields }) },
   });
   const provider = create('provider', { registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
     type: 'object', properties: { key: { type: 'string', required: true }, label: { type: 'string', required: true } }, additionalProperties: false,
   } } });
-  provider.manifest.artifacts = { targets: [{ id: 'registry', platform: 'codex', target: 'codex.skill', skillKey: 'provider',
-    scopes: ['user', 'project'], states: ['present'], refreshKeys: ['registry'],
-    delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' } }] };
+  provider.manifest.artifacts = { configKeys: ['registry'] };
   const consumer = create('consumer', {
     selected: { type: 'string', default: 'native', valueRef: { plugin: 'provider', field: 'registry', key: 'key', label: 'label', include: ['native'] } },
     unrelated: { type: 'number', default: 1 },
   }, ['provider']);
-  consumer.manifest.artifacts = { targets: [{ id: 'selected', platform: 'codex', target: 'codex.skill', skillKey: 'consumer',
-    scopes: ['user', 'project'], states: ['present'], refreshKeys: ['selected'], delivery: { mode: 'aw-extension' },
-    runtimeConfig: { keys: ['selected'] } }] };
+  consumer.manifest.artifacts = { configKeys: ['selected'] };
+  consumer.manifest.requires = { aw: { capabilities: ['aw.installed-runtime-config.v2'] } };
   const plugins = [provider, consumer];
   for (const plugin of plugins) await fs.outputJson(plugin.manifestPath, plugin.manifest);
   const store = (plugin: PluginMeta, scope: 'user' | 'project' = 'user') => ({
@@ -56,17 +53,14 @@ describe('same-source configuration references', () => {
   it('includes foreign preApply inputs without inventing a shared native renderer update', async () => {
     const f = await fixture();
     f.consumer.manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
-    const declaration = f.consumer.manifest.artifacts!.targets![0]!;
-    declaration.refreshKeys = ['unrelated'];
-    declaration.runtimeConfig = { keys: ['unrelated'] };
-    declaration.delivery = { mode: 'codex-native', identity: 'shared', renderProfile: 'user' };
+    f.consumer.manifest.artifacts!.configKeys = ['unrelated'];
     await writePluginConfigStore({ ...f.store(f.consumer), platform: 'codex', values: { selected: 'remote' } });
     const target: ReceiptTargetIdentity = { pluginName: 'consumer', platform: 'codex', scope: 'project', projectKey: f.cwd };
     const impact = await analyzePluginConfigMutationImpact({ plugin: f.provider, scope: 'user', context: 'project', cwd: f.cwd, env: f.env,
       referencePlugins: f.plugins, visibleTargets: [target], mutation: { kind: 'patch', updates: { registry: [{ key: 'remote', label: 'Remote' }] } } });
     expect(impact.affectedTargets).toEqual([target]);
     expect(impact.noEffectiveChange).toBe(false);
-    expect(impact.sharedNativeRenderTargets).toEqual([]);
+    expect(impact.sharedNativeRenderUnits).toEqual([]);
   });
 
   // Test Value Gate: a project activation can read a shared user artifact; replay must keep its write authorization boundary.
@@ -77,7 +71,7 @@ describe('same-source configuration references', () => {
     const impact = await analyzePluginConfigMutationImpact({ plugin: f.provider, scope: 'user', context: 'project', cwd: f.cwd, env: f.env,
       referencePlugins: f.plugins, visibleTargets: targets, mutation: { kind: 'patch', updates: { registry: [{ key: 'remote', label: 'Remote' }] } } });
     expect(impact.affectedTargets).toEqual(targets);
-    expect(impact.sharedNativeRenderTargets).toEqual([expect.objectContaining({ skillKey: 'consumer', pluginName: 'consumer' })]);
+    expect(impact.sharedNativeRenderUnits).toEqual([expect.objectContaining({ pluginName: 'consumer', platform: 'codex', renderScope: 'user', configKeys: ['selected'], dynamicComponents: true })]);
     await writePluginConfigStore({ ...f.store(f.provider), values: { registry: [{ key: 'remote', label: 'Remote' }] } });
     const file = resolvePluginConfigStorePath(f.store(f.provider));
     const before = await fs.readFile(file);
@@ -98,7 +92,7 @@ describe('same-source configuration references', () => {
     await fs.outputJson(path.join(f.cwd, '.agent-workflows/plugin-config/team/provider/config.json'), { registry: [{ key: 'project', label: 'Project' }] });
     await writePluginConfigStore({ ...f.store(f.consumer), platform: 'codex', values: { selected: 'remote' } });
     const foreign = { ...f.provider, sourceId: 'other', manifest: { ...f.provider.manifest,
-      config: normalizePluginConfigDefinition({ schemaVersion: 4, fields: { registry: { type: 'string', default: 'wrong' } } }) } };
+      config: normalizePluginConfigDefinition({ schemaVersion: 5, fields: { registry: { type: 'string', default: 'wrong' } } }) } };
     const config = await f.resolve(f.consumer, 'project', [foreign, ...f.plugins]);
     expect(config.values.selected).toBe('remote');
     expect(config.referenceEvidence?.[0]?.sources.registry).toBe('common');
@@ -107,7 +101,7 @@ describe('same-source configuration references', () => {
     expect(getPluginConfigReferenceChoices(f.consumer.manifest.config!, scalar, config.values, config.referenceContext)
       .choices.map((choice) => choice.value)).toEqual(['native', 'remote']);
     const snapshot = createArtifactRuntimeConfigSnapshots({ manifest: f.consumer.manifest, platform: 'codex', scope: 'project',
-      config: { mode: 'artifact-render', targetScope: 'project', ...config }, requestedArtifactIds: ['selected'] }).selected!;
+      config: { mode: 'artifact-render', targetScope: 'project', ...config }, components: [{ id: 'selected', kind: 'skill', name: 'consumer', content: { files: {} }, runtimeConfig: { keys: ['selected'] } }] }).selected!;
     expect(snapshot.effectiveValues).toEqual({ selected: 'remote' });
     await writePluginConfigStore({ ...f.store(f.provider), values: { registry: [{ key: 'broken' }] } });
     const invalid = await f.resolve(f.consumer, 'project');
@@ -202,14 +196,14 @@ describe('same-source configuration references', () => {
     const base: PluginMeta = { ...f.provider, pluginId: 'team/base', rootDir: path.join(f.cwd, 'base'),
       manifestPath: path.join(f.cwd, 'base/.agents-plugin/plugin.json'),
       manifest: { ...f.provider.manifest, name: 'base', artifacts: undefined,
-        config: normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
+        config: normalizePluginConfigDefinition({ schemaVersion: 5, fields: {
           registry: { type: 'array', default: [{ key: 'remote' }], validation: { uniqueBy: 'key' }, items: {
             type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
           } },
         } }) } };
     f.plugins.push(base);
     f.provider.manifest.dependencies = ['base'];
-    f.provider.manifest.config = normalizePluginConfigDefinition({ schemaVersion: 4, fields: {
+    f.provider.manifest.config = normalizePluginConfigDefinition({ schemaVersion: 5, fields: {
       registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
         type: 'object', properties: { key: { type: 'string', required: true,
           valueRef: { plugin: 'base', field: 'registry', key: 'key' } }, label: { type: 'string', required: true } }, additionalProperties: false,

@@ -365,24 +365,14 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('command entry');
   });
 
-  it('validates concrete Portable roots and generated dynamic sources', async () => {
+  it('validates static platform roots and declared dynamic source directories', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
       manifest.platforms = ['codex', 'claude', 'generic'];
       manifest.buildConfig = { fileRules: { generic: { include: ['skills/static-portable/**'], exclude: ['skills/commit/**'] } } };
-      manifest.artifacts = { targets: [{
-        id: 'portable-source',
-        platform: 'generic',
-        distribution: 'agent-skills',
-        target: 'agent-skills.skill',
-        kind: 'skill',
-        scopes: ['project'],
-        states: ['present'],
-        refreshKeys: [],
-        skillKey: 'portable-source',
-        sourceDirs: ['./skills/portable-source'],
-      }] };
+      manifest.artifacts = { configKeys: [], sourceDirs: ['./dynamic-templates/portable-source'] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
     });
     await fs.outputFile(
       path.join(pluginRoot, 'skills', 'static-portable', 'SKILL.md'),
@@ -394,30 +384,29 @@ describe('bundle layout validation', () => {
     );
     await fs.outputFile(path.join(pluginRoot, 'skills', 'static-portable', 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: true\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills', 'portable-source', 'README.md'), '# Portable source\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills', 'portable-source', 'SKILL.md'),
+    await fs.outputFile(path.join(pluginRoot, 'dynamic-templates', 'portable-source', 'README.md'), '# Portable source\n');
+    await fs.outputFile(path.join(pluginRoot, 'dynamic-templates', 'portable-source', 'SKILL.md'),
       '---\nname: portable-source\ndescription: Dynamic source fixture.\n---\n');
-    await fs.outputFile(path.join(pluginRoot, 'skills', 'portable-source', 'agents', 'openai.yaml'),
+    await fs.outputFile(path.join(pluginRoot, 'dynamic-templates', 'portable-source', 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: true\n');
 
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'),
+      'console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));\n');
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(embeddedRoot);
     const bundledSource = path.join(
       embeddedRoot,
       'plugins',
       'git-commit',
-      '.agents-plugin',
-      'artifact-sources',
-      'generic',
+      'dynamic-templates',
       'portable-source',
-      '0',
     );
     await expect(fs.pathExists(bundledSource)).resolves.toBe(true);
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
 
     await fs.remove(bundledSource);
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
-      'artifacts.targets[0].sourceDirs[0]',
+      'artifacts.sourceDirs[0]',
     );
     await fs.ensureDir(bundledSource);
 
@@ -445,6 +434,33 @@ describe('bundle layout validation', () => {
         'generic/skills',
       );
     }
+  });
+
+  it('verifies named global runtime input bytes before component preparation', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const providerRoot = path.join(repoRoot, 'plugins', 'runtime-provider');
+    const base = await readFixturePluginManifest(repoRoot);
+    await fs.outputJson(path.join(providerRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 4, name: 'runtime-provider', version: '0.1.0', description: 'Runtime input provider.',
+      marketplace: base.marketplace,
+      buildConfig: { runtimeExports: [{ name: 'shared', source: './shared/runtime.txt', requires: { aw: { capabilities: [] } } }] },
+    });
+    await fs.outputFile(path.join(providerRoot, 'README.md'), '# Runtime provider\n');
+    await fs.outputFile(path.join(providerRoot, 'shared/runtime.txt'), 'verified runtime input\n');
+    await updateFixturePluginManifest(repoRoot, (manifest) => {
+      manifest.artifacts = { configKeys: [], runtimeImports: [{ name: 'shared', plugin: 'runtime-provider', export: 'shared' }] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
+    });
+    await fs.outputFile(path.join(pluginRoot, 'scripts/render.mjs'),
+      'console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));\n');
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    const input = path.join(embeddedRoot, 'plugins/git-commit/.agents-plugin/runtime-imports/shared');
+    expect(await fs.readFile(input, 'utf8')).toBe('verified runtime input\n');
+    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+    await fs.writeFile(input, 'changed runtime input\n');
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('bundled runtime input digest has changed');
   });
 
   it('rejects plugin directories that are missing .agents-plugin/plugin.json', async () => {
@@ -1059,102 +1075,24 @@ describe('bundle layout validation', () => {
     );
   });
 
-  it('accepts Codex inline hooks and Claude bundle-local hooks in platform manifests', async () => {
-    const repoRoot = await makeTempRepo();
-    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-    tempDirs.push(embeddedRoot);
-    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
-    const codexManifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
-    const codexManifest = await fs.readJson(codexManifestPath);
-    codexManifest.hooks = {
-      hooks: {
-        PreToolUse: [
-          {
-            matcher: 'Bash',
-            hooks: [{ type: 'command', command: 'echo codex ok' }],
-          },
-        ],
-        UserPromptSubmit: [
-          {
-            hooks: [{ type: 'command', command: 'echo prompt ok' }],
-          },
-        ],
-      },
-    };
-    await fs.writeJson(codexManifestPath, codexManifest, { spaces: 2 });
-
-    const claudeManifest = await fs.readJson(
-      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
-    );
-    expect(claudeManifest.hooks).toBe('./claude/hooks/hooks.json');
-
+  it('keeps runtime Hooks and Agents out of the static Catalog manifests', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    for (const platform of ['codex', 'claude']) {
+      const manifest = await fs.readJson(path.join(embeddedRoot, 'plugins', 'git-commit', `.${platform}-plugin`, 'plugin.json'));
+      expect(manifest).not.toHaveProperty('hooks');
+      expect(manifest).not.toHaveProperty('agents');
+    }
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
   });
 
-  it.each([
-    {
-      name: 'string hooks field',
-      hooks: './codex/hooks/hooks.json',
-      message: 'Invalid codex.hooks: expected an inline hooks object.',
-    },
-    {
-      name: 'unsupported event',
-      hooks: {
-        hooks: {
-          SessionEnd: [
-            {
-              matcher: '*',
-              hooks: [{ type: 'command', command: 'echo done' }],
-            },
-          ],
-        },
-      },
-      message: 'codex.hooks.hooks.SessionEnd',
-    },
-    {
-      name: 'matcher on matcherless event',
-      hooks: {
-        hooks: {
-          UserPromptSubmit: [
-            {
-              matcher: 'ignored',
-              hooks: [{ type: 'command', command: 'echo prompt' }],
-            },
-          ],
-        },
-      },
-      message: 'does not allow matcher',
-    },
-    {
-      name: 'unsupported handler schema',
-      hooks: {
-        hooks: {
-          PreToolUse: [
-            {
-              matcher: 'Bash',
-              hooks: [{ type: 'command', command: 'echo slow', timeout: 1000 }],
-            },
-          ],
-        },
-      },
-      message: 'unsupported fields "timeout"',
-    },
-  ])('rejects invalid Codex inline hooks: $name', async ({ hooks, message }) => {
-    const repoRoot = await makeTempRepo();
-    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-    tempDirs.push(embeddedRoot);
-    const codexManifestPath = path.join(
-      embeddedRoot,
-      'plugins',
-      'git-commit',
-      '.codex-plugin',
-      'plugin.json',
-    );
-    const codexManifest = await fs.readJson(codexManifestPath);
-    codexManifest.hooks = hooks;
-    await fs.writeJson(codexManifestPath, codexManifest, { spaces: 2 });
-
-    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(message);
+  it.each(['codex', 'claude'] as const)('rejects unprepared runtime or removed author fields in %s Catalog manifests', async (platform) => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const manifestPath = path.join(embeddedRoot, 'plugins', 'git-commit', `.${platform}-plugin`, 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    for (const field of ['hooks', 'agents', 'commands', 'apps', 'outputStyles', 'lspServers', 'userConfig', 'channels']) {
+      await fs.writeJson(manifestPath, { ...manifest, [field]: './runtime-output' });
+      await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(`Invalid ${platform} manifest: unknown field "${field}".`);
+    }
   });
 
   it('rejects bundles missing preApply, helper, or runtime sibling files', async () => {

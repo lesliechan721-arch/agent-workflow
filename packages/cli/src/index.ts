@@ -5,6 +5,7 @@ import { preparePublicConfigConfirmation } from './commands/public-config-confir
 import { createPublicCommandInterruption } from './commands/public-interruption.js';
 import { commandResult, publicExitCode, renderPublicResult, safePublicMessage, type CommandResult, type Confirmation } from './output/public-result.js';
 import { projectReceipt } from './output/receipt-projection.js';
+import { geminiNativeConsentDiagnostic } from './output/native-consent.js';
 import { runPublicLifecycle } from './commands/public-lifecycle.js';
 import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from './commands/public-plugin-query.js';
 import fs from 'node:fs';
@@ -15,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
-import { compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARGETS, PORTABLE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
+import { compilePluginConfigDefinition, selectPluginConfigProfile, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { CatalogWorkspaceMissingError, resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
 import {
@@ -107,7 +108,6 @@ import type {
   ConfigFieldEntry,
   ConfigMutationCommand,
   PlatformTarget,
-  PortablePlatformTarget,
   Scope,
 } from './types.js';
 import { materializePortableSkillsToDirectory, PortableCommandError } from './portable/commands.js';
@@ -161,6 +161,7 @@ import {
 } from './commands/aw-capabilities.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
 import { targetsSet, targetsList, targetsChangeExclusion } from './commands/targets-command.js';
+import { runCursorWorkspaceHookCli } from './platforms/cursor-workspace-hook.js';
 import type { RecoveryReceipt } from './recovery/receipt.js';
 import { normalizeAgents } from './intent/deployment-preferences.js';
 import { resolveWorkContext } from './intent/work-context.js';
@@ -281,6 +282,7 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   valueStdin?: boolean;
   preset?: string;
   yes?: boolean;
+  nativeConsent?: boolean;
   apply?: boolean;
   scriptTimeout?: string;
 }
@@ -777,8 +779,10 @@ function writeConfigApplyNotice(
     apply: import('./types.js').ConfigApplyResult;
     otherProjectsMayRequireSync: boolean;
     warnings: string[];
+    nativeConsent?: boolean;
   },
 ): void {
+  if (receipt.nativeConsent) writeLine(write, geminiNativeConsentDiagnostic().message);
   const sanitizeMessage = (message: string): string => redactString(message)
     .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
     .replace(/file:\/\/\S+/giu, '[REDACTED PATH]')
@@ -964,7 +968,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   devPlugin
     .command('capabilities')
     .description('Show the current plugin manifest authoring surface')
-    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | pre-apply | artifacts')
+    .option('--surface <surface>', 'manifest | build-config | extensions | mcp | config | pre-apply | artifacts | platform-components | platform-capabilities | hook-handlers | managed-commands | native-tools')
     .option('--json', 'emit one machine-readable JSON object', false)
     .action((rawOptions: { surface?: string; json?: boolean }) => {
       try {
@@ -1260,14 +1264,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('export')
     .description('Write portable Skills to a safe output directory')
     .argument('<plugin>', 'plugin or source/plugin selector')
-    .addOption(strictValueOption('--platform <target>', 'Portable platform target', PORTABLE_PLATFORM_TARGETS).makeOptionMandatory())
+    .addOption(strictValueOption('--platform <target>', 'Platform target profile', PLATFORM_TARGETS).makeOptionMandatory())
     .addOption(strictValueOption('-s, --scope <scope>', 'artifact scope', ['user', 'project']).makeOptionMandatory())
     .requiredOption('--out <dir>', 'output directory')
     .option('--skill <name...>', 'write only selected Skill names')
     .option('-j, --json', 'emit one receipt v5 JSON object', false)
     .action(async (selector: string, rawOptions: {
       scope: string;
-      platform: PortablePlatformTarget;
+      platform: PlatformTarget;
       out: string;
       skill?: string[];
       json?: boolean;
@@ -1344,7 +1348,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
     .option('--no-skills', 'create the plugin without a skills directory')
     .option('--with-mcp', 'add a minimal .mcp.json', false)
-    .option('--with-apps', 'add a minimal .app.json', false)
     .option('--with-config-api', 'add AW config schema and helper', false)
     .option('--with-pre-apply', 'add an idempotent Node preApply environment check', false);
 
@@ -1370,7 +1373,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .description('Validate one source plugin directory')
     .argument('<plugin-directory>', 'source plugin directory')
     .option('--strict-agent-skills', 'allow only Agent Skills portable core frontmatter', false)
-    .option('--claude-skill-profile <profile>', 'minimum | current (default: minimum)')
+    .option('--claude-skill-profile <profile>', 'current (default) | minimum (Claude 2.1.88 fields)')
     .option('--version-base <git-ref>', 'production bundle comparison base (default: HEAD)')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
     .option('--json', 'emit one machine-readable JSON result', false);
@@ -2342,8 +2345,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   };
 
   const targets = program.command('target').description('Manage the local platform policy');
+  program.command('internal', { hidden: true }).description('AW host integration protocols')
+    .command('cursor-workspace-open').description('Return current Cursor workspace plugin paths')
+    .requiredOption('--scope <scope>', 'user or project scope')
+    .option('--project-root <path>', 'the exact project workspace root')
+    .option('--plugin-id <source/plugin>', 'return only the exact required plugin package')
+    .action(async (rawOptions: { scope: string; projectRoot?: string; pluginId?: string }) => {
+      commandExitState.exitCode = await runCursorWorkspaceHookCli(['--scope', rawOptions.scope,
+        ...(rawOptions.projectRoot ? ['--project-root', rawOptions.projectRoot] : []),
+        ...(rawOptions.pluginId ? ['--plugin-id', rawOptions.pluginId] : [])],
+      { cwd, env, stdin: options.stdin ?? process.stdin, stdout: io.stdout, stderr: io.stderr });
+    });
   contextualCommand(targets.command('set').argument('[targets...]'))
     .option('--none', 'save an empty target set', false)
+    .option('--force', 'save newly selected unavailable targets without bypassing installation requirements', false)
     .option('--apply', 'apply the saved target policy in this work context', false)
     .option('-y, --yes', 'confirm reviewed output changes', false)
     .action(async (agents: string[], rawOptions: RawRecoveryOptions) => {
@@ -2355,13 +2370,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         await showWorkContext(context, rawOptions);
         return targetsSet({ cwd: context.cwd, env: context.env, targets: normalized,
           context: recoveryContext(rawOptions), apply: rawOptions.apply, yes: rawOptions.yes,
+          force: rawOptions.force,
           cliVersion: resolveCliVersion(), runtime: recoveryRuntime(context, rawOptions, true) });
       });
     });
   contextualCommand(targets.command('list'))
     .action(async (rawOptions: RawRecoveryOptions) =>
       runRecoveryAction('targets:list', rawOptions, (context) =>
-        targetsList({ cwd: context.cwd, env: context.env, context: recoveryContext(rawOptions) })));
+        targetsList({ cwd: context.cwd, env: context.env, context: recoveryContext(rawOptions),
+          runtime: { nativeCliRunner: context.nativeCliRunner } })));
   for (const action of ['exclude', 'include'] as const) {
     contextualCommand(targets.command(action).argument('<plugin>'))
       .addOption(strictValueOption('--target <target>', 'one canonical platform target', PLATFORM_TARGETS).makeOptionMandatory())
@@ -2387,9 +2404,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--log-file <path>', 'write debug diagnostics to the specified file');
   const configMutation = (command: Command): Command => configCommand(command)
     .option('--apply', 'refresh existing affected outputs after saving', false)
+    .option('--native-consent', 'authorize this Gemini operation; may persist source-folder and current-workspace trust', false)
     .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
     .option('-y, --yes', 'confirm reviewed output changes', false);
   const configContext = async (context: CliExecutionContext, rawOptions: RawConfigOptions, apply = rawOptions.apply === true) => {
+    if (rawOptions.nativeConsent && !apply) throw new WriteCommandRequestError('--native-consent requires --apply or config apply.');
     const requested = rawOptions.context === undefined ? apply ? undefined : 'user'
       : normalizeWriteRequest(() => parseContextValue(rawOptions.context));
     const work = await resolveWorkContext({ cwd: context.cwd, context: requested });
@@ -2529,20 +2548,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const confirmation = rawOptions.apply ? await preparePublicConfigConfirmation({ plugin, scope: work.context,
               context: work.context, platform, cwd: context.cwd, env: context.env, cliVersion: resolveCliVersion(),
               nativeCliRunner: context.nativeCliRunner, awHomeMutationToken, yes: rawOptions.yes, mutation,
-              rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
+              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, catalogOperationContext,
                 expectedGenerationSetDigest: catalogOperationContext.generationSetDigest } })
               : { required: false, provided: rawOptions.yes === true, effects: [] };
             const writeReceipt = await applyPluginConfigWrite({ plugin, pluginName: plugin.manifest.name,
               scope: work.context, context: work.context, platform, cliVersion: resolveCliVersion(),
               cwd: context.cwd, env: context.env, nativeCliRunner: context.nativeCliRunner,
-              rebuildRuntime: { ...context, awHomeMutationToken, catalogOperationContext,
+              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, catalogOperationContext,
                 expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
                 ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }) },
               awHomeMutationToken, request: command === 'unset' ? { removeKeys: [key!] } : { updates: { [key!]: inputValue } },
               apply: rawOptions.apply === true, sharedNativeApplyConfirmed: rawOptions.yes === true,
               preApplyConfirmed: rawOptions.yes === true });
             return buildConfigMutationReceipt(`config:${command}`, {
-              ...writeReceipt, confirmation, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
+              ...writeReceipt, confirmation, nativeConsent: rawOptions.nativeConsent === true, ok: writeReceipt.overallState === 'succeeded', plugin: plugin.manifest.name,
               pluginName: plugin.manifest.name, pluginId, sourceId: source.sourceId, sourceIdentity: source.sourceIdentity,
               context: work, platform: platform ?? 'common',
               ...(command === 'unset' ? { removedKey: key, existed: true } : {}),
@@ -2585,7 +2604,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const receipt = await resetPluginConfigWithHelper({ ...located, plugin, pluginError, platform, scope: work.context,
               context: work.context, cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
               nativeCliRunner: context.nativeCliRunner, apply: rawOptions.apply === true,
-              rebuildRuntime: { ...context, awHomeMutationToken, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
+              rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, awHomeMutationToken, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) },
               sharedNativeApplyConfirmed: true, preApplyConfirmed: rawOptions.yes === true });
             return { ...receipt, confirmation };
           } });
@@ -2598,7 +2617,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             return resetStore(null, error instanceof Error ? error : new Error(String(error)));
           }
         });
-        const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt,
+        const receipt = buildConfigMutationReceipt('config:reset', { ...resetReceipt, nativeConsent: rawOptions.nativeConsent === true,
           ok: resetReceipt.overallState === 'succeeded', ...located, plugin: located.pluginName,
           context: work, platform: platform ?? 'common' });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
@@ -2612,6 +2631,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   contextualCommand(config.command('apply').argument('<plugin>'))
     .option('--target <target>', 'limit existing-output refresh to this platform target', collectUniqueOption)
+    .option('--native-consent', 'authorize this Gemini operation; may persist source-folder and current-workspace trust', false)
     .option('-y, --yes', 'confirm reviewed output changes', false)
     .option('--script-timeout <ms>', 'override plugin preApply timeout in milliseconds')
     .action(async (selector: string, rawOptions: RawConfigOptions) => {
@@ -2624,11 +2644,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           return { confirmation, ...await applyPluginConfig({ plugin, scope: work.context, context: work.context, targets,
             cliVersion: resolveCliVersion(), cwd: context.cwd, env: context.env, awHomeMutationToken,
             nativeCliRunner: context.nativeCliRunner, sharedNativeApplyConfirmed: rawOptions.yes === true,
-            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
+            preApplyConfirmed: rawOptions.yes === true, rebuildRuntime: { ...context, nativeConsent: rawOptions.nativeConsent === true, scriptTimeoutMs: resolveScriptTimeoutMs(rawOptions) } }),
           command: 'config:apply', plugin: plugin.manifest.name, pluginId, sourceId: source.sourceId,
           context: work,
         }; }, true));
-      const result = buildConfigMutationReceipt('config:apply', { ...receipt,
+      const result = buildConfigMutationReceipt('config:apply', { ...receipt, nativeConsent: rawOptions.nativeConsent === true,
         ok: receipt.overallState === 'succeeded' });
       if (rawOptions.json) writeJsonReceipt(io.stdout, result);
       else {
@@ -2768,7 +2788,8 @@ function configurePublicCommands(program: Command, options: CliRuntimeOptions, i
       .option('--delete-config', 'Delete all local plugin configuration')
       .option('--keep-dependencies', 'Keep orphan dependency output during normal removal')
       .option('--force', 'Bypass the dependency guard; with --only outputs, recover provably owned damaged output');
-    if (name !== 'remove') cmd.option('--script-timeout <ms>', 'Plugin script timeout');
+    if (name !== 'remove') cmd.option('--script-timeout <ms>', 'Plugin script timeout')
+      .option('--native-consent', 'Authorize this Gemini operation; may persist source-folder and current-workspace trust');
     if (name === 'sync') cmd.option('--rebuild', 'Rebuild selected owned output').option('--refresh', 'Refresh required Catalog sources');
     cmd.action(async (plugins: string[], raw: Record<string, unknown>) => {
       io.result?.(await runPublicLifecycle(name, plugins, { ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context(`plugin.${name}`, raw)));
@@ -2782,6 +2803,7 @@ function configurePublicCommands(program: Command, options: CliRuntimeOptions, i
     .action(async (selector: string) => { io.result?.(await runPublicPluginShow(selector, { cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.show'))); });
   plugin.command('status').description('Inspect requirements, outputs, and coverage').argument('[plugins...]')
     .addOption(strictValueOption('--context <context>', 'Observation context', ['user', 'project']))
+    .option('--observe-native', 'Start a supported native client to observe effective project trust')
     .action(async (plugins: string[], raw: Record<string, unknown>) => { io.result?.(await runPublicPluginStatus(plugins, { ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.status', raw))); });
 
   devPlugin.command('remove').description('Delete one owned plugin source tree').argument('<plugin>')
@@ -2903,6 +2925,10 @@ function scanPresentation(program: Command, argv: readonly string[]): { json: bo
 export async function runCli(argv: string[], options: CliRuntimeOptions = {}): Promise<number> {
   const interruption = createPublicCommandInterruption();
   const io = { ...createDefaultIo(), ...options.io };
+  if (argv[0] === 'internal' && argv[1] === 'cursor-workspace-open') {
+    return runCursorWorkspaceHookCli(argv.slice(2), { cwd: options.cwd ?? process.cwd(), env: options.env,
+      stdin: options.stdin ?? process.stdin, stdout: io.stdout, stderr: io.stderr });
+  }
   const delimiter = argv.indexOf('--');
   const awArgs = delimiter < 0 ? argv : argv.slice(0, delimiter);
   const context = createCliExecutionContext({ ...options, io });

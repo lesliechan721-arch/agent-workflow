@@ -15,7 +15,6 @@ import {
 } from './plugin-root.mjs';
 
 const execFileAsync = promisify(execFile);
-const EXPECTED_MANIFEST_CONTRACT_VERSION = 19;
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024;
@@ -145,9 +144,10 @@ async function loadProductionBundler(cliPackageRoot) {
   } catch (error) {
     throw codedError('bundlerUnavailable', `Failed to load built CLI bundler: ${error.message}`);
   }
+  const { SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION } = await import('@lesliechan721/aw-plugin-core/manifest');
   if (
     manifestModule.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
-      !== EXPECTED_MANIFEST_CONTRACT_VERSION
+      !== SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
     || typeof manifestModule.readPluginManifest !== 'function'
     || typeof manifestModule.discoverPlugins !== 'function'
     || typeof generatorModule.bundleLocalPlugin !== 'function'

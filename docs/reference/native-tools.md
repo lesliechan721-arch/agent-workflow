@@ -4,7 +4,7 @@
 
 ## 1. 作者声明与能力查询
 
-Plugin Manifest v3 的 `nativeTools` 要求 `aw.native-tools.v2`。从当前工具查询字段和限制：
+Plugin Manifest v4 的 `nativeTools` 要求 `aw.native-tools.v2`。从当前工具查询字段和限制：
 
 ```bash
 aw dev plugin capabilities --surface native-tools --json

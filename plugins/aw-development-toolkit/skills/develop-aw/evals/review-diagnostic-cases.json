@@ -32,7 +32,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "workspace/plugins/notes/.agents-plugin/plugin.json": "{\"schemaVersion\": 3, \"name\": \"notes\", \"version\": \"0.1.0\", \"description\": \"Release note draft plugin\", \"skills\": \"./skills\"}",
+          "workspace/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Release note draft plugin\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "workspace/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Draft supplied release notes.\n---\n\n# notes\n\nUse supplied changes only.\n"
         },
         "pathPrepend": [
@@ -63,7 +63,7 @@
       ],
       "input": {
         "workspaceFiles": {
-          "workspace/plugins/notes/.agents-plugin/plugin.json": "{\"schemaVersion\": 3, \"name\": \"notes\", \"version\": \"0.1.0\", \"description\": \"Release note draft plugin\", \"skills\": \"./skills\"}",
+          "workspace/plugins/notes/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 4,\n  \"name\": \"notes\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Release note draft plugin\",\n  \"skills\": \"./skills\",\n  \"marketplace\": {\n    \"category\": \"test\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  }\n}\n",
           "workspace/plugins/notes/skills/notes/SKILL.md": "---\nname: notes\ndescription: Draft notes.\n---\n\n# notes\n\nUse only supplied changes.\n"
         },
         "pathPrepend": [

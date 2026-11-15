@@ -1,11 +1,13 @@
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Scope } from '../types.js';
 import type { RebuildCommandRuntime } from '../commands/rebuild-command.js';
+import { finalizePreparedPlatformRebuildSession } from '../commands/rebuild-integration.js';
 import { addRequirements } from '../commands/intent-command.js';
 import { createEmptyIntent, calculateIntentDigest, removeIntentRoot, type PluginIntent } from '../intent/intent-codec.js';
 import { observeIntent, writeIntent, resolveIntentPath, type IntentObservation } from '../intent/intent-store.js';
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
-import { observePreferences, normalizeAgents, writePreferences } from '../intent/deployment-preferences.js';
+import { observePreferences, normalizeAgents, writePreferences, type AgentId } from '../intent/deployment-preferences.js';
+import { hasSharedUserPackage } from '../platforms/layout.js';
 import { createScopeContext } from '../intent/scope-context.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -16,8 +18,8 @@ import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, type DemandSnapshot } from './demand.js';
-import { readJointDemand, deriveJointDemand, findPlacementConflicts, targetsConflict, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
-import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, describeRecoveryPlan, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan } from './coordinator.js';
+import { readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
+import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan } from './coordinator.js';
 import { readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
 import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
@@ -34,6 +36,7 @@ export interface JointRecoveryState {
   evidence: string;
 }
 const diagnostic = (code: string, message = code): RecoveryDiagnostic => ({ code, message });
+const canReuseProviderAcrossScopes = (target: AgentId): boolean => target === 'generic' || hasSharedUserPackage(target);
 function intentReceipt(observation: IntentObservation): RecoveryReceipt['intent'] {
   return { state: observation.state,
     roots: observation.state === 'valid' ? observation.value.roots.map((root) => root.pluginId)
@@ -67,10 +70,22 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
   }
   receipt.requestedTargets = receipt.targetResults.map(({ pluginId, agent, scope, delivery }) => ({ pluginId, agent, scope, delivery }));
   for (const target of receipt.targetResults) {
-    const placement = plan.joint?.demand.placements.find((item) => item.pluginId === target.pluginId && item.target === target.agent);
+    const placements = plan.joint?.demand.placements ?? [];
+    const activationOnly = plan.joint?.children.some((child) => child.options.nativeActivationOnlyTargets?.some((item) =>
+      item.pluginId === target.pluginId && item.platform === target.agent && item.scope === target.scope));
+    const placement = placements.find((item) => item.pluginId === target.pluginId && item.target === target.agent && item.scope === target.scope)
+      ?? (target.scope === 'project' && activationOnly ? placements.find((item) =>
+        item.pluginId === target.pluginId && item.target === target.agent && item.scope === 'user'
+        && item.contributions.some((contribution) => contribution.scope === target.scope)) : undefined);
     if (placement) {
-      target.requiredBy = [...new Set(placement.contributions.map((item) => item.root))];
+      const contributions = placement.scope === target.scope ? placement.contributions
+        : placement.contributions.filter((item) => item.scope === target.scope);
+      target.requiredBy = [...new Set(contributions.map((item) => item.root))];
       target.providerScope = placement.scope;
+      if (placement.scope !== target.scope) {
+        target.requirementScope = target.scope;
+        target.relation = contributions.some((item) => item.root === target.pluginId) ? 'root' : 'dependency';
+      }
     }
   }
   receipt.remainingTargets = receipts.flatMap((item) => item.remainingTargets);
@@ -247,21 +262,21 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     errors.push(diagnostic('invalidExactTargets', '精确重试目标不属于当前请求，请重新检查并选择。'));
   }
   const selected = demand.placements.filter((placement) => targets.includes(placement.target)
-    && !demand.conflicts.some((conflict) => [conflict.left, conflict.right].some((position) => position.target === placement.target && position.scope === placement.scope))
     && (!options.exactTargets || options.exactTargets.some((exact) => exact.agent === placement.target
       && (command === 'uninstall' ? previousDemand.placements.some((previous) => previous.pluginId === placement.pluginId
         && previous.target === placement.target && previous.contributions.some((item) => item.path.includes(exact.pluginId)
           && (!exact.scope || item.scope === exact.scope)))
         : (!exact.scope || placement.contributions.some((item) => item.scope === exact.scope))
           && (exact.pluginId === placement.pluginId || placement.contributions.some((item) => item.path.includes(exact.pluginId))))))
-    && (command === 'uninstall' ? !(options.force && requested.includes(placement.pluginId))
+    && (command === 'uninstall' ? canReuseProviderAcrossScopes(placement.target)
+      && !(options.force && requested.includes(placement.pluginId))
       && previousDemand.placements.some((previous) => previous.pluginId === placement.pluginId && previous.target === placement.target
         && previous.scope !== placement.scope && previous.contributions.some((item) => item.scope === scope && requested.includes(item.root)))
       : placement.contributions.some((item) => requested.includes(item.root)
         || options.allowDependencySelectors && item.path.some((id) => requested.includes(id))) || options.existingOnly && requested.includes(placement.pluginId)));
   const activationOnlyTargets: NonNullable<RecoveryOptions['nativeActivationOnlyTargets']> = [];
   if (snapshot.project && !errors.length) {
-    const sharedNative = selected.filter((item) => item.scope === 'user' && (item.target === 'codex' || item.target === 'claude')
+    const sharedNative = selected.filter((item) => item.scope === 'user' && ['codex', 'claude', 'gemini', 'copilot'].includes(item.target)
       && item.contributions.some((entry) => entry.scope === 'project'));
     if (sharedNative.length) {
       const expanded: DemandSnapshot = { ...snapshot.project, roots: [...new Map(sharedNative.map((item) => [item.pluginId, {
@@ -276,8 +291,8 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         if (item.target === 'codex') {
           const surface = analyzeCodexSurface(item.plugin.manifest);
           const live = (actual?.backend as { live?: { components?: Array<{ kind: string; key: string; state: string }> } } | undefined)?.live;
-          const explicitlyDisabled = live?.components?.some((component) => component.kind === 'activation'
-            && component.key === 'project' && component.state === 'disabled');
+          const explicitlyDisabled = actual?.deploymentObservations?.some((observation) =>
+            observation.after.consumers.some((consumer) => consumer.activation === 'disabled'));
           const userProvidesComponents = surface.components.every((component) => !component.scopes.includes('project') || component.scopes.includes('user'));
           const retiringProjectComponents = live?.components?.some((component) => component.kind === 'ownership'
             && component.key !== 'native' && !component.key.startsWith('activation-') && !component.key.startsWith('marketplace-')
@@ -290,7 +305,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
           }
         }
         if (actual?.content !== 'satisfied') {
-          if (item.target === 'claude') activationOnlyTargets.push({ pluginId: item.pluginId, platform: 'claude', scope: 'project' });
+          if (item.target !== 'generic') activationOnlyTargets.push({ pluginId: item.pluginId, platform: item.target, scope: 'project' });
           selected.push({ ...item, scope: 'project' });
         }
       }
@@ -315,7 +330,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     originalIntent: observationEvidence(original.intent), preferencesEvidence: observationEvidence(snapshot.user.preferences),
     plannedImpact: { declaration: Boolean(declaration), preferences: false, config: false, outputs: false },
     changes: declaration ? [`保存 ${scope} 插件需求。`] : [], warnings: [], nativeGroups: [],
-    historicalNativeTargets: new Set(), deliverySwitchChecks: [], portableGroups: [], portableProtectionGroups: [],
+    portableGroups: [], portableProtectionGroups: [],
     portableResidues: [], sourceRefreshes: [], sourceRefreshFailures: [], runtime, blockExecution: errors.some((error) => ['syncPluginNotDesired', 'pluginIntentRootMissing', 'pluginIntentStateInvalid', 'catalogSnapshotInvalid', 'installTargetSelectionUnsupported', 'invalidExactTargets', 'dependencyStillRequired'].includes(error.code)
       || error.code === 'targetsNotConfigured' && !options.retireUnselectedTargets)
       || !snapshot.preferences || snapshot.user.roots === null || snapshot.project?.roots === null, joint };
@@ -325,21 +340,26 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   try {
     const currentStatus = observedStatus ?? await readRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner,
       codexObservationSession: runtime.codexObservationSession, targets: undefined }, savedDemand);
+    const sharedReferenceView = deriveSharedReferenceView(snapshot, demand, currentStatus);
     const ownsOutput = (item: { pluginId: string; agent: string | null; scope: Scope }): boolean =>
       currentStatus.ownedTargets?.some((owned) => owned.pluginId === item.pluginId
         && owned.agent === item.agent && owned.scope === item.scope) === true;
     const liveConsumers = currentStatus.existingTargets ?? [];
-    const sameProvider = (consumer: { agent: string; scope: Scope }, provider: { agent: string | null; scope: Scope }): boolean =>
-      consumer.agent === provider.agent && (provider.scope === 'user' || consumer.scope === provider.scope);
+    const sameProvider = (consumer: { agent: AgentId; scope: Scope }, provider: { agent: AgentId | null; scope: Scope }): boolean =>
+      consumer.agent === provider.agent && (consumer.scope === provider.scope
+        || provider.scope === 'user' && canReuseProviderAcrossScopes(consumer.agent));
     const automaticRetirements = command === 'uninstall' && !options.keepDependencies && demand.complete
       ? previousDemand.placements.filter((placement) => placement.scope === scope && targets.includes(placement.target)
-        && (placement.target === 'codex' || placement.target === 'claude' ? currentStatus.coverage.native : currentStatus.coverage.portable)
-        && !requested.includes(placement.pluginId) && !rootIds.includes(placement.pluginId)
+        && (placement.target !== 'generic' ? currentStatus.coverage.native : currentStatus.coverage.portable)
+        && !requested.includes(placement.pluginId)
+        && !(canReuseProviderAcrossScopes(placement.target) ? rootIds.includes(placement.pluginId)
+          : snapshot[placement.scope]?.roots?.some((root) => root.pluginId === placement.pluginId))
         && placement.contributions.some((item) => explicitlyRemoves({ pluginId: item.root, agent: placement.target, scope: item.scope }))
-        && !demand.placements.some((item) => item.pluginId === placement.pluginId && item.target === placement.target)
+        && !demand.placements.some((item) => item.pluginId === placement.pluginId && item.target === placement.target
+          && (item.scope === placement.scope || canReuseProviderAcrossScopes(placement.target)))
         && ownsOutput({ pluginId: placement.pluginId, agent: placement.target, scope: placement.scope })) : [];
     // A live consumer can outlast its Intent or its Active catalog entry.
-    const retainedConsumerFor = (provider: { pluginId: string; agent: string | null; scope: Scope }) => liveConsumers.find((consumer) => {
+    const retainedConsumerFor = (provider: { pluginId: string; agent: AgentId | null; scope: Scope }) => liveConsumers.find((consumer) => {
       if (explicitlyRemoves(consumer) && ownsOutput(consumer) || automaticRetirements.some((item) =>
         item.pluginId === consumer.pluginId && item.target === consumer.agent && item.scope === consumer.scope)) return false;
       if (!sameProvider(consumer, provider)) return false;
@@ -375,10 +395,9 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       return plan;
     }
     plan.dependencyCleanupTargets = automaticRetirements.map((item) => ({ pluginId: item.pluginId, agent: item.target, scope: item.scope }));
-    // Native platforms share one complete marketplace candidate per scope.
-    const nativeTargets = targets.filter((target) => target === 'codex' || target === 'claude');
+    const nativeTargets = targets.filter((target) => target !== 'generic');
     const targetGroups: Array<typeof targets> = [...(nativeTargets.length ? [nativeTargets] : []),
-      ...targets.filter((target) => target !== 'codex' && target !== 'claude').map((target) => [target])];
+      ...targets.filter((target) => target === 'generic').map((target) => [target])];
     for (const currentScope of snapshot.context.scopes) {
       for (const groupTargets of targetGroups) {
         const placements = selected.filter((item) => item.scope === currentScope && groupTargets.includes(item.target)
@@ -391,7 +410,8 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
           ...demand.placements.filter((item) => item.scope === currentScope && groupTargets.includes(item.target)),
           ...placements,
         ];
-        const userProviders = demand.placements.filter((item) => item.scope === 'user' && groupTargets.includes(item.target));
+        const userProviders = demand.placements.filter((item) => item.scope === 'user' && groupTargets.includes(item.target)
+          && !childPlacements.some((project) => project.scope === 'project' && project.pluginId === item.pluginId && project.target === item.target));
         const childDemand: DemandSnapshot = { ...sourceDemand,
           targetRequirements: childPlacements.map((item) => ({ pluginId: item.pluginId, target: item.target })),
           userProviders: Object.fromEntries(groupTargets.map((target) => [target, userProviders
@@ -400,6 +420,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
               sourceState: 'ready' as const, blockers: [], plugin: item.plugin }])).values()] };
         const child = await prepareScopedRecovery(command === 'reinstall' ? 'reinstall' : 'sync',
           [...new Set(placements.map((item) => item.pluginId))], { ...options, scope: currentScope, targets: groupTargets, all: false,
+            sharedReferenceView,
             cwd: snapshot.context.projectRoot ?? options.cwd, demandOverride: childDemand,
             exactTargets: placements.map((item) => ({ pluginId: item.pluginId, agent: item.target })),
             nativeActivationOnlyTargets: activationOnlyTargets.filter((item) => item.scope === currentScope
@@ -411,9 +432,9 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
                 .map((item) => ({ pluginId: item.pluginId, platform: 'codex' as const, scope: 'user' as const })) : [],
             excludedPluginIds: currentScope === 'project' ? userProviders.map((item) => item.pluginId) : [],
             dependencyScopeOverrides: currentScope === 'project'
-              ? userProviders.filter((provider) => (provider.target === 'codex' || provider.target === 'claude')
+              ? userProviders.filter((provider) => provider.target !== 'generic'
                 && !placements.some((item) => item.pluginId === provider.pluginId && item.target === provider.target))
-                .map((item) => ({ pluginId: item.pluginId, platform: item.target as 'codex' | 'claude', scope: 'user' as const })) : [],
+                .map((item) => ({ pluginId: item.pluginId, platform: item.target as import('../types.js').PlatformName, scope: 'user' as const })) : [],
           }, runtime);
         // Synthetic roots are only an execution projection, never persisted Intent.
         child.originalIntent = observationEvidence(sourceDemand.intent);
@@ -435,6 +456,10 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     for (const [index, left] of portableCandidates.entries()) for (const right of portableCandidates.slice(index + 1)) {
       if (left.child.options.scope === right.child.options.scope || left.target.agent !== right.target.agent
         || left.target.skill !== right.target.skill) continue;
+      if (left.target.providerPluginId === right.target.providerPluginId
+        && left.prepared.logicalIdentity !== '' && left.prepared.logicalIdentity === right.prepared.logicalIdentity
+        && left.target.physicalPath !== right.target.physicalPath
+        && [left, right].every((item) => item.target.observation === 'absent' || item.target.ownership === 'aw')) continue;
       const conflict = diagnostic('crossScopeSkillCollision', `${left.target.providerPluginId}@${left.child.options.scope} (${left.target.physicalPath}) 与 ${right.target.providerPluginId}@${right.child.options.scope} (${right.target.physicalPath}) 占用同一 Agent Skill 名。`);
       for (const item of [left, right]) {
         item.child.receipt.targetResults.find((target) => target.pluginId === item.prepared.options.selector && target.agent === item.target.agent)?.blockers.push(conflict);
@@ -449,7 +474,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         component.kind === 'ownership' && component.key !== 'native'
         && !component.key.startsWith('activation-') && !component.key.startsWith('marketplace-')
         && ['present', 'partial'].includes(component.state));
-      if (item.scope !== 'project' || (item.agent !== 'codex' && item.agent !== 'claude')) return false;
+      if (item.scope !== 'project' || !item.agent || !['codex', 'claude', 'gemini', 'copilot'].includes(item.agent)) return false;
       return demand.placements.some((placement) => {
         if (placement.pluginId !== item.pluginId || placement.target !== item.agent) return false;
         if (item.agent === 'codex' && scopedExtensions) {
@@ -473,11 +498,13 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       options.retireUnselectedTargets && (!snapshot.preferences!.targets.includes(item.agent)
         || snapshot.preferences!.exclusions.some((entry) => entry.plugin === item.pluginId && entry.target === item.agent))
       || command === 'uninstall' && explicitlyRemoves(item)
-      || selected.some((placement) => placement.pluginId === item.pluginId && placement.target === item.agent && placement.scope !== item.scope
+      || selected.some((placement) => canReuseProviderAcrossScopes(placement.target)
+        && placement.pluginId === item.pluginId && placement.target === item.agent && placement.scope !== item.scope
         && (item.delivery?.kind !== 'agent-skills' || (item.backend as { logicalIdentity?: string } | undefined)?.logicalIdentity === placement.plugin.catalogLogicalIdentity))
     ));
     for (const item of currentStatus.observedTargets ?? []) {
-      if (ownsOutput(item) && !requiredNativeActivation(item) && selected.some((placement) => placement.pluginId === item.pluginId
+      if (ownsOutput(item) && !requiredNativeActivation(item) && selected.some((placement) => canReuseProviderAcrossScopes(placement.target)
+        && placement.pluginId === item.pluginId
         && placement.target === item.agent && placement.scope !== item.scope)
         && !demand.placements.some((placement) => placement.pluginId === item.pluginId
           && placement.target === item.agent && placement.scope === item.scope)) retire.push(item);
@@ -495,28 +522,11 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
           && placement.target === item.agent && placement.scope === item.scope)) continue;
       retire.push(item);
     }
-    // Conflicting replacements are filtered before child preparation. Keep the
-    // affected plugins' old outputs even when that leaves no deployment child.
-    const blockedReplacementPlugins = new Set(demand.conflicts.flatMap((conflict) =>
-      [...conflict.left.plugins, ...conflict.right.plugins]));
-    const safeRetirements = retire.filter((item) => !blockedReplacementPlugins.has(item.pluginId));
-    const retiringKeys = new Set(safeRetirements.map((item) => `${item.pluginId}\0${item.agent}\0${item.scope}`));
-    const remainingPositions = currentStatus.extraObserved.filter((item) => item.agent !== null
-      && !retiringKeys.has(`${item.pluginId}\0${item.agent}\0${item.scope}`))
-      .map((item) => ({ pluginId: item.pluginId, target: item.agent!, scope: item.scope }));
-    const remainingConflicts = findPlacementConflicts([...demand.placements, ...remainingPositions]);
-    if (remainingConflicts.length) {
-      plan.receipt.blockers.push(...remainingConflicts);
-      for (const child of children) for (const target of child.receipt.targetResults) {
-        if (remainingConflicts.some((conflict) => [conflict.left, conflict.right].some((position) => position.target === target.agent && position.scope === target.scope)))
-          target.blockers.push(diagnostic('targetPlacementConflict'));
-      }
-    }
     const deploymentBlocked = children.some((child) => child.blockExecution
       || child.receipt.targetResults.some((item) => item.blockers.length));
     if (!plan.blockExecution && !deploymentBlocked) {
       const cleanups: RecoveryPlan[] = [];
-      const pendingRetirements = [...new Map(safeRetirements.map((entry) => [`${entry.pluginId}\0${entry.agent}\0${entry.scope}`, entry])).values()];
+      const pendingRetirements = [...new Map(retire.map((entry) => [`${entry.pluginId}\0${entry.agent}\0${entry.scope}`, entry])).values()];
       const orderedRetirements: typeof pendingRetirements = [];
       while (pendingRetirements.length) {
         const ready = pendingRetirements.findIndex((candidate) => !pendingRetirements.some((consumer) =>
@@ -534,6 +544,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
               .map((placement) => placement.pluginId)])),
         } : snapshot.user;
         const cleanup = await prepareScopedRecovery('cleanup', [item.pluginId], { ...options,
+          sharedReferenceView,
           scope: item.scope, cwd: snapshot.context.projectRoot ?? options.cwd, targets: [item.agent], all: false,
           // Ordinary remove's force bypasses dependencies, never ownership checks.
           force: false, exactTargets: undefined, demandOverride: cleanupDemand }, runtime);
@@ -549,6 +560,45 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       }
       children.unshift(...cleanups);
     }
+    // The first preview already seals every target in its native group. A lone
+    // Gemini/Copilot ensure group has no later sibling contribution to refresh here.
+    const onlyChild = children.length === 1 ? children[0] : undefined;
+    const onlyGroup = onlyChild?.nativeGroups.length === 1 ? onlyChild.nativeGroups[0] : undefined;
+    const singleNativePreviewComplete = !plan.blockExecution && onlyChild !== undefined && !onlyChild.blockExecution
+      && onlyChild.command === 'sync' && (onlyGroup?.platform === 'gemini' || onlyGroup?.platform === 'copilot')
+      && onlyGroup.command === 'sync'
+      && onlyGroup.preview.operationPlan !== undefined
+      && (onlyGroup.preview.operationPlan.deploymentPlans?.length ?? 0) > 0
+      && onlyGroup.preview.operationPlan.deploymentPlans!.every((deployment) => deployment.operation === 'ensure')
+      && onlyChild.receipt.targetResults.length > 0
+      && onlyChild.receipt.targetResults.every((target) => target.blockers.length === 0)
+      && onlyChild.portableGroups.length === 0 && onlyChild.portableProtectionGroups.length === 0
+      && onlyChild.portableResidues.length === 0;
+    // Other scopes and groups can change shared descriptors, preApply actions
+    // or retained packages. Refresh those previews before exposing Review.
+    if (!singleNativePreviewComplete) for (const child of children) await refreshRecoveryNativePreviews(child);
+    const preparedNativeTargets = children.flatMap((child) => child.receipt.targetResults)
+      .filter((target) => target.delivery?.kind === 'native');
+    const failedProviders = preparedNativeTargets.filter((target) => target.blockers.length > 0);
+    for (const target of preparedNativeTargets) {
+      const placement = demand.placements.find((item) => item.pluginId === target.pluginId
+        && item.target === target.agent && item.scope === target.scope);
+      if (!placement) continue;
+      for (const provider of failedProviders) {
+        if (provider === target || provider.agent !== target.agent) continue;
+        const dependency = demand.placements.find((item) => item.pluginId === provider.pluginId
+          && item.target === provider.agent && item.scope === provider.scope);
+        if (!dependency?.contributions.some((contribution) => placement.contributions.some((parent) =>
+          parent.root === contribution.root && parent.scope === contribution.scope
+          && parent.path.length < contribution.path.length
+          && parent.path.every((pluginId, index) => pluginId === contribution.path[index])))) continue;
+        for (const blocker of provider.blockers) if (!target.blockers.some((entry) =>
+          entry.code === blocker.code && entry.pluginId === provider.pluginId)) {
+          target.blockers.push({ ...blocker, pluginId: provider.pluginId });
+        }
+      }
+    }
+    finalizePreparedPlatformRebuildSession(runtime.preparedArtifactRenderResults!);
     plan.sourceRefreshes = [...new Map(children.flatMap((child) => child.sourceRefreshes).map((item) => [item.sourceId, item])).values()];
     plan.sourceRefreshFailures = [...new Map(children.flatMap((child) => child.sourceRefreshFailures).map((item) => [item.sourceId, item])).values()];
     plan.changes.push(...children.flatMap((child) => child.changes));
@@ -645,7 +695,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           if (!joint.originalOptions.existingOnly) child.demand.intent = currentIntent;
           const fresh = await measureRecoveryPerformanceStage(runtime, 'recovery.child.plan', () =>
             prepareScopedRecovery(child.command, typeof pluginIds === 'string' ? [pluginIds] : pluginIds, {
-              ...child.options, targets: agent === 'codex' || agent === 'claude' ? child.options.targets : [agent], all: false,
+              ...child.options, targets: agent !== 'generic' ? child.options.targets : [agent], all: false,
               exactTargets: child.options.exactTargets?.filter((target) => (typeof pluginIds === 'string' ? [pluginIds] : pluginIds).includes(target.pluginId)),
             }, runtime));
           fresh.originalIntent = observationEvidence(currentIntent);
@@ -659,10 +709,12 @@ export async function executeJointRecovery(plan: RecoveryPlan,
             target.blockers.push(...(reviewed?.blockers ?? []).filter((error) => reviewed?.execution === 'failed'
               || ['configApplyRequiresExistingOutput', 'crossScopeSkillCollision', 'targetPlacementConflict',
                 'preApplyAuthorizationRequired', 'nativeToolAuthorizationRequired', 'providerSwitchPreApplyFailed', 'dependencyStillRequired'].includes(error.code)));
-            if (reviewed?.execution === 'failed') target.execution = 'failed';
+            if (reviewed?.execution === 'failed') {
+              target.execution = 'failed';
+              if (reviewed.backend) target.backend = reviewed.backend;
+            }
             if (child.command !== 'cleanup' && failedCleanups.some((failed) =>
-              targetsConflict({ target: failed.agent, scope: failed.scope }, { target: target.agent, scope: target.scope })
-              || failed.agent === target.agent && (failed.pluginId === target.pluginId || joint.demand.roots.some((root) =>
+              failed.agent === target.agent && (failed.pluginId === target.pluginId || joint.demand.roots.some((root) =>
                 root.pluginId === target.pluginId && root.target === target.agent && root.dependencies.includes(failed.pluginId))))) {
               target.blockers.push(diagnostic('providerSwitchCleanupFailed'));
             }
@@ -697,6 +749,10 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         const replacementFailures = new Set<string>();
         for (const child of joint.children.filter((child) => child.command !== 'cleanup')) {
           for (const target of child.receipt.targetResults) {
+            if (replacementFailures.has(`${target.pluginId}\0${target.agent}`)) {
+              target.blockers.push(diagnostic('dependencyApplyFailed'));
+              continue;
+            }
             if (child.options.nativeActivationOnlyTargets?.some((item) => item.pluginId === target.pluginId
               && item.platform === target.agent && item.scope === target.scope)) continue;
             if (!cleanupChildren.some((cleanup) => cleanup.receipt.requestedTargets.some((old) => old.pluginId === target.pluginId))) continue;
@@ -752,7 +808,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         for (const child of joint.children.filter((child) => child.command !== 'cleanup')) {
           for (const target of child.receipt.requestedTargets) nodeFor(target.pluginId, target.scope).targets.push({ child, agent: target.agent });
         }
-        const hasNative = (node: Node): boolean => node.targets.some(({ agent }) => agent === 'codex' || agent === 'claude');
+        const hasNative = (node: Node): boolean => node.targets.some(({ agent }) => agent !== 'generic');
         for (const target of packages?.targets ?? []) {
           const sameScope = nodes.get(`${target.pluginId}\0${target.scope}`);
           const native = sameScope && hasNative(sameScope) ? sameScope
@@ -762,14 +818,16 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         }
         for (const node of nodes.values()) {
           for (const { agent } of node.targets) {
-            const plugin = joint.demand.placements.find((item) => item.pluginId === node.pluginId && item.target === agent)?.plugin;
+            const plugin = joint.demand.placements.find((item) => item.pluginId === node.pluginId && item.target === agent && item.scope === node.scope)?.plugin;
             for (const name of plugin?.manifest.dependencies ?? []) {
               const pluginId = `${plugin!.sourceId}/${name}`;
-              const provider = joint.demand.placements.find((item) => item.pluginId === pluginId && item.target === agent);
+              const providers = joint.demand.placements.filter((item) => item.pluginId === pluginId && item.target === agent);
+              const provider = providers.find((item) => item.scope === node.scope) ?? providers.find((item) => item.scope === 'user');
               if (provider) node.dependencies.add(`${pluginId}\0${provider.scope}`);
             }
           }
-          if (node.scope === 'project' && nodes.has(`${node.pluginId}\0user`)) node.dependencies.add(`${node.pluginId}\0user`);
+          if (node.scope === 'project' && node.targets.some(({ agent }) => ['codex', 'claude', 'gemini', 'copilot'].includes(agent))
+            && nodes.has(`${node.pluginId}\0user`)) node.dependencies.add(`${node.pluginId}\0user`);
           for (const dependency of node.packages?.flatMap((item) => item.dependencies) ?? []) {
             for (const provider of nodes.values()) if (provider.pluginId === dependency) node.dependencies.add(`${dependency}\0${provider.scope}`);
           }
@@ -805,7 +863,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         };
         while (pending.length) {
           const index = pending.findIndex((node) => {
-            const groups = node.targets.filter(({ child, agent }) => (agent === 'codex' || agent === 'claude') && !executedNativeChildren.has(child));
+            const groups = node.targets.filter(({ child, agent }) => agent !== 'generic' && !executedNativeChildren.has(child));
             const members = new Set([node, ...groups.flatMap(({ child }) => pending.filter((candidate) => candidate.targets.some((target) => target.child === child)))]);
             return [...members].every((member) => [...member.dependencies].every((key) =>
               !pending.some((candidate) => !members.has(candidate) && `${candidate.pluginId}\0${candidate.scope}` === key)));
@@ -832,7 +890,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
             }
           }
           for (const { child, agent } of node.targets) {
-            const native = agent === 'codex' || agent === 'claude';
+            const native = agent !== 'generic';
             if (native && executedNativeChildren.has(child)) continue;
             if (native) executedNativeChildren.add(child);
             const result = await executeChild(child, native ? child.receipt.requestedTargets.map((target) => target.pluginId) : node.pluginId, agent);

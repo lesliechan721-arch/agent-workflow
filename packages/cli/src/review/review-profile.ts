@@ -20,6 +20,8 @@ import {
   type Scope,
 } from '@lesliechan721/aw-plugin-core'
 
+import { getAuthoringPlatformCapabilities } from './platform-profile.js'
+
 import type { PluginConfigSource } from '../utils/plugin-config.js'
 import {
   ReviewSelectionError,
@@ -136,7 +138,7 @@ export function normalizeReviewProfileConfig(value: unknown): ReviewProfileConfi
 export function parseReviewProfile(value: unknown): ReviewProfile {
   if (!isRecord(value)) throw new Error('Review source binding profile must be an object.')
   const keys = Object.keys(value).sort(compareText)
-  if (keys.join(',') !== 'config,id,inputDigest,kind,platform,scope') {
+  if (keys.join(',') !== 'config,id,inputDigest,kind,platform,requestedSkills,scope') {
     throw new Error('Review source binding profile fields are invalid.')
   }
   const platform = value.platform
@@ -148,6 +150,7 @@ export function parseReviewProfile(value: unknown): ReviewProfile {
     || value.id !== `${platform}-${scope}`
     || typeof value.inputDigest !== 'string'
     || !digestPattern.test(value.inputDigest)
+    || !Array.isArray(value.requestedSkills) || value.requestedSkills.some((skill) => typeof skill !== 'string' || !safeIdPattern.test(skill))
   ) throw new Error('Review source binding profile identity is invalid.')
   return {
     kind: 'review',
@@ -155,6 +158,7 @@ export function parseReviewProfile(value: unknown): ReviewProfile {
     platform: platform as PlatformTarget,
     scope,
     inputDigest: value.inputDigest,
+    requestedSkills: value.requestedSkills as string[],
     config: normalizeReviewProfileConfig(value.config),
   }
 }
@@ -295,6 +299,7 @@ export function createReviewProfile(options: {
   config: ReviewProfileConfig
   skills: readonly ReviewSelectedSkill[]
   pluginConfigs: readonly ReviewPluginProfileConfig[]
+  requestedSkills?: readonly string[]
 }): ReviewProfile {
   const config = normalizeReviewProfileConfig(Object.fromEntries(Object.entries(options.config)
     .filter(([, values]) => Object.keys(values).length > 0)))
@@ -325,10 +330,13 @@ export function createReviewProfile(options: {
     id: `${options.platform}-${options.scope}`,
     platform: options.platform,
     scope: options.scope,
+    requestedSkills: [...(options.requestedSkills ?? [])],
     inputDigest: digestCanonical({
       platform: options.platform,
       scope: options.scope,
       skills: skillInputs,
+      requestedSkills: [...(options.requestedSkills ?? [])],
+      capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope),
       config: configInputs,
     }),
     config,

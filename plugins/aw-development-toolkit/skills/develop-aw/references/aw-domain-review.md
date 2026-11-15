@@ -4,7 +4,7 @@
 
 ## Plugin、组件与 profile
 
-核对 manifest 中的组件 key、静态 source、动态 target、共享输入与所选 profile 是否对应。单 Skill 关注其必要来源；Plugin 范围还需检查容器声明能否支持这些组件，以及组件的配置与 scope 是否相容。
+核对 manifest 中的组件 key、静态 source、动态组件集合、共享输入与所选 profile 是否对应。单 Skill 关注其必要来源；Plugin 范围还需检查容器声明能否支持这些组件，以及组件的配置与 scope 是否相容。
 
 同一公开能力在各 surface 的权限、model-callable/manual-only 策略和必要环境应符合声明。涉及组件或配置采用 组件方法（`references/plugin-components.md`），平台字段、文件投影和能力要求采用 平台投影（`references/platform-projection.md`）。
 
@@ -12,7 +12,7 @@
 
 沿实际消费者区分安装 dependency、build import、Skill runtime file import 和 artifact runtime import。按 构建与共享（`references/build-and-sharing.md`） 核对每条边的 provider、消费者、消费阶段及 capability 传播；构建复用不自动证明安装依赖成立。
 
-检查共享文件是否进入所选 Native/Portable surface，以及运行依赖是否在目标环境可用。导出声明采用 Portable 分发（`references/portable-skills.md`）；原生组件的宿主能力不能直接外推到 Portable。
+检查共享文件是否进入所选平台组件与导出内容，以及运行依赖是否在目标环境可用。导出声明采用 Portable 分发（`references/portable-skills.md`）；原生组件的宿主能力不能直接外推到 Portable。
 
 ## Catalog 与公开能力
 

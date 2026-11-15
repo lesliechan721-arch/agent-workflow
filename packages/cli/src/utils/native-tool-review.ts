@@ -1,8 +1,8 @@
 import path from 'node:path';
-import { createOperationPlan } from '../commands/operation-plan.js';
-import { getCommandPackageId, type NativeToolClosure, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
+import { createOperationPlan, operationPlanNativeToolChanges } from '../commands/operation-plan.js';
+import { canonicalizeIdentityValue, getCommandPackageId, normalizeProducerIdentity, type InstalledCommandProducer, type NativeToolClosure, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 import type { OperationAction } from '../commands/operation-plan.js';
-import { listManagedCommands, normalizeInstalledCommandProducer, readInstalledCommandProducer } from './managed-command-store.js';
+import { listManagedCommands, ManagedCommandError, normalizeInstalledCommandProducer, readInstalledCommandProducer } from './managed-command-store.js';
 
 export interface NativeToolChange {
   producer: ProducerIdentity;
@@ -20,37 +20,44 @@ export function describeNativeToolClosure(closure: NativeToolClosure): string[] 
 /** Bind the native impact to the same immutable plan as the producer files. */
 export async function captureNativeToolChanges(options: {
   actions: OperationAction[];
-  sourceId?: string;
-  pluginName: string;
-  platform: 'codex' | 'claude';
-  scope: 'user' | 'project';
-  projectRoot: string;
+  producers: readonly ProducerIdentity[];
+  nextProducers?: readonly Pick<InstalledCommandProducer, 'producer' | 'sets' | 'nativeTools'>[];
   removed: boolean;
   env: NodeJS.ProcessEnv;
   resourceRoots?: string[];
 }): Promise<NativeToolChange[]> {
+  const producerIds = new Set(options.producers.map((producer) => getCommandPackageId(normalizeProducerIdentity(producer))));
+  if (producerIds.size === 0) return [];
   const previous = new Map<string, { producer: ProducerIdentity; nativeTools?: NativeToolClosure; resourceRoot: string }>();
   const roots = new Set(options.resourceRoots ?? []);
   for (const command of (await listManagedCommands(options.env)).commands) {
     if (command.owner.kind !== 'plugin' || !command.resourceRoot) continue;
     const producer = command.owner.producer;
-    if (producer.sourceId !== options.sourceId || producer.pluginName !== options.pluginName
-      || (producer.platform !== null && producer.platform !== options.platform)
-      || (producer.scope === 'project' && producer.projectRoot !== options.projectRoot)) continue;
+    if (!producerIds.has(getCommandPackageId(producer))) continue;
     roots.add(command.resourceRoot);
   }
   for (const root of roots) {
     const record = await readInstalledCommandProducer(root).catch(() => undefined);
-    if (record && record.producer.sourceId === options.sourceId && record.producer.pluginName === options.pluginName) previous.set(getCommandPackageId(record.producer), { ...record, resourceRoot: root });
+    if (record && producerIds.has(getCommandPackageId(record.producer))) previous.set(getCommandPackageId(record.producer), { ...record, resourceRoot: root });
   }
-  const next = new Map<string, { producer: ProducerIdentity; nativeTools?: NativeToolClosure }>();
+  const next = new Map<string, InstalledCommandProducer>();
+  const addNext = (candidate: Pick<InstalledCommandProducer, 'producer' | 'sets' | 'nativeTools'>): void => {
+    const record = normalizeInstalledCommandProducer({ schemaVersion: 1, producer: candidate.producer, sets: candidate.sets,
+      ...(candidate.nativeTools ? { nativeTools: candidate.nativeTools } : {}) });
+    const id = getCommandPackageId(record.producer);
+    if (!producerIds.has(id)) return;
+    const existing = next.get(id);
+    if (existing && canonicalizeIdentityValue(existing) !== canonicalizeIdentityValue(record)) throw new ManagedCommandError('commandIdentityConflict', 'The same producer has conflicting frozen native tool records.');
+    next.set(id, record);
+  };
+  for (const candidate of options.nextProducers ?? []) addNext(candidate);
   for (const action of options.actions) {
-    if (action.kind === 'syncManagedCommandPackage') next.set(getCommandPackageId(action.producer), action);
+    if (action.kind === 'syncManagedCommandPackage') addNext(action);
     if (action.kind === 'writeOwnedArtifact' || action.kind === 'materializeNativeSkill') {
       const file = action.files?.find((entry) => entry.relativePath === '.aw-command-producer.json');
       if (file) {
         const record = normalizeInstalledCommandProducer(JSON.parse(Buffer.from(file.contentBase64, 'base64').toString('utf8')));
-        next.set(getCommandPackageId(record.producer), record);
+        addNext(record);
       }
     }
   }
@@ -86,7 +93,7 @@ export async function withNativeToolRemovalImpact(plan: import('../commands/oper
   const removals = plan.actions.filter((action) => action.kind === 'removeOwnedArtifact' || action.kind === 'removeMarketplaceProjection');
   if (removals.length === 0) return plan;
   const commands = await listManagedCommands(env);
-  const recorded = new Set(plan.actions.flatMap((action) => action.nativeToolChanges ?? []).map((change) => getCommandPackageId(change.producer)));
+  const recorded = new Set(operationPlanNativeToolChanges(plan).map((change) => getCommandPackageId(change.producer)));
   for (const command of commands.commands) {
     if (command.owner.kind !== 'plugin' || !command.resourceRoot || command.owner.producer.kind === 'package') continue;
     const producer = command.owner.producer;
@@ -99,7 +106,7 @@ export async function withNativeToolRemovalImpact(plan: import('../commands/oper
     });
     if (!action) continue;
     const installed = await readInstalledCommandProducer(command.resourceRoot).catch(() => undefined);
-    if (!installed?.nativeTools) continue;
+    if (!installed?.nativeTools || getCommandPackageId(installed.producer) !== id) continue;
     (action.nativeToolChanges ??= []).push({ producer, before: installed.nativeTools, after: null });
     recorded.add(id);
   }

@@ -10,6 +10,7 @@ import {
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
 import { installWriteCommand } from '../../src/commands/write-commands.js';
+import { observeIntent } from '../../src/intent/intent-store.js';
 import type { PluginMeta } from '../../src/types.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import {
@@ -25,7 +26,8 @@ import {
   getSourceTestRepositoryCwd,
 } from '../setup/test-isolation.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
-import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
+import { createNativeTestExecution, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
 
 interface MutationChildRun {
   completion: Promise<{ code: number | null; output: string }>;
@@ -95,7 +97,7 @@ async function configureCatalog(): Promise<{
 
 function configureDemoManifest(manifest: PluginMeta['manifest']): void {
   manifest.extensions = {
-    instructions: [{ name: 'demo', title: 'Demo', content: 'Demo.' }],
+    instructions: [{ name: 'demo', title: 'Demo', content: 'Demo.', coverage: ['main'] }],
   };
   manifest.config = {
     fields: {
@@ -175,6 +177,7 @@ describe('public AW_HOME mutation command lock', () => {
   });
 
   it('does not acquire the mutation lock for a dependency-plan preview', async () => {
+    installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true });
     const { isolation } = await configureCatalog();
     await syncCatalogSourceGeneration({
       sourceId: 'team',
@@ -184,6 +187,10 @@ describe('public AW_HOME mutation command lock', () => {
     const native = await createNativeTestExecution({ scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
       selectedTargets: [{ pluginId: 'team/demo', platform: 'codex' }], includeSelectedInDemand: true });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    const intentLocation = { cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const intentBefore = await Promise.all((['user', 'project'] as const).map((scope) =>
+      observeIntent({ ...intentLocation, scope })));
     const result = await withAwHomeMutationLock({
       env: isolation.env,
       action: () => installWriteCommand(['team/demo'], {
@@ -194,13 +201,21 @@ describe('public AW_HOME mutation command lock', () => {
         env: isolation.env,
         executionInput: native.executionInput,
         previewOperationPlan: true,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+        nativeCliRunner: runtime.nativeCliRunner,
       }),
     });
     await native.dispose();
 
-    expect(result).toMatchObject({ overallState: 'succeeded' });
+    expect(result, JSON.stringify(result, null, 2)).toMatchObject({ overallState: 'succeeded' });
     expect(result.dependencyPlan?.requestedPluginIds).toEqual(['team/demo']);
+    expect(await Promise.all((['user', 'project'] as const).map((scope) =>
+      observeIntent({ ...intentLocation, scope })))).toEqual(intentBefore);
+    expect(runtime.installed.size).toBe(0);
+    expect(runtime.marketplaces.size).toBe(0);
+    expect(await fs.pathExists(path.join(isolation.env.CODEX_HOME!, 'config.toml'))).toBe(false);
+    expect(await fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'))).toBe(false);
+    expect(runtime.nativeCliRunner.mock.calls.every(([invocation]) => invocation.args.includes('--version')
+      || invocation.args[invocation.args.indexOf('plugin') + 1] === 'list')).toBe(true);
   });
 
   it('commits a source identity update without migrating an existing config store', async () => {

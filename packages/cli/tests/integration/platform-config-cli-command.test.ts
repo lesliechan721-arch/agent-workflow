@@ -2,28 +2,58 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
+import * as platformDiscovery from '../../src/platforms/discovery.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolvePluginConfigStorePath } from '../../src/utils/plugin-config.js';
-import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
-import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+
+const discoverPlatforms = platformDiscovery.discoverPlatforms;
 
 async function fixture(withSkill = false) {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
   await git(cwd, ['init', '--quiet']);
+  let nativeCliRunner: NativeCliRunner | undefined;
+  if (withSkill) {
+    const discovery = vi.spyOn(platformDiscovery, 'discoverPlatforms').mockImplementation((ctx) => discoverPlatforms({
+      ...ctx, macApplicationsDirectories: [], windowsApplicationsDirectories: [], linuxDesktopDirectories: [],
+    }));
+    onTestFinished(() => discovery.mockRestore());
+    const binRoot = path.join(cwd, 'cursor-bin');
+    const executable = path.join(binRoot, 'cursor-agent');
+    await fs.outputFile(executable, '', { mode: 0o755 });
+    for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
+    env.PATH = binRoot;
+    nativeCliRunner = async (invocation) => {
+      if (invocation.command === executable && invocation.args.length === 1 && invocation.args[0] === '--version') {
+        return { exitCode: 0, stdout: 'Cursor Agent 2026.11.05-86047df', stderr: '' };
+      }
+      throw new Error('The Cursor configuration fixture only permits a version probe.');
+    };
+  }
   const sourceRoot = path.join(cwd, 'config-source');
+  if (withSkill) await fs.outputFile(path.join(sourceRoot, 'plugins/demo/render.mjs'), [
+    'import fs from "node:fs"; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,"utf8"));',
+    `const files=${JSON.stringify({ 'SKILL.md': '---\nname: config-demo\ndescription: Config apply fixture.\n---\nFixture.\n', 'README.md': '# Config fixture\n' })};`,
+    'const allowed=c.allowedOutputKinds.includes("skill");const enabled=c.config.values.enabled;',
+    'console.log(JSON.stringify({version:3,components:allowed&&enabled?[{id:"config-demo",kind:"skill",name:"config-demo",content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:allowed&&!enabled?[{id:"config-demo",kind:"skill",reason:"config-disabled"}]:[],unmet:[]}));',
+  ].join('\n'));
   await createCatalogSnapshotFixture(sourceRoot, 'demo', [], '# Config fixture\n', (manifest) => {
     manifest.platforms = ['cursor', 'generic'];
-    if (withSkill) manifest.skills = './skills';
+    if (withSkill) {
+      manifest.artifacts = { configKeys: ['enabled'], scopes: ['project'] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    }
     manifest.config = { schemaVersion: 5, fields: {
       mode: { type: 'string', default: 'common-default', choices: { allowCustom: true,
         presets: [{ id: 'fast', title: 'Common fast', value: 'common-fast' }] } },
@@ -35,21 +65,6 @@ async function fixture(withSkill = false) {
       cursorOnly: { type: 'number', default: 1 },
     } } } };
   });
-  if (withSkill) {
-    const pluginRoot = path.join(sourceRoot, 'plugins', 'demo');
-    const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    for (const platform of ['cursor', 'generic']) {
-      const skillRoot = path.join(pluginRoot, platform, 'skills', 'config-demo');
-      await fs.outputFile(path.join(skillRoot, 'SKILL.md'),
-        '---\nname: config-demo\ndescription: Config apply fixture.\n---\n\nFixture.\n');
-      await fs.outputFile(path.join(skillRoot, 'README.md'), '# Config apply fixture\n');
-      await fs.outputJson(path.join(skillRoot, 'aw-plugin-requirements.json'), createAwPluginRequirementsReceipt(
-        { name: plugin.manifest.name, version: plugin.manifest.version }, plugin.manifest.requires?.aw.capabilities ?? []));
-    }
-    const catalog = await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json'));
-    catalog.entries = [await createCatalogManifestV7Entry(plugin, pluginRoot)];
-    await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), catalog);
-  }
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
   await replaceCatalogSourcesConfig({ env, expectedDigest: snapshot.digest,
     config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] } });
@@ -58,7 +73,7 @@ async function fixture(withSkill = false) {
   const run = async (args: string[], input?: string | Buffer[]) => {
     const captured = createCapturedCliIo();
     const exitCode = await runCli([...args, '--json'], {
-      cwd, env, interactive: false, io: captured.io,
+      cwd, env, interactive: false, io: captured.io, nativeCliRunner,
       ...(input === undefined ? {} : { stdin: Readable.from(typeof input === 'string' ? [input] : input) })
     });
     return { exitCode, value: JSON.parse(captured.readStdout()), stdout: captured.readStdout(), stderr: captured.readStderr() };
@@ -68,6 +83,7 @@ async function fixture(withSkill = false) {
 
 // Test Value Gate: exercise argv, platform schema selection, the real atomic document, and save/apply receipts.
 describe('platform configuration CLI', () => {
+  beforeEach(() => { installNativeTestQualification({ platforms: ['cursor'], discovery: true, trust: true }); });
   it('uses common by default, compiles platform presets, and keeps project context in the user store', async () => {
     const f = await fixture();
     const initial = await f.run(['plugin', 'config', 'get', 'team/demo', 'mode']);
@@ -171,7 +187,7 @@ describe('platform configuration CLI', () => {
     { args: ['plugin', 'config', 'set', 'team/demo', 'mode', '--platform', 'agent-skills', '--value-json', '"bad"'], code: 'invalidOptionValue' },
     { args: ['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'unknown', '--value-json', '"bad"'], code: 'invalidOptionValue' },
     { args: ['plugin', 'config', 'apply', 'team/demo', '--scope', 'user'], code: 'invalidArguments' },
-    { args: ['plugin', 'config', 'apply', 'team/demo', '--target', 'gemini'], code: 'invalidArguments' },
+    { args: ['plugin', 'config', 'apply', 'team/demo', '--target', 'unknown'], code: 'invalidArguments' },
   ])('rejects invalid arguments before changing the common document: $args', async ({ args, code }) => {
     const f = await fixture();
     expect(await f.run(['plugin', 'config', 'set', 'team/demo', 'mode', '--value-json', '"saved"'])).toMatchObject({ exitCode: 0 });
@@ -234,11 +250,12 @@ describe('platform configuration CLI', () => {
           data: { targetResults: [expect.objectContaining({ pluginId: 'team/demo', target: 'cursor', scope: 'project', execution: 'applied' })] }
         }
       });
-    const output = path.join(f.cwd, '.cursor', 'skills', 'config-demo');
-    await fs.remove(path.join(output, SKILL_OWNER_MARKER));
+    const packageRoot = path.join(f.cwd, '.cursor', 'aw-plugins', (await fs.readdir(path.join(f.cwd, '.cursor', 'aw-plugins')))[0]!);
+    const output = path.join(packageRoot, 'skills', 'config-demo');
+    await fs.remove(path.join(packageRoot, SKILL_OWNER_MARKER));
     const existing = await fs.readFile(path.join(output, 'SKILL.md'));
-    const result = await f.run(['plugin', 'config', 'set', 'team/demo', 'enabled', '--value-json', 'false', '--apply', '--yes']);
-    expect(result).toMatchObject({
+    const result = await f.run(['plugin', 'config', 'set', 'team/demo', 'enabled', '--context', 'project', '--value-json', 'false', '--apply', '--yes']);
+    expect(result, JSON.stringify(result)).toMatchObject({
       exitCode: 4, value: {
         schemaVersion: 1,
         status: 'partial',
@@ -251,7 +268,7 @@ describe('platform configuration CLI', () => {
     expect(result.value.data.apply.state).not.toBe('succeeded');
     expect((await fs.readJson(f.file)).common.enabled).toBe(false);
     expect(await fs.readFile(path.join(output, 'SKILL.md'))).toEqual(existing);
-    expect(await fs.pathExists(path.join(output, SKILL_OWNER_MARKER))).toBe(false);
+    expect(await fs.pathExists(path.join(packageRoot, SKILL_OWNER_MARKER))).toBe(false);
     const applied = await f.run(['plugin', 'config', 'apply', 'team/demo', '--context', 'project', '--target', 'cursor', '--yes']);
     expect(applied.value).toMatchObject({
       schemaVersion: 1,

@@ -1,3 +1,4 @@
+import { NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
 import type {
   DependencyScopeOverride,
   DependencyScopeSelector,
@@ -105,7 +106,7 @@ function canonicalOverrides(
 ): DependencyScopeOverride[] {
   const byKey = new Map<string, DependencyScopeOverride>();
   for (const override of overrides) {
-    if (override.platform !== 'codex' && override.platform !== 'claude') {
+    if (!(NATIVE_PLATFORM_TARGETS as readonly string[]).includes(override.platform)) {
       throw new Error(`dependencyScopeOverrideInvalidPlatform: ${String(override.platform)}`);
     }
     if (override.scope !== 'project' && override.scope !== 'user') {
@@ -130,8 +131,7 @@ function canonicalScopeSelectors(
   const byKey = new Map<string, DependencyScopeSelector>();
   for (const selector of selectors) {
     if (selector.platform !== undefined
-      && selector.platform !== 'codex'
-      && selector.platform !== 'claude') {
+      && !(NATIVE_PLATFORM_TARGETS as readonly string[]).includes(selector.platform)) {
       throw new Error(`dependencyScopeOverrideInvalidPlatform: ${String(selector.platform)}`);
     }
     if (selector.scope !== 'project' && selector.scope !== 'user') {

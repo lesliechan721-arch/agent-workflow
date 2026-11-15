@@ -127,6 +127,9 @@ import {
 } from './dependency-graph.js';
 import { DependencyGraphView, projectDependencyGraphView } from './dependency-graph-view.js';
 import { agentLabel, platformLabel, scopeLabel, recoveryReason } from './glossary.js';
+import { deploymentPlanLines, deploymentResultLines, deploymentObservationLines, deploymentExclusionLines, componentGapLines } from './deployment-view.js';
+import { projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
+import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { QueryHeader, querySearchWidth } from './query-header.js';
 import { Pager, Reader, paginateWrappedRows, readerPage } from './reader.js';
@@ -159,7 +162,7 @@ import {
   configValuesEqual,
 } from './model.js';
 import type { ScopedTuiPlan } from './scoped-flow.js';
-import { managedCommandPlanChanges } from './operation-review-planner.js';
+import { managedCommandRecoveryPlanChanges } from './operation-review-planner.js';
 import type { RecoveryReceipt, RecoveryTarget } from '../recovery/receipt.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
@@ -246,6 +249,12 @@ function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
       ? ['本次会清理个人原生输出，可能影响其他项目。'] : []),
   ];
   const reasons: string[] = [];
+  for (const deployment of scopedDeploymentPlans(plan)) {
+    if (deployment.effects.length && (deployment.binding.consumers.length > 1 || deployment.evidence.sharedReferences !== 'none')) {
+      reasons.push(`${agentLabel(deployment.binding.platform)} 的原生包变更会影响所列产品面或其他共享引用，请检查具体动作。`);
+    }
+    if (deployment.effects.some((effect) => effect.destructive)) reasons.push(`${agentLabel(deployment.binding.platform)} 将撤销或移除所列内容。`);
+  }
   const dependencyCleanup = scopedDependencyCleanupTargets(plan);
   if (dependencyCleanup.length > 0) {
     reasons.push(`本次还会清理 ${dependencyCleanup.length} 个不再需要的依赖位置；请确认所列依赖。`);
@@ -274,6 +283,17 @@ function scopedRiskReasons(plan: ScopedTuiPlan): string[] {
   return [...new Set(reasons)];
 }
 
+function scopedDeploymentPlans(plan: ScopedTuiPlan): FrozenDeploymentPlan[] {
+  if (plan.kind === 'targets' || plan.kind === 'intent') return [];
+  if (plan.kind === 'retire') return plan.plan.operationPlan?.deploymentPlans ?? [];
+  const deployments = new Map<string, FrozenDeploymentPlan>();
+  const visit = (entry: typeof plan.plan): void => {
+    for (const group of entry.nativeGroups) for (const deployment of group.preview.operationPlan?.deploymentPlans ?? []) deployments.set(deployment.binding.id, deployment);
+    if ('joint' in entry) for (const child of entry.joint?.children ?? []) visit(child);
+  };
+  visit(plan.plan); return [...deployments.values()];
+}
+
 
 function recoveryPluginLabel(id: string): string {
   const [source, ...name] = id.split('/');
@@ -288,26 +308,29 @@ function recoveryTargetLines(receipt: RecoveryReceipt, result: boolean): string[
     if (result) {
       action = target.satisfaction === 'unsupported' || target.satisfaction === 'excluded' ? '! 已跳过'
         : target.execution === 'applied' || target.execution === 'no-op' ? '✓ 完成'
-        : target.execution === 'failed' || target.execution === 'partial' ? '× 安装失败'
+        : target.execution === 'partial' ? '! 部分完成' : target.execution === 'failed' ? '× 执行失败'
           : target.blockers.length ? '! 已跳过' : '? 尚未确认';
     } else if (target.blockers.length || target.satisfaction === 'excluded' || target.satisfaction === 'unsupported') {
       action = '! 跳过';
     } else if (receipt.command === 'cleanup' || receipt.command === 'uninstall' || receipt.command === 'retire') {
       action = '− 移除';
     } else if ((target.content === 'satisfied' || target.observation === 'verified') && receipt.command !== 'reinstall') {
-      unchanged += 1; continue;
+      if (!target.deploymentExclusions?.length && !target.componentGaps?.length) { unchanged += 1; continue; }
+      action = '✓ 当前输出已满足';
     } else action = target.content === 'absent' || target.observation === 'missing' ? '+ 新增安装' : '↻ 同步并修复';
     const reason = target.blockers[0] || target.reasons?.[0] ? recoveryReason((target.blockers[0] ?? target.reasons![0]!).code)
       : target.satisfaction === 'excluded' ? '已关闭此 Agent'
         : target.satisfaction === 'unsupported' ? '插件不支持此 Agent' : undefined;
     const label = `${action} ${recoveryPluginLabel(target.pluginId)}  ${scopeLabel(target.scope)}`;
-    const key = `${label}\0${reason ?? ''}`;
-    const group = groups.get(key) ?? { label: `${label}${reason ? ` · ${reason}` : ''}`, targets: [] };
-    const agent = agentLabel(target.agent);
-    if (!group.targets.includes(agent)) group.targets.push(agent);
+    const key = target.agent;
+    const group = groups.get(key) ?? { label: `→ ${agentLabel(target.agent)}`, targets: [] };
+    group.targets.push(`${label}${reason ? ` · ${reason}` : ''}`);
+    if (result && target.deploymentReceipts) group.targets.push(...deploymentResultLines(target.deploymentReceipts.map(projectDeploymentReceipt)));
+    else if (result && target.deploymentObservations) group.targets.push(...deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation)));
+    group.targets.push(...deploymentExclusionLines(target.deploymentExclusions ?? []), ...componentGapLines(target.componentGaps ?? []));
     groups.set(key, group);
   }
-  return [...groups.values()].flatMap((group) => [group.label, `  → ${group.targets.join(' · ')}`])
+  return [...groups.values()].flatMap((group) => [group.label, ...group.targets])
     .concat(unchanged ? [`✓ 另有 ${unchanged} 项已是最新`] : []);
 }
 
@@ -320,7 +343,7 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
   ].join('\n');
   const receipt = plan.plan.receipt;
   const lines = [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(plan.scope),
-    ...recoveryTargetLines(receipt, false), ...scopedDependencyCleanupLines(plan)];
+    ...recoveryTargetLines(receipt, false), ...deploymentPlanLines(scopedDeploymentPlans(plan)), ...scopedDependencyCleanupLines(plan)];
   if (plan.kind === 'recovery' && plan.plan.sourceRefreshes?.length) {
     lines.unshift(...plan.plan.sourceRefreshes.map((refresh) => `↻ 启用来源 ${refresh.sourceId} 的候选版本`),
       '来源启用后，将重新准备插件操作汇总；本次不会直接更新插件。');
@@ -400,6 +423,7 @@ function scopedPlanText(plan: ScopedTuiPlan, technical = false): string {
     ...receipt.targetResults.flatMap((target) => target.reasons?.map((reason) => `${reason.code} · ${reason.message}`) ?? []),
     ...plan.plan.changes.map((change) => `影响：${change}`),
     ...plan.plan.warnings.map((warning) => `注意：${warning}`),
+    ...deploymentPlanLines(scopedDeploymentPlans(plan), true),
     ...(plan.kind === 'recovery' ? scopedCommandPlanText(plan) : []),
     ...(plan.kind === 'retire' ? [`配置删除选项：${plan.plan.options.deleteConfig
       ? impact.config ? '已选择' : '已选择；当前没有可删除配置' : '关闭（默认）'}`] : []),
@@ -407,8 +431,7 @@ function scopedPlanText(plan: ScopedTuiPlan, technical = false): string {
 }
 
 function scopedCommandPlanText(plan: Extract<ScopedTuiPlan, { kind: 'recovery' }>): string[] {
-  return managedCommandPlanChanges(plan.plan.nativeGroups.flatMap((group) =>
-    group.preview.operationPlan?.actions ?? []))
+  return managedCommandRecoveryPlanChanges(plan.plan)
     .map((change) => `${change.title}${change.description ? `：${change.description}` : ''}`);
 }
 
@@ -431,6 +454,8 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     ...receipt.targetResults.flatMap((target) => target.reasons?.map((reason) => `${reason.code} · ${reason.message}`) ?? []),
     ...(reviewStale ? ['本次未执行，需要重新准备。'] : []),
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无交付'} · ${target.execution} · ${target.observation}${target.blockers.length ? ` · 受阻 ${target.blockers.map((blocker) => blocker.code).join('、')}` : ''}`),
+    ...receipt.targetResults.flatMap((target) => target.deploymentReceipts ? deploymentResultLines(target.deploymentReceipts.map(projectDeploymentReceipt), true)
+      : target.deploymentObservations ? deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation), true) : []),
     ...receipt.targetResults.flatMap((target) => target.recoveryActions?.map((action) =>
       `${target.pluginId} · ${target.agent}：${action}`) ?? []),
     ...(receipt.commandResults ?? []).flatMap((result) => [
@@ -3249,8 +3274,7 @@ export function ConsoleAppV4(props: {
   };
   const beginReview = (intent: OperationIntent, returnRoute?: TuiRoute): void => {
     setSplitTaskReview(undefined);
-    const agentForPlatform = (platform: PlatformName): AgentId =>
-      platform === 'claude' ? 'claude' : 'codex';
+    const agentForPlatform = (platform: PlatformName): AgentId => platform;
     if (intent.kind === 'pluginWrite') {
       const agents: AgentId[] = intent.platform === 'both' ? ['codex', 'claude']
         : [agentForPlatform(intent.platform)];
@@ -3762,7 +3786,7 @@ export function ConsoleAppV4(props: {
       return;
     }
     try {
-      const agent = platform === 'claude' ? 'claude' : 'codex';
+      const agent = platform;
       beginScopedTask({ kind: 'recovery', command: 'cleanup', scope: selectedScope,
         selectors: [pluginId], targets: [agent], exactTargets: [{ pluginId, agent }], force: true },
       () => props.controller.startForceCleanupReview(candidate));
@@ -4676,6 +4700,7 @@ export function ConsoleAppV4(props: {
         .map((target) => `${agentSummaries()[target]?.symbol ?? '?'} ${agentLabel(target)}`).join(' · ') || '请选择本机使用的 Agent'),
         run: () => openAgentManagement() },
     ];
+    if (size.rows <= 18 && snapshot.projectRoot) actions[1]!.description = `当前项目  ${path.basename(snapshot.projectRoot)}`;
     if (size.rows <= 18 && wrapConsoleText(actions[3]!.description ?? '', size.columns - 4).length > 1) title = '';
     content = <Box flexDirection="column">{actions.map((action, index) => <Box key={action.label} flexShrink={0} marginBottom={size.rows >= 24 ? 1 : 0}>
       <HomeNavTile width={size.columns - 2} title={action.label} focused={focus === index}>
@@ -4685,7 +4710,7 @@ export function ConsoleAppV4(props: {
           {stateIndex > 0 ? ' ' : ''}[{state}]
         </Text>)}</Text>}
       </HomeNavTile>
-    </Box>)}{snapshot.projectRoot ? <Box flexShrink={0}><Text color={tuiTheme.roles.secondary}>当前项目  {path.basename(snapshot.projectRoot)}</Text></Box> : null}</Box>;
+    </Box>)}{snapshot.projectRoot && size.rows > 18 ? <Box flexShrink={0}><Text color={tuiTheme.roles.secondary}>当前项目  {path.basename(snapshot.projectRoot)}</Text></Box> : null}</Box>;
   } else if (route.name === 'intentScopes') {
     breadcrumb = '插件清单';
     title = '选择清单范围';
@@ -4737,7 +4762,7 @@ export function ConsoleAppV4(props: {
         onHelp={() => { setOverlayFocus(0); setHelpPage(1); setOverlay('help'); }}
         onSync={() => beginScopedTask({ kind: 'recovery', command: 'sync', scope: flow.scope,
           selectors: flow.pluginId ? [flow.pluginId] : [], retireUnselectedTargets: true })} />;
-      help = '↑↓ 移动 · Enter/Space 勾选 · s 保存 · Esc 返回';
+      help = '↑↓ 移动 · Enter/Space 勾选 · s 保存 · r 重新检查 · Esc 返回';
     } else if (flow.stage === 'recoveryScope') {
       title = flow.command === 'uninstall' ? '选择卸载范围' : '选择清理范围';
       description = '确认变化后处理此范围，保留其他范围仍需要的内容。';
@@ -4757,7 +4782,7 @@ export function ConsoleAppV4(props: {
     } else if (flow.stage === 'targets') {
       title = flow.scope === 'user' ? '个人插件使用的工具' : '此项目在本机使用的工具';
       description = '保存后可单独准备同步任务。';
-      actions = (['codex', 'claude', 'cursor'] as const).map((agent): ActionItem => ({
+      actions = PLATFORM_TARGETS.map((agent): ActionItem => ({
         actionId: `agent:${agent}`, label: `${flow.agents.includes(agent) ? '✓' : '○'} ${agent}`,
         run: () => setScopedFlow({ ...flow,
           agents: flow.agents.includes(agent) ? flow.agents.filter((value) => value !== agent)
@@ -4780,6 +4805,7 @@ export function ConsoleAppV4(props: {
           ? [`${snapshot.progress.current.target} · ${snapshot.progress.current.phase}`] : []),
         ...snapshot.progress.messages,
         ...(flow.plan.kind === 'recovery' ? scopedCommandPlanText(flow.plan) : []),
+        ...deploymentPlanLines(scopedDeploymentPlans(flow.plan)),
       ].join('\n') : undefined;
       content = <Box flexDirection="column">
         <ProgressRow title={title} state="active" />
@@ -4852,10 +4878,10 @@ export function ConsoleAppV4(props: {
       const retryTargets = flow.receipt?.targetResults.filter((target) =>
         (target.execution === 'failed' || target.execution === 'partial')
         && (target.observation === 'missing' || target.content === 'absent')) ?? [];
-      const retryKeys = new Set(retryTargets.map((target) => `${target.pluginId}\0${target.agent}`));
+      const retryKeys = new Set(retryTargets.map((target) => `${target.pluginId}\0${target.agent}\0${target.scope}`));
       const unknownTargets = flow.receipt?.targetResults.filter((target) =>
         target.observation === 'unknown'
-        && !retryKeys.has(`${target.pluginId}\0${target.agent}`)) ?? [];
+        && !retryKeys.has(`${target.pluginId}\0${target.agent}\0${target.scope}`)) ?? [];
       const reviewStale = flow.receipt
         ? [...flow.receipt.blockers, ...flow.receipt.errors]
           .some((entry) => entry.code === 'operationReviewStale')
@@ -4879,7 +4905,7 @@ export function ConsoleAppV4(props: {
           kind: 'recovery', scope: flow.scope, command: flow.receipt!.command as 'sync',
           selectors: [...new Set(retryTargets.map((target) => target.pluginId))],
           targets: [...new Set(retryTargets.map((target) => target.agent))],
-          exactTargets: retryTargets.map((target) => ({ pluginId: target.pluginId, agent: target.agent })),
+          exactTargets: retryTargets.map((target) => ({ pluginId: target.pluginId, agent: target.agent, scope: target.scope })),
         }) }] : []),
       ];
       content = <ResultSurface status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}

@@ -31,6 +31,8 @@
     "test:smoke:fetch": "pnpm --filter @lesliechan721/aw test:smoke:fetch",
     "test:smoke:decision-kit-browser": "pnpm --filter @lesliechan721/aw test:smoke:decision-kit-browser",
     "qualification:codex-project-native": "node scripts/qualification/codex-project-native.mjs",
+    "qualification:native-platforms": "node scripts/qualification/native-platforms.mjs",
+    "test:qualification:native-platforms:harness": "node --test --test-concurrency=1 scripts/qualification/native-platforms.test.mjs",
     "test:qualification:codex-project-native:harness": "node --test scripts/qualification/codex-project-native.test.mjs",
     "qualification:codex-native-performance": "node scripts/qualification/codex-native-performance.mjs",
     "test:qualification:codex-native-performance:harness": "node --test scripts/qualification/codex-native-performance.test.mjs",

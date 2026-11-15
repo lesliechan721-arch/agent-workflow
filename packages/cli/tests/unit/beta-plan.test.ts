@@ -273,7 +273,7 @@ describe('automatic beta product planning', () => {
         await fs.cp(directory, verificationRoot, { recursive: true,
           filter: (source) => path.basename(source) !== '.git' });
         await expect(validateCatalogSnapshotTransport(verificationRoot)).resolves.toHaveProperty('manifest');
-        await expect(validateCatalogSnapshotComplete(verificationRoot)).rejects.toThrow('pluginPlatformsMigrationRequired');
+        await expect(validateCatalogSnapshotComplete(verificationRoot)).rejects.toThrow('Invalid plugin manifest structure');
       },
     });
 

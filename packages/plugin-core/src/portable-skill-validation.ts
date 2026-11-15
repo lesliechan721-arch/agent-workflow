@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import YAML from 'yaml';
 
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
-import { validateSkillFrontmatterCapabilities } from './skill-frontmatter-capabilities.js';
+import { validateSkillFrontmatterCapabilities, type SkillFrontmatterProfile } from './skill-frontmatter-capabilities.js';
 
 const SKILL_FILE_PATH = 'SKILL.md';
 const SKILL_OWNER_MARKER = '.agent-workflows-owner.json';
@@ -68,7 +68,10 @@ async function collectFiles(rootDir: string): Promise<Record<string, Buffer>> {
   return files;
 }
 
-export async function validatePortableSkillDirectory(rootDir: string): Promise<PortableSkillTree> {
+export async function validatePortableSkillDirectory(
+  rootDir: string,
+  options: { frontmatterProfile?: SkillFrontmatterProfile } = {},
+): Promise<PortableSkillTree> {
   const rootStats = await fs.lstat(rootDir).catch(() => null);
   if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     throw new Error(`Skill 根路径必须是真实目录：${rootDir}`);
@@ -78,30 +81,31 @@ export async function validatePortableSkillDirectory(rootDir: string): Promise<P
   const files = await collectFiles(rootDir);
   const skillFile = files[SKILL_FILE_PATH];
   if (!skillFile || skillFile.toString('utf8').trim() === '') {
-    throw new Error(`agent-skills.skill "${skillKey}" 缺少 SKILL.md 内容。`);
+    throw new Error(`Skill component "${skillKey}" 缺少 SKILL.md 内容。`);
   }
   const frontmatter = parseFrontmatter(skillFile.toString('utf8'));
   if (typeof frontmatter.name === 'string') validatePortableSkillName(frontmatter.name, 'SKILL.md frontmatter.name');
   if (typeof frontmatter.description === 'string' && frontmatter.description.length > 1024) {
     throw new Error('Invalid SKILL.md frontmatter.description: expected at most 1024 characters.');
   }
-  const diagnostics = validateSkillFrontmatterCapabilities(frontmatter, 'portable-agent-skills');
+  const profile = options.frontmatterProfile ?? 'portable-agent-skills';
+  const diagnostics = validateSkillFrontmatterCapabilities(frontmatter, profile);
   if (diagnostics.length > 0) {
-    throw new Error(`SKILL.md frontmatter 不符合 portable-agent-skills profile：${diagnostics.map((entry) => `[${entry.code}] ${entry.message}`).join('; ')}`);
+    throw new Error(`SKILL.md frontmatter 不符合 ${profile} profile：${diagnostics.map((entry) => `[${entry.code}] ${entry.message}`).join('; ')}`);
   }
   if (frontmatter.name !== skillKey) {
     throw new Error(`SKILL.md frontmatter 的 name 必须与 Skill 目录一致：期望 ${JSON.stringify(skillKey)}。`);
   }
   const readme = files['README.md'];
   if (!readme || readme.toString('utf8').trim() === '') {
-    throw new Error(`agent-skills.skill "${skillKey}" 缺少非空 README.md。`);
+    throw new Error(`Skill component "${skillKey}" 缺少非空 README.md。`);
   }
   return { skillKey, files };
 }
 
 export async function validatePortableSkillDirectoriesRoot(
   rootDir: string,
-  options: { dynamicSkillKeys?: ReadonlySet<string> } = {},
+  options: { dynamicSkillKeys?: ReadonlySet<string>; frontmatterProfile?: SkillFrontmatterProfile } = {},
 ): Promise<PortableSkillTree[]> {
   const rootStats = await fs.lstat(rootDir).catch(() => null);
   if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
@@ -115,7 +119,7 @@ export async function validatePortableSkillDirectoriesRoot(
     }
     // A bundle can contain runtime imports for a Skill whose complete tree is produced by its renderer.
     if (options.dynamicSkillKeys?.has(entry.name)) continue;
-    trees.push(await validatePortableSkillDirectory(path.join(rootDir, entry.name)));
+    trees.push(await validatePortableSkillDirectory(path.join(rootDir, entry.name), options));
   }
   return trees;
 }

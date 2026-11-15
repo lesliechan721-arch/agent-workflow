@@ -1,131 +1,77 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
-
-import { SKILL_CONFIG_KEYS, renderArtifactPlan } from './render-artifacts.mjs';
+import { renderArtifactPlan } from './render-artifacts.mjs';
+import { root, context, component, resourceText } from './render-test-context.mjs';
 
 const execFileAsync = promisify(execFile);
-const root = fileURLToPath(new URL('../', import.meta.url));
-const ids = ['codex-explore-skill', 'codex-explore-role', 'codex-advisor-skill', 'codex-advisor-role'];
-const skillIds = ids.filter((id) => id.endsWith('-skill'));
-const sourceManifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
-const defaultValues = Object.fromEntries(Object.entries(sourceManifest.config.fields)
-  .filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default]));
-function sourceRoot(id) {
-  const staged = path.join(root, '.agents-plugin/artifact-sources/codex', id, '0');
-  return existsSync(staged) ? staged : path.join(root, 'skills', id.replace(/-skill$/, ''));
-}
+const skillIds = ['codex-explore-skill', 'codex-advisor-skill'];
+const roleIds = ['codex-explore-role', 'codex-advisor-role'];
 
-function context(values = {}) {
-  return {
-    platform: 'codex', scope: 'user', requestedArtifactIds: ids,
-    artifactSources: skillIds.map((id) => ({ id, target: 'codex.skill', sourceDirs: [sourceRoot(id)] })),
-    config: { values: { ...structuredClone(defaultValues), ...values } },
-  };
-}
-
-function artifact(plan, id) {
-  const found = plan.artifacts.find((item) => item.id === id);
-  assert.ok(found, `Missing artifact ${id}`);
-  return found;
-}
-
-// Test Value Gate: the real process entry verifies structured artifact delivery and
-// complete default instruction transport to the native developer channel.
-test('real renderer keeps shared instructions and adds local rules only to native specialist roles', async () => {
+// Test Value Gate: the real entry delivers v3, complete batches and shared role instructions.
+test('real renderer returns complete component batches and preserves role prompts', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'codex-enhance-render-'));
   try {
     const input = path.join(temporary, 'context.json');
     await writeFile(input, JSON.stringify(context()));
-    const { stdout, stderr } = await execFileAsync(process.execPath,
-      [path.join(root, 'scripts/render-artifacts.mjs')], {
-        env: { ...process.env, AW_PLUGIN_CONTEXT: input }, cwd: temporary,
-      });
+    const { stdout, stderr } = await execFileAsync(process.execPath, [path.join(root, 'scripts/render-artifacts.mjs')], {
+      env: { ...process.env, AW_PLUGIN_CONTEXT: input }, cwd: temporary,
+    });
     assert.equal(stderr, '');
     const plan = JSON.parse(stdout);
-    assert.equal(plan.version, 2);
-    assert.deepEqual(plan.artifacts.map((item) => item.id), ids);
-    for (const [skillId, roleId, roleKey, file] of [
-      ['codex-advisor-skill', 'codex-advisor-role', 'codex-advisor', 'assets/advisor-instructions.md'],
-      ['codex-explore-skill', 'codex-explore-role', 'codex-explore', 'assets/explore-instructions.md'],
-    ]) {
-      const canonical = await readFile(path.join(sourceRoot(skillId), file), 'utf8');
-      const role = artifact(plan, roleId);
-      assert.equal(role.roleKey, roleKey);
-      assert.equal(role.content.roleFile.name, roleKey);
-      const delivered = role.content.roleFile.developer_instructions;
-      if (roleKey === 'subagent') {
-        assert.equal(delivered, canonical);
-      } else {
-        const prefix = `${canonical.trimEnd()}\n\n`;
-        assert.equal(delivered.startsWith(prefix), true);
-        const local = delivered.slice(prefix.length);
-        // The Codex developer channel consumes this local prohibition. These
-        // checks protect its scope; they do not prove model compliance.
-        assert.equal(local.split(roleKey).length - 1, 1);
-        assert.match(local, new RegExp(`不要通过 ${roleKey} 将同一`));
-        for (const other of ['codex-advisor', 'codex-explore'].filter((key) => key !== roleKey)) {
-          assert.equal(local.includes(other), false);
-        }
-      }
-      assert.equal(role.content.registration.description, role.content.roleFile.description);
-      assert.doesNotMatch(role.content.roleFile.description, /再次委派|不再委派/);
-      assert.equal(artifact(plan, skillId).content.files[file], canonical);
-      assert.equal(Object.hasOwn(role.content.roleFile, 'model'), false);
-      assert.equal(Object.hasOwn(role.content.roleFile, 'model_reasoning_effort'), false);
-      assert.deepEqual(role.refreshKeys, []);
+    assert.equal(plan.version, 3);
+    assert.deepEqual(plan.components.map((item) => item.id), [...skillIds, ...roleIds]);
+    assert.deepEqual(plan.omitted, []);
+    assert.deepEqual(plan.unmet, []);
+    for (const key of ['codex-explore', 'codex-advisor']) {
+      const filename = `assets/${key === 'codex-explore' ? 'explore' : 'advisor'}-instructions.md`;
+      const canonical = await readFile(path.join(root, 'skills', key, filename), 'utf8');
+      const role = component(plan, `${key}-role`);
+      assert.equal(role.name, key);
+      assert.equal(role.content.prompt.startsWith(`${canonical.trimEnd()}\n\n`), true);
+      assert.match(role.content.prompt.slice(canonical.trimEnd().length), new RegExp(`不要通过 ${key} 将同一`));
+      assert.equal(Object.hasOwn(role.content, 'model'), false);
+      assert.equal(Object.hasOwn(role.content, 'tools'), false);
+      assert.equal(await resourceText(component(plan, `${key}-skill`).content.files[filename]), canonical);
     }
-    for (const id of skillIds) {
-      const skill = artifact(plan, id);
-      assert.deepEqual(skill.refreshKeys, SKILL_CONFIG_KEYS[skill.skillKey]);
-      assert.equal(Object.hasOwn(skill.content.files, 'runtime/worker-bindings.json'), false);
-      assert.equal(Object.hasOwn(skill.content.files, '.aw-runtime-config.json'), false);
-      assert.equal(Object.hasOwn(skill.content.files, 'scripts/aw-runtime-config.mjs'), false);
-    }
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 });
 
-// Test Value Gate: a narrow request cannot read another consumer's configuration;
-// role-only requests work without any config and without execution-revision input.
-test('requested subsets are exact and each consumer reads only its declared configuration', async () => {
-  const manifest = JSON.parse(await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'));
-  for (const id of ids) {
-    const input = { ...context(), requestedArtifactIds: [id] };
-    Object.defineProperty(input, 'runtimeConfig', { get() { throw new Error('read execution revision'); } });
-    if (id.endsWith('-role')) {
-      Object.defineProperty(input, 'config', { get() { throw new Error('role-only read config'); } });
-    } else {
-      const key = id.replace(/-skill$/, '');
-      for (const otherKey of ['simpleTaskProfile', 'advisorGeneralProfile', 'quickProfile',
-        'taskCustomProfiles', 'advisorCustomProfiles', 'exploreCustomProfiles', 'subagentCommands']) {
-        if (!SKILL_CONFIG_KEYS[key].includes(otherKey)) {
-          Object.defineProperty(input.config.values, otherKey, { get() { throw new Error(`read ${otherKey}`); } });
-        }
-      }
-    }
-    const plan = await renderArtifactPlan(input);
-    assert.deepEqual(plan.artifacts.map((item) => item.id), [id]);
-    if (id.endsWith('-role')) {
-      const sourceInput = { ...context(), requestedArtifactIds: [id], artifactSources: undefined };
-      Object.defineProperty(sourceInput, 'config', { get() { throw new Error('source role-only read config'); } });
-      const skillKey = id.replace(/-role$/, '');
-      const declaredSources = manifest.artifacts.targets.find((target) => target.skillKey === skillKey).sourceDirs;
-      if (declaredSources.some((source) => existsSync(path.resolve(root, source, 'SKILL.md')))) {
-        assert.deepEqual(await renderArtifactPlan(sourceInput), plan);
-      } else {
-        await assert.rejects(renderArtifactPlan(sourceInput), { code: 'ENOENT' });
-      }
-    }
+// Test Value Gate: non-Skill permission batches never read config; changed keys never trim the set.
+test('uses batch permissions and always returns the complete owned collection', async () => {
+  const skillContext = context({}, 'codex', ['skill']);
+  skillContext.changedConfigKeys = ['quickProfile'];
+  assert.deepEqual((await renderArtifactPlan(skillContext)).components.map((item) => item.id), skillIds);
+  const roleContext = context({}, 'codex', ['agent', 'mcp', 'hook', 'instruction']);
+  Object.defineProperty(roleContext, 'config', { get() { throw new Error('non-Skill batch read config'); } });
+  assert.deepEqual((await renderArtifactPlan(roleContext)).components.map((item) => item.id), roleIds);
+  assert.deepEqual(await renderArtifactPlan(context({}, 'codex', ['mcp'])), { version: 3, components: [], omitted: [], unmet: [] });
+  await assert.rejects(renderArtifactPlan({ ...context(), surface: 'managed-commands' }), /surface=agent-plugin/);
+  await assert.rejects(renderArtifactPlan({ ...context({}, 'codex', ['agent']), resources: [] }), /Missing verified bundle resource/);
+});
+
+// Test Value Gate: real declared roles can be projected without exporting Codex models or tools;
+// unavailable Pi consumers produce unmet, and never an execution tool.
+test('offers neutral roles on other hosts and records missing execution consumers', async () => {
+  for (const platform of ['claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok']) {
+    const plan = await renderArtifactPlan(context({}, platform));
+    assert.deepEqual(plan.components.map((item) => item.id), roleIds);
+    assert.deepEqual(plan.unmet.map((item) => [item.id, item.reasonCode]), skillIds.map((id) => [id, 'dependency-unmet']));
+    assert.doesNotMatch(JSON.stringify(plan.components), /gpt-6|spawn_agent|registerTool/);
   }
-  const reversed = [...ids].reverse();
-  assert.deepEqual((await renderArtifactPlan({ ...context(), requestedArtifactIds: reversed }))
-    .artifacts.map((item) => item.id), reversed);
+  const declaration = context({}, 'pi', ['agent']);
+  declaration.platformCapabilities.features['agent.declaration-protocol'] = { status: 'unverified', reasonCodes: ['capability-unverified'], values: [] };
+  assert.deepEqual((await renderArtifactPlan(declaration)).unmet[0].requiredFeatures,
+    [{ feature: 'agent.declaration-protocol', values: ['aw.pi.agents.v1'] }]);
+  const missing = context({}, 'pi', ['agent']);
+  missing.platformCapabilities.kinds.agent = { status: 'unsupported', reasonCodes: ['consumer-missing'], delivery: ['native-package'] };
+  missing.platformCapabilities.features['agent.execution'] = { status: 'unsupported', reasonCodes: ['consumer-missing'], values: [] };
+  const plan = await renderArtifactPlan(missing);
+  assert.deepEqual(plan.components, []);
+  assert.deepEqual(plan.unmet.map((item) => [item.id, item.reasonCode, item.requiredFeatures]), roleIds.map((id) =>
+    [id, 'consumer-missing', [{ feature: 'component.kind.agent' }, { feature: 'agent.execution', values: ['isolated-context'] }]]));
 });

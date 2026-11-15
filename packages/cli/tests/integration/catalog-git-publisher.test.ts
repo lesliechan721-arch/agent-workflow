@@ -304,7 +304,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
           manifestDigest: calculateCatalogEntryManifestDigest(plugin),
         });
         await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-        await expect(validatePublishedCatalogSnapshot(snapshotRoot)).rejects.toThrow('pluginPlatformsMigrationRequired');
+        await expect(validatePublishedCatalogSnapshot(snapshotRoot)).rejects.toThrow('/marketplace/policy');
       },
     });
     await expect(readCatalogPublicationBranchState({

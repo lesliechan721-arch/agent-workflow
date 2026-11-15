@@ -31,7 +31,7 @@ async function createPluginRepository(root: string): Promise<string> {
   for (const name of ['batch-target', 'batch-sibling']) {
     const pluginRoot = path.join(workspaceRoot, 'plugins', name);
     await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       platforms: ['codex', 'claude'],
       name,
       version: '0.1.0',

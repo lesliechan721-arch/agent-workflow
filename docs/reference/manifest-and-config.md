@@ -1,6 +1,6 @@
 # Plugin Manifest 与配置声明合同
 
-本文件是面向插件作者与自动化消费者的公开精确合同，定义 Plugin Manifest v3、Config Definition v5、Config Store v6 的规范、校验规则、引用模型与版本语义。内部状态持久化与物理 Envelope 完整定义参见[状态与配置架构说明](../maintainers/architecture/config-and-status.md#31-命名空间与-envelope-存储)。
+本文件面向插件作者与自动化消费者，定义 Plugin Manifest v4、Config Definition v5、Config Store v6 的字段、校验、引用和版本语义。动态组件和渲染权限见[插件运行时合同](plugin-runtime.md)，内部存储见[状态与配置](../maintainers/architecture/config-and-status.md#31-命名空间与-envelope-存储)。
 
 ## 1. 独立版本体系与查询入口
 
@@ -8,7 +8,8 @@ AW 各模块采用独立版本演进，不要将不同合同的版本号混淆�
 
 | 合同对象 | 当前版本 | 作用 |
 | --- | --- | --- |
-| Plugin Manifest | `schemaVersion: 3` | 插件源码元数据与声明入口结构 |
+| Plugin Manifest | `schemaVersion: 4` | 插件源码元数据与声明入口结构 |
+| Platform Component Plan | `version: 3` | 五类平台组件的完整动态期望集合 |
 | Config Definition | `schemaVersion: 5` | Manifest 内的配置声明、引用、校验与展示定义 |
 | Config Store | `schemaVersion: 6` | 用户配置持久化存储 Envelope 格式 |
 | Runtime Config | `schemaVersion: 2` | 运行时产物内生效配置注入与读取合同 |
@@ -21,11 +22,11 @@ aw dev plugin capabilities --surface manifest --json
 aw dev plugin capabilities --surface config --json
 ```
 
-仓库内完整的公开 JSON Schema 位于 `packages/plugin-core/schemas/plugin-manifest-v3.json`。Manifest 顶层严格设定了 `additionalProperties: false`，**严禁在 Manifest 中书写 `$schema` 键**，否则会被当前 schema 校验器直接拒绝。
+公开 JSON Schema 位于 `packages/plugin-core/schemas/plugin-manifest-v4.json`，并随 Core 包分发。规范对象拒绝未知字段，明确允许的字典除外。Manifest 不接受 `$schema`。Core 类型、作者 registry、CLI 查询和生成器使用同一合同；AW 运行能力与 Agent 平台组件能力是不同集合。
 
 ---
 
-## 2. Plugin Manifest v3 合同
+## 2. Plugin Manifest v4 合同
 
 插件权威源码根目录为 `<workspace>/plugins/<plugin-name>/`，其源码真值必须位于 `.agents-plugin/plugin.json`。
 
@@ -33,7 +34,7 @@ aw dev plugin capabilities --surface config --json
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "example-plugin",
   "version": "0.1.0",
   "description": "插件功能简述",
@@ -64,17 +65,22 @@ aw dev plugin capabilities --surface config --json
 }
 ```
 
-可选的顶级字段还包括：
-- `scripts`：构建、测试与渲染脚本配置。
-- `managedCommands`：托管命令声明，详见[托管命令合同](managed-commands.md)。
-- `nativeTools`：原生协议需求（必须包含 `definitions` 与 `consumers`），详见[原生工具合同](native-tools.md)。
-- `extensions`：扩展钩子与平台权限声明。
+其他可选顶级字段包括：
 
-- `schemaVersion`：必须显式为整数 `3`。CLI 拒绝 v2 及更早版本。
+- `mcpServers`：插件相对 JSON 文件，顶层为 `{ "mcpServers": { "名称": 定义 } }`。
+- `extensions`：下文的静态 Agents、Hooks、Instructions 和调用权限。
+- `artifacts`：动态 renderer 的配置、资源和 scope 权限，完整字段见[运行时](plugin-runtime.md#3-动态-renderer-与-platformcomponentplan-合同)。
+- `scripts`：保留 `artifacts.render`、`preApply`、`helpers`、`node`、`tests` 的 Node 脚本入口。
+- `buildConfig`：保留 `cacheable`、`templates`、`fileRules`、`runtimeExports`、`buildImports`、`skillRuntimeFiles`、`generatedSkillRuntimeFiles`；资源合同见[运行时](plugin-runtime.md#1-资源声明与构建引入)。
+- `interface`：展示元数据；`config`：本文件的 Config Definition v5。
+- `managedCommands`：独立托管命令包及 Skill 命令集合，见[托管命令](managed-commands.md)。
+- `nativeTools`：带 `definitions` 和 `consumers` 的原生协议要求，见[原生工具](native-tools.md)。
+
+- `schemaVersion`：必须显式为整数 `4`，其他版本拒绝读取。
 - `name`：插件名称，符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$` 规范。
 - `version`：单插件稳定语义版本（SemVer）。由作者或发布流程维护，仅标识 artifact 版本，不代表 AW capability。
 - `description`：插件功能简要描述文本。
-- `platforms`：支持的目标平台数组。受支持的合法平台为：`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`generic`。省略或为空数组表示七个平台全部支持。
+- `platforms`：无重复的目标 ID 数组：`codex`、`claude`、`antigravity`、`cursor`、`opencode`、`pi`、`gemini`、`copilot`、`grok`、`generic`。省略或 `[]` 允许全部十个 target。该字段限定作者允许范围，不证明客户端或五类组件可运行。
 - `marketplace`：必填对象，声明市场分类、标签与策略：
   - `category`：市场分类标识（非空字符串）。
   - `tags`：标签字符串数组。
@@ -99,12 +105,46 @@ aw dev plugin capabilities --surface config --json
 - 严禁源码文件或依赖路径进入任意深度的 `.git/` 或 `node_modules/` 目录。
 - 源码树内不得包含符号链接或特殊文件节点。
 
-### 2.3 扩展能力声明
+### 2.3 五类组件与静态扩展
 
-- `extensions.hooks` 与 `extensions.nativeHooks`：声明平台钩子脚本。可执行入口仅限合法受控脚本或命令。
-- MCP 服务：声明 stdio MCP server 配置。
-- `managedCommands`：声明托管命令包与集合，详见[托管命令合同](managed-commands.md)。
-- `nativeTools`：声明原生协议需求，详见[原生工具合同](native-tools.md)。
+组件类别固定为 `skill | mcp | agent | hook | instruction`。Skills 是按需任务方法，Agents 必须有实际独立执行上下文，Hooks 是宿主事件，Instructions 是持续上下文或规则。`preApply` 和托管 shell 命令不属于宿主 Hooks 或独立 slash commands。Skill 的显式调用可以由宿主显示为 slash 入口，仍须保留调用、自动调用和可见性控制。
+
+```ts
+type FeatureRequirement = { feature: string; values?: string[] };
+type InstructionAudience = 'main' | 'plugin-agents' | 'other-agents';
+type AgentContent = {
+  description: string; prompt: string; model?: string; tools?: string[];
+  promptMode?: 'host-default' | 'append' | 'replace';
+};
+type InstructionContent = {
+  title: string; content: string; paths?: string[];
+  coverage: InstructionAudience[];
+};
+```
+
+`extensions` 的静态入口为：
+
+| 字段 | 条目形状 |
+| --- | --- |
+| `agents` | `{ name, description, prompt, model?, tools?, promptMode?, agentOverrides? }` |
+| `instructions` | `{ name, title, content, paths?, coverage, agentOverrides? }` |
+| `hooks` | `{ id, event, feedback, matcher?, command?, requires?, agentOverrides? }` |
+| `nativeHooks` | 平台 ID 到 `{ id, event, feedback, matcher?, command, requires? }[]` 的映射 |
+| `permissions` | 保留 allow/ask/deny、结构化托管命令引用及已支持的 Claude sandbox 策略，见[命令权限](managed-commands.md#a5-引用与权限) |
+
+公共 Hook 的 `event` 为 `before_tool | after_tool | session_start`，`feedback` 必填，为 `notify | context | block`。应用 override 后必须有 `command`。原生事件只接受该平台 registry 登记的事件和反馈合同；generic 不支持 Hooks。两种 Hook 的 `requires` 都是 `FeatureRequirement[]`。通知不等于阻断，不得丢弃必需反馈后报告成功。
+
+`agentOverrides` 是平台 ID 到字段覆盖或 `null` 的映射。`null` 表示本平台有意不提供；未指定沿用公共条目，数组整体替换，不递归合并任意宿主配置，不允许覆盖稳定 `id`。权限 override 仍只接受明确支持的策略字段，平台键合法不等于平台执行了该策略。
+
+Agent 未提供 `model` 或 `tools` 时使用实际消费者默认；`tools: []` 明确要求无工具。`promptMode` 缺省 `host-default`，其实际组合语义由固定平台 profile 说明；指定模型、工具限制或 append/replace 时必须有等价支持。Pi 仅交付角色声明，由用户已有的兼容消费者执行；文件写入不证明可调用。
+
+Instructions 的 `coverage` 必填且非空，正文直接注入；`paths` 有值时还要求路径匹配能力。只支持部分 audience 时，仅投影支持部分，并以原组件 ID 关联具体缺失 audience。模型、工具权限和 Hook 阻断不属于可分离语义。
+
+静态 ID 固定为 `skill:<目录名>`、`mcp:<server key>`、`agent:<公共 name>`、`instruction:<公共 name>`、`hook:<id>`、`native-hook:<platform>:<id>`。override 改显示名不改 ID。静态与动态 ID 跨类别共同查重，映射后的宿主名称也须无冲突。
+
+MCP 定义必须明确 `type`：`stdio` 使用 `command`、可选 `args/env`；`http | sse` 使用 `url`、可选 `headers`。两种字段不得混用。宿主变量引用只按已核验语法投影，不把敏感配置原值写入包。
+
+作者不提供宿主安装器、绝对输出路径、原生注册 ID 或任意原生 Manifest 透传。独立 slash commands、Apps、Output Styles、LSP、userConfig、channels、`buildConfig.manifestOverrides` 不是合法作者入口。动态字段、能力 ID/取值和校验见[运行时合同](plugin-runtime.md#3-动态-renderer-与-platformcomponentplan-合同)。
 
 ---
 
@@ -296,7 +336,7 @@ Store v6 内部隔离维护两类配置值容器：
 
 在 `Config Mutation Receipt v7` 中，配置保存与实际应用完全解耦：
 1. **保存提交（configWrite）**：进行 schema 预检与依赖闭包校验，验证通过后原子提交用户文档。一旦写入成功，回执标记 `configWrite: "succeeded"`。
-2. **应用刷新（apply）**：刷新已安装现场产物（重新物化受影响的 Native、Portable 或命令包）。
+2. **应用刷新（apply）**：刷新已安装现场产物（重新物化受影响的原生平台、generic 或命令包）。
 3. **失败保留原则**：若保存成功后应用阶段失败（例如目标平台缺少依赖、preApply 异常或现场被占用），**已保存的强配置绝不回滚**。回执与 CLI 状态将状态报告为部分完成（`status: "partial"`）并附带明确的安全恢复入口（如 `aw plugin sync`），不得判定为“配置未修改”。
 
 ### 4.3 配置变更命令行为

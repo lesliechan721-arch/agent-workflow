@@ -20,6 +20,7 @@ import {
   mergeClaudePermissions,
 } from '../../src/generators/permissions.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { parseSkillFrontmatter } from '../../src/utils/skill-validation.js';
 import { resolveCliPackageRoot } from '../../src/utils/paths.js';
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 
@@ -91,6 +92,11 @@ async function writeNodePackageFixture(
     { spaces: 2 },
   );
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
+}
+
+async function writeArtifactRendererFixture(pluginRoot: string): Promise<void> {
+  await fs.outputFile(path.join(pluginRoot, 'scripts', 'render-artifacts.mjs'),
+    'throw new Error("A bundle build must not execute the component renderer.");\n');
 }
 
 function createFakeStagingRunner(
@@ -248,142 +254,52 @@ describe('local-plugin generator', () => {
     );
   });
 
-  it('generates Claude and Codex runtime manifests with explicit bundle-local paths', async () => {
+  it('bundles static inputs for every target and preserves Native declarations for prepare', async () => {
     const repoRoot = await makeTempRepo();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
-    await fs.outputFile(
-      path.join(plugin.rootDir, 'skills', 'commit', 'evals', 'manifest.json'),
-      '{}\n',
-    );
-    await fs.outputFile(
-      path.join(plugin.rootDir, 'skills', 'commit', 'reports', 'run-1', 'summary.json'),
-      '{}\n',
-    );
-    plugin.manifest.extensions ??= {};
-    plugin.manifest.extensions.hooks ??= [];
-    plugin.manifest.extensions.hooks.push({
-      event: 'session_start',
-      command: 'echo shared session start',
+    const platforms = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi',
+      'gemini', 'copilot', 'grok', 'generic'] as const;
+    plugin.manifest.platforms = [...platforms];
+    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'README.md'),
+      '# Commit\n\nCommit workflow fixture.\n');
+    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'evals', 'manifest.json'), '{}\n');
+    await fs.outputFile(path.join(plugin.rootDir, 'skills', 'commit', 'reports', 'summary.json'), '{}\n');
+    plugin.manifest.extensions!.hooks!.push({
+      id: 'session-start', event: 'session_start', feedback: 'notify', command: 'echo shared session start',
     });
-    plugin.manifest.extensions.nativeHooks = {
-      claude: [
-        {
-          event: 'Notification',
-          matcher: '*',
-          command: 'echo claude notification',
-        },
-      ],
-      codex: [
-        {
-          event: 'UserPromptSubmit',
-          command: 'echo codex prompt',
-        },
-      ],
+    plugin.manifest.extensions!.nativeHooks = {
+      claude: [{ id: 'claude-notification', event: 'Notification', feedback: 'notify',
+        matcher: '*', command: 'echo claude notification' }],
+      codex: [{ id: 'codex-prompt', event: 'UserPromptSubmit', feedback: 'notify', command: 'echo codex prompt' }],
     };
     const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
-
     const result = await bundleLocalPlugin(plugin, outputRoot);
-
-    for (const platform of ['claude', 'codex']) {
-      await expect(
-        fs.pathExists(path.join(outputRoot, platform, 'skills', 'commit', 'evals')),
-      ).resolves.toBe(false);
-      await expect(
-        fs.pathExists(path.join(outputRoot, platform, 'skills', 'commit', 'reports')),
-      ).resolves.toBe(false);
-    }
-
     expect(Object.keys(result.platformManifests).sort()).toEqual(['claude', 'codex']);
-    expect(result.platformManifests).toMatchObject({
-      claude: {
-        skills: './claude/skills',
-        hooks: './claude/hooks/hooks.json',
-        agents: ['./claude/agents/aw-git-commit-commit-reviewer.md'],
-      },
-      codex: {
-        skills: './codex/skills',
-        hooks: {
-          hooks: {
-            PreToolUse: [
-              {
-                matcher: 'Bash',
-                hooks: [{ type: 'command', command: 'echo git hook' }],
-              },
-            ],
-            SessionStart: [
-              {
-                matcher: 'startup|resume|clear',
-                hooks: [{ type: 'command', command: 'echo shared session start' }],
-              },
-            ],
-            UserPromptSubmit: [
-              {
-                hooks: [{ type: 'command', command: 'echo codex prompt' }],
-              },
-            ],
-          },
-        },
-      },
-    });
-
-    await expect(
-      fs.readJson(path.join(outputRoot, '.codex-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      hooks: {
-        hooks: {
-          PreToolUse: [
-            {
-              matcher: 'Bash',
-              hooks: [{ type: 'command', command: 'echo git hook' }],
-            },
-          ],
-          SessionStart: [
-            {
-              matcher: 'startup|resume|clear',
-              hooks: [{ type: 'command', command: 'echo shared session start' }],
-            },
-          ],
-          UserPromptSubmit: [
-            {
-              hooks: [{ type: 'command', command: 'echo codex prompt' }],
-            },
-          ],
-        },
-      },
-    });
-    await expect(
-      fs.pathExists(path.join(outputRoot, 'codex', 'hooks', 'hooks.json')),
-    ).resolves.toBe(false);
-    await expect(
-      fs.readFile(path.join(outputRoot, 'claude', 'agents', 'aw-git-commit-commit-reviewer.md'), 'utf8'),
-    ).resolves.toContain('name: "commit-reviewer"');
-    await expect(
-      fs.pathExists(path.join(outputRoot, 'codex', 'skills', 'commit', 'SKILL.md')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.readJson(path.join(outputRoot, 'claude', 'hooks', 'hooks.json')),
-    ).resolves.toEqual({
-      hooks: {
-        Notification: [
-          {
-            matcher: '*',
-            hooks: [{ type: 'command', command: 'echo claude notification' }],
-          },
-        ],
-        PreToolUse: [
-          {
-            matcher: 'Bash',
-            hooks: [{ type: 'command', command: 'echo git hook' }],
-          },
-        ],
-        SessionStart: [
-          {
-            matcher: 'startup|resume|clear',
-            hooks: [{ type: 'command', command: 'echo shared session start' }],
-          },
-        ],
-      },
-    });
+    for (const platform of platforms) {
+      const skillPath = path.join(outputRoot, platform, 'skills', 'commit', 'SKILL.md');
+      expect(parseSkillFrontmatter(await fs.readFile(skillPath, 'utf8')).frontmatter)
+        .toMatchObject({ name: 'commit', 'user-invocable': true });
+      await expect(fs.readJson(path.join(outputRoot, platform, '.mcp.json'))).resolves.toHaveProperty('mcpServers');
+      await expect(fs.pathExists(path.join(outputRoot, platform, 'skills', 'commit', 'evals'))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(outputRoot, platform, 'skills', 'commit', 'reports'))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(outputRoot, platform, 'hooks'))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(outputRoot, platform, 'agents'))).resolves.toBe(false);
+    }
+    for (const platform of ['codex', 'claude'] as const) {
+      expect(result.platformManifests[platform]).toMatchObject({
+        skills: `./${platform}/skills`, mcpServers: `./${platform}/.mcp.json`,
+      });
+      expect(result.platformManifests[platform]).not.toHaveProperty('hooks');
+      expect(result.platformManifests[platform]).not.toHaveProperty('agents');
+      await expect(fs.readJson(path.join(outputRoot, `.${platform}-plugin`, 'plugin.json')))
+        .resolves.toEqual(result.platformManifests[platform]);
+    }
+    await expect(fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json')))
+      .resolves.toMatchObject({ schemaVersion: 4, extensions: plugin.manifest.extensions });
+    await expect(fs.readFile(path.join(outputRoot, 'skills', 'commit', 'SKILL.md'), 'utf8'))
+      .resolves.toBe(await fs.readFile(path.join(plugin.rootDir, 'skills', 'commit', 'SKILL.md'), 'utf8'));
+    await expect(fs.readJson(path.join(outputRoot, '.mcp.json')))
+      .resolves.toEqual(await fs.readJson(path.join(plugin.rootDir, '.mcp.json')));
   });
 
   it('excludes top-level Skill author directories but preserves nested domain directories', async () => {
@@ -412,66 +328,49 @@ describe('local-plugin generator', () => {
         '{}\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'SKILL.md'),
+        path.join(pluginRoot, 'renderer-resources', 'dynamic', 'SKILL.md'),
         '---\nname: dynamic\ndescription: Test dynamic Skill.\n---\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'README.md'),
+        path.join(pluginRoot, 'renderer-resources', 'dynamic', 'README.md'),
         '# Dynamic\n\nDynamic report summary ships with the Skill.\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'agents', 'openai.yaml'),
+        path.join(pluginRoot, 'renderer-resources', 'dynamic', 'agents', 'openai.yaml'),
         'policy:\n  allow_implicit_invocation: true\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'evals', 'manifest.json'),
+        path.join(pluginRoot, 'renderer-resources', 'dynamic', 'evals', 'manifest.json'),
         '{}\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'references', 'evals', 'contract.md'),
+        path.join(pluginRoot, 'renderer-resources', 'dynamic', 'references', 'evals', 'contract.md'),
         '# Dynamic eval contract\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'base', 'SKILL.md'),
+        path.join(pluginRoot, 'renderer-resources', 'rendered', 'SKILL.md'),
         '---\nname: dynamic\ndescription: Test rendered dynamic Skill.\n---\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'base', 'README.md'),
+        path.join(pluginRoot, 'renderer-resources', 'rendered', 'README.md'),
         '# Dynamic\n\nRendered dynamic report summary ships with the Skill.\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'base', 'agents', 'openai.yaml'),
+        path.join(pluginRoot, 'renderer-resources', 'rendered', 'agents', 'openai.yaml'),
         'policy:\n  allow_implicit_invocation: true\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'skills', 'dynamic', 'base', 'evals', 'private.json'),
+        path.join(pluginRoot, 'renderer-resources', 'rendered', 'evals', 'private.json'),
         '{"secret":"author-only"}\n',
       ),
     ]);
+    await writeArtifactRendererFixture(pluginRoot);
+    const executableSource = path.join(pluginRoot, 'renderer-resources', 'dynamic', 'scripts', 'run.sh');
+    await fs.outputFile(executableSource, '#!/bin/sh\nexit 0\n');
+    await fs.chmod(executableSource, 0o755);
+    manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } } };
     manifest.artifacts = {
-      targets: [
-        {
-          id: 'dynamic-skill',
-          platform: 'codex',
-          scopes: ['user', 'project'],
-          target: 'codex.skill',
-          projectManagedKind: 'skill',
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'dynamic',
-          sourceDirs: ['./skills/dynamic', './skills/dynamic/base'],
-        },
-        {
-          id: 'dynamic-claude-skill',
-          platform: 'claude',
-          scopes: ['user', 'project'],
-          target: 'claude.skill',
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'dynamic',
-          sourceDirs: ['./skills/dynamic', './skills/dynamic/base'],
-        },
-      ],
+      configKeys: [], sourceDirs: ['./renderer-resources/dynamic', './renderer-resources/rendered'],
     };
     manifest.buildConfig = {
       fileRules: {
@@ -521,14 +420,10 @@ describe('local-plugin generator', () => {
         'reports',
       ))).resolves.toBe(false);
     }
-    const dynamicSourceRoot = path.join(
-      outputRoot,
-      '.agents-plugin',
-      'artifact-sources',
-      'codex',
-      'dynamic-skill',
-      '0',
-    );
+    const dynamicSourceRoot = path.join(outputRoot, 'renderer-resources', 'dynamic');
+    const executableOutput = path.join(dynamicSourceRoot, 'scripts', 'run.sh');
+    await expect(fs.readFile(executableOutput, 'utf8')).resolves.toBe('#!/bin/sh\nexit 0\n');
+    if (process.platform !== 'win32') expect((await fs.stat(executableOutput)).mode & 0o777).toBe(0o755);
     await expect(fs.pathExists(path.join(dynamicSourceRoot, 'SKILL.md'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(dynamicSourceRoot, 'README.md'))).resolves.toBe(true);
     await expect(fs.readFile(path.join(dynamicSourceRoot, 'README.md'), 'utf8')).resolves.toContain(
@@ -541,31 +436,10 @@ describe('local-plugin generator', () => {
       'evals',
       'contract.md',
     ), 'utf8')).resolves.toBe('# Dynamic eval contract\n');
-    await expect(fs.readJson(path.join(
-      dynamicSourceRoot,
-      'base',
-      'evals',
-      'private.json',
-    ))).resolves.toEqual({ secret: 'author-only' });
     await expect(fs.pathExists(path.join(dynamicSourceRoot, 'reports'))).resolves.toBe(false);
-    await expect(fs.pathExists(path.join(
-      outputRoot,
-      '.agents-plugin',
-      'artifact-sources',
-      'codex',
-      'dynamic-skill',
-      '1',
-      'evals',
-    ))).resolves.toBe(false);
-    await expect(fs.readFile(path.join(
-      outputRoot,
-      '.agents-plugin',
-      'artifact-sources',
-      'codex',
-      'dynamic-skill',
-      '1',
-      'README.md',
-    ), 'utf8')).resolves.toContain('Rendered dynamic report summary ships with the Skill.');
+    await expect(fs.pathExists(path.join(outputRoot, 'renderer-resources', 'rendered', 'evals'))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(outputRoot, 'renderer-resources', 'rendered', 'README.md'), 'utf8'))
+      .resolves.toContain('Rendered dynamic report summary ships with the Skill.');
     await expect(fs.readFile(path.join(outputRoot, 'README.md'), 'utf8')).resolves.toContain(
       'Plugin documentation.',
     );
@@ -580,23 +454,14 @@ describe('local-plugin generator', () => {
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
     delete manifest.skills;
-    manifest.artifacts = {
-      targets: [{
-        id: 'dynamic-commit',
-        platform: 'codex',
-        scopes: ['user'],
-        target: 'codex.skill',
-        projectManagedKind: 'skill',
-        states: ['present'],
-        refreshKeys: [],
-        skillKey: 'commit',
-        sourceDirs: ['./skills/commit'],
-      }],
-    };
+    await fs.move(path.join(pluginRoot, 'skills'), path.join(pluginRoot, 'renderer-resources'));
+    await writeArtifactRendererFixture(pluginRoot);
+    manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } } };
+    manifest.artifacts = { configKeys: [], sourceDirs: ['./renderer-resources/commit'] };
     await Promise.all([
       writeFixturePluginManifest(repoRoot, manifest),
       fs.outputJson(
-        path.join(pluginRoot, 'skills', 'commit', 'aw-plugin-requirements.json'),
+        path.join(pluginRoot, 'renderer-resources', 'commit', 'aw-plugin-requirements.json'),
         { reserved: true },
       ),
     ]);
@@ -608,44 +473,26 @@ describe('local-plugin generator', () => {
     )).rejects.toThrow('source root cannot declare reserved file aw-plugin-requirements.json');
   });
 
-  it('declares the Native Codex skills root for user-only dynamic codex.skill targets', async () => {
+  it('preserves user-only renderer permissions without inventing static Skills', async () => {
     const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
     delete manifest.skills;
-    manifest.config = {
-      fields: {
-        explorerModel: {
-          type: 'string',
-          default: 'gpt-5.4-mini',
-        },
-      },
-    };
-    manifest.artifacts = {
-      targets: [
-        {
-          id: 'dynamic-explore-skill',
-          platform: 'codex',
-          scopes: ['user'],
-          target: 'codex.skill',
-          projectManagedKind: 'skill',
-          states: ['present'],
-          refreshKeys: ['explorerModel'],
-          skillKey: 'dynamic-explore',
-        },
-      ],
-    };
+    manifest.config = { fields: { explorerModel: { type: 'string', default: 'gpt-5.4-mini' } } };
+    manifest.artifacts = { configKeys: ['explorerModel'], scopes: ['user'] };
+    await writeArtifactRendererFixture(pluginRoot);
+    manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render-artifacts.mjs' } } };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', 'skills'));
+    await fs.remove(path.join(pluginRoot, 'skills'));
 
-    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const plugin = await readPluginManifest(pluginRoot);
     const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
     const result = await bundleLocalPlugin(plugin, outputRoot);
-
-    expect(result.platformManifests.codex?.skills).toBe('./codex/skills');
-    await expect(
-      fs.readJson(path.join(outputRoot, '.codex-plugin', 'plugin.json')),
-    ).resolves.toHaveProperty('skills', './codex/skills');
-    await expect(fs.pathExists(path.join(outputRoot, 'codex', 'skills'))).resolves.toBe(true);
+    expect(result.platformManifests.codex?.skills).toBeUndefined();
+    await expect(fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json')))
+      .resolves.toMatchObject({ artifacts: { configKeys: ['explorerModel'], scopes: ['user'] } });
+    await expect(fs.pathExists(path.join(outputRoot, 'codex', 'skills'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'render-artifacts.mjs'))).resolves.toBe(true);
   });
 
   it('generates only Codex bundle outputs for Codex-only plugins and removes stale Claude outputs', async () => {
@@ -666,7 +513,6 @@ describe('local-plugin generator', () => {
     expect(result.platformManifests.codex).toMatchObject({
       skills: './codex/skills',
       mcpServers: './codex/.mcp.json',
-      apps: './codex/.app.json',
     });
     expect(result.platformManifests.claude).toBeUndefined();
     await expect(fs.pathExists(path.join(outputRoot, '.codex-plugin', 'plugin.json'))).resolves.toBe(true);
@@ -693,7 +539,6 @@ describe('local-plugin generator', () => {
     expect(result.platformManifests.claude).toMatchObject({
       skills: './claude/skills',
       mcpServers: './claude/.mcp.json',
-      agents: ['./claude/agents/aw-git-commit-commit-reviewer.md'],
     });
     expect(result.platformManifests.codex).toBeUndefined();
     await expect(fs.pathExists(path.join(outputRoot, '.claude-plugin', 'plugin.json'))).resolves.toBe(true);
@@ -702,47 +547,14 @@ describe('local-plugin generator', () => {
     await expect(fs.pathExists(path.join(outputRoot, 'codex'))).resolves.toBe(false);
   });
 
-  it('bundles slashCommands only for the final supported platforms', async () => {
-    const pluginRoot = fixturePath(
-      'codex-project-repo-managed',
-      'plugins',
-      'slashCommands-only',
-    );
-
-    const claudeOnlyPlugin = await readPluginManifest(pluginRoot);
-    claudeOnlyPlugin.manifest.platforms = ['claude'];
-    const claudeOutputRoot = path.join(
-      await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-claude-bundle-')),
-      'bundle',
-    );
-    tempDirs.push(path.dirname(claudeOutputRoot));
-    const claudeResult = await bundleLocalPlugin(claudeOnlyPlugin, claudeOutputRoot);
-
-    expect(Object.keys(claudeResult.platformManifests)).toEqual(['claude']);
-    await expect(
-      fs.readFile(path.join(claudeOutputRoot, 'claude', 'commands', 'review.md'), 'utf8'),
-    ).resolves.toContain('argument-hint: "[path]"');
-    await expect(fs.pathExists(path.join(claudeOutputRoot, 'codex'))).resolves.toBe(false);
-    await expect(fs.pathExists(path.join(claudeOutputRoot, '.codex-plugin'))).resolves.toBe(false);
-
-    const codexOnlyPlugin = await readPluginManifest(pluginRoot);
-    codexOnlyPlugin.manifest.platforms = ['codex'];
-    const codexOutputRoot = path.join(
-      await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-codex-bundle-')),
-      'bundle',
-    );
-    tempDirs.push(path.dirname(codexOutputRoot));
-    const codexResult = await bundleLocalPlugin(codexOnlyPlugin, codexOutputRoot);
-
-    expect(Object.keys(codexResult.platformManifests)).toEqual(['codex']);
-    await expect(
-      fs.readFile(path.join(codexOutputRoot, 'codex', 'skills', 'review', 'SKILL.md'), 'utf8'),
-    ).resolves.toContain('Run `git status` and `git diff` yourself');
-    await expect(
-      fs.pathExists(path.join(codexOutputRoot, 'codex', 'skills', 'review', 'assets', 'review-16.svg')),
-    ).resolves.toBe(true);
-    await expect(fs.pathExists(path.join(codexOutputRoot, 'claude'))).resolves.toBe(false);
-    await expect(fs.pathExists(path.join(codexOutputRoot, '.claude-plugin'))).resolves.toBe(false);
+  it('rejects removed slashCommands before writing bundle outputs', async () => {
+    const repoRoot = await makeTempRepo();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    Object.assign(plugin.manifest, { slashCommands: './slash-commands' });
+    const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
+    await expect(bundleLocalPlugin(plugin, outputRoot))
+      .rejects.toThrow('/ must NOT have additional properties');
+    await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
   });
 
   it('renders Claude agents with frontmatter and Codex agents as valid role-file TOML', () => {
@@ -793,17 +605,23 @@ describe('local-plugin generator', () => {
   it('renders public hook event mappings for Claude and Codex runtime contracts', () => {
     const claudeArtifact = renderHooksArtifact([
       {
+        id: 'fixture-hook-2',
+        feedback: 'notify',
         event: 'after_tool',
         matcher: 'Edit',
         command: 'echo after',
       },
       {
+        id: 'fixture-hook-3',
+        feedback: 'notify',
         event: 'session_start',
         command: 'echo start',
       },
     ], 'claude');
     const codexArtifact = renderHooksArtifact([
       {
+        id: 'fixture-hook-4',
+        feedback: 'notify',
         event: 'before_tool',
         matcher: 'Write',
         command: 'echo before',
@@ -1044,7 +862,7 @@ describe('local-plugin generator', () => {
         buildMode: 'prepared',
       }),
     ).rejects.toThrow(
-      'Invalid plugin "git-commit": buildConfig.manifestOverrides.claude requires claude support, but platforms=[codex].',
+      '/buildConfig must NOT have additional properties',
     );
   });
 

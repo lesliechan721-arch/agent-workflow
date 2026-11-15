@@ -1,6 +1,8 @@
 import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
 import type { RecoveryReceipt, RecoveryTarget } from '../../src/recovery/receipt.js';
 import { vi } from 'vitest';
+import { PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core';
+import { targetAvailabilityViews } from '../../src/platforms/discovery.js';
 
 import type {
   StatusV8CodexTarget,
@@ -546,6 +548,8 @@ export function agentSettings(targets: AgentSettings['preferences']['targets'] =
     plugins: [],
     context: 'project',
     projectRoot: '/workspace',
+    availability: targetAvailabilityViews(PLATFORM_TARGETS.map((platform) => ({ platform,
+      availability: platform === 'generic' ? 'notApplicable' : 'available', installations: [], diagnostics: [] })), targets),
   };
 }
 

@@ -1,14 +1,14 @@
 # AW 方法用例
 
-[method-cases.json](method-cases.json) 使用当前 Conversation Selected Cases v1。七个场景分别检查 source 分析、共享资源、静态平台差异、动态 target 的安装态配置、静态 Skill 的配置边界、安全删除与可比较运行包。
+[method-cases.json](method-cases.json) 使用当前 Conversation Selected Cases v1。七个场景分别检查 source 分析、共享资源、静态平台差异、动态 Skill 组件的安装态配置、静态 Skill 的配置边界、安全删除与可比较运行包。
 
 | 场景 | 真实前提与可检查结果 |
 | --- | --- |
 | `source_only_scope` | 有效 source Workspace；允许只读文件命令，不执行插件代码、构建或安装 |
-| `shared_resource_authoring` | provider 真实脚本、consumer Native 与 Portable 声明；允许范围内修改 export/import 声明并核对能力传播 |
+| `shared_resource_authoring` | provider 真实脚本、consumer 十目标声明；允许范围内修改 export/import 声明并核对能力传播 |
 | `platform_choice` | 有效静态 Skill；选择足够的静态投影与实际 surface 验证范围 |
-| `installed_config_choice` | 已声明的 Codex/user 动态 target、renderer、非敏感配置与 refresh key；修改 target 和脚本，不宣称未执行的真实安装验证 |
-| `static_skill_config_choice` | 静态 Skill 及配置；说明受支持的动态 target 路径和未采用时的限制 |
+| `installed_config_choice` | 已声明的 Codex/user 动态组件、v3 renderer、非敏感 configKeys 与资源来源；修改 renderer 组件及运行脚本，不宣称未执行的真实安装验证 |
+| `static_skill_config_choice` | 静态 Skill 及配置；说明受支持的动态组件路径和未采用时的限制 |
 | `catalog_remove_empty` | 从完整种子复制独立 Workspace，建立本地 fixture HEAD，再用公开 remove；最终 status 的 plugins 为空 |
 | `comparable_finals` | setup 脚本建立真实 Git HEAD 后增加 dirty/untracked 输入；完整复制两版本，以同一 profile 准备各自 final 和 binding |
 

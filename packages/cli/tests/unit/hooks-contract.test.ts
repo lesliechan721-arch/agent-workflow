@@ -104,6 +104,7 @@ describe('hooks contract', () => {
       'PermissionRequest',
       'PostToolUse',
       'SessionStart',
+      'SubagentStart',
       'UserPromptSubmit',
       'Stop',
     ]);

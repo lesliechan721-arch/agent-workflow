@@ -89,6 +89,18 @@ describe('dependency placement plan v2', () => {
     expect(target(plan, 'team/leaf', 'claude').resolvedScope).toBe('project');
   });
 
+  it('accepts an internal placement for another native platform and propagates its dependency scope', () => {
+    const input = graph();
+    input.nodes = input.nodes.filter((node) => node.platform === 'codex').map((node) => ({ ...node, platform: 'opencode' }));
+    input.roots = [{ pluginId: 'team/root', platform: 'opencode', scope: 'project' }];
+    input.dependencyEdges = input.dependencyEdges.filter((edge) => edge.platform === 'codex').map((edge) => ({ ...edge, platform: 'opencode' }));
+    input.scopeOverrides = [{ pluginId: 'team/middle', platform: 'opencode', scope: 'user' }];
+    const plan = createDependencyPlacementPlan(input);
+    expect(plan.targets.map((entry) => [entry.pluginId, entry.platform, entry.resolvedScope])).toEqual([
+      ['team/root', 'opencode', 'project'], ['team/middle', 'opencode', 'user'], ['team/leaf', 'opencode', 'user'],
+    ]);
+  });
+
   it('reuses a healthy wider user dependency without creating a user root', () => {
     const input = graph();
     input.nodes = input.nodes.filter((node) => node.platform === 'codex').map((node) =>

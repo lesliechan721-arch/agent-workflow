@@ -13,7 +13,7 @@
   .aw-workspace.json                        [Workspace 根标识，schema 1]
   plugins/
     marketplace-source.json                 [Marketplace 根元数据]
-    <plugin-name>/.agents-plugin/plugin.json [各插件源码 Manifest v3]
+    <plugin-name>/.agents-plugin/plugin.json [各插件源码 Manifest v4]
             ↓ aw dev catalog build
   .aw/catalog/                              [生成开发快照 Snapshot schema 7]
 ```

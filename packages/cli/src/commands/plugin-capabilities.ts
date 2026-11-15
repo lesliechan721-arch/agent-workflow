@@ -26,13 +26,13 @@ const adapterFacts: Readonly<Partial<Record<
       conflicts: 'The plugin itself, missing providers, and dependency cycles.',
     },
     platforms: {
-      profiles: 'codex, claude, antigravity, cursor, opencode, pi, generic',
-      requires: 'Omitted or empty platforms support all seven canonical targets; each selected projection must be valid.',
+      profiles: 'codex, claude, antigravity, cursor, opencode, pi, gemini, copilot, grok, generic',
+      requires: 'Omitted or empty platforms support all ten canonical targets; each selected projection must be valid.',
       conflicts: 'Unknown or duplicate target IDs, distributions.agentSkills, and marketplace.policy.products.',
       provenance: ['CLI source and bundle validators'],
     },
     skills: {
-      profiles: 'Native and Portable targets from one ./skills source root',
+      profiles: 'Native platform packages and explicit-profile Agent Skills exports from one ./skills source root',
       requires: 'Each final Skill has a production README.md and valid target metadata and resource closure.',
       provenance: ['CLI target projection and Skill validators'],
     },
@@ -45,7 +45,6 @@ const adapterFacts: Readonly<Partial<Record<
       provenance: ['CLI runtime import resolver'],
     },
     'buildConfig.buildImports': { requires: 'scripts.node.build and a unique AW_PLUGIN_IMPORT_* environment variable.' },
-    'buildConfig.manifestOverrides.claude': { profiles: 'CLAUDE', requires: 'claude target support.' },
     'buildConfig.skillRuntimeFiles': { requires: 'A declared static Skill and a target below references/, assets/, or scripts/.' },
     'buildConfig.skillRuntimeFiles[].platforms': {
       profiles: 'canonical target projection',
@@ -72,18 +71,9 @@ const adapterFacts: Readonly<Partial<Record<
     'extensions.nativeHooks.claude': { profiles: 'CLAUDE', requires: 'claude target support.' },
     'extensions.nativeHooks.codex': { profiles: 'CODEX', requires: 'codex target support.' },
   },
-  'slash-commands': {
-    claude: { profiles: 'CLAUDE' },
-    'codex.description': { profiles: 'CODEX' },
-    'codex.interface': { profiles: 'CODEX', requires: 'default_prompt invokes $command-name.' },
-  },
-  'mcp-apps': {
+  mcp: {
     'mcpServers.<key>.command': { conflicts: 'url' },
     'mcpServers.<key>.url': { conflicts: 'command' },
-    'apps.<key>.id': {
-      profiles: 'CODEX user scope',
-      conflicts: 'CLAUDE-only plugins and Codex project scope.',
-    },
   },
   config: {
     'config.presentation': { conflicts: 'Schema mutation and sensitive or path values in presets.' },
@@ -92,33 +82,31 @@ const adapterFacts: Readonly<Partial<Record<
     'scripts.preApply': { requires: 'A Node entry inside the plugin root.' },
   },
   artifacts: {
-    'scripts.artifacts.render': { requires: 'artifacts.targets, dynamic command sets, or render:true command packages.' },
-    'rendererContext.commandSources': {
-      requires: 'Only packages involved in the exact requested command targets; fixed bundle directories are read-only.',
-      provenance: ['CLI artifact renderer context'],
+    'scripts.artifacts.render': {
+      requires: 'artifacts input permissions, dynamic command sets, or render:true command packages.',
     },
-    'rendererContext.requestedArtifactIds': {
-      requires: 'Return exactly these declared artifacts and no other artifacts.',
-      provenance: ['CLI artifact renderer context'],
+    'artifacts.configKeys': {
+      requires: 'Fields exist in the selected platform Config v5 profile; Skill batches contain only the non-sensitive dependency closure.',
     },
-    'artifacts.targets': { requires: 'scripts.artifacts.render and complete static target identity.' },
-    'artifacts.targets[].platform': {
-      profiles: 'one explicit canonical target',
-      requires: 'codex.skill and claude.skill use Native shared-user production; agent-skills.skill binds one Portable target.',
-      conflicts: 'Missing targets, agent-skills as a platform, and authored delivery choices.',
+    'artifacts.sourceDirs': {
+      requires: 'Verified bundle-relative input directories; these do not declare final component identities.',
     },
-    'artifacts.targets[].refreshKeys': {
-      requires: 'Fields exist in the selected target schema. Skill renderers cannot read sensitive fields; Native Skill content uses user configuration.',
+    'artifacts.runtimeImports': {
+      requires: 'Provider-owned runtime exports resolved into the consumer bundle and bound by digest.',
     },
-    'artifacts.targets[].runtimeConfig': {
-      requires: 'aw.installed-runtime-config.v2 and a native Skill target. AW injects the reader and binding; source and renderer cannot provide reserved files.',
-      conflicts: 'Sensitive keys or sensitive dependency closure.',
+    'artifacts.scopes': {
+      requires: 'The physical resource render scope; an excluded scope intentionally offers no dynamic components.',
     },
-    'artifacts.targets[].runtimeImports': {
-      requires: 'A provider runtimeExports entry resolved into the consumer bundle.',
-      conflicts: 'Using the reuse edge as an installation dependency.',
-      provenance: ['CLI runtime import resolver'],
+    'rendererContext.platformCapabilities': {
+      requires: 'The qualified capability input for the exact render unit; offline preparation uses basis=profile.',
     },
+  },
+  'platform-components': {
+    components: { requires: 'The complete v3 component set for the allowed output kinds; omitted and unmet are explicit arrays.' },
+    'components[].runtimeConfig.keys': { requires: 'aw.installed-runtime-config.v2 and a qualified native profile; a non-sensitive artifacts.configKeys subset.' },
+  },
+  'platform-capabilities': {
+    basis: { requires: 'Author preparation uses profile; local is reserved for actual consumer observations.' },
   },
   'native-tools': {
     nativeTools: {
@@ -148,7 +136,7 @@ const adapterFacts: Readonly<Partial<Record<
     },
     'Skill Markdown placeholder': {
       requires: 'A validated candidate or healthy installed producer in the same source/plugin and legal scope.',
-      conflicts: 'Portable targets and unresolved, disabled, or foreign commands.',
+      conflicts: 'Generic export profiles and unresolved, disabled, foreign, or other-placement commands.',
     },
   },
 }

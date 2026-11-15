@@ -1,4 +1,5 @@
 import fs from 'fs-extra';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readScopedRecoveryStatus, statusFromObservations, type NativeObservation } from '../../src/recovery/status.js';
@@ -21,7 +22,7 @@ function demand(ids: string[], targets: AgentId[]): DemandSnapshot {
       targets, exclusions: [] }, digest: 'sha256:test', rawDigest: 'sha256:test', rawBytes: Buffer.from('{}') },
     roots: ids.map((pluginId) => ({ pluginId, sourceId: 'local', sourceState: 'ready' as const,
       blockers: [], plugin: { manifest: { name: pluginId.split('/')[1],
-        platforms: ['claude', 'cursor'], skills: './skills' } } as never })),
+        platforms: ['claude', 'cursor', 'generic'], skills: './skills' } } as never })),
     plugins: [], errors: [],
   };
 }
@@ -31,7 +32,7 @@ describe('recovery status satisfaction', () => {
 
   // Test Value Gate: cancellation must escape the status fallback and stop observation of later roots.
   it('propagates Portable inventory cancellation without observing later roots', async () => {
-    const snapshot = demand(['local/one', 'local/two'], ['cursor']);
+    const snapshot = demand(['local/one', 'local/two'], ['generic']);
     const abort = new AbortController();
     let observedSignal: AbortSignal | undefined;
     const inspect = vi.spyOn(portableRecovery, 'inspectPortableRecovery').mockImplementation(async (options) => {
@@ -48,7 +49,7 @@ describe('recovery status satisfaction', () => {
   // Test Value Gate: the operation cwd must remain available until a pending Portable observation ends, including cancellation.
   it('keeps the scoped status context until Portable observation cancellation settles', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const snapshot = demand(['local/one', 'local/two'], ['cursor']);
+    const snapshot = demand(['local/one', 'local/two'], ['generic']);
     vi.spyOn(demandService, 'readDemand').mockResolvedValue(snapshot);
     let finish: ((value: portableRecovery.PortablePreparation) => void) | undefined;
     let observedCwd: string | undefined;
@@ -100,6 +101,55 @@ describe('recovery status satisfaction', () => {
     expect(status.ok).toBe(true);
   });
 
+  // Test Value Gate: a live package cannot prove the current complete dynamic set without matching preparation evidence.
+  it.each(['satisfied', 'absent'] as const)('keeps dynamic expectations unknown beside a %s package', async (content) => {
+    const snapshot = demand(['local/one'], ['cursor']);
+    snapshot.roots![0]!.plugin!.manifest.artifacts = { configKeys: [] };
+    const status = await statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
+      demand: snapshot, nativeObservations: [{ pluginId: 'local/one', platform: 'cursor', content, blockers: [] }] });
+    expect(status.allSatisfied).toBeNull();
+    expect(status.inventory![0]!.targetResults[0]).toMatchObject({
+      delivery: { kind: 'native', platform: 'cursor' }, content: 'unknown', observation: 'unknown',
+      blockers: [expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })],
+    });
+  });
+
+  // Test Value Gate: normal status must observe a concrete Agent through its native adapter without executing plugin code.
+  it('observes a dynamic Cursor requirement without running its renderer or creating generic output', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const rootDir = path.join(isolation.layout.fixtureCwd, 'dynamic-plugin');
+    const bin = path.join(isolation.layout.fixtureCwd, 'bin');
+    const marker = path.join(rootDir, 'renderer-ran');
+    await fs.ensureDir(rootDir);
+    await fs.ensureDir(bin);
+    await fs.writeFile(path.join(bin, 'cursor-agent'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    await fs.writeFile(path.join(rootDir, 'render.mjs'), 'import fs from "node:fs"; fs.writeFileSync("renderer-ran", "ran"); throw new Error("status must not render");\n');
+    const snapshot = demand(['local/one'], ['cursor']);
+    const plugin = snapshot.roots![0]!.plugin!;
+    Object.assign(plugin, { rootDir, sourceId: 'local', pluginId: 'local/one', sourceIdentity: `sha256:${'a'.repeat(64)}` });
+    Object.assign(plugin.manifest, { schemaVersion: 4, version: '1.0.0',
+      artifacts: { configKeys: [] }, scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } } });
+    delete plugin.manifest.skills;
+    snapshot.plugins = [plugin];
+    const invocations: string[][] = [];
+    const status = await readScopedRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd,
+      env: { ...isolation.env, PATH: bin }, demandOverride: snapshot, nativeCliRunner: async ({ command, args }) => {
+        invocations.push([path.basename(command), ...args]);
+        return { exitCode: 0, stdout: 'Cursor Agent 2026.11.05-86047df', stderr: '' };
+      } });
+    expect(invocations).toContainEqual(['cursor-agent', '--version']);
+    expect(status.inventory![0]!.targetResults[0]).toMatchObject({
+      delivery: { kind: 'native', platform: 'cursor' }, content: 'unknown',
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })]),
+      deploymentObservations: [expect.objectContaining({
+        products: [expect.objectContaining({ product: 'cli', version: '2026.11.05-86047df' })],
+        after: expect.objectContaining({ package: 'absent', nativeIdentity: expect.objectContaining({ route: 'cursor-workspace-hook' }) }),
+      })],
+    });
+    expect(await fs.pathExists(marker)).toBe(false);
+    expect(await fs.pathExists(path.join(isolation.env.HOME!, '.agents', 'skills'))).toBe(false);
+  });
+
   it.each(['sourceUnavailable', 'sourceActiveUnavailable', 'pluginManifestUnavailable'])(
     'keeps an unobservable delivery unknown for %s', async (code) => {
       const snapshot = demand(['local/one'], ['claude']);
@@ -128,4 +178,21 @@ describe('recovery status satisfaction', () => {
       if (failure === 'unsupported') expect(status.inventory![0]!.targetResults[0]!.blockers)
         .toEqual([expect.objectContaining({ code: 'deliveryUnsupported' })]);
     });
+});
+
+// Test Value Gate: requesting a status snapshot callback must not activate the retired Native backend.
+describe('current observer callbacks', () => {
+  it('returns the same scoped current snapshot without starting a legacy Native read', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const snapshot = demand(['local/one'], ['cursor']);
+    const callback = vi.fn();
+    const runner = vi.fn(async () => { throw new Error('No external read is expected for supplied observations.'); });
+    const status = await readScopedRecoveryStatus({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      demandOverride: snapshot, nativeObservations: [{ pluginId: 'local/one', platform: 'cursor', content: 'satisfied', blockers: [] }],
+      nativeCliRunner: runner, onNativeStatus: callback });
+    expect(status.kind).toBe('aw-recovery-status');
+    expect(callback).toHaveBeenCalledOnce();
+    expect(callback).toHaveBeenCalledWith(status, snapshot);
+    expect(runner).not.toHaveBeenCalled();
+  });
 });

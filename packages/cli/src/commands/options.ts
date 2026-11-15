@@ -8,7 +8,7 @@ import type {
   StatusCommandOptions,
 } from '../types.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import { isPlatformTarget } from '@lesliechan721/aw-plugin-core/manifest';
+import { isPlatformTarget, NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 
 export interface NormalizeCommandOptionsDefaults {
   cwd?: string;
@@ -40,8 +40,8 @@ export type RawStatusCommandOptions = {
   json?: boolean;
 };
 
-export type RawUninstallCommandOptions = RawCommandOptions;
-export type UninstallCommandOptions = CommandOptions;
+export type RawUninstallCommandOptions = RawCommandOptions & { force?: boolean };
+export type UninstallCommandOptions = CommandOptions & { force?: boolean };
 
 export type RawCleanupCommandOptions = RawCommandOptions & {
   json?: boolean;
@@ -88,12 +88,12 @@ export function parsePlatformTargetValue(platform: unknown): PlatformTarget {
 }
 
 export function parsePlatformValue(platform: unknown): PlatformSelection {
-  if (platform === 'codex' || platform === 'claude' || platform === 'both') {
+  if (platform === 'both' || isPlatformTarget(platform) && platform !== 'generic') {
     return platform;
   }
 
   throw new Error(
-    `Unsupported platform "${renderUnsupportedValue(platform)}". Expected one of: codex, claude, both.`,
+    `Unsupported platform "${renderUnsupportedValue(platform)}". Expected one of: ${NATIVE_PLATFORM_TARGETS.join(', ')}, both.`,
   );
 }
 
@@ -123,7 +123,7 @@ export function parseDependencyScopeOverrides(
       ? undefined
       : parsePlatformValue(selector.slice(platformSeparator + 1));
     if (parsedPlatform === 'both') {
-      throw new Error('Invalid dependency scope platform: expected codex or claude.');
+      throw new Error('Invalid dependency scope platform: expected one concrete Agent platform.');
     }
     const key = `${canonicalPluginId}\0${parsedPlatform ?? '*'}`;
     const current = byKey.get(key);
@@ -273,6 +273,7 @@ export function normalizeUninstallCommandOptions(
       missingPlatformMessage: 'uninstall 命令需要显式指定 `--platform codex|claude|both`。',
       ...defaults,
     }),
+    ...(raw.force === true ? { force: true } : {}),
   };
 }
 

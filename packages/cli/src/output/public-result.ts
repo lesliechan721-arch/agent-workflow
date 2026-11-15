@@ -1,6 +1,7 @@
 import { describeNativeToolClosure, type NativeToolChange } from '../utils/native-tool-review.js';
 import { renderPluginCapabilities, type PluginCapabilitiesResult } from '../commands/plugin-capabilities.js';
 import { redactString } from './redact.js';
+import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
 
 export interface Diagnostic {
   code: string;
@@ -77,6 +78,12 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   if (snapshot?.state) lines.push(`Snapshot: ${snapshot.state}${verbose && snapshot.path ? ` (${snapshot.path})` : ''}`);
   const policy = data.policy as { targets?: string[]; exclusions?: Array<{ plugin: string; target: string }> } | undefined;
   if (policy) { lines.push(`Targets: ${policy.targets?.join(', ') || 'none'}`); for (const entry of policy.exclusions ?? []) lines.push(`Excluded: ${entry.plugin} / ${entry.target}`); }
+  for (const target of (data.availability ?? []) as Array<{ id: string; displayName: string; selected: boolean; availability: string;
+    recovery: string[]; installations: Array<{ product: string; version: string | null; availability: string; reasonCodes: string[]; entry: { kind: string; executable?: string; configRoot?: string; root?: string } | null }> }>) {
+    lines.push(`${target.selected ? '[x]' : '[ ]'} ${target.displayName} (${target.id}): ${target.availability}`);
+    for (const product of target.installations) lines.push(`  ${product.product}: ${product.availability}; version ${product.version ?? 'unknown'}${product.reasonCodes.length ? `; ${product.reasonCodes.join(', ')}` : ''}${product.entry ? `; ${product.entry.executable ?? product.entry.configRoot ?? product.entry.root}` : ''}`);
+    for (const recovery of target.recovery) lines.push(`  ${recovery}`);
+  }
   if (Array.isArray(data.targets)) lines.push(`Supported targets: ${data.targets.join(', ')}`);
   if (Array.isArray(data.dependencies)) lines.push(`Dependencies: ${data.dependencies.join(', ') || 'none'}`);
   for (const change of (data.nativeToolChanges ?? []) as NativeToolChange[]) for (const phase of ['before', 'after'] as const) {
@@ -97,6 +104,40 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       const compatibility = entry.compatibility as { state?: string; requiredCapabilities?: string[]; missingCapabilities?: string[] } | undefined;
       if (compatibility?.state === 'unsupported') lines.push(`  Incompatible; required: ${compatibility.requiredCapabilities?.join(', ') ?? 'unknown'}; missing: ${compatibility.missingCapabilities?.join(', ') ?? 'unknown'}`);
       if ('activeReady' in entry) lines.push(`  Active: ${entry.active ? 'present' : 'absent'}; ready: ${entry.activeReady ? 'yes' : 'no'}`);
+      const targetEntry = entry as unknown as PublicTargetResult;
+      for (const excluded of targetEntry.deploymentExclusions ?? []) {
+        lines.push(`  ${excluded.product?.product ?? 'product'}: version ${excluded.product?.version ?? 'unknown'}; not-run; ${excluded.reasonCode}`);
+        lines.push(...excluded.recoveryActions.map((action) => `    Recovery: ${action}`));
+      }
+      for (const gap of targetEntry.componentGaps ?? []) lines.push(`  Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
+      if (!targetEntry.deploymentReceipts?.length) for (const deployment of targetEntry.deploymentObservations ?? []) {
+        for (const product of deployment.products) {
+          const observation = deployment.after.consumers.find((consumer) => consumer.productId === product.id);
+          lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; activation=${observation?.activation ?? 'unknown'}; trust=${observation?.trust ?? 'unknown'}; load=${observation?.load ?? 'unknown'}`);
+          for (const component of deployment.after.components) lines.push(`    Component ${component.id}: physical content ${component.presence}`);
+        }
+        lines.push(`  Package: ${deployment.after.package}; registration=${deployment.after.registration}`);
+        lines.push(...nativeSourceSummary(deployment.after.prerequisites?.nativeSources));
+      }
+      if (!targetEntry.deploymentReceipts?.length) for (const plan of targetEntry.deploymentPlans ?? []) {
+        for (const product of plan.products) lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; ${product.availability}`);
+        for (const component of plan.expected.components) lines.push(`    Planned component ${component.id}: ${component.kind}`);
+        for (const gap of plan.expected.unmet) lines.push(`    Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
+        for (const effect of plan.effects) lines.push(`  Planned effect ${effect.kind}: ${effect.componentIds.join(', ')}${effect.destructive ? '; destructive' : ''}`);
+        if (plan.sharedReferences !== 'none' || plan.products.length > 1) lines.push(`  Shared impact: ${plan.sharedReferences}; ${plan.products.length} product faces`);
+      }
+      for (const deployment of targetEntry.deploymentReceipts ?? []) {
+        for (const product of deployment.products) {
+          const observation = deployment.after.consumers.find((consumer) => consumer.productId === product.id);
+          lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; activation=${observation?.activation ?? 'unknown'}; trust=${observation?.trust ?? 'unknown'}; load=${observation?.load ?? 'unknown'}`);
+          for (const component of deployment.after.components) lines.push(`    Component ${component.id}: physical content ${component.presence}`);
+          for (const gap of deployment.unmet.filter((item) => !item.productIds.length || item.productIds.includes(product.id))) lines.push(`    Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
+        }
+        if (!deployment.products.length) for (const gap of deployment.unmet) lines.push(`  Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
+        for (const effect of deployment.effects) lines.push(`  Effect ${effect.id}: ${effect.status}; mutation=${effect.mutation}`);
+        lines.push(`  Package: ${deployment.after.package}; registration=${deployment.after.registration}; reload=${deployment.reload}`);
+        lines.push(...nativeSourceSummary(deployment.after.prerequisites?.nativeSources));
+      }
       if (verbose && entry.blockerCodes && Array.isArray(entry.blockerCodes)) lines.push(`  Blockers: ${entry.blockerCodes.join(', ')}`);
     }
   }
@@ -106,4 +147,11 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   if (verbose) for (const diagnostic of result.diagnostics.filter((entry) => entry.severity === 'info')) lines.push(`${diagnostic.code}: ${diagnostic.message}`);
   for (const action of result.nextActions) lines.push(action.kind === 'manual' ? `Next: ${action.message}` : `Next: ${action.argv.map((arg) => /\s/u.test(arg) ? JSON.stringify(arg) : arg).join(' ')}`);
   return `${lines.join('\n')}\n`;
+}
+
+function nativeSourceSummary(evidence: { observation: string; sources: Array<{ name: string; version: string | null;
+  scope: string; origin: string; enabled: boolean | null; effectiveComponents: string[] }>; overlaps: string[] } | undefined): string[] {
+  return evidence ? [`  Native sources: ${evidence.observation}`,
+    ...evidence.sources.map((source) => `    ${source.name}: version=${source.version ?? 'unknown'}; scope=${source.scope}; origin=${source.origin}; enabled=${source.enabled ?? 'unknown'}; components=${source.effectiveComponents.join(', ') || 'none'}`),
+    ...(evidence.overlaps.length ? [`    Overlapping names: ${evidence.overlaps.join(', ')}`] : [])] : [];
 }

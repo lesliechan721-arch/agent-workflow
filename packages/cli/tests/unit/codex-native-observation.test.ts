@@ -4,8 +4,10 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
+import { observeCodexExactProjectTrust, parseCodexConfigReadOutput } from '../../src/utils/codex-config-observation.js';
 import { bindNativeCliRunnerSignal, NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { configReadResponse } from '../helpers/codex-config-observation-fixture.js';
 
 function listResult(pluginIds: readonly string[]) {
   return {
@@ -19,6 +21,100 @@ function listResult(pluginIds: readonly string[]) {
 }
 
 describe('Codex native observation session', () => {
+  // Test Value Gate: malformed, duplicate, failed, or incomplete native RPC output cannot establish trust.
+  it('accepts only complete successful responses to the fixed config read exchange', () => {
+    const initialized = JSON.stringify({ id: 1, result: { userAgent: 'codex-cli/0.167.0' } });
+    const config = JSON.stringify({ id: 2, result: { config: {}, origins: {}, layers: [] } });
+    const notification = JSON.stringify({ method: 'remoteControl/status/changed', params: { status: 'disabled' } });
+    expect(parseCodexConfigReadOutput(`${initialized}\n${notification}\n${config}\n`)).toEqual({ config: {}, origins: {}, layers: [] });
+    for (const output of [initialized, config, `${config}\n${initialized}`, `${initialized}\n${config}\n${config}`,
+      `${initialized}\n${initialized}\n${config}`, `${initialized}\n{"id":2,"error":{"code":-1}}`,
+      `${initialized}\n{"id":2,"result":null}`, `${initialized}\n${config}\npartial`,
+      `${initialized}\n{"id":2,"result":{}}`,
+      `${initialized}\n${JSON.stringify({ id: 3, result: {} })}`, `${initialized}\n${config.slice(0, -1)}`,
+      `${initialized}\n${JSON.stringify({ method: 'notification', id: 3 })}\n${config}`,
+      `${initialized}\n${JSON.stringify({ method: 'notification', params: 'invalid' })}\n${config}`]) {
+      expect(() => parseCodexConfigReadOutput(output)).toThrow();
+    }
+    expect(() => parseCodexConfigReadOutput(' '.repeat(1024 * 1024 + 1))).toThrow('codexConfigObservationOutputLimit');
+  });
+
+  // Test Value Gate: effective trust requires an exact merged key and matching live layer evidence; parent trust is not copied.
+  it('requires consistent exact project, source, and enabled or disabled layer evidence', () => {
+    const cwd = path.resolve('exact-project');
+    const home = path.resolve('codex-home');
+    const trusted = configReadResponse(cwd, home, 'trusted');
+    expect(observeCodexExactProjectTrust(trusted, cwd, home)).toEqual({ state: 'observed', trust: 'trusted' });
+    expect(observeCodexExactProjectTrust(configReadResponse(cwd, home, 'untrusted'), cwd, home)).toEqual({ state: 'observed', trust: 'denied' });
+    expect(observeCodexExactProjectTrust(configReadResponse(cwd, home, 'trusted', path.dirname(cwd)), cwd, home)).toEqual({ state: 'unknown' });
+    for (const response of [
+      { ...trusted, layers: [] },
+      { ...trusted, origins: {} },
+      { ...trusted, layers: [...trusted.layers, trusted.layers[0]] },
+      { ...trusted, layers: trusted.layers.map((layer) => ({ ...layer, disabledReason: 'policy' })) },
+      { ...trusted, config: { projects: { [cwd]: {} } } },
+    ]) expect(observeCodexExactProjectTrust(response, cwd, home)).toEqual({ state: 'unknown' });
+  });
+
+  // Test Value Gate: config/read must follow initialize and wait for its result before EOF; notification chunks do not alter it.
+  it('uses the fixed sequential RPC exchange and caches only the current manager trust observation', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = await fs.realpath(layout.fixtureCwd);
+    const calls: NativeCliInvocation[] = [];
+    const manager = { kind: 'system' as const, version: '0.167.0', command: 'codex', argsPrefix: [] };
+    const session = await createCodexNativeObservationSession({ exactCwd: cwd, env, manager,
+      runner: async (invocation) => {
+        calls.push(invocation);
+        expect(invocation.args).toEqual(['app-server', '--stdio', '-c', 'features.plugins=false']);
+        expect(invocation.cwd).toBe(cwd);
+        expect(invocation.env).toBe(env);
+        const input = invocation.input!;
+        expect(JSON.parse(input.initial)).toMatchObject({ id: 1, method: 'initialize',
+          params: { capabilities: { experimentalApi: true } } });
+        const initialized = `${JSON.stringify({ id: 1, result: { userAgent: 'aw/0.167.0' } })}\n`;
+        expect(input.onStdout(initialized.slice(0, 8))).toEqual({});
+        const action = input.onStdout(initialized.slice(8));
+        expect(action?.end).toBeUndefined();
+        expect(action?.write?.trim().split('\n').map((line) => JSON.parse(line))).toEqual([
+          { method: 'initialized', params: {} }, { id: 2, method: 'config/read', params: { includeLayers: true, cwd } },
+        ]);
+        const response = `${JSON.stringify({ id: 2, result: configReadResponse(cwd, env.CODEX_HOME!, 'trusted') })}\n`;
+        expect(input.onStdout(response)).toEqual({ end: true });
+        return { exitCode: 0, stdout: initialized + response, stderr: '' };
+      } });
+    try {
+      expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'observed', trust: 'trusted' });
+      expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'observed', trust: 'trusted' });
+      expect(calls).toHaveLength(1);
+      session.setManager({ ...manager, version: '0.168.0' });
+      expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'unknown' });
+      session.setManager({ ...manager, kind: 'app' });
+      expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'unknown' });
+      expect(calls).toHaveLength(1);
+    } finally { await session.dispose(); }
+  });
+
+  // Test Value Gate: a valid config response cannot override timeout or unconfirmed process cleanup.
+  it.each([false, true])('retains config observation failure after response (cleanupUnconfirmed=%s)', async (cleanupUnconfirmed) => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = await fs.realpath(layout.fixtureCwd);
+    let failure: NativeCliError | undefined;
+    const session = await createCodexNativeObservationSession({ exactCwd: cwd, env,
+      manager: { kind: 'system', version: '0.167.0', command: 'codex', argsPrefix: [] },
+      runner: async (invocation) => {
+        failure = new NativeCliError({ invocation, exitCode: 124, reason: 'timeout',
+          stdout: `${JSON.stringify({ id: 1, result: {} })}\n${JSON.stringify({ id: 2, result: configReadResponse(cwd, env.CODEX_HOME!, 'trusted') })}\n`, stderr: '',
+          ...(cleanupUnconfirmed ? { cleanupError: new Error('process cleanup unconfirmed') } : {}) });
+        throw failure;
+      } });
+    try {
+      if (cleanupUnconfirmed) await expect(session.inspectProjectTrust(cwd)).rejects.toMatchObject({ reason: 'timeout', cleanupError: expect.any(Error) });
+      else expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'failed' });
+      if (cleanupUnconfirmed) await expect(session.dispose()).rejects.toBe(failure);
+      else await session.dispose();
+    } finally { await session.dispose().catch(() => undefined); }
+  });
+
   // Test Value Gate: one cancelled read must not release the neutral cwd while another invalidated read still cleans up.
   it.each([
     ['plugin', false], ['snapshot', false], ['plugin', true], ['snapshot', true],
@@ -351,6 +447,44 @@ describe('Codex native observation session', () => {
       expect(calls.filter((call) => call.command === 'codex')).toHaveLength(2);
       expect(calls.filter((call) => call.command === appManager.command)).toHaveLength(2);
     } finally {
+      await session.dispose();
+    }
+  });
+
+  it('keeps pending product reads bound to their manager when another product starts', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const calls: NativeCliInvocation[] = [];
+    let releaseSystem!: () => void;
+    let releaseApp!: () => void;
+    const systemGate = new Promise<void>((resolve) => { releaseSystem = resolve; });
+    const appGate = new Promise<void>((resolve) => { releaseApp = resolve; });
+    const systemManager = { kind: 'system' as const, version: '0.200.0', command: 'codex-system', argsPrefix: [] };
+    const appManager = { kind: 'app' as const, version: '0.200.0', command: 'codex-app', argsPrefix: [] };
+    const session = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd, env: isolation.env, manager: systemManager,
+      runner: async (invocation) => {
+        calls.push(invocation);
+        await (invocation.command === systemManager.command ? systemGate : appGate);
+        return listResult([invocation.command === systemManager.command ? 'system@aw' : 'app@aw']);
+      },
+    });
+    try {
+      const systemRead = session.inspectPlugin({ pluginId: 'system@aw' });
+      await vi.waitFor(() => expect(calls).toHaveLength(2));
+      session.setManager(appManager);
+      const appRead = session.inspectPlugin({ pluginId: 'app@aw' });
+      await vi.waitFor(() => expect(calls).toHaveLength(4));
+      releaseApp();
+      expect((await appRead).observation).toMatchObject({ state: 'observed', value: 'installed' });
+      releaseSystem();
+      expect((await systemRead).observation).toMatchObject({ state: 'observed', value: 'installed' });
+      expect((await session.inspectPlugin({ pluginId: 'system@aw' })).observation)
+        .toEqual({ state: 'observed', value: 'absent' });
+      expect(calls.filter((call) => call.command === systemManager.command)).toHaveLength(2);
+      expect(calls.filter((call) => call.command === appManager.command)).toHaveLength(2);
+    } finally {
+      releaseSystem();
+      releaseApp();
       await session.dispose();
     }
   });

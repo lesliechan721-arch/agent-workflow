@@ -10,8 +10,8 @@ import {
 
 const DEFAULT_GUARDED_NATIVE_COMMANDS = ['codex', 'claude'] as const;
 const DEFAULT_VERSION_OUTPUTS: Record<string, string> = {
-  codex: 'codex-cli 0.151.0',
-  claude: '2.1.88 (Claude Code)',
+  codex: 'codex-cli 0.155.0',
+  claude: '2.1.292 (Claude Code)',
 };
 
 function normalizeCommandName(command: string): string {

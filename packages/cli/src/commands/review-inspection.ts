@@ -202,7 +202,7 @@ function selectedSkillConfig(
   return selectResolvedConfig({ values, sources }, skill.refreshKeys)
 }
 
-async function legacyBindingMatchesSelection(options: {
+async function otherBindingMatchesSelection(options: {
   selection: ReviewSelection
   requestedProfile: ReviewResolvedProfile
   skill: ReviewSelectedSkill
@@ -226,7 +226,7 @@ async function legacyBindingMatchesSelection(options: {
         evalProfile, options.selection.workspace.plugins, binding.profile.config,
       )
       const config = normalizeReviewProfileConfig(Object.fromEntries(materializationProfile.plugins.map((entry) =>
-        [entry.name, entry.configByScope.user ?? {}])))
+        [entry.name, entry.configByScope[skill.configScope] ?? entry.configByScope.user ?? {}])))
       const effective = resolveReviewPluginProfileConfig({
         plugin: skill.plugin, plugins: options.selection.workspace.plugins,
         platform: requestedProfile.platform, scope: skill.configScope, config, keys: skill.refreshKeys,
@@ -265,9 +265,11 @@ async function inspectNavigationBindings(options: {
   env?: NodeJS.ProcessEnv
 }): Promise<{
   candidates: Map<string, NavigationFinalCandidate[]>
+  computedProfiles: Set<string>
   issues: ReviewInspectionNavigationIssue[]
 }> {
   const candidates = new Map<string, NavigationFinalCandidate[]>()
+  const computedProfiles = new Set<string>()
   const issues: ReviewInspectionNavigationIssue[] = []
   const context: AwSourceBindingWorkspaceValidationContext = {
     workspace: options.selection.workspace,
@@ -315,9 +317,35 @@ async function inspectNavigationBindings(options: {
       const profileMatches = binding.profile.platform === requestedProfile.platform
         && binding.profile.scope === requestedProfile.scope
       if (!profileMatches || portableConfigMismatch) continue
+      if (validation.state === 'verified' && binding.profile.kind === 'review'
+        && binding.profile.inputDigest === requestedProfile.profile.inputDigest) {
+        for (const unit of binding.preparation) {
+          if (!requestedProfile.dynamicPlugins.some((plugin) => plugin.manifest.name === unit.plugin)) continue
+          computedProfiles.add(`${unit.plugin}\0${requestedProfile.platform}\0${requestedProfile.scope}`)
+          selected = true
+          for (const unmet of unit.unmet) issues.push({ code: 'componentUnmet', path: bindingPath,
+            message: `${unit.plugin}/${unmet.name ?? unmet.id}: ${unmet.reasonCode}; requiredFeatures=${JSON.stringify(unmet.requiredFeatures)}` })
+        }
+      }
       for (const artifact of binding.artifacts) {
         const identity = bindingOutputIdentity(binding, artifact)
         if (!identity) continue
+        const actualUnit = binding.preparation.find((unit) => unit.plugin === identity.plugin
+          && unit.platform === requestedProfile.platform && unit.components.some((component) =>
+            component.kind === 'skill' && component.name === identity.skill))
+        const actual = actualUnit?.components.find((component) => component.kind === 'skill' && component.name === identity.skill)
+        if (!actual || !actualUnit) continue
+        if (!requestedProfile.skills.some((entry) => entry.pluginName === identity.plugin && entry.name === identity.skill)
+          && requestedProfile.dynamicPlugins.some((plugin) => plugin.manifest.name === identity.plugin)
+          && (!requestedProfile.requestedSkills.length || requestedProfile.requestedSkills.includes(identity.skill))) {
+          const plugin = requestedProfile.dynamicPlugins.find((plugin) => plugin.manifest.name === identity.plugin)!
+          requestedProfile.skills.push({
+            plugin, pluginName: identity.plugin, name: identity.skill, sourcePath: plugin.manifestPath,
+            sourcePaths: [plugin.manifestPath], sourceKind: 'artifact-source', targetId: actual.id,
+            dynamic: true, delivery: requestedProfile.platform === 'generic' ? 'agent-skills' : 'native',
+            configScope: actualUnit.renderScope, configScopes: {}, refreshKeys: plugin.manifest.artifacts?.configKeys ?? [],
+          })
+        }
         const skill = requestedProfile.skills.find((entry) =>
           entry.pluginName === identity.plugin && entry.name === identity.skill)
         if (!skill) continue
@@ -333,7 +361,7 @@ async function inspectNavigationBindings(options: {
         ) continue
         if (
           binding.profile.kind !== 'review'
-          && !await legacyBindingMatchesSelection({
+          && !await otherBindingMatchesSelection({
             selection: options.selection,
             requestedProfile,
             skill,
@@ -366,7 +394,7 @@ async function inspectNavigationBindings(options: {
       })
     }
   }
-  return { candidates, issues }
+  return { candidates, computedProfiles, issues }
 }
 
 function navigationSkillKey(
@@ -479,6 +507,13 @@ export async function inspectReviewTarget(
           state,
           evidencePath: chosen?.evidencePath ?? null,
         })
+      }
+    }
+    for (const profile of selection.profiles) {
+      for (const plugin of profile.dynamicPlugins) {
+        if (binding.computedProfiles.has(`${plugin.manifest.name}\0${profile.platform}\0${profile.scope}`)) continue
+        issues.push({ code: 'dynamicComponentsUnprepared', path: plugin.manifestPath,
+          message: `The dynamic component set for ${plugin.manifest.name}/${profile.profile.id} has not been verified; prepare this profile and provide its source binding.` })
       }
     }
     skills.sort((left, right) => compareText(

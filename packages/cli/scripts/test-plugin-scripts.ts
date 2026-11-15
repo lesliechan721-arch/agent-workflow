@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline';
 import fs from 'fs-extra';
 import { readNativeTool } from '@lesliechan721/aw-native-runtime/reader';
 import type { prepareWindowsJobHelper } from '@lesliechan721/agent-skill-eval';
-import { getNativeToolConsumerClosure, loadPluginNativeToolClosure } from '@lesliechan721/aw-plugin-core/manifest';
+import { getNativeToolConsumerClosure, loadPluginNativeToolClosure, isPlatformTarget, PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 import { assertSupportedNativeToolProtocol, prepareNativeToolContext, removeNativeToolEnvironment } from '../src/utils/native-tool-context.js';
 
 import { formatTestWorkers, nodeTestWorkerOptions } from './test-workers.mjs';
@@ -37,17 +37,16 @@ import {
   type CatalogRuntimeImportResolver,
 } from '../src/utils/catalog-runtime-projection.js';
 import type {
-  PlatformName,
   PluginConfigValue,
   PluginMeta,
   Scope,
 } from './plugin-staging.js';
-import type { NormalizedPluginManifest } from '../src/types.js';
+import type { NormalizedPluginManifest, PlatformTarget } from '../src/types.js';
 import { resolvePluginMetaDependencyClosure } from '../src/utils/plugin-dependencies.js';
 import { compilePluginConfigDefinition } from '../src/utils/manifest.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
 
-type PluginTestPlatformSelection = PlatformName | 'both';
+type PluginTestPlatformSelection = PlatformTarget | 'both';
 type NativeTestMode = 'fixture' | 'installed' | 'source-candidate';
 
 export interface PluginTestRunnerOptions {
@@ -96,7 +95,7 @@ interface StagedPluginTestBundleSource {
 }
 
 interface PreparedPluginTestSelection extends StagedPluginTestBundleSource {
-  platforms: PlatformName[];
+  platforms: PlatformTarget[];
 }
 
 interface NodeTestResult {
@@ -107,7 +106,7 @@ interface NodeTestResult {
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const REPO_ROOT_ENV = 'AW_PLUGIN_TEST_REPO_ROOT';
-const TEST_PLATFORM_ORDER: readonly PlatformName[] = ['codex', 'claude'];
+const TEST_PLATFORM_ORDER: readonly PlatformTarget[] = ['codex', 'claude'];
 
 function resolveRepoRoot(): string {
   return path.resolve(resolveCliPackageRoot(), '..', '..');
@@ -140,8 +139,8 @@ function parseArgs(args: string[]): ParsedArgs {
       parsed.scope = value;
     } else if (arg === '--platform') {
       const value = args[++index];
-      if (value !== 'codex' && value !== 'claude' && value !== 'both') {
-        throw new Error('--platform must be one of: codex, claude, both.');
+      if (!isPlatformTarget(value) && value !== 'both') {
+        throw new Error(`--platform must be one of: ${PLATFORM_TARGETS.join(', ')}, both.`);
       }
       parsed.platform = value;
     } else if (arg === '--native-mode') {
@@ -189,7 +188,7 @@ function parseArgs(args: string[]): ParsedArgs {
     throw new Error('Use either <plugin> or --all, not both.');
   }
   if (!parsed.all && positional.length !== 1) {
-    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform codex|claude|both] [--test-name <pattern>] [--test-concurrency <workers>] [--test-shard <index/total>] [--test-file <path> | --exclude-test-file <path>].');
+    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform <target>|both] [--test-name <pattern>] [--test-concurrency <workers>] [--test-shard <index/total>] [--test-file <path> | --exclude-test-file <path>].');
   }
   if (parsed.testFile && (parsed.all || parsed.excludeTestFile)) {
     throw new Error('--test-file requires one plugin and cannot be combined with --exclude-test-file.');
@@ -327,7 +326,7 @@ function resolveSelectedPlatforms(
   manifest: NormalizedPluginManifest,
   selection: PluginTestPlatformSelection,
   pluginName: string,
-): PlatformName[] {
+): PlatformTarget[] {
   const supportedPlatforms = resolveSupportedPlatforms(manifest);
   if (selection === 'both') {
     const platforms = TEST_PLATFORM_ORDER.filter((platform) => supportedPlatforms.has(platform));
@@ -345,8 +344,8 @@ function resolveSelectedPlatforms(
 
 function isExplicitSinglePlatformSelection(
   selection: PluginTestPlatformSelection,
-): selection is PlatformName {
-  return selection === 'codex' || selection === 'claude';
+): selection is PlatformTarget {
+  return isPlatformTarget(selection);
 }
 
 async function copyTestsIntoBundle(options: {
@@ -388,9 +387,7 @@ async function copyTestsIntoBundle(options: {
     dependencies,
     devDependencies,
     allowDevDependencies: Boolean(options.manifest.scripts?.node?.packageRoot),
-    runtimeConfigSkillRoots: (options.manifest.artifacts?.targets ?? [])
-      .filter((target) => target.runtimeConfig !== undefined)
-      .flatMap((target) => target.sourceDirs ?? []),
+    runtimeConfigSkillRoots: options.manifest.artifacts?.sourceDirs ?? [],
   });
   if (scan.errors.length > 0) {
     throw new Error(`Invalid plugin test imports:\n${scan.errors.join('\n')}`);
@@ -454,7 +451,7 @@ async function writeTestContext(options: {
   bundleRoot: string;
   sourceRoot: string;
   manifest: NormalizedPluginManifest;
-  platform: PlatformName;
+  platform: PlatformTarget;
   scope: Scope;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
@@ -613,7 +610,7 @@ async function runPreparedPluginTests(options: {
   nativePlatform?: NodeJS.Platform;
   nativePrepare?: typeof prepareWindowsJobHelper;
   scope: Scope;
-  platform: PlatformName;
+  platform: PlatformTarget;
   testName?: string;
   testConcurrency?: string;
   testShard?: string;

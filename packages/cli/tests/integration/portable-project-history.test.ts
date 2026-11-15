@@ -19,27 +19,26 @@ import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-async function fixture(scope: 'user' | 'project' = 'project') {
+async function fixture(scope: 'user' | 'project' = 'project', twoSkills = false) {
   const isolated = getCurrentSourceTestIsolation();
   const cwd = isolated.layout.fixtureCwd;
   await fs.ensureDir(path.join(cwd, '.git'));
   const sourceRoot = path.join(cwd, 'catalog');
   const pluginRoot = path.join(sourceRoot, 'plugins', 'portable');
   await createCatalogSnapshotFixture(sourceRoot, 'portable', [], 'Portable writer fixture', (manifest) => {
-    manifest.platforms = ['antigravity', 'cursor', 'pi'];
+    manifest.platforms = ['generic'];
     manifest.config = { fields: { tone: { type: 'string', default: 'first' } } };
     manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
-    manifest.artifacts = { targets: (['antigravity', 'cursor', 'pi'] as const).map((platform) => ({
-      id: `alpha-${platform}`, platform, distribution: 'agent-skills', target: 'agent-skills.skill',
-      kind: 'skill', scopes: ['project', 'user'], states: ['present'], refreshKeys: ['tone'], skillKey: 'alpha',
-    })) };
+    manifest.artifacts = { configKeys: ['tone'] };
   });
   const renderLog = path.join(cwd, 'render-log');
   await fs.outputFile(path.join(pluginRoot, 'scripts/render.mjs'), [
     "import fs from 'node:fs';",
     "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
     `fs.appendFileSync(${JSON.stringify(renderLog)}, context.platform + '\\n');`,
-    "console.log(JSON.stringify({version:2,artifacts:[{id:context.requestedArtifactIds[0],platform:context.platform,distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'present',skillKey:'alpha',refreshKeys:['tone'],content:{files:{'SKILL.md':'---\\nname: alpha\\ndescription: alpha\\n---\\nTone: '+context.config.values.tone+' Platform: '+context.platform,'README.md':'Alpha readme','references/guide.md':'Complete local guide.','.hidden':'retain hidden bytes'}}}]}));",
+    `const names = ${JSON.stringify(twoSkills ? ['alpha', 'beta'] : ['alpha'])};`,
+    "const components = names.map(name => ({id:name,kind:'skill',name,content:{files:{'SKILL.md':{text:'---\\nname: '+name+'\\ndescription: Test skill\\n---\\nTone: '+context.config.values.tone+' Platform: '+context.platform+' Scope: '+context.scope},'README.md':{text:'Skill readme'},'references/guide.md':{text:'Complete local guide.'},'.hidden':{text:'retain hidden bytes'}}}}));",
+    "console.log(JSON.stringify({version:3,components,omitted:[],unmet:[]}));",
   ].join('\n'));
   const refreshCatalog = async () => {
     const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
@@ -56,9 +55,9 @@ async function fixture(scope: 'user' | 'project' = 'project') {
     sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }] }, expectedDigest: before.digest, env: isolated.env });
   await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env: isolated.env });
   const context = await createScopeContext({ scope, cwd, env: isolated.env });
-  const options = { scope, context, selector: 'local/portable', agents: ['cursor' as const], env: context.env, cliVersion: '1.0.0' };
+  const options = { scope, context, selector: 'local/portable', agents: ['generic' as const], env: context.env, cliVersion: '1.0.0' };
   const active = (await readCatalogGenerationState(options.env)).sources.local!.active!;
-  const setTone = async (tone: string, platform?: 'cursor' | 'pi') => writePluginConfigStore({
+  const setTone = async (tone: string, platform?: 'generic') => writePluginConfigStore({
     sourceId: 'local', sourceIdentity: active.sourceIdentity, logicalIdentity: active.logicalIdentity,
     pluginName: 'portable', scope: 'user', cwd, env: options.env, values: { tone }, platform,
   });
@@ -74,23 +73,29 @@ async function apply(options: Awaited<ReturnType<typeof fixture>>['options'], au
 }
 
 describe('Portable writer through real Catalog and renderer', () => {
-  // Test Value Gate: concrete platforms must select their own effective config and final content through the production chain.
-  it('materializes and installs separate Cursor and Pi content using platform values', async () => {
+  // Test Value Gate: generic overrides common config, while User and Project keep separate render contexts and output.
+  it('uses the generic override in separate User and Project render contexts', async () => {
     const value = await fixture();
-    await value.setTone('CURSOR-SETTING', 'cursor');
-    await value.setTone('PI-SETTING', 'pi');
-    const options = { ...value.options, agents: ['cursor', 'pi'] as ('cursor' | 'pi')[] };
-    const prepared = await apply(options);
-    const [cursor, pi] = prepared.targets;
-    expect(cursor!.physicalPath).toContain(path.join('.cursor', 'skills', 'alpha'));
-    expect(pi!.physicalPath).toContain(path.join('.pi', 'skills', 'alpha'));
-    expect(await fs.readFile(path.join(cursor!.physicalPath, 'SKILL.md'), 'utf8')).toContain('Tone: CURSOR-SETTING Platform: cursor');
-    expect(await fs.readFile(path.join(pi!.physicalPath, 'SKILL.md'), 'utf8')).toContain('Tone: PI-SETTING Platform: pi');
-    expect(cursor!.configDigest).not.toBe(pi!.configDigest);
-    expect(prepared.generations?.cursor).not.toBe(prepared.generations?.pi);
-    const before = await fs.readFile(value.renderLog, 'utf8');
-    expect((await inspectPortableRecovery(options)).targets.map((target) => target.observation)).toEqual(['satisfied', 'satisfied']);
-    expect(await fs.readFile(value.renderLog, 'utf8')).toBe(before);
+    await value.setTone('COMMON-SETTING');
+    await value.setTone('GENERIC-SETTING', 'generic');
+    const userContext = await createScopeContext({ scope: 'user', cwd: value.options.context.callerCwd, env: value.options.env });
+    const user = { ...value.options, scope: 'user' as const, context: userContext, env: userContext.env };
+    try {
+      const userPrepared = await apply(user);
+      const projectPrepared = await apply(value.options);
+      const userTarget = userPrepared.targets[0]!;
+      const projectTarget = projectPrepared.targets[0]!;
+      expect(userTarget.physicalPath).toBe(path.join(userContext.targetHomes.home, '.agents', 'skills', 'alpha'));
+      expect(projectTarget.physicalPath).toBe(path.join(value.options.context.executionCwd, '.agents', 'skills', 'alpha'));
+      expect(await fs.readFile(path.join(userTarget.physicalPath, 'SKILL.md'), 'utf8')).toContain('Tone: GENERIC-SETTING Platform: generic Scope: user');
+      expect(await fs.readFile(path.join(projectTarget.physicalPath, 'SKILL.md'), 'utf8')).toContain('Tone: GENERIC-SETTING Platform: generic Scope: project');
+      expect(userTarget.configDigest).not.toBe(projectTarget.configDigest);
+      expect(userPrepared.generations?.generic).not.toBe(projectPrepared.generations?.generic);
+      const before = await fs.readFile(value.renderLog, 'utf8');
+      expect((await inspectPortableRecovery(user)).targets.map((target) => target.observation)).toEqual(['satisfied']);
+      expect((await inspectPortableRecovery(value.options)).targets.map((target) => target.observation)).toEqual(['satisfied']);
+      expect(await fs.readFile(value.renderLog, 'utf8')).toBe(before);
+    } finally { await userContext.dispose(); }
   }, 30_000);
 
   // Test Value Gate: current owned output can update without historical snapshots or generations, using its own bounded evidence.
@@ -110,7 +115,7 @@ describe('Portable writer through real Catalog and renderer', () => {
   it.each(['user', 'project'] as const)('reports %s owned config drift without preparing outputs or claiming unknown output is healthy', async (scope) => {
     const value = await fixture(scope);
     const location = { scope, cwd: value.options.context.executionCwd, env: value.options.env };
-    await writeIntentFixture(location, { roots: [{ pluginId: value.options.selector }], targets: ['cursor'] });
+    await writeIntentFixture(location, { roots: [{ pluginId: value.options.selector }], targets: ['generic'] });
     const installed = await apply(value.options);
     const output = installed.targets[0]!.physicalPath;
     const skill = path.join(output, 'SKILL.md');
@@ -125,7 +130,7 @@ describe('Portable writer through real Catalog and renderer', () => {
     };
     const status = () => invoke(['plugin', 'status', '--context', scope, '--json']);
     const baseline = await status();
-    expect(baseline.exitCode).toBe(0);
+    expect(baseline.exitCode, JSON.stringify(baseline.value)).toBe(0);
     expect(baseline.value.data.allSatisfied, JSON.stringify(baseline.value)).toBe(true);
     await fs.remove(value.options.context.generationRoot);
     const unavailable = await status();
@@ -137,7 +142,7 @@ describe('Portable writer through real Catalog and renderer', () => {
     const stale = await status();
     expect(stale.value.data.inventory[0].targetResults[0].content).toBe('drifted');
     expect(stale.value.data.allSatisfied).toBe(false);
-    expect(stale.value).toMatchObject({ status: 'success', diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'needs-preparation', subject: expect.objectContaining({ pluginId: 'local/portable', target: 'cursor' }) })]) });
+    expect(stale.value).toMatchObject({ status: 'success', diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'needs-preparation', subject: expect.objectContaining({ pluginId: 'local/portable', target: 'generic' }) })]) });
     expect(await fs.readFile(skill, 'utf8')).toBe(content);
     expect((await fs.stat(skill)).mtimeMs).toBe(before.mtimeMs);
     await fs.writeFile(path.join(output, '.agent-workflows-owner.json'), '{invalid owner');
@@ -187,20 +192,20 @@ describe('Portable writer through real Catalog and renderer', () => {
   }, 30_000);
 
   // Test Value Gate: matching unowned bytes and obsolete provider locks cannot authorize adoption; independent targets still apply.
-  it('preserves a matching foreign Cursor copy and applies independent Pi output', async () => {
-    const value = await fixture();
+  it('preserves a matching foreign Skill copy and applies an independent generic Skill', async () => {
+    const value = await fixture('project', true);
     const first = await preparePortableRecovery(value.options);
     const foreign = first.targets[0]!.physicalPath;
     await fs.copy(path.join(first.generation, 'skills', 'alpha'), foreign);
     const oldLock = path.join(value.options.context.executionCwd, 'skills-lock.json');
     await fs.writeFile(oldLock, '{broken old provider lock');
-    const options = { ...value.options, agents: ['cursor', 'pi'] as ('cursor' | 'pi')[] };
+    const options = value.options;
     const prepared = await preparePortableRecovery(options);
     expect(prepared.targets[0]).toMatchObject({ ownership: 'external', observation: 'conflict' });
     const result = await withAwHomeMutationLock({ env: options.env, action: (token) =>
       executePortableRecovery({ prepared, token, authorizeUpdate: true }) });
     expect(result.execution).toBe('partial');
-    expect(result.targets.map((target) => [target.agent, target.execution])).toEqual([['cursor', 'not-run'], ['pi', 'applied']]);
+    expect(result.targets.map((target) => [target.skill, target.execution])).toEqual([['alpha', 'not-run'], ['beta', 'applied']]);
     expect(await fs.pathExists(path.join(foreign, '.agent-workflows-owner.json'))).toBe(false);
     expect(await fs.readFile(oldLock, 'utf8')).toBe('{broken old provider lock');
   }, 30_000);

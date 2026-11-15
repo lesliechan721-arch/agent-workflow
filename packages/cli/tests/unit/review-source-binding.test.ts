@@ -1,34 +1,36 @@
-import os from 'node:os'
-import path from 'node:path'
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   initializeCatalogWorkspace,
   type PluginManifestSource,
-} from '@lesliechan721/aw-plugin-core'
-import fs from 'fs-extra'
-import { afterEach, describe, expect, it } from 'vitest'
+} from '@lesliechan721/aw-plugin-core';
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { resolveReviewSelection } from '../../src/review/review-selection.js'
-import { normalizeReviewProfileConfig } from '../../src/review/review-profile.js'
+import { resolveReviewSelection } from '../../src/review/review-selection.js';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
+import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
+import { normalizeReviewProfileConfig } from '../../src/review/review-profile.js';
 import {
   createAwSourceBindingWorkspaceValidationContext,
   readAwSourceBinding,
   resolveWorkspaceBindingSource,
   validateAwSourceBindingForWorkspace,
   writeAwSourceBinding,
-} from '../../src/review/source-binding.js'
+} from '../../src/review/source-binding.js';
 
-const roots: string[] = []
+const roots: string[] = [];
 
 async function tempRoot(label: string): Promise<string> {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), label)))
-  roots.push(root)
-  return root
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), label)));
+  roots.push(root);
+  return root;
 }
 
 function manifest(name: string): PluginManifestSource {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     name,
     version: '0.1.0',
     description: `${name} binding fixture.`,
@@ -42,31 +44,45 @@ function manifest(name: string): PluginManifestSource {
         authentication: 'ON_INSTALL',
       },
     },
-  }
+  };
+}
+
+function preparation(plugin: string, skill: string) {
+  const capabilities = getAuthoringPlatformCapabilities('codex', 'user');
+  const digest = `sha256:${'a'.repeat(64)}`;
+  return [{
+plugin, platform: 'codex' as const, renderScope: 'user' as const, profileId: capabilities.profileId,
+    capabilitiesDigest: artifactValueDigest(capabilities), expectedDigest: digest, resourceDigest: digest, renderInputDigest: digest, outputs: [],
+    components: [{ id: `skill:${skill}`, kind: 'skill' as const, name: skill, source: 'static' as const }], omitted: [], unmet: []
+}];
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => fs.remove(root)))
-})
+  await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+});
 
 describe('Review source binding', () => {
   it('keeps complete array overrides with stable object order and rejects nested items', () => {
-    expect(normalizeReviewProfileConfig({ demo: {
-      models: [{ weight: 1, 'model-name': 'one' }, { weight: 2, 'model-name': 'two' }],
-      labels: [],
-    } })).toEqual({ demo: {
-      labels: [],
-      models: [{ 'model-name': 'one', weight: 1 }, { 'model-name': 'two', weight: 2 }],
-    } })
-    expect(() => normalizeReviewProfileConfig({ demo: { labels: [['nested']] } })).toThrow('invalid array')
-    expect(() => normalizeReviewProfileConfig({ demo: { labels: ['one', 2] } })).toThrow('invalid array')
-  })
+    expect(normalizeReviewProfileConfig({
+      demo: {
+        models: [{ weight: 1, 'model-name': 'one' }, { weight: 2, 'model-name': 'two' }],
+        labels: [],
+      }
+    })).toEqual({
+      demo: {
+        labels: [],
+        models: [{ 'model-name': 'one', weight: 1 }, { 'model-name': 'two', weight: 2 }],
+      }
+    });
+    expect(() => normalizeReviewProfileConfig({ demo: { labels: [['nested']] } })).toThrow('invalid array');
+    expect(() => normalizeReviewProfileConfig({ demo: { labels: ['one', 2] } })).toThrow('invalid array');
+  });
 
   it('writes, parses, and verifies a current Review Skill binding', async () => {
-    const workspaceRoot = await tempRoot('aw-review-binding-workspace-')
-    const outputRoot = await tempRoot('aw-review-binding-output-')
-    await initializeCatalogWorkspace({ workspaceRoot })
-    const pluginRoot = path.join(workspaceRoot, 'plugins', 'binding-plugin')
+    const workspaceRoot = await tempRoot('aw-review-binding-workspace-');
+    const outputRoot = await tempRoot('aw-review-binding-output-');
+    await initializeCatalogWorkspace({ workspaceRoot });
+    const pluginRoot = path.join(workspaceRoot, 'plugins', 'binding-plugin');
     await Promise.all([
       fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest('binding-plugin')),
       fs.outputFile(
@@ -77,26 +93,27 @@ describe('Review source binding', () => {
         path.join(outputRoot, 'skills', 'bound-skill', 'SKILL.md'),
         '---\nname: bound-skill\ndescription: Final fixture.\n---\n\n# Final\n',
       ),
-    ])
+    ]);
     const selection = await resolveReviewSelection({
       cwd: workspaceRoot,
       target: 'binding-plugin',
       skills: ['bound-skill'],
       platform: 'codex',
       scope: 'user',
-    })
+    });
     const written = await writeAwSourceBinding({
       rootDir: outputRoot,
       source: await resolveWorkspaceBindingSource(selection.workspace),
       subject: { plugin: 'binding-plugin', skill: 'bound-skill' },
       profile: selection.profiles[0]!.profile,
+      preparation: preparation('binding-plugin', 'bound-skill'),
       artifacts: [{
         kind: 'review-skill',
         plugin: 'binding-plugin',
         skill: 'bound-skill',
         path: 'skills/bound-skill',
       }],
-    })
+    });
 
     await expect(readAwSourceBinding(written.bindingPath)).resolves.toMatchObject({
       schemaVersion: 2,
@@ -110,8 +127,8 @@ describe('Review source binding', () => {
       artifacts: [{
         kind: 'review-skill', plugin: 'binding-plugin', skill: 'bound-skill',
       }],
-    })
-    const context = await createAwSourceBindingWorkspaceValidationContext(workspaceRoot)
+    });
+    const context = await createAwSourceBindingWorkspaceValidationContext(workspaceRoot);
     await expect(validateAwSourceBindingForWorkspace({
       bindingPath: written.bindingPath,
       context,
@@ -120,26 +137,26 @@ describe('Review source binding', () => {
       state: 'verified',
       outputs: [{ kind: 'review-skill', plugin: 'binding-plugin', skill: 'bound-skill' }],
       issues: [],
-    })
+    });
 
-    await fs.appendFile(path.join(pluginRoot, 'skills', 'bound-skill', 'SKILL.md'), '\nChanged.\n')
-    const changedContext = await createAwSourceBindingWorkspaceValidationContext(workspaceRoot)
+    await fs.appendFile(path.join(pluginRoot, 'skills', 'bound-skill', 'SKILL.md'), '\nChanged.\n');
+    const changedContext = await createAwSourceBindingWorkspaceValidationContext(workspaceRoot);
     const changed = await validateAwSourceBindingForWorkspace({
       bindingPath: written.bindingPath,
       context: changedContext,
       expectedSubject: { plugin: 'binding-plugin', skill: 'bound-skill' },
-    })
-    expect(changed.state).toBe('drifted')
-    expect(changed.issues).toContainEqual(expect.objectContaining({ code: 'sourceBindingSourceDrift' }))
-  })
+    });
+    expect(changed.state).toBe('drifted');
+    expect(changed.issues).toContainEqual(expect.objectContaining({ code: 'sourceBindingSourceDrift' }));
+  });
 
   it('rejects Review artifact ownership outside the bound plugin', async () => {
-    const outputRoot = await tempRoot('aw-review-binding-owner-')
+    const outputRoot = await tempRoot('aw-review-binding-owner-');
     await fs.outputFile(
       path.join(outputRoot, 'skills', 'owned', 'SKILL.md'),
       '---\nname: owned\ndescription: Owned fixture.\n---\n\n# Owned\n',
-    )
-    const digest = `sha256:${'a'.repeat(64)}`
+    );
+    const digest = `sha256:${'a'.repeat(64)}`;
     await expect(writeAwSourceBinding({
       rootDir: outputRoot,
       source: { kind: 'workspace', workspaceIdentity: 'fixture', sourceIdentity: digest },
@@ -150,12 +167,14 @@ describe('Review source binding', () => {
         platform: 'codex',
         scope: 'user',
         inputDigest: digest,
+        requestedSkills: [],
         config: {},
       },
+      preparation: preparation('owner', 'owned'),
       artifacts: [{
         kind: 'review-skill', plugin: 'foreign', skill: 'owned', path: 'skills/owned',
       }],
-    })).rejects.toThrow('artifacts do not match the Review profile')
-    await expect(fs.pathExists(path.join(outputRoot, 'aw-source-binding.json'))).resolves.toBe(false)
-  })
-})
+    })).rejects.toThrow('artifacts do not match the Review profile');
+    await expect(fs.pathExists(path.join(outputRoot, 'aw-source-binding.json'))).resolves.toBe(false);
+  });
+});

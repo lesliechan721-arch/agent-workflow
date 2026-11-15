@@ -31,6 +31,7 @@ export async function createCodexNativeTestRuntime(
   isolation.env.PATH = [binRoot, inheritedPath].filter(Boolean).join(path.delimiter);
   const installed = new Map<string, string>();
   const marketplaces = new Map<string, string>();
+  const packageRoots = new Map<string, string>();
   const configPath = path.join(isolation.env.CODEX_HOME!, 'config.toml');
   const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
     if (invocation.args.includes('--version')) return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
@@ -54,11 +55,13 @@ export async function createCodexNativeTestRuntime(
       const separator = pluginId.lastIndexOf('@');
       const root = marketplaces.get(pluginId.slice(separator + 1));
       if (!root) throw new Error(`Unregistered fixture marketplace: ${pluginId}`);
-      const manifest = await fs.readJson(path.join(root, 'plugins', pluginId.slice(0, separator), '.agents-plugin/plugin.json'));
+      const manifest = await fs.readJson(path.join(root, 'plugins', pluginId.slice(0, separator), '.codex-plugin/plugin.json'));
       installed.set(pluginId, manifest.version);
+      packageRoots.set(pluginId, path.join(root, 'plugins', pluginId.slice(0, separator)));
       await applyCodexConfigTransactionFile(configPath, { upsertPluginActivations: { [pluginId]: true } });
     } else if (args[1] === 'remove') {
       installed.delete(args[2]!);
+      packageRoots.delete(args[2]!);
       await applyCodexConfigTransactionFile(configPath, { removePluginActivations: [args[2]!] });
     }
     if (args[1] === 'list' && args.includes('--json')) {
@@ -77,5 +80,5 @@ export async function createCodexNativeTestRuntime(
     }
     return { exitCode: 0, stdout: '', stderr: '' };
   });
-  return { nativeCliRunner, installed, marketplaces };
+  return { nativeCliRunner, installed, marketplaces, packageRoots };
 }

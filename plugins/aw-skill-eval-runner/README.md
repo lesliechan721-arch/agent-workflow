@@ -7,7 +7,7 @@ aw target set codex
 aw plugin install aw-skill-eval-runner --scope user
 ```
 
-也支持 Claude Code，可改用 `--target claude-code`。需要 PATH 中兼容的 `aw` 和 `aw-skill-eval`。包含公开能力 `run-aw-skill-evals`，其它 Skill 也可按当前任务使用它。
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。实际调用控制与客户端能力按目标核对，无法保留的组件语义会显示为未满足。需要 PATH 中兼容的 `aw` 和 `aw-skill-eval`。包含公开能力 `run-aw-skill-evals`，其它 Skill 也可按当前任务使用它。
 
 例如：“为这个 Skill 准备 Eval，但不要调用模型。”或“在已批准的预算内运行这个 Spec，使用其当前 Audit。”准备、验证和执行有各自的完成点；只验证 Spec、Audit 或 Result 时不启动模型。用例设计由 Author 负责，Oracle 与异常结果的语义判断由独立 Auditor 负责，本插件落实格式、绑定和运行条件。
 

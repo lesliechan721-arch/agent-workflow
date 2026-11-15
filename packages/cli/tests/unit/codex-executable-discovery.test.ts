@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { inspectSystemCodex, resolveCodexManager } from '../../src/utils/codex-manager.js';
 import { getCodexOperationRequirement } from '../../src/utils/agent-version.js';
 import { setCodexDiscoveryOverridesForTests } from '../../src/utils/codex-executable-discovery.js';
+import { discoverPlatform, installationInvocation } from '../../src/platforms/discovery.js';
+import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
 import { NativeCliError, type NativeCliInvocation, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import {
   createIsolatedTestEnv,
@@ -37,7 +39,7 @@ describe('Codex executable discovery', () => {
     }));
     const runner = vi.fn<NativeCliRunner>(async (invocation) => ({
       exitCode: 0,
-      stdout: `codex-cli ${invocation.command === commands[0] ? '0.150.0' : '0.153.0'}`,
+      stdout: `codex-cli ${invocation.command === commands[0] ? '0.154.0' : '0.157.0'}`,
       stderr: '',
     }));
 
@@ -46,7 +48,7 @@ describe('Codex executable discovery', () => {
       cwd: isolation.layout.fixtureCwd,
       env: { ...isolation.env, PATH: 'first:second' },
       runner,
-    })).resolves.toMatchObject({ command: commands[1], version: '0.153.0' });
+    })).resolves.toMatchObject({ command: commands[1], version: '0.157.0' });
     expect(runner).toHaveBeenCalledTimes(2);
   });
 
@@ -56,6 +58,98 @@ describe('Codex executable discovery', () => {
     await fs.chmod(target, 0o755);
     return fs.realpath(target);
   }
+
+  describe.runIf(process.platform !== 'win32')('POSIX npm launcher identity', () => {
+    async function npmLauncher(name = 'npm'): Promise<{ launcher: string; metadata: string; env: NodeJS.ProcessEnv }> {
+      const packageRoot = path.join(isolation.layout.fixtureCwd, name, 'node_modules', '@openai', 'codex');
+      const launcher = await executable(path.relative(isolation.layout.fixtureCwd, path.join(packageRoot, 'bin', 'codex.js')));
+      const metadata = path.join(packageRoot, 'package.json');
+      await fs.outputJson(metadata, { name: '@openai/codex', version: '0.200.0', bin: { codex: 'bin/codex.js' } });
+      const binRoot = path.join(isolation.layout.fixtureCwd, `${name}-bin`);
+      await fs.ensureDir(binRoot);
+      await fs.symlink(launcher, path.join(binRoot, 'codex'));
+      return { launcher, metadata, env: { ...isolation.env, PATH: binRoot } };
+    }
+
+    // Test Value Gate: one verified npm entry must reuse list evidence across planner and adapter reads.
+    it('keeps one manager identity and preserves explicit fresh observation boundaries', async () => {
+      const fixture = await npmLauncher();
+      const runner = vi.fn<NativeCliRunner>(async (invocation) => ({ exitCode: 0,
+        stdout: invocation.args.at(-1) === '--version' ? 'codex-cli 0.200.0' : JSON.stringify({ installed: [], available: [] }),
+        stderr: '' }));
+      const ctx = { platform: 'linux' as const, cwd: isolation.layout.fixtureCwd, env: fixture.env, runner };
+      const manager = await resolveCodexManager(ctx);
+      expect(manager).toEqual({ kind: 'system', command: process.execPath, argsPrefix: [fixture.launcher], version: '0.200.0' });
+      const discovery = await discoverPlatform('codex', ctx);
+      const product = discovery.installations[0]!;
+      expect(product).toMatchObject({ availability: 'available', entry: { executable: fixture.launcher } });
+      const invocation = await installationInvocation(product, ctx, []);
+      const session = await createCodexNativeObservationSession({ exactCwd: ctx.cwd, env: ctx.env, runner, manager });
+      try {
+        await session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' });
+        session.setManager({ ...manager, command: invocation.command, argsPrefix: invocation.args });
+        await session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' });
+        expect(runner.mock.calls.filter(([request]) => request.args.includes('list'))).toHaveLength(1);
+        session.invalidate('aw');
+        await session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' });
+        expect(runner.mock.calls.filter(([request]) => request.args.includes('list'))).toHaveLength(2);
+        expect(runner.mock.calls.filter(([request]) => request.args.at(-1) === '--version')).toHaveLength(2);
+      } finally { await session.dispose(); }
+    });
+
+    it('keeps separate product identities for two verified npm launchers using the same Node', async () => {
+      const first = await npmLauncher('first');
+      const second = await npmLauncher('second');
+      const runner = vi.fn<NativeCliRunner>(async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }));
+      const discovery = await discoverPlatform('codex', { platform: 'linux', cwd: isolation.layout.fixtureCwd,
+        env: { ...isolation.env, PATH: `${first.env.PATH}:${second.env.PATH}` }, runner });
+      expect(discovery.installations.map((product) => product.entry?.kind === 'cli' ? product.entry.executable : null))
+        .toEqual([first.launcher, second.launcher]);
+      expect(new Set(discovery.installations.map((product) => product.id)).size).toBe(2);
+      expect(runner.mock.calls.map(([request]) => ({ command: request.command, args: request.args }))).toEqual([
+        { command: process.execPath, args: [first.launcher, '--version'] },
+        { command: process.execPath, args: [second.launcher, '--version'] },
+      ]);
+    });
+
+    // Test Value Gate: a .js suffix or unverified metadata cannot select a different interpreter.
+    it.each(['missing metadata', 'foreign package', 'different bin', 'linked metadata', 'custom script'] as const)(
+      'keeps the original direct entry for %s', async (failure) => {
+        const fixture = await npmLauncher();
+        if (failure === 'missing metadata') await fs.remove(fixture.metadata);
+        if (failure === 'foreign package' || failure === 'different bin') await fs.writeJson(fixture.metadata, {
+          name: failure === 'foreign package' ? '@foreign/codex' : '@openai/codex', version: '0.200.0',
+          bin: { codex: failure === 'different bin' ? 'bin/custom.js' : 'bin/codex.js' },
+        });
+        if (failure === 'linked metadata') {
+          const external = path.join(isolation.layout.fixtureCwd, 'external-package.json');
+          await fs.copyFile(fixture.metadata, external);
+          await fs.remove(fixture.metadata);
+          await fs.symlink(external, fixture.metadata);
+        }
+        if (failure === 'custom script') {
+          const custom = await executable('custom.js');
+          await fs.remove(path.join(fixture.env.PATH!, 'codex'));
+          await fs.symlink(custom, path.join(fixture.env.PATH!, 'codex'));
+          fixture.launcher = custom;
+        }
+        const runner = vi.fn<NativeCliRunner>(async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }));
+        await expect(resolveCodexManager({ platform: 'linux', cwd: isolation.layout.fixtureCwd, env: fixture.env, runner }))
+          .resolves.toEqual({ kind: 'system', command: fixture.launcher, argsPrefix: [], version: '0.200.0' });
+        expect(runner).toHaveBeenCalledTimes(1);
+        expect(runner.mock.calls[0]![0]).toMatchObject({ command: fixture.launcher, args: ['--version'] });
+      },
+    );
+
+    it('excludes a verified npm launcher when its reported version differs from its metadata', async () => {
+      const fixture = await npmLauncher();
+      const runner = vi.fn<NativeCliRunner>(async () => ({ exitCode: 0, stdout: 'codex-cli 0.201.0', stderr: '' }));
+      await expect(inspectSystemCodex({ platform: 'linux', cwd: isolation.layout.fixtureCwd, env: fixture.env,
+        operationRequirement: getCodexOperationRequirement('project'), runner }))
+        .resolves.toMatchObject({ state: 'unresolved', diagnostics: [expect.stringContaining('package version')] });
+      expect(runner.mock.calls[0]![0]).toMatchObject({ command: process.execPath, args: [fixture.launcher, '--version'] });
+    });
+  });
 
   async function macApp(name = 'Codex.app', directory = 'Applications'): Promise<{ command: string; directory: string }> {
     const root = path.join(isolation.layout.fixtureCwd, directory);
@@ -71,11 +165,11 @@ describe('Codex executable discovery', () => {
 
   // Test Value Gate: PATH and App candidates share one SemVer selection and stable tie rule.
   it.each([
-    ['0.151.0', '0.153.0', 'app'],
-    ['0.153.0', '0.152.0', 'system'],
-    ['0.153.0', '0.153.0', 'system'],
-    ['0.153.0-rc.2', '0.153.0-rc.10', 'app'],
-    ['0.153.0', '0.153.0-rc.10', 'system'],
+    ['0.155.0', '0.157.0', 'app'],
+    ['0.157.0', '0.156.0', 'system'],
+    ['0.157.0', '0.157.0', 'system'],
+    ['0.157.0-rc.2', '0.157.0-rc.10', 'app'],
+    ['0.157.0', '0.157.0-rc.10', 'system'],
   ] as const)('merges PATH %s and App %s and selects %s', async (pathVersion, appVersion, kind) => {
     const pathCommand = await executable('bin/codex');
     const app = await macApp();
@@ -94,8 +188,8 @@ describe('Codex executable discovery', () => {
     await expect(resolveCodexManager({
       platform: 'linux', cwd: isolation.layout.fixtureCwd,
       env: { ...isolation.env, PATH: 'first:second' },
-      runner: versionRunner(new Map([[first, '0.153.0+first'], [second, '0.153.0+second']])),
-    })).resolves.toMatchObject({ command: first, version: '0.153.0+first' });
+      runner: versionRunner(new Map([[first, '0.157.0+first'], [second, '0.157.0+second']])),
+    })).resolves.toMatchObject({ command: first, version: '0.157.0+first' });
   });
 
   it.runIf(process.platform !== 'win32')('probes a shared real PATH/App executable only once', async () => {
@@ -103,7 +197,7 @@ describe('Codex executable discovery', () => {
     const shim = path.join(isolation.layout.fixtureCwd, 'bin', 'codex');
     await fs.ensureDir(path.dirname(shim));
     await fs.symlink(app.command, shim);
-    const runner = vi.fn(versionRunner(new Map([[app.command, '0.153.0']])));
+    const runner = vi.fn(versionRunner(new Map([[app.command, '0.157.0']])));
     await expect(resolveCodexManager({
       platform: 'darwin', cwd: isolation.layout.fixtureCwd,
       env: { ...isolation.env, PATH: 'bin:bin' }, macApplicationsDirectories: [app.directory],
@@ -127,7 +221,7 @@ describe('Codex executable discovery', () => {
   it('isolates App sources through external boundaries and permits an explicit fixture', async () => {
     const app = await macApp('ChatGPT.app');
     const blockedQuery = vi.fn<NativeCliRunner>(async () => { throw new Error('must not query'); });
-    const runner = vi.fn(versionRunner(new Map([[app.command, '0.153.0']])));
+    const runner = vi.fn(versionRunner(new Map([[app.command, '0.157.0']])));
     setCodexDiscoveryOverridesForTests({ macApplicationsDirectories: [], queryRunner: blockedQuery });
     const options = {
       platform: 'darwin' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env,
@@ -175,7 +269,7 @@ describe('Codex executable discovery', () => {
     const runner: NativeCliRunner = async (invocation) => {
       if (invocation.command === pathCommand && failure === 'launcher') throw new Error('secret launch error');
       return { exitCode: 0, stdout: invocation.command === pathCommand && failure === 'version'
-        ? 'secret invalid version' : `codex-cli ${invocation.command === app.command ? '0.153.0' : '0.151.0'}`, stderr: '' };
+        ? 'secret invalid version' : `codex-cli ${invocation.command === app.command ? '0.157.0' : '0.155.0'}`, stderr: '' };
     };
     const inspection = await inspectSystemCodex({
       platform: 'darwin', cwd: isolation.layout.fixtureCwd,
@@ -243,8 +337,8 @@ describe('Codex executable discovery', () => {
     const arm = await executable('arm-app/codex.exe');
     const appRoot = (name: string) => path.join(isolation.layout.fixtureCwd, name);
     const versions = new Map([
-      [pathCommand, '0.151.0'], [first, '0.152.0'], [nested, '0.154.0'],
-      [neutral, '0.153.0'], [foreign, '0.999.0'], [arm, '0.999.0'],
+      [pathCommand, '0.155.0'], [first, '0.156.0'], [nested, '0.158.0'],
+      [neutral, '0.157.0'], [foreign, '0.999.0'], [arm, '0.999.0'],
     ]);
     const runner = vi.fn(versionRunner(versions));
     await expect(resolveCodexManager({
@@ -254,14 +348,14 @@ describe('Codex executable discovery', () => {
         registered(appRoot('b-app'), 'Neutral'), registered(appRoot('arm-app'), 'Arm64'),
         registered(appRoot('foreign'), 'X64', 'Foreign.App_fixture'), registered(appRoot('a-app')),
       ]),
-    })).resolves.toMatchObject({ kind: 'app', command: nested, version: '0.154.0' });
+    })).resolves.toMatchObject({ kind: 'app', command: nested, version: '0.158.0' });
     expect(runner.mock.calls.map(([invocation]) => invocation.command)).toEqual([pathCommand, first, nested, neutral]);
   });
 
   it('sorts registered Windows packages before equal-version selection', async () => {
     const first = await executable('a-app/codex.exe');
     const second = await executable('z-app/codex.exe');
-    const runner = versionRunner(new Map([[first, '0.153.0'], [second, '0.153.0']]));
+    const runner = versionRunner(new Map([[first, '0.157.0'], [second, '0.157.0']]));
     const packages = [registered(path.dirname(second)), registered(path.dirname(first))];
     const options = {
       platform: 'win32' as const, arch: 'x64' as const, cwd: isolation.layout.fixtureCwd,
@@ -288,7 +382,7 @@ describe('Codex executable discovery', () => {
         unsafe = await executable(path.join('unsafe', ...Array.from({ length: 17 }, (_, index) => `d${index}`), 'codex.exe'));
       }
       const unsafePaths = failure === 'root reparse' ? [unsafeRoot] : failure === 'candidate reparse' ? [unsafe] : [];
-      const runner = vi.fn(versionRunner(new Map([[healthy, '0.151.0'], [unsafe, '0.999.0']])));
+      const runner = vi.fn(versionRunner(new Map([[healthy, '0.155.0'], [unsafe, '0.999.0']])));
       const inspection = await inspectSystemCodex({
         platform: 'win32', arch: 'x64', cwd: isolation.layout.fixtureCwd, env: isolation.env,
         operationRequirement: requirement, runner,
@@ -321,7 +415,7 @@ describe('Codex executable discovery', () => {
       virtualEntry(String(target)) ? stats : lstat(target)) as typeof fs.lstat);
     vi.spyOn(fs, 'realpath').mockImplementation((async (target: Parameters<typeof fs.realpath>[0]) =>
       virtualEntry(String(target)) ? String(target) : realpath(target)) as typeof fs.realpath);
-    const runner = vi.fn(versionRunner(new Map([[pathCommand, '0.151.0'], [appCommand, '0.999.0']])));
+    const runner = vi.fn(versionRunner(new Map([[pathCommand, '0.155.0'], [appCommand, '0.999.0']])));
     await expect(inspectSystemCodex({
       platform: 'win32', arch: 'x64', cwd: isolation.layout.fixtureCwd,
       env: { ...isolation.env, PATH: 'bin', PATHEXT: '.EXE' },
@@ -342,7 +436,7 @@ describe('Codex executable discovery', () => {
       await executable(path.join(prefix, 'codex.CMD'));
     }
     const env = Object.fromEntries(Object.entries(isolation.env).filter(([key]) => !['PATH', 'PATHEXT'].includes(key.toUpperCase())));
-    const runner = vi.fn<NativeCliRunner>(async () => ({ exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' }));
+    const runner = vi.fn<NativeCliRunner>(async () => ({ exitCode: 0, stdout: 'codex-cli 0.155.0', stderr: '' }));
     const command = await fs.realpath(path.join(isolation.layout.fixtureCwd, directory, `codex${extension}`));
     await expect(resolveCodexManager({
       platform: 'win32', arch: 'x64', cwd: isolation.layout.fixtureCwd,

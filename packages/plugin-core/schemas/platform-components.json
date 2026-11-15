@@ -1,0 +1,4685 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflows.dev/schemas/platform-components.json",
+  "$defs": {
+    "componentKind": {
+      "enum": [
+        "skill",
+        "mcp",
+        "agent",
+        "hook",
+        "instruction"
+      ]
+    },
+    "platform": {
+      "enum": [
+        "codex",
+        "claude",
+        "antigravity",
+        "cursor",
+        "opencode",
+        "pi",
+        "gemini",
+        "copilot",
+        "grok",
+        "generic"
+      ]
+    },
+    "scope": {
+      "enum": [
+        "user",
+        "project"
+      ]
+    },
+    "featureRequirement": {
+      "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/featureRequirement"
+    },
+    "sourceRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "bundle"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "runtime-import"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "path"
+          ]
+        }
+      ]
+    },
+    "resourceFile": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "$ref": "#/$defs/sourceRef"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      ]
+    },
+    "mcpContent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "stdio"
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "http",
+                "sse"
+              ]
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ]
+        }
+      ]
+    },
+    "agentContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "tools": {
+          "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/stringArray"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promptMode": {
+          "enum": [
+            "host-default",
+            "append",
+            "replace"
+          ]
+        }
+      },
+      "required": [
+        "description",
+        "prompt"
+      ]
+    },
+    "instructionContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "paths": {
+          "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/stringArray"
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "main",
+              "plugin-agents",
+              "other-agents"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "title",
+        "content",
+        "coverage"
+      ]
+    },
+    "hookContent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dialect": {
+              "const": "common"
+            },
+            "event": {
+              "enum": [
+                "before_tool",
+                "after_tool",
+                "session_start"
+              ]
+            },
+            "feedback": {
+              "enum": [
+                "notify",
+                "context",
+                "block"
+              ]
+            },
+            "matcher": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "dialect",
+            "event",
+            "feedback",
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dialect": {
+              "const": "native"
+            },
+            "event": {
+              "type": "string",
+              "minLength": 1
+            },
+            "feedback": {
+              "enum": [
+                "notify",
+                "context",
+                "block"
+              ]
+            },
+            "matcher": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "dialect",
+            "event",
+            "feedback",
+            "command"
+          ]
+        }
+      ]
+    },
+    "pluginComponent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+            },
+            "kind": {
+              "const": "skill"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/featureRequirement"
+              },
+              "uniqueItems": true
+            },
+            "content": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "files": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "additionalProperties": {
+                    "$ref": "#/$defs/resourceFile"
+                  }
+                }
+              },
+              "required": [
+                "files"
+              ]
+            },
+            "runtimeConfig": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "keys": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true,
+                  "minItems": 1
+                }
+              },
+              "required": [
+                "keys"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "content"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+            },
+            "kind": {
+              "const": "mcp"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/featureRequirement"
+              },
+              "uniqueItems": true
+            },
+            "content": {
+              "$ref": "#/$defs/mcpContent"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "content"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+            },
+            "kind": {
+              "const": "agent"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/featureRequirement"
+              },
+              "uniqueItems": true
+            },
+            "content": {
+              "$ref": "#/$defs/agentContent"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "content"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+            },
+            "kind": {
+              "const": "hook"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/featureRequirement"
+              },
+              "uniqueItems": true
+            },
+            "content": {
+              "$ref": "#/$defs/hookContent"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "content"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+            },
+            "kind": {
+              "const": "instruction"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/featureRequirement"
+              },
+              "uniqueItems": true
+            },
+            "content": {
+              "$ref": "#/$defs/instructionContent"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "content"
+          ]
+        }
+      ]
+    },
+    "capabilityFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unverified"
+          ]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "status",
+        "reasonCodes"
+      ]
+    },
+    "platformCapabilitiesV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "basis": {
+          "enum": [
+            "local",
+            "profile"
+          ]
+        },
+        "profileId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consumers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "product": {
+                "enum": [
+                  "cli",
+                  "app",
+                  "generic"
+                ]
+              },
+              "version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "agentConsumers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "version": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "enabled": {
+                      "enum": [
+                        "yes",
+                        "no",
+                        "unknown"
+                      ]
+                    },
+                    "packageAccess": {
+                      "enum": [
+                        "allowed",
+                        "denied",
+                        "unknown"
+                      ]
+                    },
+                    "scope": {
+                      "enum": [
+                        "user",
+                        "project"
+                      ]
+                    },
+                    "trust": {
+                      "enum": [
+                        "trusted",
+                        "required",
+                        "blocked",
+                        "unknown"
+                      ]
+                    },
+                    "settings": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "promptMode": {
+                          "enum": [
+                            "host-default",
+                            "append",
+                            "replace",
+                            "unknown"
+                          ]
+                        },
+                        "loadExtensions": {
+                          "enum": [
+                            "yes",
+                            "no",
+                            "host-default",
+                            "unknown"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "promptMode",
+                        "loadExtensions"
+                      ]
+                    },
+                    "configurationEvidence": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version",
+                    "enabled",
+                    "packageAccess"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "product",
+              "version"
+            ]
+          }
+        },
+        "kinds": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "skill": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "delivery": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "native-package",
+                      "native-extension",
+                      "managed-host-resource",
+                      "generic-files"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes",
+                "delivery"
+              ]
+            },
+            "mcp": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "delivery": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "native-package",
+                      "native-extension",
+                      "managed-host-resource",
+                      "generic-files"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes",
+                "delivery"
+              ]
+            },
+            "agent": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "delivery": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "native-package",
+                      "native-extension",
+                      "managed-host-resource",
+                      "generic-files"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes",
+                "delivery"
+              ]
+            },
+            "hook": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "delivery": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "native-package",
+                      "native-extension",
+                      "managed-host-resource",
+                      "generic-files"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes",
+                "delivery"
+              ]
+            },
+            "instruction": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "delivery": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "native-package",
+                      "native-extension",
+                      "managed-host-resource",
+                      "generic-files"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes",
+                "delivery"
+              ]
+            }
+          },
+          "required": [
+            "skill",
+            "mcp",
+            "agent",
+            "hook",
+            "instruction"
+          ]
+        },
+        "features": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "skill.invocation.manual": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "true",
+                      "false"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.invocation.model": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "true",
+                      "false"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.visibility": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "visible",
+                      "hidden"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.runtime-config": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "aw.installed-runtime-config.v2"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "mcp.transport": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "stdio",
+                      "http",
+                      "sse"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "agent.execution": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "isolated-context"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "agent.model": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "agent.tools": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "allowlist",
+                      "none"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "agent.prompt-mode": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "host-default",
+                      "append",
+                      "replace"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "agent.declaration-protocol": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "aw.pi.agents.v1"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "instruction.coverage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "main",
+                      "plugin-agents",
+                      "other-agents"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "instruction.paths": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "instruction.after-compaction": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.common.before_tool": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.common.after_tool": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.common.session_start": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.AfterAgent": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.AfterTool": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.BeforeAgent": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.BeforeTool": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.ConfigChange": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.CwdChanged": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.Elicitation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.ElicitationResult": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.FileChanged": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.InstructionsLoaded": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.Notification": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PermissionDenied": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PermissionRequest": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PostCompact": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PostToolUse": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PostToolUseFailure": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PreCompact": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PreToolUse": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.SessionEnd": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.SessionStart": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.Setup": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.Stop": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.StopFailure": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.SubagentStart": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.SubagentStop": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.TaskCompleted": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.TaskCreated": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.TeammateIdle": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.UserPromptSubmit": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.WorktreeCreate": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.WorktreeRemove": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.afterFileEdit": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.afterMCPExecution": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.afterShellExecution": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.beforeMCPExecution": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.beforeReadFile": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.beforeShellExecution": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.beforeSubmitPrompt": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.before_agent_start": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.errorOccurred": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.postToolUse": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.preToolUse": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.sessionEnd": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.sessionStart": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.session_start": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.stop": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.subagentStart": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.subagentStop": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.tool_result": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.userPromptSubmitted": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.workspaceOpen": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.tools": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "allowlist",
+                      "denylist",
+                      "none"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.model": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.effort": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.execution": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "isolated-context"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.agent": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.background": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "true",
+                      "false"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.hooks": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.paths": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.shell": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "bash",
+                      "powershell"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.invocation.hint": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "skill.arguments": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PostInvocation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.tool_call": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.PreInvocation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.before": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.native.after": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "notify",
+                      "context",
+                      "block"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            },
+            "hook.matcher": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "unsupported",
+                    "unverified"
+                  ]
+                },
+                "reasonCodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "values": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "common.after_tool",
+                      "common.before_tool",
+                      "common.session_start",
+                      "native.AfterAgent",
+                      "native.AfterTool",
+                      "native.BeforeAgent",
+                      "native.BeforeTool",
+                      "native.ConfigChange",
+                      "native.CwdChanged",
+                      "native.Elicitation",
+                      "native.ElicitationResult",
+                      "native.FileChanged",
+                      "native.InstructionsLoaded",
+                      "native.Notification",
+                      "native.PermissionDenied",
+                      "native.PermissionRequest",
+                      "native.PostCompact",
+                      "native.PostInvocation",
+                      "native.PostToolUse",
+                      "native.PostToolUseFailure",
+                      "native.PreCompact",
+                      "native.PreInvocation",
+                      "native.PreToolUse",
+                      "native.SessionEnd",
+                      "native.SessionStart",
+                      "native.Setup",
+                      "native.Stop",
+                      "native.StopFailure",
+                      "native.SubagentStart",
+                      "native.SubagentStop",
+                      "native.TaskCompleted",
+                      "native.TaskCreated",
+                      "native.TeammateIdle",
+                      "native.UserPromptSubmit",
+                      "native.WorktreeCreate",
+                      "native.WorktreeRemove",
+                      "native.after",
+                      "native.afterFileEdit",
+                      "native.afterMCPExecution",
+                      "native.afterShellExecution",
+                      "native.before",
+                      "native.beforeMCPExecution",
+                      "native.beforeReadFile",
+                      "native.beforeShellExecution",
+                      "native.beforeSubmitPrompt",
+                      "native.before_agent_start",
+                      "native.errorOccurred",
+                      "native.postToolUse",
+                      "native.preToolUse",
+                      "native.sessionEnd",
+                      "native.sessionStart",
+                      "native.session_start",
+                      "native.stop",
+                      "native.subagentStart",
+                      "native.subagentStop",
+                      "native.tool_call",
+                      "native.tool_result",
+                      "native.userPromptSubmitted",
+                      "native.workspaceOpen"
+                    ]
+                  },
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "status",
+                "reasonCodes"
+              ]
+            }
+          },
+          "required": []
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "platform",
+        "scope",
+        "basis",
+        "profileId",
+        "consumers",
+        "kinds",
+        "features"
+      ]
+    },
+    "platformComponentPlanV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 3
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pluginComponent"
+          }
+        },
+        "omitted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+              },
+              "kind": {
+                "$ref": "#/$defs/componentKind"
+              },
+              "reason": {
+                "enum": [
+                  "not-offered",
+                  "config-disabled"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "reason"
+            ]
+          }
+        },
+        "unmet": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+              },
+              "kind": {
+                "$ref": "#/$defs/componentKind"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "componentId": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+              },
+              "requiredFeatures": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/featureRequirement"
+                },
+                "uniqueItems": true
+              },
+              "reasonCode": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "requiredFeatures",
+              "reasonCode"
+            ]
+          }
+        }
+      },
+      "required": [
+        "version",
+        "components",
+        "omitted",
+        "unmet"
+      ]
+    },
+    "plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/semver"
+        }
+      },
+      "required": [
+        "pluginId",
+        "name",
+        "version"
+      ]
+    },
+    "renderConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/config"
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/configScalar"
+              },
+              {
+                "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/configV4ObjectValue"
+              },
+              {
+                "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/configV4ArrayValue"
+              }
+            ]
+          }
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": [
+              "default",
+              "common",
+              "platform",
+              "missing"
+            ]
+          }
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "plugin": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "field": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "property": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "segments": {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "field"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "recoverable": {
+                "const": true
+              }
+            },
+            "required": [
+              "code",
+              "path",
+              "message",
+              "recoverable"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "values",
+        "sources",
+        "issues"
+      ]
+    },
+    "platformRenderContextV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "surface": {
+          "const": "agent-plugin"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "plugin": {
+          "$ref": "#/$defs/plugin"
+        },
+        "config": {
+          "$ref": "#/$defs/renderConfig"
+        },
+        "changedConfigKeys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "allowedOutputKinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/componentKind"
+          },
+          "uniqueItems": true
+        },
+        "platformCapabilities": {
+          "$ref": "#/$defs/platformCapabilitiesV1"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "bundle",
+                  "runtime-import"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "root": {
+                "type": "string",
+                "minLength": 1
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "root",
+              "digest"
+            ]
+          }
+        },
+        "previousComponents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+              },
+              "kind": {
+                "$ref": "#/$defs/componentKind"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "name"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "surface",
+        "platform",
+        "scope",
+        "plugin",
+        "config",
+        "changedConfigKeys",
+        "allowedOutputKinds",
+        "platformCapabilities",
+        "resources",
+        "previousComponents"
+      ]
+    },
+    "commandSetArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "const": "aw.command-set"
+        },
+        "kind": {
+          "const": "commandSet"
+        },
+        "platform": {
+          "enum": [
+            "codex",
+            "claude",
+            "antigravity",
+            "cursor",
+            "opencode",
+            "pi",
+            "gemini",
+            "copilot",
+            "grok"
+          ]
+        },
+        "state": {
+          "enum": [
+            "present",
+            "disabled"
+          ]
+        },
+        "refreshKeys": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "https://schemas.agent-workflows.dev/plugin-manifest-v4.json#/$defs/commandDefinition"
+          }
+        },
+        "disabledReason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "kind",
+        "state",
+        "refreshKeys",
+        "entries"
+      ]
+    },
+    "agentCommandContextV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "surface": {
+          "const": "agent-commands"
+        },
+        "platform": {
+          "enum": [
+            "codex",
+            "claude",
+            "antigravity",
+            "cursor",
+            "opencode",
+            "pi",
+            "gemini",
+            "copilot",
+            "grok"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "plugin": {
+          "$ref": "#/$defs/plugin"
+        },
+        "config": {
+          "$ref": "#/$defs/renderConfig"
+        },
+        "changedConfigKeys": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requestedArtifactIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "previousArtifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/commandSetArtifact"
+          }
+        },
+        "producers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "set": {
+                "type": "string",
+                "minLength": 1
+              },
+              "componentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "resourceRoot": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "set",
+              "componentId",
+              "resourceRoot"
+            ]
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "surface",
+        "platform",
+        "scope",
+        "plugin",
+        "config",
+        "changedConfigKeys",
+        "requestedArtifactIds",
+        "previousArtifacts",
+        "producers"
+      ]
+    }
+  },
+  "$ref": "#/$defs/platformComponentPlanV3"
+}

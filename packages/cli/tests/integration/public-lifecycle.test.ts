@@ -1,6 +1,8 @@
 import path from 'node:path';
+import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
@@ -10,11 +12,33 @@ import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
-import { runPublicLifecycle, type LifecycleData } from '../../src/commands/public-lifecycle.js';
+import { runPublicLifecycle as executePublicLifecycle, type LifecycleData } from '../../src/commands/public-lifecycle.js';
 import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
 import { createNativeDependencyCatalog, createCodexNativeTestRuntime } from '../helpers/write-command-fixture.js';
 import { syncManagedCommandPackage, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
+
+// The real adapter publishes and inspects the package. Only the Pi client mutation is controlled here.
+async function runPublicLifecycle(...args: Parameters<typeof executePublicLifecycle>) {
+  const [command, plugins, options, input] = args;
+  return executePublicLifecycle(command, plugins, options, { ...input,
+    nativeCliRunner: input?.nativeCliRunner ?? (async (invocation) => {
+      if (!['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase())
+        || !['install', 'remove'].includes(invocation.args[0]!) || !invocation.args.includes('--local')) {
+        throw new Error('Unexpected Native test command.');
+      }
+      const file = path.join(invocation.cwd, '.pi', 'settings.json');
+      const settings = await fs.readJson(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return {}; throw error;
+      });
+      const source = invocation.args.at(-1)!;
+      const packages: string[] = settings.packages ?? [];
+      await fs.outputJson(file, { ...settings, packages: invocation.args[0] === 'install'
+        ? [...new Set([...packages, source])] : packages.filter((entry) => entry !== source) });
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }),
+  });
+}
 
 async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'; targets?: string[]; sourceId?: string; name?: string }={}) {
   const isolation=getCurrentSourceTestIsolation();
@@ -24,7 +48,7 @@ async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'
   const source=path.join(isolation.layout.fixtureCwd, `public-source-${sourceId}`);
   await fs.ensureDir(cwd); await git(cwd, ['init', '--quiet']);
   const root=path.join(source, 'plugins', name);
-  for(const folder of ['skills', 'cursor/skills', 'pi/skills']) {
+  for(const folder of ['skills', 'generic/skills', 'pi/skills']) {
     await fs.outputFile(path.join(root, folder, name, 'SKILL.md'), `---\nname: ${name}\ndescription: Test ${name}\n---\nUse ${name}.\n`);
     await fs.outputFile(path.join(root, folder, name, 'README.md'), 'Use demo.\n');
   }
@@ -32,12 +56,12 @@ async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'
     + (options.script === 'fail-pi' ? "if (input.target.platform === 'pi') process.exit(7);\n" : ''));
   await createDependencyCatalogSnapshotFixture(source, [{
     name, configureManifest: (manifest) => {
-      manifest.platforms=['cursor', 'pi']; manifest.skills='./skills'; delete manifest.extensions;
+      manifest.platforms=['generic', 'pi']; manifest.skills='./skills'; delete manifest.extensions;
       if(options.script) manifest.scripts={ preApply: { path: './pre-apply.mjs' } };
     }
   }]);
   const plugin=await readPluginManifest(root, { mode: 'bundle' });
-  for(const target of ['cursor', 'pi']) await fs.outputJson(path.join(root, target, 'skills', name, 'aw-plugin-requirements.json'),
+  for(const target of ['generic', 'pi']) await fs.outputJson(path.join(root, target, 'skills', name, 'aw-plugin-requirements.json'),
     createAwPluginRequirementsReceipt({ name, version: '1.0.0' }, plugin.manifest.requires?.aw.capabilities??[]));
   const catalog=path.join(source, 'catalog-manifest.json');
   await fs.writeJson(catalog, { ...await fs.readJson(catalog), entries: [await createCatalogManifestV7Entry(plugin, root)] });
@@ -45,12 +69,21 @@ async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'
   await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: sourceId, type: 'path', primary: true, path: source }] }, expectedDigest: current.digest, env: isolation.env });
   if(options.active!==false) await syncCatalogSourceGeneration({ sourceId, cliVersion: '1.0.0', env: isolation.env });
   const location={ cwd, env: isolation.env, cliVersion: '1.0.0', scope: 'project' as const, context: 'project' as const };
-  await setTargets(location, options.targets??['cursor']);
-  return { location, source, root, output: path.join(cwd, '.cursor', 'skills', name) };
+  await setTargets(location, options.targets??['generic']);
+  return { location, source, root, output: path.join(cwd, '.agents', 'skills', name) };
 }
 
 // Test Value Gate: protect public results and real writes at the confirmation, source, and ownership boundaries.
 describe('public plugin lifecycle', () => {
+  beforeEach(async () => {
+    installNativeTestQualification({ discovery: true, trust: true });
+    const isolation = getCurrentSourceTestIsolation();
+    await fs.outputJson(path.join(resolvePlatformConfigRoot('pi', { cwd: isolation.layout.fixtureCwd, env: isolation.env }), 'settings.json'), { packages: [], defaultProjectTrust: 'always' });
+    const bin = path.join(isolation.layout.fixtureCwd, 'pi-controlled-bin');
+    await fs.outputFile(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 'controlled client entry');
+    await fs.chmod(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 0o755);
+    isolation.env.PATH = `${bin}${path.delimiter}${isolation.env.PATH ?? ''}`;
+  });
   it('retains every producer result when removing Active and retired plugins together', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
@@ -70,7 +103,7 @@ describe('public plugin lifecycle', () => {
     for (const pluginName of ['active', 'retired']) {
       const sourceDirectory = path.join(cwd, `${pluginName}-commands`);
       await fs.outputFile(path.join(sourceDirectory, 'run.mjs'), 'process.exit(0);\n');
-      packages.push(await syncManagedCommandPackage({ producer: { sourceId: 'team', sourceIdentity, pluginName, kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null },
+      packages.push(await syncManagedCommandPackage({ producer: { sourceId: 'team', sourceIdentity, pluginName, kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null, placementKey: null },
         sourceDirectory, sets: [{ set: 'tools', state: 'present', entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'run.mjs' })] }], env: isolation.env }));
     }
     await createNativeDependencyCatalog(source, [{ name: 'active' }]);
@@ -85,17 +118,18 @@ describe('public plugin lifecycle', () => {
       expect((await resolveManagedCommand(value.commandIds[0]!, isolation.env)).view.availability).toBe('ready');
     }
   });
-  it.each([['cursor'], ['cursor', 'pi']])('reports foreign output blockers with independently observed targets %j', async (...targets) => {
+  it.each([[['generic']], [['generic', 'pi']]])('reports foreign output blockers with independently observed targets %j', async (targets) => {
     const { location, output } = await fixture({ targets });
-    expect((await runPublicLifecycle('install', ['team/demo'], location)).status).toBe('success');
+    const installed = await runPublicLifecycle('install', ['team/demo'], location);
+    expect(installed.status, JSON.stringify(installed)).toBe('success');
     const marker = path.join(output, '.agent-workflows-owner.json');
     await fs.writeJson(marker, { ...await fs.readJson(marker), owner: 'foreign' });
     const status = await runPublicPluginStatus([], location);
     expect(status.status).toBe(targets.length === 1 ? 'blocked' : 'partial');
     expect(status.data).toMatchObject({ inventory: [expect.objectContaining({ targetResults: expect.arrayContaining([
-      expect.objectContaining({ target: 'cursor', content: 'conflict', blockerCodes: ['portableOutputConflict'] }),
+      expect.objectContaining({ target: 'generic', content: 'conflict', blockerCodes: ['portableOutputConflict'] }),
     ]) })] });
-    expect(status.diagnostics).toContainEqual(expect.objectContaining({ code: 'portableOutputConflict', subject: { pluginId: 'team/demo', target: 'cursor', scope: 'project' } }));
+    expect(status.diagnostics).toContainEqual(expect.objectContaining({ code: 'portableOutputConflict', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project' } }));
   });
 
   it.each(['fetch', 'activation'] as const)('continues a healthy source when another refresh fails during %s', async (failureStage) => {
@@ -128,19 +162,19 @@ describe('public plugin lifecycle', () => {
     expect(result.data).toMatchObject({ changes: { outputs: 'changed' }, targetResults: expect.arrayContaining([
       expect.objectContaining({ pluginId: 'alpha/first', execution: 'applied', observation: 'verified' }),
       expect.objectContaining({ pluginId: 'beta/second', execution: 'not-run', content: 'unknown' }),
-    ]), remainingTargets: [{ pluginId: 'beta/second', target: 'cursor', scope: 'project' }] });
+    ]), remainingTargets: [{ pluginId: 'beta/second', target: 'generic', scope: 'project' }] });
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ subject: { sourceId: 'beta' } }));
     expect(await fs.pathExists(first.output)).toBe(true);
     expect(await fs.pathExists(second.output)).toBe(false);
     if (failureStage === 'activation') expect(interrupted).toBe(true);
   });
   it('keeps completed targets and unknown script effects when another target fails', async () => {
-    const { location, output } = await fixture({ script: 'fail-pi', targets: ['cursor', 'pi'] });
+    const { location, output } = await fixture({ script: 'fail-pi', targets: ['generic', 'pi'] });
     const result = await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true, scriptTimeout: '1000' });
     expect(result.status, JSON.stringify(result)).toBe('partial');
     expect(result.data).toMatchObject({ changes: { requirements: 'changed', outputs: 'changed' },
-      targetResults: [expect.objectContaining({ target: 'cursor', execution: 'applied', observation: 'verified' }),
-        expect.objectContaining({ target: 'pi', execution: 'failed' })],
+      targetResults: [expect.objectContaining({ target: 'pi', execution: 'failed' }),
+        expect.objectContaining({ target: 'generic', execution: 'applied', observation: 'verified' })],
       remainingTargets: [{ pluginId: 'team/demo', target: 'pi', scope: 'project' }] });
     expect(await fs.pathExists(output)).toBe(true);
   });
@@ -190,15 +224,15 @@ describe('public plugin lifecycle', () => {
   });
 
   it('filters one install without changing the saved target policy and reports unsatisfied status', async () => {
-    const { location, output }=await fixture({ targets: ['cursor', 'pi'] });
-    const result=await runPublicLifecycle('install', ['team/demo'], { ...location, target: ['cursor'] });
+    const { location, output }=await fixture({ targets: ['generic', 'pi'] });
+    const result=await runPublicLifecycle('install', ['team/demo'], { ...location, target: ['generic'] });
     expect(result.status, JSON.stringify(result)).toBe('success');
-    expect((result.data as LifecycleData).targetResults.map((target) => target.target)).toEqual(['cursor']);
+    expect((result.data as LifecycleData).targetResults.map((target) => target.target)).toEqual(['generic']);
     expect(await fs.pathExists(output)).toBe(true);
     expect(await fs.pathExists(path.join(location.cwd, '.pi', 'skills', 'demo'))).toBe(false);
     const status=await runPublicPluginStatus([], location);
     expect(status.status, JSON.stringify(status)).toBe('success');
-    expect(status.data).toMatchObject({ allSatisfied: false, targetPolicy: { targets: ['cursor', 'pi'] } });
+    expect(status.data).toMatchObject({ allSatisfied: false, targetPolicy: { targets: ['generic', 'pi'] } });
   });
 
   it('keeps ordinary removal blocked offline while both only modes remain available', async () => {
@@ -215,7 +249,7 @@ describe('public plugin lifecycle', () => {
     const canceled=await runPublicLifecycle('remove', ['team/demo'], { ...location, only: 'requirements' });
     expect(canceled.status).toBe('success'); expect(await fs.pathExists(output)).toBe(true);
     await setTargets(location, []);
-    const cleaned=await runPublicLifecycle('remove', ['team/demo'], { ...location, only: 'outputs', target: ['cursor'], yes: true });
+    const cleaned=await runPublicLifecycle('remove', ['team/demo'], { ...location, only: 'outputs', target: ['generic'], yes: true });
     expect(cleaned.status, JSON.stringify(cleaned)).toBe('success'); expect(await fs.pathExists(output)).toBe(false);
   });
 

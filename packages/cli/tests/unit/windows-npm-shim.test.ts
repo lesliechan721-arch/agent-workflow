@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { resolveWindowsNpmCommand } from '../../src/utils/windows-npm-shim.js';
+import { renderNpmCmdShim, resolveWindowsNpmCommand } from '../../src/utils/windows-npm-shim.js';
 import { writeSkillsCliFixture } from '../helpers/skills-cli-fixture.js';
 
 const execFileAsync = promisify(execFile);
@@ -62,4 +62,27 @@ describe('Windows npm launcher', () => {
       await expect(fixture.resolve()).rejects.toThrow('Windows skills launcher is unsupported');
     },
   );
+
+  // Test Value Gate: official extensionless Node bins must work, while a
+  // shell entry or another file type must not gain Node execution permission.
+  it.each([
+    ['Node shebang', 'cli', '#!/usr/bin/env node\n', true],
+    ['shell shebang', 'cli', '#!/bin/sh\n', false],
+    ['no shebang', 'cli', '', false],
+    ['other extension', 'cli.sh', '#!/usr/bin/env node\n', false],
+  ] as const)('validates an npm entry with %s', async (_mode, name, header, supported) => {
+    const fixture = await createSkillsFixture();
+    const launcher = path.join(fixture.binRoot, 'node_modules', 'skills', 'bin', name);
+    await fs.outputFile(launcher, header + 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+    await fs.writeJson(path.join(fixture.binRoot, 'node_modules', 'skills', 'package.json'), {
+      name: 'skills', bin: { skills: `bin/${name}` },
+    });
+    await fs.writeFile(fixture.shim, renderNpmCmdShim(`node_modules\\skills\\bin\\${name}`));
+    if (!supported) { await expect(fixture.resolve()).rejects.toThrow('launcher is unsupported'); return; }
+    const invocation = await fixture.resolve();
+    expect(invocation).toEqual({ command: process.execPath, argsPrefix: [await fs.realpath(launcher)] });
+    const args = ['extensionless', 'a&b', '%PATH%'];
+    const result = await execFileAsync(invocation.command, [...invocation.argsPrefix, ...args], { env: fixture.env });
+    expect(JSON.parse(result.stdout)).toEqual(args);
+  });
 });

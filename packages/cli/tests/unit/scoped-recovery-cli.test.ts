@@ -45,7 +45,7 @@ describe('plugin work context CLI', () => {
     ['plugin', 'install', 'team/demo', '--scope', 'project', '--context', 'user'],
     ['plugin', 'remove', 'team/demo', '--scope', 'project', '--context', 'user'],
     ['target', 'set'], ['target', 'set', 'codex', '--none'],
-    ['target', 'set', 'claude-code'], ['target', 'set', 'gemini'],
+    ['target', 'set', 'claude-code'], ['target', 'set', 'unknown-platform'],
     ['target', 'exclude', 'team/demo', '--target', 'agent-skills'],
     ['plugin', 'sync', '--check', '--rebuild'], ['plugin', 'sync', '--check', '--refresh'],
     ['install', 'team/demo'], ['reinstall', 'team/demo'], ['uninstall', 'team/demo'],
@@ -68,11 +68,18 @@ describe('plugin work context CLI', () => {
     const before = await Promise.all(paths.map((file) => fs.readFile(file)));
     const output = path.join(options.cwd, 'keep.txt');
     await fs.writeFile(output, 'existing output');
-    const set = await jsonCommand(['target', 'set', 'cursor', 'codex', 'cursor'], options);
+    const unavailable = { ...options, env: { ...options.env, PATH: '' } };
+    const requested = ['target', 'set', 'cursor', 'codex', 'gemini', 'cursor'];
+    const beforeSelection = await fileTree(options.env.AW_HOME!);
+    const blocked = await jsonCommand(requested, unavailable);
+    expect(blocked.exitCode).toBe(3);
+    expect(blocked.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'targetUnavailable' }));
+    expect(await fileTree(options.env.AW_HOME!)).toEqual(beforeSelection);
+    const set = await jsonCommand([...requested, '--force'], unavailable);
     expect(set.exitCode).toBe(0);
     expect(set.value).toMatchObject({ command: 'target.set', status: 'success', data: {
       preferencesChanged: true, outputsMayHaveChanged: false,
-      policy: { schemaVersion: 2, targets: ['codex', 'cursor'], exclusions: [] },
+      policy: { schemaVersion: 2, targets: ['codex', 'cursor', 'gemini'], exclusions: [] },
     } });
     expect((await jsonCommand(['target', 'set', '--none'], options)).exitCode).toBe(0);
     expect(await observePreferences({ ...options, scope: 'user' })).toMatchObject({ state: 'valid', value: { targets: [], exclusions: [] } });
@@ -111,7 +118,9 @@ describe('plugin work context CLI', () => {
     const filename = await resolvePreferencesPath({ ...options, scope: 'user' });
     const original = '{ "schemaVersion": 1, "kind": "aw-project-preferences", "agents": [] }\n';
     await fs.outputFile(filename, original);
-    expect((await jsonCommand(['target', 'set', 'codex'], options)).exitCode).toBe(3);
+    const result = await jsonCommand(['target', 'set', 'codex', '--force'], options);
+    expect(result.exitCode).toBe(3);
+    expect(result.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'deploymentPreferencesInvalid' }));
     expect(await fs.readFile(filename, 'utf8')).toBe(original);
   });
 

@@ -4,12 +4,14 @@
 
 ## 安装与使用
 
-在包含本插件的 Catalog 来源中安装到 Codex 和 Claude Code：
+在包含本插件的 Catalog 来源中选择目标：
 
 ```bash
 aw target set codex claude
 aw plugin install frontend-design --scope user
 ```
+
+安装目标包括 Codex、Claude Code、Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 和 Grok Build；`generic` 只输出通用 Skills。实际调用控制与客户端能力按目标核对，无法保留的组件语义会显示为未满足。
 
 支持 user 和 project 安装范围，无插件配置项。唯一技能是 `frontend-design`，既可按任务自动采用，也可显式选择。
 

@@ -20,7 +20,7 @@ import {
   discoverPlugins,
   readMarketplaceSourceMeta,
 } from '../src/utils/manifest.js';
-import type { PlatformName, PluginMeta } from '../src/types.js';
+import type { PluginMeta } from '../src/types.js';
 import { createCatalogRuntimeImportResolver } from '../src/utils/catalog-runtime-projection.js';
 import { orderPluginMetasByDependencies } from '../src/utils/plugin-dependencies.js';
 
@@ -156,7 +156,7 @@ export async function bundlePlugins(
     skillRuntimeFiles: SkillRuntimeFileProvenance[];
   }> = {};
   const runtimeResolver = createCatalogRuntimeImportResolver(plugins);
-  const bundledPluginsByPlatform: Record<PlatformName, PluginMeta[]> = {
+  const bundledPluginsByPlatform: Record<'codex' | 'claude', PluginMeta[]> = {
     claude: [],
     codex: [],
   };

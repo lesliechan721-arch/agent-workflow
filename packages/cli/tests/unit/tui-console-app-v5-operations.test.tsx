@@ -550,7 +550,7 @@ describe('ConsoleAppV4', () => {
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
       kind: 'recovery', scope: 'user', selectors: ['official/agent-lab'],
-      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'claude' }],
+      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'claude', scope: 'user' }],
     }), expect.any(AbortSignal));
     expect(executeScopedTask).toHaveBeenCalledTimes(1);
   });
@@ -619,7 +619,7 @@ describe('ConsoleAppV4', () => {
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
       expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
         kind: 'recovery', scope: 'user',
-        exactTargets: [{ pluginId: 'official/agent-lab', agent: 'claude' }],
+        exactTargets: [{ pluginId: 'official/agent-lab', agent: 'claude', scope: 'user' }],
       }), expect.any(AbortSignal));
       instance.unmount();
       instance.cleanup();
@@ -1491,7 +1491,7 @@ describe('ConsoleAppV4', () => {
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));
     expect(executeScopedTask).toHaveBeenCalledTimes(1);
     expect(instance.lastFrame()).toContain('请求仍有未完成目标');
-    expect(instance.lastFrame()).toContain('× 安装失败 agent-lab（official）');
+    expect(instance.lastFrame()).toContain('× 执行失败 agent-lab（official）');
     const resultDetails = await readScopedDetails(instance);
     expect(resultDetails).toContain('official/agent-lab · Claude Code [个人] · 原生 · failed · missing');
     expect(executeScopedTask).toHaveBeenCalledTimes(1);
@@ -1500,7 +1500,7 @@ describe('ConsoleAppV4', () => {
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
       kind: 'recovery', scope: 'user',
-      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'claude' }],
+      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'claude', scope: 'user' }],
     }), expect.any(AbortSignal));
   });
 

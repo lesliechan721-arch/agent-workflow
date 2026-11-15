@@ -1,13 +1,14 @@
 import { describeNativeToolClosure } from '../utils/native-tool-review.js';
 import type { Scope } from '../types.js';
 import type { CliPrompt } from '../commands/runtime.js';
-import type { OperationPlan } from '../commands/operation-plan.js';
+import { operationPlanNativeToolChanges, type OperationPlan } from '../commands/operation-plan.js';
 import {
   executeRemovedPluginOutputCleanup, inspectRemovedPluginCleanup,
   type RebuildCommandRuntime, type RemovedPluginCleanupTarget,
 } from '../commands/rebuild-command.js';
 import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
-import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
+import { inventoryCatalogSourceReferences, type CatalogSourceReferenceInventory } from '../utils/catalog-source-references.js';
+import { hasSharedUserPackage } from '../platforms/layout.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { deletePluginConfigStore } from '../utils/plugin-config.js';
@@ -16,6 +17,7 @@ import { observePreferences, writePreferences, selectAgents } from '../intent/de
 import { assertNeutralAncestorChain, createScopeContext, type ScopeContext } from '../intent/scope-context.js';
 import { inspectPortableResidue, type PortableResidue } from '../portable/recovery.js';
 import type { RecoveryReceipt, RecoveryTarget } from './receipt.js';
+import { disposePreparedPlatformRebuildSession } from '../commands/rebuild-integration.js';
 
 export interface RetireOptions {
   signal?: AbortSignal;
@@ -70,6 +72,42 @@ function blocksStrongRetirement(code: string, deleteConfig: boolean): boolean {
     'removedPluginMarketplaceIdentityConflict'].includes(code)
     || deleteConfig && (code === 'removedPluginConfigTargetUnsupported' || code === 'removedPluginConfigTargetUnsafe');
 }
+function nativeInventoryErrors(inventory: CatalogSourceReferenceInventory, pluginId: string,
+  agent: RecoveryTarget['agent'], scope: Scope) {
+  if (agent === 'generic') return [];
+  const plugin = parsePluginId(pluginId);
+  return inventory.errors.filter((error) => {
+    const relevance = error.relevance;
+    return !relevance.global && relevance.platform === agent && !error.kind.startsWith('config')
+      && (relevance.sourceId === undefined || relevance.sourceId === plugin.sourceId)
+      && (relevance.pluginName === undefined || relevance.pluginName === plugin.pluginName)
+      && (relevance.scope === undefined || relevance.scope === scope
+        || relevance.scope === 'user' && hasSharedUserPackage(agent));
+  });
+}
+function retainUnobservedNativeTargets(receipt: RecoveryReceipt, inventory: CatalogSourceReferenceInventory,
+  removed: RemovedPluginCleanupTarget | null): void {
+  for (const target of receipt.targetResults) {
+    const verified = removed?.evidence.some((entry) => entry.platform === target.agent && entry.scope === target.scope
+      && entry.plan.actions.some((action) => action.recoveryCandidate?.evidence === 'verified'
+        && action.recoveryCandidate.binding.plugin.sourceIdentity === removed.sourceIdentity
+        && action.recoveryCandidate.binding.plugin.pluginId === target.pluginId
+        && action.recoveryCandidate.binding.platform === target.agent
+        && action.recoveryCandidate.binding.scope.kind === target.scope));
+    // Verified candidates retain the normal cleanup path and its exact failure
+    // evidence. Inventory errors fill an observation gap only without a candidate.
+    if (verified) continue;
+    const errors = nativeInventoryErrors(inventory, target.pluginId, target.agent, target.scope);
+    if (!errors.length) continue;
+    target.content = 'unknown'; target.observation = 'unknown'; target.execution = 'not-run';
+    for (const error of errors) {
+      const reason = diagnostic(error.kind === 'nativeNamespaceUnsafe'
+        ? 'removedPluginMarketplaceProjectionUnsafe' : 'stateInventoryResidual', error.message);
+      if (!target.blockers.some((entry) => entry.code === reason.code && entry.message === reason.message)) target.blockers.push(reason);
+      if (!receipt.blockers.some((entry) => entry.code === reason.code && entry.message === reason.message)) receipt.blockers.push(reason);
+    }
+  }
+}
 function finish(receipt: RecoveryReceipt, options: RetireOptions, portable: PortableResidue,
   configDeletionCompleted = false): RecoveryReceipt {
   receipt.requestedTargets = receipt.targetResults.map(({ pluginId, agent, scope, delivery }) =>
@@ -99,7 +137,16 @@ function finish(receipt: RecoveryReceipt, options: RetireOptions, portable: Port
 
 export async function prepareRetire(options: RetireOptions, runtime: RebuildCommandRuntime = {}): Promise<RetirePlan> {
   options.signal?.throwIfAborted();
+  const ownsPreparedResults = runtime.preparedArtifactRenderResults === undefined;
+  const preparedResults = runtime.preparedArtifactRenderResults ?? new Map();
+  runtime = { ...runtime, preparedArtifactRenderResults: preparedResults };
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env });
+  if (ownsPreparedResults) {
+    const dispose = context.dispose;
+    context.dispose = async () => {
+      try { await disposePreparedPlatformRebuildSession(preparedResults); } finally { await dispose(); }
+    };
+  }
   try {
     options.signal?.throwIfAborted();
     const parsed = parsePluginId(options.selector);
@@ -132,24 +179,26 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
     }
     const requestedAgents = options.targets === undefined ? undefined : selectAgents({ preferences, targets: options.targets }).agents;
     const portable = await inspectPortableResidue({ scope: options.scope, context, selector: options.selector,
-      env: context.env, agents: requestedAgents?.filter((agent) => agent !== 'codex' && agent !== 'claude'), signal: options.signal });
+      env: context.env, agents: requestedAgents?.filter((agent): agent is 'generic' => agent === 'generic'), signal: options.signal });
     options.signal?.throwIfAborted();
     const agents = requestedAgents ?? [...new Set([
-      ...(removed?.evidence.filter((entry) => entry.plan.actions.length).map((entry) => entry.platform === 'claude'
-        ? 'claude' as const : 'codex' as const) ?? []),
+      ...(removed?.evidence.map((entry) => entry.platform) ?? []),
       ...(removed && (removed.nativeState === 'installed' || removed.nativeState === 'unknown'
         || removed.projectionPresent || removed.activationScopes.length > 0) ? ['codex' as const] : []),
       ...portable.targets.map((entry) => entry.agent),
       ...(portable.unknownAgents ?? []),
+      ...inventory.errors.flatMap((error) => !error.relevance.global && error.relevance.platform
+        && nativeInventoryErrors(inventory, options.selector, error.relevance.platform, options.scope).includes(error)
+        ? [error.relevance.platform] : []),
     ])];
     const targetResults: RecoveryTarget[] = agents.map((agent) => {
-      const delivery = agent !== 'codex' && agent !== 'claude' ? { kind: 'agent-skills' as const, provider: 'aw' as const, agentId: agent }
-        : { kind: 'native' as const, platform: agent === 'claude' ? 'claude' as const : 'codex' as const };
+      const delivery = agent === 'generic' ? { kind: 'agent-skills' as const, provider: 'aw' as const, agentId: 'generic' as const }
+        : { kind: 'native' as const, platform: agent };
       const portableUnknown = portable.unknownAgents?.some((item) => item === agent) ?? portable.state === 'unknown';
-      const hasPortable = portableUnknown || portable.targets.some((target) => target.agent === agent);
+      const hasPortable = agent === 'generic' && (portableUnknown || portable.targets.some((target) => target.agent === agent));
       const hasNative = delivery.kind === 'native' && (removed?.evidence.some((entry) => entry.platform === (delivery.kind === 'native' ? delivery.platform : undefined))
-        || removed?.nativeState === 'installed' || removed?.nativeState === 'unknown'
-        || removed?.projectionPresent || (removed?.activationScopes.length ?? 0) > 0);
+        || agent === 'codex' && (removed?.nativeState === 'installed' || removed?.nativeState === 'unknown'
+          || removed?.projectionPresent || (removed?.activationScopes.length ?? 0) > 0));
       return { pluginId: options.selector, agent, scope: options.scope, delivery,
         execution: 'not-run', observation: 'unknown', content: hasPortable || hasNative ? 'unknown' : 'absent',
         blockers: hasPortable ? [diagnostic(portableUnknown
@@ -168,6 +217,7 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
         ...('digest' in intent ? { digest: intent.digest } : {}), roots }, requestedRoots: [options.selector],
       requestedTargets: [], selection, blockers, errors: [], targetResults, remainingTargets: [], recoveryActions: [],
       declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: false };
+    retainUnobservedNativeTargets(receipt, inventory, removed);
     const plannedImpact = {
       declaration: roots?.includes(options.selector) === true,
       preferences: !options.preservePreferences && preferences.state === 'valid' && preferences.value.exclusions.some((entry) =>
@@ -175,29 +225,29 @@ export async function prepareRetire(options: RetireOptions, runtime: RebuildComm
       config: options.deleteConfig === true && removed?.configTargets.some((entry) =>
         entry.scope === options.scope && entry.kind !== 'absent') === true,
       outputs: removed?.evidence.some((entry) => entry.plan.actions.length > 0
-        && agents.includes(entry.platform === 'claude' ? 'claude' : 'codex')) === true,
+        && agents.includes(entry.platform)) === true,
     };
     const changes = [
       ...(plannedImpact.declaration ? [`删除 ${options.scope} 声明 ${options.selector}。`] : []),
       ...(plannedImpact.preferences ? [`删除此插件的本机平台排除。`] : []),
       ...(plannedImpact.config ? [`删除 ${options.scope} 已保存配置。`] : []),
-      ...agents.filter((agent) => agent !== 'cursor').map((agent) =>
+      ...agents.filter((agent) => agent !== 'generic').map((agent) =>
         `检查并清理 ${options.scope}/${agent} 已验证原生输出。`),
     ];
     const preview = removed ? await executeRemovedPluginOutputCleanup({ target: removed,
-      selectedTargets: targetResults.flatMap((target) => target.delivery?.kind === 'native'
+      selectedTargets: targetResults.flatMap((target) => target.delivery?.kind === 'native' && !target.blockers.length
         ? [{ pluginId: target.pluginId, platform: target.delivery.platform, scope: target.scope }] : []),
       context, runtime: { ...runtime, previewOperationPlan: true,
         nativeCliRunner: bindNativeCliRunnerSignal(runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), options.signal) },
     }) : undefined;
     options.signal?.throwIfAborted();
-    const nativeToolChanges = preview?.operationPlan?.actions.flatMap((action) => action.nativeToolChanges ?? []) ?? [];
+    const nativeToolChanges = preview?.operationPlan ? operationPlanNativeToolChanges(preview.operationPlan) : [];
     if (nativeToolChanges.length) receipt.nativeToolChanges = nativeToolChanges;
+    for (const change of nativeToolChanges) {
+      if (change.before) changes.push(...describeNativeToolClosure(change.before).map((description) =>
+        `撤销原生工具 · ${change.producer.sourceId}/${change.producer.pluginName} · ${change.producer.key} · ${description}`));
+    }
     for (const action of preview?.operationPlan?.actions ?? []) {
-      for (const change of action.nativeToolChanges ?? []) {
-        if (change.before) changes.push(...describeNativeToolClosure(change.before).map((description) =>
-          `撤销原生工具 · ${change.producer.sourceId}/${change.producer.pluginName} · ${change.producer.key} · ${description}`));
-      }
       if (action.kind !== 'retainManagedCommandPackage') continue;
       changes.push(`保留命令包 ${action.producer.key}：${action.producer.sourceId}/${action.producer.pluginName}`
         + ` · ${action.producer.scope === 'user' ? '所有项目共用' : '当前项目内共用'}`
@@ -261,6 +311,7 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
         const current = await inspectRemovedPluginCleanup({ pluginId: plan.options.selector, scope: plan.options.scope,
           inventory, cwd: plan.context.executionCwd, env: plan.context.env,
           nativeCliRunner: runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), codexManager: runtime.codexManager });
+        retainUnobservedNativeTargets(receipt, inventory, current);
         if (!current || !plan.evidence || current.sourceIdentity !== plan.evidence.sourceIdentity
           || current.logicalIdentity !== plan.evidence.logicalIdentity
           || current.snapshotDigest !== plan.evidence.snapshotDigest
@@ -274,14 +325,14 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
         }
         const portable = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,
           selector: plan.options.selector, env: plan.context.env, agents: plan.options.targets === undefined
-            ? undefined : plan.receipt.selection.agents.filter((agent) => agent !== 'codex' && agent !== 'claude') }).catch(() => undefined);
+            ? undefined : plan.receipt.selection.agents.filter((agent): agent is 'generic' => agent === 'generic') }).catch(() => undefined);
         if (!portable || JSON.stringify(portable) !== JSON.stringify(plan.portable)) {
           receipt.blockers.push(diagnostic('operationReviewStale'));
           return finish(receipt, plan.options, plan.portable);
         }
         if (plan.operationPlan) {
           await executeRemovedPluginOutputCleanup({ target: current,
-            selectedTargets: receipt.targetResults.flatMap((target) => target.delivery?.kind === 'native'
+            selectedTargets: receipt.targetResults.flatMap((target) => target.delivery?.kind === 'native' && !target.blockers.length
               ? [{ pluginId: target.pluginId, platform: target.delivery.platform, scope: target.scope }] : []),
             context: plan.context, runtime: { ...runtime, awHomeMutationToken: token,
               previewOperationPlan: true, expectedPlanFingerprint: plan.operationPlan.planFingerprint } });
@@ -318,7 +369,7 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
         }
         await refreshIntent();
         if (plan.evidence) {
-          const selectedTargets = receipt.targetResults.flatMap((target) => target.delivery?.kind === 'native'
+          const selectedTargets = receipt.targetResults.flatMap((target) => target.delivery?.kind === 'native' && !target.blockers.length
             ? [{ pluginId: target.pluginId, platform: target.delivery.platform, scope: target.scope }] : []);
           if (selectedTargets.length || plan.operationPlan?.actions.some((action) =>
             action.kind === 'retainManagedCommandPackage')) {
@@ -329,12 +380,28 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
               if (result.commandResults?.length) receipt.commandResults = result.commandResults;
               receipt.outputsMayHaveChanged = result.rebuildResults.some((entry) => entry.actions.length > 0);
               let partialAttributed = result.commandResults?.some((entry) => entry.state !== 'completed') === true;
-              for (const target of receipt.targetResults.filter((entry) => entry.delivery?.kind === 'native')) {
+              for (const target of receipt.targetResults.filter((entry) => entry.delivery?.kind === 'native' && !entry.blockers.length)) {
                 const platform = target.delivery?.kind === 'native' ? target.delivery.platform : undefined;
                 const backendTargets = result.targetResults.filter((entry) => entry.target.pluginId === target.pluginId
                   && entry.target.scope === target.scope && entry.target.platform === platform);
                 const rebuildTargets = result.rebuildResults.filter((entry) => entry.target.pluginId === target.pluginId
                   && entry.target.scope === target.scope && entry.target.platform === platform);
+                const deployments = rebuildTargets.flatMap((entry) => entry.deploymentReceipts ?? []);
+                const deploymentPlans = (result.operationPlan?.deploymentPlans ?? plan.operationPlan?.deploymentPlans ?? [])
+                  .filter((entry) => entry.binding.plugin.pluginId === target.pluginId
+                    && entry.binding.platform === platform && entry.binding.scope.kind === target.scope);
+                if (deployments.length) target.deploymentReceipts = deployments.map((entry) => ({ ...entry,
+                  products: deploymentPlans.find((candidate) => candidate.binding.id === entry.bindingId)?.binding.consumers ?? [] }));
+                const nativeIncomplete = deployments.some((entry) => {
+                  const expected = deploymentPlans.find((candidate) => candidate.binding.id === entry.bindingId);
+                  const after = entry.after;
+                  const inactive = after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
+                  const unknown = after.package === 'unknown' || after.registration === 'unknown'
+                    || after.ownership === 'unknown' || after.ownership === 'foreign';
+                  const keptForConsumer = !unknown && inactive && expected?.evidence.sharedReferences === 'present';
+                  return unknown || !inactive || !keptForConsumer
+                    && (after.package === 'present' || after.registration === 'present');
+                });
                 const failed = backendTargets.some((entry) => entry.state === 'failed');
                 const commandFailures = (result.commandResults ?? []).filter((entry) => entry.state !== 'completed'
                   && entry.producer.sourceId === plan.evidence!.sourceId
@@ -343,20 +410,31 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                   && entry.producer.platform === platform);
                 const sharedNativePreserved = platform === 'codex'
                   && result.warnings.some((warning) => warning.startsWith('sharedNativePreserved:'));
-                const preserved = backendTargets.some((entry) => entry.action === 'keep')
-                  || rebuildTargets.some((entry) => entry.residual.length > 0 || entry.quarantined.length > 0)
-                  || sharedNativePreserved;
+                const preserved = rebuildTargets.some((entry) => entry.residual.length > 0 || entry.quarantined.length > 0)
+                  || (deployments.length ? nativeIncomplete : backendTargets.some((entry) => entry.action === 'keep') || sharedNativePreserved);
                 target.execution = failed ? 'failed' : commandFailures.length
                   ? backendTargets.length ? 'partial' : 'failed' : backendTargets.length ? 'applied' : 'no-op';
+                if (!failed && nativeIncomplete) target.execution = deployments.some((entry) =>
+                  entry.effects.some((effect) => effect.mutation !== 'none')) ? 'partial' : 'not-run';
                 target.observation = failed || commandFailures.length ? 'unknown'
                   : target.content === 'absent' ? 'missing' : 'unknown';
-                target.backend = backendTargets.map((entry) => ({
-                  target: { pluginId: entry.target.pluginId, platform: entry.target.platform,
+                target.backend = backendTargets.map((entry) => {
+                  const matching = rebuildTargets.filter((result) => result.target.pluginId === entry.target.pluginId
+                    && result.target.platform === entry.target.platform && result.target.scope === entry.target.scope);
+                  return { target: { pluginId: entry.target.pluginId, platform: entry.target.platform,
                     scope: entry.target.scope }, action: entry.action, state: entry.state,
-                  ...(entry.errorCode ? { errorCode: entry.errorCode } : {}),
-                }));
+                    ...(entry.errorCode ? { errorCode: entry.errorCode } : {}),
+                    residual: [...new Set(matching.flatMap((result) => result.residual))],
+                    quarantined: [...new Set(matching.flatMap((result) => result.quarantined))] };
+                });
                 if (failed) target.blockers.push(diagnostic('nativeRetireFailed'));
                 else if (preserved) target.blockers.push(diagnostic('sharedNativePreserved'));
+                if (deployments.some((entry) => entry.after.ownership === 'foreign')) target.blockers.push(diagnostic('deploymentOwnershipUnconfirmed'));
+                if (deployments.some((entry) => entry.after.registration === 'unknown' || entry.after.package === 'unknown'
+                  || entry.after.ownership === 'unknown')) target.blockers.push(diagnostic('nativeObservationUnknown'));
+                const observedReasons = deployments.flatMap((entry) => [...entry.diagnostics, ...entry.after.diagnostics]);
+                if (observedReasons.length) target.reasons = [...new Map(observedReasons.map((entry) =>
+                  [entry.code, diagnostic(entry.code, entry.message)])).values()];
                 for (const producer of commandFailures) {
                   target.blockers.push(...(producer.errors.length ? producer.errors.map((error) =>
                     diagnostic(error.code, error.message)) : [diagnostic('managedCommandRecoveryFailed')]));
@@ -373,7 +451,8 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
             }
           }
         }
-        if (portable.state === 'unknown' && !receipt.targetResults.some((target) =>
+        if (portable.state === 'unknown' && receipt.targetResults.some((target) => target.agent === 'generic')
+          && !receipt.targetResults.some((target) =>
           target.blockers.some((entry) => entry.code === 'portableObservationFailed'))) {
           receipt.blockers.push(diagnostic('portableObservationFailed'));
         }

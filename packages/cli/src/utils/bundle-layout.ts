@@ -8,7 +8,6 @@ import type {
   PlatformName,
   PluginMeta,
   PlatformPluginManifest,
-  PluginManifestSource,
   NormalizedPluginManifest,
 } from '../types.js';
 import {
@@ -18,17 +17,13 @@ import {
 import { readJsonFile } from './json.js';
 import { readMarketplaceManifestAtPath } from './marketplace.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
-import {
-  validateRenderedClaudeHooksContent,
-  validateRenderedCodexHooksContent,
-} from './rendered-contract.js';
 import { scanNodeImportContract } from './plugin-script-contract.js';
-import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 import {
   validatePortableSkillDirectory,
   validateSkillDirectory,
 } from './dynamic-skill-tree.js';
 import { validateRuntimeSkillClosure } from './runtime-skill-closure.js';
+import { calculateFileDigest } from './bundle-integrity.js';
 import { validateManagedCommandPackageClosure } from './managed-command-closure.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
@@ -154,165 +149,24 @@ async function assertMcpArtifact(
   }
 }
 
-async function assertAppsArtifact(
-  pluginRoot: string,
-  relativePath: string,
-  fieldName: string,
-  expectedPrefix: string,
-): Promise<void> {
-  const resolved = assertRelativeBundlePath(pluginRoot, relativePath, fieldName, expectedPrefix);
-  if (!(await fs.pathExists(resolved))) {
-    throw new Error(`Invalid ${fieldName}: "${relativePath}" does not exist in bundle.`);
-  }
-  const realResolved = await assertRealBundlePath(pluginRoot, resolved, fieldName, expectedPrefix);
-  const content = await assertJsonObjectFile(realResolved, fieldName);
-  if (!content.apps || typeof content.apps !== 'object' || Array.isArray(content.apps)) {
-    throw new Error(`Invalid ${fieldName}: expected top-level "apps" object.`);
-  }
-
-  for (const [name, app] of Object.entries(content.apps as Record<string, unknown>)) {
-    if (!app || typeof app !== 'object' || Array.isArray(app)) {
-      throw new Error(`Invalid ${fieldName}.apps.${name}: expected an object.`);
-    }
-    const id = (app as Record<string, unknown>).id;
-    if (typeof id !== 'string' || id.trim() === '') {
-      throw new Error(`Invalid ${fieldName}.apps.${name}.id: expected a non-empty string.`);
-    }
-  }
-}
-
-async function assertClaudeHooksArtifact(
-  pluginRoot: string,
-  relativePath: string,
-): Promise<void> {
-  const resolved = assertRelativeBundlePath(pluginRoot, relativePath, 'claude.hooks', './claude/');
-  if (!(await fs.pathExists(resolved))) {
-    throw new Error(`Invalid claude.hooks: "${relativePath}" does not exist in bundle.`);
-  }
-  const realResolved = await assertRealBundlePath(pluginRoot, resolved, 'claude.hooks', './claude/');
-  const content = await assertJsonObjectFile(realResolved, 'claude.hooks');
-  validateRenderedClaudeHooksContent(content, 'claude.hooks');
-}
-
-async function validateClaudeManifest(
+async function validatePlatformManifest(
   pluginRoot: string,
   manifest: PlatformPluginManifest,
+  platform: PlatformName,
   ownerMarkerPolicy: 'reject' | 'ignore',
 ): Promise<void> {
-  const input = manifest as unknown as Record<string, unknown>;
-  for (const key of Object.keys(input)) {
-    if (![
-      'name',
-      'version',
-      'description',
-      'skills',
-      'mcpServers',
-      'interface',
-      'agents',
-      'hooks',
-      'commands',
-      'outputStyles',
-      'lspServers',
-      'userConfig',
-      'channels',
-    ].includes(key)) {
-      throw new Error(`Invalid claude manifest: unknown field "${key}".`);
+  for (const key of Object.keys(manifest)) {
+    if (!['name', 'version', 'description', 'skills', 'mcpServers', 'interface'].includes(key)) {
+      throw new Error(`Invalid ${platform} manifest: unknown field "${key}".`);
     }
   }
-  assertStrictSemVer(manifest.version, 'claude manifest.version');
-
+  assertStrictSemVer(manifest.version, `${platform} manifest.version`);
   if (manifest.skills) {
-    await validateClaudeSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
-  }
-  if (manifest.commands) {
-    await assertBundlePathExists(pluginRoot, manifest.commands, 'claude.commands', './claude/');
-  }
-  if (manifest.hooks) {
-    if (typeof manifest.hooks !== 'string') {
-      throw new Error('Invalid claude.hooks: expected a bundle-local path string.');
-    }
-    await assertClaudeHooksArtifact(pluginRoot, manifest.hooks);
+    if (platform === 'codex') await validateCodexSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
+    else await validateClaudeSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
   }
   if (manifest.mcpServers) {
-    await assertMcpArtifact(pluginRoot, manifest.mcpServers, 'claude.mcpServers', './claude/');
-  }
-  if (manifest.outputStyles) {
-    await assertBundlePathExists(
-      pluginRoot,
-      manifest.outputStyles,
-      'claude.outputStyles',
-      './claude/',
-    );
-  }
-  if (manifest.agents) {
-    for (const [index, agentPath] of manifest.agents.entries()) {
-      await assertBundlePathExists(
-        pluginRoot,
-        agentPath,
-        `claude.agents[${index}]`,
-        './claude/',
-      );
-    }
-  }
-  if (manifest.lspServers) {
-    if (typeof manifest.lspServers === 'string') {
-      await assertBundlePathExists(
-        pluginRoot,
-        manifest.lspServers,
-        'claude.lspServers',
-        './claude/',
-      );
-    } else if (Array.isArray(manifest.lspServers)) {
-      for (const [index, entry] of manifest.lspServers.entries()) {
-        if (typeof entry === 'string') {
-          await assertBundlePathExists(
-            pluginRoot,
-            entry,
-            `claude.lspServers[${index}]`,
-            './claude/',
-          );
-        }
-      }
-    }
-  }
-}
-
-async function validateCodexManifest(
-  pluginRoot: string,
-  manifest: PlatformPluginManifest,
-  ownerMarkerPolicy: 'reject' | 'ignore',
-): Promise<void> {
-  const input = manifest as unknown as Record<string, unknown>;
-  for (const key of Object.keys(input)) {
-    if (![
-      'name',
-      'version',
-      'description',
-      'skills',
-      'mcpServers',
-      'apps',
-      'interface',
-      'hooks',
-    ].includes(key)) {
-      throw new Error(`Invalid codex manifest: unknown field "${key}".`);
-    }
-  }
-  assertStrictSemVer(manifest.version, 'codex manifest.version');
-
-  if (manifest.skills) {
-    await validateCodexSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
-  }
-  if (manifest.mcpServers) {
-    await assertMcpArtifact(pluginRoot, manifest.mcpServers, 'codex.mcpServers', './codex/');
-  }
-  if (manifest.apps) {
-    await assertAppsArtifact(pluginRoot, manifest.apps, 'codex.apps', './codex/');
-  }
-  if (manifest.hooks) {
-    if (typeof manifest.hooks === 'string') {
-      throw new Error('Invalid codex.hooks: expected an inline hooks object.');
-    }
-    validateRenderedCodexHooksContent(manifest.hooks, 'codex.hooks');
+    await assertMcpArtifact(pluginRoot, manifest.mcpServers, `${platform}.mcpServers`, `./${platform}/`);
   }
 }
 
@@ -454,7 +308,7 @@ function readDependencyNames(packageJson: Record<string, unknown>, fieldName: st
 
 async function readPackageRootDependencySets(
   pluginRoot: string,
-  manifest: PluginManifestSource,
+  manifest: Pick<NormalizedPluginManifest, 'scripts'>,
 ): Promise<{ dependencies: string[]; devDependencies: string[] }> {
   const packageRoot = manifest.scripts?.node?.packageRoot;
   if (!packageRoot) {
@@ -473,7 +327,7 @@ async function readPackageRootDependencySets(
 
 async function validateRuntimeBareImportResolvesInBundle(
   pluginRoot: string,
-  manifest: PluginManifestSource,
+  manifest: Pick<NormalizedPluginManifest, 'scripts'>,
   bareSpecifiers: readonly string[],
 ): Promise<void> {
   const packageRoot = manifest.scripts?.node?.packageRoot;
@@ -519,13 +373,10 @@ async function validateAwRuntimeLayout(
     const relativeRoot = `./${platform}/skills`;
     if (!manifest.skills && !await fs.pathExists(path.join(pluginRoot, stripDotSlash(relativeRoot)))) continue;
     const resolvedRoot = await resolveSkillsCollectionRoot(pluginRoot, relativeRoot, `${platform}/skills`, `./${platform}/`);
-    const dynamicKeys = new Set((manifest.artifacts?.targets ?? []).filter((target) =>
-      target.platform === platform && target.target === 'agent-skills.skill').map((target) => target.skillKey!));
     for (const entry of await fs.readdir(resolvedRoot, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`Invalid ${platform}/skills: direct children must be regular Skill directories (${entry.name}).`);
-      if (dynamicKeys.has(entry.name)) continue;
       const skillRoot = path.join(resolvedRoot, entry.name);
-      await validatePortableSkillDirectory(skillRoot);
+      await validatePortableSkillDirectory(skillRoot, { frontmatterProfile: 'claude-current' });
       await validateRuntimeSkillClosure(skillRoot);
     }
   }
@@ -561,21 +412,20 @@ async function validateAwRuntimeLayout(
     nodeEntries.add(filePath);
   }
 
-  for (const [targetIndex, target] of (manifest.artifacts?.targets ?? []).entries()) {
-    for (const [sourceIndex] of (target.sourceDirs ?? []).entries()) {
-      const relativePath = getArtifactSourceBundleRelativePath({
-        platform: target.platform,
-        distribution: target.distribution,
-        artifactId: target.id,
-        index: sourceIndex,
-      });
-      const stats = await fs.lstat(path.join(pluginRoot, relativePath)).catch(() => null);
-      if (!stats?.isDirectory() || stats.isSymbolicLink()) {
-        throw new Error(
-          `Invalid artifacts.targets[${targetIndex}].sourceDirs[${sourceIndex}]: ` +
-            `missing bundled artifact source directory "${relativePath}".`,
-        );
-      }
+  for (const [index, sourceDir] of (manifest.artifacts?.sourceDirs ?? []).entries()) {
+    await resolveExistingBundlePath(pluginRoot, sourceDir, `artifacts.sourceDirs[${index}]`, './');
+    const stats = await fs.lstat(path.resolve(pluginRoot, sourceDir));
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(`Invalid artifacts.sourceDirs[${index}]: expected a regular bundled resource directory.`);
+    }
+  }
+  for (const [index, reference] of (manifest.artifacts?.runtimeImports ?? []).entries()) {
+    if (!reference.resolved) throw new Error(`Invalid artifacts.runtimeImports[${index}]: unresolved runtime input.`);
+    const expected = `./.agents-plugin/runtime-imports/${reference.name}`;
+    if (reference.resolved.path !== expected) throw new Error(`Invalid artifacts.runtimeImports[${index}]: runtime input path does not match its name.`);
+    const input = await resolveExistingBundlePath(pluginRoot, expected, `artifacts.runtimeImports[${index}].resolved.path`, './.agents-plugin/runtime-imports/');
+    if (await calculateFileDigest(input) !== reference.resolved.digest) {
+      throw new Error(`Invalid artifacts.runtimeImports[${index}]: bundled runtime input digest has changed.`);
     }
   }
 
@@ -621,14 +471,7 @@ async function validateAwRuntimeLayout(
     entryFiles: [...nodeEntries],
     dependencies,
     devDependencies,
-    runtimeConfigSkillRoots: (manifest.artifacts?.targets ?? [])
-      .filter((target) => target.runtimeConfig !== undefined)
-      .flatMap((target) => (target.sourceDirs ?? []).map((_, index) => getArtifactSourceBundleRelativePath({
-        platform: target.platform,
-        distribution: target.distribution,
-        artifactId: target.id,
-        index,
-      }))),
+    runtimeConfigSkillRoots: (manifest.artifacts?.sourceDirs ?? []).map(stripDotSlash),
   });
   if (scan.errors.length > 0) {
     throw new Error(`Invalid scripts.node runtime imports:\n${scan.errors.join('\n')}`);
@@ -724,7 +567,7 @@ export async function validateBundleLayout(
     readMarketplaceManifestFromBundle(rootDir, 'codex'),
     listBundledPluginNames(rootDir),
   ]);
-  const supportedPluginNamesByPlatform: Record<PlatformName, Set<string>> = {
+  const supportedPluginNamesByPlatform: Record<'codex' | 'claude', Set<string>> = {
     claude: new Set<string>(),
     codex: new Set<string>(),
   };
@@ -766,11 +609,7 @@ export async function validateBundleLayout(
         }
 
         const platformManifest = await readJsonFile<PlatformPluginManifest>(manifestPath);
-        if (platform === 'claude') {
-          await validateClaudeManifest(pluginRoot, platformManifest, ownerMarkerPolicy);
-        } else {
-          await validateCodexManifest(pluginRoot, platformManifest, ownerMarkerPolicy);
-        }
+        await validatePlatformManifest(pluginRoot, platformManifest, platform, ownerMarkerPolicy);
         continue;
       }
 

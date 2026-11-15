@@ -1,11 +1,11 @@
-import type { PlatformName, PluginManifestSource, PluginMeta } from '../types.js';
+import type { PluginManifestSource, PluginMeta } from '../types.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
 
 export const MAX_DIRECT_PLUGIN_DEPENDENCIES = 64;
 export const MAX_PLUGIN_DEPENDENCY_CLOSURE = 256;
 export const MAX_PLUGIN_DEPENDENCY_DEPTH = 32;
 
-type PluginDependencyNode = PluginManifestSource;
+type PluginDependencyNode = Pick<PluginManifestSource, 'name' | 'dependencies' | 'platforms'>;
 
 function comparePluginNames(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -84,7 +84,7 @@ function assertMarketplaceProductCoverage<T extends PluginDependencyNode>(
       const dependencyPlatforms = resolveSupportedPlatforms(dependency);
       const missingPlatforms = [...requiredPlatforms]
         .filter((platform) => !dependencyPlatforms.has(platform))
-        .sort(comparePluginNames) as PlatformName[];
+        .sort(comparePluginNames);
       if (missingPlatforms.length > 0) {
         throw new Error(
           `Invalid plugin dependency graph: dependency "${dependencyName}" does not cover plugin "${plugin.name}" marketplace products (${missingPlatforms.join(', ')} missing).`,

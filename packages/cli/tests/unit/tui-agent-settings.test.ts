@@ -33,6 +33,7 @@ async function fixture() {
   await createDependencyCatalogSnapshotFixture(source, names.map((name) => ({
     name, ...(name !== 'd' ? { dependencies: ['d'] } : {}),
     configureManifest: (manifest) => {
+      manifest.schemaVersion = 4;
       manifest.platforms = ['cursor', 'generic'];
       manifest.skills = './skills';
       delete manifest.extensions;
@@ -57,7 +58,7 @@ async function fixture() {
     expectedDigest: initial.digest, env: isolation.env });
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
   const generated = await fs.readJson(path.join(source, '.aw-generated.json')) as { workspaceIdentity: string };
-  const context = { cwd, env: isolation.env };
+  const context = { cwd, env: { ...isolation.env, PATH: '' } };
   const intent = (roots: string[]) => ({ schemaVersion: 3 as const, kind: 'aw-plugin-intents' as const,
     sources: { team: { logicalIdentity: generated.workspaceIdentity } },
     roots: roots.map((name) => ({ pluginId: `team/${name}` })),
@@ -128,8 +129,8 @@ describe('TUI Agent settings storage', () => {
     expect({ ino: after.ino, mtimeMs: after.mtimeMs }).toEqual({ ino: before.ino, mtimeMs: before.mtimeMs });
   });
 
-  // Test Value Gate: a required dependency cannot be disabled through its own root editor, while placement conflicts remain a deployment issue.
-  it('rejects a required dependency exclusion and permits saving targets with a fixed placement conflict', async () => {
+  // Test Value Gate: a required dependency cannot be disabled; saving Native and generic preferences does not write either output.
+  it('rejects a required dependency exclusion and saves Native with generic without a logical directory conflict', async () => {
     const value = await fixture();
     await writePreferences(value.location, { ...createEmptyPreferences(), targets: ['cursor'] });
     const current = await readAgentSettings(value.context);
@@ -145,7 +146,7 @@ describe('TUI Agent settings storage', () => {
     const conflictPreview = await previewAgentSettings(value.context,
       { ...conflicted, targets: [...conflicted.targets] });
     expect(conflictPreview.blocked).toBe(false);
-    expect(conflictPreview.conflicts.length).toBeGreaterThan(0);
+    expect(conflictPreview.conflicts).toEqual([]);
     const saved = await saveAgentSettings(value.context, { expectedRevision: current.revision,
       preferences: { ...conflicted, targets: [...conflicted.targets] } });
     expect(saved.preferences.targets).toEqual(['cursor', 'generic']);

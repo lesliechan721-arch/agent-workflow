@@ -10,11 +10,12 @@ import {
 } from '@lesliechan721/agent-skill-eval'
 import {
   calculateCatalogWorkspaceSourceIdentity,
+  assertFeatureRequirement,
+  isAuthorOnlySkillDirectory,
   selectPluginConfigProfile,
   PLATFORM_TARGETS,
-  isPortablePlatformTarget,
+  isPlatformTarget,
   type PlatformTarget,
-  type PortablePlatformTarget,
   resolveSupportedPlatforms,
   GENERATED_OUTPUT_MARKER_FILENAME,
   readCatalogWorkspace,
@@ -30,9 +31,12 @@ import {
 } from '../eval/manifest-v1.js'
 import type { CatalogSourceResolution, PluginMeta, Scope } from '../types.js'
 import { resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js'
+import { getProfileRenderScopes } from '../platforms/layout.js'
+import { artifactValueDigest } from '../utils/artifact-plan.js'
+import { getAuthoringPlatformCapabilities } from './platform-profile.js'
+import type { ComponentPreparationBinding } from './skill-materialization.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js'
-import { pluginConfigHasExternalReferences } from '../utils/plugin-config-references.js'
 import {
   parseAwSourceBindingEvalInput,
   resolveAwSourceBindingEvalProvider,
@@ -58,10 +62,10 @@ export const AW_SOURCE_BINDING_FILENAME = 'aw-source-binding.json'
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/u
 const safeIdPattern = /^[a-z0-9][a-z0-9-]*$/u
+const missingPreparationMessage = 'Source binding preparation is missing; prepare again in a new directory.'
 const unsupportedV1Message =
   'AW source binding schema version 1 is unsupported. Run "aw dev eval prepare" or "aw dev skill export" again.'
-const legacyPortableDependencyEvidenceMessage =
-  'Legacy Portable binding does not bind dependency config. Run "aw dev review prepare" for current Review evidence.'
+
 
 export interface AwWorkspaceBindingSource {
   kind: 'workspace'
@@ -89,7 +93,7 @@ export interface AwSourceBindingSubject {
 
 export type AwSourceBindingProfile =
   | { kind: 'eval'; id: string; platform: PlatformTarget; scope: Scope; inputDigest: string; config?: ReviewProfileConfig }
-  | { kind: 'portable'; id: `${PortablePlatformTarget}-${Scope}`; platform: PortablePlatformTarget; scope: Scope; inputDigest: string }
+  | { kind: 'portable'; id: `${PlatformTarget}-${Scope}`; platform: PlatformTarget; scope: Scope; inputDigest: string }
   | ReviewProfile
 
 export type AwSourceBindingArtifact =
@@ -115,6 +119,7 @@ export interface AwSourceBindingV2 {
   subject: AwSourceBindingSubject
   profile: AwSourceBindingProfile
   evalInput?: AwSourceBindingEvalInput
+  preparation: ComponentPreparationBinding[]
   artifacts: AwSourceBindingArtifact[]
   finalDigest: string
 }
@@ -151,6 +156,7 @@ export interface WriteAwSourceBindingOptions {
   subject: AwSourceBindingSubject
   profile: AwSourceBindingProfile
   evalInput?: AwSourceBindingEvalInput
+  preparation: ComponentPreparationBinding[]
   artifacts: AwSourceBindingArtifactInput[]
 }
 
@@ -293,17 +299,51 @@ function normalizeProfile(value: unknown): AwSourceBindingProfile {
       ...(row.config === undefined ? {} : { config: normalizeReviewProfileConfig(row.config) }),
     }
   }
-  if (row.kind === 'portable' && isPortablePlatformTarget(row.platform)
+  if (row.kind === 'portable' && isPlatformTarget(row.platform)
     && row.id === `${row.platform}-${row.scope}`) {
     return {
       kind: 'portable',
-      id: `${row.platform as PortablePlatformTarget}-${row.scope}`,
-      platform: row.platform as PortablePlatformTarget,
+      id: `${row.platform as PlatformTarget}-${row.scope}`,
+      platform: row.platform as PlatformTarget,
       scope: row.scope,
       inputDigest: row.inputDigest,
     }
   }
   throw new Error('Source binding profile kind or id is invalid.')
+}
+
+function normalizePreparation(value: unknown): ComponentPreparationBinding[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error(missingPreparationMessage)
+  return value.map((raw): ComponentPreparationBinding => {
+    if (!strictRecord(raw, ['plugin', 'platform', 'renderScope', 'profileId', 'capabilitiesDigest', 'expectedDigest', 'resourceDigest', 'renderInputDigest', 'outputs', 'components', 'omitted', 'unmet'])) {
+      throw new Error('Source binding preparation fields are invalid.')
+    }
+    const row = raw as Record<string, unknown>
+    if (!safeId(row.plugin) || !PLATFORM_TARGETS.includes(row.platform as PlatformTarget) || !scopeValue(row.renderScope)
+      || !nonEmptyString(row.profileId) || !['capabilitiesDigest', 'expectedDigest', 'resourceDigest', 'renderInputDigest'].every((key) => digestString(row[key]))
+      || !Array.isArray(row.outputs) || !Array.isArray(row.components) || !Array.isArray(row.omitted) || !Array.isArray(row.unmet)) throw new Error('Source binding preparation is invalid.')
+    for (const output of row.outputs as unknown[]) {
+      if (!strictRecord(output, ['path', 'digest']) || !digestString((output as Record<string, unknown>).digest)) throw new Error('Source binding component output is invalid.')
+      normalizeRelativePath((output as Record<string, unknown>).path)
+    }
+    const kinds = ['skill', 'mcp', 'agent', 'hook', 'instruction']
+    const entries = [...row.components, ...row.omitted, ...row.unmet] as Array<Record<string, unknown>>
+    if (entries.some((entry) => !entry || typeof entry !== 'object' || typeof entry.id !== 'string'
+      || !entry.id.trim() || /[/\\\u0000-\u001f]/u.test(entry.id) || !kinds.includes(entry.kind as string))
+      || new Set(entries.map((entry) => entry.id)).size !== entries.length) throw new Error('Source binding component identities are invalid.')
+    if (row.components.some((entry) => !strictRecord(entry, ['id', 'kind', 'name', 'source']) || !nonEmptyString((entry as Record<string, unknown>).name) || !['static', 'dynamic'].includes((entry as Record<string, unknown>).source as string))) throw new Error('Source binding component summary is invalid.')
+    for (const entry of row.omitted) {
+      const item = entry as Record<string, unknown>
+      if (!strictRecord(item, ['id', 'kind', 'reason']) || !['not-offered', 'config-disabled'].includes(item.reason as string)) throw new Error('Source binding omission is invalid.')
+    }
+    for (const entry of row.unmet) {
+      const item = entry as Record<string, unknown>
+      if (!strictRecord(item, ['id', 'kind', 'requiredFeatures', 'reasonCode', ...(item.name === undefined ? [] : ['name']), ...(item.componentId === undefined ? [] : ['componentId'])])
+        || !Array.isArray(item.requiredFeatures) || !nonEmptyString(item.reasonCode)) throw new Error('Source binding unmet component is invalid.')
+      for (const feature of item.requiredFeatures) assertFeatureRequirement(feature)
+    }
+    return structuredClone(raw) as unknown as ComponentPreparationBinding
+  })
 }
 
 function normalizeArtifact(value: unknown): AwSourceBindingArtifact {
@@ -346,6 +386,10 @@ export function parseAwSourceBinding(value: unknown): AwSourceBindingV2 {
   if (row?.schemaVersion === 1 && row.kind === 'aw-source-binding') {
     throw new Error(unsupportedV1Message)
   }
+  if (row?.schemaVersion === 2 && row.kind === 'aw-source-binding'
+    && (!Array.isArray(row.preparation) || row.preparation.length === 0)) {
+    throw new Error(missingPreparationMessage)
+  }
   if (
     !strictRecord(row, [
       'schemaVersion',
@@ -354,13 +398,14 @@ export function parseAwSourceBinding(value: unknown): AwSourceBindingV2 {
       'subject',
       'profile',
       ...(row?.evalInput === undefined ? [] : ['evalInput']),
+      'preparation',
       'artifacts',
       'finalDigest',
     ])
     || row.schemaVersion !== 2
     || row.kind !== 'aw-source-binding'
     || !Array.isArray(row.artifacts)
-    || (row.artifacts.length === 0 && (row.profile as { kind?: unknown })?.kind !== 'portable')
+    || !Array.isArray(row.preparation) || row.preparation.length === 0
     || !digestString(row.finalDigest)
   ) throw new Error('Source binding receipt is invalid.')
   const binding: AwSourceBindingV2 = {
@@ -370,6 +415,7 @@ export function parseAwSourceBinding(value: unknown): AwSourceBindingV2 {
     subject: normalizeSubject(row.subject),
     profile: normalizeProfile(row.profile),
     ...(row.evalInput === undefined ? {} : { evalInput: parseAwSourceBindingEvalInput(row.evalInput) }),
+    preparation: normalizePreparation(row.preparation),
     artifacts: row.artifacts.map(normalizeArtifact),
     finalDigest: row.finalDigest,
   }
@@ -452,6 +498,7 @@ export async function writeAwSourceBinding(
     subject: options.subject,
     profile: options.profile,
     ...(options.evalInput === undefined ? {} : { evalInput: options.evalInput }),
+    preparation: options.preparation,
     artifacts,
   }
   const binding = parseAwSourceBinding({ ...unsigned, finalDigest: bindingDigest(unsigned) })
@@ -518,25 +565,29 @@ export function resolveEvalProfileBindingInput(
       throw new Error(`Eval profile "${profile.id}" plugin "${plugin.manifest.name}" does not support ${profile.platform}.`)
     }
   }
-  const config = normalizeReviewProfileConfig(Object.fromEntries(closure.map((plugin) => [plugin.manifest.name, {
-    ...(profile.plugins.find((entry) => entry.name === plugin.manifest.name)?.config ?? {}),
-    ...(profile.configByScope?.user?.find((entry) => entry.name === plugin.manifest.name)?.config ?? {}),
-    ...(profile.configByScope?.[profile.scope]?.find((entry) => entry.name === plugin.manifest.name)?.config ?? {}),
-    ...(normalizedConfig[plugin.manifest.name] ?? {}),
-  }])))
-  const resolved = closure.map((plugin) => resolveReviewPluginProfileConfig({
-    plugin, plugins: closure, platform: profile.platform, scope: profile.scope, config,
-  }))
+  const resolved = getProfileRenderScopes(profile.platform, profile.scope).flatMap((scope) => {
+    const config = normalizeReviewProfileConfig(Object.fromEntries(closure.map((plugin) => [plugin.manifest.name, {
+      ...(profile.plugins.find((entry) => entry.name === plugin.manifest.name)?.config ?? {}),
+      ...(profile.configByScope?.user?.find((entry) => entry.name === plugin.manifest.name)?.config ?? {}),
+      ...(scope === 'project' ? profile.configByScope?.project?.find((entry) => entry.name === plugin.manifest.name)?.config ?? {} : {}),
+      ...(normalizedConfig[plugin.manifest.name] ?? {}),
+    }])))
+    return closure.map((plugin) => resolveReviewPluginProfileConfig({
+      plugin, plugins: closure, platform: profile.platform, scope, config,
+    }))
+  })
   const materializationProfile: AwSkillEvalMaterializationProfile = {
     id: profile.id, platform: profile.platform, scope: profile.scope,
-    plugins: resolved.map((entry) => ({ name: entry.pluginName, configByScope: { user: entry.overrides } })),
+    plugins: closure.map((plugin) => ({ name: plugin.manifest.name, configByScope: Object.fromEntries(
+      resolved.filter((entry) => entry.pluginName === plugin.manifest.name).map((entry) => [entry.scope, entry.overrides]),
+    ) })),
   }
   return {
     materializationProfile,
     profile: {
       kind: 'eval', id: profile.id, platform: profile.platform, scope: profile.scope,
-      inputDigest: digestCanonical({ materializationProfile, config: resolved.map((entry) => ({
-        plugin: entry.pluginName, digest: entry.digest,
+      inputDigest: digestCanonical({ materializationProfile, capabilities: getAuthoringPlatformCapabilities(profile.platform, profile.scope), config: resolved.map((entry) => ({
+        plugin: entry.pluginName, scope: entry.scope, digest: entry.digest,
       })) }),
       ...(Object.keys(normalizedConfig).length === 0 ? {} : { config: normalizedConfig }),
     },
@@ -544,7 +595,7 @@ export function resolveEvalProfileBindingInput(
 }
 
 export async function resolvePortablePluginProfileConfig(options: {
-  platform: PortablePlatformTarget
+  platform: PlatformTarget
   plugin: PluginMeta
   plugins?: readonly PluginMeta[]
   offlineConfig?: ReviewProfileConfig
@@ -555,7 +606,7 @@ export async function resolvePortablePluginProfileConfig(options: {
   catalogSourceIdentity?: string
   logicalIdentity?: string
 }): Promise<PortablePluginProfileConfig> {
-  if (!isPortablePlatformTarget(options.platform)) throw new Error('Portable profile requires an explicit canonical platform.')
+  if (!isPlatformTarget(options.platform)) throw new Error('Portable profile requires an explicit canonical platform.')
   if (!resolveSupportedPlatforms(options.plugin.manifest).has(options.platform)) {
     throw new Error(`Plugin "${options.plugin.manifest.name}" does not support platform "${options.platform}".`)
   }
@@ -569,7 +620,7 @@ export async function resolvePortablePluginProfileConfig(options: {
         ...resolved.sources,
       }, issues: [], stores: {},
     }
-    return { config, digest: digestCanonical({ platform: options.platform, values: config.values, sources: config.sources }) }
+    return { config, digest: digestCanonical({ platform: options.platform, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope), values: config.values, sources: config.sources }) }
   }
   const config = await resolveArtifactRenderConfig({
     referencePlugins: options.plugins,
@@ -588,12 +639,12 @@ export async function resolvePortablePluginProfileConfig(options: {
   }
   return {
     config,
-    digest: digestCanonical({ platform: options.platform, values: config.values, sources: config.sources }),
+    digest: digestCanonical({ platform: options.platform, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope), values: config.values, sources: config.sources }),
   }
 }
 
 export async function resolvePortableProfileBindingInputs(options: {
-  platform: PortablePlatformTarget
+  platform: PlatformTarget
   plugins: readonly PluginMeta[]
   offlineConfig?: ReviewProfileConfig
   pluginName: string
@@ -621,7 +672,7 @@ export async function resolvePortableProfileBindingInputs(options: {
     platform: options.platform,
     scope: options.scope,
     inputDigest: `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify({ platform: options.platform, scope: options.scope, config: configDigests }))
+      .update(JSON.stringify({ platform: options.platform, scope: options.scope, capabilities: getAuthoringPlatformCapabilities(options.platform, options.scope), config: configDigests }))
       .digest('hex')}`,
   }, providerConfigs: configDigests }
 }
@@ -643,6 +694,12 @@ async function currentWorkspaceProfile(options: {
   env?: NodeJS.ProcessEnv
   offlineConfig?: ReviewProfileConfig
 }): Promise<AwSourceBindingProfile> {
+  for (const unit of options.binding.preparation) {
+    const current = getAuthoringPlatformCapabilities(unit.platform, unit.renderScope)
+    if (unit.profileId !== current.profileId || unit.capabilitiesDigest !== artifactValueDigest(current)) {
+      throw new Error('The bound platform capability profile changed; prepare again.')
+    }
+  }
   const plugin = options.workspace.plugins.find((entry) =>
     entry.manifest.name === options.binding.subject.plugin)
   if (!plugin) throw new Error('The bound plugin is not present in the current Workspace.')
@@ -658,8 +715,7 @@ async function currentWorkspaceProfile(options: {
     ).profile
   }
   if (options.binding.profile.kind === 'review') {
-    const skills = options.binding.artifacts.flatMap((artifact) =>
-      artifact.kind === 'review-skill' ? [artifact.skill] : [])
+    const skills = options.binding.profile.requestedSkills
     const selection = await resolveReviewSelection({
       cwd: options.workspace.workspaceRoot,
       workspaceRoot: options.workspace.workspaceRoot,
@@ -675,11 +731,6 @@ async function currentWorkspaceProfile(options: {
     return profile
   }
   const source = options.binding.source
-  if (options.offlineConfig !== undefined
-    && resolvePluginMetaDependencyClosure(options.workspace.plugins, [options.binding.subject.plugin])
-      .some((entry) => pluginConfigHasExternalReferences(entry.manifest))) {
-    throw new Error(legacyPortableDependencyEvidenceMessage)
-  }
   return resolvePortableProfileBindingInput({
     plugins: options.workspace.plugins,
     pluginName: options.binding.subject.plugin,
@@ -738,6 +789,7 @@ export async function readAwSourceBinding(bindingPath: string): Promise<AwSource
     subject: binding.subject,
     profile: binding.profile,
     ...(binding.evalInput === undefined ? {} : { evalInput: binding.evalInput }),
+    preparation: binding.preparation,
     artifacts: binding.artifacts,
   }
   if (binding.finalDigest !== bindingDigest(unsigned)) {
@@ -772,24 +824,19 @@ async function currentPortableArtifactOwners(options: {
   for (const plugin of closure) {
     const platform = options.binding.profile.platform
     if (!resolveSupportedPlatforms(plugin.manifest).has(platform)) continue
-    const dynamicKeys = new Set((plugin.manifest.artifacts?.targets ?? [])
-      .filter((target) => target.target === 'agent-skills.skill' && target.platform === options.binding.profile.platform)
-      .map((target) => target.skillKey!))
-    for (const target of plugin.manifest.artifacts?.targets ?? []) {
-      if (
-        target.target === 'agent-skills.skill'
-        && target.platform === options.binding.profile.platform
-        && target.scopes.includes(options.binding.profile.scope)
-      ) record(target.skillKey!, plugin.manifest.name)
+    for (const unit of options.binding.preparation.filter((unit) => unit.plugin === plugin.manifest.name && unit.platform === platform)) {
+      for (const component of unit.components) {
+        if (component.kind === 'skill' && component.source === 'dynamic') record(component.name, plugin.manifest.name)
+      }
     }
     if (!plugin.manifest.skills) continue
     const root = path.join(plugin.rootDir, plugin.manifest.skills.replace(/^\.\//u, ''))
     const rootInfo = await fs.lstat(root).catch(() => null)
     if (!rootInfo?.isDirectory() || rootInfo.isSymbolicLink()) continue
     for (const entry of await fs.readdir(root, { withFileTypes: true })) {
-      if (dynamicKeys.has(entry.name)) continue
       const info = await fs.lstat(path.join(root, entry.name)).catch(() => null)
-      if (entry.isDirectory() && info?.isDirectory() && !info.isSymbolicLink()) {
+      if (entry.isDirectory() && info?.isDirectory() && !info.isSymbolicLink()
+        && !await isAuthorOnlySkillDirectory(path.join(root, entry.name))) {
         record(entry.name, plugin.manifest.name)
       }
     }
@@ -907,9 +954,7 @@ export async function validateAwSourceBindingForWorkspace(options: {
       issues.push({ code: 'sourceBindingProfileDrift', message: 'The current profile input differs from the bound profile.' })
     }
   } catch (error) {
-    issues.push({ code: 'sourceBindingProfileDrift', message: error instanceof Error
-      && error.message === legacyPortableDependencyEvidenceMessage ? legacyPortableDependencyEvidenceMessage
-      : 'The current profile input cannot be validated.' })
+    issues.push({ code: 'sourceBindingProfileDrift', message: error instanceof Error ? error.message : 'The current profile input cannot be validated.' })
   }
   const rootDir = path.dirname(bindingPath)
   if (binding.profile.kind === 'eval') {
@@ -941,6 +986,15 @@ export async function validateAwSourceBindingForWorkspace(options: {
       })
     } catch {
       portableOwners = new Map()
+    }
+  }
+  for (const output of binding.preparation.flatMap((unit) => unit.outputs)) {
+    try {
+      if (await artifactDigest(rootDir, { kind: 'eval-workspace', path: output.path }) !== output.digest) {
+        issues.push({ code: 'sourceBindingArtifactDrift', message: `The prepared component package differs from its binding: ${output.path}` })
+      }
+    } catch {
+      issues.push({ code: 'sourceBindingArtifactDrift', message: `The prepared component package is missing or invalid: ${output.path}` })
     }
   }
   for (const artifact of binding.artifacts) {

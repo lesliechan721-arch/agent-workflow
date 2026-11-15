@@ -90,7 +90,7 @@ describe('command receipt v6', () => {
 
   it('reports a retained shared package and its exact remove command after platform cleanup', () => {
     const producer: CommandProducerResult['producer'] = { sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, pluginName: 'demo',
-      kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null };
+      kind: 'package', key: 'tools', platform: null, placementKey: null, scope: 'user', projectRoot: null };
     const packageId = getCommandPackageId(producer);
     const recovery = `aw command package remove ${packageId} --yes`;
     const retained: CommandProducerResult = {
@@ -109,7 +109,7 @@ describe('command receipt v6', () => {
   it('includes command producer failure in the receipt without creating a platform target', () => {
     const commandResult: CommandProducerResult = {
       producer: { sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, pluginName: 'demo',
-        kind: 'package', key: 'tools', platform: null, scope: 'user', projectRoot: null },
+        kind: 'package', key: 'tools', platform: null, placementKey: null, scope: 'user', projectRoot: null },
       state: 'failed', commandIds: [], removedCommandIds: [],
       errors: [{ code: 'commandBindingInvalid', message: 'The command binding could not be published.' }],
       recoveryActions: ['aw command package sync team/demo tools --scope user --yes'],

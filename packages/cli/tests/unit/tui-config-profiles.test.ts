@@ -17,10 +17,10 @@ import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-async function fixture(withPortableSkill = false) {
+async function fixture(withGenericSkill = false) {
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-profiles');
-  if (withPortableSkill) {
+  if (withGenericSkill) {
     const skill = path.join(sourceRoot, 'plugins/demo/skills/example');
     await fs.outputFile(path.join(skill, 'SKILL.md'),
       '---\nname: example\ndescription: Configuration apply fixture\n---\nRun this fixture.\n');
@@ -28,7 +28,7 @@ async function fixture(withPortableSkill = false) {
     await fs.copy(path.join(sourceRoot, 'plugins/demo/skills'), path.join(sourceRoot, 'plugins/demo/generic/skills'));
   }
   await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'Configuration profiles', (manifest) => {
-    if (withPortableSkill) { manifest.skills = './skills'; manifest.platforms = ['generic']; }
+    if (withGenericSkill) { manifest.skills = './skills'; manifest.platforms = ['generic']; }
     manifest.config = {
       schemaVersion: 5,
       fields: {
@@ -57,7 +57,7 @@ async function fixture(withPortableSkill = false) {
       },
     };
   });
-  if (withPortableSkill) {
+  if (withGenericSkill) {
     const root = path.join(sourceRoot, 'plugins/demo');
     const plugin = await readPluginManifest(root, { mode: 'bundle' });
     await fs.outputJson(path.join(root, 'generic/skills/example/aw-plugin-requirements.json'),
@@ -172,7 +172,7 @@ describe('TUI user configuration profiles', () => {
     controller.dispose();
   });
 
-  it('reviews only existing Portable outputs and refreshes them without a second config write', async () => {
+  it('reviews only existing generic outputs and refreshes them without a second config write', async () => {
     const { dependencies, identity } = await fixture(true);
     const isolation = getCurrentSourceTestIsolation();
     const options = { scope: 'user' as const, context: 'user' as const,
@@ -200,7 +200,7 @@ describe('TUI user configuration profiles', () => {
     expect(review.configImpact?.affectedTargetCount).toBe(1);
     expect(review.changes.some((change) => change.title.includes('Generic'))).toBe(true);
     const result = await controller.executeOperation(review.reviewToken);
-    expect(result.state).toBe('succeeded');
+    expect(result.state, JSON.stringify(result)).toBe('succeeded');
     if (!('summary' in result) || !result.summary) throw new Error('Expected the configuration apply result.');
     expect(result.summary.configTargets).toEqual(expect.arrayContaining([
       expect.objectContaining({ platform: 'generic', scope: 'user', state: 'completed' }),

@@ -222,6 +222,7 @@ export function getMarketplaceManifestPath(
   catalogRoot: string,
   platform: PlatformName,
 ): string {
+  if (platform !== 'codex' && platform !== 'claude') throw new Error(`No Catalog marketplace manifest exists for ${platform}.`);
   return path.join(
     catalogRoot,
     platform === 'codex' ? CODEX_MARKETPLACE_PATH : CLAUDE_MARKETPLACE_PATH,
@@ -230,7 +231,7 @@ export function getMarketplaceManifestPath(
 
 export function getMarketplaceManifestPaths(
   catalogRoot: string,
-): Record<PlatformName, string> {
+): Record<'codex' | 'claude', string> {
   return {
     claude: getMarketplaceManifestPath(catalogRoot, 'claude'),
     codex: getMarketplaceManifestPath(catalogRoot, 'codex'),

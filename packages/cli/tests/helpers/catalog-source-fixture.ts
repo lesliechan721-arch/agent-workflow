@@ -12,13 +12,14 @@ import {
 } from '../../src/utils/catalog-manifest-v7.js';
 import {
   deriveAwCapabilitiesFromManifest,
+  createAwPluginRequirementsReceipt,
   createMarketplaceManifestEntry,
   createPlatformManifestBase,
   normalizeAwCapabilities,
   readPluginManifest,
   resolveSupportedNativePlatforms,
+  resolveSupportedPlatforms,
 } from '../../src/utils/manifest.js';
-import { resolvePlatformEntries } from '../../src/utils/platform-entries.js';
 import {
   readCatalogGenerationState,
   withCatalogGenerationStateTransaction,
@@ -43,7 +44,7 @@ export async function createCatalogSnapshotFixture(
   const pluginRoot = path.join(rootDir, 'plugins', pluginName);
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest: PluginMeta['manifest'] = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     name: pluginName,
     version: '1.0.0',
     description: `${pluginName} plugin`,
@@ -67,7 +68,9 @@ export async function createCatalogSnapshotFixture(
   };
   const pluginMeta = { rootDir: pluginRoot, manifestPath, manifest };
   const marketplaceEntry = createMarketplaceManifestEntry(pluginMeta);
-  const nativePlatforms = resolveSupportedNativePlatforms(manifest);
+  const supportedPlatforms = resolveSupportedPlatforms(manifest);
+  const nativePlatforms = new Set([...resolveSupportedNativePlatforms(manifest)]
+    .filter((platform): platform is 'codex' | 'claude' => platform === 'codex' || platform === 'claude'));
   await Promise.all((['claude', 'codex'] as const).map((platform) =>
     fs.remove(path.join(pluginRoot, `.${platform}-plugin`))));
   const marketplace = (platform: 'CODEX' | 'CLAUDE') => ({
@@ -79,28 +82,12 @@ export async function createCatalogSnapshotFixture(
       : [],
   });
   const platformManifest = (platform: 'claude' | 'codex') => {
-    const projected = createPlatformManifestBase(pluginMeta) as Record<string, unknown>;
-    if ((manifest.artifacts?.targets ?? []).some((target) =>
-      target.platform === platform && target.target === `${platform}.skill`)) {
+    const projected = createPlatformManifestBase(pluginMeta);
+    if (manifest.skills) {
       projected.skills = `./${platform}/skills`;
-    }
-    if (platform === 'claude') {
-      const agents = resolvePlatformEntries(manifest.extensions?.agents, platform);
-      if (agents.length > 0) {
-        projected.agents = agents.map((agent) => {
-          const slug = (value: string) => value.trim().toLowerCase()
-            .replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '');
-          return `./claude/agents/aw-${slug(manifest.name)}-${slug(agent.name)}.md`;
-        });
-      }
     }
     return projected;
   };
-  const projectedAgentPaths = resolvePlatformEntries(manifest.extensions?.agents, 'claude').map((agent) => {
-    const slug = (value: string) => value.trim().toLowerCase()
-      .replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '');
-    return path.join(pluginRoot, 'claude', 'agents', `aw-${slug(manifest.name)}-${slug(agent.name)}.md`);
-  });
   await Promise.all([
     fs.outputJson(manifestPath, manifest, { spaces: 2 }),
     ...[...nativePlatforms].map((platform) => fs.outputJson(
@@ -108,12 +95,23 @@ export async function createCatalogSnapshotFixture(
       platformManifest(platform),
       { spaces: 2 },
     )),
-    ...[...nativePlatforms].filter((platform) => (manifest.artifacts?.targets ?? []).some((target) =>
-      target.platform === platform && target.target === `${platform}.skill`))
-      .map((platform) => fs.ensureDir(path.join(pluginRoot, platform, 'skills'))),
-    ...(nativePlatforms.has('claude')
-      ? projectedAgentPaths.map((agentPath) => fs.outputFile(agentPath, '# Agent\n'))
-      : []),
+    ...[...supportedPlatforms].map((platform) => fs.ensureDir(path.join(pluginRoot, platform))),
+    ...(manifest.skills ? [...supportedPlatforms].map(async (platform) => {
+      const source = path.join(pluginRoot, 'skills');
+      const destination = path.join(pluginRoot, platform, 'skills');
+      if (await fs.pathExists(source)) {
+        await fs.remove(destination);
+        await fs.copy(source, destination, { overwrite: true });
+      } else await fs.ensureDir(destination);
+      // Requirements receipts belong only to the generated platform transport.
+      // Keep explicitly supplied bytes so corruption tests retain their evidence.
+      for (const skill of await fs.readdir(destination, { withFileTypes: true })) {
+        if (!skill.isDirectory() || !await fs.pathExists(path.join(destination, skill.name, 'SKILL.md'))) continue;
+        const receiptPath = path.join(destination, skill.name, 'aw-plugin-requirements.json');
+        if (!await fs.pathExists(receiptPath)) await fs.outputJson(receiptPath,
+          createAwPluginRequirementsReceipt({ name: manifest.name, version: manifest.version }, manifest.requires?.aw.capabilities ?? []), { spaces: 2 });
+      }
+    }) : []),
     fs.outputJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),
     fs.outputJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), marketplace('CLAUDE'), { spaces: 2 }),
   ]);
@@ -232,6 +230,7 @@ export async function createDependencyCatalogSnapshotFixture(
             name: `${plugin.name}-instruction`,
             title: plugin.name,
             content: `${plugin.name}.`,
+            coverage: ['main'],
           }],
         };
         plugin.configureManifest?.(manifest);

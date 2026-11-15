@@ -53,18 +53,18 @@ describe('agent-version', () => {
     const requirement = getCodexOperationRequirement(scope);
     expect(requirement.scope).toBe(scope);
     await expect(probeCodexOperationVersion(requirement, {
-      runner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.150.0', stderr: '' }),
+      runner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.154.0', stderr: '' }),
     })).resolves.toMatchObject({
       status: 'tooOld',
-      requiredMinVersion: '0.151.0',
-      detectedVersion: '0.150.0',
+      requiredMinVersion: '0.155.0',
+      detectedVersion: '0.154.0',
     });
     await expect(probeCodexOperationVersion(requirement, {
-      runner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' }),
+      runner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.155.0', stderr: '' }),
     })).resolves.toMatchObject({
       status: 'supported',
-      requiredMinVersion: '0.151.0',
-      detectedVersion: '0.151.0',
+      requiredMinVersion: '0.155.0',
+      detectedVersion: '0.155.0',
     });
   });
 
@@ -91,7 +91,7 @@ describe('agent-version', () => {
       runner: async () => ({
         exitCode: 0,
         stdout: 'codex-cli',
-        stderr: '0.151.0',
+        stderr: '0.155.0',
       }),
     });
 
@@ -99,11 +99,11 @@ describe('agent-version', () => {
       platform: 'codex',
       command: 'codex',
       status: 'supported',
-      detectedVersion: '0.151.0',
-      requiredMinVersion: '0.151.0',
+      detectedVersion: '0.155.0',
+      requiredMinVersion: '0.155.0',
     });
     expect(result.rawOutput).toContain('codex-cli');
-    expect(result.rawOutput).toContain('0.151.0');
+    expect(result.rawOutput).toContain('0.155.0');
   });
 
   it('passes the effective Codex home and agent kind only to Codex version probes', async () => {
@@ -126,14 +126,14 @@ describe('agent-version', () => {
       env: codexEnv,
       runner: async (invocation) => {
         codexInvocation = invocation;
-        return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
+        return { exitCode: 0, stdout: 'codex-cli 0.155.0', stderr: '' };
       },
     });
     await probeAgentVersion('claude', {
       env: claudeEnv,
       runner: async (invocation) => {
         claudeInvocation = invocation;
-        return { exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' };
+        return { exitCode: 0, stdout: '2.1.292 (Claude Code)', stderr: '' };
       },
     });
 
@@ -156,7 +156,7 @@ describe('agent-version', () => {
       calls += 1;
       return {
         exitCode: 0,
-        stdout: 'codex-cli 0.151.0',
+        stdout: 'codex-cli 0.155.0',
         stderr: '',
       };
     };
@@ -172,12 +172,12 @@ describe('agent-version', () => {
     });
 
     expect(calls).toBe(1);
-    expect(first).toMatchObject({ status: 'supported', detectedVersion: '0.151.0' });
-    expect(second).toMatchObject({ status: 'supported', detectedVersion: '0.151.0' });
+    expect(first).toMatchObject({ status: 'supported', detectedVersion: '0.155.0' });
+    expect(second).toMatchObject({ status: 'supported', detectedVersion: '0.155.0' });
     expect(second).not.toBe(first);
   });
 
-  it.each(['0.145.0', '0.150.999'])('rejects Codex %s below the 0.151.0 minimum', async (version) => {
+  it.each(['0.145.0', '0.154.999'])('rejects Codex %s below the 0.155.0 minimum', async (version) => {
     await expect(
       probeAgentVersion('codex', {
         runner: async () => ({
@@ -190,7 +190,7 @@ describe('agent-version', () => {
       status: 'tooOld',
       reasonCode: 'agentVersionTooLow',
       detectedVersion: version,
-      requiredMinVersion: '0.151.0',
+      requiredMinVersion: '0.155.0',
     });
   });
 
@@ -199,41 +199,41 @@ describe('agent-version', () => {
       probeAgentVersion('codex', {
         runner: async () => ({
           exitCode: 0,
-          stdout: 'codex-cli 0.151.0-beta.1',
+          stdout: 'codex-cli 0.155.0-beta.1',
           stderr: '',
         }),
       }),
     ).resolves.toMatchObject({
       status: 'tooOld',
       reasonCode: 'agentVersionTooLow',
-      detectedVersion: '0.151.0-beta.1',
+      detectedVersion: '0.155.0-beta.1',
     });
 
     await expect(
       probeAgentVersion('codex', {
         runner: async () => ({
           exitCode: 0,
-          stdout: 'codex-cli 0.151.1-alpha.1',
+          stdout: 'codex-cli 0.155.1-alpha.1',
           stderr: '',
         }),
       }),
     ).resolves.toMatchObject({
       status: 'supported',
-      detectedVersion: '0.151.1-alpha.1',
+      detectedVersion: '0.155.1-alpha.1',
     });
 
     await expect(
       probeAgentVersion('claude', {
         runner: async () => ({
           exitCode: 0,
-          stdout: '2.1.88-alpha.1 (Claude Code)',
+          stdout: '2.1.292-alpha.1 (Claude Code)',
           stderr: '',
         }),
       }),
     ).resolves.toMatchObject({
       status: 'tooOld',
       reasonCode: 'agentVersionTooLow',
-      detectedVersion: '2.1.88-alpha.1',
+      detectedVersion: '2.1.292-alpha.1',
     });
   });
 

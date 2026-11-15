@@ -19,8 +19,8 @@ export const CATALOG_LATEST_REF = 'refs/heads/catalog/latest';
 export const CATALOG_BETA_REF = 'refs/heads/catalog/beta';
 export const DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS = 5000;
 export const MINIMUM_AGENT_VERSIONS = {
-  codex: '0.151.0',
-  claude: '2.1.88',
+  codex: '0.155.0',
+  claude: '2.1.292',
 } as const;
 export const AGENT_VERSION_PROBE_COMMANDS = {
   codex: 'codex',

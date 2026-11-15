@@ -27,7 +27,7 @@ async function configurePortableCatalog(options: {
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'portable-source');
   const configureManifest = (manifest: Parameters<NonNullable<Parameters<typeof createCatalogSnapshotFixture>[4]>>[0]) => {
-    manifest.platforms = ['cursor'];
+    manifest.platforms = ['generic'];
     manifest.skills = './skills';
     manifest.extensions = undefined;
   };
@@ -63,7 +63,7 @@ async function configurePortableCatalog(options: {
       plugin.manifest.requires?.aw.capabilities ?? [],
     );
     for (const name of names) {
-      const skillRoot = path.join(root, 'cursor', 'skills', name);
+      const skillRoot = path.join(root, 'generic', 'skills', name);
       await fs.outputFile(
         path.join(skillRoot, 'SKILL.md'),
         `---\nname: ${name}\ndescription: ${name} description\n---\nBody.\n`,
@@ -112,7 +112,7 @@ async function configurePortableCatalog(options: {
 describe('portable Skill export CLI', () => {
   afterEach(() => { setPortableCommandTestHooksForTests(undefined); vi.restoreAllMocks(); });
 
-  it.each([undefined, 'agent-skills', 'claude-code', 'gemini', 'codex', 'claude'])(
+  it.each([undefined, 'agent-skills', 'claude-code', 'unknown-platform', 'Generic', 'all'])(
     'rejects missing or invalid Portable platform %s before touching output', async (platform) => {
       const isolation = getCurrentSourceTestIsolation();
       const captured = createCapturedCliIo();
@@ -138,7 +138,7 @@ describe('portable Skill export CLI', () => {
     const firstIo = createCapturedCliIo();
     expect(await runCli(
       [
-        'dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', out,
+        'dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', out,
         '--skill', 'alpha', 'dependency-skill', '--json',
       ],
       { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
@@ -169,7 +169,7 @@ describe('portable Skill export CLI', () => {
         workspaceSourceIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       },
       subject: { plugin: 'portable' },
-      profile: { kind: 'portable', id: 'cursor-project', platform: 'cursor', scope: 'project' },
+      profile: { kind: 'portable', id: 'generic-project', platform: 'generic', scope: 'project' },
       artifacts: [
         {
           kind: 'portable-skill', plugin: 'portable', skill: 'alpha', path: 'skills/alpha',
@@ -185,7 +185,7 @@ describe('portable Skill export CLI', () => {
 
     const unknownIo = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'unknown-output'), '--skill', 'unknown', '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'unknown-output'), '--skill', 'unknown', '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: unknownIo.io },
     )).toBe(1);
     expect(JSON.parse(unknownIo.readStdout())).toMatchObject({
@@ -196,7 +196,7 @@ describe('portable Skill export CLI', () => {
 
     const secondIo = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', out, '--skill', 'beta', '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', out, '--skill', 'beta', '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
     )).toBe(0);
     await expect(fs.pathExists(path.join(out, 'skills', 'alpha'))).resolves.toBe(false);
@@ -209,7 +209,7 @@ describe('portable Skill export CLI', () => {
     });
     const io = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-output'), '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-output'), '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
     )).toBe(3);
     expect(JSON.parse(io.readStdout())).toMatchObject({
@@ -228,7 +228,7 @@ describe('portable Skill export CLI', () => {
     });
     const io = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-dependency-output'), '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-dependency-output'), '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
     )).toBe(3);
     expect(JSON.parse(io.readStdout())).toMatchObject({
@@ -258,7 +258,7 @@ describe('portable Skill export CLI', () => {
       await prepare(target);
       const io = createCapturedCliIo();
       expect(await runCli(
-        ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+        ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'],
         { cwd: fixture.cwd, env: fixture.env, io: io.io },
       )).toBe(3);
       expect(JSON.parse(io.readStdout())).toMatchObject({
@@ -287,7 +287,7 @@ describe('portable Skill export CLI', () => {
     for (const target of [codexHome, claudeHome]) {
       const io = createCapturedCliIo();
       expect(await runCli(
-        ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+        ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'],
         { cwd: fixture.cwd, env, io: io.io },
       )).toBe(3);
       expect(JSON.parse(io.readStdout())).toMatchObject({
@@ -306,7 +306,7 @@ describe('portable Skill export CLI', () => {
     const target = path.join(fixture.cwd, 'identity-output');
     const firstIo = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
     )).toBe(0);
     const markerPath = path.join(target, '.aw-materialization.json');
@@ -317,7 +317,7 @@ describe('portable Skill export CLI', () => {
 
     const secondIo = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'local/portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'local/portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
     )).toBe(3);
     expect(JSON.parse(secondIo.readStdout())).toMatchObject({
@@ -334,7 +334,7 @@ describe('portable Skill export CLI', () => {
     const target = path.join(fixture.cwd, 'raced-output');
     const firstIo = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
     )).toBe(0);
     const displaced = path.join(fixture.cwd, 'displaced-output');
@@ -350,7 +350,7 @@ describe('portable Skill export CLI', () => {
     });
     const secondIo = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
     )).toBe(3);
     expect(JSON.parse(secondIo.readStdout())).toMatchObject({
@@ -381,7 +381,7 @@ describe('portable Skill export CLI', () => {
     });
     const io = createCapturedCliIo();
     expect(await runCli(
-      ['dev', 'skill', 'export', '--platform', 'cursor', 'portable', '--scope', 'project', '--out', target, '--json'],
+      ['dev', 'skill', 'export', '--platform', 'generic', 'portable', '--scope', 'project', '--out', target, '--json'],
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
     )).toBe(1);
     await expect(fs.pathExists(target)).resolves.toBe(false);

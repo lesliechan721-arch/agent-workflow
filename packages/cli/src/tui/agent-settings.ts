@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { resolveSupportedPlatforms, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
 import type { Scope } from '../types.js';
 import {
@@ -7,8 +6,8 @@ import {
 } from '../intent/deployment-preferences.js';
 import { deriveJointDemand, readJointDemand, validateExclusions } from '../recovery/joint-demand.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
-import { agentLabel, scopeLabel } from './glossary.js';
-import { resolveUserHome } from '../utils/state-paths.js';
+import { discoverPlatforms, requiresTargetConfirmation, targetAvailabilityViews,
+  TargetSelectionConfirmationRequiredError, type TargetAvailabilityView } from '../platforms/discovery.js';
 
 export interface AgentSettings {
   preferences: DeploymentPreferences;
@@ -16,6 +15,7 @@ export interface AgentSettings {
   plugins: Array<{ pluginId: string; scopes: Scope[]; supportedTargets: PlatformTarget[] }>;
   context: Scope;
   projectRoot?: string;
+  availability: TargetAvailabilityView[];
 }
 
 export interface AgentSettingsPreview {
@@ -47,6 +47,7 @@ export async function readAgentSettings(context: SettingsContext): Promise<Agent
     revision: observed.state === 'valid' ? observed.rawDigest : 'absent',
     plugins: [...plugins.values()], context: joint.project ? 'project' : 'user',
     ...(joint.context.projectRoot ? { projectRoot: joint.context.projectRoot } : {}),
+    availability: targetAvailabilityViews(await discoverPlatforms(context), observed.state === 'valid' ? observed.value.targets : []),
   };
 }
 
@@ -78,18 +79,12 @@ export async function previewAgentSettings(context: SettingsContext,
   for (const placement of plan.placements) {
     if (!pluginId || placement.pluginId === pluginId) counts[placement.target] = (counts[placement.target] ?? 0) + 1;
   }
-  return { blocked: Boolean(pluginId && reasons.length), reasons,
-    conflicts: plan.conflicts.map((conflict) => ({ targets: [conflict.left.target, conflict.right.target],
-      plugins: [...new Set([...conflict.left.plugins, ...conflict.right.plugins])],
-      technical: [conflict.message, ...[conflict.left, conflict.right]
-        .filter((position) => position.target === 'generic' || position.target === 'antigravity' && position.scope === 'project')
-        .map((position) => `通用发现目录（${scopeLabel(position.scope)}）：${path.join(position.scope === 'user'
-          ? resolveUserHome(context.env ?? process.env) : snapshot.context.projectRoot!, '.agents', 'skills')}`)],
-      message: `${agentLabel(conflict.left.target)}（${scopeLabel(conflict.left.scope)}）与 ${agentLabel(conflict.right.target)}（${scopeLabel(conflict.right.scope)}）使用冲突的 Skill 目录，不能同时安装。` })), counts };
+  return { blocked: Boolean(pluginId && reasons.length), reasons, conflicts: [], counts };
 }
 
 export async function saveAgentSettings(context: SettingsContext, request: {
   expectedRevision: string; preferences: DeploymentPreferences; pluginId?: string;
+  confirmedUnavailableTargets?: PlatformTarget[];
 }): Promise<AgentSettings> {
   const location = { ...context, scope: 'user' as const };
   await withAwHomeMutationLock({ env: context.env, action: async (token) => {
@@ -102,6 +97,12 @@ export async function saveAgentSettings(context: SettingsContext, request: {
         ...input.exclusions.filter((entry) => entry.plugin === request.pluginId),
       ] }
       : { ...current.preferences, targets: input.targets };
+    if (!request.pluginId) {
+      const unconfirmed = current.availability.filter((target) => next.targets.includes(target.id)
+        && !current.preferences.targets.includes(target.id) && requiresTargetConfirmation(target.availability)
+        && !request.confirmedUnavailableTargets?.includes(target.id));
+      if (unconfirmed.length) throw new TargetSelectionConfirmationRequiredError(unconfirmed);
+    }
     if (request.pluginId) {
       if (!current.plugins.some((plugin) => plugin.pluginId === request.pluginId)) {
         throw new Error('pluginIntentRootMissing');

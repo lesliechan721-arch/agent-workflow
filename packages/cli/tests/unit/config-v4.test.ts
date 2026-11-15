@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
-import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
+import { normalizePluginConfigDefinition, type PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../../src/types.js';
 import {
@@ -13,6 +13,8 @@ import {
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 import { applyPluginConfigWrite } from '../../src/utils/plugin-config-write.js';
+import { selectPlatformRenderConfig } from '../../src/utils/artifact-request.js';
+import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { createArtifactRuntimeConfigSnapshots } from '../../src/utils/runtime-config.js';
 import { createConfigV4Definition } from '../helpers/config-v4-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -31,7 +33,7 @@ function fixture() {
     manifestPath: path.join(isolation.layout.fixtureCwd, '.agents-plugin/plugin.json'),
     sourceId: store.sourceId, sourceIdentity, catalogLogicalIdentity: store.logicalIdentity,
     manifest: {
-      schemaVersion: 3, name: store.pluginName, version: '1.0.0', description: 'Executor config fixture',
+      schemaVersion: 4, name: store.pluginName, version: '1.0.0', description: 'Executor config fixture',
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       config: createConfigV4Definition(),
     },
@@ -40,6 +42,26 @@ function fixture() {
     plugin, scope: 'user', platform, cwd: store.cwd, env: store.env, request: { updates }, apply: false,
   });
   return { store, plugin, save };
+}
+
+async function subagentRuntimeComponents(plugin: PluginMeta, config: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>): Promise<PluginComponent[]> {
+  const { renderArtifactPlan } = await import('../../../../plugins/agent-subagent/scripts/render-artifacts.mjs');
+  const capabilities = getAuthoringPlatformCapabilities('codex', 'user');
+  capabilities.profileId = 'synthetic-runtime-snapshot';
+  capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
+  for (const [feature, values] of [['agent.execution', ['isolated-context']], ['agent.prompt-mode', ['host-default']],
+    ['skill.runtime-config', ['aw.installed-runtime-config.v2']]] as const) {
+    capabilities.features[feature] = { status: 'supported', reasonCodes: [], values: [...values] };
+  }
+  const plan = await renderArtifactPlan({ schemaVersion: 1, surface: 'agent-plugin', platform: 'codex', scope: 'user',
+    plugin: { pluginId: 'team/executor-config', name: plugin.manifest.name, version: plugin.manifest.version },
+    config: selectPlatformRenderConfig({ resolved: { ...config, mode: 'artifact-render', targetScope: 'user' },
+      keys: plugin.manifest.artifacts!.configKeys, nonSensitive: true }),
+    changedConfigKeys: [], allowedOutputKinds: ['skill'], platformCapabilities: capabilities, previousComponents: [],
+    resources: [{ kind: 'bundle', name: './skills/spawn-subagent', digest: `sha256:${'0'.repeat(64)}`,
+      root: path.resolve(import.meta.dirname, '../../../../plugins/agent-subagent/skills/spawn-subagent') }],
+  });
+  return plan.components;
 }
 
 describe('Config Definition v4 CLI boundaries', () => {
@@ -74,8 +96,9 @@ describe('Config Definition v4 CLI boundaries', () => {
     const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
     expect(config.values).toMatchObject({ subagentCommands: commands, generalTaskProfile });
     plugin.manifest.artifacts = source.artifacts;
+    plugin.manifest.requires = source.requires;
     const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['spawn-subagent-skill'],
+      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', components: await subagentRuntimeComponents(plugin, config),
       config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
     expect(snapshots['spawn-subagent-skill']!.effectiveValues).toEqual({ subagentCommands: commands, subagentRetentionHours: 24 });
     const file = resolvePluginConfigStorePath(store);
@@ -116,13 +139,14 @@ describe('Config Definition v4 CLI boundaries', () => {
     const source = await fs.readJson(path.resolve(import.meta.dirname, '../../../../plugins/agent-subagent/.agents-plugin/plugin.json'));
     plugin.manifest.config = normalizePluginConfigDefinition(source.config);
     plugin.manifest.artifacts = source.artifacts;
+    plugin.manifest.requires = source.requires;
     const maximum = Math.floor(Number.MAX_SAFE_INTEGER / 3_600_000);
     for (const subagentRetentionHours of [maximum, 1, 0]) {
       await save({ subagentRetentionHours });
       const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, targetScope: 'user' });
       expect(config.values.subagentRetentionHours).toBe(subagentRetentionHours);
       const snapshots = createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-        logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', requestedArtifactIds: ['spawn-subagent-skill'],
+        logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'user', components: await subagentRuntimeComponents(plugin, config),
         config: { ...config, mode: 'artifact-render', targetScope: 'user' } });
       expect(snapshots['spawn-subagent-skill']!.effectiveValues).toEqual({ subagentCommands: [], subagentRetentionHours });
     }
@@ -202,11 +226,12 @@ describe('Config Definition v4 CLI boundaries', () => {
     const config = await resolveEffectivePluginConfig({ ...store, manifest: plugin.manifest, platform: 'codex', targetScope: 'project' });
     expect(config.values.subagentCommands).toEqual([{ key: 'remote', title: 'Project', adapter: 'oracle', args: [], envFrom: { TOKEN: 'HOST_TOKEN' } }]);
     expect(config.sources).toMatchObject({ subagentCommands: 'platform', advisorProfile: 'common' });
-    plugin.manifest.artifacts = { targets: [{ id: 'runtime', platform: 'codex', target: 'codex.skill',
-      kind: 'skill', scopes: ['project'], states: ['present'], skillKey: 'runtime', refreshKeys: ['advisorProfile', 'subagentCommands'],
-      runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }] };
+    plugin.manifest.artifacts = { configKeys: ['advisorProfile', 'subagentCommands'] };
+    plugin.manifest.requires = { aw: { capabilities: ['aw.installed-runtime-config.v2'] } };
+    const components: PluginComponent[] = [{ id: 'runtime', kind: 'skill', name: 'runtime', content: { files: {} },
+      runtimeConfig: { keys: ['advisorProfile', 'subagentCommands'] } }];
     const runtime = (resolved: typeof config) => createArtifactRuntimeConfigSnapshots({ sourceId: store.sourceId, sourceIdentity,
-      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'project', requestedArtifactIds: ['runtime'],
+      logicalIdentity: store.logicalIdentity, manifest: plugin.manifest, platform: 'codex', scope: 'project', components,
       config: { ...resolved, mode: 'artifact-render', targetScope: 'project' },
     });
     expect(runtime(config).runtime!.effectiveValues).toEqual(config.values);

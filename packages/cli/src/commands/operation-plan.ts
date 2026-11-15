@@ -1,13 +1,14 @@
 import crypto from 'node:crypto';
 
-import { canonicalizePluginConfigValues } from '@lesliechan721/aw-plugin-core/manifest';
+import { canonicalizeIdentityValue, canonicalizePluginConfigValues, getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 
-import type { PlatformName, PluginConfigValue, Scope } from '../types.js';
+import type { PlatformName, PlatformTarget, PluginConfigValue, Scope } from '../types.js';
 import type { OwnedSharedLocator, OwnerIdentity } from '../utils/ownership.js';
 import type { ProducerIdentity } from '../types.js';
 import type { NativeToolClosure } from '@lesliechan721/aw-plugin-core/manifest';
 import type { InstalledCommandSet } from '../utils/managed-command-store.js';
 import type { RetainedManagedCommandPackage } from '../utils/managed-command-materialization.js';
+import type { DeploymentExclusion, FrozenDeploymentPlan } from '../platforms/contracts.js';
 
 export interface OperationArtifactFile {
   relativePath: string;
@@ -154,6 +155,9 @@ type OperationActionDefinition =
     };
 
 export interface OperationPlan {
+  deploymentExclusions?: DeploymentExclusion[];
+  nativeToolChanges?: NativeToolChange[];
+  deploymentPlans?: FrozenDeploymentPlan[];
   intentChanges: Array<{
     scope: Scope;
     beforeDigest: string;
@@ -167,6 +171,20 @@ export interface OperationPlan {
 }
 
 export type OperationPlanInput = Omit<OperationPlan, 'planFingerprint'>;
+
+/** One review surface for native declarations carried by packages or platform Skills. */
+export function operationPlanNativeToolChanges(plan: Pick<OperationPlan, 'actions' | 'nativeToolChanges'> | undefined): NativeToolChange[] {
+  if (!plan) return [];
+  const changes = new Map<string, NativeToolChange>();
+  for (const change of [...plan.nativeToolChanges ?? [], ...plan.actions.flatMap((action) => action.nativeToolChanges ?? [])]) {
+    const key = getCommandPackageId(change.producer);
+    const previous = changes.get(key);
+    if (previous && canonicalizeIdentityValue(previous) !== canonicalizeIdentityValue(change)) throw new Error('nativeToolPlanConflict: one producer has conflicting frozen changes.');
+    changes.set(key, change);
+  }
+  return [...changes.entries()].sort(([left], [right]) => compareText(left, right)).map(([, change]) => change);
+}
+
 
 export function createOperationPlanConfigDigest(options: {
   pluginId: string;
@@ -196,6 +214,10 @@ function canonical<T>(values: readonly T[], key: (value: T) => string): T[] {
 
 function canonicalizeOperationPlanInput(input: OperationPlanInput): OperationPlanInput {
   return {
+    ...(input.deploymentExclusions?.length ? { deploymentExclusions: canonical(input.deploymentExclusions,
+      (entry) => `${entry.platform}:${entry.pluginId}:${entry.scope.kind}:${entry.scope.kind === 'project' ? entry.scope.projectRoot : ''}:${entry.productId}:${entry.reasonCode}`) } : {}),
+    ...(input.nativeToolChanges?.length ? { nativeToolChanges: operationPlanNativeToolChanges({ actions: [], nativeToolChanges: input.nativeToolChanges }) } : {}),
+    ...(input.deploymentPlans ? { deploymentPlans: canonical(input.deploymentPlans, (plan) => plan.binding.id) } : {}),
     intentChanges: canonical(input.intentChanges, (change) => change.scope),
     actions: [...input.actions],
     changes: [...input.changes].sort(compareText),
@@ -219,7 +241,7 @@ export function createOperationPlan(input: OperationPlanInput): OperationPlan {
   const canonicalInput = canonicalizeOperationPlanInput(input);
   const digest = crypto
     .createHash('sha256')
-    .update(JSON.stringify(canonicalInput))
+    .update(JSON.stringify(canonicalInput, (key, value) => key === 'stagingRoot' || key === 'stagingPath' ? undefined : value))
     .digest('hex');
   return { ...canonicalInput, planFingerprint: `sha256:${digest}` };
 }
@@ -228,9 +250,16 @@ export function createBatchIntentCompatiblePlanFingerprint(
   plan: OperationPlan,
   ignoredTargetKeys: ReadonlySet<string> = new Set(),
 ): string {
-  const targetKey = (target: { pluginId: string; platform?: PlatformName; scope: Scope }): string =>
+  const targetKey = (target: { pluginId: string; platform?: PlatformTarget; scope: Scope }): string =>
     `${target.pluginId}\0${target.platform}\0${target.scope}`;
   return createOperationPlan({
+    deploymentPlans: plan.deploymentPlans?.filter((entry) => !ignoredTargetKeys.has(targetKey({
+      pluginId: entry.binding.plugin.pluginId, platform: entry.binding.platform, scope: entry.binding.scope.kind }))),
+    deploymentExclusions: plan.deploymentExclusions?.filter((entry) => !ignoredTargetKeys.has(targetKey({
+      pluginId: entry.pluginId, platform: entry.platform, scope: entry.scope.kind }))),
+    nativeToolChanges: plan.nativeToolChanges?.filter((entry) => !ignoredTargetKeys.has(targetKey({
+      pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, platform: entry.producer.platform ?? undefined,
+      scope: entry.producer.scope }))),
     intentChanges: plan.intentChanges.map(({ scope }) => ({
       scope,
       beforeDigest: 'batch-intent',

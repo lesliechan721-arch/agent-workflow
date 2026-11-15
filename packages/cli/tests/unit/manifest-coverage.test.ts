@@ -74,7 +74,7 @@ function createCatalogManifestFixture() {
           authentication: 'ON_INSTALL',
         },
         dependencies: [],
-        requires: { aw: { capabilities: ['aw.plugin-manifest.v3'] } },
+        requires: { aw: { capabilities: ['aw.plugin-manifest.v4'] } },
         source: './plugins/demo',
         artifactDigest: sha256('a'),
         manifestDigest: sha256('b'),
@@ -89,74 +89,19 @@ afterEach(async () => {
 });
 
 describe('manifest coverage', () => {
-  it('accepts object-based channels and rejects plugin paths that escape the root', () => {
-    const manifest = validatePluginManifest('/tmp/plugin', {
-      schemaVersion: 3,
-      name: 'demo-object-channels',
-      version: '0.1.0',
-      description: 'demo',
-      marketplace: {
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-      },
-      buildConfig: {
-        manifestOverrides: {
-          claude: {
-            lspServers: './config/lsp.json',
-            channels: {
-              default: true,
-            },
-          },
-        },
-      },
-    });
-
-    expect(manifest.buildConfig?.manifestOverrides?.claude).toMatchObject({
-      lspServers: './config/lsp.json',
-      channels: {
-        default: true,
-      },
-    });
-
-    expect(() =>
-      validatePluginManifest('/tmp/plugin', {
-        schemaVersion: 3,
-        name: 'bad-demo',
-        version: '0.1.0',
-        description: 'demo',
-        skills: './../skills',
-        marketplace: {
-          category: 'workflow',
-          strict: true,
-          policy: {
-            installation: 'AVAILABLE',
-            authentication: 'ON_INSTALL',
-          },
-        },
-      }),
-    ).toThrow('path must stay inside the plugin root');
-
-    expect(() =>
-      validatePluginManifest('/tmp/plugin', {
-        schemaVersion: 3,
-        name: 'bad-demo-abs',
-        version: '0.1.0',
-        description: 'demo',
-        apps: '/tmp/apps.json',
-        marketplace: {
-          category: 'workflow',
-          strict: true,
-          policy: {
-            installation: 'AVAILABLE',
-            authentication: 'ON_INSTALL',
-          },
-        },
-      }),
-    ).toThrow('/apps must match pattern');
+  it('rejects removed host entries and preserves relative resource path guards', () => {
+    const base = { schemaVersion: 4, name: 'demo', version: '0.1.0', description: 'demo',
+      marketplace: { category: 'workflow', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } } };
+    expect(() => validatePluginManifest('/tmp/plugin', { ...base,
+      buildConfig: { manifestOverrides: { claude: { lspServers: './config/lsp.json', channels: { default: true } } } },
+    })).toThrow('/buildConfig must NOT have additional properties');
+    expect(() => validatePluginManifest('/tmp/plugin', { ...base, apps: '/tmp/apps.json' }))
+      .toThrow('must NOT have additional properties');
+    expect(() => validatePluginManifest('/tmp/plugin', { ...base, skills: './../skills' }))
+      .toThrow('/skills must be equal to constant');
+    expect(() => validatePluginManifest('/tmp/plugin', { ...base, mcpServers: '/tmp/mcp.json' }))
+      .toThrow('/mcpServers must match pattern');
   });
 
   it('discovers, resolves, and selects plugins from repo and catalog directories', async () => {
@@ -166,7 +111,7 @@ describe('manifest coverage', () => {
     await fs.writeJson(
       path.join(alphaRoot, '.agents-plugin', 'plugin.json'),
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         name: 'alpha-note',
         version: '0.1.0',
         description: 'alpha plugin',
@@ -243,6 +188,8 @@ describe('manifest coverage', () => {
     manifest.extensions.nativeHooks = {
       claude: [
         {
+          id: 'notification',
+          feedback: 'notify',
           event: 'Notification',
           matcher: '*',
           command: 'echo claude notification',
@@ -250,6 +197,8 @@ describe('manifest coverage', () => {
       ],
       codex: [
         {
+          id: 'prompt',
+          feedback: 'notify',
           event: 'UserPromptSubmit',
           command: 'echo codex prompt',
         },
@@ -265,6 +214,8 @@ describe('manifest coverage', () => {
     expect(plugin.manifest.extensions?.nativeHooks).toEqual({
       claude: [
         {
+          id: 'notification',
+          feedback: 'notify',
           event: 'Notification',
           matcher: '*',
           command: 'echo claude notification',
@@ -272,6 +223,8 @@ describe('manifest coverage', () => {
       ],
       codex: [
         {
+          id: 'prompt',
+          feedback: 'notify',
           event: 'UserPromptSubmit',
           command: 'echo codex prompt',
         },
@@ -284,6 +237,8 @@ describe('manifest coverage', () => {
         nativeHooks: {
           claude: [
             {
+              id: 'notification',
+              feedback: 'notify',
               event: 'Notification',
               matcher: '*',
               command: 'echo claude notification',
@@ -291,6 +246,8 @@ describe('manifest coverage', () => {
           ],
           codex: [
             {
+              id: 'prompt',
+              feedback: 'notify',
               event: 'UserPromptSubmit',
               command: 'echo codex prompt',
             },

@@ -55,7 +55,7 @@ async function createPlugin(options: { sensitiveValue?: string } = {}): Promise<
     rootDir,
     manifestPath: path.join(rootDir, '.agents-plugin', 'plugin.json'),
     manifest: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 'demo',
       version: '1.0.0',
       description: 'preApply fixture',

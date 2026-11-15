@@ -34,7 +34,7 @@ function fixture(config: unknown, name = 'demo', dependencies: string[] = []) {
     catalogLogicalIdentity: 'team/catalog',
     pluginId: `team/${name}`,
     manifest: {
-      schemaVersion: 3, name, version: '1.0.0', description: 'Platform config fixture', dependencies,
+      schemaVersion: 4, name, version: '1.0.0', description: 'Platform config fixture', dependencies,
       marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
       config: normalizePluginConfigDefinition(config),
     },

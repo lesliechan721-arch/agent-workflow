@@ -6,7 +6,7 @@ const profile = { type: 'object', properties: {
   effort: { type: 'string', choices: { allowCustom: false, presets: [{ id: 'high', title: 'High', value: 'high' }] } },
 }, additionalProperties: false }
 function manifest(config: unknown) {
-  return { schemaVersion: 3, name: 'config-example', version: '0.1.0', description: 'Example', platforms: ['codex', 'claude'],
+  return { schemaVersion: 4, name: 'config-example', version: '0.1.0', description: 'Example', platforms: ['codex', 'claude'],
     marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, config }
 }
 function config() {
@@ -27,7 +27,7 @@ describe('Config Definition v3', () => {
     expect(validatePluginConfigValue(normalized.config!.fields.profile!, { model: 'local', effort: 'bogus' })).toMatchObject([{ code: 'choice' }])
     expect(deriveAwCapabilitiesFromManifest(bundle)).toContain('aw.plugin-config.v3')
     expect(deriveAwCapabilitiesFromManifest(bundle)).toContain('aw.plugin-config-summary.v1')
-    expect(checkAwCapabilitySupport(deriveAwCapabilitiesFromManifest(bundle), ['aw.plugin-manifest.v3', 'aw.plugin-config.v2']).missing)
+    expect(checkAwCapabilitySupport(deriveAwCapabilitiesFromManifest(bundle), ['aw.plugin-manifest.v4', 'aw.plugin-config.v2']).missing)
       .toEqual(['aw.plugin-config-summary.v1', 'aw.plugin-config.v3'])
   })
   it('counts reference edges through aliases and object children; inline nodes cost zero', () => {

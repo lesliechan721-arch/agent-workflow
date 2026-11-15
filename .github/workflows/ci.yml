@@ -120,30 +120,35 @@ jobs:
             name: Linux x64 / Node 24 / plugins
             shard: ''
             timeout: 30
+            pack_smoke: false
           - runner: macos-15
             os: darwin
             arch: arm64
             name: macOS arm64 / Node 24 / plugins
             shard: ''
             timeout: 30
+            pack_smoke: true
           - runner: windows-2025
             os: win32
             arch: x64
             name: Windows x64 / Node 24 / plugins 1 of 3
             shard: 1/3
             timeout: 90
+            pack_smoke: false
           - runner: windows-2025
             os: win32
             arch: x64
             name: Windows x64 / Node 24 / plugins 2 of 3
             shard: 2/3
             timeout: 90
+            pack_smoke: true
           - runner: windows-2025
             os: win32
             arch: x64
             name: Windows x64 / Node 24 / plugins 3 of 3
             shard: 3/3
             timeout: 90
+            pack_smoke: false
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     env:
@@ -160,6 +165,24 @@ jobs:
         with:
           arch: ${{ matrix.arch }}
           shard: ${{ matrix.shard }}
+      - name: Configure pack smoke diagnostics
+        if: matrix.pack_smoke
+        shell: bash
+        run: printf 'AW_TEST_DIAGNOSTICS_DIR=%s/aw-test-diagnostics\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Run the native pack smoke
+        if: matrix.pack_smoke
+        shell: bash
+        run: pnpm test:smoke:pack:cli
+      - name: Save failed pack smoke diagnostics
+        if: failure() && matrix.pack_smoke
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-diagnostics-pack-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/aw-test-diagnostics/publisher/**/*.json
+            ${{ runner.temp }}/aw-test-diagnostics/npm/**/*.json
+          if-no-files-found: ignore
+          retention-days: 7
   platform:
     name: ${{ matrix.name }}
     strategy:
@@ -171,25 +194,25 @@ jobs:
             arch: arm64
             name: darwin arm64 / Node 24
             integration_shard: ''
-            runtime_smoke: true
+            process_lifecycle: false
           - runner: windows-2025
             os: win32
             arch: x64
             name: win32 x64 / Node 24 / integration 1 of 3
             integration_shard: 1/3
-            runtime_smoke: false
+            process_lifecycle: false
           - runner: windows-2025
             os: win32
             arch: x64
             name: win32 x64 / Node 24 / integration 2 of 3
             integration_shard: 2/3
-            runtime_smoke: false
+            process_lifecycle: false
           - runner: windows-2025
             os: win32
             arch: x64
             name: win32 x64 / Node 24 / integration 3 of 3
             integration_shard: 3/3
-            runtime_smoke: true
+            process_lifecycle: true
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     defaults:
@@ -240,11 +263,9 @@ jobs:
         env:
           AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '1' }}
       - name: Run Windows process lifecycle tests
-        if: matrix.os == 'win32' && matrix.runtime_smoke
+        if: matrix.os == 'win32' && matrix.process_lifecycle
         working-directory: packages/cli
         run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts
-      - run: pnpm test:smoke:pack:cli
-        if: matrix.runtime_smoke
       - name: Save failed test diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

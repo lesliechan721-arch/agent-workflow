@@ -1,14 +1,15 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { syncWriteCommand as nativeSyncWriteCommand, uninstallWriteCommand as nativeUninstallWriteCommand } from '../../src/commands/write-commands.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
+import { operationPlanNativeToolChanges } from '../../src/commands/operation-plan.js';
 import { listManagedCommandPackages, listManagedCommands, readInstalledCommandProducer, resolveManagedCommand, syncManagedCommandPackage } from '../../src/utils/managed-command-store.js';
 import { readIntentFixture, writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
-import { createNativeTestExecution } from '../helpers/native-execution-fixture.js';
+import { createNativeTestExecution, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { managedCommandProducerIdentity } from '../../src/utils/managed-command-materialization.js';
 import { withResolvedCatalogPlugin } from '../../src/utils/multi-source-catalog.js';
 import { resolvePreferencesPath, writePreferences } from '../../src/intent/deployment-preferences.js';
@@ -40,6 +41,7 @@ const uninstallWriteCommand: typeof nativeUninstallWriteCommand = (names, option
   nativeWrite(nativeUninstallWriteCommand, names, options, runtime);
 
 describe('native declaration confirmation at ordinary write entries', () => {
+  beforeEach(() => { installNativeTestQualification({ platforms: ['claude'], discovery: true, trust: true }); });
   // Test Value Gate: projection-only tests cannot prove confirmation precedes
   // requirement, producer, script and platform writes. Use real CLI/catalog/installed state,
   // and the same accepted-plan contract used by the existing Review bridge.
@@ -62,10 +64,13 @@ describe('native declaration confirmation at ordinary write entries', () => {
         await fs.outputFile(path.join(pluginRoot, relative), content);
       }
       await fs.outputFile(path.join(pluginRoot, 'tools/run.mjs'), 'process.exit(0);\n');
+      // A real component makes this exercise native registration and permission writes with package authority.
+      await fs.outputFile(path.join(pluginRoot, 'skills/provider/SKILL.md'), '---\nname: provider\ndescription: Native authorization fixture.\n---\nProvider.\n');
       await fs.outputFile(path.join(pluginRoot, 'scripts/pre-apply.mjs'),
         `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(scriptMarker)}, 'executed');\n`);
       await createCatalogSnapshotFixture(sourceRoot, 'native-review', [], 'Native Review fixture\n', (manifest) => {
         manifest.platforms = ['claude'];
+        manifest.skills = './skills';
         manifest.scripts = { preApply: { path: './scripts/pre-apply.mjs' } };
         manifest.extensions = { permissions: [{ name: 'tool', allow: ['echo hello'] }] };
         manifest.managedCommands = {
@@ -120,7 +125,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     expect(await observeIntent(intentOptions)).toMatchObject({ state: 'absent' });
     expect(await fs.readFile(preferencesPath)).toEqual(preferencesBefore);
     expect(await fs.pathExists(path.join(env.AW_HOME!, 'plugin-config/team/native-review/config.json'))).toBe(false);
-    expect(await fs.pathExists(path.join(env.AW_HOME!, 'marketplaces/team'))).toBe(false);
+    expect(await fs.pathExists(path.join(env.AW_HOME!, 'platforms/claude'))).toBe(false);
     expect(await fs.pathExists(scriptMarker)).toBe(false);
     expect(writes()).toHaveLength(writesBefore);
 
@@ -248,6 +253,9 @@ describe('native declaration confirmation at ordinary write entries', () => {
         data: {}
       }
     });
+    await fs.ensureDir(path.join(cwd, '.git'));
+    const sharedActivation = await run(['plugin', 'install', 'team/native-removal', '--scope', 'project', '--context', 'project', '--yes']);
+    expect(sharedActivation, JSON.stringify(sharedActivation)).toMatchObject({ exitCode: 0 });
     const command = (await listManagedCommands(env)).commands[0]!;
     const before = await readInstalledCommandProducer(command.resourceRoot!);
     const installedNative = await fs.readJson(native.installedPath);
@@ -255,7 +263,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     expect(before.nativeTools).toEqual(fixture.closure);
     const preview = await uninstallWriteCommand(['team/native-removal'], { cwd, platform: 'claude', scope: 'user' },
       { ...native.runtime, previewOperationPlan: true });
-    expect(preview.operationPlan!.actions.flatMap((action) => action.nativeToolChanges ?? [])).toEqual([]);
+    expect(operationPlanNativeToolChanges(preview.operationPlan!)).toEqual([]);
     const removed = await run(['plugin', 'remove', ...selection, '--yes']);
     expect(removed, JSON.stringify(removed)).toMatchObject({
       exitCode: 0, receipt: {

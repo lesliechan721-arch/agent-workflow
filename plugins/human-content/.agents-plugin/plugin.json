@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "name": "human-content",
   "version": "0.1.0",
   "description": "面向人的复杂材料阅读与反馈；保留原意、状态和完整依据。",
@@ -10,6 +10,9 @@
     "cursor",
     "opencode",
     "pi",
+    "gemini",
+    "copilot",
+    "grok",
     "generic"
   ],
   "skills": "./skills",

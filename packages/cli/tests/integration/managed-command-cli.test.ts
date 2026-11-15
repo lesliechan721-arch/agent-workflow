@@ -107,7 +107,7 @@ describe('managed command CLI', () => {
 
   // Protects the public offline recovery selector after a project or source is no longer available.
   it('removes an exact package ID without Catalog access and rejects conflicting owner evidence', async () => {
-    const producer: ProducerIdentity = { sourceId: 'retired', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'toolkit', kind: 'package', key: 'tool', platform: null, scope: 'project', projectRoot: path.join(isolated.layout.fixtureCwd, 'removed-project') };
+    const producer: ProducerIdentity = { sourceId: 'retired', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'toolkit', kind: 'package', key: 'tool', platform: null, placementKey: null, scope: 'project', projectRoot: path.join(isolated.layout.fixtureCwd, 'removed-project') };
     const entry = normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'entry.mjs' });
     const installed = await syncManagedCommandPackage({ producer, sourceDirectory: source, sets: [{ set: 'tools', state: 'present', entries: [entry] }], env: isolated.env });
     const packageRoot = path.dirname(installed.resourceRoot);
@@ -167,7 +167,7 @@ describe('managed command CLI', () => {
   it('includes the complete former native declaration when removing an exact package', async () => {
     const fixture = nativeToolFixture();
     for (const [relative, content] of Object.entries(fixture.files)) await fs.mkdir(path.dirname(path.join(source, relative)), { recursive: true }).then(() => fs.writeFile(path.join(source, relative), content));
-    const producer: ProducerIdentity = { sourceId: 'retired', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'toolkit', kind: 'package', key: 'tool', platform: null, scope: 'user', projectRoot: null };
+    const producer: ProducerIdentity = { sourceId: 'retired', sourceIdentity: `sha256:${'b'.repeat(64)}`, pluginName: 'toolkit', kind: 'package', key: 'tool', platform: null, placementKey: null, scope: 'user', projectRoot: null };
     const installed = await syncManagedCommandPackage({ producer, sourceDirectory: source, sets: [{ set: 'tools', state: 'present', entries: [normalizeCommandDefinition({ key: 'run', runner: 'node', entry: 'entry.mjs' })] }], nativeTools: fixture.closure, env: isolated.env });
     const removed = await invoke(['package', 'remove', installed.id, '--yes', '--json']);
     expect(removed.exitCode).toBe(0);

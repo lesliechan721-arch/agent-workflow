@@ -31,6 +31,51 @@ afterEach(async () => {
 });
 
 describe('dynamic skill tree', () => {
+  // Test Value Gate: Windows Eval materialization can exceed MAX_PATH before
+  // mkdtemp; complete writes and replacement must still clean their staging.
+  it('writes and replaces an owned Skill tree beyond 260 characters with ordinary output paths', async () => {
+    const root = await makeTempRoot();
+    const parent = path.join(root, 'a'.repeat(80), 'b'.repeat(80), 'c'.repeat(80));
+    const target = path.join(parent, 'owner-skill');
+    expect(target.length).toBeGreaterThan(260);
+    const ownership = {
+      allowedRoot: parent,
+      identity: {
+        owner: 'agent-workflows' as const,
+        plugin: 'long-path-test',
+        artifactKey: 'owner-skill',
+        platform: 'codex' as const,
+        scope: 'user' as const,
+      },
+    };
+    const original = {
+      skillKey: 'owner-skill',
+      files: {
+        'SKILL.md': Buffer.from('# Original\n'),
+        'agents/openai.yaml': Buffer.from('policy:\n  allow_implicit_invocation: true\n'),
+        'references/retired.md': Buffer.from('retired\n'),
+      },
+    };
+    const replacement = {
+      ...original,
+      files: {
+        'SKILL.md': Buffer.from('# Replacement\n'),
+        'agents/openai.yaml': original.files['agents/openai.yaml'],
+        'references/current.md': Buffer.from('current\n'),
+      },
+    };
+
+    for (const tree of [original, replacement]) {
+      const written = await writeDynamicSkillTree(target, tree, ownership);
+      expect(written.sort()).toEqual(Object.keys(tree.files).map((relative) => path.join(target, relative)).sort());
+      expect(written.every((writtenPath) => !writtenPath.startsWith('\\\\?\\'))).toBe(true);
+      expect((await readDynamicSkillTree(target, 'codex.skill'))?.files).toEqual(tree.files);
+      expect(await fs.readJson(path.join(target, SKILL_OWNER_MARKER))).toMatchObject(ownership.identity);
+      expect(await fs.readdir(parent)).toEqual(['owner-skill']);
+    }
+    expect(await fs.pathExists(path.join(target, 'references/retired.md'))).toBe(false);
+  });
+
   // Test Value Gate: native command entries must remain executable after Skill
   // materialization, while renderer text cannot inherit execution permission.
   it.skipIf(process.platform === 'win32')('preserves source execution modes and clears renderer overrides', async () => {

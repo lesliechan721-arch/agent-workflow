@@ -8,17 +8,35 @@ import {
   computeSkillDigest,
   validateEvalSpecFile,
 } from '@lesliechan721/agent-skill-eval'
+import { getPlatformFeatureRegistry } from '@lesliechan721/aw-plugin-core/manifest'
 import fs from 'fs-extra'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import { runCli } from '../../src/index.js'
 import { setSkillEvalCommandTestHooksForTests } from '../../src/commands/skill-eval.js'
+import * as authorProfile from '../../src/review/platform-profile.js'
 import {
   createAwSourceBindingWorkspaceValidationContext,
   validateAwSourceBindingForWorkspace,
 } from '../../src/review/source-binding.js'
 
 const roots: string[] = []
+
+// Qualify only the Skills under test; Agent gaps remain observable in preparation evidence.
+function installCodexSkillTestQualification(): void {
+  const getCapabilities = authorProfile.getAuthoringPlatformCapabilities
+  const profile = vi.spyOn(authorProfile, 'getAuthoringPlatformCapabilities').mockImplementation((platform, scope) => {
+    const capabilities = getCapabilities(platform, scope)
+    if (platform !== 'codex') return capabilities
+    capabilities.profileId = `test-qualified:${capabilities.profileId}`
+    capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] }
+    for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) {
+      capabilities.features[id] = { status: 'supported', reasonCodes: [], ...(feature.values ? { values: [...feature.values] } : {}) }
+    }
+    return capabilities
+  })
+  onTestFinished(() => profile.mockRestore())
+}
 
 async function treeDigests(root: string): Promise<Record<string, string>> {
   const result: Record<string, string> = {}
@@ -98,7 +116,12 @@ async function createWorkspace(): Promise<{
   const skillRoot = path.join(ownerRoot, 'skills', 'owner-skill')
   const evalRoot = path.join(skillRoot, 'evals')
   const manifestPath = path.join(ownerRoot, '.agents-plugin', 'plugin.json')
+  const participantManifestPath = path.join(root, 'plugins', 'participant-plugin', '.agents-plugin', 'plugin.json')
+  const participantManifest = await fs.readJson(participantManifestPath)
+  participantManifest.platforms = ['codex', 'generic']
+  await fs.writeJson(participantManifestPath, participantManifest, { spaces: 2 })
   const pluginManifest = await fs.readJson(manifestPath)
+  pluginManifest.platforms = ['codex', 'generic']
   pluginManifest.dependencies = ['participant-plugin']
   pluginManifest.config = {
     fields: {
@@ -178,30 +201,28 @@ afterEach(async () => {
 })
 describe('aw dev eval commands', () => {
   it('binds explicit non-sensitive config overrides and rejects changes before commit', async () => {
+    installCodexSkillTestQualification()
     // Protect the public prepare boundary: actual paths can be supplied without editing
     // a profile or signing a runtime receipt, and the same values can be revalidated.
     const fixture = await createWorkspace()
     const manifestPath = path.join(fixture.ownerRoot, '.agents-plugin', 'plugin.json')
     const pluginManifest = await fs.readJson(manifestPath)
-    pluginManifest.artifacts = { targets: [{
-      id: 'configured', platform: 'codex', scopes: ['project', 'user'],
-      target: 'codex.skill', states: ['present'], refreshKeys: ['mode'], skillKey: 'configured-skill',
-    }] }
+    pluginManifest.artifacts = { configKeys: ['mode'] }
     pluginManifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } }
     await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
     await fs.outputFile(path.join(fixture.ownerRoot, 'scripts', 'render.mjs'), [
       "import { readFile } from 'node:fs/promises';",
       'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-      'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
-      '  id: "configured", kind: "skill", platform: "codex", target: "codex.skill",',
-      '  state: "present", skillKey: "configured-skill", refreshKeys: ["mode"],',
+      'const components = context.allowedOutputKinds.includes("skill") ? [{',
+      '  id: "configured", kind: "skill", name: "configured-skill",',
       '  content: { files: {',
-      '    "SKILL.md": "---\\nname: configured-skill\\ndescription: Inspect deterministic configured content.\\n---\\nRead render.json.\\n",',
-      '    "README.md": "Inspect deterministic configured content.\\n",',
-      '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n",',
-      '    "render.json": JSON.stringify({ mode: context.config.values.mode }),',
+      '    "SKILL.md": {text:"---\\nname: configured-skill\\ndescription: Inspect deterministic configured content.\\n---\\nRead render.json.\\n"},',
+      '    "README.md": {text:"Inspect deterministic configured content.\\n"},',
+      '    "agents/openai.yaml": {text:"policy:\\n  allow_implicit_invocation: true\\n"},',
+      '    "render.json": {text:JSON.stringify({ mode: context.config.values.mode })},',
       '  } },',
-      '}]}));',
+      '}] : [];',
+      'process.stdout.write(JSON.stringify({version:3,components,omitted:[],unmet:[]}));',
     ].join('\n'))
     await fs.writeFile(path.join(fixture.skillRoot, 'SKILL.md'),
       (await fs.readFile(path.join(fixture.skillRoot, 'SKILL.md'), 'utf8')).replaceAll('TODO', 'Fixture instruction'))
@@ -254,7 +275,8 @@ describe('aw dev eval commands', () => {
     expect(await fs.pathExists(`${output}-drifted`)).toBe(false)
   }, 30_000)
 
-  it('prepares mixed static, dynamic, and shared native Codex content with scoped config', async () => {
+  it('prepares static and dynamic Codex Skills with shared config and preserves unavailable agent evidence', async () => {
+    installCodexSkillTestQualification()
     const fixture = await createWorkspace()
     const providerInit = capture()
     expect(await runCli([
@@ -269,6 +291,7 @@ describe('aw dev eval commands', () => {
       fixture.root, 'plugins', 'runtime-provider', '.agents-plugin', 'plugin.json',
     )
     const providerManifest = await fs.readJson(providerManifestPath)
+    providerManifest.platforms = ['codex', 'generic']
     providerManifest.buildConfig = {
       runtimeExports: [{
         name: 'runtime-data',
@@ -304,65 +327,29 @@ describe('aw dev eval commands', () => {
     pluginManifest.config.fields.dynamicEnabled = { type: 'boolean', required: true }
     pluginManifest.config.fields.nativeEnabled = { type: 'boolean', required: true }
     pluginManifest.artifacts = {
-      targets: [{
-        id: 'dynamic-skill',
-        platform: 'codex',
-        scopes: ['project', 'user'],
-        target: 'codex.skill',
-        states: ['present', 'disabled'],
-        refreshKeys: ['roleMode', 'dynamicEnabled'],
-        skillKey: 'dynamic-skill',
-      }, {
-        id: 'native-skill',
-        platform: 'codex',
-        scopes: ['project', 'user'],
-        target: 'codex.skill',
-        projectManagedKind: 'skill',
-        states: ['present', 'disabled'],
-        refreshKeys: ['nativeMode', 'nativeEnabled'],
-        skillKey: 'native-skill',
-      }, {
-        id: 'fixture-role',
-        platform: 'codex',
-        scopes: ['project', 'user'],
-        target: 'codex.agentRole',
-        states: ['present'],
-        refreshKeys: ['roleMode'],
-        roleKey: 'fixture-role',
-        requiresCodexProjectConfig: true,
-      }],
+      configKeys: ['roleMode', 'nativeMode', 'dynamicEnabled', 'nativeEnabled'],
     }
     await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
     const rendererLog = path.join(fixture.root, 'renderer-requests.jsonl')
     await fs.outputFile(path.join(fixture.ownerRoot, 'scripts', 'render.mjs'), [
       "import fs from 'node:fs';",
       "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
-      `fs.appendFileSync(${JSON.stringify(rendererLog)}, JSON.stringify({ids:context.requestedArtifactIds,platform:context.platform,scope:context.scope,targetScope:context.config.targetScope}) + '\\n');`,
-      'const artifacts = context.requestedArtifactIds.map((id) => {',
-      "  if (id === 'fixture-role') return {",
-      "    id, kind: 'codexRole', platform: 'codex', target: 'codex.agentRole', state: 'present',",
-      "    roleKey: 'fixture-role', refreshKeys: ['roleMode'], content: {",
-      "      registration: { description: 'Eval fixture role.' },",
-      "      roleFile: { name: 'fixture-role', description: 'Eval fixture role.', developer_instructions: 'Fixture.', model: context.config.values.roleMode },",
-      '    },',
-      '  };',
-      "  const skillKey = id === 'native-skill' ? 'native-skill' : 'dynamic-skill';",
-      "  const refreshKeys = id === 'native-skill' ? ['nativeMode', 'nativeEnabled'] : ['roleMode', 'dynamicEnabled'];",
+      `fs.appendFileSync(${JSON.stringify(rendererLog)}, JSON.stringify({kinds:context.allowedOutputKinds,platform:context.platform,scope:context.scope,targetScope:context.scope}) + '\\n');`,
+      'const components = [], omitted = [], unmet = [];',
+      "if (context.allowedOutputKinds.includes('agent')) unmet.push({id:'fixture-role',kind:'agent',name:'fixture-role',requiredFeatures:[{feature:'component.kind.agent'}],reasonCode:'capability-unverified'});",
+      "if (context.allowedOutputKinds.includes('skill')) for (const id of ['dynamic-skill','native-skill']) {",
       "  const selected = id === 'native-skill' ? context.config.values.nativeMode : context.config.values.roleMode;",
       "  const enabled = id === 'native-skill' ? context.config.values.nativeEnabled : context.config.values.dynamicEnabled;",
-      "  if (!enabled) return { id, kind: 'skill', platform: 'codex', target: 'codex.skill', state: 'disabled', skillKey, refreshKeys };",
-      '  return {',
-      "    id, kind: 'skill', platform: 'codex', target: 'codex.skill', state: 'present', skillKey, refreshKeys,",
-      '    content: { files: {',
-      "      'SKILL.md': `---\\nname: ${skillKey}\\ndescription: ${skillKey} Eval fixture.\\n---\\n\\n# ${skillKey}\\n`,",
-      "      'README.md': `# ${skillKey}\\n`,",
-      "      'agents/openai.yaml': 'policy:\\n  allow_implicit_invocation: true\\n',",
-      "      'render.json': JSON.stringify({ selected, targetScope: context.config.targetScope }),",
-      "      'references/native-tree.json': JSON.stringify({ nativeTree: true }),",
-      '    } },',
-      '  };',
-      '});',
-      'process.stdout.write(JSON.stringify({ version: 2, artifacts }));',
+      "  if (!enabled) { omitted.push({id,kind:'skill',reason:'config-disabled'}); continue; }",
+      "  components.push({id,kind:'skill',name:id,content:{files:{",
+      "    'SKILL.md': {text:`---\\nname: ${id}\\ndescription: ${id} Eval fixture.\\n---\\n\\n# ${id}\\n`},",
+      "    'README.md': {text:`# ${id}\\n`},",
+      "    'agents/openai.yaml': {text:'policy:\\n  allow_implicit_invocation: true\\n'},",
+      "    'render.json': {text:JSON.stringify({selected,targetScope:context.scope})},",
+      "    'references/native-tree.json': {text:JSON.stringify({nativeTree:true})},",
+      '  }}});',
+      '}',
+      'process.stdout.write(JSON.stringify({version:3,components,omitted,unmet}));',
     ].join('\n'))
     const selectedCasesPath = path.join(fixture.evalRoot, 'trigger-cases.json')
     await fs.writeJson(selectedCasesPath, {
@@ -451,7 +438,7 @@ describe('aw dev eval commands', () => {
     await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), manifest, { spaces: 2 })
 
     for (const [profile, roleMode] of [
-      ['project-scoped', 'project-role'],
+      ['project-scoped', 'common-role'],
       ['user-scoped', 'user-role'],
     ] as const) {
       const output = path.join(fixture.outputRoot, profile)
@@ -477,8 +464,12 @@ describe('aw dev eval commands', () => {
       await expect(fs.pathExists(path.join(
         subject, '.agents', 'skills', 'participant-skill', 'SKILL.md',
       ))).resolves.toBe(true)
-      await expect(fs.readFile(path.join(subject, '.codex', 'agents', 'aw-eval-owner-fixture-role.toml'), 'utf8'))
-        .resolves.toContain(`model = ${JSON.stringify(roleMode)}`)
+      await expect(fs.pathExists(path.join(subject, '.codex', 'agents', 'aw-eval-owner-fixture-role.toml')))
+        .resolves.toBe(false)
+      const binding = await fs.readJson(path.join(output, 'aw-source-binding.json'))
+      expect(binding.preparation.flatMap((unit: {unmet: unknown[]}) => unit.unmet)).toContainEqual(
+        expect.objectContaining({id:'fixture-role',kind:'agent',reasonCode:'capability-unverified'}),
+      )
       await expect(validateEvalSpecFile(path.join(output, 'spec.json')))
         .resolves.toMatchObject({ valid: true })
     }
@@ -496,11 +487,11 @@ describe('aw dev eval commands', () => {
     await expect(fs.pathExists(path.join(optionalSubject, 'native-skill'))).resolves.toBe(false)
 
     const requests = (await fs.readFile(rendererLog, 'utf8')).trim().split('\n')
-      .map((line) => JSON.parse(line) as { ids: string[]; platform: string; scope: string; targetScope: string })
-    expect([...new Set(requests.flatMap((request) => request.ids))].sort())
-      .toEqual(['dynamic-skill', 'fixture-role', 'native-skill'])
+      .map((line) => JSON.parse(line) as { kinds: string[]; platform: string; scope: string; targetScope: string })
+    expect([...new Set(requests.flatMap((request) => request.kinds))].sort())
+      .toEqual(['agent', 'hook', 'instruction', 'mcp', 'skill'])
     expect(requests.every((request) => request.platform === 'codex')).toBe(true)
-    for (const request of requests.filter((row) => row.ids.some((id) => id === 'dynamic-skill' || id === 'native-skill'))) {
+    for (const request of requests.filter((row) => row.kinds.includes('skill'))) {
       expect(request).toMatchObject({ scope: 'user', targetScope: 'user' })
     }
 
@@ -514,7 +505,6 @@ describe('aw dev eval commands', () => {
     await expect(fs.pathExists(requiredDisabledOutput)).resolves.toBe(false)
 
     pluginManifest.skills = './skills'
-    pluginManifest.artifacts.targets[0].sourceDirs = ['./skills/dynamic-skill']
     await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
     const dynamicEvalRoot = path.join(fixture.ownerRoot, 'skills', 'dynamic-skill', 'evals')
     await fs.outputJson(path.join(dynamicEvalRoot, 'cases.json'), {
@@ -584,6 +574,7 @@ describe('aw dev eval commands', () => {
   }, 30_000)
 
   it('prepares the new manifest v1 as a fixed EvalSpec workspace and runs doctor read-only', async () => {
+    installCodexSkillTestQualification()
     const fixture = await createWorkspace()
     await fs.outputFile(
       path.join(fixture.skillRoot, 'references', 'generated-reference.md'),
@@ -669,7 +660,13 @@ describe('aw dev eval commands', () => {
     expect(JSON.parse(validation.stdout())).toMatchObject({
       schemaVersion: 1,
       status: 'success',
-      diagnostics: [],
+      // Validation runs in a child process with the production profile; the
+      // parent-only Eval fixture qualification does not apply to this command.
+      diagnostics: ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch) ? [] : [{
+        code: 'commandWarning',
+        severity: 'warning',
+        message: 'component unmet (codex/user): skill:owner-skill [capability-unverified] [{"feature":"component.kind.skill"}]',
+      }],
       data: {}
     })
     const blockedOutput = path.join(fixture.root, 'prepared-v1')

@@ -3,7 +3,7 @@ import fs from 'fs-extra';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV8Payload } from '../../src/commands/status-v6.js';
+import type { RecoveryStatus } from '../../src/recovery/status.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
@@ -24,19 +24,15 @@ import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const mocks = vi.hoisted(() => ({
-  statusCommandV8: vi.fn(),
+  readRecoveryStatus: vi.fn(),
   applyPluginConfigWrite: vi.fn(),
   applyPluginConfig: vi.fn(),
   resolveConfigPreApplyAuthorization: vi.fn(),
 }));
 
-vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
-  statusCommandV8: async (...args: unknown[]) => ({
-    projectIntentObservation: { state: 'absent' as const },
-    nativeExtraObserved: [],
-    ...await mocks.statusCommandV8(...args),
-  }),
+vi.mock('../../src/recovery/status.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/recovery/status.js')>(),
+  readRecoveryStatus: mocks.readRecoveryStatus,
 }));
 
 vi.mock('../../src/utils/plugin-config-write.js', async (importOriginal) => ({
@@ -45,47 +41,6 @@ vi.mock('../../src/utils/plugin-config-write.js', async (importOriginal) => ({
   applyPluginConfig: mocks.applyPluginConfig,
   resolveConfigPreApplyAuthorization: mocks.resolveConfigPreApplyAuthorization,
 }));
-
-function placement(scope: 'project' | 'user') {
-  return {
-    scope,
-    state: 'ready' as const,
-    components: [{
-      kind: 'intent' as const,
-      key: 'desired',
-      state: 'desired' as const,
-      metadata: { enabled: true, scopes: [scope], relation: 'managed' as const },
-    }, {
-      kind: 'ownership' as const,
-      key: 'fixture',
-      state: 'present' as const,
-    }, {
-      kind: 'activation' as const,
-      key: scope,
-      state: 'enabled' as const,
-      metadata: { evidence: 'assumed' as const },
-    }],
-    reasons: [],
-    recoveryActions: [],
-  };
-}
-
-function statusTarget(scopes: Array<'project' | 'user'>): StatusV8Payload['targets'][number] {
-  return {
-    pluginName: 'demo',
-    pluginId: 'team/demo',
-    sourceId: 'team',
-    sourceIdentity: `sha256:${'1'.repeat(64)}`,
-    version: '1.0.0',
-    platform: 'codex',
-    cwd: '/fixture',
-    state: 'ready',
-    components: [],
-    reasons: [],
-    recoveryActions: [],
-    placements: scopes.map(placement),
-  };
-}
 
 async function setupBackend() {
   const isolation = getCurrentSourceTestIsolation();
@@ -114,31 +69,18 @@ async function setupBackend() {
     env: isolation.env,
   });
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
-  const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-  const makeStatus = (scopes: Array<'project' | 'user'>) => ({
-    payload: {
-      schemaVersion: 8 as const,
-      catalog: {
-        configDigest: configured.digest,
-        compositeDigest: 'sha256:composite',
-        primarySourceId: 'team',
-        sources: [],
-      },
-      filters: { plugins: ['team/demo'], platform: 'codex' as const, cwd: isolation.layout.fixtureCwd },
-      targets: [statusTarget(scopes)],
-      errors: [],
-    },
-    pluginSummaries: [{
-      pluginId: 'team/demo',
-      pluginName: 'demo',
-      sourceId: 'team',
-      sourceIdentity: 'identity:team',
-      dependencyDirectCount: 0,
-      dependencyTotalCount: 0,
-    }],
-    targetRevisions: [],
-  });
-  mocks.statusCommandV8.mockResolvedValue(makeStatus(['project', 'user']));
+  const makeStatus = (scopes: Array<'project' | 'user'>): RecoveryStatus => {
+    const targets = scopes.map((scope) => ({ pluginId: 'team/demo', agent: 'codex' as const, scope,
+      delivery: { kind: 'native' as const, platform: 'codex' as const }, execution: 'not-run' as const,
+      observation: 'verified' as const, content: 'satisfied' as const, blockers: [], requiredBy: ['team/demo'] }));
+    return { schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: true,
+      intent: { state: 'valid' }, selection: { agents: ['codex'], origin: 'preference', preferences: 'valid' },
+      inventory: [{ pluginId: 'team/demo', source: 'team', sourceState: 'ready', blockers: [], targetResults: targets }],
+      observedTargets: targets, existingTargets: targets.map(({ pluginId, agent, scope }) => ({ pluginId, agent, scope })),
+      extraObserved: [], coverage: { native: true, portable: true, scopes: ['user', 'project'], projectRoot: isolation.layout.fixtureCwd },
+      counts: { blocked: 0, pending: 0, ready: targets.length, unconfirmed: 0 }, allSatisfied: true, inSync: true, errors: [] };
+  };
+  mocks.readRecoveryStatus.mockResolvedValue(makeStatus(['project', 'user']));
   const dependencies = createTuiControllerDependencies(createCliExecutionContext({
     cwd: isolation.layout.fixtureCwd,
     env: isolation.env,
@@ -185,7 +127,7 @@ beforeEach(() => {
     otherProjectsMayRequireSync: false,
   });
   mocks.applyPluginConfig.mockResolvedValue({
-    configWrite: 'succeeded',
+    configWrite: 'notStarted',
     overallState: 'succeeded',
     apply: { state: 'succeeded', targetResults: [] },
     otherProjectsMayRequireSync: false,
@@ -241,7 +183,7 @@ describe('TUI multi-profile config save backend', () => {
       new AbortController().signal,
       () => undefined,
     );
-    mocks.statusCommandV8.mockResolvedValue(makeStatus(['user']));
+    mocks.readRecoveryStatus.mockResolvedValue(makeStatus(['user']));
 
     await expect(dependencies.executeIntent(intent, evidence)).rejects.toMatchObject({
       code: 'operationReviewStale',

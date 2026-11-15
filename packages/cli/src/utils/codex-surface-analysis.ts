@@ -1,4 +1,4 @@
-import { selectPluginConfigProfile } from '@lesliechan721/aw-plugin-core/manifest';
+import { selectPluginConfigProfile, type ExpectedComponentSet } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   NormalizedPluginManifest,
@@ -12,11 +12,11 @@ export const QUALIFIED_CODEX_NATIVE_KINDS = [
   'skill',
   'mcp',
   'hook',
-  'app',
+  'instruction',
 ] as const;
 
 export type CodexNativeKind = typeof QUALIFIED_CODEX_NATIVE_KINDS[number];
-export type CodexUnsupportedNativeKind = 'slashCommand';
+export type CodexUnsupportedNativeKind = never;
 export type CodexExtensionKind =
   | 'skill'
   | 'instruction'
@@ -49,11 +49,13 @@ export interface CodexSurfaceOwnerCollision {
 
 export interface CodexSurfaceAnalysisOptions {
   nativeArtifactNames?: Partial<Record<CodexNativeKind, readonly string[]>>;
+  preparedComponents?: ExpectedComponentSet;
 }
 
 export interface CodexSurfaceAnalysis {
   ok: boolean;
   configInputs: string[];
+  dynamicComponents: 'prepared' | 'unprepared' | 'not-declared';
   nativeKinds: CodexNativeKind[];
   extensionKinds: CodexExtensionKind[];
   unsupportedKinds: CodexUnsupportedNativeKind[];
@@ -90,8 +92,7 @@ const NATIVE_KIND_ORDER: Array<CodexNativeKind | CodexUnsupportedNativeKind> = [
   'skill',
   'mcp',
   'hook',
-  'app',
-  'slashCommand',
+  'instruction',
 ];
 const EXTENSION_KIND_ORDER: CodexExtensionKind[] = [
   'skill',
@@ -172,6 +173,7 @@ export function analyzeCodexSurface(
     return {
       ok: true,
       configInputs: [],
+      dynamicComponents: 'not-declared',
       nativeKinds: [],
       extensionKinds: [],
       unsupportedKinds: [],
@@ -187,32 +189,33 @@ export function analyzeCodexSurface(
   const components: CodexSurfaceComponent[] = [];
   const nativeKinds = new Set<CodexNativeKind>();
   const extensionKinds = new Set<CodexExtensionKind>();
-  const unsupportedKinds = new Set<CodexUnsupportedNativeKind>();
   const declareNative = (kind: CodexNativeKind, key: string): void => {
     nativeKinds.add(kind);
     addNativeComponents(components, kind, key, options.nativeArtifactNames?.[kind]);
   };
 
-  if (manifest.skills) declareNative('skill', 'manifest.skills');
-  if (manifest.mcpServers) declareNative('mcp', 'manifest.mcpServers');
-  if (resolvePlatformHookDefinitions(manifest, 'codex').length > 0) {
+  if (!options.preparedComponents && manifest.skills) declareNative('skill', 'manifest.skills');
+  if (!options.preparedComponents && manifest.mcpServers) declareNative('mcp', 'manifest.mcpServers');
+  if (!options.preparedComponents && resolvePlatformHookDefinitions(manifest, 'codex').length > 0) {
     declareNative('hook', 'manifest.hooks');
   }
-  if (manifest.apps) declareNative('app', 'manifest.apps');
-  if (manifest.slashCommands) unsupportedKinds.add('slashCommand');
 
   const configInputs = Object.keys(manifest.config === undefined
     ? {} : selectPluginConfigProfile(manifest.config, 'codex').fields).sort(compareText);
 
-  for (const instruction of resolvePlatformEntries(manifest.extensions?.instructions, 'codex')) {
-    extensionKinds.add('instruction');
-    addAwComponent(components, {
-      key: `extensions.instructions:${instruction.name}`,
-      kind: 'instruction',
-      scopes: [...BOTH_SCOPES],
-      dynamic: false,
-      name: instruction.name,
-    });
+  if (options.preparedComponents) {
+    for (const component of options.preparedComponents.components) {
+      const owner = component.kind === 'agent' ? 'aw' : 'codex-native';
+      if (owner === 'aw') extensionKinds.add('agent');
+      else nativeKinds.add(component.kind as CodexNativeKind);
+      components.push({ key: component.id, kind: component.kind, owner,
+        scopes: [...BOTH_SCOPES], dynamic: options.preparedComponents.sources[component.id] === 'dynamic', name: component.name });
+    }
+  } else {
+    for (const instruction of resolvePlatformEntries(manifest.extensions?.instructions, 'codex')) {
+      nativeKinds.add('instruction');
+      addNativeComponents(components, 'instruction', `extensions.instructions:${instruction.name}`, [instruction.name]);
+    }
   }
   for (const permission of resolvePlatformEntries(manifest.extensions?.permissions, 'codex')) {
     extensionKinds.add('permission');
@@ -224,7 +227,7 @@ export function analyzeCodexSurface(
       name: permission.name,
     });
   }
-  for (const agent of resolvePlatformEntries(manifest.extensions?.agents, 'codex')) {
+  for (const agent of options.preparedComponents ? [] : resolvePlatformEntries(manifest.extensions?.agents, 'codex')) {
     extensionKinds.add('agent');
     addAwComponent(components, {
       key: `extensions.agents:${agent.name}`,
@@ -234,42 +237,11 @@ export function analyzeCodexSurface(
       name: agent.name,
     });
   }
-  for (const target of manifest.artifacts?.targets ?? []) {
-    if (target.platform !== 'codex') continue;
-    const kind: CodexExtensionKind = target.target === 'codex.skill'
-      ? 'skill'
-      : target.target === 'codex.agentRole'
-        ? 'agent'
-        : 'instruction';
-    if (target.target === 'codex.skill') {
-      nativeKinds.add('skill');
-      components.push({
-        key: `artifacts.targets:${target.id}`,
-        kind: 'skill',
-        owner: 'codex-native',
-        scopes: [...BOTH_SCOPES],
-        dynamic: true,
-        refreshKeys: [...target.refreshKeys],
-        name: target.skillKey,
-      });
-    } else {
-      extensionKinds.add(kind);
-      addAwComponent(components, {
-        key: `artifacts.targets:${target.id}`,
-        kind,
-        scopes: [...target.scopes],
-        dynamic: true,
-        refreshKeys: [...target.refreshKeys],
-        name: target.skillKey ?? target.roleKey ?? target.id,
-      });
-    }
-  }
-
-  const orderedNativeKinds = NATIVE_KIND_ORDER
-    .filter((kind): kind is CodexNativeKind => kind !== 'slashCommand' && nativeKinds.has(kind));
+  // Dynamic component identities exist only after preparation. Static inspection
+  // reports the declarations it can read and leaves that collection unobserved.
+  const orderedNativeKinds = NATIVE_KIND_ORDER.filter((kind) => nativeKinds.has(kind));
   const orderedExtensionKinds = EXTENSION_KIND_ORDER.filter((kind) => extensionKinds.has(kind));
-  const orderedUnsupportedKinds = NATIVE_KIND_ORDER
-    .filter((kind): kind is CodexUnsupportedNativeKind => kind === 'slashCommand' && unsupportedKinds.has(kind));
+  const orderedUnsupportedKinds: CodexUnsupportedNativeKind[] = [];
   const collisions = collectOwnerCollisions(components);
   const missingNativeIdentityKinds = orderedNativeKinds.filter((kind) =>
     components.some((component) => component.owner === 'aw'
@@ -306,6 +278,7 @@ export function analyzeCodexSurface(
   return {
     ok: errorCode === undefined,
     configInputs,
+    dynamicComponents: options.preparedComponents ? 'prepared' : manifest.artifacts ? 'unprepared' : 'not-declared',
     nativeKinds: orderedNativeKinds,
     extensionKinds: orderedExtensionKinds,
     unsupportedKinds: orderedUnsupportedKinds,
