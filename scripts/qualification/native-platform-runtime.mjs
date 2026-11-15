@@ -41,6 +41,7 @@ export function isolatedEnvironment(root, network = false) {
     npm_config_cache: path.join(root, 'npm-cache'), npm_config_registry: 'https://registry.npmjs.org',
     npm_config_audit: 'false', npm_config_fund: 'false',
     CI: '1', NO_COLOR: '1', TERM: 'dumb', DO_NOT_TRACK: '1', DISABLE_TELEMETRY: '1',
+    AGY_CLI_DISABLE_AUTO_UPDATE: 'true',
     DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   };
   for (const key of ['SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT']) {

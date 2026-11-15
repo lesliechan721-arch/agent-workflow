@@ -7,7 +7,6 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { assertCommand, execute, prepareEnvironment, renderPackage, sha256, verifyCandidate } from './native-platform-runtime.mjs';
 import { probeAntigravityLocalManagement } from './native-platform-antigravity-management.mjs';
-import { runScope } from './native-platforms.mjs';
 
 export const interfaceDistributions = Object.freeze({
   cursor: Object.freeze({ version: '2026.11.05-86047df',
@@ -196,7 +195,10 @@ export async function probeClientInterfaces(platform, launcher, context, runComm
         if (processFailed) break;
       }
     } else report.inventory = { status: 'unverified', reason: 'Fixed version and plugin list --json parser were not confirmed.' };
-  } else report.inventory = { status: 'unverified', reason: 'Marketplace list is account-visible; no account query was requested.' };
+  } else {
+    report.inventory = { status: 'unverified', reason: 'Marketplace list is account-visible; no account query was requested.' };
+    report.scope = { status: 'unverified', reason: 'The pinned CLI exposes account marketplace commands, not a credential-free local effective plugin scope query. Interactive plugin pagers and internal resolvers are not a verified query interface.' };
+  }
   if (platform === 'antigravity' && options.localManagement && !processFailed && report.status === 'observed'
     && report.commands.filter(entry => entry.id.endsWith('-plugin-list')).length === 2
     && report.commands.filter(entry => entry.id.endsWith('-plugin-list')).every(entry => entry.stdout.trim() === '[]')) {
@@ -230,7 +232,8 @@ export async function runInterfaceProbes(options) {
       credentials: 'empty temporary runtime whitelist', stdin: 'EOF', sessions: 'none', models: 'none',
       network: 'blocking HTTP(S)/ALL proxies for client commands; not an OS firewall',
       clientProcessContract: 'verified-observed except explicitly approved Antigravity 1.3.4 Linux x64 agents inventory observed mode; original deadlines, marker/identity and normal descendant exit/cleanup retained; not Provider or OS qualification',
-      localManagement: 'Antigravity Linux x64/User public AW install, version and same-version renderer refresh, native consumer bytes, fresh effective scope and removal; previous direct User leaf evidence retained; Project agents query remains blocked by normal descendant exit and is not repeated in this User run' }, clients: [] };
+      autoUpdate: 'AGY_CLI_DISABLE_AUTO_UPDATE=true in the isolated whitelist; generic DISABLE_AUTOUPDATER is not sufficient for the pinned client',
+      localManagement: 'Antigravity Linux x64 candidate User management and Project effective-scope investigation; agents is an agent inventory observation only, never a substitute for effective plugin or Skill scope. No public AW or model session is run by this interface probe.' }, clients: [] };
   try {
     if (process.env.GITHUB_ACTIONS !== 'true' || process.platform !== 'linux' || process.arch !== 'x64') throw new Error('hosted-linux-x64-required');
     report.candidate = await verifyCandidate(options.candidate);
@@ -264,22 +267,22 @@ export async function runInterfaceProbes(options) {
           const setup = await execute({ executable: 'git', prefix: [] }, ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env });
           assertCommand(setup);
           client.projectSetup = commandEvidence(setup);
-          // Run the independently qualified User cell before the still
-          // unqualified Project inventory. A later Project process failure
-          // cannot erase this result or authorize further client commands.
-          client.publicAw = await runScope(platform, 'user', launcher, { publicAw: true, clientBin: path.join(root, 'public-bin') });
-          if (client.publicAw.commands.some(command => command.processFailure || command.timedOut
-            || command.cancelled || command.maxBufferExceeded || command.terminationReason && command.terminationReason !== 'complete')) {
-            throw new Error('public-aw-process-contract-failed');
-          }
         }
-        Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }, execute));
-        if (platform === 'antigravity') client.projectQualification = {
-          status: 'blocked', reason: 'unverified effective Project scope and live descendants before agents completion',
-          sourceRun: 'https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43466772539',
-          executedInThisRun: false, productionProfilePromoted: false };
-        if (platform === 'antigravity' && client.publicAw) {
-          if (client.publicAw.status !== 'passed') { client.status = 'failed'; client.publicAwReason = client.publicAw.reason; }
+        Object.assign(client, await probeClientInterfaces(platform, launcher, { root, project, neutral, env }, execute,
+          platform === 'antigravity' ? { localManagement: true, antigravityAgentObservation: true } : {}));
+        client.entriesAfter = await Promise.all(entries.map(async entry => ({
+          path: entry.path, sha256: sha256(await fs.readFile(entry.path)),
+        })));
+        client.entryBytesUnchanged = client.entriesAfter.every((entry, index) => entry.sha256 === entries[index].sha256);
+        if (!client.entryBytesUnchanged) throw new Error('fixed-client-entry-changed');
+        if (platform === 'antigravity') {
+          const projectScope = client.management?.scopes.find(scope => scope.scope === 'project');
+          client.projectQualification = {
+            status: 'blocked',
+            reason: projectScope?.reason ?? 'No verified effective Project plugin or Skill scope query result.',
+            inventoryScope: projectScope?.scopeEvidence ?? 'unverified',
+            executedInThisRun: projectScope !== undefined, productionProfilePromoted: false,
+            previousProcessFailure: 'https://github.com/lesliechan721-arch/agent-workflow/actions/runs/43466772539' };
         }
       } catch (error) {
         client.status = 'failed'; client.reason = error?.message;

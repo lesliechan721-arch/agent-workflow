@@ -176,6 +176,9 @@ test('isolates configuration and does not pass arbitrary credentials or startup 
     assert.equal(env.COPILOT_HOME, path.join(root, 'copilot'));
     assert.equal(env.COPILOT_OFFLINE, 'true');
     assert.equal(env.COPILOT_AUTO_UPDATE, 'false');
+    // The pinned Antigravity updater accepts the literal "true", not "1".
+    // A background update would invalidate the fixed binary and process scope.
+    assert.equal(env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true');
     assert.equal(env.HTTPS_PROXY, 'http://127.0.0.1:1');
     assert.equal(isolatedEnvironment(root, true).GITHUB_TOKEN, undefined);
   } finally {
