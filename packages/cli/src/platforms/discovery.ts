@@ -184,25 +184,27 @@ export async function installationInvocation(product: ProductInstallation, ctx: 
   return { command: executable, args, cwd: ctx.cwd, env: ctx.env, signal: ctx.signal };
 }
 
-/** Metadata binds the declared version to this npm JS entry; discovery still probes it. */
-async function geminiNpmIdentity(ctx: ReadContext, invocation: NativeCliInvocation, versionOutput: string, requiredBin?: string): Promise<boolean> {
-  const entry = invocation.command === process.execPath && invocation.args.length === 2
-    && invocation.args[1] === '--version' ? invocation.args[0] : undefined;
+/** Metadata binds the declared version and npm bin to this JS entry; native probes remain required. */
+export async function npmCliEntryIdentity(ctx: ReadContext, invocation: NativeCliInvocation,
+  platform: 'gemini' | 'pi', versionOutput: string, requiredBin?: string): Promise<boolean> {
+  const entry = invocation.command === process.execPath ? invocation.args[0] : undefined;
   const version = versionOutput.trim();
   if (!entry || !path.isAbsolute(entry) || !entry.endsWith('.js')
     || extractStrictSemVerTokenFromVersionOutput(version) !== version) return false;
   try {
     const actualEntry = await fs.realpath(entry);
-    // Official npm layouts place the entry at the package root or one directory below it.
-    for (const root of [path.dirname(actualEntry), path.dirname(path.dirname(actualEntry))]) {
+    // Gemini entries use at most two levels. The fixed Pi bundle uses three.
+    const levels = requiredBin?.split('/').length ?? 2;
+    let root = path.dirname(actualEntry);
+    for (let depth = 0; depth < levels; depth += 1, root = path.dirname(root)) {
       const file = await containedFile(root, path.join(root, 'package.json'));
       if (!file) continue;
       const metadata: unknown = JSON.parse(await smallText(file));
       if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
       const pkg = metadata as { name?: unknown; version?: unknown; bin?: unknown };
-      if (pkg.name !== '@google/gemini-cli' || pkg.version !== version
+      if (pkg.name !== cliProfiles[platform].packageName || pkg.version !== version
         || !pkg.bin || typeof pkg.bin !== 'object' || Array.isArray(pkg.bin)) return false;
-      const bin = (pkg.bin as Record<string, unknown>).gemini;
+      const bin = (pkg.bin as Record<string, unknown>)[platform];
       if (typeof bin !== 'string' || path.isAbsolute(bin)) return false;
       const parts = bin.replace(/^\.\//u, '').split(/[/\\]/u);
       if (!parts.length || parts.some((part) => !part || part === '.' || part === '..')) return false;
@@ -224,14 +226,16 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
     const product = installation(platform, 'cli', entry, 'unknown', null, ['clientProbeFailed']);
     try {
       const invocation = await installationInvocation(product, ctx, ['--version']);
-      const directGeminiVersion = platform === 'gemini' && await geminiNpmIdentity(ctx, invocation, '0.67.0', 'bundle/gemini.js');
+      const directGeminiVersion = platform === 'gemini' && await npmCliEntryIdentity(ctx, invocation, 'gemini', '0.67.0', 'bundle/gemini.js');
       // Fixed 0.67.0 otherwise loads the CLI twice by relaunching Node. Keep
       // this environment override local to its actual version probe.
       const versionContext = directGeminiVersion ? { ...ctx, env: { ...(ctx.env ?? process.env), GEMINI_CLI_NO_RELAUNCH: 'true' } } : ctx;
       const versionOutput = await probe(versionContext, invocation.command, invocation.args,
         directGeminiVersion ? GEMINI_NPM_VERSION_PROBE_TIMEOUT_MS : DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
       if (!profile.identity.test(versionOutput)
-        && !(platform === 'gemini' && await geminiNpmIdentity(ctx, invocation, versionOutput))) {
+        && !(platform === 'gemini' && await npmCliEntryIdentity(ctx, invocation, 'gemini', versionOutput))
+        && !(platform === 'pi' && versionOutput.trim() === '1.5.0'
+          && await npmCliEntryIdentity(ctx, invocation, 'pi', versionOutput, 'dist/bundle/cli.js'))) {
         const help = await probe(ctx, invocation.command, [...invocation.args.slice(0, -1), '--help']);
         if (!profile.identity.test(help)) {
           product.reasonCodes = ['clientIdentityUnconfirmed']; throw new Error('clientIdentityUnconfirmed');

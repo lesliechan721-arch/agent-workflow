@@ -9,6 +9,9 @@ import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/ge
 import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
+import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../../src/constants.js';
+import { queryNativeDeploymentResult } from '../../src/platforms/inspection-query.js';
+import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
 
 const platforms = ['codex', 'claude', 'gemini', 'copilot'] as const;
@@ -35,7 +38,7 @@ async function fixture(platform: Platform, project = true) {
     claudeScope: 'user' as 'user' | 'managed' | 'project' | 'local', claudeProjectPath: cwd };
   ctx.runner = async (request) => {
     calls.push(request);
-    const command = request.args.join(' ');
+    const command = request.args.slice(request.command === process.execPath ? 1 : 0).join(' ');
     if (command !== `plugin list --marketplace ${layout.marketplaceName} --json`
       && !['plugin list --json', 'plugin marketplace list --json', 'extensions list --output-format json'].includes(command)) {
       throw new Error('Unexpected native query.');
@@ -72,7 +75,129 @@ async function fixture(platform: Platform, project = true) {
   return { ctx, binding, layout, id, host, native, calls, settings, configure };
 }
 
+async function geminiNpmFixture(project = true, bin = 'bundle/gemini.js') {
+  const item = await fixture('gemini', project);
+  const packageRoot = path.join(item.ctx.cwd, 'native-client/node_modules/@google/gemini-cli');
+  const entry = path.join(packageRoot, bin);
+  const metadata = { name: '@google/gemini-cli', version: '0.67.0', bin: { gemini: bin } };
+  await fs.outputFile(entry, '#!/usr/bin/env node\n');
+  await fs.outputJson(path.join(packageRoot, 'package.json'), metadata);
+  item.binding.consumers[0]!.entry = { kind: 'cli', executable: entry, configRoot: item.host };
+  return { ...item, packageRoot, entry, metadata };
+}
+
 describe('native deployment state authority', () => {
+  // Test Value Gate: the pinned official list command may skip the bootstrap
+  // parent, with native state, exact scope, cancellation and deadline intact.
+  it.each([false, true])('uses a local relaunch override for pinned Gemini inventory (project=%s)', async (project) => {
+    const item = await geminiNpmFixture(project);
+    item.ctx.env = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'caller-value' };
+    const originalEnv = { ...item.ctx.env };
+    const processFlag = process.env.GEMINI_CLI_NO_RELAUNCH;
+    item.ctx.signal = new AbortController().signal;
+    const observed = await inspectDeployment(item.ctx, item.binding);
+    expect(observed.registration).toBe('present');
+    expect(observed.consumers[0]?.activation).toBe('enabled');
+    expect(item.calls.length).toBe(1);
+    const call = item.calls[0]!;
+    expect(call.command).toBe(process.execPath);
+    expect(call.args).toEqual([item.entry, 'extensions', 'list', '--output-format', 'json']);
+    expect(call.cwd === item.ctx.cwd).toBe(project);
+    if (!project) {
+      expect(call.cwd.startsWith(`${item.ctx.cwd}${path.sep}`)).toBe(false);
+      expect(await fs.pathExists(call.cwd)).toBe(false);
+    }
+    expect(call.signal).toBe(item.ctx.signal);
+    expect(call.timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
+    expect(call.env?.GEMINI_CLI_NO_RELAUNCH).toBe('true');
+    expect(Object.keys(call.env ?? {}).sort()).toEqual(Object.keys(originalEnv).sort());
+    expect(Object.entries(originalEnv).every(([key, value]) => key === 'GEMINI_CLI_NO_RELAUNCH' || call.env?.[key] === value)).toBe(true);
+    expect(call.env === item.ctx.env).toBe(false);
+    expect(item.ctx.env?.GEMINI_CLI_NO_RELAUNCH).toBe('caller-value');
+    expect(process.env.GEMINI_CLI_NO_RELAUNCH).toBe(processFlag);
+  });
+
+  // Test Value Gate: the optimization must use the verified Node entry behind
+  // Windows npm shims, without executing a foreign command file.
+  it('uses only the verified Gemini Windows npm entry for inventory', async () => {
+    const item = await geminiNpmFixture();
+    const binRoot = path.dirname(path.dirname(path.dirname(item.packageRoot)));
+    const shim = path.join(binRoot, 'gemini.cmd');
+    await fs.outputFile(shim, renderNpmCmdShim('node_modules\\@google\\gemini-cli\\bundle\\gemini.js'));
+    item.ctx.platform = 'win32';
+    item.binding.consumers[0]!.entry = { kind: 'cli', executable: shim, configRoot: item.host };
+    const calls: NativeCliInvocation[] = [];
+    item.ctx.runner = async (call) => {
+      calls.push(call);
+      return { exitCode: 0, stdout: '', stderr: '[]\n' };
+    };
+    await queryNativeDeploymentResult(item.ctx, item.binding, ['extensions', 'list', '--output-format', 'json']);
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.command).toBe(process.execPath);
+    expect(calls[0]!.args).toEqual([item.entry, 'extensions', 'list', '--output-format', 'json']);
+    expect(calls[0]!.env?.GEMINI_CLI_NO_RELAUNCH).toBe('true');
+    await fs.outputJson(path.join(item.packageRoot, 'package.json'), { ...item.metadata, name: 'foreign-cli' });
+    await expect(queryNativeDeploymentResult(item.ctx, item.binding,
+      ['extensions', 'list', '--output-format', 'json'])).rejects.toThrow();
+    expect(calls.length).toBe(1);
+  });
+
+  // Test Value Gate: metadata selects only a startup optimization. A mismatch
+  // must still execute the original query and preserve its native bytes.
+  it.each([
+    'missing', 'invalid', 'foreign', 'manifest-version', 'product-version', 'bin-mismatch', 'other-entry', 'native', 'other-args',
+  ] as const)('keeps the original Gemini query for %s', async (kind) => {
+    const item = await geminiNpmFixture(true, kind === 'other-entry' ? 'dist/index.js' : undefined);
+    const file = path.join(item.packageRoot, 'package.json');
+    if (kind === 'missing') await fs.remove(file);
+    else if (kind === 'invalid') await fs.writeFile(file, '{invalid');
+    else {
+      if (kind === 'foreign') item.metadata.name = 'foreign-cli';
+      if (kind === 'manifest-version') item.metadata.version = '0.67.1';
+      if (kind === 'product-version') item.binding.consumers[0]!.version = '0.67.1';
+      if (kind === 'bin-mismatch') {
+        item.metadata.bin.gemini = 'bundle/other.js';
+        await fs.outputFile(path.join(item.packageRoot, 'bundle/other.js'), 'Different entry.');
+      }
+      if (kind === 'native') item.binding.consumers[0]!.entry = {
+        kind: 'cli', executable: path.join(item.ctx.cwd, 'gemini'), configRoot: item.host,
+      };
+      await fs.outputJson(file, item.metadata);
+    }
+    item.ctx.env = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'caller-value' };
+    const args = ['extensions', 'list', '--output-format', 'json', ...(kind === 'other-args' ? ['--help'] : [])];
+    const nativeResult = { exitCode: 0, stdout: 'native stdout', stderr: 'native stderr' };
+    item.ctx.runner = async (call) => {
+      item.calls.push(call);
+      return nativeResult;
+    };
+    expect(await queryNativeDeploymentResult(item.ctx, item.binding, (cwd) => {
+      expect(cwd).toBe(item.ctx.cwd);
+      return args;
+    })).toBe(nativeResult);
+    expect(item.calls.length).toBe(1);
+    expect(item.calls[0]!.env === item.ctx.env).toBe(true);
+  });
+
+  // Test Value Gate: direct bootstrap inventory cannot convert native exit,
+  // timeout, abort or cleanup failures into successful JSON observations.
+  it.each(['exit', 'timeout', 'cleanup', 'aborted'] as const)('retains optimized Gemini %s query failure', async (failure) => {
+    const item = await geminiNpmFixture(false);
+    const calls: NativeCliInvocation[] = [];
+    item.ctx.runner = async (invocation) => {
+      calls.push(invocation);
+      if (failure === 'exit') return { exitCode: 1, stdout: '', stderr: '[]\n' };
+      throw new NativeCliError({ invocation, exitCode: failure === 'timeout' ? 124 : 1, stdout: '', stderr: '[]\n',
+        ...(failure === 'cleanup' ? { cleanupError: new Error('cleanup unconfirmed') } : { reason: failure }) });
+    };
+    await expect(queryNativeDeploymentResult(item.ctx, item.binding,
+      ['extensions', 'list', '--output-format', 'json'])).rejects.toMatchObject({ name: 'NativeCliError',
+      ...(failure === 'cleanup' ? { cleanupError: expect.any(Error) } : failure === 'exit' ? { exitCode: 1 } : { reason: failure }) });
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.env?.GEMINI_CLI_NO_RELAUNCH).toBe('true');
+    expect(await fs.pathExists(calls[0]!.cwd)).toBe(false);
+  });
+
   // Test Value Gate: Gemini 0.67 writes its empty inventory to stderr, not stdout.
   it('reads the Gemini empty stderr inventory as absent', async () => {
     const item = await fixture('gemini', false);

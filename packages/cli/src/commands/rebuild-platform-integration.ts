@@ -494,13 +494,18 @@ export class PlatformRebuildSession {
   async buildTarget(input: TargetInput): Promise<DesiredTarget> {
     if (input.readOnlyInspectionPlan) return this.build(input);
     const key = this.key(input);
+    let verifyInitial: (() => Promise<void>) | undefined;
     let target = this.targets.get(key);
-    if (!target) { target = this.build(input); this.targets.set(key, target); }
+    if (!target) {
+      target = this.build(input, (check) => { verifyInitial = check; });
+      this.targets.set(key, target);
+    }
     const result = await target;
-    await result.platformDeployment?.verify();
+    if (verifyInitial) await verifyInitial();
+    else await result.platformDeployment?.verify();
     return result;
   }
-  private async build(input: TargetInput): Promise<DesiredTarget> {
+  private async build(input: TargetInput, receiveInitialVerifier?: (check: () => Promise<void>) => void): Promise<DesiredTarget> {
     const resolution = await this.resolve(input);
     if (!resolution.bindings.length) throw Object.assign(
       new Error(`platformUnavailable: ${resolution.exclusions.map((item) => item.reasonCode).join(', ') || input.platform}`),
@@ -564,6 +569,7 @@ export class PlatformRebuildSession {
     const blockedReceipts: DeploymentReceipt[] = [];
     const cleanupResults: CleanupResult[] = [];
     const checks = new Map<string, () => Promise<boolean>>();
+    let initialDiscoveryCheck: (() => Promise<boolean>) | undefined;
     const priorProducers = new Map<string, ProducerIdentity[]>();
     const priorResourceRoots = new Map<string, string[]>();
     const bindingRecoveryEvidence: ManagedCommandBindingRecoveryEvidence[] = [];
@@ -661,10 +667,10 @@ export class PlatformRebuildSession {
             ownership: await inspectOwnedComponents({ components: [component], executor: this.ownership }), contentDigest: await ownedContentDigest(component),
           })) };
       };
-      const fingerprintParts = async () => ({
+      const fingerprintParts = async (discovery?: { value: unknown }) => ({
         managedCommandReview,
         source: removing ? null : await pathEvidence(input.plugin.rootDir),
-        discovery: removing ? { consumers: entry.binding.consumers, executables: await Promise.all(entry.binding.consumers.map((consumer) =>
+        discovery: discovery ? discovery.value : removing ? { consumers: entry.binding.consumers, executables: await Promise.all(entry.binding.consumers.map((consumer) =>
           consumer.entry?.kind === 'cli' ? pathEvidence(consumer.entry.executable) : null)) } : await adapter.discover(ctx),
         sharedReferenceView: this.context.sharedReferenceView,
         layout: await getDeploymentLayout(ctx, entry.binding),
@@ -684,20 +690,24 @@ export class PlatformRebuildSession {
       if (initialReads?.[0].status === 'rejected') throw initialReads[0].reason;
       const initialParts = initialReads?.[0].status === 'fulfilled' ? initialReads[0].value : await fingerprintParts();
       const initial = artifactValueDigest(initialParts);
-      const fingerprint = async (): Promise<string> => artifactValueDigest(await fingerprintParts());
+      const fingerprint = async (discovery?: { value: unknown }): Promise<string> => artifactValueDigest(await fingerprintParts(discovery));
       if (initialReads?.[1].status === 'rejected') throw initialReads[1].reason;
       let mutableBaseline = initialReads?.[1].status === 'fulfilled' ? initialReads[1].value : await currentMutable();
       const preparationObservation = entry.binding.route === 'gemini-extension' || entry.binding.route === 'antigravity-cli'
         ? mutableBaseline.observation : entry.observation;
-      checks.set(entry.binding.id, async () => {
-        if (!parallelNativeReads) return await fingerprint() === initial
+      const check = async (discovery?: { value: unknown }): Promise<boolean> => {
+        if (!parallelNativeReads) return await fingerprint(discovery) === initial
           && artifactValueDigest(await currentMutable()) === artifactValueDigest(mutableBaseline);
-        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(), currentMutable()]);
+        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(discovery), currentMutable()]);
         if (immutableRead.status === 'rejected') throw immutableRead.reason;
         if (immutableRead.value !== initial) return false;
         if (mutableRead.status === 'rejected') throw mutableRead.reason;
         return artifactValueDigest(mutableRead.value) === artifactValueDigest(mutableBaseline);
-      });
+      };
+      checks.set(entry.binding.id, () => check());
+      if (resolution.bindings.length === 1 && ['gemini-extension', 'pi-package'].includes(entry.binding.route)) {
+        initialDiscoveryCheck = () => check({ value: initialParts.discovery });
+      }
       this.mutableChecks.set(entry.binding.id, { physicalKey: entry.binding.physicalKey,
         marketplaceRoot: entry.layout.marketplaceRoot, sourceId: entry.binding.plugin.sourceId,
         sourceIdentity: entry.binding.plugin.sourceIdentity,
@@ -814,10 +824,11 @@ export class PlatformRebuildSession {
     target.ownedComponents = plans.flatMap((plan) => plan.evidence.ownership.map((item) => item.component));
     target.desiredOwnedComponents = target.ownedComponents;
     let frozenNativeTools: { signature: string; changes: NativeToolChange[] } | undefined;
-    const verify = async (): Promise<void> => {
-      for (const check of checks.values()) if (!await check()) throw new Error('operationPlanStale: deployment evidence changed.');
+    const verifyChecks = async (selected: Iterable<() => Promise<boolean>>): Promise<void> => {
+      for (const check of selected) if (!await check()) throw new Error('operationPlanStale: deployment evidence changed.');
       for (const plan of plans) if (!await this.verifyMarketplace(plan)) throw new Error('operationPlanStale: marketplace evidence changed.');
     };
+    const verify = (): Promise<void> => verifyChecks(checks.values());
     const canVerifyAtExecution = (): boolean => {
       const prepared = deployments[0];
       if (!prepared || deployments.length !== 1 || plans.length !== 1 || plans[0] !== prepared.plan || blockedReceipts.length
@@ -1084,6 +1095,19 @@ export class PlatformRebuildSession {
         return receipts;
       },
     };
+    if (initialDiscoveryCheck) {
+      const firstCheck = initialDiscoveryCheck;
+      const canReuseDiscovery = () => this.targets.size === 1 && deployments.length === 1 && plans.length === 1
+        && plans[0] === deployments[0]!.plan && !blockedReceipts.length && plans[0]!.operation === 'ensure'
+        && plans[0]!.expected.components.length > 0 && !plans[0]!.expected.unmet.length;
+      receiveInitialVerifier?.(async () => {
+        if (!canReuseDiscovery()) return verify();
+        // Only this creator reuses the discovery captured after rendering.
+        // Inspect still rereads all native facts and local copy/config evidence.
+        await verifyChecks([firstCheck]);
+        if (!canReuseDiscovery()) await verify();
+      });
+    }
     return target;
   }
 }

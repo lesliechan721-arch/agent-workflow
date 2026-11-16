@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
@@ -10,6 +11,7 @@ import { createEmptyPreferences, observePreferences, writePreferences } from '..
 import { projectReceipt } from '../../src/output/receipt-projection.js';
 import { publicExitCode, renderPublicResult } from '../../src/output/public-result.js';
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
+import { NativeCliError } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(): Promise<ReadContext> {
@@ -44,6 +46,22 @@ async function geminiNpmFixture(windows = false, bin = 'bundle/gemini.js') {
     await fs.outputFile(path.join(ctx.env!.PATH!, 'gemini.cmd'),
       renderNpmCmdShim(`node_modules\\@google\\gemini-cli\\${bin.replaceAll('/', '\\')}`));
   } else await fs.symlink(entry, path.join(ctx.env!.PATH!, 'gemini'));
+  return { ctx, packageRoot, entry: await fs.realpath(entry), metadata };
+}
+
+async function piNpmFixture(windows = false, bin = 'dist/bundle/cli.js') {
+  const ctx = await fixture();
+  const packageRoot = path.join(ctx.env!.PATH!, 'node_modules/@earendil-works/pi-coding-agent');
+  const entry = path.join(packageRoot, bin);
+  const metadata = { name: '@earendil-works/pi-coding-agent', version: '1.5.0', bin: { pi: bin } };
+  await fs.outputFile(entry, '#!/usr/bin/env node\n', { mode: 0o755 });
+  await fs.outputJson(path.join(packageRoot, 'package.json'), metadata);
+  if (windows) {
+    ctx.platform = 'win32';
+    ctx.env = { ...ctx.env, USERPROFILE: 'C:\\Users\\qualification', PI_CODING_AGENT_DIR: 'C:\\qualification\\pi' };
+    await fs.outputFile(path.join(ctx.env!.PATH!, 'pi.cmd'),
+      renderNpmCmdShim(`node_modules\\@earendil-works\\pi-coding-agent\\${bin.replaceAll('/', '\\')}`));
+  } else await fs.symlink(entry, path.join(ctx.env!.PATH!, 'pi'));
   return { ctx, packageRoot, entry: await fs.realpath(entry), metadata };
 }
 
@@ -149,18 +167,18 @@ describe('read-only target discovery and production selection', () => {
       expect(command).toBe(process.execPath); expect(args[0]).toBe(item.entry);
       expect(signal).toBe(item.ctx.signal);
       expect(timeoutMs).toBe(version === '0.67.0' ? 10_000 : DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
-      expect(env).toEqual({ ...originalEnv, GEMINI_CLI_NO_RELAUNCH: version === '0.67.0' ? 'true' : 'caller-value' });
-      if (version === '0.67.0') expect(env).not.toBe(item.ctx.env);
-      else expect(env).toBe(item.ctx.env);
+      expect(isDeepStrictEqual(env, { ...originalEnv, GEMINI_CLI_NO_RELAUNCH: version === '0.67.0' ? 'true' : 'caller-value' })).toBe(true);
+      if (version === '0.67.0') expect(env === item.ctx.env).toBe(false);
+      else expect(env === item.ctx.env).toBe(true);
       calls.push(args.at(-1)!);
       return { exitCode: 0, stdout: args.at(-1) === '--version' ? `${version}\n` : 'Gemini CLI', stderr: '' };
     };
     const first = (await discoverPlatform('gemini', item.ctx)).installations[0]!;
     expect(first).toMatchObject({ availability: 'available', version: '0.67.0' });
     const native = await installationInvocation(first, item.ctx, ['extensions', 'install', '/frozen-package']);
-    expect(native.env).toBe(item.ctx.env);
+    expect(native.env === item.ctx.env).toBe(true);
     expect(native.args).toEqual([item.entry, 'extensions', 'install', '/frozen-package']);
-    expect(item.ctx.env).toEqual(originalEnv);
+    expect(isDeepStrictEqual(item.ctx.env, originalEnv)).toBe(true);
     expect(process.env.GEMINI_CLI_NO_RELAUNCH).toBe(processFlag);
     version = '0.67.1'; item.metadata.version = version;
     await fs.outputJson(path.join(item.packageRoot, 'package.json'), item.metadata);
@@ -175,15 +193,15 @@ describe('read-only target discovery and production selection', () => {
     item.ctx.runner = async ({ command, args, env, timeoutMs }) => {
       expect(command).toBe(process.execPath); expect(args[0]).toBe(item.entry);
       expect(timeoutMs).toBe(10_000);
-      expect(env).toEqual({ ...originalEnv, GEMINI_CLI_NO_RELAUNCH: 'true' });
-      expect(env).not.toBe(item.ctx.env);
+      expect(isDeepStrictEqual(env, { ...originalEnv, GEMINI_CLI_NO_RELAUNCH: 'true' })).toBe(true);
+      expect(env === item.ctx.env).toBe(false);
       calls.push(args.at(-1)!);
       return { exitCode: 0, stdout: args.at(-1) === '--version' ? '0.67.0\n' : 'Gemini CLI', stderr: '' };
     };
     const found = await discoverPlatform('gemini', item.ctx);
     expect(found.availability, JSON.stringify(found)).toBe('available');
     expect(calls).toEqual(['--version']);
-    expect(item.ctx.env).toEqual(originalEnv);
+    expect(isDeepStrictEqual(item.ctx.env, originalEnv)).toBe(true);
   });
 
   // Invalid metadata must retain the existing independent help identity check.
@@ -206,7 +224,7 @@ describe('read-only target discovery and production selection', () => {
       const calls: string[] = [];
       item.ctx.runner = async ({ args, env, timeoutMs }) => {
         expect(timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
-        expect(env).toBe(item.ctx.env);
+        expect(env === item.ctx.env).toBe(true);
         calls.push(args.at(-1)!);
         return { exitCode: 0, stdout: args.at(-1) === '--version' ? '0.67.0\n' : 'Gemini CLI', stderr: '' };
       };
@@ -221,7 +239,7 @@ describe('read-only target discovery and production selection', () => {
     const ctx = kind === 'native' ? await fixture() : (await geminiNpmFixture(false, 'dist/index.js')).ctx;
     if (kind === 'native') await executable(ctx, 'gemini');
     ctx.runner = async ({ env, timeoutMs }) => {
-      expect(env).toBe(ctx.env);
+      expect(env === ctx.env).toBe(true);
       expect(timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
       return { exitCode: 0, stdout: 'Gemini CLI 0.67.0', stderr: '' };
     };
@@ -240,7 +258,7 @@ describe('read-only target discovery and production selection', () => {
       const version = args.at(-1) === '--version';
       calls.push(args.at(-1)!);
       expect(timeoutMs).toBe(version ? 10_000 : DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
-      expect(env).toEqual(version ? { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'true' } : item.ctx.env);
+      expect(isDeepStrictEqual(env, version ? { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'true' } : item.ctx.env)).toBe(true);
       return { exitCode: 0, stdout: version ? output.version : output.help, stderr: '' };
     };
     expect((await discoverPlatform('gemini', item.ctx)).installations[0]).toMatchObject({
@@ -255,7 +273,7 @@ describe('read-only target discovery and production selection', () => {
     const ctx = await fixture(); await executable(ctx, 'copilot');
     const stdout = `GitHub Copilot CLI 1.0.95.${lineEnding}Run 'copilot update' to check for updates.${lineEnding}`;
     const found = await discoverPlatform('copilot', { ...ctx, runner: async ({ env, timeoutMs }) => {
-      expect(env).toBe(ctx.env);
+      expect(env === ctx.env).toBe(true);
       expect(timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
       return { exitCode: 0, stdout, stderr: '' };
     } });
@@ -362,7 +380,77 @@ describe('read-only target discovery and production selection', () => {
     expect(resolvePlatformConfigRoot('pi', { ...windows, env: { ...windows.env, PI_CODING_AGENT_DIR: '~\\pi-agent' } })).toBe('C:\\Users\\reader\\pi-agent');
   });
 
-  // Test Value Gate: the official Pi CLI prints only a version; discovery must confirm its help identity without accepting an unrelated pi executable.
+  // Test Value Gate: the pinned npm package binds a bare Pi version to its real
+  // three-level entry, while each discovery still executes the native version.
+  it.each(process.platform === 'win32' ? [true] : [false, true])('identifies pinned Pi npm metadata without help (Windows=%s)', async (windows) => {
+    const item = await piNpmFixture(windows);
+    const calls: string[] = [];
+    item.ctx.runner = async ({ command, args, env, timeoutMs }) => {
+      expect(command).toBe(process.execPath); expect(args[0]).toBe(item.entry);
+      expect(env === item.ctx.env).toBe(true);
+      expect(timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
+      calls.push(args.at(-1)!);
+      if (args.at(-1) !== '--version') throw new Error('Pinned identity must not need help.');
+      return { exitCode: 0, stdout: '1.5.0\n', stderr: '' };
+    };
+    for (let index = 0; index < 2; index += 1) {
+      expect((await discoverPlatform('pi', item.ctx)).installations[0]).toMatchObject({ availability: 'available', version: '1.5.0' });
+    }
+    expect(calls).toEqual(['--version', '--version']);
+  });
+
+  // Test Value Gate: metadata can remove only the fixed entry's redundant help
+  // probe; missing or different evidence must retain independent identity.
+  it.runIf(process.platform !== 'win32').each([
+    'missing', 'invalid', 'foreign', 'version-mismatch', 'bin-mismatch', 'other-version', 'other-entry',
+  ] as const)('keeps Pi native version and help confirmation for %s', async (kind) => {
+    const item = await piNpmFixture(false, kind === 'other-entry' ? 'dist/cli.js' : undefined);
+    const file = path.join(item.packageRoot, 'package.json');
+    if (kind === 'missing') await fs.remove(file);
+    else if (kind === 'invalid') await fs.writeFile(file, '{invalid');
+    else {
+      if (kind === 'foreign') item.metadata.name = 'foreign-cli';
+      if (kind === 'version-mismatch') item.metadata.version = '1.5.1';
+      if (kind === 'bin-mismatch') {
+        item.metadata.bin.pi = 'dist/other.js';
+        await fs.outputFile(path.join(item.packageRoot, 'dist/other.js'), 'Different entry.');
+      }
+      if (kind === 'other-version') item.metadata.version = '1.5.1';
+      await fs.outputJson(file, item.metadata);
+    }
+    const observedVersion = kind === 'other-version' ? '1.5.1' : '1.5.0';
+    const calls: string[] = [];
+    item.ctx.runner = async ({ args }) => {
+      calls.push(args.at(-1)!);
+      return { exitCode: 0, stderr: '', stdout: args.at(-1) === '--version' ? `${observedVersion}\n` : 'pi coding agent' };
+    };
+    expect((await discoverPlatform('pi', item.ctx)).installations[0]).toMatchObject({ availability: 'available', version: observedVersion });
+    expect(calls).toEqual(['--version', '--help']);
+  });
+
+  // Test Value Gate: a matching package must not turn failed native probes into
+  // availability or swallow abort and unconfirmed process cleanup.
+  it.runIf(process.platform !== 'win32').each(['exit', 'timeout', 'cleanup', 'aborted'] as const)(
+    'retains Pi %s probe failure with matching metadata', async (failure) => {
+      const item = await piNpmFixture();
+      const calls: string[] = [];
+      item.ctx.runner = async (invocation) => {
+        calls.push(invocation.args.at(-1)!);
+        if (failure === 'exit') return { exitCode: 1, stdout: '1.5.0\n', stderr: '' };
+        throw new NativeCliError({ invocation, exitCode: failure === 'timeout' ? 124 : 1, stdout: '1.5.0\n', stderr: '',
+          ...(failure === 'cleanup' ? { cleanupError: new Error('cleanup unconfirmed') } : { reason: failure }) });
+      };
+      const pending = discoverPlatform('pi', item.ctx);
+      if (failure === 'cleanup' || failure === 'aborted') {
+        await expect(pending).rejects.toMatchObject({ name: 'NativeCliError',
+          ...(failure === 'cleanup' ? { cleanupError: expect.any(Error) } : { reason: 'aborted' }) });
+      } else expect((await pending).installations[0]).toMatchObject({ availability: 'unknown', version: null });
+      expect(calls).toEqual(['--version']);
+    },
+  );
+
+  // Test Value Gate: a validated npm launcher without a matching package version
+  // still needs Pi help, while a foreign Windows shim must never be executed.
   it('identifies the official Pi version and help output through its validated npm launcher', async () => {
     const ctx = await fixture();
     const packageRoot = path.join(ctx.env!.PATH!, 'node_modules', '@earendil-works', 'pi-coding-agent');

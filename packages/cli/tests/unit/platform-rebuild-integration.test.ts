@@ -198,15 +198,15 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
     nativeConsent: true, reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
   const original = getAgentPluginAdapter(platform);
   const adapter: typeof original = { ...original,
-    async discover(ctx) {
+    discover: vi.fn<typeof original.discover>(async (ctx) => {
       await reads.discovery?.();
       const configRoot = resolvePlatformConfigRoot(platform, ctx);
       return { platform, availability: 'available', diagnostics: [], installations: (options.multiple ? [configRoot, `${configRoot}-second`] : [configRoot])
         .map((root, index) => ({ id: `${platform}-evidence-client-${index}`, product: 'cli' as const,
           version: clientVersion, availability: 'available' as const, reasonCodes: [],
           entry: { kind: 'cli' as const, executable, configRoot: root } })) };
-    },
-    async inspect(ctx, binding) { await reads.inspection?.(); return original.inspect(ctx, binding); },
+    }),
+    inspect: vi.fn<typeof original.inspect>(async (ctx, binding) => { await reads.inspection?.(); return original.inspect(ctx, binding); }),
   };
   if (options.state === 'foreign') {
     const ctx = { cwd: isolated.layout.fixtureCwd, env: isolated.env, runner };
@@ -373,6 +373,123 @@ describe('native evidence checks', () => {
       expect(await fs.readFile(path.join(installed, relativeOutput), 'utf8')).toContain('Revision 3.');
       await retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!);
     } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: only the creator may reuse its just-read client discovery.
+  // Every local/native observation and every cached call stays fresh.
+  it.each(['gemini', 'pi'] as const)('keeps first-build %s observations fresh while reusing only discovery', async (platform) => {
+    const item = await nativeEvidenceFixture(platform);
+    try {
+      expect(vi.mocked(item.adapter.discover).mock.calls.length).toBe(2);
+      expect(vi.mocked(item.adapter.inspect).mock.calls.length).toBe(3);
+      const cached = await item.integration.buildTarget(item.input);
+      expect(cached.platformDeployment).toBe(item.target.platformDeployment);
+      expect(vi.mocked(item.adapter.discover).mock.calls.length).toBe(3);
+      expect(vi.mocked(item.adapter.inspect).mock.calls.length).toBe(4);
+      item.changeClient();
+      await expect(item.integration.buildTarget(item.input)).rejects.toThrow('operationPlanStale');
+      expect(vi.mocked(item.adapter.discover).mock.calls.length).toBe(4);
+      expect(vi.mocked(item.adapter.inspect).mock.calls.length).toBe(5);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: one target can contain distinct physical namespaces.
+  it('keeps complete discovery checks for multiple Pi bindings', async () => {
+    const item = await nativeEvidenceFixture('pi', { multiple: true });
+    try {
+      expect(item.target.platformDeployment?.plans).toHaveLength(2);
+      expect(vi.mocked(item.adapter.discover).mock.calls.length).toBe(5);
+      expect(vi.mocked(item.adapter.inspect).mock.calls.length).toBe(6);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: a failed creator check must not poison the cached raw build.
+  it('rechecks the cached target after an initial source change is restored', async () => {
+    const item = await nativeEvidenceFixture('pi');
+    const changed = path.join(item.root, 'changed-during-preparation');
+    let prepared = 0;
+    const adapter: typeof item.adapter = { ...item.adapter, lifecycle: { ...item.adapter.lifecycle,
+      prepare(input) {
+        const result = item.adapter.lifecycle.prepare(input);
+        if (++prepared === 1) fs.outputFileSync(changed, 'Changed after the baseline.');
+        return result;
+      },
+    } };
+    try {
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => adapter);
+      vi.mocked(adapter.discover).mockClear(); vi.mocked(adapter.inspect).mockClear();
+      const integration = createRebuildIntegration({ context: item.context });
+      await expect(integration.buildTarget(item.input)).rejects.toThrow('operationPlanStale');
+      expect(vi.mocked(adapter.discover).mock.calls.length).toBe(2);
+      await fs.remove(changed);
+      const restored = await integration.buildTarget(item.input);
+      expect(restored.platformDeployment?.plans).toHaveLength(1);
+      expect(prepared).toBe(1);
+      expect(vi.mocked(adapter.discover).mock.calls.length).toBe(3);
+      expect(vi.mocked(adapter.inspect).mock.calls.length).toBe(4);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: actual native-copy bytes are outside the AW source paths.
+  it('rereads Gemini native-copy bytes in the initial return check', async () => {
+    const item = await nativeEvidenceFixture('gemini');
+    try {
+      const installed = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(installed.status).toBe('succeeded');
+      const relative = item.target.platformDeployment!.plans[0]!.projections.flatMap((projection) => projection.components)[0]!.relativeOutputs[0]!;
+      const copy = path.join(geminiExtensionPaths({ cwd: item.input.cwd, env: item.context.env }).root,
+        item.layout.nativeIdentity.packageId, relative);
+      const original = await fs.readFile(copy, 'utf8');
+      let prepared = 0;
+      const adapter: typeof item.adapter = { ...item.adapter, lifecycle: { ...item.adapter.lifecycle,
+        prepare(input) {
+          const result = item.adapter.lifecycle.prepare(input);
+          if (++prepared === 1) fs.writeFileSync(copy, `${original}\nChanged native copy.`);
+          return result;
+        },
+      } };
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => adapter);
+      item.runner.mockClear();
+      const integration = createRebuildIntegration({ context: item.context });
+      await expect(integration.buildTarget({ ...item.input, command: 'sync' })).rejects.toThrow('operationPlanStale');
+      expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
+      expect(await fs.readFile(copy, 'utf8')).toContain('Changed native copy.');
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: waiting on the creator does not consume its private checker.
+  it('keeps a concurrent cache hit independently fresh', async () => {
+    const item = await nativeEvidenceFixture('pi');
+    const gate = evidenceReadGate();
+    let first: ReturnType<typeof item.integration.buildTarget> | undefined;
+    let second: typeof first;
+    try {
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => item.adapter);
+      vi.mocked(item.adapter.discover).mockClear(); vi.mocked(item.adapter.inspect).mockClear();
+      let inspections = 0;
+      item.reads.inspection = async () => { if (++inspections === 1) await gate.read(); };
+      const integration = createRebuildIntegration({ context: item.context });
+      const build = vi.spyOn(item.context.platformRebuildSession, 'buildTarget');
+      first = integration.buildTarget(item.input);
+      await vi.waitFor(() => expect(gate.started).toBe(true));
+      second = integration.buildTarget(item.input);
+      await vi.waitFor(() => expect(build).toHaveBeenCalledTimes(2));
+      gate.release();
+      const [created, cached] = await Promise.all([first, second]);
+      expect(created.platformDeployment).toBe(cached.platformDeployment);
+      expect(vi.mocked(item.adapter.discover).mock.calls.length).toBe(3);
+      expect(vi.mocked(item.adapter.inspect).mock.calls.length).toBe(4);
+    } finally {
+      gate.release();
+      await Promise.allSettled([first, second].filter((value) => value !== undefined));
+      await item.context.platformRebuildSession!.dispose();
+    }
   });
 
   // Test Value Gate: first installs and installed syncs need one fresh execution
