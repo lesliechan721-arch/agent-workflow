@@ -62,7 +62,7 @@ describe('CLI Gemini native consent', () => {
         const installed = path.join(resolvePlatformConfigRoot('gemini', { cwd, env }), 'extensions/demo');
         const manifest = await fs.readJson(path.join(installed, 'gemini-extension.json')).catch(() => null);
         const rules = geminiActivationRules(await readGeminiActivationSnapshot({ cwd: queryCwd, env }), 'demo');
-        return { exitCode: 0, stderr: '', stdout: JSON.stringify(manifest ? [{ name: manifest.name,
+        return { exitCode: 0, stdout: '', stderr: JSON.stringify(manifest ? [{ name: manifest.name,
           version: manifest.version, path: installed, isActive: geminiPathEnabled(rules, queryCwd) }] : []) };
       }
       expect(args.slice(0, 2)).toEqual(['extensions', 'install']);

@@ -134,7 +134,7 @@ describe('native recovery dispatch', () => {
         const queryCwd = invocation.cwd ?? cwd;
         const manifest = await fs.readJson(path.join(installed, 'gemini-extension.json')).catch(() => null);
         const rules = geminiActivationRules(await readGeminiActivationSnapshot({ cwd: queryCwd, env }), 'demo');
-        return { exitCode: 0, stderr: '', stdout: JSON.stringify(manifest ? [{ name: manifest.name,
+        return { exitCode: 0, stdout: '', stderr: JSON.stringify(manifest ? [{ name: manifest.name,
           version: manifest.version, path: installed, isActive: geminiPathEnabled(rules, queryCwd) }] : []) };
       }
       expect(['install', 'update', 'uninstall']).toContain(action);

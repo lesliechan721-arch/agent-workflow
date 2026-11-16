@@ -10,7 +10,7 @@ import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
 import { deploymentPackageComponent, inspectStaticSupplements } from '../platforms/inspection.js';
 import type { PlatformDriverState } from '../platforms/lifecycle.js';
-import { nativeRoute, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
+import { nativeRoute, piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
 import { assertGeminiProjectRules, geminiActivationEvidence, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
   geminiUserActivation, readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
@@ -676,9 +676,9 @@ export class PlatformRebuildSession {
           supplements: await Promise.all(projection.supplements.map((contribution) => pathEvidence(contribution.stagingPath))),
         }))),
       });
-      // Gemini and Copilot discovery and inspection are independent reads. Settle
+      // Discovery and inspection are independent reads for these routes. Settle
       // both before comparing or throwing, while preserving immutable priority.
-      const parallelNativeReads = entry.binding.route === 'gemini-extension' || entry.binding.route === 'copilot-marketplace';
+      const parallelNativeReads = ['gemini-extension', 'copilot-marketplace', 'pi-package'].includes(entry.binding.route);
       const initialReads = parallelNativeReads
         ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
       if (initialReads?.[0].status === 'rejected') throw initialReads[0].reason;
@@ -824,9 +824,13 @@ export class PlatformRebuildSession {
         || target.operationActions === undefined || target.operationActions.some((action) =>
           action.kind === 'runPreApply' || action.kind === 'syncManagedCommandPackage')) return false;
       const { plan, driverState } = prepared;
-      return plan.operation === 'ensure' && ['gemini-extension', 'copilot-marketplace'].includes(plan.binding.route)
+      const hiddenEmptyPiProject = piProjectRegistrationHidden(plan.binding, driverState.before)
+        && driverState.before.package === 'absent' && driverState.before.ownership === 'absent'
+        && plan.evidence.sharedReferences === 'none' && plan.evidence.ownership.every((item) => item.state === 'absent')
+        && plan.effects.every((effect) => ['publish-package', 'register'].includes(effect.kind));
+      return plan.operation === 'ensure' && ['gemini-extension', 'copilot-marketplace', 'pi-package'].includes(plan.binding.route)
         && plan.binding.platform === target.identity.platform && plan.expected.components.length > 0 && !plan.expected.unmet.length
-        && driverState.before.package !== 'unknown' && driverState.before.registration !== 'unknown'
+        && driverState.before.package !== 'unknown' && (driverState.before.registration !== 'unknown' || hiddenEmptyPiProject)
         && ['absent', 'aw', 'shared'].includes(driverState.before.ownership)
         && plan.effects.every((effect) => ['publish-package', 'register', 'refresh', 'activate'].includes(effect.kind));
     };

@@ -16,7 +16,7 @@ import { inspectPiDeployment } from './inspection-pi.js';
 import { inspectGrokDeployment } from './inspection-grok.js';
 import { getQualifiedPlatformProfile } from './capabilities.js';
 import { getPhysicalKey } from './identity.js';
-import { queryNativeDeployment } from './inspection-query.js';
+import { queryNativeDeployment, queryNativeDeploymentResult } from './inspection-query.js';
 import { geminiActivationRules, geminiExtensionPaths, geminiScopePattern, geminiUserActivation,
   readGeminiActivationSnapshot, readGeminiNativeCopyContentDigest } from './gemini-activation.js';
 
@@ -292,7 +292,13 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
         const enabled = geminiUserActivation(snapshot, nativeId, geminiExtensionPaths(ctx).home);
         return { activation: enabled === 'unknown' ? 'unknown' : enabled ? 'enabled' : 'disabled' };
       });
-      const inventory = rows(await queryNativeDeployment(ctx, binding, ['extensions', 'list', '--output-format', 'json']));
+      // Gemini 0.67 flushes its JSON ConsoleLog events to stderr on exit.
+      // A second output stream cannot establish an unambiguous inventory.
+      const output = await queryNativeDeploymentResult(ctx, binding, ['extensions', 'list', '--output-format', 'json']);
+      if (output.stdout.trim()) throw new Error('nativeObservationInvalid');
+      const inventory = rows(output.stderr);
+      if (inventory.some((row) => typeof row.name !== 'string' || !row.name.trim()
+        || typeof row.isActive !== 'boolean' || typeof row.path !== 'string')) throw new Error('nativeObservationInvalid');
       const matches = inventory.filter((row) => row.name === nativeId);
       if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
       result.registration = matches.length ? 'present' : 'absent';

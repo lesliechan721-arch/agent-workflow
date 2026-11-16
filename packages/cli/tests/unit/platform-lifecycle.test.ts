@@ -897,9 +897,9 @@ describe('platform inspection and native activation', () => {
     await fs.outputJson(metadataPath, { type: 'local', source: layout.packageRoot });
     await fs.outputJson(path.join(installed, 'gemini-extension.json'), { name: 'demo', version: '1.0.0' });
     await fs.outputJson(path.join(ctx.cwd, '.gemini/extensions/extension-enablement.json'), { demo: { overrides: [`!${geminiScopePattern(ctx.cwd)}`] } });
-    const runner = vi.fn(async (_call: NativeCliInvocation) => ({ exitCode: 0, stdout: JSON.stringify([
+    const runner = vi.fn(async (_call: NativeCliInvocation) => ({ exitCode: 0, stderr: JSON.stringify([
       { name: 'demo', path: installed, isActive: true },
-    ]), stderr: '' }));
+    ]), stdout: '' }));
     const observation = await inspectDeployment({ ...ctx, runner }, input.binding);
     expect(observation).toMatchObject({ registration: 'present', ownership: 'aw' });
     expect(observation.consumers[0]?.activation).toBe('enabled');

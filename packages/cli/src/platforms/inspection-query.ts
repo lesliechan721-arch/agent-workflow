@@ -1,12 +1,12 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { createSafeNeutralCwd } from '../intent/scope-context.js';
-import { runNativeCliChecked } from '../utils/native-cli.js';
+import { runNativeCliChecked, type NativeCliResult } from '../utils/native-cli.js';
 import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, ReadContext } from './contracts.js';
 
 /** User queries exclude caller project configuration; project queries use the exact binding. */
-export async function queryNativeDeployment(ctx: ReadContext, binding: DeploymentBinding,
-  args: string[] | ((cwd: string) => string[])): Promise<string> {
+export async function queryNativeDeploymentResult(ctx: ReadContext, binding: DeploymentBinding,
+  args: string[] | ((cwd: string) => string[])): Promise<NativeCliResult> {
   const product = binding.consumers.find((item) => item.entry?.kind === 'cli' && item.availability === 'available');
   if (!product) throw new Error('nativeEntryUnavailable');
   const neutral = binding.scope.kind === 'user' ? await createSafeNeutralCwd(ctx.env ?? process.env) : undefined;
@@ -16,8 +16,13 @@ export async function queryNativeDeployment(ctx: ReadContext, binding: Deploymen
     const output = await runNativeCliChecked({ ...invocation, signal: ctx.signal,
       timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, ctx.runner);
     if (Buffer.byteLength(output.stdout) + Buffer.byteLength(output.stderr) > 1024 * 1024) throw new Error('nativeObservationOutputLimit');
-    return output.stdout;
+    return output;
   } finally {
     await neutral?.dispose();
   }
+}
+
+export async function queryNativeDeployment(ctx: ReadContext, binding: DeploymentBinding,
+  args: string[] | ((cwd: string) => string[])): Promise<string> {
+  return (await queryNativeDeploymentResult(ctx, binding, args)).stdout;
 }

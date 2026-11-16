@@ -101,7 +101,7 @@ function evidenceReadGate() {
   return gate;
 }
 
-async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravity', options: { state?: 'foreign' | 'unknown'; multiple?: boolean } = {}) {
+async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravity' | 'pi', options: { state?: 'foreign' | 'unknown'; multiple?: boolean; scope?: 'user' | 'project' } = {}) {
   if (platform === 'antigravity') installNativeTestQualification({ platforms: ['antigravity'] });
   const isolated = getCurrentSourceTestIsolation();
   const root = path.join(isolated.layout.fixtureCwd, `${platform}-evidence-source`);
@@ -118,21 +118,23 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
   Object.assign(plugin, { sourceId: 'team', pluginId: 'team/evidence-demo', sourceIdentity: `sha256:${'d'.repeat(64)}` });
   const reads: { discovery?: () => Promise<void>; inspection?: () => Promise<void>; mutation?: () => void | Promise<void>;
     geminiInstallSource?: () => string; antigravityInstallSource?: () => string } = {};
-  const inventories = platform === 'gemini' ? ['extensions list --output-format json'] : platform === 'antigravity' ? ['plugin list --json'] : ['plugin marketplace list --json', 'plugin list --json'];
+  const inventories = platform === 'pi' ? ['list'] : platform === 'gemini' ? ['extensions list --output-format json'] : platform === 'antigravity' ? ['plugin list --json'] : ['plugin marketplace list --json', 'plugin list --json'];
   let layout: Awaited<ReturnType<typeof getDeploymentLayout>> | undefined;
   let marketplaceAdded = false;
   let installed = false;
   let enabled = false;
-  let clientVersion = platform === 'gemini' ? '0.67.0' : platform === 'antigravity' ? '1.3.4' : '1.0.95';
+  let clientVersion = platform === 'pi' ? '1.5.0' : platform === 'gemini' ? '0.67.0' : platform === 'antigravity' ? '1.3.4' : '1.0.95';
   const runner = vi.fn(async (invocation: Parameters<RebuildExecutionContext['nativeCliRunner']>[0]) => {
     const args = invocation.args;
     if (inventories.includes(args.join(' '))) {
+      if (platform === 'pi') return { exitCode: 0, stderr: '', stdout: options.state === 'unknown' ? 'invalid inventory' : installed
+        ? `${options.scope === 'project' ? 'Project' : 'User'} packages:\n  ${layout!.packageRoot}\n    ${layout!.packageRoot}\n` : 'No packages installed.\n' };
       if (platform === 'antigravity') return { exitCode: 0, stderr: '', stdout: JSON.stringify(installed ? [{
         name: layout!.nativeIdentity.packageId, source: 'antigravity', enabled,
         path: path.join(layout!.physicalIdentity.namespaceRoot, 'plugins', layout!.nativeIdentity.packageId), version: '1.0.0',
       }] : []) };
       if (platform === 'gemini') {
-        if (!installed) return { exitCode: 0, stdout: '[]', stderr: '' };
+        if (!installed) return { exitCode: 0, stdout: '', stderr: '[]' };
         const { root, file } = geminiExtensionPaths({ cwd: invocation.cwd, env: isolated.env });
         const config = await fs.readJson(file).catch(() => ({}));
         let isActive = true;
@@ -141,7 +143,7 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
           const location = pattern.slice(0, -2);
           if (pattern === '*' || invocation.cwd === location || invocation.cwd.startsWith(`${location}${path.sep}`)) isActive = !rule.startsWith('!');
         }
-        return { exitCode: 0, stderr: '', stdout: JSON.stringify([{
+        return { exitCode: 0, stdout: '', stderr: JSON.stringify([{
           name: layout!.nativeIdentity.packageId, path: path.join(root, layout!.nativeIdentity.packageId), isActive,
           installMetadata: { type: 'local', source: layout!.packageRoot },
         }]) };
@@ -158,7 +160,10 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
       return { exitCode: 0, stdout: JSON.stringify(rows), stderr: '' };
     }
     await reads.mutation?.();
-    if (platform === 'antigravity') {
+    if (platform === 'pi') {
+      if (args[0] !== 'install' && args[0] !== 'remove') throw new Error('Unexpected fixture Pi mutation.');
+      installed = args[0] === 'install';
+    } else if (platform === 'antigravity') {
       const directory = path.join(layout!.physicalIdentity.namespaceRoot, 'plugins', layout!.nativeIdentity.packageId);
       if (args[1] === 'install') {
         await fs.remove(directory);
@@ -206,14 +211,14 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
   if (options.state === 'foreign') {
     const ctx = { cwd: isolated.layout.fixtureCwd, env: isolated.env, runner };
     const resolved = await adapter.resolve(ctx, { plugin: { sourceId: plugin.sourceId!, sourceIdentity: plugin.sourceIdentity!,
-      pluginId: plugin.pluginId!, version: plugin.manifest.version }, scope: { kind: 'user' }, operation: 'ensure',
+      pluginId: plugin.pluginId!, version: plugin.manifest.version }, scope: options.scope === 'project' ? { kind: 'project', projectRoot: isolated.layout.fixtureCwd } : { kind: 'user' }, operation: 'ensure',
       discovery: await adapter.discover(ctx), recoveryCandidates: [] });
     const foreignLayout = await getDeploymentLayout(ctx, resolved.bindings[0]!);
     await fs.outputFile(path.join(foreignLayout.packageRoot, 'foreign.txt'), 'Keep foreign content.');
   }
   context.platformRebuildSession = new PlatformRebuildSession(context, () => adapter);
   const integration = createRebuildIntegration({ context });
-  const input = { plugin, platform, scope: 'user' as const, cwd: isolated.layout.fixtureCwd,
+  const input = { plugin, platform, scope: options.scope ?? 'user', cwd: isolated.layout.fixtureCwd,
     command: 'install' as const, catalog: { rootDir: root, source: 'local' as const, catalogVersion: '1.0.0', channel: 'latest' as const } };
   const target = await integration.buildTarget(input);
   expect(target.platformDeployment?.plans).toHaveLength(options.multiple ? 2 : 1);
@@ -372,7 +377,7 @@ describe('native evidence checks', () => {
 
   // Test Value Gate: first installs and installed syncs need one fresh execution
   // check, while receipt observation, mutation rebase and postcheck stay fresh.
-  it.each(['gemini', 'copilot'] as const)('checks fresh %s evidence once before first install and installed sync', async (platform) => {
+  it.each(['gemini', 'copilot', 'pi'] as const)('checks fresh %s evidence once before first install and installed sync', async (platform) => {
     const item = await nativeEvidenceFixture(platform);
     let discovery = 0;
     let inspection = 0;
@@ -423,6 +428,28 @@ describe('native evidence checks', () => {
       expect(synced.deploymentReceipts?.[0]?.after).toMatchObject({ package: 'present', registration: 'present', ownership: 'aw' });
       await target.platformDeployment!.postcheck(synced.deploymentReceipts!);
       expect([discovery, inspection]).toEqual([1, 3]);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: only a valid hidden Project inventory and an empty owned
+  // slot qualify; query failures retain the full preflight path and no writes.
+  it.each(['hidden', 'unknown'] as const)('checks fresh Pi Project evidence for %s inventory', async (state) => {
+    const item = await nativeEvidenceFixture('pi', { scope: 'project', ...(state === 'unknown' ? { state } : {}) });
+    let discovery = 0;
+    item.reads.discovery = async () => { discovery++; };
+    try {
+      expect(item.target.platformObservations?.[0]?.observation.registration).toBe('unknown');
+      expect(item.target.platformDeployment!.canVerifyAtExecution()).toBe(state === 'hidden');
+      const preparation = await prepareRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(preparation.status).toBe('ready');
+      expect(discovery).toBe(state === 'hidden' ? 0 : 1);
+      if (state === 'hidden') {
+        await fs.outputFile(path.join(item.root, 'changed-after-review'), 'Changed.');
+        const result = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+        expect(result).toMatchObject({ status: 'failed', error: { phase: 'preflight', message: expect.stringContaining('operationPlanStale') } });
+        expect(discovery).toBe(1);
+      }
+      expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
 
@@ -522,7 +549,7 @@ describe('native evidence checks', () => {
 
   // Test Value Gate: slow CLI identity and inventory reads may overlap only
   // within one check. Each verification must finish both fresh reads.
-  it.each(['gemini', 'copilot'] as const)('overlaps fresh discovery and inspection at each %s verification boundary', async (platform) => {
+  it.each(['gemini', 'copilot', 'pi'] as const)('overlaps fresh discovery and inspection at each %s verification boundary', async (platform) => {
     const item = await nativeEvidenceFixture(platform);
     const gates: ReturnType<typeof evidenceReadGate>[] = [];
     let pending: Promise<void> | undefined;
@@ -552,7 +579,7 @@ describe('native evidence checks', () => {
 
   // Test Value Gate: concurrent failures must not hide immutable staleness or
   // return before the other native read has completed.
-  it.each(['gemini', 'copilot'] as const)('waits for both %s reads and preserves stale and immutable error priority', async (platform) => {
+  it.each(['gemini', 'copilot', 'pi'] as const)('waits for both %s reads and preserves stale and immutable error priority', async (platform) => {
     const item = await nativeEvidenceFixture(platform);
     const discovery = evidenceReadGate();
     const inspection = evidenceReadGate();

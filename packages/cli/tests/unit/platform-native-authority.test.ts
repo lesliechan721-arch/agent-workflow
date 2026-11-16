@@ -8,7 +8,7 @@ import { deploymentPackageComponent, inspectDeployment } from '../../src/platfor
 import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty-state.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
-import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
+import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
 
 const platforms = ['codex', 'claude', 'gemini', 'copilot'] as const;
@@ -56,7 +56,9 @@ async function fixture(platform: Platform, project = true) {
     else if (platform === 'gemini') value = native.installed ? [{ name: id, isActive: native.enabled,
       path: path.join(geminiExtensionPaths(ctx).root, id), installMetadata: { type: 'local', source: layout.packageRoot } }] : [];
     else value = native.installed ? [{ name: layout.nativeIdentity.packageId, marketplace: layout.marketplaceName, enabled: native.enabled }] : [];
-    return { exitCode: 0, stdout: JSON.stringify(value), stderr: '' };
+    return platform === 'gemini'
+      ? { exitCode: 0, stdout: '', stderr: `${JSON.stringify(value)}\n` }
+      : { exitCode: 0, stdout: JSON.stringify(value), stderr: '' };
   };
   const settings = platform === 'codex' ? path.join(layout.activationPath, 'config.toml')
     : platform === 'gemini' ? geminiExtensionPaths(ctx).file
@@ -71,6 +73,66 @@ async function fixture(platform: Platform, project = true) {
 }
 
 describe('native deployment state authority', () => {
+  // Test Value Gate: Gemini 0.67 writes its empty inventory to stderr, not stdout.
+  it('reads the Gemini empty stderr inventory as absent', async () => {
+    const item = await fixture('gemini', false);
+    item.native.installed = false;
+    const observed = await inspectDeployment(item.ctx, item.binding);
+    expect(observed.registration).toBe('absent');
+    expect(observed.diagnostics).toEqual([]);
+  });
+
+  // Test Value Gate: native disabled remains authoritative over local enablement.
+  it('reads Gemini disabled activation from stderr despite local enablement', async () => {
+    const item = await fixture('gemini');
+    await item.configure(true);
+    item.native.enabled = false;
+    const observed = await inspectDeployment(item.ctx, item.binding);
+    expect(observed.registration).toBe('present');
+    expect(observed.consumers[0]?.activation).toBe('disabled');
+    expect(observed.configuration?.activation).toBe('enabled');
+  });
+
+  // Test Value Gate: invalid or ambiguous streams cannot authorize native absence or activation.
+  it.each([
+    { label: 'empty streams', stdout: '', stderr: '' },
+    { label: 'stdout-only JSON', stdout: '[]', stderr: '' },
+    { label: 'conflicting streams', stdout: '[{"name":"demo","isActive":true,"path":"/native/demo"}]', stderr: '[]\n' },
+    { label: 'invalid JSON', stdout: '', stderr: 'Warning\n[]' },
+    { label: 'invalid envelope', stdout: '', stderr: '{}' },
+    { label: 'invalid row', stdout: '', stderr: '[null]' },
+    { label: 'missing identity', stdout: '', stderr: '[{"isActive":true,"path":"/native/demo"}]' },
+    { label: 'invalid activation', stdout: '', stderr: '[{"name":"demo","isActive":"true","path":"/native/demo"}]' },
+    { label: 'invalid path', stdout: '', stderr: '[{"name":"demo","isActive":true,"path":null}]' },
+  ])('keeps Gemini state unknown for $label', async ({ stdout, stderr }) => {
+    const item = await fixture('gemini');
+    await item.configure(true);
+    item.ctx.runner = async () => ({ exitCode: 0, stdout, stderr });
+    const observed = await inspectDeployment(item.ctx, item.binding);
+    expect(observed.registration).toBe('unknown');
+    expect(observed.consumers[0]?.activation).toBe('unknown');
+    expect(observed.configuration?.activation).toBe('enabled');
+  });
+
+  // Test Value Gate: valid inventory bytes cannot hide native exit, timeout, or cleanup failures.
+  it.each(['exit', 'timeout', 'cleanup', 'aborted'] as const)('rejects Gemini %s failures with valid stderr JSON', async (failure) => {
+    const item = await fixture('gemini');
+    item.ctx.runner = async (invocation) => {
+      if (failure === 'exit') return { exitCode: 1, stdout: '', stderr: '[]\n' };
+      throw new NativeCliError({ invocation, exitCode: failure === 'timeout' ? 124 : 1, stdout: '', stderr: '[]\n',
+        ...(failure === 'cleanup' ? { cleanupError: new Error('cleanup unconfirmed') } : { reason: failure }) });
+    };
+    const pending = inspectDeployment(item.ctx, item.binding);
+    if (failure === 'cleanup' || failure === 'aborted') {
+      await expect(pending).rejects.toMatchObject({ name: 'NativeCliError',
+        ...(failure === 'cleanup' ? { cleanupError: expect.any(Error) } : { reason: 'aborted' }) });
+    } else {
+      const observed = await pending;
+      expect(observed.registration).toBe('unknown');
+      expect(observed.consumers[0]?.activation).toBe('unknown');
+    }
+  });
+
   // Test Value Gate: conflicting local entries must not replace native effective activation.
   it.each(platforms)('preserves %s native enabled when local activation is disabled', async (platform) => {
     const item = await fixture(platform);

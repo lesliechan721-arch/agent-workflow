@@ -89,7 +89,7 @@ describe('Gemini shared extension activation', () => {
     const runner = vi.fn(async (invocation: NativeCliInvocation) => {
       if (invocation.args.join(' ') === 'extensions list --output-format json') {
         const present = await fs.pathExists(installed);
-        return { exitCode: 0, stderr: '', stdout: JSON.stringify(present ? [{ name: identity.packageId,
+        return { exitCode: 0, stdout: '', stderr: JSON.stringify(present ? [{ name: identity.packageId,
           path: installed, isActive: true, installMetadata: { type: 'local', source: component.path } }] : []) };
       }
       if (invocation.args[1] === 'uninstall') {

@@ -7,11 +7,83 @@ import test from 'node:test';
 const enableName = 'AW_NATIVE_QUALIFICATION_MANAGED_TRACE';
 const previousEnable = process.env[enableName];
 delete process.env[enableName];
-const { createManagedTraceRunner, createManagedTraceWriter, managedTraceConfiguration, managedTraceInstalled } =
+const { createManagedTraceRunner, createManagedPluginTraceRunner, createManagedTraceWriter, managedTraceConfiguration, managedTraceInstalled } =
   await import('./native-platform-managed-trace.mjs');
 if (previousEnable !== undefined) process.env[enableName] = previousEnable;
 
 const PUBLIC_MARKER = 'AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER';
+
+function assertTracedInvocation(received, invocation) {
+  assert.equal(typeof received.onSpawn, 'function');
+  const { onSpawn, ...rest } = received;
+  assert.deepEqual(rest, invocation);
+}
+
+// Test Value Gate: only the active fixture marker may cross the isolated script
+// environment boundary; original options, backend, errors and privacy remain.
+test('injects only the current public marker into each qualification script call', async () => {
+  const env = { [PUBLIC_MARKER]: 'fixture-marker', PARENT_SECRET: 'private-parent' };
+  const invocation = Object.freeze({ command: 'private-command', args: ['private-argument'], cwd: 'private-cwd',
+    env: Object.freeze({ HOME: 'isolated-home', PATH: 'isolated-path' }), stdin: 'private-input' });
+  const result = Object.freeze({ exitCode: 0, signal: null, stdout: 'private-output', stderr: 'private-stderr', timedOut: false });
+  const records = [];
+  let calls = 0;
+  const options = Object.freeze({ timeoutMs: 1234, signal: new AbortController().signal, sensitiveValues: ['private-sensitive'],
+    onSpawn({ pid }) { assert.equal(pid, 456); throw new Error('diagnostic callback failure'); } });
+  const wrapped = createManagedPluginTraceRunner((received, receivedOptions) => {
+    calls += 1;
+    assert.deepEqual(received, { ...invocation, env: { ...invocation.env, [PUBLIC_MARKER]: env[PUBLIC_MARKER] } });
+    assert.notEqual(received.env, invocation.env);
+    const { onSpawn, ...rest } = receivedOptions;
+    assert.deepEqual(rest, { timeoutMs: options.timeoutMs, signal: options.signal, sensitiveValues: options.sensitiveValues });
+    assert.doesNotThrow(() => onSpawn({ pid: 456 }));
+    return Promise.resolve(result);
+  }, { env, emit: record => records.push(record) });
+  assert.equal(await wrapped(invocation, options), result);
+  env[PUBLIC_MARKER] = 'next-fixture-marker';
+  assert.equal(await wrapped(invocation, options), result);
+  assert.equal(calls, 2); assert.equal(invocation.env[PUBLIC_MARKER], undefined);
+  assert.deepEqual(records.map(record => record.phase), ['start', 'spawn', 'finish', 'start', 'spawn', 'finish']);
+  assert(records.every(record => record.role === 'plugin-script' && record.parentPid === process.pid && record.publicMarkerProvided));
+  assert(records.filter(record => record.phase === 'spawn').every(record => record.childPid === 456));
+  assert.notEqual(records[0].operationId, records[3].operationId);
+  const encoded = JSON.stringify(records);
+  for (const secret of ['fixture-marker', 'next-fixture-marker', 'private-', 'isolated-']) assert(!encoded.includes(secret));
+  const unchangedOptions = Object.freeze({ timeoutMs: 456 });
+  const unchanged = createManagedPluginTraceRunner((received, receivedOptions) => {
+    assert.equal(received, invocation); assert.equal(receivedOptions, unchangedOptions); return Promise.resolve(result);
+  }, { env: { PARENT_SECRET: 'private-parent' }, emit() { throw new Error('trace failure'); } });
+  assert.equal(await unchanged(invocation, unchangedOptions), result);
+});
+
+test('retains plugin errors and projects bounded snapshot timing without secrets', async () => {
+  const diagnostics = Array.from({ length: 5 }, (_, index) => ({
+    rootPid: 456, reason: 'marker-lookup-failed', stage: 'observation', markerLookupAttempts: 2,
+    snapshotStartedAt: 100, snapshotDeadline: 2100,
+    queries: [{ kind: 'marker', startedAt: 100, deadline: 2100, settledAt: 2100, callbackState: 'pending', completion: 'deadline' }],
+    environment: 'private-environment', marker: 'private-marker', index,
+  }));
+  const error = Object.assign(new Error('private-error'), { stderr: 'private-stderr', processTreeDiagnostics: diagnostics,
+    operationDiagnostic: { code: 'pluginProcessCleanupFailed', safeMessage: 'private-message' } });
+  for (const synchronous of [false, true]) {
+    const records = [];
+    const wrapped = createManagedPluginTraceRunner(() => {
+      if (synchronous) throw error;
+      return Promise.reject(error);
+    }, { env: { [PUBLIC_MARKER]: 'private-marker' }, emit: record => records.push(record) });
+    if (synchronous) assert.throws(() => wrapped({ env: {} }, { timeoutMs: 1234 }), received => received === error);
+    else await assert.rejects(wrapped({ env: {} }, { timeoutMs: 1234 }), received => received === error);
+    const finish = records.at(-1);
+    assert.equal(finish.failureCategory, 'cleanup-unconfirmed');
+    assert.equal(finish.processTreeDiagnostics.length, 2);
+    assert.deepEqual(finish.processTreeDiagnostics[0].queries, diagnostics[0].queries);
+    assert.equal(finish.processTreeDiagnostics[0].snapshotDeadline, 2100);
+    assert(!JSON.stringify(records).includes('private-'));
+  }
+  const wrapped = createManagedPluginTraceRunner(() => Promise.reject(error),
+    { env: { [PUBLIC_MARKER]: 'private-marker' }, emit() { throw new Error('trace failure'); } });
+  await assert.rejects(wrapped({ env: {} }, { timeoutMs: 1234 }), received => received === error);
+});
 
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-managed-trace-')));
@@ -67,9 +139,9 @@ test('samples completed Windows Codex PowerShell queries in the eight unmatched 
   }
 });
 
-// Test Value Gate: private diagnostics retain the exact invocation, including
+// Test Value Gate: private diagnostics retain the invocation fields, including
 // stdin exchange and cancellation, and return/reject the original native objects.
-test('passes one original invocation and returns the same successful or nonzero result', async (t) => {
+test('preserves native invocation fields and returns the same successful or nonzero result', async (t) => {
   const { entry } = await fixture(t);
   const input = Object.freeze({ initial: 'private input', onStdout() { return { end: true }; } });
   const invocation = Object.freeze({ command: entry, args: Object.freeze(['install', 'fixture']), input,
@@ -79,7 +151,7 @@ test('passes one original invocation and returns the same successful or nonzero 
     const records = [];
     let calls = 0;
     const wrapped = createManagedTraceRunner(async (received) => {
-      calls += 1; assert.equal(received, invocation); assert.equal(received.input, input); return result;
+      calls += 1; assertTracedInvocation(received, invocation); assert.equal(received.input, input); return result;
     }, { entries: [entry], client: 'pi', env: { [PUBLIC_MARKER]: 'public-value' }, emit: (record) => records.push(record) });
     assert.equal(await wrapped(invocation), result); assert.equal(calls, 1);
     assert.deepEqual(records.map((record) => record.phase), ['start', 'finish']);
@@ -94,6 +166,28 @@ test('passes one original invocation and returns the same successful or nonzero 
   }
 });
 
+// Test Value Gate: the logical native operation must bind its actual spawn PID
+// while keeping diagnostic callbacks separate from execution and marker facts.
+test('associates a native spawn with one operation and preserves a failing callback', async (t) => {
+  const { entry } = await fixture(t);
+  const records = [];
+  let callbacks = 0;
+  const result = Object.freeze({ exitCode: 0, stdout: '', stderr: '' });
+  const wrapped = createManagedTraceRunner(invocation => {
+    assert.doesNotThrow(() => invocation.onSpawn({ pid: 123 }));
+    return Promise.resolve(result);
+  }, { entries: [entry], client: 'codex', env: {}, emit: record => records.push(record) });
+  assert.equal(await wrapped({ command: entry, args: [], onSpawn({ pid }) {
+    callbacks += 1; assert.equal(pid, 123); throw new Error('diagnostic callback failed');
+  } }), result);
+  assert.equal(callbacks, 1);
+  assert.deepEqual(records.map(record => record.phase), ['start', 'spawn', 'finish']);
+  assert.equal(records[0].operationId, records[1].operationId);
+  assert.equal(records[1].operationId, records[2].operationId);
+  assert.equal(records[1].childPid, 123); assert.equal(records[2].childPid, 123);
+  assert.equal(records[0].publicMarkerProvided, false);
+});
+
 test('throws the original error and captures safe exit, timeout, and cleanup metadata only', async (t) => {
   const { entry } = await fixture(t);
   const invocation = { command: entry, args: ['install', 'fixture'] };
@@ -105,7 +199,7 @@ test('throws the original error and captures safe exit, timeout, and cleanup met
       operationDiagnostic: { code: 'nativeCliFailed', safeMessage: 'The platform CLI exited unsuccessfully.' } });
     Object.defineProperty(error, 'message', { get() { throw new Error('error message must not be read'); } });
     const records = [];
-    const wrapped = createManagedTraceRunner(async (received) => { assert.equal(received, invocation); throw error; },
+    const wrapped = createManagedTraceRunner(async (received) => { assertTracedInvocation(received, invocation); throw error; },
       { entries: [entry], client: 'codex', env: {}, emit: (record) => records.push(record) });
     await assert.rejects(wrapped(invocation), (received) => received === error);
     const finish = records[1];
@@ -137,7 +231,9 @@ test('matches only real whitelist files in command or args[0] and directly deleg
     const count = records.length;
     const returned = wrapped(invocation);
     if (!matched) assert.equal(returned, pending);
-    assert.equal(await returned, result); assert.equal(received, invocation);
+    assert.equal(await returned, result);
+    if (matched) assertTracedInvocation(received, invocation);
+    else assert.equal(received, invocation);
     assert.equal(records.length - count, matched ? 2 : 1);
     if (!matched) {
       assert.equal(records.at(-1).phase, 'unmatched');
@@ -180,7 +276,7 @@ test('removes environment markers and unknown UUIDs before truncation without ch
   const error = Object.freeze({ exitCode: 1, reason: `exit-${secrets[4]}`, stderr: `${secrets.join('/')}\n${'e'.repeat(5000)}`,
     cause: { code: `CUSTOM-${secrets[2]}` }, operationDiagnostic: { code: 'nativeCliFailed', safeMessage: secrets.join('/') } });
   const records = [];
-  const wrapped = createManagedTraceRunner(async (received) => { assert.equal(received, invocation); throw error; },
+  const wrapped = createManagedTraceRunner(async (received) => { assertTracedInvocation(received, invocation); throw error; },
     { entries: [entry], client: 'codex', env: { [PUBLIC_MARKER]: secrets[1], INITIAL_MARKER: secrets[2] },
       emit: (record) => records.push(record) });
   await assert.rejects(wrapped(invocation), (received) => received === error);
@@ -218,7 +314,7 @@ test('keeps successful results and original throws when emit fails', async (t) =
   for (const thrown of [false, true]) {
     let calls = 0;
     const wrapped = createManagedTraceRunner((received) => {
-      calls += 1; assert.equal(received, invocation);
+      calls += 1; assertTracedInvocation(received, invocation);
       if (thrown) throw error;
       return Promise.resolve(result);
     }, { entries: [entry], client: 'pi', env: {}, emit() { throw new Error('emit failure'); } });

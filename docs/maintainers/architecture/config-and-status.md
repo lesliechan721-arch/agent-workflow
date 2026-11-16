@@ -89,7 +89,7 @@ generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有
 
 ### 3.1 只读观察
 
-状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。User 查询使用隔离 neutral cwd，Project 查询绑定精确项目。Codex 使用 scoped plugin list；Claude 使用 plugin list 和 marketplace list；Copilot 使用对应原生清单的 enabled；Gemini 使用 extensions list --output-format json 的当前 workspace isActive；Grok 使用 list/inspect 的各自字段。Pi 1.5.0 list 仅提供可见包与 scope，未报告的 activation/trust 保持 unknown；未信任项目可能被清单隐藏，缺少项目段不证明项目未安装。所有清单均不提升为模型采用证据。Codex private cache 不进入删除授权。
+状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。User 查询使用隔离 neutral cwd，Project 查询绑定精确项目。Codex 使用 scoped plugin list；Claude 使用 plugin list 和 marketplace list；Copilot 使用对应原生清单的 enabled；Gemini 0.67.0 使用 extensions list --output-format json 的 stderr JSON 清单和当前 workspace isActive，stdout 必须为空白；无效结构或两流冲突保持 unknown；Grok 使用 list/inspect 的各自字段。Pi 1.5.0 list 仅提供可见包与 scope，未报告的 activation/trust 保持 unknown；未信任项目可能被清单隐藏，缺少项目段不证明项目未安装。所有清单均不提升为模型采用证据。Codex private cache 不进入删除授权。
 
 Pi 首次 ensure 只有在源位置、归属和物理 slot 均确认为不存在时，才可把新独占源交给原生 install。宿主命令自行执行信任门禁，AW 不授信；unknown 不允许替换或删除既有内容。成功后仅按原生 list 可报告的登记核验，不要求该接口未提供的 activation/trust；只读状态仍保留这些未知字段。
 
@@ -99,7 +99,7 @@ Grok inspect.projectTrusted 仅表示当前目录与运行时信任，不是新�
 
 显式 `--observe-native` 允许合格的 Codex app-server 或 OpenCode 2.0.0 CLI 的私有本地服务启动，因此可能创建 installation ID、日志、SQLite 状态和 cache，读取既有认证，加载已安装插件代码并按宿主现有配置连接外部服务。OpenCode 使用单次 --standalone API 绑定精确 location，不复用远程或版本不明的服务；active 确认当前 CLI 的启用与加载，failed 单独报告加载失败，异步激活尚未出现的条目保持 unknown，不将 CLI 结果提升为 Desktop 结果。公开结果通过 `nativeObservationSideEffects` 同时向人类和 JSON 消费者披露；该选项不要求也不执行登录、模型或账号 RPC。普通 status、TUI 和复用观察 session 的其他消费者默认不启用此模式。
 
-同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。Gemini 与 Copilot 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，仍逐次重新读取，并保留不可变输入失败与 stale 的优先级。对 Gemini/Copilot 的单个正常非空部署，若完整动作明确没有 preApply、托管命令包写入或补足删除，可把纯准备和紧邻执行的重复完整核验合并到执行入口。入口核验失败仍走原 preflight 错误路径；只有同次调用、同一冻结计划的首个生命周期证据检查可消费该成功结果一次。每次执行仍重新核验，脚本、托管写入、多部署、blocked/unknown 现场及其他平台保持原检查，写后观察、rebase 和最终状态读取不复用该结果。跨调用不缓存弱现场结论。联合准备最终只有一个无阻断的 Gemini 或 Copilot ensure 组，且没有 Portable 部署、保护或残留时，首轮原生预览已封存该组全部目标，可省去返回 Review 前同一组的重复预览。多 scope、多组、移除及未完成计划继续刷新；来源激活后重准备、锁内复核、执行前检查和写后读取保持。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
+同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。Gemini、Copilot 与 Pi 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，仍逐次重新读取，并保留不可变输入失败与 stale 的优先级。对 Gemini/Copilot/Pi 的单个正常非空部署，若完整动作明确没有 preApply、托管命令包写入或补足删除，可把纯准备和紧邻执行的重复完整核验合并到执行入口。入口核验失败仍走原 preflight 错误路径；只有同次调用、同一冻结计划的首个生命周期证据检查可消费该成功结果一次。每次执行仍重新核验，Pi 1.5.0 有效清单仅隐藏 Project 段时，只有包及归属均 absent、无共享引用、全部 owner 槽位为空且动作仅发布与登记，才可使用该入口核验；registration 仍为 unknown，原生安装仍可拒绝未信任项目。脚本、托管写入、多部署、blocked、其他 unknown 现场及其他平台保持原检查，写后观察、rebase 和最终状态读取不复用该结果。跨调用不缓存弱现场结论。联合准备最终只有一个无阻断的 Gemini 或 Copilot ensure 组，且没有 Portable 部署、保护或残留时，首轮原生预览已封存该组全部目标，可省去返回 Review 前同一组的重复预览。多 scope、多组、移除及未完成计划继续刷新；来源激活后重准备、锁内复核、执行前检查和写后读取保持。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
 
 ### 3.2 scope 与共享物理包
 

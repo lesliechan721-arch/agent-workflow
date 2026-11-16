@@ -36,6 +36,8 @@ export interface NativeCliInvocation {
   timeoutMs?: number;
   /** Internal bounded exchange. The runner retains stdin and process ownership. */
   input?: NativeCliInput;
+  /** Internal diagnostics only. Callback failures cannot change process execution. */
+  onSpawn?(child: { pid: number }): void;
 }
 
 export interface NativeCliInput {
@@ -892,6 +894,9 @@ export function createExecFileNativeCliRunner(
           ));
         },
       );
+      if (child.pid !== undefined) {
+        try { invocation.onSpawn?.({ pid: child.pid }); } catch { /* Diagnostic only. */ }
+      }
       if (cleanupStrategy === 'observed-tree' && child.pid !== undefined) {
         processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
       }

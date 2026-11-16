@@ -116,6 +116,7 @@ describe('native-cli', () => {
     ['long UNC', `\\\\server\\share\\${'a\\'.repeat(130)}project`, `\\\\?\\UNC\\server\\share\\${'a\\'.repeat(130)}project`],
   ])('preserves the Windows cwd contract for %s', async (_name, cwd, expected) => {
     let observedCwd: string | undefined;
+    const onSpawn = vi.fn(() => { throw new Error('diagnostic callback failed'); });
     const runner = createExecFileNativeCliRunner({ platform: 'win32',
       createWindowsJobInvocation: (executable, args) => ({ command: 'fixture-job-helper',
         args: ['--config', 'fixed'], config: { schemaVersion: 1, executable, args: [...args], parentPid: 42 } }),
@@ -125,7 +126,8 @@ describe('native-cli', () => {
         queueMicrotask(() => callback(null, 'cwd fixture', ''));
         return child;
       } });
-    await expect(runner({ command: 'controlled-client', args: [], cwd })).resolves.toMatchObject({ exitCode: 0 });
+    await expect(runner({ command: 'controlled-client', args: [], cwd, onSpawn })).resolves.toMatchObject({ exitCode: 0 });
+    expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ pid: 321 });
     expect(observedCwd).toBe(expected);
   });
 
