@@ -6,12 +6,12 @@ import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { parseArgs, runScope, versionFrom, redact, publicAwFailureSummary, readQualificationCodexSources,
+import { parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, readQualificationCodexSources,
   observeQualification } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
-import { observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
+import { prepareGeminiFixtureTrust, observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
 import './native-platform-marker-confirmations.test.mjs';
 import './native-platform-process-query-timings.test.mjs';
@@ -161,6 +161,76 @@ test('requires an explicit client acquisition mode and rejects ambiguous inputs'
   assert.equal(versionFrom('opencode v2.2.6\n'), '2.2.6');
   assert.equal(versionFrom('opencode v2.2.6-preview'), null);
   assert.equal(versionFrom('unknown'), null);
+});
+
+// Test Value Gate: local trust is an explicit Gemini public-fixture permission,
+// restricted to the actual macOS host. No CLI argument can override the host.
+test('restricts the local macOS fallback to explicit public Gemini qualification', () => {
+  const base = ['--candidate', 'candidate.json', '--report', 'report.json', '--install'];
+  const valid = [...base, '--client', 'gemini', '--public-aw', '--local-macos-fallback'];
+  assert.equal(parseArgs(valid, 'darwin')['local-macos-fallback'], true);
+  for (const host of ['linux', 'win32']) assert.throws(() => parseArgs(valid, host), /invalid-arguments/u);
+  for (const client of ['all', 'codex', 'pi', 'claude', 'copilot', 'grok', 'opencode']) {
+    assert.throws(() => parseArgs([...base, '--client', client, '--public-aw', '--local-macos-fallback'], 'darwin'), /invalid-arguments/u);
+  }
+  assert.throws(() => parseArgs([...base, '--client', 'gemini', '--local-macos-fallback'], 'darwin'), /invalid-arguments/u);
+  assert.throws(() => parseArgs([...valid, '--local-macos-fallback'], 'darwin'), /invalid-arguments/u);
+  assert.throws(() => parseArgs([...valid, '--host', 'darwin']), /invalid-arguments/u);
+  assert.equal(Boolean(parseArgs([...base, '--client', 'gemini', '--public-aw'], 'darwin')['local-macos-fallback']), false);
+  if (process.platform !== 'darwin') assert.throws(() => parseArgs(valid), /invalid-arguments/u);
+});
+
+test('keeps default Gemini fixture trust Hosted-only and writes only authorized temporary trust', async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-gemini-local-trust-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const savedHosted = process.env.GITHUB_ACTIONS;
+  delete process.env.GITHUB_ACTIONS;
+  try {
+    const env = await prepareEnvironment(root);
+    const workspace = path.join(root, 'workspace');
+    const ctx = { platform: 'gemini', scope: 'project', root, env,
+      project: path.join(root, 'project'), neutral: path.join(root, 'neutral') };
+    const directory = path.join(env.GEMINI_CLI_HOME, '.gemini');
+    await assert.rejects(prepareGeminiFixtureTrust(ctx, workspace), { code: 'ERR_ASSERTION' });
+    assert.equal(await fs.stat(path.join(directory, 'trustedFolders.json')).then(() => true, () => false), false);
+    ctx.localMacosFallback = true;
+    if (process.platform !== 'darwin') {
+      await assert.rejects(prepareGeminiFixtureTrust(ctx, workspace), { code: 'ERR_ASSERTION' });
+      return;
+    }
+    const evidence = await prepareGeminiFixtureTrust(ctx, workspace);
+    assert.equal(evidence.boundary, 'authorized-local-macos-fallback');
+    assert.equal(evidence.host, process.platform);
+    assert.equal(evidence.hosted, false);
+    assert.equal(evidence.activationOverridesWritten, false);
+    assert.equal(process.env.GITHUB_ACTIONS, undefined);
+    const trust = JSON.parse(await fs.readFile(path.join(directory, 'trustedFolders.json'), 'utf8'));
+    const expected = [workspace, ctx.project, ctx.neutral];
+    assert.equal(Object.keys(trust).length, 3);
+    assert.equal(expected.every(location => trust[location] === 'TRUST_FOLDER'), true);
+    assert.equal((await fs.readdir(directory)).length, 1);
+    assert.equal(env.GITHUB_TOKEN, undefined);
+    assert.equal(env.NODE_OPTIONS, undefined);
+    assert.equal(env.GITHUB_ACTIONS, undefined);
+  } finally {
+    if (savedHosted === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = savedHosted;
+  }
+});
+
+test('reports the authorized local fixture boundary even when candidate verification fails', {
+  skip: process.platform !== 'darwin',
+}, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-gemini-local-report-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const options = parseArgs(['--candidate', path.join(root, 'missing.json'), '--client', 'gemini',
+    '--report', path.join(root, 'report.json'), '--install', '--public-aw', '--local-macos-fallback']);
+  const report = await run(options);
+  assert.equal(report.status, 'failed');
+  assert.equal(report.boundary.fixtureTrust, 'authorized-local-macos-fallback');
+  assert.equal(report.boundary.host, process.platform);
+  assert.equal(report.boundary.hosted, process.env.GITHUB_ACTIONS === 'true');
+  assert.equal(report.clients.length, 0);
 });
 
 test('isolates configuration and does not pass arbitrary credentials or startup injection', () => {

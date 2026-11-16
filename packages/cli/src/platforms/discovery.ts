@@ -42,6 +42,8 @@ export interface ReadContext {
   /** Replaces only external process probes, including OS identity queries. */
   runner?: NativeCliRunner;
   codexObservationSession?: import('../utils/codex-native-observation.js').CodexNativeObservationSession;
+  /** Optional private session directory for native Node code compilation. */
+  nativeNodeCompileCacheDir?: () => Promise<string>;
   /** Explicit status observation may start a supported native app-server or private local server. */
   observeNative?: boolean;
   /** Isolated filesystem boundary for App discovery tests. */
@@ -215,6 +217,20 @@ export async function npmCliEntryIdentity(ctx: ReadContext, invocation: NativeCl
   return false;
 }
 
+/** Used only after the fixed Gemini read-only npm entry has been confirmed. */
+export async function geminiReadOnlyProbeEnv(ctx: ReadContext, env: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
+  const probeEnv: NodeJS.ProcessEnv = { ...env, GEMINI_CLI_NO_RELAUNCH: 'true' };
+  if ((ctx.platform ?? process.platform) !== 'darwin' || !ctx.nativeNodeCompileCacheDir
+    || env.NODE_COMPILE_CACHE !== undefined || env.NODE_DISABLE_COMPILE_CACHE !== undefined) return probeEnv;
+  try {
+    ctx.signal?.throwIfAborted();
+    const directory = await ctx.nativeNodeCompileCacheDir();
+    ctx.signal?.throwIfAborted();
+    probeEnv.NODE_COMPILE_CACHE = directory;
+  } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
+  return probeEnv;
+}
+
 async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext): Promise<DiscoveryResult> {
   const profile = cliProfiles[platform];
   const products: ProductInstallation[] = [];
@@ -229,7 +245,8 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
       const directGeminiVersion = platform === 'gemini' && await npmCliEntryIdentity(ctx, invocation, 'gemini', '0.67.0', 'bundle/gemini.js');
       // Fixed 0.67.0 otherwise loads the CLI twice by relaunching Node. Keep
       // this environment override local to its actual version probe.
-      const versionContext = directGeminiVersion ? { ...ctx, env: { ...(ctx.env ?? process.env), GEMINI_CLI_NO_RELAUNCH: 'true' } } : ctx;
+      const versionContext = directGeminiVersion
+        ? { ...ctx, env: await geminiReadOnlyProbeEnv(ctx, invocation.env ?? process.env) } : ctx;
       const versionOutput = await probe(versionContext, invocation.command, invocation.args,
         directGeminiVersion ? GEMINI_NPM_VERSION_PROBE_TIMEOUT_MS : DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
       if (!profile.identity.test(versionOutput)

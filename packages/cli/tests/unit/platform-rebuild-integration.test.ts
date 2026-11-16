@@ -229,6 +229,53 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
 }
 
 describe('native evidence checks', () => {
+  // Test Value Gate: code-cache writes must not stale package evidence or survive
+  // the session that owns the existing private staging root.
+  it('shares a private Gemini code-cache directory and removes it with staging', async () => {
+    const item = await nativeEvidenceFixture('gemini');
+    try {
+      const contexts = vi.mocked(item.adapter.discover).mock.calls.map(([ctx]) => ctx);
+      const first = contexts[0]!.nativeNodeCompileCacheDir;
+      const second = contexts[1]!.nativeNodeCompileCacheDir;
+      if (!first || !second) throw new Error('Expected private lazy cache providers.');
+      const [one, two] = await Promise.all([first(), second()]);
+      expect(one === two).toBe(true);
+      await fs.outputFile(path.join(one, 'compiled-code'), 'Temporary compiled code.');
+      const inspections = vi.mocked(item.adapter.inspect).mock.calls.length;
+      await item.target.platformDeployment!.verify();
+      expect(vi.mocked(item.adapter.inspect).mock.calls.length).toBe(inspections + 1);
+      await item.context.platformRebuildSession!.dispose();
+      expect(await fs.pathExists(one)).toBe(false);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: an optional optimization cannot retain a rejected promise
+  // that prevents the later mandatory staging allocation from recovering.
+  it('recovers staging after an optional Gemini cache allocation fails', async () => {
+    const item = await nativeEvidenceFixture('gemini');
+    let first = true;
+    const adapter: typeof item.adapter = { ...item.adapter, async discover(ctx) {
+      if (first) {
+        first = false;
+        const failure = new Error('Controlled optional cache allocation failure.');
+        const allocate = vi.spyOn(fs, 'mkdtemp').mockRejectedValueOnce(failure);
+        try {
+          if (!ctx.nativeNodeCompileCacheDir) throw new Error('Expected a cache provider.');
+          await expect(ctx.nativeNodeCompileCacheDir()).rejects.toBe(failure);
+        } finally { allocate.mockRestore(); }
+      }
+      return item.adapter.discover(ctx);
+    } };
+    try {
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, () => adapter);
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget(item.input);
+      expect(target.platformDeployment?.plans.length).toBe(1);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
   // Test Value Gate: accepting a newer mutable baseline must not preserve an
   // absent plan that overwrites a foreign native copy created during preparation.
   it('protects a foreign Antigravity copy appearing during preparation', async () => {

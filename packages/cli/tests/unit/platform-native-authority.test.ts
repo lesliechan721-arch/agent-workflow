@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -86,35 +87,119 @@ async function geminiNpmFixture(project = true, bin = 'bundle/gemini.js') {
   return { ...item, packageRoot, entry, metadata };
 }
 
+async function geminiCompileFixture(project = true, bin?: string) {
+  const item = await geminiNpmFixture(project, bin);
+  item.ctx.platform = 'darwin';
+  item.ctx.env = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'caller-value' };
+  if (process.platform === 'win32') {
+    // Simulate the Darwin home syntax while keeping all files in this host's isolated tree.
+    item.ctx.env.HOME = `/${item.ctx.env.HOME!.replaceAll('\\', '/')}`;
+    item.ctx.env.GEMINI_CLI_HOME = path.dirname(item.host);
+  }
+  delete item.ctx.env.NODE_COMPILE_CACHE;
+  delete item.ctx.env.NODE_DISABLE_COMPILE_CACHE;
+  const compileDir = path.join(item.ctx.cwd, 'session/native-node-compile-cache');
+  let directoryRequests = 0;
+  item.ctx.nativeNodeCompileCacheDir = async () => { directoryRequests += 1; return compileDir; };
+  return { ...item, compileDir, directoryRequests: () => directoryRequests };
+}
+
 describe('native deployment state authority', () => {
-  // Test Value Gate: the pinned official list command may skip the bootstrap
-  // parent, with native state, exact scope, cancellation and deadline intact.
-  it.each([false, true])('uses a local relaunch override for pinned Gemini inventory (project=%s)', async (project) => {
-    const item = await geminiNpmFixture(project);
-    item.ctx.env = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'caller-value' };
+  // Test Value Gate: shared code compilation must still read every native state
+  // change, with exact scope, cancellation, deadline and caller env intact.
+  it.each([false, true])('uses local Gemini probe overrides with fresh inventory (project=%s)', async (project) => {
+    const item = await geminiCompileFixture(project);
     const originalEnv = { ...item.ctx.env };
-    const processFlag = process.env.GEMINI_CLI_NO_RELAUNCH;
+    const originalProcessEnv = { ...process.env };
     item.ctx.signal = new AbortController().signal;
     const observed = await inspectDeployment(item.ctx, item.binding);
     expect(observed.registration).toBe('present');
     expect(observed.consumers[0]?.activation).toBe('enabled');
-    expect(item.calls.length).toBe(1);
-    const call = item.calls[0]!;
-    expect(call.command).toBe(process.execPath);
-    expect(call.args).toEqual([item.entry, 'extensions', 'list', '--output-format', 'json']);
-    expect(call.cwd === item.ctx.cwd).toBe(project);
-    if (!project) {
-      expect(call.cwd.startsWith(`${item.ctx.cwd}${path.sep}`)).toBe(false);
-      expect(await fs.pathExists(call.cwd)).toBe(false);
+    item.native.enabled = false;
+    expect((await inspectDeployment(item.ctx, item.binding)).consumers[0]?.activation).toBe('disabled');
+    expect(item.calls.length).toBe(2);
+    expect(item.directoryRequests()).toBe(2);
+    for (const call of item.calls) {
+      expect(call.command).toBe(process.execPath);
+      expect(call.args).toEqual([item.entry, 'extensions', 'list', '--output-format', 'json']);
+      expect(call.cwd === item.ctx.cwd).toBe(project);
+      if (!project) {
+        expect(call.cwd.startsWith(`${item.ctx.cwd}${path.sep}`)).toBe(false);
+        expect(await fs.pathExists(call.cwd)).toBe(false);
+      }
+      expect(call.signal).toBe(item.ctx.signal);
+      expect(call.timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
+      expect(isDeepStrictEqual(call.env, { ...originalEnv,
+        GEMINI_CLI_NO_RELAUNCH: 'true', NODE_COMPILE_CACHE: item.compileDir })).toBe(true);
+      expect(call.env === item.ctx.env).toBe(false);
     }
-    expect(call.signal).toBe(item.ctx.signal);
-    expect(call.timeoutMs).toBe(DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS);
-    expect(call.env?.GEMINI_CLI_NO_RELAUNCH).toBe('true');
-    expect(Object.keys(call.env ?? {}).sort()).toEqual(Object.keys(originalEnv).sort());
-    expect(Object.entries(originalEnv).every(([key, value]) => key === 'GEMINI_CLI_NO_RELAUNCH' || call.env?.[key] === value)).toBe(true);
-    expect(call.env === item.ctx.env).toBe(false);
-    expect(item.ctx.env?.GEMINI_CLI_NO_RELAUNCH).toBe('caller-value');
-    expect(process.env.GEMINI_CLI_NO_RELAUNCH).toBe(processFlag);
+    expect(isDeepStrictEqual(item.ctx.env, originalEnv)).toBe(true);
+    expect(isDeepStrictEqual({ ...process.env }, originalProcessEnv)).toBe(true);
+  });
+
+  // Test Value Gate: caller cache or disable settings, including empty values,
+  // must suppress directory allocation without changing the native query.
+  it.each([
+    { key: 'NODE_COMPILE_CACHE', value: '' },
+    { key: 'NODE_COMPILE_CACHE', value: '/caller/compile-cache' },
+    { key: 'NODE_DISABLE_COMPILE_CACHE', value: '' },
+    { key: 'NODE_DISABLE_COMPILE_CACHE', value: '1' },
+  ])('preserves caller $key=$value on Gemini inventory', async ({ key, value }) => {
+    const item = await geminiCompileFixture();
+    item.ctx.env![key] = value;
+    const expectedEnv = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'true' };
+    expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe('present');
+    expect(item.directoryRequests()).toBe(0);
+    expect(item.calls.length).toBe(1);
+    expect(isDeepStrictEqual(item.calls[0]!.env, expectedEnv)).toBe(true);
+    expect(item.ctx.env![key] === value).toBe(true);
+  });
+
+  // Test Value Gate: other host platforms retain the already verified relaunch
+  // optimization and never request the Darwin compilation directory.
+  it.each(['linux', 'win32'] as const)('keeps Gemini compilation hints out of %s inventory', async (platform) => {
+    const item = await geminiCompileFixture();
+    item.ctx.platform = platform;
+    const expectedEnv = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'true' };
+    item.ctx.runner = async (call) => {
+      item.calls.push(call);
+      return { exitCode: 0, stdout: '', stderr: '[]\n' };
+    };
+    const result = await queryNativeDeploymentResult(item.ctx, item.binding, ['extensions', 'list', '--output-format', 'json']);
+    expect(result.exitCode).toBe(0);
+    expect(item.directoryRequests()).toBe(0);
+    expect(item.calls.length).toBe(1);
+    expect(isDeepStrictEqual(item.calls[0]!.env, expectedEnv)).toBe(true);
+  });
+
+  // Test Value Gate: cache allocation is optional; only abort or unconfirmed
+  // cleanup may stop the native observation before its command runs.
+  it.each(['filesystem', 'aborted', 'cleanup', 'signal'] as const)('handles Gemini compile directory %s failures', async (failure) => {
+    const item = await geminiCompileFixture(false);
+    const controller = new AbortController();
+    item.ctx.signal = controller.signal;
+    const filesystemError = Object.assign(new Error('compile directory unavailable'), { code: 'EACCES' });
+    const fatalError = new NativeCliError({ invocation: { command: process.execPath, args: [], cwd: item.ctx.cwd },
+      exitCode: 1, stdout: '', stderr: '', ...(failure === 'cleanup'
+        ? { cleanupError: new Error('cleanup unconfirmed') } : { reason: 'aborted' }) });
+    const cancellation = new Error('query cancelled');
+    let directoryRequests = 0;
+    item.ctx.nativeNodeCompileCacheDir = async () => {
+      directoryRequests += 1;
+      if (failure === 'signal') controller.abort(cancellation);
+      throw failure === 'aborted' || failure === 'cleanup' ? fatalError : filesystemError;
+    };
+    const pending = queryNativeDeploymentResult(item.ctx, item.binding, ['extensions', 'list', '--output-format', 'json']);
+    if (failure === 'filesystem') {
+      expect((await pending).exitCode).toBe(0);
+      expect(item.calls.length).toBe(1);
+      expect(isDeepStrictEqual(item.calls[0]!.env, { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'true' })).toBe(true);
+      expect(await fs.pathExists(item.calls[0]!.cwd)).toBe(false);
+    } else {
+      await expect(pending.catch((error: unknown) => error === (failure === 'signal' ? cancellation : fatalError))).resolves.toBe(true);
+      expect(item.calls.length).toBe(0);
+    }
+    expect(directoryRequests).toBe(1);
   });
 
   // Test Value Gate: the optimization must use the verified Node entry behind
@@ -147,7 +232,7 @@ describe('native deployment state authority', () => {
   it.each([
     'missing', 'invalid', 'foreign', 'manifest-version', 'product-version', 'bin-mismatch', 'other-entry', 'native', 'other-args',
   ] as const)('keeps the original Gemini query for %s', async (kind) => {
-    const item = await geminiNpmFixture(true, kind === 'other-entry' ? 'dist/index.js' : undefined);
+    const item = await geminiCompileFixture(true, kind === 'other-entry' ? 'dist/index.js' : undefined);
     const file = path.join(item.packageRoot, 'package.json');
     if (kind === 'missing') await fs.remove(file);
     else if (kind === 'invalid') await fs.writeFile(file, '{invalid');
@@ -177,12 +262,13 @@ describe('native deployment state authority', () => {
     })).toBe(nativeResult);
     expect(item.calls.length).toBe(1);
     expect(item.calls[0]!.env === item.ctx.env).toBe(true);
+    expect(item.directoryRequests()).toBe(0);
   });
 
   // Test Value Gate: direct bootstrap inventory cannot convert native exit,
   // timeout, abort or cleanup failures into successful JSON observations.
   it.each(['exit', 'timeout', 'cleanup', 'aborted'] as const)('retains optimized Gemini %s query failure', async (failure) => {
-    const item = await geminiNpmFixture(false);
+    const item = await geminiCompileFixture(false);
     const calls: NativeCliInvocation[] = [];
     item.ctx.runner = async (invocation) => {
       calls.push(invocation);
@@ -195,6 +281,7 @@ describe('native deployment state authority', () => {
       ...(failure === 'cleanup' ? { cleanupError: expect.any(Error) } : failure === 'exit' ? { exitCode: 1 } : { reason: failure }) });
     expect(calls.length).toBe(1);
     expect(calls[0]!.env?.GEMINI_CLI_NO_RELAUNCH).toBe('true');
+    expect(calls[0]!.env?.NODE_COMPILE_CACHE === item.compileDir).toBe(true);
     expect(await fs.pathExists(calls[0]!.cwd)).toBe(false);
   });
 

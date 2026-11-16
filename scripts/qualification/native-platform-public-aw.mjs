@@ -277,6 +277,21 @@ async function requireProductionSkillProfile(ctx) {
   }
 }
 
+// Trust only the temporary source and working directories. AW still performs
+// native installation and activation through the unchanged public scenario.
+export async function prepareGeminiFixtureTrust(ctx, workspace) {
+  const hosted = process.env.GITHUB_ACTIONS === 'true';
+  const localFallback = ctx.localMacosFallback === true && process.platform === 'darwin' && ctx.platform === 'gemini';
+  assert(hosted || localFallback, 'Real Gemini public qualification requires Hosted or the authorized local macOS fallback.');
+  const directory = path.join(ctx.env.GEMINI_CLI_HOME, '.gemini');
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(path.join(directory, 'trustedFolders.json'),
+    JSON.stringify(Object.fromEntries([workspace, ctx.project, ctx.neutral].map((location) => [location, 'TRUST_FOLDER'])), null, 2) + '\n');
+  return { level: 'fixture-config', scope: ctx.scope,
+    boundary: localFallback ? 'authorized-local-macos-fallback' : 'hosted-only', host: process.platform, hosted,
+    trusted: 'isolated source workspace and working directories', sessionRequests: 'none', activationOverridesWritten: false };
+}
+
 export async function qualifyPublicAw(ctx) {
   if (!['codex', 'pi', 'grok', 'copilot', 'gemini', 'claude', 'opencode', 'antigravity'].includes(ctx.platform)) await ctx.defer('public-aw-native-management-observer-not-implemented');
   if (ctx.platform === 'antigravity') {
@@ -315,14 +330,7 @@ export async function qualifyPublicAw(ctx) {
     await ctx.aw(['source', 'add', 'qualification', '--path', path.join(workspace, '.aw/catalog'), '--no-auto-check', '--primary', '--yes']);
     return { source: 'qualification', plugin: ctx.pluginName, version: '0.1.0' };
   });
-  if (ctx.platform === 'gemini') await ctx.check('explicit-host-fixture-trust', async () => {
-    assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Real Gemini public qualification requires a credential-free Hosted environment.');
-    const directory = path.join(ctx.env.GEMINI_CLI_HOME, '.gemini');
-    await fs.mkdir(directory, { recursive: true });
-    await fs.writeFile(path.join(directory, 'trustedFolders.json'),
-      JSON.stringify(Object.fromEntries([workspace, ctx.project, ctx.neutral].map((location) => [location, 'TRUST_FOLDER'])), null, 2) + '\n');
-    return { level: 'fixture-config', scope: ctx.scope, trusted: 'isolated source workspace and working directories', sessionRequests: 'none', activationOverridesWritten: false };
-  });
+  if (ctx.platform === 'gemini') await ctx.check('explicit-host-fixture-trust', () => prepareGeminiFixtureTrust(ctx, workspace));
   if (ctx.scope === 'project') await ctx.check('explicit-host-project-trust', async () => {
     // Host trust is an explicit isolated fixture, separate from AW --yes.
     if (ctx.platform === 'codex') await fs.writeFile(path.join(ctx.env.CODEX_HOME, 'config.toml'),

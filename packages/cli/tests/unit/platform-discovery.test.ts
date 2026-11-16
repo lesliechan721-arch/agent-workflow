@@ -162,6 +162,8 @@ describe('read-only target discovery and production selection', () => {
     const processFlag = process.env.GEMINI_CLI_NO_RELAUNCH;
     item.ctx.signal = new AbortController().signal;
     const calls: string[] = [];
+    let directoryRequests = 0;
+    item.ctx.nativeNodeCompileCacheDir = async () => { directoryRequests += 1; return path.join(item.ctx.cwd, 'unused-cache'); };
     let version = '0.67.0';
     item.ctx.runner = async ({ command, args, env, timeoutMs, signal }) => {
       expect(command).toBe(process.execPath); expect(args[0]).toBe(item.entry);
@@ -184,6 +186,52 @@ describe('read-only target discovery and production selection', () => {
     await fs.outputJson(path.join(item.packageRoot, 'package.json'), item.metadata);
     expect((await discoverPlatform('gemini', item.ctx)).installations[0]).toMatchObject({ availability: 'available', version: '0.67.1' });
     expect(calls).toEqual(['--version', '--version']);
+    expect(directoryRequests).toBe(0);
+  });
+
+  // Test Value Gate: a shared code compilation directory must not reuse native
+  // version results, alter the caller environment, or reach mutation commands.
+  it.runIf(process.platform !== 'win32')('shares a Darwin Gemini compile directory across fresh version probes', async () => {
+    const item = await geminiNpmFixture();
+    item.ctx.platform = 'darwin';
+    item.ctx.env = { ...item.ctx.env, GEMINI_CLI_NO_RELAUNCH: 'caller-value' };
+    delete item.ctx.env.NODE_COMPILE_CACHE;
+    delete item.ctx.env.NODE_DISABLE_COMPILE_CACHE;
+    const originalEnv = { ...item.ctx.env };
+    const originalProcessEnv = { ...process.env };
+    const compileDir = path.join(item.ctx.cwd, 'session/native-node-compile-cache');
+    let directoryRequests = 0;
+    item.ctx.nativeNodeCompileCacheDir = async () => { directoryRequests += 1; return compileDir; };
+    let nativeVersions = 0;
+    let cacheAvailable = true;
+    item.ctx.runner = async ({ args, env, timeoutMs }) => {
+      nativeVersions += 1;
+      expect(args).toEqual([item.entry, '--version']);
+      expect(timeoutMs).toBe(10_000);
+      expect(env === item.ctx.env).toBe(false);
+      expect(isDeepStrictEqual(env, { ...originalEnv, GEMINI_CLI_NO_RELAUNCH: 'true',
+        ...(cacheAvailable ? { NODE_COMPILE_CACHE: compileDir } : {}) })).toBe(true);
+      return { exitCode: 0, stdout: '0.67.0\n', stderr: '' };
+    };
+    const first = await discoverPlatform('gemini', item.ctx);
+    const second = await discoverPlatform('gemini', item.ctx);
+    expect(first.installations[0]?.version).toBe('0.67.0');
+    expect(second.installations[0]?.version).toBe('0.67.0');
+    expect(nativeVersions).toBe(2);
+    expect(directoryRequests).toBe(2);
+    cacheAvailable = false;
+    item.ctx.nativeNodeCompileCacheDir = async () => {
+      directoryRequests += 1;
+      throw Object.assign(new Error('compile directory unavailable'), { code: 'EACCES' });
+    };
+    expect((await discoverPlatform('gemini', item.ctx)).installations[0]?.version).toBe('0.67.0');
+    expect(nativeVersions).toBe(3);
+    expect(directoryRequests).toBe(3);
+    const mutation = await installationInvocation(first.installations[0]!, item.ctx, ['extensions', 'install', '/frozen-package']);
+    expect(mutation.env === item.ctx.env).toBe(true);
+    expect(directoryRequests).toBe(3);
+    expect(isDeepStrictEqual(item.ctx.env, originalEnv)).toBe(true);
+    expect(isDeepStrictEqual({ ...process.env }, originalProcessEnv)).toBe(true);
   });
 
   it('binds Gemini metadata to the JS entry resolved from its Windows npm shim', async () => {
@@ -208,6 +256,9 @@ describe('read-only target discovery and production selection', () => {
   it.runIf(process.platform !== 'win32').each(['missing', 'invalid', 'foreign', 'version-mismatch', 'bin-mismatch', 'escaping-bin'] as const)(
     'keeps Gemini help identity confirmation for %s npm metadata', async (kind) => {
       const item = await geminiNpmFixture();
+      item.ctx.platform = 'darwin';
+      let directoryRequests = 0;
+      item.ctx.nativeNodeCompileCacheDir = async () => { directoryRequests += 1; return path.join(item.ctx.cwd, 'unused-cache'); };
       const file = path.join(item.packageRoot, 'package.json');
       if (kind === 'missing') await fs.remove(file);
       else if (kind === 'invalid') await fs.writeFile(file, '{invalid');
@@ -230,6 +281,7 @@ describe('read-only target discovery and production selection', () => {
       };
       expect((await discoverPlatform('gemini', item.ctx)).availability).toBe('available');
       expect(calls).toEqual(['--version', '--help']);
+      expect(directoryRequests).toBe(0);
     },
   );
 

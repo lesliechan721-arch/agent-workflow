@@ -314,6 +314,19 @@ export class PlatformRebuildSession {
   }
   setOwnershipExecutor(executor: OwnedComponentExecutor): void { this.ownership = executor; }
   private root(): Promise<string> { return this.staging ??= fs.mkdtemp(path.join(os.tmpdir(), 'aw-deployment-')); }
+  private nativeReadContext(input: TargetInput): ReadContext {
+    const ctx = readContext(this.context, input.cwd);
+    if (input.platform === 'gemini') ctx.nativeNodeCompileCacheDir = async () => {
+      const pending = this.root();
+      try { return path.join(await pending, 'native-node-compile-cache'); }
+      catch (error) {
+        // An optional cache allocation must not poison later required staging.
+        if (this.staging === pending) this.staging = undefined;
+        throw error;
+      }
+    };
+    return ctx;
+  }
   async dispose(): Promise<void> {
     for (const result of await Promise.allSettled(this.units.values())) if (result.status === 'fulfilled') await result.value.finalized.cleanup();
     if (this.staging) await fs.remove(await this.staging);
@@ -333,7 +346,7 @@ export class PlatformRebuildSession {
     if (!result) {
       result = (async () => {
         const adapter = this.adapterFor(input.platform);
-        const ctx = readContext(this.context, input.cwd);
+        const ctx = this.nativeReadContext(input);
         const plugin = sourceIdentity(input);
         const recoveryCandidates = (this.context.recoveryCandidates ?? []).filter((candidate) => candidate.binding.platform === input.platform
           && candidate.binding.plugin.sourceIdentity === plugin.sourceIdentity && candidate.binding.plugin.pluginId === plugin.pluginId
@@ -511,7 +524,7 @@ export class PlatformRebuildSession {
       new Error(`platformUnavailable: ${resolution.exclusions.map((item) => item.reasonCode).join(', ') || input.platform}`),
       { deploymentExclusions: this.exclusions.get(this.key(input)) ?? [] });
     const adapter = this.adapterFor(input.platform);
-    const ctx = readContext(this.context, input.cwd);
+    const ctx = this.nativeReadContext(input);
     this.contexts.add(ctx);
     const observed = await Promise.all(resolution.bindings.map(async (binding) => ({ binding, observation: await adapter.inspect(ctx, binding), layout: await getDeploymentLayout(ctx, binding) })));
     if (input.readOnlyInspectionPlan && !input.readOnlyShallowInspectionPlan) for (const entry of observed) {

@@ -1,7 +1,7 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { createSafeNeutralCwd } from '../intent/scope-context.js';
 import { runNativeCliChecked, type NativeCliResult } from '../utils/native-cli.js';
-import { installationInvocation, npmCliEntryIdentity } from './discovery.js';
+import { geminiReadOnlyProbeEnv, installationInvocation, npmCliEntryIdentity } from './discovery.js';
 import type { DeploymentBinding, ReadContext } from './contracts.js';
 
 /** User queries exclude caller project configuration; project queries use the exact binding. */
@@ -21,7 +21,7 @@ export async function queryNativeDeploymentResult(ctx: ReadContext, binding: Dep
       && queryArgs[2] === '--output-format' && queryArgs[3] === 'json'
       && await npmCliEntryIdentity(ctx, invocation, 'gemini', '0.67.0', 'bundle/gemini.js');
     const queryInvocation = directGeminiList
-      ? { ...invocation, env: { ...(invocation.env ?? process.env), GEMINI_CLI_NO_RELAUNCH: 'true' } } : invocation;
+      ? { ...invocation, env: await geminiReadOnlyProbeEnv(ctx, invocation.env ?? process.env) } : invocation;
     const output = await runNativeCliChecked({ ...queryInvocation, signal: ctx.signal,
       timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS }, ctx.runner);
     if (Buffer.byteLength(output.stdout) + Buffer.byteLength(output.stderr) > 1024 * 1024) throw new Error('nativeObservationOutputLimit');
