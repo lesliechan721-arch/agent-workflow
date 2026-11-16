@@ -14,12 +14,15 @@ import { executeRebuildOperation } from '../../src/commands/rebuild-operations.j
 import { createNoopReporter } from '../../src/output/reporter.js';
 import { createNoopDebugLogger } from '../../src/output/debug-log.js';
 import { createScopeContext } from '../../src/intent/scope-context.js';
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 
 async function fixture(platform: 'pi' | 'grok', project = false) {
   const isolated = getCurrentSourceTestIsolation();
   const cwd = isolated.layout.fixtureCwd;
   const env: NodeJS.ProcessEnv = { ...isolated.env, GROK_HOME: path.join(cwd, 'grok-home') };
   const ctx: ReadContext = { cwd, env };
+  let piList = 'No packages installed.\n';
+  if (platform === 'pi') ctx.runner = async () => ({ exitCode: 0, stderr: '', stdout: piList });
   const host = platform === 'pi' ? path.join(env.HOME!, '.pi', 'agent') : env.GROK_HOME!;
   const scope: ScopeRef = project ? { kind: 'project', projectRoot: cwd } : { kind: 'user' };
   const resolved = await resolveDeployments(ctx, { plugin: { sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`,
@@ -31,7 +34,7 @@ async function fixture(platform: 'pi' | 'grok', project = false) {
   const layout = await getDeploymentLayout(ctx, binding);
   const caps = async () => getPlatformCapabilities({ binding, renderUnit: resolved.renderUnits[0]!,
     observation: await inspectDeployment(ctx, binding), profile: getQualifiedPlatformProfile(platform) });
-  return { ctx, host, binding, layout, caps };
+  return { ctx, host, binding, layout, caps, setPiList: (value: string) => { piList = value; } };
 }
 
 async function consumer(root: string, version = '0.22.0') {
@@ -50,7 +53,167 @@ async function grokPackage(item: Awaited<ReturnType<typeof fixture>>, body: stri
   return digest;
 }
 
+async function grokRebuildFixture(trusted: boolean | undefined) {
+  installNativeTestQualification({ platforms: ['grok'] });
+  const item = await fixture('grok');
+  const bin = path.join(item.ctx.cwd, 'bin');
+  await fs.outputFile(path.join(bin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const env = { ...item.ctx.env, PATH: bin };
+  const root = path.join(item.ctx.cwd, 'grok-plugin');
+  await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 4, name: 'example', version: '1.0.0',
+    description: 'Grok trust and stale fixture.', platforms: ['grok'], skills: './skills',
+    marketplace: { category: 'development', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } } });
+  await fs.outputFile(path.join(root, 'skills/demo/SKILL.md'), '---\nname: demo\ndescription: Grok lifecycle fixture.\n---\nGrok fixture.\n');
+  const plugin = await readPluginManifest(root, { mode: 'bundle' });
+  Object.assign(plugin, { sourceId: 'team', pluginId: 'team/example', sourceIdentity: item.binding.plugin.sourceIdentity });
+  const installed = path.join(item.host, 'installed-plugins/local-123');
+  const state = { trusted, enabled: true, source: '', registered: false };
+  const queryCwds = new Set<string>();
+  const nativeWrites: string[][] = [];
+  const runner: NonNullable<RebuildExecutionContext['nativeCliRunner']> = async ({ args, cwd }) => {
+    let stdout = '';
+    if (args.includes('--version')) stdout = 'grok 1.0.77';
+    else if (args.includes('--help')) stdout = 'Grok Build plugin install uninstall update enable disable --json';
+    else if (args[0] === 'plugin' && args[1] === 'list') stdout = JSON.stringify(state.registered ? [{ status: 'installed',
+      name: 'example', repo_key: 'local-123', version: '1.0.0', path: installed, source: state.source }] : []);
+    else if (args[0] === 'inspect') {
+      queryCwds.add(cwd);
+      stdout = JSON.stringify({ grokVersion: '1.0.77', cwd, projectRoot: null, projectTrusted: state.trusted,
+        configSources: { layers: [{ role: 'user', path: path.join(item.host, 'config.toml') }] },
+        plugins: state.registered ? [{ name: 'example', scope: 'user', path: installed, enabled: state.enabled }] : [],
+        skills: [], agents: [], mcpServers: [] });
+    } else {
+      nativeWrites.push([...args]);
+      if (args[0] === 'plugin' && args[1] === 'install') {
+        state.source = args[2]!; state.registered = true; state.enabled = true;
+        await fs.copy(state.source, installed, { overwrite: true });
+      } else if (args[0] === 'plugin' && args[1] === 'uninstall') {
+        state.registered = false; await fs.remove(installed);
+      } else if (args[0] === 'plugin' && args[1] === 'enable') state.enabled = true;
+      else if (args[0] === 'plugin' && args[1] === 'disable') state.enabled = false;
+      else throw new Error('Unexpected Grok fixture mutation.');
+    }
+    return { exitCode: 0, stdout, stderr: '' };
+  };
+  const context: RebuildExecutionContext = { env, nativeCliRunner: runner,
+    reporter: createNoopReporter(), debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map() };
+  let integration = createRebuildIntegration({ context });
+  const prepare = (command: 'sync' | 'reinstall' = 'sync') => integration.buildTarget({ plugin, platform: 'grok', scope: 'user', cwd: item.ctx.cwd, command,
+    catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0' } });
+  const observe = () => inspectDeployment({ ...item.ctx, env, runner }, item.binding);
+  const grant = async () => {
+    await runner({ command: path.join(bin, 'grok'), cwd: item.ctx.cwd, env,
+      args: ['plugin', 'install', item.layout.packageRoot, '--trust'] });
+    // Explicit native consent happens between AW commands, with a new Review.
+    await context.platformRebuildSession?.dispose();
+    delete context.platformRebuildSession;
+    context.preparedArtifactRenderResults = new Map();
+    integration = createRebuildIntegration({ context });
+  };
+  return { item, state, queryCwds, nativeWrites, context, get integration() { return integration; }, prepare, observe, grant };
+}
+
 describe('public native consumer observation', () => {
+  // Test Value Gate: runtime trust does not grant new-source consent, and fresh
+  // neutral query directories must not invalidate an unchanged prepared action.
+  it.each([true, false, undefined])('uses Grok native User trust=%s through preparation and execution', async (trusted) => {
+    const test = await grokRebuildFixture(trusted);
+    try {
+      const before = await test.observe();
+      const repeat = await test.observe();
+      expect(test.queryCwds.size).toBe(2);
+      expect(repeat.prerequisites.nativeSources?.configurationEvidence).toBe(before.prerequisites.nativeSources?.configurationEvidence);
+      expect(before.consumers[0]?.trust).toBe(trusted === true ? 'trusted' : trusted === false ? 'required' : 'unknown');
+      const target = await test.prepare();
+      const result = await executeRebuildOperation({ command: 'sync', target, driver: test.integration.driver });
+      expect(result.status).toBe('failed');
+      const diagnostics = result.deploymentReceipts?.flatMap((receipt) => [
+        ...receipt.diagnostics, ...receipt.effects.flatMap((effect) => effect.diagnostics),
+      ]);
+      expect(diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeTrustRequired' }));
+      expect(test.nativeWrites).toEqual([]);
+      if (trusted) {
+        await test.grant();
+        const synced = await executeRebuildOperation({ command: 'sync', target: await test.prepare(), driver: test.integration.driver });
+        expect(synced.status, JSON.stringify(synced)).toBe('succeeded');
+        expect((await test.observe()).registration).toBe('present');
+        const refresh = await test.prepare('reinstall');
+        const refreshed = await executeRebuildOperation({ command: 'reinstall', target: refresh, driver: test.integration.driver });
+        expect(refreshed.status, JSON.stringify(refreshed)).toBe('succeeded');
+        expect(test.nativeWrites.filter((args) => args[0] === 'plugin' && args[1] === 'install')).toHaveLength(2);
+      }
+    } finally { await test.context.platformRebuildSession?.dispose(); }
+  });
+
+  // Test Value Gate: ignoring ephemeral query metadata must still reject a
+  // prepared write after actual native identity, policy or configuration changes.
+  it.each(['enabled', 'trust', 'source', 'configuration'] as const)('rejects a prepared Grok write after %s changes', async (change) => {
+    const test = await grokRebuildFixture(true);
+    try {
+      const installed = await executeRebuildOperation({ command: 'sync', target: await test.prepare(), driver: test.integration.driver });
+      expect(installed.status).toBe('failed');
+      await test.grant();
+      const target = await test.prepare();
+      const before = await test.observe();
+      const mutations = test.nativeWrites.length;
+      if (change === 'enabled') test.state.enabled = false;
+      else if (change === 'trust') test.state.trusted = false;
+      else if (change === 'source') test.state.source = path.join(test.item.ctx.cwd, 'foreign-source');
+      else await fs.outputFile(path.join(test.item.host, 'config.toml'), '[plugins]\ndisabled=["example"]\n');
+      const after = await test.observe();
+      expect(after.prerequisites.nativeSources?.configurationEvidence).not.toBe(before.prerequisites.nativeSources?.configurationEvidence);
+      const result = await executeRebuildOperation({ command: 'sync', target, driver: test.integration.driver });
+      expect(result).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('operationPlanStale') } });
+      expect(test.nativeWrites).toHaveLength(mutations);
+    } finally { await test.context.platformRebuildSession?.dispose(); }
+  });
+
+  // Test Value Gate: native package registration must survive conflicting or
+  // damaged supplemental files without claiming activation, trust or loading.
+  it.each([false, true])('keeps Pi native scope registration separate from local configuration with project=%s', async (project) => {
+    const item = await fixture('pi', project);
+    const scope = project ? 'Project' : 'User';
+    item.setPiList(`${scope} packages:\n  ${item.layout.packageRoot}\n    ${item.layout.packageRoot}\n`);
+    await fs.outputFile(item.layout.activationPath, '{');
+    const native = await inspectDeployment(item.ctx, item.binding);
+    expect(native.registration).toBe('present');
+    expect(native.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'not-observed' });
+    expect(native.configuration).toMatchObject({ scope: project ? 'project' : 'user', activation: 'unknown' });
+    item.setPiList('User packages:\n  npm:another-package\n');
+    expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe(project ? 'unknown' : 'absent');
+  });
+
+  it.each(['No packages installed.\n', 'User packages:\n  npm:other-package\n', '', 'Project packages:\n'])(
+    'keeps Pi Project absence unknown and distinguishes hidden scope from invalid native output: %j', async (output) => {
+      const item = await fixture('pi', true);
+      item.setPiList(output);
+      const observed = await inspectDeployment(item.ctx, item.binding);
+      expect(observed.registration).toBe('unknown');
+      const hidden = output.startsWith('No packages') || output.startsWith('User packages:');
+      expect(observed.diagnostics).toContainEqual(expect.objectContaining({ code: hidden ? 'piProjectRegistrationNotVisible' : 'piNativeObservationUnconfirmed' }));
+    });
+
+  it('keeps Pi native facts unknown after a query failure despite configured registration and trust', async () => {
+    const item = await fixture('pi', true);
+    await fs.outputJson(item.layout.activationPath, { packages: [item.layout.packageRoot] });
+    await fs.outputJson(path.join(item.host, 'trust.json'), { [item.ctx.cwd]: true });
+    item.ctx.runner = async ({ args, cwd }) => {
+      expect(args).toEqual(['list']);
+      expect(cwd).toBe(item.binding.scope.kind === 'project' ? item.binding.scope.projectRoot : undefined);
+      return { exitCode: 1, stdout: '', stderr: 'query unavailable' };
+    };
+    const observation = await inspectDeployment(item.ctx, item.binding);
+    expect(observation).toMatchObject({ registration: 'unknown', configuration: { activation: 'enabled', trust: 'trusted' } });
+    expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'unknown' });
+  });
+
+  it.each(['missing-path', 'unexpected-text'] as const)('does not complete Pi registration from %s output', async (format) => {
+    const item = await fixture('pi');
+    item.setPiList(`User packages:\n  ${item.layout.packageRoot}\n${format === 'unexpected-text' ? `    ${item.layout.packageRoot}\nUnexpected output\n` : ''}`);
+    await fs.outputJson(item.layout.activationPath, { packages: [item.layout.packageRoot] });
+    expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe('unknown');
+  });
+
   // Test Value Gate: public User status uses a fresh neutral cwd. It must
   // compare the same consumer inputs as the writer, regardless of cwd files.
   it('keeps Pi User consumer evidence independent of neutral execution directories', async () => {
@@ -95,8 +258,8 @@ describe('public native consumer observation', () => {
     expect(after.prerequisites).not.toEqual(before.prerequisites);
   });
 
-  // Test Value Gate: Pi's persisted relative AW source must remain registered in
-  // both scopes and must not change the prepared Agent consumer inputs.
+  // Test Value Gate: native relative sources must match their exact scope and
+  // installed path; publishing output must not change Agent consumer inputs.
   it.each([false, true])('recognizes Pi relative AW registration with project=%s', async (project) => {
     const item = await fixture('pi', project);
     const before = await inspectDeployment(item.ctx, item.binding);
@@ -105,10 +268,13 @@ describe('public native consumer observation', () => {
     });
     const source = path.relative(path.dirname(item.layout.activationPath), item.layout.packageRoot);
     await fs.outputJson(item.layout.activationPath, { packages: [source] });
+    item.setPiList(`${project ? 'Project' : 'User'} packages:\n  ${source}\n    ${item.layout.packageRoot}\n`);
     const installed = await inspectDeployment(item.ctx, item.binding);
     expect(installed.registration).toBe('present');
     expect(installed.prerequisites).toEqual(before.prerequisites);
     await fs.outputJson(item.layout.activationPath, { packages: [`npm:${source}`] });
+    expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe('present');
+    item.setPiList(`${project ? 'Project' : 'User'} packages:\n  npm:other-package\n`);
     expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe('absent');
   });
 
@@ -119,6 +285,7 @@ describe('public native consumer observation', () => {
     const before = await inspectDeployment(item.ctx, item.binding);
     await fs.outputJson(path.join(item.layout.packageRoot, 'package.json'), { name: item.layout.nativeIdentity.packageId, version: '1.0.0', pi: { skills: ['./skills'] } });
     await fs.outputJson(item.layout.activationPath, { packages: [item.layout.packageRoot] });
+    item.setPiList(`User packages:\n  ${item.layout.packageRoot}\n    ${item.layout.packageRoot}\n`);
     const installed = await inspectDeployment(item.ctx, item.binding);
     expect(installed.registration).toBe('present');
     expect(installed.prerequisites).toEqual(before.prerequisites);
@@ -175,9 +342,9 @@ describe('public native consumer observation', () => {
     expect(JSON.stringify(unknown)).not.toContain('token');
   });
 
-  // Test Value Gate: the actual 1.0.77 report keeps inspect.enabled true after
-  // disable. Configuration and effective component sources must remain separate.
-  it('keeps Grok registration, disable, load and Claude overlap independent', async () => {
+  // Test Value Gate: native enabled, local disabled and effective resource
+  // sources are separate facts, including overlapping compatibility sources.
+  it('keeps Grok native activation, local configuration, load and Claude overlap independent', async () => {
     const item = await fixture('grok');
     const name = item.layout.nativeIdentity.packageId;
     const installed = path.join(item.host, 'installed-plugins', 'local-123');
@@ -201,7 +368,8 @@ describe('public native consumer observation', () => {
     const disabled = await inspectDeployment(item.ctx, item.binding);
     expect(disabled.registration).toBe('present');
     expect(disabled.ownership).toBe('absent');
-    expect(disabled.consumers[0]).toMatchObject({ activation: 'disabled', trust: 'unknown', load: 'not-observed' });
+    expect(disabled.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'required', load: 'not-observed' });
+    expect(disabled.configuration).toMatchObject({ scope: 'user', activation: 'disabled' });
     expect(disabled.prerequisites.nativeSources).toMatchObject({ overlaps: [name], sources: [
       { version: '1.0.0', origin: 'native', effectiveComponents: [] },
       { version: '2.0.0', origin: 'compatibility', effectiveComponents: ['skills:compat-skill'] },
@@ -210,7 +378,7 @@ describe('public native consumer observation', () => {
     ] });
     active = true; await fs.outputFile(config, `[plugins]\nenabled=["${name}"]\ndisabled=[]\n`);
     const enabled = await inspectDeployment(item.ctx, item.binding);
-    expect(enabled.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'trusted', load: 'observed' });
+    expect(enabled.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'required', load: 'observed' });
     expect(enabled.ownership).toBe('absent');
     expect(enabled.prerequisites.nativeSources?.configurationEvidence).not.toBe(disabled.prerequisites.nativeSources?.configurationEvidence);
   });
@@ -225,7 +393,31 @@ describe('public native consumer observation', () => {
     }) });
     const observation = await inspectDeployment(item.ctx, item.binding);
     expect(observation).toMatchObject({ registration: 'not-applicable', package: 'present', ownership: 'foreign' });
-    expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'required', load: 'not-observed' });
+    expect(observation.consumers[0]).toMatchObject({ activation: 'disabled', trust: 'required', load: 'not-observed' });
+  });
+
+  // Test Value Gate: supplemental parse failures must preserve native enabled,
+  // trust and effective resource facts for the exact project source.
+  it('keeps Grok native facts when supplemental configuration and compatibility metadata are damaged', async () => {
+    const item = await fixture('grok', true);
+    const name = item.layout.nativeIdentity.packageId;
+    const compatibility = path.join(item.ctx.cwd, 'compatibility');
+    await fs.outputFile(path.join(compatibility, '.claude-plugin/plugin.json'), '{');
+    await fs.outputFile(path.join(item.ctx.cwd, '.grok', 'config.toml'), '[plugins');
+    item.ctx.runner = async ({ args }) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'plugin' ? [] : {
+      grokVersion: '1.0.77', projectTrusted: true, configSources: { layers: [] },
+      plugins: [{ name, scope: 'project', path: item.layout.packageRoot, enabled: true },
+        { name, scope: 'project', path: compatibility, enabled: true }],
+      skills: [{ name: 'native-skill', source: { plugin_name: name, path: path.join(item.layout.packageRoot, 'skills/demo/SKILL.md') } }],
+      agents: [], mcpServers: [],
+    }) });
+    const observation = await inspectDeployment(item.ctx, item.binding);
+    expect(observation.registration).toBe('not-applicable');
+    expect(observation.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'trusted', load: 'observed' });
+    expect(observation.configuration).toMatchObject({ scope: 'project', activation: 'unknown', reasonCodes: ['grokConfigurationUnconfirmed'] });
+    expect(observation.prerequisites.nativeSources).toMatchObject({ observation: 'unknown', sources: [
+      { path: item.layout.packageRoot, effectiveComponents: ['skills:native-skill'] }, { path: compatibility, origin: 'unknown' },
+    ] });
   });
 
   // Test Value Gate: a same-version configuration update can change the AW
@@ -272,7 +464,7 @@ describe('public native consumer observation', () => {
         plugins: [{ name, scope: 'user', path: installed, enabled: true }], skills: [], agents: [], mcpServers: [] }) });
     const observed = await inspectDeployment(item.ctx, item.binding);
     expect(observed.nativePackageContentDigest).toBeUndefined();
-    if (boundary === 'outside-store') expect(observed.registration).toBe('unknown');
+    if (boundary === 'outside-store') expect(observed).toMatchObject({ registration: 'present', ownership: 'unknown' });
     else expect(observed).toMatchObject({ registration: 'present', ownership: boundary === 'foreign-source' ? 'foreign' : 'shared' });
   });
 

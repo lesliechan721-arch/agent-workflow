@@ -18,6 +18,8 @@ import type { ProductInstallation } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
+import { resolveAbsoluteAwHome } from '../../src/utils/state-paths.js';
 
 async function fixture() {
   const isolation = getCurrentSourceTestIsolation();
@@ -70,6 +72,12 @@ describe('frozen platform rebuild integration', () => {
         expect.objectContaining({ status: 'applied', mutation: 'confirmed' }),
       ]));
       expect(await fs.pathExists(item.packageRoot)).toBe(false);
+      expect(result.deploymentReceipts?.[0]?.after).toMatchObject({ package: 'absent', registration: 'not-applicable',
+        consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown' })]) });
+      const binding = item.target.platformDeployment!.plans[0]!.binding;
+      expect(await fs.readJson(path.join(resolveAbsoluteAwHome(item.context.env), 'platforms', binding.platform,
+        'empty-state', `${binding.id.slice(7)}.json`))).toMatchObject({ kind: 'aw-platform-empty-state', result: 'intentional-empty',
+        binding: { id: binding.id, scope: binding.scope } });
     } finally { await item.context.platformRebuildSession?.dispose(); }
   });
 
@@ -110,7 +118,7 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
   Object.assign(plugin, { sourceId: 'team', pluginId: 'team/evidence-demo', sourceIdentity: `sha256:${'d'.repeat(64)}` });
   const reads: { discovery?: () => Promise<void>; inspection?: () => Promise<void>; mutation?: () => void | Promise<void>;
     geminiInstallSource?: () => string; antigravityInstallSource?: () => string } = {};
-  const inventories = platform === 'gemini' ? ['extensions list'] : platform === 'antigravity' ? ['plugin list --json'] : ['plugin marketplace list --json', 'plugin list --json'];
+  const inventories = platform === 'gemini' ? ['extensions list --output-format json'] : platform === 'antigravity' ? ['plugin list --json'] : ['plugin marketplace list --json', 'plugin list --json'];
   let layout: Awaited<ReturnType<typeof getDeploymentLayout>> | undefined;
   let marketplaceAdded = false;
   let installed = false;
@@ -123,10 +131,31 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
         name: layout!.nativeIdentity.packageId, source: 'antigravity', enabled,
         path: path.join(layout!.physicalIdentity.namespaceRoot, 'plugins', layout!.nativeIdentity.packageId), version: '1.0.0',
       }] : []) };
+      if (platform === 'gemini') {
+        if (!installed) return { exitCode: 0, stdout: '[]', stderr: '' };
+        const { root, file } = geminiExtensionPaths({ cwd: invocation.cwd, env: isolated.env });
+        const config = await fs.readJson(file).catch(() => ({}));
+        let isActive = true;
+        for (const rule of config[layout!.nativeIdentity.packageId]?.overrides ?? []) {
+          const pattern = rule.startsWith('!') ? rule.slice(1) : rule;
+          const location = pattern.slice(0, -2);
+          if (pattern === '*' || invocation.cwd === location || invocation.cwd.startsWith(`${location}${path.sep}`)) isActive = !rule.startsWith('!');
+        }
+        return { exitCode: 0, stderr: '', stdout: JSON.stringify([{
+          name: layout!.nativeIdentity.packageId, path: path.join(root, layout!.nativeIdentity.packageId), isActive,
+          installMetadata: { type: 'local', source: layout!.packageRoot },
+        }]) };
+      }
       if (options.state === 'unknown' && args[1] === 'marketplace') return { exitCode: 0, stdout: '{}', stderr: '' };
+      const user = await fs.readJson(path.join(layout?.activationPath ?? resolvePlatformConfigRoot(platform,
+        { cwd: invocation.cwd, env: isolated.env }), 'settings.json')).catch(() => ({}));
+      const project = await fs.readJson(path.join(invocation.cwd, '.github/copilot/settings.json')).catch(() => ({}));
+      const local = await fs.readJson(path.join(invocation.cwd, '.github/copilot/settings.local.json')).catch(() => ({}));
+      const enabledPlugins = { ...user.enabledPlugins, ...project.enabledPlugins, ...local.enabledPlugins };
       const rows = args[1] === 'marketplace' ? marketplaceAdded ? [{ name: layout!.marketplaceName, source: layout!.marketplaceRoot }] : []
-        : installed ? [{ name: layout!.nativeIdentity.packageId, marketplace: layout!.marketplaceName, source: layout!.marketplaceRoot }] : [];
-      return { exitCode: 0, stdout: platform === 'copilot' ? JSON.stringify(rows) : '', stderr: '' };
+        : installed ? [{ name: layout!.nativeIdentity.packageId, marketplace: layout!.marketplaceName,
+          source: layout!.marketplaceRoot, enabled: enabledPlugins[layout!.nativeIdentity.registrationId!] !== false }] : [];
+      return { exitCode: 0, stdout: JSON.stringify(rows), stderr: '' };
     }
     await reads.mutation?.();
     if (platform === 'antigravity') {
@@ -316,7 +345,7 @@ describe('native evidence checks', () => {
           const blocked = await run(unchangedSource.integration, unchangedSource.target, 'sync');
           expect(blocked.status, JSON.stringify(blocked)).toBe('failed');
           expect(blocked.deploymentReceipts?.flatMap((receipt) => receipt.diagnostics)).toContainEqual(expect.objectContaining({ code: 'nativeRefreshDataUnconfirmed' }));
-          expect(item.runner).not.toHaveBeenCalled();
+          expect(item.runner.mock.calls.filter(([invocation]) => !item.inventories.includes(invocation.args.join(' ')))).toEqual([]);
           expect(await fs.readFile(path.join(installed, '.env'), 'utf8')).toBe('PRIVATE_SETTING=retain\n');
           await fs.remove(path.join(installed, '.env'));
         }
@@ -329,7 +358,7 @@ describe('native evidence checks', () => {
       item.runner.mockClear();
       const recovered = await run(retry.integration, retry.target, 'sync');
       expect(recovered.status, JSON.stringify(recovered)).toBe('succeeded');
-      expect(item.runner.mock.calls.map(([invocation]) => invocation.args)).toEqual([
+      expect(item.runner.mock.calls.filter(([invocation]) => !item.inventories.includes(invocation.args.join(' '))).map(([invocation]) => invocation.args)).toEqual([
         ['extensions', 'uninstall', item.layout.nativeIdentity.packageId],
         ['extensions', 'install', item.layout.packageRoot, '--consent', '--skip-settings'],
       ]);
@@ -575,45 +604,17 @@ describe('native evidence checks', () => {
   });
 });
 
-async function marketplaceFixture(extras = false) {
+async function marketplaceFixture(extras = false, names: readonly string[] = ['first', 'second']) {
   const isolated = getCurrentSourceTestIsolation();
+  const claude = await createClaudeNativeTestRuntime(isolated);
   const bin = path.join(isolated.layout.fixtureCwd, 'marketplace-bin');
-  for (const command of ['claude', 'opencode']) await fs.outputFile(path.join(bin, command), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  const env = { ...isolated.env, PATH: bin };
+  await fs.outputFile(path.join(bin, 'opencode'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const env = { ...isolated.env, PATH: `${bin}${path.delimiter}${isolated.env.PATH ?? ''}` };
   async function nativeRunner(invocation: Parameters<NonNullable<RebuildExecutionContext['nativeCliRunner']>>[0]) {
-    if (invocation.args.includes('--version')) return { exitCode: 0, stdout: /claude/iu.test(invocation.command) ? '2.1.292 (Claude Code)' : 'opencode 2.0.0', stderr: '' };
-    const args = invocation.args;
-    if (args[0] !== 'plugin') throw new Error('Unexpected fixture native mutation.');
-    const home = isolated.env.AW_CLAUDE_HOME!;
-    const knownPath = path.join(home, 'plugins/known_marketplaces.json');
-    const known = await fs.readJson(knownPath).catch(() => ({}));
-    if (args[1] === 'marketplace' && args[2] === 'add') {
-      const root = args[3]!;
-      const { marketplaceName } = await fs.readJson(path.join(root, 'config.json'));
-      await fs.outputJson(knownPath, { ...known, [marketplaceName]: { source: { source: 'directory', path: root }, installLocation: root } });
-    } else {
-      const id = args[2]!;
-      const scope = args[args.indexOf('--scope') + 1];
-      const settingsPath = scope === 'local' ? path.join(invocation.cwd, '.claude/settings.local.json') : path.join(home, 'settings.json');
-      const settings = await fs.readJson(settingsPath).catch(() => ({}));
-      const installedPath = path.join(home, 'plugins/installed_plugins.json');
-      const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} }));
-      const records = (installed.plugins[id] ?? []).filter((record: { scope: string; projectPath?: string }) => record.scope !== scope || scope === 'local' && record.projectPath !== invocation.cwd);
-      if (['install', 'update', 'uninstall'].includes(args[1]!)) {
-        if (args[1] !== 'uninstall') {
-          const marketplace = known[id.slice(id.lastIndexOf('@') + 1)];
-          const root = path.join(marketplace.installLocation, 'plugins', id.slice(0, id.lastIndexOf('@')));
-          const manifest = await fs.readJson(path.join(root, '.claude-plugin/plugin.json'));
-          records.push({ scope, ...(scope === 'local' ? { projectPath: invocation.cwd } : {}), version: manifest.version, installPath: root });
-        }
-        const plugins = { ...installed.plugins };
-        if (records.length) plugins[id] = records;
-        else delete plugins[id];
-        await fs.outputJson(installedPath, { plugins });
-      }
-      if (['install', 'enable', 'disable', 'uninstall'].includes(args[1]!)) await fs.outputJson(settingsPath, { ...settings, enabledPlugins: { ...settings.enabledPlugins, [id]: !['disable', 'uninstall'].includes(args[1]!) } });
+    if (invocation.args.includes('--version') && /opencode/iu.test(invocation.command)) {
+      return { exitCode: 0, stdout: 'opencode 2.0.0', stderr: '' };
     }
-    return { exitCode: 0, stdout: '', stderr: '' };
+    return claude.nativeCliRunner(invocation);
   }
 
   const context: RebuildExecutionContext = { env, nativeCliRunner: nativeRunner, reporter: createNoopReporter(),
@@ -633,7 +634,7 @@ async function marketplaceFixture(extras = false) {
   context.platformRebuildSession = new PlatformRebuildSession(context, adapterFor);
   const integration = createRebuildIntegration({ context });
   const targets = [];
-  for (const name of ['first', 'second']) {
+  for (const name of names) {
     const root = path.join(isolated.layout.fixtureCwd, `market-${name}`);
     await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 4, name, version: '1.0.0', description: 'Frozen marketplace fixture.',
       platforms: ['claude', 'opencode'], marketplace: { category: 'development', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
@@ -653,10 +654,134 @@ async function marketplaceFixture(extras = false) {
       catalog: { rootDir: root, source: 'local', catalogVersion: '1.0.0', channel: 'latest' } }));
   }
   await integration.sealMarketplaceGenerations(targets);
-  return { context, integration, targets, adapterFor };
+  return { context, integration, targets, adapterFor, claude };
 }
 
 describe('shared marketplace generation', () => {
+  // Test Value Gate: retracting an inherited project requirement must not create
+  // a false local override. An existing local installation still uses disable.
+  it.each([
+    { local: false, command: 'uninstall' },
+    { local: false, command: 'sync' },
+    { local: true, command: 'uninstall' },
+  ] as const)('retracts Claude project with local=$local through $command without changing User', async ({ local, command }) => {
+    const item = await marketplaceFixture(false, ['first']);
+    const user = item.targets[0]!;
+    const input = { plugin: user.plugin, platform: 'claude' as const, cwd: item.claude.projectRoot,
+      catalog: { rootDir: user.plugin.rootDir, source: 'local' as const, catalogVersion: '1.0.0', channel: 'latest' as const } };
+    const freshIntegration = async () => {
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, item.adapterFor);
+      return createRebuildIntegration({ context: item.context });
+    };
+    try {
+      const installedUser = await executeRebuildOperation({ command: 'install', target: user, driver: item.integration.driver });
+      expect(installedUser.status, JSON.stringify(installedUser)).toBe('succeeded');
+      if (local) {
+        const integration = await freshIntegration();
+        const project = await integration.buildTarget({ ...input, scope: 'project', command: 'install' });
+        await integration.sealMarketplaceGenerations([project]);
+        const installed = await executeRebuildOperation({ command: 'install', target: project, driver: integration.driver });
+        expect(installed.status, JSON.stringify(installed)).toBe('succeeded');
+      }
+      const packageRoot = user.platformDeployment!.plans[0]!.evidence.layout.packageRoot;
+      const skill = path.join(packageRoot, 'skills/check/SKILL.md');
+      const content = await fs.readFile(skill, 'utf8');
+      if (command === 'sync') await fs.writeFile(path.join(input.plugin.rootDir, 'render.mjs'),
+        'console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));');
+      const integration = await freshIntegration();
+      const target = await integration.buildTarget({ ...input, scope: 'project', command });
+      await integration.sealMarketplaceGenerations([target]);
+      const plan = target.platformDeployment!.plans[0]!;
+      expect(target.platformDeployment!.deployments[0]!.driverState.before).toMatchObject({ registration: 'present',
+        scopeRegistration: local ? 'present' : 'absent', configuration: { activation: local ? 'enabled' : 'absent' },
+        consumers: [expect.objectContaining({ activation: 'enabled' })] });
+      expect(plan.effects.map((effect) => effect.kind)).toEqual(local ? ['deactivate'] : []);
+      item.claude.nativeCliRunner.mockClear();
+      const removed = await executeRebuildOperation({ command, target, driver: integration.driver });
+      expect(removed.status, JSON.stringify(removed)).toBe('succeeded');
+      if (command === 'sync') {
+        expect(await fs.readJson(path.join(resolveAbsoluteAwHome(item.context.env), 'platforms', plan.binding.platform,
+          'empty-state', `${plan.binding.id.slice(7)}.json`))).toMatchObject({ kind: 'aw-platform-empty-state', result: 'intentional-empty',
+          binding: { id: plan.binding.id, scope: plan.binding.scope } });
+      }
+      const nativeId = plan.evidence.layout.nativeIdentity.registrationId!;
+      const settingsPath = path.join(input.cwd, '.claude/settings.local.json');
+      if (local) expect((await fs.readJson(settingsPath)).enabledPlugins[nativeId]).toBe(false);
+      else expect(await fs.pathExists(settingsPath)).toBe(false);
+      const mutations = item.claude.nativeCliRunner.mock.calls.map(([call]) => call.args.slice(call.args.indexOf('plugin')))
+        .filter((args) => args[0] === 'plugin' && args[1] !== 'list' && args[2] !== 'list');
+      expect(mutations).toEqual(local ? [['plugin', 'disable', nativeId, '--scope', 'local']] : []);
+      const records = (await fs.readJson(item.claude.installedPath)).plugins[nativeId] as Array<{ scope: string }>;
+      expect(records.map((record) => record.scope).sort()).toEqual(local ? ['local', 'user'] : ['user']);
+      expect(await fs.readFile(skill, 'utf8')).toBe(content);
+      const ctx = { cwd: input.cwd, env: item.context.env, runner: item.context.nativeCliRunner };
+      const adapter = getAgentPluginAdapter('claude');
+      expect((await adapter.inspect(ctx, user.platformDeployment!.plans[0]!.binding)).consumers)
+        .toContainEqual(expect.objectContaining({ activation: 'enabled' }));
+      const project = await adapter.inspect(ctx, plan.binding);
+      expect(project).toMatchObject({ package: 'present', ownership: 'aw', registration: 'present',
+        scopeRegistration: local ? 'present' : 'absent',
+        consumers: [expect.objectContaining({ activation: local ? 'disabled' : 'enabled' })] });
+    } finally { await item.context.platformRebuildSession?.dispose(); }
+  });
+
+  // Test Value Gate: inherited native enablement must still install the exact
+  // project scope, which must survive removal of the User activation.
+  it('registers Claude local scope beside User and retains it when User is revoked', async () => {
+    const item = await marketplaceFixture(false, ['first']);
+    const user = item.targets[0]!;
+    const input = { plugin: user.plugin, platform: 'claude' as const, cwd: item.claude.projectRoot,
+      catalog: { rootDir: user.plugin.rootDir, source: 'local' as const, catalogVersion: '1.0.0', channel: 'latest' as const } };
+    const freshIntegration = async () => {
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      item.context.platformRebuildSession = new PlatformRebuildSession(item.context, item.adapterFor);
+      return createRebuildIntegration({ context: item.context });
+    };
+    try {
+      const installedUser = await executeRebuildOperation({ command: 'install', target: user, driver: item.integration.driver });
+      expect(installedUser.status, JSON.stringify(installedUser)).toBe('succeeded');
+
+      const projectIntegration = await freshIntegration();
+      const project = await projectIntegration.buildTarget({ ...input, scope: 'project', command: 'install' });
+      await projectIntegration.sealMarketplaceGenerations([project]);
+      const before = project.platformDeployment!.deployments[0]!.driverState.before;
+      expect(before).toMatchObject({ registration: 'present', scopeRegistration: 'absent',
+        consumers: [expect.objectContaining({ activation: 'enabled', trust: 'unknown' })] });
+      const plan = project.platformDeployment!.plans[0]!;
+      expect(plan.effects).toContainEqual(expect.objectContaining({ kind: 'register' }));
+      item.claude.nativeCliRunner.mockClear();
+      const installedProject = await executeRebuildOperation({ command: 'install', target: project, driver: projectIntegration.driver });
+      expect(installedProject.status, JSON.stringify(installedProject)).toBe('succeeded');
+      const nativeId = plan.evidence.layout.nativeIdentity.registrationId!;
+      expect(item.claude.nativeCliRunner.mock.calls.some(([call]) => call.args.slice(call.args.indexOf('plugin')).join(' ')
+        === `plugin install ${nativeId} --scope local`)).toBe(true);
+      const records = (await fs.readJson(item.claude.installedPath)).plugins[nativeId] as Array<{ scope: string; projectPath?: string }>;
+      expect(records.map((record) => record.scope).sort()).toEqual(['local', 'user']);
+      expect(records.find((record) => record.scope === 'local')?.projectPath).toBe(item.claude.projectRoot);
+      const skill = path.join(plan.evidence.layout.packageRoot, 'skills/check/SKILL.md');
+      const content = await fs.readFile(skill, 'utf8');
+
+      const removeIntegration = await freshIntegration();
+      const removeUser = await removeIntegration.buildTarget({ ...input, scope: 'user', command: 'uninstall' });
+      await removeIntegration.sealMarketplaceGenerations([removeUser]);
+      const removed = await executeRebuildOperation({ command: 'uninstall', target: removeUser, driver: removeIntegration.driver });
+      expect(removed.status, JSON.stringify(removed)).toBe('succeeded');
+      const userSettings = await fs.readJson(path.join(item.claude.claudeHome, 'settings.json'));
+      expect(userSettings.enabledPlugins[nativeId]).toBe(false);
+      expect((await fs.readJson(item.claude.installedPath)).plugins[nativeId]).toContainEqual(expect.objectContaining({
+        scope: 'local', projectPath: item.claude.projectRoot,
+      }));
+      expect(await fs.readFile(skill, 'utf8')).toBe(content);
+      const currentProject = await getAgentPluginAdapter('claude').inspect({ cwd: input.cwd, env: item.context.env,
+        runner: item.context.nativeCliRunner }, plan.binding);
+      expect(currentProject).toMatchObject({ package: 'present', ownership: 'aw', registration: 'present', scopeRegistration: 'present',
+        consumers: [expect.objectContaining({ activation: 'enabled', trust: 'unknown' })] });
+    } finally { await item.context.platformRebuildSession?.dispose(); }
+  });
+
   // Test Value Gate: unmet components cannot erase old shared MCP/Hook output, while another platform still progresses.
   it('retains the complete old package on unmet components and continues an independent platform', async () => {
     const item = await marketplaceFixture(true);
@@ -761,10 +886,19 @@ async function registrationFixture(options: { platform?: 'codex' | 'claude'; fai
     entry: { kind: 'cli', executable, configRoot: path.join(isolation.layout.fixtureCwd, `${platform}-registration-home`) } };
   const installed = new Set<string>();
   const enabled = new Set<string>();
+  let marketplace: { name: string; root: string } | undefined;
   const calls: string[][] = [];
   const context: RebuildExecutionContext = { env: isolation.env, reporter: createNoopReporter(),
     debugLogger: createNoopDebugLogger(), preparedArtifactRenderResults: new Map(), nativeCliRunner: async (request) => {
       const args = [...request.args]; calls.push(args);
+      if (args[1] === 'marketplace' && args[2] === 'list') return { exitCode: 0, stderr: '',
+        stdout: JSON.stringify(marketplace ? [{ name: marketplace.name, source: 'directory', path: marketplace.root,
+          installLocation: marketplace.root }] : []) };
+      if (args[1] === 'marketplace' && args[2] === 'add') {
+        const root = args[3]!;
+        marketplace = { name: (await fs.readJson(path.join(root, 'config.json'))).marketplaceName, root };
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
       const scope = platform === 'claude' ? args[args.indexOf('--scope') + 1]! : 'global';
       if (args[0] === 'plugin' && ['add', 'install', 'update'].includes(args[1]!)) {
         if (installed.has(scope) && args[1] !== 'update') return { exitCode: 1, stdout: '', stderr: 'already installed' };
@@ -780,6 +914,8 @@ async function registrationFixture(options: { platform?: 'codex' | 'claude'; fai
     discover: async () => ({ platform, availability: 'available', installations: [product, ...options.excludedProduct ? [options.excludedProduct] : []], diagnostics: [] }),
     capabilities(input) { const value = original.capabilities(input); value.kinds.skill = { ...value.kinds.skill, status: 'supported', reasonCodes: [] }; return value; },
     async inspect(ctx, binding) {
+      // This orchestration fixture reports explicit scope receipts. Native
+      // shared inheritance is checked through inspectDeployment in its own suite.
       const layout = await getDeploymentLayout(ctx, binding);
       const present = await fs.pathExists(layout.packageRoot);
       const scope = platform === 'claude' ? binding.scope.kind === 'project' ? 'local' : 'user' : 'global';

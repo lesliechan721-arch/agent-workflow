@@ -11,6 +11,7 @@ import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { controller, deferred, loadResult, scopedPlan, scopedReceipt, type ScopedTaskRequest } from '../helpers/tui-console-app-fixture.js';
 import { focusAction, input, nextTurn } from '../helpers/tui-console-app-input.js';
 import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
+import { deploymentObservationLines } from '../../src/tui/deployment-view.js';
 
 afterEach(cleanup);
 
@@ -56,6 +57,29 @@ function target(plan: FrozenDeploymentPlan): RecoveryTarget {
 }
 
 describe('native deployment public and TUI consumers', () => {
+  // Test Value Gate: local declarations can disagree with effective native state;
+  // both facts must survive the public receipt and human presentation.
+  it('shows a local declaration separately from the native effective state', () => {
+    const current = target(deployment());
+    const completed = current.deploymentReceipts![0]!;
+    completed.after.scopeRegistration = 'absent';
+    completed.after.configuration = { scope: 'project', activation: 'disabled', reasonCodes: [] };
+    const receipt = scopedReceipt({ kind: 'recovery', scope: 'user', selectors: ['official/agent-lab'] });
+    receipt.targetResults = [current];
+    const projected = projectReceipt('target.set', receipt);
+    const publicTarget = (projected.data as { targetResults: Array<{ deploymentReceipts: Array<{ after: { configuration: object; consumers: object[] } }> }> }).targetResults[0]!;
+    expect(publicTarget.deploymentReceipts[0]!.after).toMatchObject({
+      scopeRegistration: 'absent', configuration: { scope: 'project', activation: 'disabled' }, consumers: [{ activation: 'enabled' }, {}],
+    });
+    expect(renderPublicResult(projected)).toContain('activation=enabled');
+    expect(renderPublicResult(projected)).toContain('Native registration in requested scope: absent');
+    expect(renderPublicResult(projected)).toContain('activation-entry=disabled; not native effective state');
+    const observed = { bindingId: completed.bindingId, products: completed.products, after: completed.after };
+    const lines = deploymentObservationLines([observed]).join('\n');
+    expect(lines).toContain('启用 已启用');
+    expect(lines).toContain('原生独立 scope 登记：缺失');
+    expect(lines).toContain('显式停用（不代表原生有效状态）');
+  });
   // Test Value Gate: cleanup must expose actual recovery locations without borrowing another target's paths or claiming restoration.
   it.each(['wrapped', 'retirement'] as const)('keeps quarantine and residual recovery locations on their exact public target (%s)', (shape) => {
     const receipt = scopedReceipt({ kind: 'recovery', command: 'cleanup', scope: 'project', selectors: ['official/agent-lab'] });

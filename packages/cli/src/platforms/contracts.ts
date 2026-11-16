@@ -155,6 +155,14 @@ export interface PlannedEffect {
 
 export type Presence = 'present' | 'absent' | 'unknown' | 'not-applicable';
 export type Activation = 'enabled' | 'disabled' | 'blocked' | 'unknown' | 'not-applicable';
+/** Local configuration evidence supplements native observations; it never overrides them. */
+export interface DeploymentConfigurationObservation {
+  scope: ScopeRef['kind'];
+  activation: 'enabled' | 'disabled' | 'absent' | 'unknown';
+  trust?: 'trusted' | 'required' | 'blocked' | 'unknown';
+  marketplace?: 'absent' | 'canonical' | 'foreign' | 'unknown';
+  reasonCodes: string[];
+}
 export interface DeploymentObservation {
   /** Version read from the verified owned package descriptor; absence means unknown. */
   packageVersion?: string;
@@ -163,7 +171,10 @@ export interface DeploymentObservation {
   physicalKey: string;
   package: Presence;
   registration: Presence;
+  /** Independent registration in the requested scope, only when the native API reports it. */
+  scopeRegistration?: Presence;
   ownership: 'aw' | 'foreign' | 'shared' | 'unknown' | 'absent';
+  configuration?: DeploymentConfigurationObservation;
   consumers: Array<{
     productId: string;
     activationKey: string;
@@ -283,6 +294,8 @@ export interface PreparationEvidence {
 export interface MutationOutcome {
   mutation: 'none' | 'confirmed' | 'possible';
   changed: boolean;
+  /** Exact Pi 1.5 Project remove acknowledgment, valid only for this action. */
+  unregisterConfirmed?: true;
 }
 export interface MutationContext extends ReadContext {
   /** One explicit CLI grant for this exact frozen Gemini plan; never persisted or inferred. */

@@ -10,7 +10,7 @@ import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
 import { deploymentPackageComponent, inspectStaticSupplements } from '../platforms/inspection.js';
 import type { PlatformDriverState } from '../platforms/lifecycle.js';
-import { nativeRoute } from '../platforms/lifecycle-native.js';
+import { nativeRoute, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
 import { assertGeminiProjectRules, geminiActivationEvidence, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
   geminiUserActivation, readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
@@ -280,8 +280,8 @@ async function sharedReferences(context: RebuildExecutionContext, binding: Deplo
   }
   // These routes do not expose a complete global activation inventory. An absent
   // registration is sufficient for orphan payload cleanup; otherwise keep it.
-  return observation.registration === 'absent' && observation.consumers.every((consumer) => consumer.activation === 'disabled')
-    && view?.desiredComplete === true && view.scopes.includes('user') && view.scopes.includes('project') ? 'none' : 'unknown';
+  return observation.registration === 'absent' && view?.desiredComplete === true
+    && view.scopes.includes('user') && view.scopes.includes('project') ? 'none' : 'unknown';
 }
 
 export class PlatformRebuildSession {
@@ -712,7 +712,15 @@ export class PlatformRebuildSession {
             registration: mutableBaseline.observation.registration } };
           const onlyRegistration = mutableBaseline.observation.registration === 'absent' && current.observation.registration === 'present'
             && artifactValueDigest(withoutRegistration) === artifactValueDigest(mutableBaseline);
-          if (!onlyRegistration || await fingerprint() !== initial) {
+          const onlyMarketplace = ['codex-marketplace', 'claude-marketplace'].includes(entry.binding.route)
+            && current.observation.configuration?.marketplace === 'canonical'
+            && mutableBaseline.observation.configuration?.marketplace === 'absent'
+            && (current.observation.registration === mutableBaseline.observation.registration
+              || mutableBaseline.observation.registration === 'absent' && current.observation.registration === 'present')
+            && artifactValueDigest({ ...withoutRegistration, observation: { ...withoutRegistration.observation,
+              configuration: { ...current.observation.configuration, marketplace: mutableBaseline.observation.configuration.marketplace },
+            } }) === artifactValueDigest(mutableBaseline);
+          if ((!onlyRegistration && !onlyMarketplace) || await fingerprint() !== initial) {
             throw new Error('operationPlanStale: deployment evidence changed during source registration.');
           }
           // This is the one shared observation changed by our confirmed source
@@ -867,7 +875,9 @@ export class PlatformRebuildSession {
           const packageIncomplete = packageIds.size > 0 && (after.package !== 'present' || !['aw', 'shared'].includes(after.ownership)
             || nativeContentIncomplete
             || nativeRoute(plan.binding.route) && (after.registration !== 'present'
-              || after.consumers.some((consumer) => consumer.activation !== 'enabled') || untrusted));
+              || plan.binding.route !== 'pi-package' && after.consumers.some((consumer) => consumer.activation !== 'enabled')
+              || plan.binding.route === 'claude-marketplace' && after.scopeRegistration !== undefined && after.scopeRegistration !== 'present'
+              || untrusted));
           const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id)
             || !after.components.some((observed) => observed.id === component.id && observed.presence === 'present' && !observed.reasonCodes.length));
           receipt.diagnostics.push(...after.diagnostics);
@@ -1044,10 +1054,18 @@ export class PlatformRebuildSession {
               }
             }
             const emptyState = emptyStates.get(prepared.plan.binding.id);
+            const removedByCommand = piProjectRemovalConfirmed(prepared.plan, receipt);
+            const inactiveScope = removedByCommand || receipt.after.registration === 'absent'
+              || receipt.after.package === 'absent' && receipt.after.registration === 'not-applicable'
+              || receipt.after.scopeRegistration === 'absent'
+              || prepared.plan.binding.scope.kind === 'project'
+                && ['codex-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(prepared.plan.binding.route)
+                && receipt.after.configuration?.activation === 'absent'
+              || receipt.after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
             if (emptyState && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
-              && receipt.after.registration !== 'unknown' && receipt.after.package !== 'unknown'
+              && (receipt.after.registration !== 'unknown' || removedByCommand) && receipt.after.package !== 'unknown'
               && !['foreign', 'unknown'].includes(receipt.after.ownership)
-              && receipt.after.consumers.every((consumer) => !['unknown', 'enabled'].includes(consumer.activation))) {
+              && inactiveScope) {
               const residual = await inspectOwnedComponents({ components: prepared.plan.evidence.ownership
                 .filter((slot) => !('path' in slot.component) || slot.component.path !== prepared.plan.evidence.layout.packageRoot)
                 .map((slot) => slot.component), executor: this.ownership });

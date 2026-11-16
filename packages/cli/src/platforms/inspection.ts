@@ -6,6 +6,7 @@ import { inspectOwnedComponents, parseOwnedTextHeader, readSkillOwnerMarker, typ
 import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
 import { getDeploymentLayout, getNativePackageName, type DeploymentLayout } from './layout.js';
 import { inspectNativeDeployment } from './inspection-native.js';
+import { inspectOpenCodeDeployment } from './inspection-opencode.js';
 import { tryParseStrictSemVer } from '../utils/manifest.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { projectSupplementFile } from './projection.js';
@@ -60,10 +61,6 @@ export async function inspectStaticSupplements(ctx: ReadContext, binding: Deploy
     } else result.push({ id: component.id, presence: 'unknown', reasonCodes: ['componentOutputUnconfirmed'] });
   }
   return { components: result, owned };
-}
-async function fileExists(file: string): Promise<boolean> {
-  try { await fs.lstat(file); return true; }
-  catch (error) { if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return false; throw error; }
 }
 async function inspectRelativeOutput(root: string, output: string): Promise<'present' | 'absent' | 'unknown'> {
   let current = root;
@@ -133,25 +130,25 @@ export async function inspectDeployment(ctx: ReadContext, binding: DeploymentBin
         result.components.push({ id: component.id, presence, reasonCodes: presence === 'present' ? [] : [presence === 'absent' ? 'componentOutputMissing' : 'componentOutputUnconfirmed'] });
       }
     }
-    await inspectNativeDeployment(ctx, binding, layout, result);
-    if (['antigravity-directory', 'opencode-directory', 'cursor-workspace-hook'].includes(binding.route)) {
-      result.registration = 'not-applicable';
-      // A directory proves materialization, not host loading or project trust.
-      for (const consumer of result.consumers) {
-        consumer.load = 'not-observed';
-        consumer.activation = result.package === 'absent' ? 'disabled' : 'unknown';
-      }
-      if (binding.route === 'cursor-workspace-hook' && !await fileExists(layout.activationPath)) {
-        for (const consumer of result.consumers) consumer.activation = 'disabled';
-      }
-    }
     if (state === 'error') result.diagnostics.push(...unknownDeployment(binding, 'deploymentOwnershipUnreadable').diagnostics);
   } catch (error) {
     rethrowFatalError(error);
     ctx.signal?.throwIfAborted();
-    const unknown = unknownDeployment(binding);
-    return { ...result, registration: unknown.registration, consumers: unknown.consumers,
-      diagnostics: [...result.diagnostics, ...unknown.diagnostics] };
+    result.ownership = 'unknown';
+    result.diagnostics.push(...unknownDeployment(binding, 'deploymentOwnershipUnreadable').diagnostics);
+  }
+  try {
+    await inspectNativeDeployment(ctx, binding, layout, result);
+    if (binding.route === 'opencode-directory') await inspectOpenCodeDeployment(ctx, binding, layout, result);
+    if (['antigravity-directory', 'opencode-directory', 'cursor-workspace-hook'].includes(binding.route)) {
+      result.registration = 'not-applicable';
+      // A directory proves materialization, not host loading or project trust.
+    }
+  } catch (error) {
+    rethrowFatalError(error);
+    ctx.signal?.throwIfAborted();
+    // A later supplemental read must not discard an earlier native response.
+    result.diagnostics.push(...unknownDeployment(binding).diagnostics);
   }
   return result;
 }

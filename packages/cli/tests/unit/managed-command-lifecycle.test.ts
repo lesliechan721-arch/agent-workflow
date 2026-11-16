@@ -19,11 +19,13 @@ import { syncPluginManagedCommandPackage } from '../../src/utils/managed-command
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createIsolatedTestEnv, type IsolatedTestEnvironment } from '../helpers/test-isolation.js';
 import { git } from '../helpers/catalog-source-fixture.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 
 describe('managed command plugin lifecycle', () => {
   let isolated: IsolatedTestEnvironment;
   let pluginRoot: string;
   let capturePath: string;
+  let claude: Awaited<ReturnType<typeof createClaudeNativeTestRuntime>>;
   const contexts: RebuildExecutionContext[] = [];
   const sourceIdentity = `sha256:${'a'.repeat(64)}`;
   const baseManifest = {
@@ -41,8 +43,9 @@ describe('managed command plugin lifecycle', () => {
     capturePath = path.join(isolated.layout.fixtureCwd, 'capture.json');
     isolated.env.CAPTURE_FILE = capturePath;
     const bin = path.join(isolated.layout.fixtureCwd, 'native-bin');
-    for (const name of ['opencode', 'claude']) await fs.outputFile(path.join(bin, `${name}${process.platform === 'win32' ? '.exe' : ''}`), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    for (const name of ['opencode']) await fs.outputFile(path.join(bin, `${name}${process.platform === 'win32' ? '.exe' : ''}`), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     isolated.env.PATH = bin;
+    claude = await createClaudeNativeTestRuntime(isolated);
   });
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -58,39 +61,9 @@ describe('managed command plugin lifecycle', () => {
     return { ...await readPluginManifest(root, { mode: 'bundle' }), sourceId: source.sourceId, sourceIdentity, pluginId: source.pluginId };
   }
   async function nativeRunner(invocation: Parameters<NonNullable<RebuildExecutionContext['nativeCliRunner']>>[0]) {
-    if (invocation.args.includes('--version')) return { exitCode: 0, stdout: /claude/iu.test(invocation.command) ? '2.1.292 (Claude Code)' : 'opencode 2.0.0', stderr: '' };
-    const args = invocation.args;
-    if (args[0] !== 'plugin') throw new Error('Unexpected fixture native mutation.');
-    const home = isolated.env.AW_CLAUDE_HOME!;
-    const knownPath = path.join(home, 'plugins/known_marketplaces.json');
-    const known = await fs.readJson(knownPath).catch(() => ({}));
-    if (args[1] === 'marketplace' && args[2] === 'add') {
-      const root = args[3]!;
-      const { marketplaceName } = await fs.readJson(path.join(root, 'config.json'));
-      await fs.outputJson(knownPath, { ...known, [marketplaceName]: { source: { source: 'directory', path: root }, installLocation: root } });
-    } else {
-      const id = args[2]!;
-      const scope = args[args.indexOf('--scope') + 1];
-      const settingsPath = scope === 'local' ? path.join(invocation.cwd, '.claude/settings.local.json') : path.join(home, 'settings.json');
-      const settings = await fs.readJson(settingsPath).catch(() => ({}));
-      const installedPath = path.join(home, 'plugins/installed_plugins.json');
-      const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} }));
-      const records = (installed.plugins[id] ?? []).filter((record: { scope: string; projectPath?: string }) => record.scope !== scope || scope === 'local' && record.projectPath !== invocation.cwd);
-      if (['install', 'update', 'uninstall'].includes(args[1]!)) {
-        if (args[1] !== 'uninstall') {
-          const marketplace = known[id.slice(id.lastIndexOf('@') + 1)];
-          const root = path.join(marketplace.installLocation, 'plugins', id.slice(0, id.lastIndexOf('@')));
-          const manifest = await fs.readJson(path.join(root, '.claude-plugin/plugin.json'));
-          records.push({ scope, ...(scope === 'local' ? { projectPath: invocation.cwd } : {}), version: manifest.version, installPath: root });
-        }
-        const plugins = { ...installed.plugins };
-        if (records.length) plugins[id] = records;
-        else delete plugins[id];
-        await fs.outputJson(installedPath, { plugins });
-      }
-      if (['install', 'enable', 'disable', 'uninstall'].includes(args[1]!)) await fs.outputJson(settingsPath, { ...settings, enabledPlugins: { ...settings.enabledPlugins, [id]: !['disable', 'uninstall'].includes(args[1]!) } });
-    }
-    return { exitCode: 0, stdout: '', stderr: '' };
+    if (claude.isClaudeInvocation(invocation)) return claude.nativeCliRunner(invocation);
+    if (invocation.args.includes('--version')) return { exitCode: 0, stdout: 'opencode 2.0.0', stderr: '' };
+    throw new Error('Unexpected fixture native mutation.');
   }
   function integrationFor(env = isolated.env) {
     const context: RebuildExecutionContext = createCommandExecutionContext({ env, nativeCliRunner: nativeRunner });

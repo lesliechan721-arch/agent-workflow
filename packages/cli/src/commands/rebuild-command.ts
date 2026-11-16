@@ -5003,9 +5003,11 @@ async function runRebuildCommandInSession(
               const packageKeys = new Set(deployments.map(({ binding }) => binding.physicalKey));
               const scopedContribution = consumerInspection.components.some(({ component, state }) => state !== 'absent'
                 && component.identity.scope === options_.scope && !packageKeys.has(component.identity.physicalKey ?? ''));
-              const nativeConsumer = deployments.some(({ observation }) => observation.registration !== 'absent'
-                && observation.consumers.some((consumer) =>
-                  consumer.activation !== 'disabled' && consumer.activation !== 'not-applicable'));
+              const nativeConsumer = deployments.some(({ binding, observation }) => observation.registration !== 'absent'
+                && (binding.platform === 'codex' && binding.scope.kind === 'project' && observation.configuration
+                  ? observation.configuration.activation !== 'absent' && observation.configuration.activation !== 'disabled'
+                  : observation.consumers.some((consumer) =>
+                    consumer.activation !== 'disabled' && consumer.activation !== 'not-applicable')));
               return declaredHere || scopedContribution || nativeConsumer ? 'live' : 'absent';
             }
             return consumerInspection.state === 'absent' ? 'absent' : 'live';

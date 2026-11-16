@@ -81,7 +81,7 @@ describe('five namespaced write commands', () => {
     expect(upgraded.dependencyPlan?.requestedPluginIds).toEqual(['team/root']);
     expect(upgraded.rebuildResults.map((entry) => entry.target.pluginName)).toEqual(['leaf', 'root']);
     expect(upgraded.dependencyPlan?.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/leaf', relation: 'dependency', action: 'install' }),
+      expect.objectContaining({ pluginId: 'team/leaf', relation: 'dependency', state: 'partial', action: 'reinstall' }),
     ]));
   });
 

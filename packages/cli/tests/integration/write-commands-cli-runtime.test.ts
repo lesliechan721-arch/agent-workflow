@@ -668,11 +668,7 @@ describe('five namespaced write commands', () => {
         },
       }),
     ]);
-    const nativeCliRunner = vi.fn(async () => ({
-      exitCode: 0,
-      stdout: 'claude-cli 99.0.0',
-      stderr: '',
-    }));
+    const { nativeCliRunner } = await createClaudeNativeTestRuntime(isolation);
     await writeIntentFixture({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env },
       { roots: [{ pluginId: 'team/config-native', platforms: ['claude'] }] });
     const captured = createCapturedCliIo();
@@ -693,7 +689,10 @@ describe('five namespaced write commands', () => {
         apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] }
       },
     });
-    expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(nativeCliRunner.mock.calls.filter(([invocation]) => {
+      const args = invocation.args.slice(invocation.args.indexOf('plugin'));
+      return args[0] === 'plugin' && args[1] !== 'list' && args[2] !== 'list';
+    })).toEqual([]);
     expect((await readPluginConfigStore({
       sourceId: 'team',
       sourceIdentity,

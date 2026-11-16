@@ -94,8 +94,7 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
   try { if (options.targets ?? options.target) filters = normalizeAgents((options.targets ?? options.target)!); for (const plugin of plugins) parsePluginId(plugin); }
   catch { return invalid(command, 'target', 'Invalid plugin selector or target.'); }
   const observationDiagnostics: Diagnostic[] = options.observeNative ? [{ code: 'nativeObservationSideEffects', severity: 'warning',
-    message: 'Native observation can start Codex app-server. It can create an installation ID, logs, SQLite state, and cache, read existing authentication, and access configured cloud services or remote environments.',
-    subject: { target: 'codex' } }] : [];
+    message: 'Native observation can start Codex app-server or a private local OpenCode server. It can load installed plugin code, create logs, state, and cache, read existing authentication, and access configured services.' }] : [];
   const context = createCommandExecutionContext({ ...input, env: options.env ?? input.env, interactive: false });
   try {
     const work = await resolveWorkContext({ cwd: options.cwd, context: options.context as Scope | undefined });

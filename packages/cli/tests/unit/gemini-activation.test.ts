@@ -87,6 +87,11 @@ describe('Gemini shared extension activation', () => {
       projections: [{ renderUnitId: binding.renderUnitIds[0]!, bundle, supplements: [], components: projection(newDigest).components, diagnostics: [] }], effects: [effect], evidence },
     driverState: { before, identity, product: binding.consumers[0]!, packageComponent: component, bundle, contributions: [], removals: [] } };
     const runner = vi.fn(async (invocation: NativeCliInvocation) => {
+      if (invocation.args.join(' ') === 'extensions list --output-format json') {
+        const present = await fs.pathExists(installed);
+        return { exitCode: 0, stderr: '', stdout: JSON.stringify(present ? [{ name: identity.packageId,
+          path: installed, isActive: true, installMetadata: { type: 'local', source: component.path } }] : []) };
+      }
       if (invocation.args[1] === 'uninstall') {
         await fs.remove(installed);
         await fs.writeFile(file, JSON.stringify({ sibling: { overrides: ['*'] } }, null, 2));
@@ -133,7 +138,9 @@ describe('Gemini shared extension activation', () => {
       const receipt = await executePlatformLifecycle(item.execution, item.prepared);
       expect(receipt.effects[0]).toMatchObject({ status: 'blocked', mutation: 'none' });
       expect(receipt.effects[0]!.diagnostics[0]!.code).toBe(kind === 'foreign-source' ? 'nativeIdentityUnconfirmed' : 'nativeRefreshDataUnconfirmed');
-      expect(item.runner).not.toHaveBeenCalled();
+      expect(item.runner.mock.calls.filter(([invocation]) => invocation.args.join(' ') !== 'extensions list --output-format json')).toEqual([]);
+      expect(receipt.after.registration).toBe('present');
+      expect(receipt.after.consumers.every((consumer) => consumer.activation === 'enabled')).toBe(true);
       expect(await fs.pathExists(item.installed)).toBe(true);
       expect(await fs.readJson(item.file)).toEqual(item.original);
     },

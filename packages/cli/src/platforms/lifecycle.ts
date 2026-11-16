@@ -7,7 +7,7 @@ import type {
   ProjectionResult,
 } from './contracts.js';
 import { inspectDeployment } from './inspection.js';
-import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, routeReload } from './lifecycle-native.js';
+import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, piProjectRegistrationHidden, routeReload } from './lifecycle-native.js';
 import { geminiConsentMessages } from './gemini-consent.js';
 import { geminiReplacementMessages } from './gemini-activation.js';
 
@@ -148,10 +148,14 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       reasonCode: 'packageUpdateBlockedByUnmet', requiredFeatures: [],
     })));
   }
-  // Gemini can retain an explicit rule that is currently disabled by a parent.
-  const revokeActivation = binding.route === 'gemini-extension'
-    || observation.consumers.some((consumer) => consumer.activation === 'enabled' || consumer.activation === 'unknown');
-  const hasReferences = evidence.sharedReferences !== 'none';
+  const inheritedClaudeProject = binding.route === 'claude-marketplace' && binding.scope.kind === 'project'
+    && observation.registration === 'present' && observation.scopeRegistration === 'absent'
+    && observation.configuration?.activation === 'absent';
+  // Inherited Claude activation has no local entry to revoke. Gemini can retain
+  // an explicit rule that is currently disabled by a parent.
+  const revokeActivation = !inheritedClaudeProject && (binding.route === 'gemini-extension'
+    || observation.consumers.some((consumer) => consumer.activation === 'enabled' || consumer.activation === 'unknown'));
+  const hasReferences = inheritedClaudeProject || evidence.sharedReferences !== 'none';
   const empty = !expected.components.length && !expected.unmet.length;
   if (removing || empty) {
     // Scope-local entries are revoked before any package or native registration.
@@ -194,12 +198,22 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
       add('publish-package', evidence.layout.packageRoot, ids);
     }
     if (!retainPackage && nativeRoute(binding.route) && state.bundle) {
-      if (observation.registration === 'unknown') return blocked('nativeObservationUnknown', 'The native registration could not be observed. Check the client and retry.');
-      if (observation.registration === 'absent') add('register', identity!.sourceLocation, ids);
+      // A new, exclusive Pi source can be offered to the native installer even
+      // when list hides an empty/untrusted project. The host enforces trust;
+      // unknown state never authorizes replacement or removal of existing data.
+      const newPiSource = binding.route === 'pi-package' && operation === 'ensure'
+        && observation.package === 'absent' && observation.ownership === 'absent' && packageSlot?.state === 'absent';
+      if (observation.registration === 'unknown' && !newPiSource) return blocked('nativeObservationUnknown', 'The native registration could not be observed. Check the client and retry.');
+      if (observation.registration === 'absent' || newPiSource && observation.registration === 'unknown'
+        || binding.route === 'claude-marketplace' && observation.scopeRegistration === 'absent') add('register', identity!.sourceLocation, ids);
       else if ((packageChanged || nativeCopyChanged) && binding.route !== 'pi-package' && binding.route !== 'copilot-marketplace') {
         add('refresh', identity!.sourceLocation, ids, ['codex-marketplace', 'antigravity-cli', 'grok-cli'].includes(binding.route));
       }
-      if (binding.route !== 'pi-package' && (operation === 'reinstall' || packageChanged || nativeCopyChanged || observation.consumers.some((consumer) => consumer.activation !== 'enabled'))) {
+      const needsProjectEntry = binding.scope.kind === 'project'
+        && ['codex-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(binding.route)
+        && observation.configuration?.activation !== 'enabled';
+      if (binding.route !== 'pi-package' && (operation === 'reinstall' || packageChanged || nativeCopyChanged || needsProjectEntry
+        || observation.consumers.some((consumer) => consumer.activation !== 'enabled'))) {
         add('activate', evidence.layout.activationPath, ids);
       }
     } else if (!retainPackage && nativeRoute(binding.route) && identity && observation.registration === 'present'
@@ -315,7 +329,8 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       if (effect.kind === 'unregister') {
         if (binding.platform === 'codex') ctx.codexObservationSession?.invalidate(plan.evidence.layout.marketplaceName ?? undefined);
         const checked = await observe();
-        if (checked.physicalKey !== binding.physicalKey || checked.registration !== 'absent') {
+        if (checked.physicalKey !== binding.physicalKey || checked.registration !== 'absent'
+          && !(outcome.unregisterConfirmed && piProjectRegistrationHidden(binding, checked))) {
           throw Object.assign(new Error('nativeUnregisterPostcheckFailed'), { mutation: 'possible' });
         }
         nativeRemoved = true;
@@ -368,8 +383,11 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   for (const result of receipt.effects) {
     if (result.status !== 'applied') continue;
     const effect = plan.effects.find((item) => item.id === result.id)!;
-    const incomplete = (effect.kind === 'register' || effect.kind === 'refresh') && (receipt.after.registration !== 'present' || !nativeContentReady)
-      || effect.kind === 'activate' && receipt.after.consumers.some((item) => item.activation !== 'enabled');
+    const incomplete = (effect.kind === 'register' || effect.kind === 'refresh') && (receipt.after.registration !== 'present' || !nativeContentReady
+      || binding.route === 'claude-marketplace' && state.before.scopeRegistration !== undefined && receipt.after.scopeRegistration !== 'present')
+      || effect.kind === 'activate' && receipt.after.consumers.some((item) => item.activation !== 'enabled')
+      || binding.route === 'pi-package' && effect.kind === 'unregister' && receipt.after.registration !== 'absent'
+        && !(nativeRemoved && piProjectRegistrationHidden(binding, receipt.after));
     if (incomplete) {
       result.status = receipt.after.registration === 'unknown' || receipt.after.consumers.some((item) => item.activation === 'unknown')
         || binding.route === 'grok-cli' && receipt.after.components.some((component) => component.presence === 'unknown') ? 'unknown' : 'failed';

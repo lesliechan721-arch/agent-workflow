@@ -527,7 +527,7 @@ describe('five namespaced write commands', () => {
       pluginId: 'team/middle', scope: 'project', providerScope: 'project', observation: 'verified',
     }));
     const projectConfig = await readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'));
-    expect(projectConfig.snapshot.plugins[leafId]?.enabled).toBe(true);
+    expect(projectConfig.snapshot.plugins[leafId]).toBeUndefined();
     expect((await readCodexConfigFile(path.join(isolation.env.CODEX_HOME!, 'config.toml'))).snapshot.plugins[leafId]?.enabled).toBe(true);
     await expect(observeIntent(userIntentLocation)).resolves.toEqual(userIntentBefore);
     await expect(snapshotRegularTree(userLayout.packageRoot)).resolves.toEqual(packageBefore);
@@ -997,9 +997,7 @@ describe('five namespaced write commands', () => {
     const restoredLayout = await nativeFixtureLayout('leaf', 'team', 'user');
     const restoredConfig = (await readCodexConfigFile(userConfig)).snapshot;
     expect(restoredConfig.plugins[restoredLayout.nativeIdentity.registrationId!]?.enabled).toBe(true);
-    expect(restoredConfig.marketplaces[restoredLayout.marketplaceName!]).toMatchObject({
-      sourceType: 'local', source: restoredLayout.marketplaceRoot,
-    });
+    expect(restoredConfig.marketplaces[restoredLayout.marketplaceName!]).toBeUndefined();
     expect((await nativeInstructionContext('leaf')).hookSpecificOutput).toMatchObject({
       hookEventName: 'SessionStart', additionalContext: expect.stringContaining('leaf.'),
     });

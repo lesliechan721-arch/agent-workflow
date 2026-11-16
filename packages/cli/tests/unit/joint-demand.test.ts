@@ -146,6 +146,7 @@ describe('operation-local shared reference coverage', () => {
     const input = snapshot(['d'], [], ['codex']);
     for (const plugin of input.user.plugins) plugin.manifest.platforms = ['codex'];
     const after: DeploymentObservation = { physicalKey: 'shared-codex-package', package: 'present', registration: 'present',
+      configuration: { scope: 'project', activation: 'enabled', reasonCodes: [] },
       ownership: 'aw', consumers: [{ productId: 'codex-cli', activationKey: 'project-activation', activation: 'enabled',
         trust: 'trusted', load: 'not-observed' }], components: [], nativeIdentity: null,
       prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
@@ -161,6 +162,32 @@ describe('operation-local shared reference coverage', () => {
       desired: [{ pluginId: 'local/d', platform: 'codex', scope: 'user', projectRoot: null }],
       observed: [{ pluginId: 'local/d', platform: 'codex', scope: 'project', projectRoot: '/project', physicalKey: 'shared-codex-package' }],
       observations: [{ complete: true }] });
+
+    after.configuration!.activation = 'absent';
+    const inherited = deriveSharedReferenceView(input, deriveJointDemand(input), current);
+    expect(inherited.observed).toEqual([]);
+    expect(inherited.observations[0]?.complete).toBe(true);
+    expect(after.consumers[0]?.activation).toBe('enabled');
+    after.configuration!.activation = 'unknown';
+    expect(deriveSharedReferenceView(input, deriveJointDemand(input), current).observations[0]?.complete).toBe(false);
+
+    // Neutral User activation is independent; local declarations cannot remove
+    // a real native consumer from the shared-package deletion guard.
+    const observed = current.extraObserved![0]!;
+    observed.scope = 'user';
+    after.configuration!.scope = 'user';
+    for (const platform of ['codex', 'gemini', 'copilot'] as const) {
+      observed.agent = platform;
+      for (const activation of ['absent', 'disabled', 'unknown'] as const) {
+        after.configuration!.activation = activation;
+        const neutral = deriveSharedReferenceView(input, deriveJointDemand(input), current);
+        expect(neutral.observed).toContainEqual(expect.objectContaining({ platform, scope: 'user' }));
+        expect(neutral.observations[0]?.complete).toBe(true);
+      }
+    }
+    observed.agent = 'codex';
+    observed.scope = 'project';
+    after.configuration!.scope = 'project';
 
     after.registration = 'unknown';
     expect(deriveSharedReferenceView(input, deriveJointDemand(input), current).observations[0]?.complete).toBe(false);

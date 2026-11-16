@@ -25,7 +25,7 @@
 
 首次 install 只获取所选来源确实缺少的 Active，以及同来源必要依赖；已有 Active 不隐式升级，损坏 Active 不当作首次安装。`sync --refresh` 显式刷新来源。查询不取源、不运行 renderer/preApply、不创建工作区或配置。`source status --remote` 只允许临时获取并清理材料，不写 store、Active、lastSync。作者缺少工作区时使用 `dev catalog create` 显式建立。
 
-`aw plugin status [plugins...] --observe-native` 显式允许启动已合格的 Codex CLI 0.167.0 `app-server`，观察当前项目的有效信任。该进程临时使用 `features.plugins=false`，避免观察期间触发原生插件同步或升级；返回值只作为信任层证据，不代表用户原来的有效 feature 状态。原生启动仍可能创建 installation ID、日志、SQLite 状态和 cache，读取已有认证，并按现有配置访问云端服务或远程环境；人类输出和 JSON diagnostics 均保留 `nativeObservationSideEffects`。只观察 User 时不启动 app-server。普通 status 不启动 app-server，也没有这些启动副作用。观察不修改信任、AW ledger 或生产资格；支持的精确路径与配置层证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
+`aw plugin status [plugins...] --observe-native` 显式允许启动已合格的 Codex CLI 0.167.0 app-server 观察当前项目信任，或 OpenCode CLI 2.0.0 的单次私有本地服务观察插件加载。Codex 临时使用 features.plugins=false，返回 feature 值不作为用户原有效配置；仅观察 User 不启动 Codex app-server。OpenCode 使用 --standalone，不复用远程或版本不明的服务，缺项不推断禁用。原生启动可加载插件代码，创建日志、状态和 cache，读取既有认证并按现有配置访问外部服务；人类输出和 JSON diagnostics 均保留 nativeObservationSideEffects。普通 status 和 TUI 不启动这些观察服务。观察不修改信任、AW ledger 或生产资格；精确证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 普通需求、平台策略和配置保存由命令表达写入意图。删除输出、配置重置、共享替换、重要来源变化、作者源码删除、远端发布及安装附带 preApply 要求 `--yes`。显式 run/build/test 与准备/导出所必需的构建渲染不重复要求执行确认。缺少确认不先提交需求或配置；必要来源候选可临时准备，确认前不启用。TUI 保留其 Review 确认。
 
@@ -140,6 +140,8 @@ effects 只描述本次请求拟执行的重要影响，不表示已经发生。
 | dev | source/final/profile 身份、验证结果、必要产物与 source-binding 路径；发布计划和发布事实分开 |
 | command 管理 | 命令与 package 身份、可用性、实际变化、诊断；不把 run 子程序输出包入 data |
 | self/help | 当前 executable 能力、实际参数与结果 schema 信息；使用当前注册事实，不维护另一份手写命令真值 |
+
+plugin.status 和生命周期中的 deploymentObservations/deploymentReceipts 保留原生 registration、consumers.activation/trust/load，与 AW package/ownership/组件内容分开。可选 after.scopeRegistration 仅在原生接口提供安装 scope 时，报告当前 scope 的独立登记（present/absent/unknown）。可选 after.configuration 是本地补充：scope、显式 activation（enabled/disabled/absent/unknown）、可选 trust/marketplace、reasonCodes；缺项或读取失败不覆盖原生状态。共享包在项目中有效启用不等于项目独立安装，target scope 表示需求/观察上下文。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 plugin.show 的 components 只报告五类静态声明事实；权限在 invocationPolicy.declarations 计数。dynamicComponents 保留 declared、state（unprepared/not-declared）、configKeys 与 scopes：未准备时 kinds/names/count 为 null；没有动态 renderer 时为 []/[]/0。普通查询不运行脚本，不把 null 当空集合。
 

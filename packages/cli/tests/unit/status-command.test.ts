@@ -487,6 +487,41 @@ describe('public status through platform adapters', () => {
     expect(await fs.pathExists(value.sentinel)).toBe(false);
   });
 
+  // Test Value Gate: an empty receipt must not hide an enabled User native
+  // registration. A Project with no explicit entry can retain User inheritance.
+  it.each(['user', 'project'] as const)('checks dynamic empty Codex %s scope against native enabled with no local entry', async (scope) => {
+    const value = await fixture('codex', { available: true, dynamic: true, scope });
+    const { binding, layout, renderUnits } = await placement(value, 'codex');
+    const probe = value.runner.getMockImplementation()!;
+    value.runner.mockImplementation(async (invocation) => invocation.args.includes('list')
+      ? { exitCode: 0, stderr: '', stdout: JSON.stringify({ installed: [{ pluginId: layout.nativeIdentity.registrationId,
+        installed: true, enabled: true, version: '1.0.0' }], available: [] }) } : probe(invocation));
+    const adapter = getAgentPluginAdapter('codex');
+    const demand = await readDemand({ scope, cwd: value.cwd, env: value.env });
+    const plugin = demand.roots![0]!.plugin!;
+    const observation = await adapter.inspect({ cwd: value.cwd, env: value.env, runner: value.runner }, binding);
+    expect(observation.configuration).toMatchObject({ scope, activation: 'absent' });
+    expect(observation.consumers).toEqual([expect.objectContaining({ activation: 'enabled' })]);
+    const state = await createPlatformEmptyState({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
+      renderUnit, prerequisites: observation.prerequisites,
+      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('codex') }),
+      config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
+        sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'codex',
+        scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
+    }))) });
+    await writePlatformEmptyState({ state, env: value.env });
+    const status = await value.read();
+    if (scope === 'user') {
+      expect(target(status).content).not.toBe('satisfied');
+      expect(status.allSatisfied).not.toBe(true);
+    } else {
+      expect(target(status)).toMatchObject({ content: 'satisfied', observation: 'verified' });
+      expect(status.allSatisfied).toBe(true);
+    }
+    expect(target(status).deploymentObservations?.[0]?.after.consumers).toEqual([expect.objectContaining({ activation: 'enabled' })]);
+    expect(await fs.pathExists(value.sentinel)).toBe(false);
+  });
+
   it('does not interpret a foreign Native package as installed or remove its files', async () => {
     qualifySkill('opencode');
     const value = await fixture('opencode', { available: true });
@@ -510,7 +545,7 @@ describe('public status through platform adapters', () => {
     const status = await value.read();
     expect(target(status)).toMatchObject({ content: 'unknown', observation: 'unknown' });
     expect(target(status).deploymentObservations?.[0]?.after).toMatchObject({ package: 'present', ownership: 'aw',
-      consumers: [expect.objectContaining({ activation: 'unknown', load: 'not-observed' })] });
+      consumers: [expect.objectContaining({ activation: 'unknown', load: 'unknown' })] });
     expect(await snapshot(layout.packageRoot)).toEqual(before);
   });
 

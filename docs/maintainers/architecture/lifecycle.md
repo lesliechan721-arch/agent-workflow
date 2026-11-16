@@ -19,7 +19,7 @@
 
 ## Ownership 与删除权限
 
-live ownership 和实际平台组件是输出清理和 status 的现场证据；Intent 表示需求，不是 installed ledger。普通恢复和清理不改声明、偏好或插件配置。不得新增安装合同存储、第二套安装状态或持久依赖图。
+live ownership 和实际平台组件是输出清理和 status 的现场证据；Intent 表示需求，不是 installed ledger。原生安装、启用和加载状态采用原生命令/API，配置只补充声明与 scope 信息；完整状态规则见[状态与配置](config-and-status.md#22-平台产品面与组件事实)。补充证据可阻止危险写入或删除，不能将原生已安装改为未安装。普通恢复和清理不改声明、偏好或插件配置。不得新增安装合同存储、第二套安装状态或持久依赖图。
 
 generic writer 的可重建 owner marker 绑定 source/plugin、target、scope、Skill 与内容清单。原生目录包及补足复用 owner-aware writer，并绑定 sourceIdentity、physicalKey 与 scope；包内可重建物化证据保留冻结组件 ID 到原生输出的映射。观察区分 absent、satisfied、drifted、conflict、unknown。只替换和清理由精确证据证明归属的输出；foreign、共享和未知内容保留。离线 cleanup 不要求来源仍在线；force 不能认领第三方内容。失败保留成功部分和精确恢复入口，不承诺补偿。
 
@@ -103,6 +103,8 @@ CLI/TUI 共用 adapter 注册表和发现结果。实际入口、配置根、版
 discover、prepare、materialize、原生 mutation 与 postcheck 的错误只阻断真实依赖分组，其他平台继续。参数错误、共同强配置损坏、无法取得唯一锁、共同授权缺失和用户中断仍可整体停止。共享发布失败只阻断其消费者，不回滚其他平台成功。
 
 包、注册、activation、trust、组件 presence 与 load 各自保留。ComponentGap.requiredFeatures 必填，完整传递冻结 feature/values、缺口 ID 与 componentId；无能力要求的执行错误使用空数组。不能将缺少 block 或一个 Instructions audience 简化为整类缺失。
+
+原生动作回执与后续只读状态分开：Pi 1.5.0 Project remove 的精确成功确认可完成本次撤销及专属包清理，即使有效 list 未显示 Project 段；registration 仍保留 unknown。命令、清单与归属边界见[状态证据](config-and-status.md#31-只读观察)。Grok 首次 User 来源须先由用户显式原生授信，目录信任和 AW --yes 均不能代替。
 
 成功有意空集合在 Review 中明确撤销旧输出，新目标为成功 no-op；全部 unmet 或渲染失败不触发空集卸载。部分 unmet 时，可更新独立支持的组件，但保留旧补足文件，不将本次缺少投影当作作者关闭；此保护不依赖原生包是否存在。取消一个需求不删除仍被引用的共享包或命令绑定。preApply 失败不清旧输出，Grok 同 scope Instructions 渲染失败也不能发布缺正文的 Agent 包。
 

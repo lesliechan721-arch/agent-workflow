@@ -18,6 +18,7 @@ import { assertNeutralAncestorChain, createScopeContext, type ScopeContext } fro
 import { inspectPortableResidue, type PortableResidue } from '../portable/recovery.js';
 import type { RecoveryReceipt, RecoveryTarget } from './receipt.js';
 import { disposePreparedPlatformRebuildSession } from '../commands/rebuild-integration.js';
+import { piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 
 export interface RetireOptions {
   signal?: AbortSignal;
@@ -395,8 +396,13 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                 const nativeIncomplete = deployments.some((entry) => {
                   const expected = deploymentPlans.find((candidate) => candidate.binding.id === entry.bindingId);
                   const after = entry.after;
-                  const inactive = after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
-                  const unknown = after.package === 'unknown' || after.registration === 'unknown'
+                  const removedByCommand = expected && piProjectRemovalConfirmed(expected, entry);
+                  const inactive = removedByCommand || after.registration === 'absent'
+                    || after.package === 'absent' && after.registration === 'not-applicable'
+                    || after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation))
+                    || expected?.binding.scope.kind === 'project' && (after.scopeRegistration === 'absent'
+                      || ['codex', 'gemini', 'copilot'].includes(platform ?? '') && after.configuration?.activation === 'absent');
+                  const unknown = after.package === 'unknown' || after.registration === 'unknown' && !removedByCommand
                     || after.ownership === 'unknown' || after.ownership === 'foreign';
                   const keptForConsumer = !unknown && inactive && expected?.evidence.sharedReferences === 'present';
                   return unknown || !inactive || !keptForConsumer
@@ -430,8 +436,11 @@ export async function executeRetire(plan: RetirePlan, execution: { yes?: boolean
                 if (failed) target.blockers.push(diagnostic('nativeRetireFailed'));
                 else if (preserved) target.blockers.push(diagnostic('sharedNativePreserved'));
                 if (deployments.some((entry) => entry.after.ownership === 'foreign')) target.blockers.push(diagnostic('deploymentOwnershipUnconfirmed'));
-                if (deployments.some((entry) => entry.after.registration === 'unknown' || entry.after.package === 'unknown'
-                  || entry.after.ownership === 'unknown')) target.blockers.push(diagnostic('nativeObservationUnknown'));
+                if (deployments.some((entry) => {
+                  const expected = deploymentPlans.find((candidate) => candidate.binding.id === entry.bindingId);
+                  return entry.after.registration === 'unknown' && !(expected && piProjectRemovalConfirmed(expected, entry))
+                    || entry.after.package === 'unknown' || entry.after.ownership === 'unknown';
+                })) target.blockers.push(diagnostic('nativeObservationUnknown'));
                 const observedReasons = deployments.flatMap((entry) => [...entry.diagnostics, ...entry.after.diagnostics]);
                 if (observedReasons.length) target.reasons = [...new Map(observedReasons.map((entry) =>
                   [entry.code, diagnostic(entry.code, entry.message)])).values()];

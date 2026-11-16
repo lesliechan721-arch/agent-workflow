@@ -1,7 +1,7 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
-import { NativeCliError, runNativeCliChecked, type NativeCliInput } from '../utils/native-cli.js';
+import { NativeCliError, runNativeCliChecked, type NativeCliInput, type NativeCliResult } from '../utils/native-cli.js';
 import { installationInvocation } from './discovery.js';
-import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
+import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
 import type { PlatformDriverState } from './lifecycle.js';
 import { inspectDeployment } from './inspection.js';
 import { assertGeminiNativeOwner, assertGeminiProjectRules, assertGeminiRefreshSource, assertGeminiReplacementContent,
@@ -20,6 +20,22 @@ export function routeReload(route: InstallRoute): DeploymentReceipt['reload'] {
 }
 function blocked(code: string): never {
   throw Object.assign(new Error(code), { code, mutation: 'none' });
+}
+
+/** A valid list can hide an empty or untrusted Project scope. Query failures cannot. */
+export function piProjectRegistrationHidden(binding: DeploymentBinding, observation: DeploymentObservation): boolean {
+  return binding.route === 'pi-package' && binding.scope.kind === 'project'
+    && binding.consumers.length > 0 && binding.consumers.every((consumer) => consumer.version === '1.5.0')
+    && observation.physicalKey === binding.physicalKey && observation.registration === 'unknown'
+    && observation.diagnostics.some((diagnostic) => diagnostic.code === 'piProjectRegistrationNotVisible')
+    && !observation.diagnostics.some((diagnostic) => ['piNativeObservationUnconfirmed', 'deploymentPostcheckFailed'].includes(diagnostic.code));
+}
+
+/** Action success does not rewrite the later read-only registration observation. */
+export function piProjectRemovalConfirmed(plan: FrozenDeploymentPlan, receipt: DeploymentReceipt): boolean {
+  return receipt.bindingId === plan.binding.id && piProjectRegistrationHidden(plan.binding, receipt.after)
+    && plan.effects.some((effect) => effect.kind === 'unregister' && receipt.effects.some((result) =>
+      result.id === effect.id && result.status === 'applied' && result.mutation === 'confirmed'));
 }
 
 /** Grok uninstall can remove a whole repository, so the exact registration must be exclusive. */
@@ -64,12 +80,13 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
   const cwd = binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd;
   const id = identity.registrationId ?? identity.packageId;
   let confirmed = false;
-  const run = async (args: string[], input?: NativeCliInput): Promise<void> => {
+  const run = async (args: string[], input?: NativeCliInput): Promise<NativeCliResult> => {
     if (!product) blocked('clientInstallEntryUnavailable');
     const invocation = await installationInvocation(product, { ...ctx, cwd }, args);
     try {
-      await runNativeCliChecked({ ...invocation, ...(input ? { input } : {}), timeoutMs: Math.max(60_000, DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS) }, ctx.runner);
+      const result = await runNativeCliChecked({ ...invocation, ...(input ? { input } : {}), timeoutMs: Math.max(60_000, DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS) }, ctx.runner);
       confirmed = true;
+      return result;
     } catch (error) {
       if (input && error instanceof NativeCliError
         && (error.cause as { code?: string } | undefined)?.code === 'nativeConsentPromptUnsupported') {
@@ -144,9 +161,15 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
         : ['plugin', 'install', evidence.layout.packageRoot]);
       break;
     }
-    case 'pi-package':
-      await run([effect.kind === 'unregister' ? 'remove' : 'install', ...(binding.scope.kind === 'project' ? ['--local'] : []), identity.sourceLocation]);
+    case 'pi-package': {
+      const result = await run([effect.kind === 'unregister' ? 'remove' : 'install', ...(binding.scope.kind === 'project' ? ['--local'] : []), identity.sourceLocation]);
+      if (effect.kind === 'unregister' && binding.scope.kind === 'project' && product?.version === '1.5.0'
+        && !result.stderr.trim() && result.stdout.replace(/\u001b\[[0-9;]*m/gu, '').replace(/\r\n/gu, '\n').trimEnd()
+          === `Removing ${identity.sourceLocation}...\nRemoved ${identity.sourceLocation}`) {
+        return { mutation: 'confirmed', changed: true, unregisterConfirmed: true };
+      }
       break;
+    }
     case 'gemini-extension': {
       if (effect.kind === 'register' || effect.kind === 'refresh') {
         if (ctx.geminiNativeConsent !== prepared.plan) blocked('nativeConsentRequired');
@@ -210,7 +233,10 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       }
       break;
     case 'grok-cli':
-      // --trust is host authorization and is never inferred from AW --yes.
+      // projectTrusted reports folder/runtime trust, not consent to a new source.
+      // Only an existing exact, exclusive native registration can be refreshed
+      // with --trust. First install and recovery require explicit host consent.
+      if (effect.kind === 'register') blocked('nativeTrustRequired');
       if (effect.kind !== 'unregister' && (!before.consumers.length
         || binding.consumers.some((product) => !before.consumers.some((consumer) => consumer.productId === product.id && consumer.trust === 'trusted')))) blocked('nativeTrustRequired');
       if (effect.kind === 'unregister' || effect.kind === 'refresh') {
