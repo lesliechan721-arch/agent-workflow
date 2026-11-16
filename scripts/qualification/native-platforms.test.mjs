@@ -401,7 +401,7 @@ test('selects ordinary observation only for Copilot Darwin native commands', { t
 // Test Value Gate: the private preload must retain the real CLI backend, including
 // Windows helper admission, while recording a selected native failure safely.
 test('loads a managed trace before a real native command on supported Hosted systems', {
-  skip: !['linux', 'win32'].includes(process.platform), timeout: 30_000,
+  skip: !['linux', 'darwin', 'win32'].includes(process.platform), timeout: 30_000,
 }, async () => {
   await publicProcessFixture(async (options) => {
     const nativeFile = path.join(options.cwd, 'selected-native.cjs');
@@ -432,12 +432,17 @@ test('loads a managed trace before a real native command on supported Hosted sys
     const rows = (await fs.readFile(traceFile, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     assert.deepEqual(rows.filter((row) => row.phase === 'installation').map((row) => row.state), ['loading-runner', 'installed']);
     const operations = rows.filter((row) => row.phase !== 'installation');
-    assert.deepEqual(operations.map((row) => row.phase), ['start', 'finish']);
+    assert.deepEqual(operations.map((row) => row.phase), ['start', 'spawn', 'finish']);
     assert.equal(operations[0].publicMarkerProvided, true);
-    assert.equal(operations[1].exitCode, 7);
-    assert.equal(operations[1].stderr, '');
+    assert.equal(operations[2].exitCode, 7);
+    assert.equal(operations[2].stderr, '');
     assert(!JSON.stringify(rows).includes('managed-trace-public-marker'));
-    assert(rows.every((row) => !('childPid' in row)));
+    assert.equal(operations[0].childPid, undefined);
+    assert(Number.isSafeInteger(operations[1].childPid) && operations[1].childPid > 0);
+    assert.equal(operations[2].childPid, operations[1].childPid);
+    assert(operations.every((row) => row.operationId === operations[0].operationId
+      && row.parentPid === operations[0].parentPid));
+    assert(Number.isSafeInteger(operations[0].parentPid) && operations[0].parentPid > 0);
   });
 });
 
