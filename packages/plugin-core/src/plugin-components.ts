@@ -122,18 +122,30 @@ export const PLATFORM_FEATURE_REGISTRY: Readonly<Record<string, PlatformFeatureD
 ));
 export function getPlatformFeatureRegistry(): Readonly<Record<string, PlatformFeatureDefinition>> { return PLATFORM_FEATURE_REGISTRY; }
 
-// Reuse referenced validators to avoid expanding shared schemas during CLI startup.
-const ajv = new Ajv2020({ allErrors: true, strict: true, inlineRefs: false });
-ajv.addSchema(manifestSchema);
-ajv.addSchema(componentSchema);
-const validateComponent = ajv.compile<PluginComponent>({ $ref: `${componentSchema.$id}#/$defs/pluginComponent` });
-const validatePlan = ajv.compile<PlatformComponentPlanV3>({ $ref: `${componentSchema.$id}#/$defs/platformComponentPlanV3` });
-const validateCapabilities = ajv.compile<PlatformCapabilitiesV1>({ $ref: `${componentSchema.$id}#/$defs/platformCapabilitiesV1` });
-const validateContext = ajv.compile<PlatformRenderContextV1>({ $ref: `${componentSchema.$id}#/$defs/platformRenderContextV1` });
-const validateCommandContext = ajv.compile<AgentCommandContextV1>({ $ref: `${componentSchema.$id}#/$defs/agentCommandContextV1` });
-const validateRequirement = ajv.compile<FeatureRequirement>({ $ref: `${manifestSchema.$id}#/$defs/featureRequirement` });
-function assertSchema<T>(validator: ValidateFunction<T>, value: unknown, field: string): asserts value is T {
-  if (!validator(value)) throw new Error(`Invalid ${field}: ${ajv.errorsText(validator.errors)}.`);
+// Compile only the contracts a caller uses, sharing referenced validators.
+let componentAjv: Ajv2020 | undefined;
+function getComponentAjv(): Ajv2020 {
+  if (!componentAjv) {
+    const ajv = new Ajv2020({ allErrors: true, strict: true, inlineRefs: false });
+    ajv.addSchema(manifestSchema);
+    ajv.addSchema(componentSchema);
+    componentAjv = ajv;
+  }
+  return componentAjv;
+}
+function lazyValidator<T>(ref: string): () => ValidateFunction<T> {
+  let validator: ValidateFunction<T> | undefined;
+  return () => validator ??= getComponentAjv().compile<T>({ $ref: ref });
+}
+const getComponentValidator = lazyValidator<PluginComponent>(`${componentSchema.$id}#/$defs/pluginComponent`);
+const getPlanValidator = lazyValidator<PlatformComponentPlanV3>(`${componentSchema.$id}#/$defs/platformComponentPlanV3`);
+const getCapabilitiesValidator = lazyValidator<PlatformCapabilitiesV1>(`${componentSchema.$id}#/$defs/platformCapabilitiesV1`);
+const getContextValidator = lazyValidator<PlatformRenderContextV1>(`${componentSchema.$id}#/$defs/platformRenderContextV1`);
+const getCommandContextValidator = lazyValidator<AgentCommandContextV1>(`${componentSchema.$id}#/$defs/agentCommandContextV1`);
+const getRequirementValidator = lazyValidator<FeatureRequirement>(`${manifestSchema.$id}#/$defs/featureRequirement`);
+function assertSchema<T>(getValidator: () => ValidateFunction<T>, value: unknown, field: string): asserts value is T {
+  const validator = getValidator();
+  if (!validator(value)) throw new Error(`Invalid ${field}: ${getComponentAjv().errorsText(validator.errors)}.`);
 }
 function assertIdentity(id: string): void {
   if (id.trim() === '' || /[/\\\u0000-\u001f\u007f]/u.test(id) || id.startsWith('command-set.') || id.startsWith('command-package.')) {
@@ -144,10 +156,10 @@ function safeRelativePath(value: string, field: string): string {
   return normalizeCommandRelativeFile(value.replace(/^\.\//u, ''), field);
 }
 export function assertFeatureRequirement(value: unknown): asserts value is FeatureRequirement {
-  assertSchema(validateRequirement, value, 'feature requirement');
+  assertSchema(getRequirementValidator, value, 'feature requirement');
 }
 export function assertPlatformCapabilities(value: unknown): asserts value is PlatformCapabilitiesV1 {
-  assertSchema(validateCapabilities, value, 'platform capabilities');
+  assertSchema(getCapabilitiesValidator, value, 'platform capabilities');
   for (const fact of [...Object.values(value.kinds), ...Object.values(value.features)]) {
     if (fact.reasonCodes.some((code) => !CAPABILITY_REASON_CODES.includes(code as typeof CAPABILITY_REASON_CODES[number]))) {
       throw new Error('Invalid platform capabilities: unknown reason code.');
@@ -175,7 +187,7 @@ export function assertPlatformCapabilities(value: unknown): asserts value is Pla
   }
 }
 export function assertPlatformRenderContext(value: unknown): asserts value is PlatformRenderContextV1 {
-  assertSchema(validateContext, value, 'platform render context');
+  assertSchema(getContextValidator, value, 'platform render context');
   assertPlatformCapabilities(value.platformCapabilities);
   if (value.platform !== value.platformCapabilities.platform || value.scope !== value.platformCapabilities.scope) throw new Error('Invalid platform render context: capability platform/scope mismatch.');
   const keys = new Set(Object.keys(value.config.schema.fields));
@@ -297,7 +309,7 @@ export interface ComponentPlanValidationOptions {
   staticComponents?: readonly PluginComponent[];
 }
 export function assertPluginComponent(value: unknown, options: Pick<ComponentPlanValidationOptions, 'platform'> & { phase?: 'source' | 'target' }): asserts value is PluginComponent {
-  assertSchema(validateComponent, value, 'plugin component');
+  assertSchema(getComponentValidator, value, 'plugin component');
   assertIdentity(value.id);
   if (value.name.trim() === '' || /[/\\\u0000-\u001f\u007f]/u.test(value.name)) throw new Error('Invalid component name.');
   if (value.kind === 'hook') {
@@ -322,7 +334,7 @@ function sourceIsAllowed(source: SourceRef, options: ComponentPlanValidationOpti
   });
 }
 export function assertPlatformComponentPlan(value: unknown, options: ComponentPlanValidationOptions): asserts value is PlatformComponentPlanV3 {
-  assertSchema(validatePlan, value, 'platform component plan');
+  assertSchema(getPlanValidator, value, 'platform component plan');
   assertPlatformCapabilities(options.platformCapabilities);
   if (options.platform !== options.platformCapabilities.platform || (options.scope !== undefined && options.scope !== options.platformCapabilities.scope)) throw new Error('Invalid component plan: capability platform/scope mismatch.');
   assertNoDuplicateHookHandlers([...(options.staticComponents ?? []), ...value.components], options.platform);
@@ -528,7 +540,7 @@ export function getRendererConfigKeys(manifest: NormalizedPluginManifest, platfo
 }
 
 export function assertAgentCommandContext(value: unknown): asserts value is AgentCommandContextV1 {
-  assertSchema(validateCommandContext, value, 'agent command context');
+  assertSchema(getCommandContextValidator, value, 'agent command context');
   const configKeys = new Set(Object.keys(value.config.schema.fields));
   for (const [key, field] of Object.entries(value.config.schema.fields)) {
     if (field.sensitive === true) throw new Error('Invalid agent command context: sensitive config is not permitted.');

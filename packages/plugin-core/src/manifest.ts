@@ -1,4 +1,4 @@
-import { Ajv2020, type ErrorObject } from 'ajv/dist/2020.js'
+import { Ajv2020, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js'
 
 import schema from '../schemas/plugin-manifest-v4.json' with { type: 'json' }
 import type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js'
@@ -8,13 +8,16 @@ export type { PluginManifestSourceV4 } from './generated/plugin-manifest-v4.js'
 export const PLUGIN_MANIFEST_SCHEMA_VERSION = 4 as const
 export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 20
 
-const ajv = new Ajv2020({
-  allErrors: true,
-  strict: true,
-  // Reuse referenced validators to avoid expanding shared schemas during CLI startup.
-  inlineRefs: false,
-})
-const validateV4 = ajv.compile<PluginManifestSourceV4>(schema)
+// Metadata-only imports must not pay for schema compilation.
+let manifestValidator: ValidateFunction<PluginManifestSourceV4> | undefined
+
+function getManifestValidator(): ValidateFunction<PluginManifestSourceV4> {
+  return manifestValidator ??= new Ajv2020({
+    allErrors: true,
+    strict: true,
+    inlineRefs: false,
+  }).compile<PluginManifestSourceV4>(schema)
+}
 
 export class PluginManifestStructureError extends Error {
   readonly issues: ErrorObject[]
@@ -51,6 +54,7 @@ export function assertPluginManifestStructure(
       `Unsupported plugin manifest schemaVersion: expected ${PLUGIN_MANIFEST_SCHEMA_VERSION}.`,
     )
   }
+  const validateV4 = getManifestValidator()
   if (!validateV4(value)) {
     const issues = validateV4.errors ?? []
     throw new PluginManifestStructureError(

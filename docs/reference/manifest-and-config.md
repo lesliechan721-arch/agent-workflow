@@ -24,6 +24,8 @@ aw dev plugin capabilities --surface config --json
 
 公开 JSON Schema 位于 `packages/plugin-core/schemas/plugin-manifest-v4.json`，并随 Core 包分发。规范对象拒绝未知字段，明确允许的字典除外。Manifest 不接受 `$schema`。Core 类型、作者 registry、CLI 查询和生成器使用同一合同；AW 运行能力与 Agent 平台组件能力是不同集合。
 
+仅需严格 SemVer 解析、比较和错误类型的 Node 消费者可使用 `@lesliechan721/aw-plugin-core/semver`，避免加载完整 Manifest 校验模块。原包根入口和 `/manifest` 继续导出同一实现。
+
 ---
 
 ## 2. Plugin Manifest v4 合同

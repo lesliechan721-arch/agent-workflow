@@ -12,7 +12,7 @@ import type {
   CodexOperationRequirement,
   Scope,
 } from '../types.js';
-import { compareStrictSemVer, tryParseStrictSemVer } from './manifest.js';
+import { compareStrictSemVer, tryParseStrictSemVer } from '@lesliechan721/aw-plugin-core/semver';
 import { getCodexHome } from './state-paths.js';
 import {
   getDefaultNativeCliRunner,

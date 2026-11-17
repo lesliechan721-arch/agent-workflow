@@ -9,7 +9,6 @@ import {
   CODEX_MARKETPLACE_PATH,
 } from '../constants.js';
 import type { PlatformName, Scope } from '../types.js';
-import { validateBundleLayout } from './bundle-layout.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 import {
   getClaudeHome,
@@ -145,6 +144,8 @@ export async function resolveEmbeddedPluginsRoot(): Promise<string> {
   }
 
   try {
+    // Path helpers are also used before any Catalog contents need validation.
+    const { validateBundleLayout } = await import('./bundle-layout.js');
     await validateBundleLayout(candidate);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

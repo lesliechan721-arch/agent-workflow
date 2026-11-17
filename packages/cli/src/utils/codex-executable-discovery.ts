@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 
-import { tryParseStrictSemVer } from './manifest.js';
+import { tryParseStrictSemVer } from '@lesliechan721/aw-plugin-core/semver';
 import { NativeCliError, type CodexManager, type NativeCliRunner } from './native-cli.js';
 import { readEnvironmentValue, resolveUserHome } from './state-paths.js';
 

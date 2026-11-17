@@ -44,6 +44,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: /^@lesliechan721\/aw-plugin-core\/semver$/u,
+        replacement: fileURLToPath(new URL('../plugin-core/src/strict-semver.ts', import.meta.url)),
+      },
+      {
         find: /^@lesliechan721\/aw-plugin-core\/manifest$/u,
         replacement: fileURLToPath(new URL('../plugin-core/src/manifest.ts', import.meta.url)),
       },

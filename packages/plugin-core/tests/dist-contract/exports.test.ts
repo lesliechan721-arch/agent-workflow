@@ -40,11 +40,28 @@ import {
   resolveSupportedPlatforms,
   compilePluginConfigDefinition,
   selectPluginConfigProfile as selectManifestConfigProfile,
+  parseStrictSemVer as parseManifestSemVer,
+  StrictSemVerValidationError,
 } from '@lesliechan721/aw-plugin-core/manifest'
+import {
+  compareStrictSemVer,
+  parseStrictSemVer,
+  tryParseStrictSemVer,
+} from '@lesliechan721/aw-plugin-core/semver'
 
 const require = createRequire(import.meta.url)
 
 describe('public package exports', () => {
+  it('shares strict version parsing and errors through the lightweight semver entry', () => {
+    expect(parseStrictSemVer).toBe(parseManifestSemVer)
+    expect(parseStrictSemVer('1.2.3-beta.2+build.7', 'client.version')).toMatchObject({
+      major: 1, minor: 2, patch: 3, prerelease: ['beta', '2'], build: ['build', '7'],
+    })
+    expect(compareStrictSemVer('1.2.3-beta.2', '1.2.3-beta.10')).toBeLessThan(0)
+    expect(compareStrictSemVer('1.2.3+first', '1.2.3+second')).toBe(0)
+    expect(tryParseStrictSemVer('01.2.3')).toBeNull()
+    expect(() => parseStrictSemVer('latest', 'client.version')).toThrow(StrictSemVerValidationError)
+  })
   it('exposes the same complete-collection Hook identity check from both entries', () => {
     expect(assertNoDuplicateHookHandlers).toBe(assertManifestHookHandlers)
     const components: PluginComponent[] = [
