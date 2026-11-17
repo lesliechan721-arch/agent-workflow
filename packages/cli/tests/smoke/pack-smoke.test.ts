@@ -1036,7 +1036,8 @@ describe('pack smoke', () => {
       expect(nativePackageRoot).toBe(path.join(nativeBeforeTrust.marketplaces[nativePlugin.marketplaceName]!, 'plugins', 'packed-build'));
       expect(codexBeforeTrust, projectInstallBeforeTrust.diagnostic).toMatchObject({ execution: 'partial', deploymentReceipts: expect.arrayContaining([
         expect.objectContaining({ after: expect.objectContaining({ package: 'present', registration: 'present', ownership: 'aw',
-          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', trust: 'unknown' })]) }) }),
+          configuration: expect.objectContaining({ scope: 'project', activation: 'enabled' }),
+          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'disabled', trust: 'unknown' })]) }) }),
       ]) });
       expect(await fs.readJson(path.join(nativePackageRoot, '.agent-workflows-owner.json'))).toMatchObject({
         schemaVersion: 3, owner: 'agent-workflows', sourceId: developmentSourceId,
@@ -1122,7 +1123,10 @@ describe('pack smoke', () => {
     }
     const nativeCalls = (await fs.readFile(externalAuthoringEnv.AW_PACK_NATIVE_CALL_LOG, 'utf8')).trim().split('\n')
       .map((line) => JSON.parse(line) as { platform: string; args: string[]; cwd: string });
-    expect(nativeCalls.filter((call) => call.platform === 'claude' && call.args[0] === 'plugin' && call.args[1] !== 'list')).toEqual([]);
+    const claudeWrites = nativeCalls.filter((call) => call.platform === 'claude' && call.args[0] === 'plugin'
+      && call.args[1] !== 'list'
+      && !(call.args.length === 4 && call.args[1] === 'marketplace' && call.args[2] === 'list' && call.args[3] === '--json'));
+    expect(claudeWrites).toEqual([]);
     if (codexSkillQualified) {
       expect(nativeCalls).toContainEqual(expect.objectContaining({ platform: 'codex', args: ['plugin', 'add', nativePluginId] }));
     } else {
