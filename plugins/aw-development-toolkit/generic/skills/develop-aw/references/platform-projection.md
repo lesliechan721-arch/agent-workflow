@@ -24,6 +24,8 @@ PlatformTarget 有 codex、claude、antigravity、cursor、opencode、pi、gemin
 
 实际 render scope 由固定物理布局决定，不能用 activation scope 替代。Codex/Claude/Gemini/Copilot 共享包固定 user；Codex 项目角色及独立项目包保留真实 project scope。artifacts.scopes、config、命令 producer 和 runtimeConfig 均按 render scope 解释。共享包采用所有实际消费者共同能力；同物理位置冲突须停止该组。
 
+核对安装态时，从公开原生命令/API 取得对应状态；本地配置只补充显式条目、scope、归属和内容，不能覆盖原生结果。共享包的当前项目 enabled 不证明独立项目安装；查询未提供的事实保留 unknown。字段和观察副作用通过 aw plugin status --json 查看原生事实与 configuration 补充；显式 --observe-native 可启动原生观察服务并加载插件代码。
+
 Config v5 先按平台替换原始 definitions/fields，再展开引用，值按 defaults < common < platforms[P] 解析；项目 scope 不新增配置存储层。
 
 ## AW 运行要求与真实资格

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.71",
+  "catalogVersion": "0.1.0-beta.72",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "8207834eedf6fc2b91b0c578f7a1e13031a79913"
+    "sourceHead": "9c865fd81887c26a050d674d4192a1a803baeafc"
   },
   "entries": [
     {
@@ -174,7 +174,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.15",
+      "version": "0.1.0-beta.16",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -199,9 +199,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:fac82569da7edbbea4284b7517adc2fb4f7a561afa53391ce5e14d9d6490a039",
-      "manifestDigest": "sha256:c2e4b644b7e87116cee0da437616a6f02ad674fc93a6f6778638a37b736ed821",
-      "contentDigest": "sha256:910bff6849eca54c39100fac1aee0ee95307444d64670e4f6b12e1a74c28822e"
+      "artifactDigest": "sha256:983a2ae320ec56e6279b3bf72a604485a1d217f0c599799f7ef194de960716c3",
+      "manifestDigest": "sha256:fae0728fb7748a16465578af6cd7cfc86c87a6b82b244562e85c4b07a6f8ea90",
+      "contentDigest": "sha256:c16594aa786a476e18667fd344c9a83a56db4e139dea797b5163c947bf53b3bc"
     },
     {
       "name": "aw-skill-eval-runner",
