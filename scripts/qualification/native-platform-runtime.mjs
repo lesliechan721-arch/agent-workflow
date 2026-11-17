@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createProcessNameDiagnostic, createProcessMarkerRowDiagnostic, createLinuxEnvironmentDiagnostic } from './native-platform-process-names.mjs';
 import { createMarkerIdentityConfirmationCapture } from './native-platform-marker-confirmations.mjs';
+import { createProcessQueryTimingDiagnostic } from './native-platform-process-query-timings.mjs';
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -84,9 +85,11 @@ export async function execute(launcher, args, options) {
   const windowsJobHelperPath = process.platform === 'win32'
     ? await (await import('../../packages/agent-skill-eval/dist/windows-job.js')).prepareWindowsJobHelper()
     : undefined;
+  const queryTimings = process.platform === 'darwin' && process.env.GITHUB_ACTIONS === 'true'
+    && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1' ? createProcessQueryTimingDiagnostic() : undefined;
   const names = options.captureProcessNames && process.platform === 'darwin'
     && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1'
-    ? createProcessNameDiagnostic() : undefined;
+    ? createProcessNameDiagnostic(queryTimings?.execFile) : undefined;
   const nativeLinux = ['gemini', 'grok'].includes(options.nativeClient) && process.platform === 'linux'
     && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES === '1';
   const markerRows = nativeLinux ? createProcessMarkerRowDiagnostic(undefined, {
@@ -100,12 +103,14 @@ export async function execute(launcher, args, options) {
       maxBufferBytes: 2 * 1024 * 1024, ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
     }, names || markerRows ? { onSpawn(handle) { names?.onSpawn(handle); markerRows?.onSpawn(handle); } } : {}, { containment: 'verified-observed',
       ...(windowsJobHelperPath ? { processTree: { windowsJobHelperPath } } : {}),
-      ...(names ? { processTree: { execFile: names.execFile } } : {}),
+      ...(names || queryTimings ? { processTree: { execFile: names?.execFile ?? queryTimings.execFile } } : {}),
       ...(markerRows ? { processTree: { execFile: markerRows.execFile,
         onLinuxMarkerIdentityConfirmation: confirmations.capture } } : {}),
     });
     const markerIdentityConfirmations = confirmations?.snapshot();
-    return markerIdentityConfirmations ? { ...result, markerIdentityConfirmations } : result;
+    const processQueryTimings = queryTimings?.snapshot();
+    return { ...result, ...(markerIdentityConfirmations ? { markerIdentityConfirmations } : {}),
+      ...(processQueryTimings ? { processQueryTimings } : {}) };
   } catch (error) {
     try {
       const observed = names?.snapshot(error?.processTreeDiagnostics);
@@ -114,9 +119,11 @@ export async function execute(launcher, args, options) {
       if (rows?.length) error.qualificationMarkerRows = rows;
       const evidence = confirmations?.snapshot();
       if (evidence) error.qualificationMarkerIdentityConfirmations = evidence;
+      const timings = queryTimings?.snapshot();
+      if (timings) error.publicAwProcessQueryTimings = timings;
     } catch { /* Private diagnostic data must not replace the original failure. */ }
     throw error;
-  } finally { names?.stop(); markerRows?.stop(); confirmations?.stop(); }
+  } finally { names?.stop(); markerRows?.stop(); confirmations?.stop(); queryTimings?.stop(); }
 }
 
 export async function processManagementInfo() {
@@ -151,17 +158,41 @@ export function getOpenCodeDistribution(parent, host = process) {
   return { packageName, version: clients.opencode.version, entry: `bin/opencode${host.platform === 'win32' ? '.exe' : ''}` };
 }
 
-export async function acquireClient(platform, root) {
-  const client = clients[platform];
-  const npm = await resolveNpm();
-  await prepareEnvironment(root);
+async function readInstallTiming(root) {
+  const phases = ['npm', 'command:install', 'idealTree', 'reify', 'reify:loadTrees', 'reify:unpack', 'reify:build'];
+  try {
+    const directory = path.join(root, 'npm-cache', '_logs');
+    const name = (await fs.readdir(directory)).filter(name => name.endsWith('-timing.json')).sort().at(-1);
+    if (!name) return { state: 'missing' };
+    const file = path.join(directory, name);
+    const handle = await fs.open(file, 'r');
+    let bytes;
+    try {
+      const result = await handle.read(Buffer.alloc(256 * 1024 + 1), 0, 256 * 1024 + 1, 0);
+      if (result.bytesRead > 256 * 1024) return { state: 'over-limit' };
+      bytes = result.buffer.subarray(0, result.bytesRead);
+    } finally { await handle.close(); }
+    const value = JSON.parse(bytes.toString('utf8'));
+    return { state: 'captured', timers: Object.fromEntries(phases.flatMap(phase => {
+      const elapsed = value.timers?.[phase];
+      return Number.isFinite(elapsed) && elapsed >= 0 ? [[phase, elapsed]] : [];
+    })), unfinished: phases.filter(phase => Object.hasOwn(value.unfinishedTimers ?? {}, phase)) };
+  } catch (error) { return { state: error.code === 'ENOENT' ? 'missing' : 'unavailable' }; }
+}
+
+// Download diagnostics use only fixed phase names and numbers, never raw npm logs.
+export async function installClientPackage(client, root, npm, runCommand = promisify(execFile)) {
   const prefix = path.join(root, 'tool');
+  const timeoutMs = 180_000;
+  const startedAt = Date.now();
+  const started = performance.now();
+  const download = { startedAt, timeoutMs };
   // Downloads use bounded direct-child handling with installation scripts disabled.
   // Client commands use execute and its process-tree contract.
   try {
-    await promisify(execFile)(npm.executable, [...npm.prefix, 'install', '--prefix', prefix, '--no-audit', '--no-fund',
-    '--ignore-scripts', '--package-lock=true', `${client.package}@${client.version}`], {
-      cwd: root, env: isolatedEnvironment(root, true), timeout: 180_000,
+    await runCommand(npm.executable, [...npm.prefix, 'install', '--prefix', prefix, '--no-audit', '--no-fund',
+    '--ignore-scripts', '--timing', '--package-lock=true', `${client.package}@${client.version}`], {
+      cwd: root, env: isolatedEnvironment(root, true), timeout: timeoutMs,
       maxBuffer: 2 * 1024 * 1024, encoding: 'utf8', killSignal: 'SIGKILL', windowsHide: true,
     });
   }
@@ -171,9 +202,23 @@ export async function acquireClient(platform, root) {
     for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
       if (process.env[key]) stderr = stderr.replaceAll(process.env[key], '<DOWNLOAD_PROXY>');
     }
-    error.evidence = { exitCode: cause.code, signal: cause.signal, killed: cause.killed, stderr };
+    const elapsed = performance.now() - started;
+    Object.assign(download, { completedAt: Date.now(), elapsedMs: Math.round(elapsed),
+      status: 'failed', deadlineReached: elapsed >= timeoutMs });
+    error.evidence = { exitCode: cause.code, signal: cause.signal, killed: cause.killed, stderr,
+      download: { ...download, npmTiming: await readInstallTiming(root) } };
     throw error;
   }
+  Object.assign(download, { completedAt: Date.now(), elapsedMs: Math.round(performance.now() - started), status: 'completed' });
+  return { ...download, npmTiming: await readInstallTiming(root) };
+}
+
+export async function acquireClient(platform, root) {
+  const client = clients[platform];
+  const npm = await resolveNpm();
+  await prepareEnvironment(root);
+  const prefix = path.join(root, 'tool');
+  const download = await installClientPackage(client, root, npm);
   let packageRoot = path.join(prefix, 'node_modules', client.package);
   let metadata = JSON.parse(await fs.readFile(path.join(packageRoot, 'package.json'), 'utf8'));
   if (metadata.name !== client.package || metadata.version !== client.version) throw new Error('installed-package-identity-mismatch');
@@ -224,7 +269,7 @@ export async function acquireClient(platform, root) {
     }
   }
   return { launcher: { executable: node ? process.execPath : entry, prefix: node ? [entry] : [] }, binDirectory: prefix,
-    acquisition: { package: client.package, version: client.version, source: client.source,
+    acquisition: { package: client.package, version: client.version, source: client.source, download,
       integrity: lock.packages?.[`node_modules/${client.package}`]?.integrity ?? null,
       executablePackage, executablePackageVersion: metadata.version,
       executablePackageIntegrity: lock.packages?.[`node_modules/${executablePackage}`]?.integrity ?? null,

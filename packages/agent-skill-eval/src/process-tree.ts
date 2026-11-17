@@ -140,6 +140,14 @@ export interface ProcessTreeDiagnostic {
   snapshotDeadline?: number;
   markerLookupAttempts?: number;
   queries?: ProcessQueryDiagnostic[];
+  sentinel?: {
+    pid: number;
+    knownStartTime: string;
+    present: boolean | null;
+    startTime?: string;
+    identityMatches: boolean | null;
+    markerMatches: boolean | null;
+  };
   processes: Array<{
     pid: number;
     present: boolean | null;
@@ -876,6 +884,8 @@ function posixDiagnostic(
     .filter((identity): identity is ProcessIdentity => identity !== undefined)
     .map((identity) => [identity.pid, identity.startTime]));
   const pids = new Set([state.pid, ...identities.keys(), ...affectedPids]);
+  const sentinel = state.lease?.sentinel;
+  const sentinelEntry = sentinel ? snapshot?.table.get(sentinel.pid) : undefined;
   for (const [pid, entry] of snapshot?.table ?? []) {
     if (pid === state.lease?.sentinel.pid) continue;
     if (snapshot?.markerPids.has(pid) ||
@@ -890,6 +900,14 @@ function posixDiagnostic(
     rootPgidMode: state.rootPgidMode,
     affectedPids,
     markerLookupSucceeded: snapshot?.markerLookupSucceeded ?? null,
+    ...(sentinel ? { sentinel: {
+      pid: sentinel.pid, knownStartTime: sentinel.startTime,
+      present: snapshot ? sentinelEntry !== undefined : null,
+      ...(sentinelEntry ? { startTime: sentinelEntry.startTime } : {}),
+      identityMatches: snapshot ? sentinelEntry?.startTime === sentinel.startTime : null,
+      markerMatches: snapshot?.markerLookupSucceeded && !snapshot.unreadableMarkerPids.has(sentinel.pid)
+        ? snapshot.markerPids.has(sentinel.pid) : null,
+    } } : {}),
     ...(snapshot ? {
       snapshotStartedAt: snapshot.snapshotStartedAt,
       snapshotDeadline: snapshot.snapshotDeadline,
