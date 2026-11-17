@@ -291,6 +291,96 @@ describe('plugin script test runner', () => {
     }
   });
 
+  // Test Value Gate: CI shard remapping must preserve every file, target, and
+  // preferred backend, including new plugins/files and a failed native run.
+  it('balances Windows CI shards without changing complete runner coverage', async () => {
+    const repoRoot = await makeTempRepo();
+    await configureTestManifest({
+      repoRoot,
+      platforms: ['codex', 'claude'],
+      testEntries: ['./scripts/part-*.test.mjs'],
+    });
+    const nodeShardsByPlugin: Record<string, number[]> = {
+      'agent-skill-toolkit': [1, 3, 2],
+      'aw-development-toolkit': [2, 3, 1],
+      'dev-workflow': [1, 3, 2],
+      'git-commit': [1, 2, 3],
+    };
+    for (const plugin of Object.keys(nodeShardsByPlugin)) {
+      if (plugin !== 'git-commit') await clonePlugin(repoRoot, 'git-commit', plugin);
+    }
+    const nativePluginRoot = path.join(repoRoot, 'plugins', 'aw-development-toolkit');
+    const nativeManifestPath = path.join(nativePluginRoot, '.agents-plugin', 'plugin.json');
+    const nativeManifest = await fs.readJson(nativeManifestPath);
+    const fixture = nativeToolFixture({ kind: 'plugin-test', consumer: 'node', policy: 'preferred' });
+    nativeManifest.requires = { aw: { capabilities: ['aw.native-tools.v2'] } };
+    nativeManifest.nativeTools = { definitions: fixture.closure.definitions, consumers: fixture.closure.consumers };
+    await fs.writeJson(nativeManifestPath, nativeManifest);
+    const contextFile = path.join(repoRoot, 'native-context.json');
+    await fs.writeJson(contextFile, { schemaVersion: 1, tools: {
+      job: { state: 'ready', protocol: 'aw.windows-job.v1', executable: process.execPath },
+    } });
+    const marker = path.join(repoRoot, 'matrix-events');
+    for (const plugin of Object.keys(nodeShardsByPlugin)) {
+      for (let id = 0; id < 4; id += 1) {
+        await fs.outputFile(path.join(repoRoot, 'plugins', plugin, 'scripts', `part-${id}.test.mjs`), [
+          'import test from "node:test";',
+          'import fs from "node:fs";',
+          'test("records complete CI matrix", () => {',
+          '  const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          '  const backend = process.env.AW_NATIVE_TOOL_CONTEXT ? JSON.parse(process.env.AW_NATIVE_TOOL_CONTEXT).tools.job.state : "none";',
+          `  fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify([context.plugin.name, context.platform, ${id}, backend]) + "\\n");`,
+          `  if (context.plugin.name === "aw-development-toolkit" && ${id} === 0 && backend === "ready") throw new Error("selected native shard failure");`,
+          '});',
+        ].join('\n'));
+      }
+    }
+    const allSeen: string[] = [];
+    for (let index = 1; index <= 3; index += 1) {
+      await fs.remove(marker);
+      const output = captureOutput();
+      const code = await runPluginScriptTests([
+        '--all', '--test-shard', `${index}/3`,
+        ...(index === 2 ? ['--test-shard-profile=windows-ci'] : ['--test-shard-profile', 'windows-ci']),
+        '--test-concurrency', '1', '--native-mode', 'source-candidate', '--native-context', contextFile,
+      ], { repoRoot, nativePlatform: 'win32', env: { ...process.env, AW_TEST_WORKERS: '1' }, ...output });
+      expect(code, output.readStderr()).toBe(index === 3 ? 1 : 0);
+      const expected: string[] = [];
+      for (const [plugin, nodeShards] of Object.entries(nodeShardsByPlugin)) {
+        const files = [[0, 3], [1], [2]][nodeShards[index - 1] - 1];
+        for (const platform of ['codex', 'claude']) {
+          for (const id of files) {
+            for (const backend of plugin === 'aw-development-toolkit' ? ['ready', 'unavailable'] : ['none']) {
+              expected.push(JSON.stringify([plugin, platform, id, backend]));
+            }
+          }
+        }
+      }
+      const seen = (await fs.readFile(marker, 'utf8')).trim().split('\n');
+      expect(seen.sort()).toEqual(expected.sort());
+      allSeen.push(...seen);
+    }
+    expect(allSeen).toHaveLength(40);
+    expect(new Set(allSeen).size).toBe(40);
+  }, 30_000);
+
+  it('rejects invalid CI shard profiles before preparing plugins', async () => {
+    for (const args of [
+      ['--all', '--test-shard', '1/3', '--test-shard-profile'],
+      ['--all', '--test-shard', '1/3', '--test-shard-profile', 'other'],
+      ['--all', '--test-shard-profile', 'windows-ci'],
+      ['--all', '--test-shard', '1/2', '--test-shard-profile', 'windows-ci'],
+      ['git-commit', '--test-shard', '1/3', '--test-shard-profile', 'windows-ci'],
+    ]) {
+      const output = captureOutput();
+      expect(await runPluginScriptTests(args, {
+        repoRoot: path.join(os.tmpdir(), 'missing-shard-profile-repo'), ...output,
+      })).toBe(1);
+      expect(output.readStdout()).toBe('');
+      expect(output.readStderr()).toContain('--test-shard-profile');
+    }
+  });
+
   it('applies configured Node file concurrency and explicit overrides to real test processes', async () => {
     const repoRoot = await makeTempRepo();
     await configureTestManifest({

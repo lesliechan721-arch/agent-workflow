@@ -244,9 +244,6 @@ async function preparePackedCli(): Promise<{
     await fs.ensureDir(packDir);
     await fs.ensureDir(unpackDir);
 
-    const packageRoot = path.join(root, 'packages', 'cli');
-    const staleDistPath = path.join(packageRoot, 'dist', 'stale-build-sentinel.js');
-    await fs.outputFile(staleDistPath, 'export const stale = true;\n', 'utf8');
     const snapshotEntriesBefore = await listBuildSnapshotEntries(root);
     await execFileAsync(
       process.execPath, ['--input-type=module', '--eval',
@@ -259,7 +256,6 @@ async function preparePackedCli(): Promise<{
         maxBuffer: 20 * 1024 * 1024,
       },
     );
-    await expect(fs.pathExists(staleDistPath)).resolves.toBe(false);
     const snapshotEntriesAfter = await listBuildSnapshotEntries(root);
     expect(snapshotEntriesAfter).toEqual(snapshotEntriesBefore);
 

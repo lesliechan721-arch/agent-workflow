@@ -101,6 +101,6 @@ runs:
     - name: Run the Windows plugin file shard
       if: runner.os == 'Windows'
       shell: pwsh
-      run: pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --native-mode source-candidate --native-context "$env:RUNNER_TEMP/aw-native-context.json"
+      run: pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --test-shard-profile windows-ci --native-mode source-candidate --native-context "$env:RUNNER_TEMP/aw-native-context.json"
       env:
         AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS: '1'

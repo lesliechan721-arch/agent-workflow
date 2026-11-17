@@ -26,7 +26,35 @@ import {
   writeBuildOutputs,
   writeRequiredOutputs,
 } from './build-cache.test-helper.js';
+import { runCliBuild } from '../../../../scripts/build/build-cache.mjs';
+
 describe('build cache output binding', () => {
+  // Test Value Gate: a real build must remove stale compiled files before the
+  // package builder runs, without removing package source or unrelated state.
+  it('cleans stale dist files before invoking the package builder', async () => {
+    const repoRoot = await createRepo();
+    for (const name of ['cli', 'agent-skill-eval', 'plugin-core']) {
+      await fs.mkdir(path.join(repoRoot, 'packages', name, 'dist'), { recursive: true });
+      await fs.writeFile(path.join(repoRoot, 'packages', name, 'dist', 'stale.js'), 'stale\n');
+    }
+    const source = path.join(repoRoot, 'packages', 'cli', 'source.ts');
+    await fs.writeFile(source, 'keep source\n');
+    await runCliBuild(repoRoot, {
+      command: process.execPath,
+      args: ['--input-type=module', '--eval', `
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs';
+        for (const name of ['cli', 'agent-skill-eval', 'plugin-core']) {
+          assert.equal(fs.existsSync('packages/' + name + '/dist'), false);
+        }
+        fs.mkdirSync('packages/cli/dist', { recursive: true });
+        fs.writeFileSync('packages/cli/dist/fresh.js', 'fresh');
+      `],
+    });
+    await expect(fs.readFile(path.join(repoRoot, 'packages', 'cli', 'dist', 'fresh.js'), 'utf8')).resolves.toBe('fresh');
+    await expect(fs.readFile(source, 'utf8')).resolves.toBe('keep source\n');
+  });
+
   it('rejects required and non-required CLI dist symlinks for builds and snapshots', async () => {
     const repoRoot = await createRepo();
     await buildWithCache(repoRoot, { build: () => writeBuildOutputs(repoRoot) });

@@ -33,7 +33,7 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
 - **macOS arm64 普通测试**：普通 integration 按历史耗时分为两个独立 runner，每片默认最多 2 workers；分片 2 随后串行运行 integration 中的 `process-lifecycle` 测试。
 - **Linux 插件环境**：Linux 插件测试执行独立的构建，并将构建出的 CLI 严格配置到 `PATH` 中。
 - **矩阵复合 Action**：插件测试由普通矩阵 job 调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64、macOS arm64 和 Windows x64。
-- **原生打包 smoke**：macOS arm64 的插件 job 和 Windows 插件分片 2 在插件合同完成后运行 `pnpm test:smoke:pack:cli`，复用该 job 的 Node、构建产物与 Windows native context，并保留失败诊断。Linux 的打包 smoke 继续由 release verification 执行；集成测试 job 不再串行等待打包测试。
+- **原生打包 smoke**：macOS arm64 的插件 job 和 Windows 插件分片 1 在插件合同完成后运行 `pnpm test:smoke:pack:cli`，复用该 job 的 Node、构建产物与 Windows native context，并保留失败诊断。Linux 的打包 smoke 继续由 release verification 执行；集成测试 job 不再串行等待打包测试。macOS 与 Windows 的 pack job 另行缓存 npm 的 `_cacache` 下载数据，并显式向 smoke 传入该缓存目录；安装 prefix 仍每次新建，不缓存已安装产物。
 
 ### 2.2 Windows 独立测试分片与长时任务（CI1）
 
@@ -76,13 +76,14 @@ CI 显式设置 `AW_TEST_SHARD_PLATFORM` 为 `win32` 或 `darwin`；本地未设
 - **复合 Action**：调用 `.github/actions/plugin-tests/action.yml`。
 - **执行命令**：
   ```bash
-  pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --native-mode source-candidate --native-context "$env:RUNNER_TEMP/aw-native-context.json"
+  pnpm plugin:test --all --test-concurrency 1 --test-shard "$env:TEST_SHARD" --test-shard-profile windows-ci --native-mode source-candidate --native-context "$env:RUNNER_TEMP/aw-native-context.json"
   ```
 - **分片分配算法**：
-  Node 启动脚本按测试文件相对路径的字母顺序排序后轮流分配。分片绝不拆分单个测试文件。每个插件及其所选目标平台使用同一分片编号。
-  新增或重命名的测试文件必须根据真实耗时测算平衡分配到各分片中；所有三个分片均属于发布前的必要检查项。
+  默认 `--test-shard` 由 Node 按测试文件相对路径的字母顺序排序后轮流分配，不拆分单个文件。Windows CI 显式使用 `--test-shard-profile windows-ci`，按历史耗时对少量插件的三个 Node 片做置换；同一插件的所有目标平台与 native/portable backend 使用同一映射。该 profile 只接受 `--all` 和 `<index>/3`，无效组合在准备插件前失败。
+  映射及来源 run 位于 `packages/cli/scripts/test-plugin-scripts.ts` 的 `WINDOWS_CI_NODE_TEST_SHARDS`；未列入的插件保持原片号。新增或重命名文件仍由 Node 自动纳入三片覆盖，不依赖文件 allowlist。`AW_PLUGIN_TEST` 的 `shard` 表示 CI 片号，`nodeShard` 表示 profile 生效后的 Node 片号；默认模式不增加后者。
+  更新映射时按每个插件、每个目标的完整 runner 耗时测算，不能把共享 fixture 中的叶子测试位置当成入口文件。真实 runner 回归检查各片并集、互斥、平台与 backend 完整性和失败传播；所有三个 CI 分片均属于发布前的必要检查项。
 - **分片 1 附加任务**：分片 1 额外承接真实文件占用与跨卷移动资格测试。
-- **分片 2 附加任务**：插件测试完成后运行 Windows x64 的 `pnpm test:smoke:pack:cli`，保留当前 source-candidate helper 和 native context。
+- **分片 1 打包任务**：插件测试完成后运行 Windows x64 的 `pnpm test:smoke:pack:cli`，保留当前 source-candidate helper 和 native context。
 - **作业超时与诊断**：
   插件 Job 超时上限设置为 90 分钟（此为故障观察上限，非正常等待时长）。
   每个分片均启用命令阶段耗时、PowerShell 调用次数、累计耗时及最大耗时诊断。

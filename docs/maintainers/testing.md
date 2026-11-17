@@ -94,7 +94,7 @@ Windows Job 显式生产资格使用 `pnpm native:windows-job:prepare` 构建当
 - **环境透传限制**：测试入口只将明确为 `1` 的 `AW_SUBAGENT_COMMUNICATION_DIAGNOSTICS` 传给子测试；该例外不开放其它宿主变量或长时资格开关。
 - **脱敏格式与完整保护**：敏感值替换按字段进行，数值命中敏感值时变成脱敏字符串，事件仍为有效 JSON。原始 stdout/stderr 仍在该插件进程结束后整体脱敏输出，以保留跨写入块的敏感值保护。
 - **单文件与排除参数互斥**：`--test-file <plugin-relative-path>` 只运行一个已声明文件，找不到时失败；它只接受单个插件且不能与 `--exclude-test-file` 同用。`--exclude-test-file <plugin-relative-path>` 在分片前排除该精确文件；CI 必须另行运行被排除的文件。
-- **分片覆盖要求**：非法分片参数在准备插件前拒绝。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。
+- **分片覆盖要求**：非法分片参数在准备插件前拒绝。所有分片合并才是完整覆盖，单片可能没有分配到小插件的文件。CI 专用 `--test-shard-profile windows-ci` 的适用范围、映射和更新规则见 [CI 插件分片](ci.md#222-windows-插件测试三路分片node-file-shard)。
 - **Native Mode 与 Context 准备**：
   `plugin:test` 的 `--native-mode` 为 `fixture|installed|source-candidate`，默认 `fixture`。Windows fixture 和 source-candidate 必须显式传 `--native-context <JSON>`；`installed` 使用 Eval 的正常已安装依赖解析。测试入口不从 PATH、旧 AW cache 或仓库 EXE 自动发现工具，也不构建或下载。维护者使用 `node native-tools/windows-job/test-environment.mjs --candidate <directory> --context-file <file>` 从本次候选生成 context；此输入只服务测试，不构成生产路径覆盖能力。普通 build/test 不要求 Go 或真实 EXE。
 - **插件专属原生验证边界**：具体插件专属的会话恢复、TTL 扫描、Windows 原子 JSON 以及长时资格等底层验证分工，由所属插件维护入口负责（参见 [Agent Subagent 运行时验证](../../plugins/agent-subagent/skills/spawn-subagent/docs/runtime.md#插件专属测试与-windows-原生验证边界)）。
@@ -166,6 +166,8 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 ## Build Reuse
 
 `scripts/build/ensure-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
+
+Pack smoke 通过 release snapshot 复用匹配的前置构建，同一文件内共享三产品 tarball；它不主动污染 `dist` 来强制重建。陈旧产物清理由 build cache unit 通过真实构建启动 helper 和隔离输出验证。外部安装继续在新 prefix 中真实执行 npm install；CI 只缓存下载数据，并保留 npm timing 和缓存命中诊断。
 
 `pnpm build:dev` 只用于本地开发。它按 Eval、Core、CLI TypeScript 和 plugin bundle 分别计算生产输入与输出 identity；test、Vitest config、docs、change metadata、Eval 和 report 不进入 key。每个 TypeScript 目标使用独立 `tsBuildInfoFile`。输入文件删除、输出损坏、cache metadata 或 `tsbuildinfo` 损坏时，只 clean 并重建该目标。CLI key 还绑定 Eval 和 Core 输出 identity，plugin bundle 使用独立 key 和输出验证。
 

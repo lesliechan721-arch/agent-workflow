@@ -67,6 +67,7 @@ interface ParsedArgs {
   testName?: string;
   testConcurrency?: string;
   testShard?: string;
+  testShardProfile?: 'windows-ci';
   testFile?: string;
   excludeTestFile?: string;
   nativeMode: NativeTestMode;
@@ -107,6 +108,15 @@ interface NodeTestResult {
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const REPO_ROOT_ENV = 'AW_PLUGIN_TEST_REPO_ROOT';
 const TEST_PLATFORM_ORDER: readonly PlatformTarget[] = ['codex', 'claude'];
+// CI shard -> Node shard, measured at 5dab92c25796ebc17592fb997839c3e128199ea4:
+// https://github.com/lesliechan721-arch/agent-workflow/actions/runs/44028891314
+// Sum each plugin/platform's maximum AW_PLUGIN_TEST.elapsedMs, including both
+// backends. These three permutations predict 270/272/270s instead of 181/393/238s.
+const WINDOWS_CI_NODE_TEST_SHARDS: ReadonlyMap<string, readonly [number, number, number]> = new Map([
+  ['agent-skill-toolkit', [1, 3, 2]],
+  ['aw-development-toolkit', [2, 3, 1]],
+  ['dev-workflow', [1, 3, 2]],
+]);
 
 function resolveRepoRoot(): string {
   return path.resolve(resolveCliPackageRoot(), '..', '..');
@@ -168,6 +178,12 @@ function parseArgs(args: string[]): ParsedArgs {
       }
       if (arg === '--test-file') parsed.testFile = stripDotSlash(value).replaceAll('\\', '/');
       else parsed.excludeTestFile = stripDotSlash(value).replaceAll('\\', '/');
+    } else if (arg === '--test-shard-profile' || arg.startsWith('--test-shard-profile=')) {
+      const value = arg === '--test-shard-profile' ? args[++index] : arg.slice('--test-shard-profile='.length);
+      if (value !== 'windows-ci') {
+        throw new Error('--test-shard-profile must be windows-ci.');
+      }
+      parsed.testShardProfile = value;
     } else if (arg === '--test-shard' || arg.startsWith('--test-shard=')) {
       const value = arg === '--test-shard' ? args[++index] : arg.slice('--test-shard='.length);
       const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(value ?? '');
@@ -188,10 +204,13 @@ function parseArgs(args: string[]): ParsedArgs {
     throw new Error('Use either <plugin> or --all, not both.');
   }
   if (!parsed.all && positional.length !== 1) {
-    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform <target>|both] [--test-name <pattern>] [--test-concurrency <workers>] [--test-shard <index/total>] [--test-file <path> | --exclude-test-file <path>].');
+    throw new Error('Usage: pnpm plugin:test <plugin> | --all [--scope user|project] [--platform <target>|both] [--test-name <pattern>] [--test-concurrency <workers>] [--test-shard <index/total>] [--test-shard-profile windows-ci] [--test-file <path> | --exclude-test-file <path>].');
   }
   if (parsed.testFile && (parsed.all || parsed.excludeTestFile)) {
     throw new Error('--test-file requires one plugin and cannot be combined with --exclude-test-file.');
+  }
+  if (parsed.testShardProfile && (!parsed.all || !parsed.testShard?.endsWith('/3'))) {
+    throw new Error('--test-shard-profile windows-ci requires --all and --test-shard <index/3>.');
   }
   if (parsed.all && positional.length !== 0) {
     throw new Error('Use either <plugin> or --all, not both.');
@@ -614,6 +633,7 @@ async function runPreparedPluginTests(options: {
   testName?: string;
   testConcurrency?: string;
   testShard?: string;
+  testShardProfile?: ParsedArgs['testShardProfile'];
   testFile?: string;
   excludeTestFile?: string;
   env: NodeJS.ProcessEnv;
@@ -621,6 +641,11 @@ async function runPreparedPluginTests(options: {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }): Promise<number> {
+  let nodeTestShard = options.testShard;
+  if (options.testShardProfile && nodeTestShard) {
+    const shardIndex = Number(nodeTestShard.split('/')[0]);
+    nodeTestShard = `${WINDOWS_CI_NODE_TEST_SHARDS.get(options.prepared.pluginName)?.[shardIndex - 1] ?? shardIndex}/3`;
+  }
   const matchedEntries = await matchTestEntries(
     options.prepared.baselineRoot,
     options.prepared.manifest.scripts?.tests?.node,
@@ -740,7 +765,10 @@ async function runPreparedPluginTests(options: {
       });
       options.stdout(`AW_PLUGIN_TEST ${line}\n`);
     };
-    progress({ event: 'start', files: entries, shard: options.testShard });
+    progress({
+      event: 'start', files: entries, shard: options.testShard,
+      ...(options.testShardProfile ? { nodeShard: nodeTestShard } : {}),
+    });
     const preferred = closure?.consumers.flatMap((consumer) => consumer.tools.filter((binding) => binding.policy === 'preferred' && binding.platforms.includes(nativePlatform as 'win32'))) ?? [];
     if (options.native.nativeMode !== 'fixture' && preferred.some((binding) => nativeContext.tools[binding.key]?.state !== 'ready')) throw new Error('nativePreferredContractUnavailable');
     const backendEnvironments = [spawnEnv];
@@ -759,7 +787,7 @@ async function runPreparedPluginTests(options: {
           cwd: canonicalProjectRoot,
           env: backendEnv,
           testName: options.testName,
-          testShard: options.testShard,
+          testShard: nodeTestShard,
           workers: nodeTestWorkerOptions({ env: options.env, explicit: options.testConcurrency }),
           stdout: options.stdout,
           progress,
@@ -847,6 +875,7 @@ async function runPreparedPluginSelection(options: {
           testName: options.parsed.testName,
           testConcurrency: options.parsed.testConcurrency,
           testShard: options.parsed.testShard,
+          testShardProfile: options.parsed.testShardProfile,
           testFile: options.parsed.testFile,
           excludeTestFile: options.parsed.excludeTestFile,
           env: options.env,
