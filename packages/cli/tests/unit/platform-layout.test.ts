@@ -16,6 +16,38 @@ async function fixture(platform: 'codex' | 'cursor' | 'pi' | 'grok' | 'copilot' 
       installations: ['cli', 'app'].map((product) => ({ id: product, product: product as 'cli' | 'app', version: '1.0.0', availability: 'available', reasonCodes: [], entry: { kind: 'cli', executable: path.join(root, product), configRoot: path.join(root, `.${platform}`) } })) } };
   return { root, ctx, request };
 }
+// Test Value Gate: discovered clients share the interface minimum; one valid
+// CLI path can serve ordinary Skills without extending App or component support.
+it.each([
+  ['codex', '0.155.0', '0.154.9'], ['claude', '2.1.292', '2.1.291'],
+  ['copilot', '1.0.95', '1.0.94'], ['gemini', '0.63.0', '0.62.9'],
+  ['pi', '1.0.0', '0.9.9'], ['opencode', '2.0.0', '1.9.9'],
+  ['antigravity', '1.3.4', '1.3.3'],
+] as const)('uses the %s interface minimum with any complete CLI path', async (platform, minimum, below) => {
+  const { ctx, request } = await fixture(platform);
+  request.discovery.installations = [{ ...request.discovery.installations[0]!, version: minimum }];
+  const resolved = await resolveDeployments(ctx, request);
+  const binding = resolved.bindings[0]!;
+  const renderUnit = resolved.renderUnits.find((unit) => unit.output === 'package')!;
+  const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent', ownership: 'absent',
+    consumers: [], components: [], nativeIdentity: null, diagnostics: [], prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } } };
+  const input = { binding, renderUnit, observation, profile: getQualifiedPlatformProfile(platform, { platform: 'linux', arch: 'x64' }) };
+  for (const version of [minimum, '99.0.0', '99.0.0-alpha.1']) {
+    binding.consumers[0]!.version = version;
+    expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
+  }
+  for (const version of [below, `${minimum}-alpha.1`, 'invalid', null]) {
+    binding.consumers[0]!.version = version;
+    expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+  }
+  binding.consumers[0]!.version = minimum;
+  binding.consumers.push({ ...binding.consumers[0]!, id: 'old-cli', version: below, availability: 'unsupported' },
+    { ...binding.consumers[0]!, id: 'app', product: 'app', version: '99.0.0' },
+    { ...binding.consumers[0]!, id: 'failed-cli', availability: 'unknown' });
+  expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
+  binding.consumers.shift();
+  expect(getPlatformCapabilities(input).kinds.skill.status).not.toBe('supported');
+});
 it('shares Codex products and user rendering while keeping project roles and activation separate', async () => {
   const { root, ctx, request } = await fixture('codex');
   const user = await resolveDeployments(ctx, request);
@@ -29,9 +61,9 @@ it('shares Codex products and user rendering while keeping project roles and act
   expect(project.renderUnits.find((unit) => unit.output === 'supplement')!.renderScope.kind).toBe('project');
 });
 
-// Test Value Gate: the observed User leaf must not qualify the failed Project
-// branch, unrecorded hosts, neighbouring versions, Apps, or other component kinds.
-it('limits Antigravity ordinary Skills to CLI 1.3.4 on six recorded hosts at User scope', async () => {
+// Test Value Gate: ordinary Skills retain the recorded host, product, scope
+// and component limits when their runtime version satisfies the interface.
+it('keeps Antigravity ordinary Skills limited to six CLI hosts at User scope', async () => {
   const { root, ctx, request } = await fixture('antigravity');
   request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '1.3.4' }];
   const resolved = await resolveDeployments(ctx, request);
@@ -52,10 +84,6 @@ it('limits Antigravity ordinary Skills to CLI 1.3.4 on six recorded hosts at Use
   for (const feature of Object.values(capabilities.features)) expect(feature.status).toBe('unverified');
   const project = await resolveDeployments(ctx, { ...request, scope: { kind: 'project', projectRoot: path.join(root, 'project') } });
   expect(getPlatformCapabilities({ ...input, binding: project.bindings[0]!, renderUnit: project.renderUnits[0]! }).kinds.skill.status).toBe('unverified');
-  for (const version of ['1.3.3', '1.3.5', null]) {
-    binding.consumers[0]!.version = version;
-    expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
-  }
   binding.consumers[0]!.version = '1.3.4';
   binding.consumers[0]!.product = 'app';
   expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
@@ -88,7 +116,7 @@ it('keeps missing Pi consumers distinct from unknown observation and hides produ
     prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
   const input = { binding, renderUnit: resolved.renderUnits[0]!, observation, profile: getQualifiedPlatformProfile('pi') };
   expect(getPlatformCapabilities(input).kinds.agent).toMatchObject({ status: 'unsupported', reasonCodes: ['consumer-missing'] });
-  expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+  expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
   expect(JSON.stringify(getPlatformCapabilities(input))).not.toContain(root);
   observation.prerequisites.agentConsumers.observation = 'unknown';
   expect(getPlatformCapabilities(input).kinds.agent.status).toBe('unverified');
@@ -107,9 +135,9 @@ it('uses separate immutable source roots when one AW home serves different nativ
   expect(firstLayout.packageRoot).not.toBe(secondLayout.packageRoot);
   expect(firstLayout.marketplaceName).not.toBe(secondLayout.marketplaceName);
 });
-// Test Value Gate: only the approved exact CLI/version/host cells gain ordinary
-// Skill delivery; neighbouring versions, product surfaces and features stay gated.
-it.each(['codex', 'pi'] as const)('limits the finite %s Skill profile to its recorded cells', async (platform) => {
+// Test Value Gate: ordinary Skill delivery keeps its host/product limits,
+// exact historical evidence and independent feature qualification.
+it.each(['codex', 'pi'] as const)('keeps the %s Skill profile host and product limits', async (platform) => {
   const { ctx, request } = await fixture(platform);
   const version = platform === 'codex' ? '0.167.0' : '1.5.0';
   request.discovery.installations = [{ ...request.discovery.installations[0]!, version }];
@@ -135,7 +163,7 @@ it.each(['codex', 'pi'] as const)('limits the finite %s Skill profile to its rec
     binding.consumers[0]!.product = 'app';
     expect(getPlatformCapabilities({ ...input, profile }).kinds.skill.status).toBe('unverified');
     binding.consumers[0]!.product = 'cli'; binding.consumers[0]!.version = platform === 'codex' ? '0.168.0' : '1.5.1';
-    expect(getPlatformCapabilities({ ...input, profile }).kinds.skill.status).toBe('unverified');
+    expect(getPlatformCapabilities({ ...input, profile }).kinds.skill.status).toBe('supported');
     binding.consumers[0]!.version = version;
   }
   for (const host of [{ platform: 'freebsd', arch: 'x64' }, { platform: 'linux', arch: 's390x' }] as const) {
@@ -153,13 +181,13 @@ it('blocks project writes that alias Codex user configuration but retains cleanu
   expect(cleanup.bindings).toHaveLength(1);
 });
 
-// Test Value Gate: the finite records authorize ordinary Skills for both scopes
-// on six exact CLI hosts, without authorizing other consumers or features.
+// Test Value Gate: ordinary Skills keep both scopes, six CLI host limits and
+// exact historical evidence, without authorizing other products or features.
 it.each([
   { platform: 'copilot', exactVersion: '1.0.95', previousVersion: '1.0.94', nextVersion: '1.0.96', evidenceDate: '2026-11-12' },
   { platform: 'claude', exactVersion: '2.1.317', previousVersion: '2.1.316', nextVersion: '2.1.318', evidenceDate: '2026-11-12' },
   { platform: 'opencode', exactVersion: '2.0.0', previousVersion: '1.9.9', nextVersion: '2.0.1', evidenceDate: '2026-11-13' },
-] as const)('limits $platform ordinary Skills to the recorded CLI version, hosts and scopes', async ({ platform, exactVersion, previousVersion, nextVersion, evidenceDate }) => {
+] as const)('keeps $platform ordinary Skill product, host and scope limits', async ({ platform, exactVersion, nextVersion, evidenceDate }) => {
   const { root, ctx, request } = await fixture(platform);
   request.discovery.installations = [{ ...request.discovery.installations[0]!, version: exactVersion }];
   const hosts: Array<{ platform: NodeJS.Platform; arch: NodeJS.Architecture }> = [
@@ -187,16 +215,12 @@ it.each([
         product: 'cli', version: exactVersion, platform: host.platform, arch: host.arch,
         scopes: ['user', 'project'], kinds: ['skill'], features: [],
       });
-      for (const version of [previousVersion, nextVersion, null]) {
-        binding.consumers[0]!.version = version;
-        expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
-      }
       binding.consumers[0]!.version = exactVersion;
       binding.consumers[0]!.product = 'app';
       expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
       binding.consumers[0]!.product = 'cli';
       binding.consumers.push({ ...binding.consumers[0]!, id: 'other-consumer', version: nextVersion });
-      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
       binding.consumers.pop();
     }
     for (const host of [{ platform: 'freebsd', arch: 'x64' }, { platform: 'linux', arch: 's390x' }] as const) {
@@ -211,8 +235,8 @@ it.each([
   }
 });
 
-// Test Value Gate: scope-specific records authorize only the recorded
-// CLI version and hosts for deployment and author materialization.
+// Test Value Gate: runtime and author views keep scope-specific product and
+// host limits, while qualification evidence retains its exact tested versions.
 it('limits Grok ordinary Skills to the four recorded CLI User/Project environments', async () => {
   const { root, ctx, request } = await fixture('grok');
   request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '1.0.77' }];
@@ -244,8 +268,10 @@ it('limits Grok ordinary Skills to the four recorded CLI User/Project environmen
       platform: host.platform, arch: host.arch, scopes: ['project'], kinds: ['skill'], features: [] });
     for (const version of ['1.0.76', '1.0.78', '1.0.82', null]) {
       binding.consumers[0]!.version = version;
-      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
     }
+    binding.consumers[0]!.version = 'invalid';
+    expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
     binding.consumers[0]!.version = '1.0.77';
     binding.consumers[0]!.product = 'app';
     expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
@@ -261,8 +287,8 @@ it('limits Grok ordinary Skills to the four recorded CLI User/Project environmen
   expect(getAuthoringPlatformCapabilities('grok', 'user').kinds.skill.status).toBe(hostQualified ? 'supported' : 'unverified');
 });
 
-// Test Value Gate: scope-specific records authorize only the recorded
-// CLI version and hosts for deployment and author materialization.
+// Test Value Gate: runtime and author views keep scope-specific product and
+// host limits, while qualification evidence retains its exact tested versions.
 it('limits Gemini ordinary Skills to the six recorded CLI User/Project environments', async () => {
   const { root, ctx, request } = await fixture('gemini');
   request.discovery.installations = [{ ...request.discovery.installations[0]!, version: '0.67.0' }];
@@ -295,16 +321,12 @@ it('limits Gemini ordinary Skills to the six recorded CLI User/Project environme
       expect(capability.kinds.skill.status).toBe('supported');
       for (const kind of ['hook', 'mcp', 'instruction', 'agent'] as const) expect(capability.kinds[kind].status).toBe('unverified');
       for (const feature of Object.values(capability.features)) expect(feature.status).toBe('unverified');
-      for (const version of ['0.66.0', '0.67.1', '0.68.0', null]) {
-        input.binding.consumers[0]!.version = version;
-        expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
-      }
       input.binding.consumers[0]!.version = '0.67.0';
       input.binding.consumers[0]!.product = 'app';
       expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
       input.binding.consumers[0]!.product = 'cli';
       input.binding.consumers.push({ ...input.binding.consumers[0]!, id: 'other-consumer', version: '0.67.1' });
-      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('unverified');
+      expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
       input.binding.consumers.pop();
     }
   }

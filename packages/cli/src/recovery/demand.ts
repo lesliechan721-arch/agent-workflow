@@ -43,6 +43,9 @@ export interface ReadDemandOptions {
   preferences?: PreferencesObservation;
   catalogOperationContext?: CatalogOperationContext;
   signal?: AbortSignal;
+  /** Shared only by reads within one operation, never carried into execution. */
+  resolveCatalog?: () => Promise<{ context: CatalogOperationContext; configured: Set<string> }>;
+  manifestReads?: Map<string, Promise<PluginMeta>>;
 }
 
 /** Manifest delivery choice is independent of tool, trust, and configuration health. */
@@ -82,12 +85,18 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
   let context = options.catalogOperationContext;
   let configured: Set<string>;
   try {
-    const snapshot = await readCatalogSourcesConfigSnapshot(options.env);
-    configured = new Set(snapshot.config.sources.map((source) => source.id));
-    context ??= await resolvePartialCatalogOperationContext({
-      env: options.env, configSnapshot: snapshot, signal: options.signal,
-      sourceIds: [...new Set(roots.map((root) => root.sourceId))].filter((id) => configured.has(id)),
-    });
+    if (options.resolveCatalog) {
+      const shared = await options.resolveCatalog();
+      configured = shared.configured;
+      context = shared.context;
+    } else {
+      const snapshot = await readCatalogSourcesConfigSnapshot(options.env);
+      configured = new Set(snapshot.config.sources.map((source) => source.id));
+      context ??= await resolvePartialCatalogOperationContext({
+        env: options.env, configSnapshot: snapshot, signal: options.signal,
+        sourceIds: [...new Set(roots.map((root) => root.sourceId))].filter((id) => configured.has(id)),
+      });
+    }
   } catch (error) {
     options.signal?.throwIfAborted();
     if (error instanceof Error && error.name === 'AbortError') throw error;
@@ -125,7 +134,13 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
       const pluginId = `${root.sourceId}/${entry.name}`;
       if (pluginCache.has(pluginId)) continue;
       try {
-        const plugin = await readPluginManifest(path.join(source.rootDir, 'plugins', entry.name), { mode: 'bundle' });
+        const key = JSON.stringify([source.sourceIdentity, source.logicalIdentity, source.snapshotDigest, source.rootDir, pluginId]);
+        let reading = options.manifestReads?.get(key);
+        if (!reading) {
+          reading = readPluginManifest(path.join(source.rootDir, 'plugins', entry.name), { mode: 'bundle' });
+          options.manifestReads?.set(key, reading);
+        }
+        const plugin = structuredClone(await reading);
         Object.assign(plugin, {
           pluginId, sourceId: root.sourceId, sourceIdentity: source.sourceIdentity,
           catalogLogicalIdentity: source.logicalIdentity,

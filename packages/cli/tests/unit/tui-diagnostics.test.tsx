@@ -3,7 +3,7 @@ import os from 'node:os';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { DiagnosticSummary, diagnosticDetailRowCount } from '../../src/tui/components.js';
+import { DiagnosticSummary, diagnosticDetailRowCount, diagnosticDetailText } from '../../src/tui/components.js';
 import {
   safeDiagnosticCode,
   sanitizeDiagnosticCause,
@@ -14,6 +14,24 @@ import {
 afterEach(() => cleanup());
 
 describe('TUI diagnostic projection', () => {
+  it('keeps validated recovery paths while rejecting controls and credential-bearing locations', () => {
+    const diagnostic: DiagnosticSummaryViewModel = {
+      severity: 'error', title: 'Inventory', userMessage: 'Incomplete', impact: [], nextStep: 'Inspect',
+      technical: { code: 'stateInventoryFailed', recoveryDiagnostics: [
+        { code: 'stateInventoryFailed', detail: { reasonCode: 'ownerHeaderPathValidation',
+          path: '/fixture/agents/aw-demo.toml', configKey: 'agents.demo.config_file' } },
+        { code: 'stateInventoryFailed', detail: { reasonCode: 'ownerHeaderPathValidation',
+          path: '/fixture/token=hidden-secret', configKey: 'bad\u001b[31mkey' } },
+      ] },
+    };
+    const text = diagnosticDetailText(diagnostic);
+    expect(text).toContain('/fixture/agents/aw-demo.toml');
+    expect(text).toContain('agents.demo.config_file');
+    expect(text).toContain('sync only after this inventory error is gone');
+    expect(text).not.toContain('hidden-secret');
+    expect(text).not.toContain('\u001b');
+  });
+
   it('redacts injected credentials, private paths, digests, raw output, and controls in real Ink output', () => {
     const privateSourceRoot = '/private/source/root';
     const injected = [

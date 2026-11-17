@@ -126,6 +126,53 @@ describe('Gemini shared extension activation', () => {
     expect(await fs.readJson(item.file)).toEqual(item.original);
   });
 
+  // Test Value Gate: interactive install cannot validate a destructive replacement
+  // before uninstall; unknown client contracts must retain the complete old copy.
+  it('keeps a newer Gemini copy before unverified destructive refresh and gives exact manual recovery', async () => {
+    const item = await replacementFixture();
+    item.binding.consumers[0]!.version = '0.68.0';
+    const receipt = await executePlatformLifecycle(item.execution, item.prepared);
+    expect(receipt.effects[0]).toMatchObject({ status: 'blocked', mutation: 'none' });
+    const diagnostic = receipt.diagnostics.find((value) => value.code === 'nativeConsentProtocolUnconfirmed');
+    expect(diagnostic).toMatchObject({ subject: { pluginId: 'test/demo', target: 'gemini', scope: 'project', field: 'nativeSource' },
+      detail: { reasonCode: 'geminiNativeConsentSource', path: item.identity.sourceLocation } });
+    expect(receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeConsentWorkspace',
+      subject: expect.objectContaining({ field: 'workspace' }), detail: { reasonCode: 'geminiNativeConsentWorkspace',
+        path: item.binding.scope.kind === 'project' ? item.binding.scope.projectRoot : item.ctx.cwd } }));
+    expect(diagnostic?.message).toContain('test/demo --context project --target gemini');
+    expect(diagnostic?.message).not.toContain('--consent');
+    expect(item.runner.mock.calls.filter(([invocation]) => invocation.args[1] !== 'list')).toEqual([]);
+    expect(await fs.readFile(path.join(item.installed, 'skills/demo/SKILL.md'), 'utf8')).toBe('Revision 2.\n');
+    expect(await fs.readJson(item.file)).toEqual(item.original);
+  });
+
+  // Test Value Gate: separate output pipes have no complete authorization frame.
+  // The host must not start or receive input for an unverified client contract.
+  it.each(['register', 'refresh'] as const)('keeps newer Gemini %s manual before any cross-stream prompt', async (operation) => {
+    const item = await replacementFixture();
+    item.binding.consumers[0]!.version = '0.68.0';
+    item.binding.plugin.version = '2.0.0';
+    const effect = { ...item.effect, kind: operation };
+    const frames = [
+      ['stderr', 'Installing extension "demo".\n'],
+      ['stdout', 'Do you want to con'],
+      ['stdout', 'tinue? [Y/n]: '],
+      ['stderr', 'Grant unrestricted access.\n'],
+    ] as const;
+    const answers: unknown[] = [];
+    item.runner.mockImplementation(async (invocation) => {
+      for (const [stream, chunk] of frames) answers.push(stream === 'stdout'
+        ? invocation.input?.onStdout(chunk) : invocation.input?.onStderr?.(chunk));
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    await expect(executeNativeLifecycle(item.execution, item.prepared, effect)).rejects
+      .toMatchObject({ code: 'nativeConsentProtocolUnconfirmed', mutation: 'none' });
+    expect(item.runner).not.toHaveBeenCalled();
+    expect(answers).toEqual([]);
+    expect(await fs.readJson(item.file)).toEqual(item.original);
+    expect(await fs.pathExists(item.installed)).toBe(true);
+  });
+
   it.each(['env', 'extra', 'modified', 'weak-marker', 'foreign-source', 'nested-metadata'] as const)(
     'retains the native copy without replacement when %s evidence is unsafe', async (kind) => {
       const item = await replacementFixture();
@@ -157,7 +204,7 @@ describe('Gemini shared extension activation', () => {
 
   // Test Value Gate: native User enable removes HOME child Workspace rules.
   // The checked installer result must restore both project references and fields.
-  it('restores project rules and sibling fields after the fixed native installer enables User', async () => {
+  it('restores project rules after the recorded client install with bounded consent', async () => {
     const { ctx, binding, evidence, identity, file, home, project, otherProject } = await fixture();
     const other = geminiScopePattern(otherProject);
     const nested = geminiScopePattern(path.join(project, 'nested'));
@@ -189,10 +236,6 @@ describe('Gemini shared extension activation', () => {
     execution.geminiNativeConsent = structuredClone(prepared.plan);
     await expect(executeNativeLifecycle(execution, prepared, effect)).rejects.toMatchObject({ code: 'nativeConsentRequired' });
     execution.geminiNativeConsent = prepared.plan;
-    binding.consumers[0]!.version = '0.68.0';
-    await expect(executeNativeLifecycle(execution, prepared, effect)).rejects.toMatchObject({ code: 'nativeConsentVersionUnsupported', mutation: 'none' });
-    expect(runner).not.toHaveBeenCalled();
-    binding.consumers[0]!.version = '0.67.0';
     await expect(executeNativeLifecycle(execution, prepared, effect)).resolves.toMatchObject({ mutation: 'confirmed' });
     expect(runner.mock.calls.map(([invocation]) => invocation.args)).toEqual([['extensions', 'install', identity.sourceLocation, '--consent', '--skip-settings']]);
     const value = await fs.readJson(file);

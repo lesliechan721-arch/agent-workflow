@@ -84,7 +84,7 @@ selected source/plugin 的 namespaced config inventory 损坏不阻止该目标�
 
 普通 cleanup 使用离线清理，不因 Active 缺少 entry 扩大到停用。`catalogSourceUnavailable`、`bundleUnavailable` 和 `codexIntentSourceUnavailable` 只说明当前恢复路由不可用。Review 绑定目标位置与 live ownership evidence；Execute 在同一 `AW_HOME` mutation lock 内重验，漂移时在删除前返回 stale。实际删除竞态保留输出并返回 partial。
 
-普通 cleanup 不读取 Active；force 可把当前 Active 中所选 plugin bundle 的 shallow evidence 作为可选补充。source、Active 或 store 缺失或损坏不能永久阻止 Intent 取消，或阻止有充分 live evidence 的清理。两者保留 foreign、shared、unknown 内容和无法安全撤销的原生包，不猜测输出路径。
+普通 cleanup 不读取 Active；force 可把当前 Active 中所选 plugin bundle 的 shallow evidence 作为可选补充。source、Active 或 store 缺失或损坏不能永久阻止 Intent 取消，或阻止有充分 live evidence 的清理。两者保留 foreign、shared、unknown 内容和无法安全撤销的原生包，不猜测输出路径。旧产物不符合当前路径或来源证据时，扫描错误仍保留精确恢复位置；不能把它加入合法 owner reference。普通和 force 均不能处理时，说明备份、核对精确配置引用、人工移出扫描目录和重新查询的步骤。坏头部不能独自证明归属或无关性；未改变前置条件前，不循环推荐同一失败清理命令。
 
 ### 受限 force cleanup
 
@@ -104,7 +104,7 @@ discover、prepare、materialize、原生 mutation 与 postcheck 的错误只阻
 
 包、注册、activation、trust、组件 presence 与 load 各自保留。ComponentGap.requiredFeatures 必填，完整传递冻结 feature/values、缺口 ID 与 componentId；无能力要求的执行错误使用空数组。不能将缺少 block 或一个 Instructions audience 简化为整类缺失。
 
-原生动作回执与后续只读状态分开：Pi 1.5.0 Project remove 的精确成功确认可完成本次撤销及专属包清理，即使有效 list 未显示 Project 段；registration 仍保留 unknown。命令、清单与归属边界见[状态证据](config-and-status.md#31-只读观察)。Grok 首次 User 来源须先由用户显式原生授信，目录信任和 AW --yes 均不能代替。
+原生动作回执与后续只读状态分开：Pi Project remove 的精确成功确认可完成本次撤销及专属包清理，即使有效 list 未显示 Project 段；registration 仍保留 unknown。命令、清单与归属边界见[状态证据](config-and-status.md#31-只读观察)。Grok 首次 User 来源须先由用户显式原生授信，目录信任和 AW --yes 均不能代替。
 
 成功有意空集合在 Review 中明确撤销旧输出，新目标为成功 no-op；全部 unmet 或渲染失败不触发空集卸载。部分 unmet 时，可更新独立支持的组件，但保留旧补足文件，不将本次缺少投影当作作者关闭；此保护不依赖原生包是否存在。取消一个需求不删除仍被引用的共享包或命令绑定。preApply 失败不清旧输出，Grok 同 scope Instructions 渲染失败也不能发布缺正文的 Agent 包。
 

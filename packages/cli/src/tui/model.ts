@@ -1,5 +1,6 @@
 import { agentLabel } from './glossary.js';
-import type { RecoveryTarget } from '../recovery/receipt.js';
+import type { RecoveryDiagnostic, RecoveryTarget } from '../recovery/receipt.js';
+import { inventoryRecoveryActions, publicDiagnostic } from '../commands/public-lifecycle-result.js';
 import { configObjectHasSensitiveChild, presentConfigValue, safeConfigText } from './config-value-presentation.js';
 export { configObjectHasSensitiveChild } from './config-value-presentation.js';
 import {
@@ -668,6 +669,7 @@ export interface UserIssueViewModel {
   configLayer?: { profile: ConfigProfileKey; context: Scope };
   actions: UserIssueActionViewModel[];
   technicalDetails: Array<{ code: string; message: string }>;
+  recoveryDiagnostics?: RecoveryDiagnostic[];
   diagnostic: DiagnosticSummaryViewModel;
 }
 
@@ -1752,12 +1754,25 @@ function targetIssues(
   return issues;
 }
 
-function statusIssues(payload: StatusV8Payload): UserIssueDraft[] {
+function recoveryDiagnosticDetail(reason: RecoveryDiagnostic): { code: string; message: string } {
+  if (!reason.detail) return { code: reason.code, message: reason.message };
+  const diagnostic = publicDiagnostic(reason);
+  const detail = diagnostic.detail;
+  return { code: diagnostic.code, message: [diagnostic.message,
+    ...(detail ? [`Reason: ${detail.reasonCode}`] : []),
+    ...(detail?.path ? [`Location: ${detail.path}`] : []),
+    ...(detail?.configKey ? [`Config key: ${detail.configKey}`] : []),
+    ...inventoryRecoveryActions([reason]).flatMap((action) => action.kind === 'manual' ? [action.message] : []),
+  ].join('\n') };
+}
+
+function statusIssues(payload: StatusV8Payload, recoveryDiagnostics: readonly RecoveryDiagnostic[]): UserIssueDraft[] {
   const targetCodes = new Set(payload.targets.flatMap((target) =>
     target.reasons.map((error) => error.code)));
   const issues = new Map<string, UserIssueDraft>();
-  for (const error of payload.errors) {
-    if (targetCodes.has(error.code) || issues.has(error.code)) continue;
+  for (const error of [...payload.errors, ...recoveryDiagnostics.filter((entry) => entry.detail)]) {
+    if (issues.has(error.code) || targetCodes.has(error.code)
+      && !recoveryDiagnostics.some((entry) => entry.code === error.code && entry.detail)) continue;
     const projection = error.code === 'legacyStateUnsupported'
       ? {
           title: '发现旧版状态',
@@ -1789,7 +1804,11 @@ function statusIssues(payload: StatusV8Payload): UserIssueDraft[] {
             { id: 'retryLater', label: '稍后重新检查' },
           ]
         : [{ id: 'retryLater', label: '稍后重试' }, { id: 'viewTechnical', label: '技术详情' }],
-      technicalDetails: [{ code: error.code, message: projection.explanation }],
+      technicalDetails: recoveryDiagnostics.some((entry) => entry.code === error.code && entry.detail)
+        ? [...new Map(recoveryDiagnostics.filter((entry) => entry.code === error.code && entry.detail)
+          .map(recoveryDiagnosticDetail).map((entry) => [entry.message, entry])).values()]
+        : [{ code: error.code, message: projection.explanation }],
+      recoveryDiagnostics: recoveryDiagnostics.filter((entry) => entry.code === error.code && entry.detail),
     });
   }
   return [...issues.values()];
@@ -2007,6 +2026,7 @@ function issueDiagnostic(
       ...(sourceDiagnostic && source?.resolvedCommit ? { resolvedCommit: source.resolvedCommit } : {}),
       ...(context.length > 0 ? { context } : {}),
       checks,
+      ...(issue.recoveryDiagnostics?.length ? { recoveryDiagnostics: issue.recoveryDiagnostics.map((entry) => publicDiagnostic(entry)) } : {}),
     },
   };
 }
@@ -2113,6 +2133,7 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
       impact: [...new Set(ordered.flatMap((issue) => issue.impact))],
       technicalDetails: [...new Map(ordered.flatMap((issue) => issue.technicalDetails)
         .map((detail) => [`${detail.code}\0${detail.message}`, detail])).values()],
+      recoveryDiagnostics: ordered.flatMap((issue) => issue.recoveryDiagnostics ?? []),
       actions: dedupeIssueActions(ordered.flatMap((issue) => issue.actions)),
     };
   });
@@ -2146,7 +2167,7 @@ function recoveryTargetIssues(targets: readonly RecoveryTarget[]): UserIssueDraf
     const explanation = conflict ? '当前目标位置含有未确认归属的内容。'
       : incomplete ? '当前目标缺少已声明的内容，或现场内容与当前需求不同。'
         : '当前目标的满足状态尚未确认。';
-    const details = [...target.blockers, ...(target.reasons ?? [])].map(({ code, message }) => ({ code, message }));
+    const details = [...target.blockers, ...(target.reasons ?? [])].map(recoveryDiagnosticDetail);
     if (dependency) details.push({ code: missing ? 'dependencyMissing' : 'dependencyNotReady',
       message: '当前依赖尚未满足其实际使用位置，关联的根插件需要恢复。' });
     const affectedTargets = [...(relationship === 'direct' ? [{ ...entity, relationship: 'direct' as const }] : []), ...consumers];
@@ -2168,6 +2189,7 @@ function recoveryTargetIssues(targets: readonly RecoveryTarget[]): UserIssueDraf
         ...(dependency ? [{ id: 'viewDependencyIssue' as const, label: '查看依赖插件问题', pluginId: target.pluginId }] : []),
         { id: 'viewTechnical', label: '查看技术详情' }],
       technicalDetails: details.length ? details : [{ code: `targetContent:${target.content ?? 'unknown'}`, message: explanation }],
+      recoveryDiagnostics: [...target.blockers, ...(target.reasons ?? [])].filter((entry) => entry.detail),
     }];
   });
 }
@@ -2177,6 +2199,7 @@ export function buildTuiViewModel(options: {
   pluginSummaries: StatusV8PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   recoveryTargets?: readonly RecoveryTarget[];
+  recoveryDiagnostics?: readonly RecoveryDiagnostic[];
   retainedNativePluginIds?: readonly string[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
@@ -2383,7 +2406,7 @@ export function buildTuiViewModel(options: {
     ...recoveryTargetIssues(options.recoveryTargets ?? []),
     ...allTargetIssues.filter((issue) => !issue.mergeEligible
       || !issue.sourceId || !sourceRootIds.has(issue.sourceId)),
-    ...statusIssues(options.status),
+    ...statusIssues(options.status, options.recoveryDiagnostics ?? []),
     ...configIssues(options.pluginSummaries),
     ...dependencyOverviewIssues(
       options.dependencyOverviews ?? [],

@@ -11,6 +11,16 @@ import { tryParseStrictSemVer } from '../utils/manifest.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { projectSupplementFile } from './projection.js';
 import { ownedSupplementFile } from './supplement-layout.js';
+import { selectNativeProduct } from './discovery.js';
+
+/** A positive operation uses one complete product path, including its exact activation scope. */
+export function selectedNativeConsumer(binding: DeploymentBinding,
+  observation: Pick<DeploymentObservation, 'consumers'>): DeploymentObservation['consumers'][number] | undefined {
+  const product = selectNativeProduct(binding.consumers);
+  const matches = observation.consumers.filter((consumer) => consumer.productId === product?.id
+    && consumer.activationKey === binding.activationKey);
+  return matches.length === 1 ? matches[0] : undefined;
+}
 
 export function unknownDeployment(binding: DeploymentBinding, code = 'deploymentObservationUnknown'): DeploymentObservation {
   const generic = binding.route === 'generic-skills';

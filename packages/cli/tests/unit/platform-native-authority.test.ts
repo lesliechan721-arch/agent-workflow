@@ -11,7 +11,7 @@ import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../../src/constants.js';
-import { queryNativeDeploymentResult } from '../../src/platforms/inspection-query.js';
+import { createNativeQuerySession, queryNativeDeploymentResult } from '../../src/platforms/inspection-query.js';
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
 
@@ -105,6 +105,88 @@ async function geminiCompileFixture(project = true, bin?: string) {
 }
 
 describe('native deployment state authority', () => {
+  // Test Value Gate: a full client inventory serves multiple roots in the same
+  // read operation; a new operation and reads outside a session remain fresh.
+  it('shares Claude inventories across roots and owns the neutral query directory', async () => {
+    const item = await fixture('claude', false);
+    const session = createNativeQuerySession();
+    const ctx = { ...item.ctx, nativeQuerySession: session };
+    let cwd = '';
+    try {
+      const sibling = { ...item.binding, plugin: { ...item.binding.plugin, pluginId: 'team/sibling' } };
+      await Promise.all([inspectDeployment(ctx, item.binding), inspectDeployment(ctx, sibling)]);
+      expect(item.calls.map((call) => call.args)).toEqual(expect.arrayContaining([
+        ['plugin', 'list', '--json'], ['plugin', 'marketplace', 'list', '--json'],
+      ]));
+      expect(item.calls).toHaveLength(2);
+      cwd = item.calls[0]!.cwd!;
+      expect(item.calls.every((call) => call.cwd === cwd)).toBe(true);
+      expect(await fs.pathExists(cwd)).toBe(true);
+    } finally { await session.dispose(); }
+    expect(await fs.pathExists(cwd)).toBe(false);
+    await inspectDeployment(item.ctx, item.binding);
+    expect(item.calls).toHaveLength(4);
+    const next = createNativeQuerySession();
+    try { await inspectDeployment({ ...item.ctx, nativeQuerySession: next }, item.binding); }
+    finally { await next.dispose(); }
+    expect(item.calls).toHaveLength(6);
+  });
+
+  // Test Value Gate: scope, real entry, config namespace, source arguments and
+  // observation mode must not reuse another native result, even within a session.
+  it('separates native inventory inputs and returns independent result objects', async () => {
+    const item = await fixture('claude', false);
+    const session = createNativeQuerySession();
+    const calls: NativeCliInvocation[] = [];
+    const ctx: ReadContext = { ...item.ctx, nativeQuerySession: session, runner: async (invocation) => {
+      calls.push(invocation); return { exitCode: 0, stdout: '[]', stderr: '' };
+    } };
+    const args = (cwd: string) => ['plugin', 'list', '--location', cwd, '--json'];
+    try {
+      const first = await queryNativeDeploymentResult(ctx, item.binding, args);
+      first.stdout = 'changed by consumer';
+      expect((await queryNativeDeploymentResult(ctx, item.binding, args)).stdout).toBe('[]');
+      expect(calls).toHaveLength(1);
+      await queryNativeDeploymentResult(ctx, { ...item.binding, scope: { kind: 'project', projectRoot: ctx.cwd } }, args);
+      const product = item.binding.consumers[0]!;
+      await queryNativeDeploymentResult(ctx, { ...item.binding, consumers: [{ ...product,
+        entry: { kind: 'cli', executable: path.join(ctx.cwd, 'other-client'), configRoot: item.host } }] }, args);
+      await queryNativeDeploymentResult(ctx, { ...item.binding, consumers: [{ ...product,
+        entry: { kind: 'cli', executable: path.join(ctx.cwd, 'claude'), configRoot: path.join(item.host, 'other') } }] }, args);
+      await queryNativeDeploymentResult(ctx, item.binding, ['plugin', 'list', '--marketplace', 'other-source', '--json']);
+      await queryNativeDeploymentResult({ ...ctx, env: { ...ctx.env, CLAUDE_CONFIG_DIR: path.join(item.host, 'alternate') } }, item.binding, args);
+      await queryNativeDeploymentResult({ ...ctx, observeNative: true }, item.binding, args);
+      expect(calls).toHaveLength(7);
+      expect(calls[0]!.cwd).not.toBe(calls[1]!.cwd);
+      expect(calls[0]!.args).toEqual(['plugin', 'list', '--location', calls[0]!.cwd, '--json']);
+    } finally { await session.dispose(); }
+    expect((await Promise.all(calls.filter((call) => call.cwd !== ctx.cwd).map((call) => fs.pathExists(call.cwd!)))).every((present) => !present)).toBe(true);
+  });
+
+  // Test Value Gate: one failed snapshot preserves its native reason without
+  // retry storms, but a new operation retries and cancellation cannot return cache.
+  it('retains native failure evidence only inside its operation', async () => {
+    const item = await fixture('claude');
+    let calls = 0;
+    const failure = new NativeCliError({ invocation: { command: 'claude', args: [] }, exitCode: 124,
+      stdout: '', stderr: '', reason: 'timeout' });
+    const controller = new AbortController();
+    const session = createNativeQuerySession();
+    const ctx: ReadContext = { ...item.ctx, signal: controller.signal, nativeQuerySession: session,
+      runner: async () => { calls += 1; throw failure; } };
+    const read = () => queryNativeDeploymentResult(ctx, item.binding, ['plugin', 'list', '--json']);
+    try {
+      for (let index = 0; index < 2; index += 1) await expect(read()).rejects.toBe(failure);
+      expect(calls).toBe(1);
+      const cancellation = new Error('cancelled'); controller.abort(cancellation);
+      await expect(read()).rejects.toBe(cancellation);
+      expect(calls).toBe(1);
+    } finally { await session.dispose(); }
+    await expect(queryNativeDeploymentResult({ ...ctx, nativeQuerySession: undefined, signal: undefined },
+      item.binding, ['plugin', 'list', '--json'])).rejects.toBe(failure);
+    expect(calls).toBe(2);
+  });
+
   // Test Value Gate: shared code compilation must still read every native state
   // change, with exact scope, cancellation, deadline and caller env intact.
   it.each([false, true])('uses local Gemini probe overrides with fresh inventory (project=%s)', async (project) => {

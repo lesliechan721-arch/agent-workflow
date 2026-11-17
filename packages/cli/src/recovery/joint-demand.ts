@@ -7,6 +7,9 @@ import type { RecoveryDiagnostic } from './receipt.js';
 import type { NativeSharedReference, NativeSharedReferenceView } from '../utils/native-demand.js';
 import type { RecoveryStatus } from './status.js';
 import { hasSharedUserPackage } from '../platforms/layout.js';
+import { observeIntent } from '../intent/intent-store.js';
+import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import { resolvePartialCatalogOperationContext } from '../utils/catalog-operation-context.js';
 
 export interface JointDemandSnapshot {
   context: WorkContext;
@@ -47,8 +50,25 @@ export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' |
 }): Promise<JointDemandSnapshot> {
   const context = await resolveWorkContext(options);
   const { preferences: draftPreferences, ...readOptions } = options;
-  const user = await readDemand({ ...readOptions, scope: 'user' });
-  const project = context.projectRoot ? await readDemand({ ...readOptions, scope: 'project', cwd: context.projectRoot, preferences: user.preferences }) : undefined;
+  const [userIntent, projectIntent] = await Promise.all([
+    options.intent ?? observeIntent({ ...options, scope: 'user' }),
+    context.projectRoot ? options.intent ?? observeIntent({ ...options, scope: 'project', cwd: context.projectRoot }) : undefined,
+  ]);
+  let catalog: ReturnType<NonNullable<ReadDemandOptions['resolveCatalog']>> | undefined;
+  const resolveCatalog = options.resolveCatalog ?? (() => catalog ??= (async () => {
+    const snapshot = await readCatalogSourcesConfigSnapshot(options.env);
+    const configured = new Set(snapshot.config.sources.map((source) => source.id));
+    const sourceIds = [...new Set([userIntent, projectIntent].flatMap((intent) => intent?.state === 'valid'
+      ? intent.value.roots.map((root) => root.pluginId.split('/')[0]!) : []))].filter((id) => configured.has(id));
+    const resolved = options.catalogOperationContext ?? await resolvePartialCatalogOperationContext({
+      env: options.env, configSnapshot: snapshot, signal: options.signal, sourceIds,
+    });
+    return { context: resolved, configured };
+  })());
+  const shared = { resolveCatalog, manifestReads: options.manifestReads ?? new Map<string, Promise<PluginMeta>>() };
+  const user = await readDemand({ ...readOptions, ...shared, intent: userIntent, scope: 'user' });
+  const project = context.projectRoot ? await readDemand({ ...readOptions, ...shared, intent: projectIntent,
+    scope: 'project', cwd: context.projectRoot, preferences: user.preferences }) : undefined;
   const preferences = draftPreferences ?? (user.preferences.state === 'valid' ? user.preferences.value
     : user.preferences.state === 'absent' ? createEmptyPreferences() : null);
   return { context, user, project, preferences };

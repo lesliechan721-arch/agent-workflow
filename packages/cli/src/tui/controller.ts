@@ -2197,6 +2197,7 @@ export class TuiController {
       status: this.#status.payload,
       pluginSummaries: this.#status.pluginSummaries,
       targetRevisions: this.#status.targetRevisions,
+      recoveryDiagnostics: Object.values(this.#status.scopedRecovery ?? {}).flatMap((status) => status.errors),
       recoveryTargets: Object.values(this.#status.scopedRecovery ?? {}).flatMap((status) => [
         ...(status.inventory ?? []).flatMap((root) => root.targetResults),
         ...(status.observedTargets ?? []).filter((target) => target.scope === status.scope

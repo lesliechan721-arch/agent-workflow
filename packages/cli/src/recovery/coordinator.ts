@@ -1,5 +1,7 @@
 import { describeNativeToolClosure } from '../utils/native-tool-review.js';
 import path from 'node:path';
+import { CatalogSourceInventoryIncompleteError } from '../utils/catalog-source-references.js';
+import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
@@ -314,6 +316,9 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
 
 function nativeResults(plan: RecoveryPlan, group: NativeGroup,
   result: RebuildCommandResult, executed: boolean): void {
+  for (const diagnostic of result.recoveryDiagnostics ?? []) {
+    if (!plan.receipt.blockers.some((entry) => JSON.stringify(entry) === JSON.stringify(diagnostic))) plan.receipt.blockers.push(diagnostic);
+  }
   if (executed && result.commandResults?.length) {
     plan.receipt.commandResults = [...new Map([
       ...(plan.receipt.commandResults ?? []), ...result.commandResults,
@@ -369,6 +374,17 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
     });
     for (const failure of backendTargets.filter((entry) => entry.state === 'failed')) {
       block(target, failure.errorCode ?? 'nativeRecoveryFailed');
+    }
+    // Keep checked recovery locations even when preparation stops before execution.
+    const nativeDiagnostics = result.rebuildResults.filter((entry) => entry.target.pluginId === pluginId
+      && entry.target.platform === platform && entry.target.scope === plan.options.scope)
+      .flatMap((entry) => entry.deploymentReceipts ?? [])
+      .flatMap((entry) => [...entry.diagnostics, ...entry.effects.flatMap((effect) => effect.diagnostics)])
+      .filter((entry) => entry.detail);
+    for (const entry of nativeDiagnostics) {
+      const destination = entry.severity === 'error' ? target.blockers : (target.reasons ??= []);
+      const detail: RecoveryDiagnostic = { code: entry.code, message: entry.message, subject: entry.subject, detail: entry.detail };
+      if (!destination.some((previous) => JSON.stringify(previous) === JSON.stringify(detail))) destination.push(detail);
     }
     for (const dependency of dependencies.filter((entry) => entry.action === 'block')) {
       block(target, dependency.errorCode ?? 'dependencyNotReady');
@@ -873,6 +889,9 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
     } catch (error) {
       options.signal?.throwIfAborted();
       if (error instanceof Error && error.name === 'AbortError') throw error;
+      if (error instanceof CatalogSourceInventoryIncompleteError) {
+        receipt.blockers.push(...error.inventory.errors.map(inventoryRecoveryDiagnostic));
+      }
       for (const { pluginId, platform } of group.targets) {
         block(pair(plan, pluginId, agentForPlatform(platform))!, errorCode(error, 'nativePreparationFailed'));
       }

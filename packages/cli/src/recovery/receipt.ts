@@ -7,7 +7,11 @@ import type { DeploymentObservation, DeploymentReceipt, DeploymentExclusion, Fro
 
 import type { PortableComponentGap } from '../portable/recovery.js';
 
-export interface RecoveryDiagnostic { code: string; message: string; pluginId?: string }
+export interface RecoveryDiagnostic {
+  code: string; message: string; pluginId?: string;
+  subject?: import('../output/public-result.js').Diagnostic['subject'];
+  detail?: import('../output/public-result.js').Diagnostic['detail'];
+}
 export type RecoveryDelivery = Delivery;
 export interface RecoveryTarget {
   pluginId: string;

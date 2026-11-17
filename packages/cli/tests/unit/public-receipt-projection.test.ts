@@ -1,9 +1,49 @@
 import { describe, expect, it } from 'vitest';
 import { projectReceipt } from '../../src/output/receipt-projection.js';
-import { publicExitCode } from '../../src/output/public-result.js';
+import { commandResult, publicExitCode, renderPublicResult } from '../../src/output/public-result.js';
+import { inventoryRecoveryActions, publicDiagnostic } from '../../src/commands/public-lifecycle-result.js';
 import type { CatalogPublicationFailureOutcome } from '../../src/commands/catalog-publish.js';
 
 describe('public domain result projection', () => {
+  it('shows a checked recovery location and conditional manual steps without exposing raw failure text', () => {
+    const diagnostic = publicDiagnostic({ code: 'stateInventoryFailed',
+      message: 'Could not read /private/internal-state; token=private-value',
+      subject: { pluginId: 'team/demo', target: 'codex', scope: 'user' },
+      detail: { reasonCode: 'ownerHeaderPathValidation', path: '/home/example/.codex/agents/aw-demo-review.toml',
+        configKey: 'agents.review.config_file' } });
+    const result = commandResult('plugin.status', { allSatisfied: null, coverage: { requestComplete: false } },
+      { status: 'blocked', diagnostics: [diagnostic], nextActions: inventoryRecoveryActions([diagnostic]) });
+    const output = renderPublicResult(result);
+    expect(diagnostic.subject).toEqual({ pluginId: 'team/demo', target: 'codex', scope: 'user' });
+    expect(output).toContain('/home/example/.codex/agents/aw-demo-review.toml');
+    expect(output).toContain('agents.review.config_file');
+    expect(output).toContain('Back up');
+    expect(output).toContain('only if it still points to this exact item');
+    expect(output).toContain('outside the host scan directories');
+    expect(output).not.toContain('private-value');
+    expect(output).not.toContain('/private/internal-state');
+    expect(output).not.toContain('--force');
+    expect(publicDiagnostic({ code: 'stateInventoryFailed', message: '',
+      detail: { reasonCode: 'ownerHeaderPathValidation', path: '/home/token=private-value/file' } }).detail)
+      .toEqual({ reasonCode: 'ownerHeaderPathValidation' });
+  });
+
+  it('binds a manual Gemini permission check to the frozen source and workspace', () => {
+    const subject = { pluginId: 'team/demo', target: 'gemini', scope: 'project' as const };
+    const actions = inventoryRecoveryActions([
+      { code: 'nativeConsentProtocolUnverified', subject: { ...subject, field: 'nativeSource' },
+        detail: { reasonCode: 'nativeConsentProtocolUnverified', path: '/home/example/frozen-source' } },
+      { code: 'nativeConsentWorkspace', subject: { ...subject, field: 'workspace' },
+        detail: { reasonCode: 'nativeConsentWorkspace', path: '/home/example/project' } },
+    ]);
+    expect(actions).toHaveLength(1);
+    const output = JSON.stringify(actions);
+    expect(output).toContain('/home/example/frozen-source');
+    expect(output).toContain('/home/example/project');
+    expect(output).toContain('Review each host permission yourself');
+    expect(output).not.toContain('--consent');
+  });
+
   it('retains self-check observations and requirement derivation facts', () => {
     const observations = [{ code: 'aw-command-detected', blocking: false, path: 'SKILL.md', provenance: 'shell-fence', command: 'aw dev review inspect', capability: 'aw.review-inspection.v3', message: 'Detected an AW command.', backend: { secret: 'hidden' } }];
     const result = projectReceipt('self.check', { ok: false, awVersion: '1', coreVersion: '1', source: { kind: 'manifest', path: '/workspace/plugin.json' }, plugin: { name: 'demo', version: '1.0.0' }, requiredCapabilities: ['future'], missingCapabilities: ['future'], capabilitySetDigest: 'digest', observations });

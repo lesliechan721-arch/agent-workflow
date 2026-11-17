@@ -1,8 +1,5 @@
-import { createElement } from 'react';
-
 import type { PlatformSelection, PluginConfigSchemaField, Scope } from '../types.js';
 import { createRebuildProgressFeed } from '../output/rebuild-progress.js';
-import { CommandWizard } from '../tui/wizard.js';
 import type { LiveConsoleItem, StatusScopedTarget } from './status-v6.js';
 import {
   type CliExecutionContext,
@@ -103,6 +100,9 @@ export async function runCommandWizard<T>(
   context: CliExecutionContext,
   request: CommandWizardRequest<T>,
 ): Promise<CommandWizardResult<T>> {
+  const [{ createElement }, { CommandWizard }] = await Promise.all([
+    import('react'), import('../tui/wizard.js'),
+  ]);
   const progress = createRebuildProgressFeed();
   let diagnostic: unknown;
   const sessionReporter: CommandReporter = {

@@ -8,7 +8,7 @@ import type { DeploymentBinding, DeploymentExclusion, DeploymentReceipt, FrozenD
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
-import { deploymentPackageComponent, inspectStaticSupplements } from '../platforms/inspection.js';
+import { deploymentPackageComponent, inspectStaticSupplements, selectedNativeConsumer } from '../platforms/inspection.js';
 import type { PlatformDriverState } from '../platforms/lifecycle.js';
 import { nativeRoute, piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
@@ -897,13 +897,14 @@ export class PlatformRebuildSession {
           receipt.after = after;
           const packageIds = new Set(plan.projections.filter((projection) => projection.bundle)
             .flatMap((projection) => projection.components.map((component) => component.id)));
-          const untrusted = after.consumers.some((consumer) => consumer.trust === 'required' || consumer.trust === 'blocked');
+          const consumer = selectedNativeConsumer(plan.binding, after);
+          const untrusted = consumer?.trust === 'required' || consumer?.trust === 'blocked';
           const nativeContentIncomplete = ['gemini-extension', 'antigravity-cli'].includes(plan.binding.route) && packageIds.size > 0
             && (!after.nativePackageContentDigest || after.nativePackageContentDigest !== plan.projections.find((projection) => projection.bundle)?.bundle?.contentDigest);
           const packageIncomplete = packageIds.size > 0 && (after.package !== 'present' || !['aw', 'shared'].includes(after.ownership)
             || nativeContentIncomplete
             || nativeRoute(plan.binding.route) && (after.registration !== 'present'
-              || plan.binding.route !== 'pi-package' && after.consumers.some((consumer) => consumer.activation !== 'enabled')
+              || plan.binding.route !== 'pi-package' && consumer?.activation !== 'enabled'
               || plan.binding.route === 'claude-marketplace' && after.scopeRegistration !== undefined && after.scopeRegistration !== 'present'
               || untrusted));
           const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id)

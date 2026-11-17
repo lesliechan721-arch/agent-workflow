@@ -1193,7 +1193,8 @@ describe('multi-source read commands', () => {
         })] }),
       ]));
       expect(captured.readStdout().trim().split('\n').filter(Boolean).length).toBeGreaterThan(0);
-      expect(captured.readStdout()).not.toContain(invalidPath);
+      expect(payload.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeStateUnreadable',
+        detail: expect.objectContaining({ reasonCode: 'nativeStateRead', path: invalidPath }) }));
       expect(captured.readStderr()).toContain('nativeStateUnreadable');
       expect(captured.readStderr()).not.toContain(invalidPath);
     },

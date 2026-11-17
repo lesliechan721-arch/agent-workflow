@@ -2,7 +2,10 @@ import fs from 'fs-extra';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readScopedRecoveryStatus, statusFromObservations, type NativeObservation } from '../../src/recovery/status.js';
+import { readRecoveryStatus, readScopedRecoveryStatus, statusFromObservations, type NativeObservation } from '../../src/recovery/status.js';
+import { runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
+import * as inventory from '../../src/utils/catalog-source-references.js';
+import * as registry from '../../src/platforms/registry.js';
 import type { AgentId } from '../../src/intent/deployment-preferences.js';
 import type { DemandSnapshot } from '../../src/recovery/demand.js';
 import type { ScopeContext } from '../../src/intent/scope-context.js';
@@ -29,6 +32,41 @@ function demand(ids: string[], targets: AgentId[]): DemandSnapshot {
 
 describe('recovery status satisfaction', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('does not report an undeclared plugin complete when its source is missing', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const options = { cwd: layout.fixtureCwd, env, context: 'user' as const, targets: ['cursor'] };
+    const domain = await readRecoveryStatus({ ...options, plugins: ['ghost/missing'] });
+    expect(domain.inventory).toEqual([]);
+    expect(domain.coverage.requestComplete).toBe(false);
+    expect(domain.errors).toContainEqual(expect.objectContaining({ code: 'sourceMissing', pluginId: 'ghost/missing' }));
+    const result = await runPublicPluginStatus(['ghost/missing'], options);
+    expect(result.status).toBe('blocked');
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'sourceMissing', subject: {
+      pluginId: 'ghost/missing', sourceId: 'ghost',
+    } }));
+  });
+
+  it('keeps a source-scoped inventory error off another source with the same plugin name', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    vi.spyOn(inventory, 'inventoryCatalogSourceReferences').mockResolvedValue({ references: [], errors: [{
+      code: 'stateInventoryFailed', kind: 'configRead', location: 'safe-location', message: 'Incomplete',
+      recoveryPath: path.join(layout.fixtureCwd, 'broken.json'),
+      relevance: { global: false, sourceId: 'a', pluginName: 'demo', platform: 'cursor', scope: 'user' },
+    }] });
+    const adapter = registry.getAgentPluginAdapter('cursor');
+    vi.spyOn(registry, 'getAgentPluginAdapter').mockReturnValue({ ...adapter,
+      discover: async () => ({ platform: 'cursor', availability: 'missing', installations: [], diagnostics: [] }),
+      resolve: async () => ({ bindings: [], exclusions: [], diagnostics: [] }),
+    });
+    const value = await readScopedRecoveryStatus({ cwd: layout.fixtureCwd, env, scope: 'user',
+      demandOverride: demand(['a/demo', 'b/demo'], ['cursor']) });
+    const targets = value.inventory!.flatMap((entry) => entry.targetResults);
+    expect(targets.find((target) => target.pluginId === 'a/demo')!.blockers)
+      .toContainEqual(expect.objectContaining({ code: 'stateInventoryFailed' }));
+    expect(targets.find((target) => target.pluginId === 'b/demo')!.blockers)
+      .not.toContainEqual(expect.objectContaining({ code: 'stateInventoryFailed' }));
+  });
 
   // Test Value Gate: cancellation must escape the status fallback and stop observation of later roots.
   it('propagates Portable inventory cancellation without observing later roots', async () => {

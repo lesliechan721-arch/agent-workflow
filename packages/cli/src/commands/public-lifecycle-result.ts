@@ -1,8 +1,10 @@
 import type { Scope, CommandProducerResult } from '../types.js';
 import type { RecoveryReceipt, RecoveryTarget, RecoveryDiagnostic } from '../recovery/receipt.js';
 import type { NativeToolChange } from '../utils/native-tool-review.js';
-import type { CommandResult, Confirmation, Diagnostic } from '../output/public-result.js';
+import path from 'node:path';
+import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../output/public-result.js';
 import { commandResult, safePublicMessage } from '../output/public-result.js';
+import { redactString } from '../output/redact.js';
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
 import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, FrozenDeploymentPlan, PlannedEffect, DeploymentExclusion } from '../platforms/contracts.js';
 import { identityDigest } from '../platforms/identity.js';
@@ -84,7 +86,18 @@ const messages: Record<string, string> = {
   pluginUnavailable: 'The plugin is not available in the selected Active Catalog.',
   nativeTrustUnconfirmed: 'The native client effective trust state could not be observed. Registration and activation do not establish trust.',
   outputsRetainedRequirements: 'Requirements were retained. A later sync can deploy these outputs again.',
+  stateInventoryFailed: 'The local output inventory is incomplete. Inspect the detected location before recovery.',
 };
+
+function safeRecoveryDetail(detail: Diagnostic['detail']): Diagnostic['detail'] {
+  if (!detail || !/^[A-Za-z][A-Za-z0-9._-]*$/u.test(detail.reasonCode)) return undefined;
+  const safe = (value: string): boolean => !/[\u0000-\u001f\u007f-\u009f]/u.test(value) && redactString(value) === value;
+  return { reasonCode: detail.reasonCode,
+    ...(detail.path && safe(detail.path) && (path.isAbsolute(detail.path) || path.win32.isAbsolute(detail.path))
+      ? { path: detail.path } : {}),
+    ...(detail.configKey && safe(detail.configKey) ? { configKey: detail.configKey } : {}),
+  };
+}
 
 export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: Diagnostic['subject'], severity: Diagnostic['severity'] = 'error'): Diagnostic {
   const code = typeof value === 'string' ? value : value.code;
@@ -95,8 +108,43 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   // Native consent receipts include the checked plugin and scope recovery command.
   // Preserve that safe detail for CLI and TUI instead of replacing it with the generic code text.
   const consentMessage = Object.hasOwn(geminiConsentMessages, code) ? publicMessage : undefined;
+  const detail = typeof value === 'string' ? undefined : safeRecoveryDetail(value.detail);
+  const combinedSubject = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
+    ...(typeof value !== 'string' ? value.subject : {}), ...subject };
   return { code, severity, message: consentMessage ?? messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
-    ...(subject || typeof value !== 'string' && value.pluginId ? { subject: { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}), ...subject } } : {}) };
+    ...(Object.keys(combinedSubject).length ? { subject: combinedSubject } : {}), ...(detail ? { detail } : {}) };
+}
+
+/** Recovery locations are diagnostic facts, never permission to delete their contents. */
+export function inventoryRecoveryActions(values: readonly Pick<RecoveryDiagnostic, 'code' | 'subject' | 'detail'>[]): NextAction[] {
+  const diagnostics = values.map((value) => publicDiagnostic({ ...value, message: '' }));
+  const actions = new Map<string, NextAction>();
+  for (const diagnostic of diagnostics) {
+    const detail = diagnostic.detail;
+    if (!detail) continue;
+    const subject = diagnostic.subject;
+    const identity = [subject?.pluginId, subject?.target, subject?.scope].filter(Boolean).join(' / ') || 'The affected inventory scope';
+    let message: string;
+    if (subject?.field === 'nativeSource' && subject.target === 'gemini') {
+      const workspace = diagnostics.find((entry) => entry.subject?.field === 'workspace'
+        && entry.subject.pluginId === subject.pluginId && entry.subject.scope === subject.scope)?.detail?.path;
+      message = `${identity}: The native permission protocol is unconfirmed. ${detail.path
+        ? `Use Gemini's interactive extension installation with the exact source ${JSON.stringify(detail.path)}`
+        : 'Locate the frozen native source in the operation review and use Gemini\'s interactive extension installation'}${workspace
+        ? ` from workspace ${JSON.stringify(workspace)}` : ' from the reviewed workspace'}. Review each host permission yourself; do not skip permission prompts. Then recheck this target with AW status and sync.`;
+    } else if (subject?.field === 'workspace') continue;
+    else if (diagnostic.code === 'nativeStateUnreadable' || detail.reasonCode.startsWith('config')) {
+      message = `${identity}: Back up ${detail.path ? JSON.stringify(detail.path) : 'the affected configuration'} and inspect its format and permissions (${detail.reasonCode}). Repair only the invalid entries after review; retain unrelated configuration. Then run status for the same context and target.`;
+    }
+    else if (diagnostic.code === 'stateInventoryFailed' || diagnostic.code === 'forceCleanupPathUnavailable') {
+      message = `${identity}: Automatic cleanup cannot prove exclusive ownership (${detail.reasonCode}). Back up ${detail.path
+        ? `the detected item ${JSON.stringify(detail.path)}` : 'the affected host output identified by the inventory scan'} and the related host configuration. ${detail.configKey
+        ? `Check ${JSON.stringify(detail.configKey)} and remove that reference only if it still points to this exact item and you confirm it is no longer needed.`
+        : 'Check configuration references to this exact item; do not assume the owner header proves ownership.'} After your confirmation, move only this item outside the host scan directories. Keep shared directories and stores. Run status again for the same plugin, target, and context; sync only after this inventory error is gone.`;
+    } else continue;
+    actions.set(message, { kind: 'manual', message });
+  }
+  return [...actions.values()];
 }
 
 export function projectTarget(value: RecoveryTarget): PublicTargetResult {
@@ -262,7 +310,7 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
     diagnostics.push(...target.blockers.map((entry) => publicDiagnostic(entry, subject)));
     diagnostics.push(...(target.reasons ?? []).map((entry) => publicDiagnostic(entry, subject, 'warning')));
   }
-  for (const result of receipt.commandResults ?? []) diagnostics.push(...result.errors.map((entry) => publicDiagnostic(entry,
+  for (const result of receipt.commandResults ?? []) diagnostics.push(...result.errors.map((entry) => publicDiagnostic({ code: entry.code, message: entry.message },
     { pluginId: `${result.producer.sourceId}/${result.producer.pluginName}`, scope: result.producer.scope })));
   const changed = Object.values(data.changes).some((value) => value !== 'none');
   const status = receipt.ok ? 'success' : changed || receipt.targetResults.some((target) => ['applied', 'partial'].includes(target.execution)) ? 'partial' : 'blocked';
@@ -271,6 +319,9 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   if (!receipt.ok) {
     if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
     else for (const target of data.remainingTargets) {
+      if (result.diagnostics.some((entry) => entry.subject?.pluginId === target.pluginId
+        && entry.subject.target === target.target && entry.detail
+        && (entry.code === 'stateInventoryFailed' || entry.subject.field === 'nativeSource'))) continue;
       const consent = target.target === 'gemini' && result.diagnostics.some((entry) =>
         (entry.code.startsWith('nativeConsent') || entry.code === 'nativeRefreshDataUnconfirmed'
           || entry.code === 'nativeInstallContentPostcheckFailed') && entry.subject?.pluginId === target.pluginId);
@@ -281,5 +332,6 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
     }
   }
   result.nextActions.push(...cleanupRecoveryActions(receipt));
+  result.nextActions.push(...inventoryRecoveryActions(result.diagnostics));
   return result;
 }

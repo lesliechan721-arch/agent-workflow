@@ -53,12 +53,14 @@ async function grokPackage(item: Awaited<ReturnType<typeof fixture>>, body: stri
   return digest;
 }
 
-async function grokRebuildFixture(trusted: boolean | undefined) {
+async function grokRebuildFixture(trusted: boolean | undefined, multipleCli = false) {
   installNativeTestQualification({ platforms: ['grok'] });
   const item = await fixture('grok');
   const bin = path.join(item.ctx.cwd, 'bin');
   await fs.outputFile(path.join(bin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  const env = { ...item.ctx.env, PATH: bin };
+  const secondBin = path.join(item.ctx.cwd, 'other-bin');
+  if (multipleCli) await fs.outputFile(path.join(secondBin, 'grok'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const env = { ...item.ctx.env, PATH: [bin, ...(multipleCli ? [secondBin] : [])].join(path.delimiter) };
   const root = path.join(item.ctx.cwd, 'grok-plugin');
   await fs.outputJson(path.join(root, '.agents-plugin/plugin.json'), { schemaVersion: 4, name: 'example', version: '1.0.0',
     description: 'Grok trust and stale fixture.', platforms: ['grok'], skills: './skills',
@@ -142,6 +144,24 @@ describe('public native consumer observation', () => {
         expect(refreshed.status, JSON.stringify(refreshed)).toBe('succeeded');
         expect(test.nativeWrites.filter((args) => args[0] === 'plugin' && args[1] === 'install')).toHaveLength(2);
       }
+    } finally { await test.context.platformRebuildSession?.dispose(); }
+  });
+
+  // Test Value Gate: the grouped rebuild postcheck must use the same complete
+  // CLI path as native mutation without rewriting the other CLI's unknown facts.
+  it('refreshes through one Grok CLI while retaining another CLI as unobserved', async () => {
+    const test = await grokRebuildFixture(true, true);
+    try {
+      await executeRebuildOperation({ command: 'sync', target: await test.prepare(), driver: test.integration.driver });
+      await test.grant();
+      const target = await test.prepare('reinstall');
+      expect(target.platformDeployment?.plans[0]?.binding.consumers).toHaveLength(2);
+      const refreshed = await executeRebuildOperation({ command: 'reinstall', target, driver: test.integration.driver });
+      expect(refreshed.status, JSON.stringify(refreshed)).toBe('succeeded');
+      expect(refreshed.deploymentReceipts?.[0]?.after.consumers).toMatchObject([
+        { activation: 'enabled', trust: 'trusted' }, { activation: 'unknown', trust: 'unknown', load: 'unknown' },
+      ]);
+      expect(refreshed.deploymentReceipts?.flatMap((receipt) => receipt.unmet)).toEqual([]);
     } finally { await test.context.platformRebuildSession?.dispose(); }
   });
 
@@ -260,8 +280,9 @@ describe('public native consumer observation', () => {
 
   // Test Value Gate: native relative sources must match their exact scope and
   // installed path; publishing output must not change Agent consumer inputs.
-  it.each([false, true])('recognizes Pi relative AW registration with project=%s', async (project) => {
+  it.each([false, true])('recognizes Pi relative AW registration on a newer CLI with project=%s', async (project) => {
     const item = await fixture('pi', project);
+    item.binding.consumers[0]!.version = '1.6.0';
     const before = await inspectDeployment(item.ctx, item.binding);
     await fs.outputJson(path.join(item.layout.packageRoot, 'package.json'), {
       name: item.layout.nativeIdentity.packageId, version: '1.0.0', pi: { skills: ['./skills'] },
@@ -276,6 +297,41 @@ describe('public native consumer observation', () => {
     expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe('present');
     item.setPiList(`${project ? 'Project' : 'User'} packages:\n  npm:other-package\n`);
     expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe('absent');
+  });
+
+  // Test Value Gate: the current list contract can be parsed on newer Pi
+  // versions; unknown structures cannot turn a hidden Project into absence.
+  it.each(['Unexpected package inventory', 'Project packages:\n  /source\n    relative-path\n',
+    'Project packages:\n  /source\nProject packages:\n  /other\n'])('refuses unknown newer Pi list responses: %s', async (list) => {
+    const item = await fixture('pi', true);
+    item.binding.consumers[0]!.version = '1.6.0';
+    item.setPiList(list);
+    const result = await inspectDeployment(item.ctx, item.binding);
+    expect(result.registration).toBe('unknown');
+    expect(result.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown' });
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'piNativeObservationUnconfirmed' }));
+  });
+
+  // Test Value Gate: Grok's response version must be valid and match the selected
+  // entry; a newer known response retains registration and trust facts.
+  it.each(['known', 'invalid-version', 'different-version', 'missing-plugins'] as const)('checks newer Grok response identity: %s', async (boundary) => {
+    const item = await fixture('grok', true);
+    item.binding.consumers[0]!.version = '1.0.82';
+    item.ctx.runner = async ({ args }) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'plugin' ? [] : {
+      grokVersion: boundary === 'invalid-version' ? 'invalid' : boundary === 'different-version' ? '1.0.83' : '1.0.82',
+      projectTrusted: true, plugins: boundary === 'missing-plugins' ? undefined : [{
+        name: item.layout.nativeIdentity.packageId, scope: 'project', path: item.layout.packageRoot, enabled: true,
+      }], skills: [], agents: [], mcpServers: [],
+    }) });
+    const result = await inspectDeployment(item.ctx, item.binding);
+    if (boundary === 'known') {
+      expect(result.registration).toBe('not-applicable');
+      expect(result.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'trusted', load: 'not-observed' });
+    } else {
+      expect(result.registration).toBe('unknown');
+      expect(result.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown' });
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'deploymentObservationUnknown' }));
+    }
   });
 
   // Test Value Gate: publishing/registering AW output must not change prepared

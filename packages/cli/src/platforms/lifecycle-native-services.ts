@@ -5,7 +5,7 @@ import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-n
 import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../utils/codex-config.js';
 import { atomicReplaceSafeFile } from '../utils/safe-fs.js';
 import { runNativeCliChecked } from '../utils/native-cli.js';
-import { installationInvocation } from './discovery.js';
+import { installationInvocation, selectNativeProduct } from './discovery.js';
 import { getDeploymentLayout } from './layout.js';
 import { inspectClaudeMarketplaceSource, inspectCopilotMarketplaceSource } from './inspection-native.js';
 import { geminiActivationEvidence, readGeminiActivationSnapshot, setGeminiActivation } from './gemini-activation.js';
@@ -24,7 +24,7 @@ function fail(code: string): never { throw Object.assign(new Error(code), { code
 export function createNativeLifecycleServices(ctx: ReadContext & Pick<MutationContext, 'geminiActivationSnapshot'>, evidence: PreparationEvidence):
   Pick<MutationContext['services'], 'registerMarketplace' | 'setActivation'> {
   const run = async (binding: DeploymentBinding, args: string[]): Promise<void> => {
-    const product = binding.consumers.find((item) => item.availability === 'available' && item.entry?.kind === 'cli');
+    const product = selectNativeProduct(binding.consumers);
     if (!product) fail('clientInstallEntryUnavailable');
     const invocation = await installationInvocation(product, { ...ctx, cwd: binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd }, args);
     await runNativeCliChecked({ ...invocation, timeoutMs: 60_000 }, ctx.runner);

@@ -184,6 +184,9 @@ export interface CatalogSourceInventoryError {
   kind: string;
   location: string;
   message: string;
+  /** Scanner-owned location for recovery; never an ownership or deletion proof. */
+  recoveryPath?: string;
+  configKey?: string;
   relevance:
     | { global: true }
     | {
@@ -193,6 +196,7 @@ export interface CatalogSourceInventoryError {
         platform?: PlatformName;
         scope?: Scope;
         projectLocationKey?: string;
+        componentName?: string;
       };
 }
 
@@ -293,6 +297,7 @@ function inventoryError(
     code: 'stateInventoryFailed',
     kind,
     location: sanitizeCatalogSourceErrorMessage(location, env, sensitiveRoots),
+    recoveryPath: path.resolve(location),
     message: sanitizeCatalogSourceErrorMessage(message, env, sensitiveRoots),
     relevance: relevance ?? inventoryErrorRelevance(location, env, cwd),
   };
@@ -661,20 +666,31 @@ async function readOwnedHeaderReference(
   if (requireGeneratedName
     && !path.basename(filePath).startsWith(parsed.identity.sourceId
       ? `aw-${parsed.identity.sourceId}-${parsed.identity.plugin}-` : `aw-${parsed.identity.plugin}-`)) {
-    errors.push(inventoryError(
+    const physical = inventoryErrorRelevance(filePath, env, cwd);
+    let configKey: string | undefined;
+    if (!physical.global && physical.platform === 'codex' && path.extname(filePath) === '.toml') {
+      try {
+        const configPath = physical.scope === 'project' ? path.join(resolveRepoRootSync(cwd), '.codex/config.toml') : path.join(getCodexHome(env), 'config.toml');
+        const config = await readCodexConfigFile(configPath);
+        const keys: string[] = [];
+        for (const [name, value] of Object.entries(config.snapshot.agents)) {
+          if (typeof value.configFile === 'string'
+            && path.resolve(path.dirname(configPath), value.configFile) === path.resolve(filePath)) keys.push(`agents.${name}.config_file`);
+        }
+        configKey = keys.length === 1 ? keys[0] : keys.length > 1 ? 'agents' : undefined;
+      } catch { /* Unknown references require manual inspection. */ }
+    }
+    const issue = inventoryError(
       new Error('Owned text header path does not match its plugin identity.'),
       filePath,
       'ownerHeaderPathValidation',
       env,
       cwd,
-      {
-        global: false,
-        ...(parsed.identity.sourceId ? { sourceId: parsed.identity.sourceId } : {}),
-        pluginName: parsed.identity.plugin,
-        ...(parsed.identity.platform !== 'generic' ? { platform: parsed.identity.platform } : {}),
-        scope: parsed.identity.scope,
-      },
-    ));
+      !physical.global && configKey && configKey !== 'agents' ? { ...physical,
+        componentName: configKey.slice('agents.'.length, -'.config_file'.length) } : physical,
+    );
+    if (configKey) issue.configKey = configKey;
+    errors.push(issue);
     return null;
   }
   const reference = ownerReferenceFromRaw(filePath, { schemaVersion: 3, ...parsed.identity });
@@ -1231,7 +1247,8 @@ async function observedProjectReference(options: {
     } });
 }
 
-async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.ProcessEnv; scope?: Scope },
+async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.ProcessEnv; scope?: Scope;
+  collectPathEvidence?: boolean; observationPlugins?: ReadonlySet<string> },
   errors: CatalogSourceInventoryError[]): Promise<CatalogSourceReference[]> {
   const references: CatalogSourceReference[] = [];
   const ctx = { cwd: options.cwd, env: options.env };
@@ -1309,7 +1326,9 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
           ? path.join(layout.physicalIdentity.namespaceRoot, 'plugins', layout.nativeIdentity.packageId) : layout.packageRoot;
         if (canonicalizePathThroughExistingAncestorSync(expectedPackageRoot) !== canonicalizePathThroughExistingAncestorSync(packageRoot)
           || getPhysicalKey(layout.physicalIdentity) !== marker.physicalKey) throw new Error('nativeOwnerPlacementMismatch');
-        if (antigravityCopy) {
+        const inspectCopy = !options.observationPlugins || options.observationPlugins.has(marker.pluginId)
+          || options.observationPlugins.has(marker.pluginId.slice(marker.pluginId.indexOf('/') + 1));
+        if (antigravityCopy && inspectCopy) {
           await readSkillOwnerMarker({ skillRoot: packageRoot, allowedRoot: root,
             expectedIdentity: deploymentPackageComponent(binding, layout).identity });
           if (!projection || getPhysicalKey(projection.physicalIdentity) !== marker.physicalKey
@@ -1318,7 +1337,7 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
         const component: OwnedComponent = { kind: 'owned-directory', path: packageRoot, allowedRoot: root, identity };
         const scopes: Scope[] = descriptor.scope === 'user' && options.scope !== 'user'
           && ['codex', 'claude', 'gemini', 'copilot'].includes(descriptor.platform) ? ['user', 'project'] : [descriptor.scope];
-        const pathEvidence = await offlineOwnedPathEvidence(packageRoot);
+        const pathEvidence = options.collectPathEvidence === false ? undefined : await offlineOwnedPathEvidence(packageRoot);
         for (const scope of scopes) {
           const scopedBinding = { ...binding, scope: scope === 'user' ? { kind: 'user' as const }
             : { kind: 'project' as const, projectRoot }, consumers: binding.consumers.map((consumer) => ({ ...consumer })) };
@@ -1331,7 +1350,7 @@ async function nativeOwnedReferences(options: { cwd: string; env: NodeJS.Process
             platform: scopedBinding.platform, scope: scopedBinding.scope, route: scopedBinding.route, physicalKey: scopedBinding.physicalKey });
           scopedBinding.renderUnitIds = scopedLayout.renderUnits.map((unit) => unit.id);
           const recoveryCandidate: RecoveryCandidate = { binding: scopedBinding, physicalIdentity: scopedLayout.physicalIdentity,
-            nativeIdentity: scopedLayout.nativeIdentity, evidence: 'verified' };
+            nativeIdentity: scopedLayout.nativeIdentity, evidence: antigravityCopy && !inspectCopy ? 'unknown' : 'verified' };
           // A copied marker is a native recovery clue, never direct filesystem
           // removal authority for the cache or ownership of the AW source path.
           references.push({ kind: antigravityCopy ? 'namespacedMarketplace' : 'namespacedOwner', location: markerPath, sourceId: marker.sourceId,
@@ -1358,6 +1377,10 @@ export async function inventoryCatalogSourceReferences(options: {
   scope?: Scope;
   includeProjectAgentSkills?: boolean;
   includePlatformHistoricalProjects?: boolean;
+  /** Names from a verified Catalog graph, independent of damaged owner headers. */
+  knownPluginNames?: readonly string[];
+  collectPathEvidence?: boolean;
+  observationPlugins?: ReadonlySet<string>;
 }): Promise<CatalogSourceReferenceInventory> {
   const env = options.env ?? process.env;
   const awHome = resolveAwHome(env);
@@ -1716,6 +1739,14 @@ export async function inventoryCatalogSourceReferences(options: {
     reference.projectKey ?? '',
   ].join('\0'), reference])).values()];
   unique.sort((left, right) => left.location.localeCompare(right.location));
+  const knownNames = [...new Set([...(options.knownPluginNames ?? []), ...unique.flatMap((reference) =>
+    reference.kind.startsWith('namespaced') && reference.pluginName ? [reference.pluginName] : [])])];
+  for (const error of errors) {
+    if (error.kind !== 'ownerHeaderPathValidation' || error.relevance.global || !error.recoveryPath || error.configKey === 'agents') continue;
+    const basename = path.basename(error.recoveryPath);
+    const candidates = knownNames.filter((name) => basename.startsWith(`aw-${name}-`));
+    if (candidates.length === 1) error.relevance = { ...error.relevance, pluginName: candidates[0] };
+  }
   return { inventorySchemaVersion: 1, references: options.scope === 'user'
     ? unique.filter((reference) => reference.scope !== 'project') : unique, errors };
 }

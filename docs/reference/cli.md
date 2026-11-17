@@ -25,7 +25,7 @@
 
 首次 install 只获取所选来源确实缺少的 Active，以及同来源必要依赖；已有 Active 不隐式升级，损坏 Active 不当作首次安装。`sync --refresh` 显式刷新来源。查询不取源、不运行 renderer/preApply、不创建工作区或配置。`source status --remote` 只允许临时获取并清理材料，不写 store、Active、lastSync。作者缺少工作区时使用 `dev catalog create` 显式建立。
 
-`aw plugin status [plugins...] --observe-native` 显式允许启动已合格的 Codex CLI 0.167.0 app-server 观察当前项目信任，或 OpenCode CLI 2.0.0 的单次私有本地服务观察插件加载。Codex 临时使用 features.plugins=false，返回 feature 值不作为用户原有效配置；仅观察 User 不启动 Codex app-server。OpenCode 使用 --standalone，不复用远程或版本不明的服务，缺项不推断禁用。原生启动可加载插件代码，创建日志、状态和 cache，读取既有认证并按现有配置访问外部服务；人类输出和 JSON diagnostics 均保留 nativeObservationSideEffects。普通 status 和 TUI 不启动这些观察服务。观察不修改信任、AW ledger 或生产资格；精确证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
+`aw plugin status [plugins...] --observe-native` 显式允许启动满足接口最低条件的 Codex CLI app-server 观察当前项目信任，或 满足 V2 最低条件的 OpenCode CLI 单次私有本地服务观察插件加载。Codex 临时使用 features.plugins=false，返回 feature 值不作为用户原有效配置；仅观察 User 不启动 Codex app-server。OpenCode 使用 --standalone，不复用远程或版本不明的服务，缺项不推断禁用。原生启动可加载插件代码，创建日志、状态和 cache，读取既有认证并按现有配置访问外部服务；人类输出和 JSON diagnostics 均保留 nativeObservationSideEffects。普通 status 和 TUI 不启动这些观察服务。观察不修改信任、AW ledger 或生产资格；精确证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 普通需求、平台策略和配置保存由命令表达写入意图。删除输出、配置重置、共享替换、重要来源变化、作者源码删除、远端发布及安装附带 preApply 要求 `--yes`。显式 run/build/test 与准备/导出所必需的构建渲染不重复要求执行确认。缺少确认不先提交需求或配置；必要来源候选可临时准备，确认前不启用。TUI 保留其 Review 确认。
 
@@ -33,7 +33,7 @@
 
 `plugin install`、`plugin sync`、`plugin config apply` 及带 `--apply` 的配置写命令接受独立的 `--native-consent`。该选项仅授权本次冻结插件、来源、版本与所选 scope 计划中的 Gemini 原生安装或更新。Gemini 可能持久保存源目录与当前工作区的信任，并接受扩展许可；AW 不保存全局自动批准设置。普通 `--yes`、环境变量、旧回执与 TUI Review 确认均不提供此许可。授权事实在生命周期的 `data.request.nativeConsent`、配置结果的 `data.nativeConsent` 中表示；显式授权时保留 `nativeConsentGranted` warning，说明持久信任副作用，该字段不表示原生动作已经完成。
 
-没有原生许可时，Gemini 安装或更新在启动该原生命令前返回 `nativeConsentRequired`，不会等待用户 stdin。已提交的需求、配置和 AW 源包保留，结果按实际变化为 blocked 或 partial，并给出 `aw plugin sync <source/plugin> --context <user|project> --target gemini --native-consent` 恢复命令；需先审阅副作用，同次其他 AW 重要影响仍须单独提供 `--yes`。TUI 当前没有原生许可入口，遇到此阻断时通过该 CLI 命令恢复。固定交互只支持 Gemini CLI `0.67.0`；未知版本返回 `nativeConsentVersionUnsupported`，未知或重复提示返回 `nativeConsentPromptUnsupported`，不扩展自动授权。卸载扩展不代表 Gemini 已撤销独立的持久信任条目。
+没有原生许可时，Gemini 安装或更新在启动该原生命令前返回 `nativeConsentRequired`，不会等待用户 stdin。已提交的需求、配置和 AW 源包保留，结果按实际变化为 blocked 或 partial，并给出 `aw plugin sync <source/plugin> --context <user|project> --target gemini --native-consent` 恢复命令；需先审阅副作用，同次其他 AW 重要影响仍须单独提供 `--yes`。TUI 当前没有原生许可入口，遇到此阻断时通过该 CLI 命令恢复。Gemini CLI `0.67.0` 保留已验证的受限自动许可路径；当前其他版本的跨流提示缺少可验证的完整授权边界，安装及更新在原生命令启动前返回 `nativeConsentProtocolUnconfirmed` 和绑定冻结来源、工作区的人工许可步骤；普通资格及只读观察仍可继续。固定版本路径的未知或重复提示返回 `nativeConsentPromptUnsupported`，不扩展授权。无法在刷新卸载之前确认完整许可和配置合同，则停止并提供人工原生处理及后续 sync 步骤，不先卸载再试探许可。卸载扩展不代表 Gemini 已撤销独立的持久信任条目。
 
 Gemini `0.67.0` 同版本动态刷新会在精确 AW 所有权、来源和旧副本完整摘要核验后，以原生卸载、重装更新实际副本，并保留原有全局及项目激活。原生目录中的 `.env`、额外或改写文件、弱 owner 会以 `nativeRefreshDataUnconfirmed` 阻断，原目录保留；先保存或处理这些本地数据，不能用 `--yes`、`--native-consent` 或 force 越过该保护。重装后的实际包体必须匹配冻结投影，无法确认时报告 `nativeInstallContentPostcheckFailed` 和部分结果，保留 AW 源包与已核验的激活规则。修复现场后，在同一工作区使用上述带 `--native-consent` 的 sync 恢复；已保存的配置和需求不会回滚。
 
@@ -69,6 +69,7 @@ type Diagnostic = {
   code: string;
   severity: 'info' | 'warning' | 'error';
   message: string;
+  detail?: { reasonCode: string; path?: string; configKey?: string };
   subject?: {
     pluginId?: string;
     sourceId?: string;
@@ -97,7 +98,7 @@ type Confirmation = {
 - `command` 是已解析的稳定命令 ID，例如 `plugin.install`、`source.sync`、`dev.catalog.publish.apply`；无法识别命令时为 null，不把任意输入回显成命令 ID。
 - `data` 始终是对象。不同业务有明确的类型；列表通常使用 `items`。请求尚未完成归一化、且未执行业务变更时，允许使用严格的空对象 `{}`，即使命令 ID 已经识别。已完成的空列表才输出 `[]`，不能用它替代尚未取得的事实。
 - `status` 描述这次调用是否完成；`data` 描述插件、来源、配置等业务事实。插件尚未就绪不等于 status 查询执行失败。
-- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。
+- `diagnostics` 与 `nextActions` 始终存在，可为空。诊断使用稳定 code 和英文 message；自动化按 code/status/typed data 判断，不解析英文句子。可选 detail 仅包含可信细分 reasonCode、本次恢复所需的安全文件位置 path 和配置键 configKey；不回显配置值、凭据、原生 stderr 或异常栈。subject 仍承载相关插件、来源、target 与 scope。
 - 业务对象自身的 schemaVersion、Manifest schema 和配置定义版本位于相应 data 内，与顶层输出协议版本分别管理。
 - data 使用显式投影，不直接 JSON.stringify 内部 backend、Error、renderer context 或整个服务对象。单次请求内部的锁、进程句柄和授权对象不属于输出协议。
 
@@ -191,6 +192,8 @@ type LifecycleData = {
 
 status 的 `trust: "not-applicable"` 表示当前完整组件集合不需要额外信任门槛，不表示项目已受信任或宿主已加载。Codex 的有限用户级普通 Skill 判定及显式项目信任观察边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。`nativeTrustUnconfirmed` warning 说明信任观测不足，保留 unknown 及原退出码；显式观察取得拒信证据时报告 `trust: "blocked"` 和 `nativeTrustRequired`，不会因登记或 activation 已启用而改成 trusted。
 
+plugin.status 的 selection 保留 plugins/targets 数组及 targetOrigin。指定依赖插件时，inventory 返回其真实目标、requiredBy 和提供者关系，不把它加入直接需求。counts 仅统计可见目标；allSatisfied/inSync 仍描述整个授权读取上下文，明确不满足为 false，未完整观察为 null。可选 coverage.requestComplete 描述本次选择及必要依赖、共享与碰撞检查是否完整；本次请求可完成而全局汇总仍未知，未选目标未观察不独自使请求失败。
+
 remainingTargets 只列本次请求选择中未完成的目标，不能把过滤掉的平台或未检查的其它项目加入自动重试。所有长期需求是否满足由已有 allSatisfied 与 coverage 事实表达，不能从本次 status=success 推断整个机器已同步。
 
 `changes.outputs` 无法证明具体结果时为 unknown，不能从“执行器返回了”推断已改变或未改变。来源准备已经启用、需求已保存但部署受阻时，必须分别列出这些变化。没有物理操作的 requirements-only 返回空 targetResults，不伪造各平台安装成功。
@@ -199,7 +202,7 @@ remainingTargets 只列本次请求选择中未完成的目标，不能把过滤
 
 下一步命令提供 argv 数组，不让调用者从 shell 字符串猜测引号。它是建议数据，不是执行授权。由 AW 根据可信业务事实构造，不接受插件 stderr 中嵌入的任意命令。不得自动加入 `--yes`；需要确认时用 requiresConfirmation 表达。不能安全生成命令时返回 manual 说明，不能给假定可安全重试的命令。
 
-清理失败的 manual 说明保留该插件、平台和 scope 的实际隔离文件及残留位置，供用户定位恢复；不得借用其他目标的位置，也不能把隔离或保留写成已恢复、已删除。
+清理失败的 manual 说明保留该插件、平台和 scope 的实际隔离文件及残留位置，供用户定位恢复；不得借用其他目标的位置，也不能把隔离或保留写成已恢复、已删除。无法安全认领的旧产物须指出具体原因、备份对象、需核对的精确配置引用、移到宿主扫描目录之外的方法及同范围 status 重查。配置引用不确定时要求人工核对，不断言可以删除；不删除整个宿主目录或共享 store，也不把已失败的同一 force 命令作为唯一下一步。
 
 自动化应忽略未知可选字段。新增命令、新的非必填字段和新的诊断 code 可作为兼容扩展；删除/改义字段、收窄有效值或改变 status 含义须提升输出 schemaVersion。输出协议版本与 CLI 包版本、持久文件格式分别管理。
 

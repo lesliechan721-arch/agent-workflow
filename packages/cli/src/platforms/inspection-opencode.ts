@@ -4,6 +4,7 @@ import type { DeploymentBinding, DeploymentObservation, ReadContext } from './co
 import { queryNativeDeployment } from './inspection-query.js';
 import { getDeploymentResourceKey, type DeploymentLayout } from './layout.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
+import { platformVersionSupported } from './discovery.js';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('opencodeNativeResponseInvalid');
@@ -57,10 +58,10 @@ export async function inspectOpenCodeDeployment(ctx: ReadContext, binding: Deplo
     return;
   }
   const products = binding.consumers.filter((product) => product.product === 'cli' && product.entry?.kind === 'cli'
-    && product.availability === 'available' && product.version === '2.0.0');
+    && product.availability === 'available' && platformVersionSupported('opencode', product.version));
   if (!products.length) {
     diagnostic(result, binding, 'opencodeNativeVersionUnverified',
-      'Native observation requires an available OpenCode 2.0.0 CLI. Other client state remains unknown.');
+      'Native observation requires an available OpenCode CLI with the V2 interface. Other client state remains unknown.');
     return;
   }
   const env = { ...(ctx.env ?? process.env), OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_AUTOUPDATE: '1',

@@ -2,6 +2,7 @@ import { COMPONENT_KINDS, getPlatformFeatureRegistry, type PlatformCapabilitiesV
 import { compareStrictSemVer } from '../utils/manifest.js';
 import { identityDigest } from './identity.js';
 import type { CapabilityInput, QualifiedPlatformProfile } from './contracts.js';
+import { platformVersionSupported } from './discovery.js';
 
 const PROFILE_BASELINES: Record<PlatformId, string> = {
   codex: '0.155.0', claude: '2.1.292', cursor: 'desktop-3.29_cli-2026.11.05-86047df',
@@ -25,7 +26,8 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
   }]));
   if (platform === 'codex') features['instruction.after-compaction'] = { status: 'unsupported', reasonCodes: ['interface-unsupported'] };
   const profile: QualifiedPlatformProfile = { id: `${platform}:${PROFILE_BASELINES[platform]}`, platform, kinds, features, agentConsumers: [] };
-  // Finite native qualification: exact CLI versions in the recorded host cells.
+  // Qualification records retain the exact tested CLI versions and host cells.
+  // Ordinary management uses the discovery interface minimum for these products.
   // It does not qualify invocation metadata, Hooks, MCP execution, or model behavior.
   const skillVersion = platform === 'codex' ? '0.167.0' : platform === 'pi' ? '1.5.0' : platform === 'copilot' ? '1.0.95' : platform === 'claude' ? '2.1.317'
     : platform === 'gemini' ? '0.67.0' : platform === 'grok' ? '1.0.77' : platform === 'opencode' ? '2.0.0' : platform === 'antigravity' ? '1.3.4' : null;
@@ -86,12 +88,14 @@ export function getPlatformCapabilities(input: CapabilityInput, basis: 'local' |
   const consumers = renderUnit.consumers;
   for (const kind of COMPONENT_KINDS) {
     const qualified = profile.qualifiedConsumers?.[kind];
-    if (qualified && consumers.some((consumer) => !qualified.some((entry) => entry.product === consumer.product && entry.version === consumer.version))) {
+    if (qualified && !consumers.some((consumer) => consumer.availability === 'available'
+      && qualified.some((entry) => entry.product === consumer.product) && platformVersionSupported(binding.platform, consumer.version))) {
       kinds[kind] = { ...kinds[kind], status: 'unverified', reasonCodes: ['capability-unverified'] };
     }
   }
-  for (const consumer of consumers) {
-    if (consumer.availability === 'available' || consumer.availability === 'notApplicable') continue;
+  // Excluded entries remain facts. They do not revoke another complete path.
+  const available = consumers.some((consumer) => consumer.availability === 'available' || consumer.availability === 'notApplicable');
+  for (const consumer of available ? [] : consumers) {
     const reason = consumer.availability === 'missing' ? 'client-missing' : consumer.availability === 'unsupported' ? 'version-unsupported' : 'capability-unverified';
     for (const fact of [...Object.values(kinds), ...Object.values(features)]) {
       fact.status = consumer.availability === 'unknown' ? 'unverified' : 'unsupported';

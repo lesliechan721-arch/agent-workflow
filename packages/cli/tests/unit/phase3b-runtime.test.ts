@@ -1571,7 +1571,9 @@ describe('phase 3B namespaced runtime stores', () => {
         location: `[catalog-source]/.agents/skills/${name}/.agent-workflows-owner.json`,
       }));
     }
-    expect(JSON.stringify(inventory.errors)).not.toContain(isolation.layout.fixtureCwd);
+    expect(JSON.stringify(inventory.errors.map(({ recoveryPath: _recoveryPath, ...error }) => error)))
+      .not.toContain(isolation.layout.fixtureCwd);
+    expect(inventory.errors.every((error) => error.recoveryPath?.startsWith(isolation.layout.fixtureCwd))).toBe(true);
     const nativeProjectInventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,

@@ -9,12 +9,11 @@ import { createCodexNativeObservationSession } from '../utils/codex-native-obser
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { inspectOwnedComponents, readSkillOwnerMarker } from '../utils/ownership.js';
 import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
-import { installationInvocation } from './discovery.js';
+import { installationInvocation, platformVersionSupported, selectNativeProduct } from './discovery.js';
 import type { DeploymentBinding, DeploymentConfigurationObservation, DeploymentObservation, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
 import { inspectPiDeployment } from './inspection-pi.js';
 import { inspectGrokDeployment } from './inspection-grok.js';
-import { getQualifiedPlatformProfile } from './capabilities.js';
 import { getPhysicalKey } from './identity.js';
 import { queryNativeDeployment, queryNativeDeploymentResult } from './inspection-query.js';
 import { geminiActivationRules, geminiExtensionPaths, geminiScopePattern, geminiUserActivation,
@@ -156,7 +155,7 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
         if (marketplace === 'foreign') result.ownership = 'foreign';
         return { activation: configuredActivation(config.snapshot.plugins[nativeId]?.enabled), marketplace };
       });
-      const product = binding.consumers.find((item) => item.entry?.kind === 'cli' && item.availability === 'available');
+      const product = selectNativeProduct(binding.consumers);
       if (!product || product.entry?.kind !== 'cli') {
         result.registration = 'unknown';
         setActivation(result, 'unknown');
@@ -181,8 +180,7 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
         session.setManager(manager);
         const observed = await session.inspectPlugin({ pluginId: nativeId, scope: binding.scope.kind });
         if (ctx.observeNative && binding.scope.kind === 'project' && product.product === 'cli'
-          && product.version === '0.167.0' && getQualifiedPlatformProfile('codex', ctx).qualifiedConsumers?.skill?.some((qualified) =>
-            qualified.product === product.product && qualified.version === product.version)) {
+          && platformVersionSupported('codex', product.version)) {
           session.setManager(manager);
           const trust = await session.inspectProjectTrust(binding.scope.projectRoot);
           for (const consumer of result.consumers) if (consumer.productId === product.id && consumer.trust === 'unknown'
