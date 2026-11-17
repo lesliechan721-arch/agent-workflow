@@ -73,6 +73,8 @@ export interface ReadRecoveryStatusOptions {
   nativeCliRunner?: NativeCliRunner;
   codexObservationSession?: CodexNativeObservationSession;
   catalogOperationContext?: CatalogOperationContext;
+  /** Sources observed within one read-only operation, including residual outputs. */
+  catalogSources?: Map<string, CatalogOperationContext['catalog']['sources'][number]>;
   scope?: Scope;
   context?: Scope;
   demandOverride?: DemandSnapshot;
@@ -519,9 +521,23 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
         || options.observationPlugins.has(entry.pluginName))
       && (!options.targets || options.targets.includes(entry.platform)));
     const observedPlugins = new Map(demand.plugins.map((plugin) => [plugin.pluginId, plugin]));
-    let catalog = demand.catalogOperationContext ?? options.catalogOperationContext;
+    const catalog = demand.catalogOperationContext ?? options.catalogOperationContext;
+    const catalogSources = options.catalogSources ?? new Map<string, CatalogOperationContext['catalog']['sources'][number]>();
+    for (const source of catalog?.catalog.sources ?? []) if (!catalogSources.has(source.sourceId)) catalogSources.set(source.sourceId, source);
     if (candidates.some((entry) => !observedPlugins.has(`${entry.sourceId}/${entry.pluginName}`))) {
-      try { catalog ??= await resolvePartialCatalogOperationContext({ env: context.env, signal: options.signal }); }
+      try {
+        const missing = [...new Set(candidates.map((entry) => entry.sourceId!))].filter((id) => !catalogSources.has(id));
+        if (missing.length) {
+          const config = await readCatalogSourcesConfigSnapshot(context.env);
+          const configured = new Set(config.config.sources.map((source) => source.id));
+          const sourceIds = missing.filter((id) => configured.has(id));
+          if (sourceIds.length) {
+            const additional = await resolvePartialCatalogOperationContext({ env: context.env, signal: options.signal,
+              configSnapshot: config, sourceIds });
+            for (const source of additional.catalog.sources) catalogSources.set(source.sourceId, source);
+          }
+        }
+      }
       catch (error) {
         rethrowFatalError(error);
         options.signal?.throwIfAborted();
@@ -529,7 +545,7 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
       for (const candidate of candidates) {
         const pluginId = `${candidate.sourceId}/${candidate.pluginName}`;
         if (observedPlugins.has(pluginId)) continue;
-        const source = catalog?.catalog.sources.find((entry) => entry.sourceId === candidate.sourceId)?.resolution;
+        const source = catalogSources.get(candidate.sourceId!)?.resolution;
         if (!source?.manifest.entries.some((entry) => entry.name === candidate.pluginName)) continue;
         try {
           const plugin = await readPluginManifest(path.join(source.rootDir, 'plugins', candidate.pluginName!), { mode: 'bundle' });
@@ -726,7 +742,7 @@ async function readRecoveryStatusWithQueries(options: ReadRecoveryStatusOptions 
   onDemand?: (demand: DemandSnapshot) => string[] | undefined;
   onNativeStatus?: (status: RecoveryStatus, demand: DemandSnapshot) => void | Promise<void>;
 }, preparedDemand?: JointDemandSnapshot): Promise<RecoveryStatus> {
-  options = { ...options, discoveryCache: new Map() };
+  options = { ...options, discoveryCache: new Map(), catalogSources: new Map() };
   const snapshot = preparedDemand ?? await measureRecoveryPerformanceStage(options, 'status.demand', () => readJointDemand(options));
   if (options.codexObservationSession || options.nativeObservations) {
     return readRecoveryStatusInSession(options, snapshot);
@@ -758,8 +774,9 @@ async function checkUndeclaredSelection(options: ReadRecoveryStatusOptions, snap
   const selectors = (options.plugins ?? []).filter((selector) => ![...known].some((id) =>
     id === selector || !selector.includes('/') && parsePluginId(id).pluginName === selector));
   if (!selectors.length) return [];
-  const sources = new Map([options.catalogOperationContext, ...demands.map((demand) => demand.catalogOperationContext)]
-    .flatMap((context) => context?.catalog.sources ?? []).map((source) => [source.sourceId, source]));
+  const sources = options.catalogSources ?? new Map<string, CatalogOperationContext['catalog']['sources'][number]>();
+  for (const source of [options.catalogOperationContext, ...demands.map((demand) => demand.catalogOperationContext)]
+    .flatMap((context) => context?.catalog.sources ?? [])) if (!sources.has(source.sourceId)) sources.set(source.sourceId, source);
   const errors: RecoveryDiagnostic[] = [];
   try {
     const config = await readCatalogSourcesConfigSnapshot(options.env);

@@ -328,7 +328,8 @@ describe('public status through platform adapters', () => {
   });
 
   // Test Value Gate: a component-specific trust applicability fact must not hide
-  // project trust, incomplete expectations, stale bytes, rejected trust, or another consumer.
+  // project trust, incomplete expectations, stale bytes, or rejected trust. An
+  // additional unqualified App must retain unknown facts without blocking the CLI.
   it.each([
     { name: 'project scope', scope: 'project' as const },
     { name: 'dynamic expectations', dynamic: true },
@@ -339,7 +340,7 @@ describe('public status through platform adapters', () => {
     { name: 'failed native observation', unreadable: true },
     { name: 'an additional App consumer', app: true },
     { name: 'blocked trust', blocked: true },
-  ])('keeps Codex trust evidence conservative for $name', async (options) => {
+  ])('reports Codex trust applicability for $name', async (options) => {
     const profile = getQualifiedPlatformProfile('codex', { platform: 'darwin', arch: 'arm64' });
     if ('unqualified' in options) delete profile.qualifiedConsumers;
     vi.spyOn(platformCapabilities, 'getQualifiedPlatformProfile').mockReturnValue(profile);
@@ -383,6 +384,16 @@ describe('public status through platform adapters', () => {
       expect(observed).toMatchObject({ content: 'unknown', satisfaction: 'unknown', deploymentObservations: [{
         after: { consumers: [{ activation: 'enabled', trust: 'unknown', load: 'unknown' }] },
       }] });
+    } else if ('app' in options) {
+      const status = await value.read();
+      expect(status.allSatisfied).toBe(true);
+      expect(target(status).content).toBe('satisfied');
+      const consumers = target(status).deploymentObservations!.flatMap((entry) => entry.after.consumers);
+      expect(consumers).toHaveLength(2);
+      expect(consumers.find((consumer) => !consumer.productId.endsWith(':app')))
+        .toMatchObject({ trust: 'not-applicable', load: 'unknown' });
+      expect(consumers.find((consumer) => consumer.productId.endsWith(':app')))
+        .toMatchObject({ trust: 'unknown', load: 'unknown' });
     } else {
       const status = await value.read();
       expect(status.allSatisfied).not.toBe(true);

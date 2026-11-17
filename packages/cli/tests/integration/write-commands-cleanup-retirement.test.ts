@@ -148,7 +148,11 @@ describe('five namespaced write commands', () => {
       }, { env, nativeCliRunner: defaultNativeRuntime.nativeCliRunner });
       expect(result.status).not.toBe('success');
       const manual = result.nextActions.filter((action) => action.kind === 'manual').map((action) => action.message).join('\n');
-      for (const file of files) { expect(manual).toContain(file); expect(await fs.pathExists(file)).toBe(true); }
+      for (const file of files) {
+        expect(result.diagnostics).toContainEqual(expect.objectContaining({ detail: expect.objectContaining({ path: file }) }));
+        expect(manual).toContain(JSON.stringify(file));
+        expect(await fs.pathExists(file)).toBe(true);
+      }
       expect(manual).toContain('Back up');
       expect(manual).toContain('outside the host scan directories');
     }

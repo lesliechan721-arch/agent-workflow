@@ -5,8 +5,11 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
+import { preparePublishedCatalogWorkspace } from '@lesliechan721/aw-plugin-core';
 
 import { runCli } from '../../dist/src/index.js';
+import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../dist/scripts/plugin-staging.js';
+import { CLI_RESERVED_IMPORTS } from '../../dist/src/utils/manifest.js';
 import { applyCatalogPublicationPlan, prepareCatalogPublicationPlan } from '../../dist/src/commands/catalog-publish.js';
 import { readCatalogPublicationPluginHistory } from '../../dist/src/commands/catalog-publication-inspection.js';
 import { setTestPathFenceHookForTests } from '../../dist/src/utils/test-path-fence.js';
@@ -135,7 +138,88 @@ async function publishedPluginVersion(publication) {
   return manifest.entries.find((entry) => entry.name === 'journal-test')?.version;
 }
 
+// Build valid history snapshots without repeating the journal apply contract.
+async function publishHistoryFixture({ root, remote, branch = 'catalog/latest', previous }) {
+  const prepared = await stage('history.build', async () => preparePublishedCatalogWorkspace({
+    workspaceRoot: root, sourceHead: await git(root, ['rev-parse', 'HEAD']),
+    previousSnapshotRoot: previous?.repositoryPath, reservedImports: CLI_RESERVED_IMPORTS,
+    adapter: { async build(build) {
+      await bundleLocalPlugin(build.plugin, build.outputRoot, {
+        buildMode: 'staging', runtimeResolver: createCatalogRuntimeImportResolver(build.plugins),
+      });
+    } },
+  }));
+  return stage('history.publish', async () => {
+    const repository = await temporaryRoot();
+    await git(repository, ['init', '--quiet']);
+    if (previous) {
+      await git(repository, ['fetch', '--quiet', '--no-tags', remote, previous.commit]);
+      await git(repository, ['reset', '--soft', 'FETCH_HEAD']);
+    }
+    await fs.copy(prepared.outputRoot, repository);
+    await git(repository, ['-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'add', '--all']);
+    const identity = ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid'];
+    await git(repository, [...identity, 'commit', '--quiet', '-m', `Catalog history ${prepared.catalogVersion}`]);
+    const tag = `catalog-v${prepared.catalogVersion}`;
+    await git(repository, [...identity, 'tag', '--annotate', tag, '--message', tag]);
+    await git(repository, ['push', '--quiet', '--atomic', remote,
+      `HEAD:refs/heads/${branch}`, `refs/tags/${tag}:refs/tags/${tag}`]);
+    return { repositoryPath: prepared.outputRoot, commit: await git(repository, ['rev-parse', 'HEAD']) };
+  });
+}
+
 async function runCase() {
+  const stableReuse = testName === 'rejects stable Plugin identity reuse and downgrade after a deletion without remote or formal state writes';
+  const betaReuse = testName === 'reuses unchanged beta Plugin identity after deletion';
+  if (stableReuse || betaReuse) {
+    const branch = stableReuse ? 'catalog/latest' : 'catalog/beta';
+    const { root, remote } = await stage('createWorkspace', () => createWorkspace(stableReuse ? '1.0.0' : '1.0.0-beta.1'));
+    const pluginRoot = path.join(root, 'plugins', 'journal-test');
+    const pluginBackup = path.join(await temporaryRoot(), 'journal-test');
+    await stage('prepare.original', async () => {
+      await addHistoryKeeperPlugin(root);
+      if (stableReuse) await setPluginVersion(root, '0.2.0');
+      await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
+      await commitAll(root, 'prepare original plugin');
+      await fs.copy(pluginRoot, pluginBackup);
+    });
+    const first = await stage('publish.original', () => publishHistoryFixture({ root, remote, branch }));
+    if (betaReuse) assert.equal(await publishedPluginVersion(first), '0.1.0-beta.1');
+    await stage('remove.plugin', async () => {
+      await fs.remove(pluginRoot);
+      await setCatalogVersion(root, stableReuse ? '1.1.0' : '1.0.0-beta.2');
+      await commitAll(root, 'remove plugin');
+    });
+    const removed = await stage('publish.removed', () => publishHistoryFixture({ root, remote, branch, previous: first }));
+    await stage('restore.plugin', async () => {
+      await fs.copy(pluginBackup, pluginRoot);
+      if (stableReuse) await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
+      await setCatalogVersion(root, stableReuse ? '1.2.0' : '1.0.0-beta.3');
+      await commitAll(root, 'restore plugin');
+    });
+    if (stableReuse) {
+      await stage('reject.reused.version', async () => {
+        const before = await git(remote, ['show-ref']);
+        await assert.rejects(plan(root), /maps to different content/u);
+        assert.equal(await fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0')), false);
+        assert.equal(await git(remote, ['show-ref']), before);
+      });
+      await stage('reject.downgrade', async () => {
+        await setPluginVersion(root, '0.1.0');
+        await commitAll(root, 'lower readded plugin version');
+        const before = await git(remote, ['show-ref']);
+        await assert.rejects(plan(root), /must not be lower than previous/u);
+        assert.equal(await fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0')), false);
+        assert.equal(await git(remote, ['show-ref']), before);
+      });
+    } else {
+      const unchanged = await stage('plan.restored', () => plan(root, branch));
+      assert.equal(unchanged.parent, removed.commit);
+      assert.equal(await publishedPluginVersion(unchanged), '0.1.0-beta.1');
+      assert.equal((await stage('apply.restored', () => apply(root, unchanged))).state, 'published');
+    }
+    return;
+  }
   if (testName === 'allows a renamed remote alias when its fetch and push identity is unchanged') {
     const { root, remote } = await stage('createWorkspace', () => createWorkspace());
     const publication = await stage('plan', () => plan(root));

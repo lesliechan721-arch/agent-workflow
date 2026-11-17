@@ -41,7 +41,7 @@ const roots: string[] = [];
 
 const publisherTempBase = os.tmpdir();
 const publisherPackageRoot = fileURLToPath(new URL('../..', import.meta.url));
-const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending |uses only the first-parent Catalog history)/u;
+const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending |uses only the first-parent Catalog history|rejects stable Plugin identity reuse and downgrade after a deletion|reuses unchanged beta Plugin identity after deletion)/u;
 let diagnostics: TestCommandDiagnostics | undefined;
 
 beforeEach(({ task, signal }) => {
@@ -994,65 +994,15 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     await expect(apply(root, publication)).rejects.toThrow(/missing|occupied|Increase/u);
   });
 
-  it('rejects stable Plugin identity reuse and downgrade after a deletion without remote or formal state writes', async () => {
-    const { root, remote } = await createWorkspace('1.0.0');
-    const pluginRoot = path.join(root, 'plugins', 'journal-test');
-    await addHistoryKeeperPlugin(root);
-    await setPluginVersion(root, '0.2.0');
-    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
-    await commitAll(root, 'prepare original plugin');
-    const backupRoot = await temporaryRoot('aw-catalog-plugin-backup-');
-    const pluginBackup = path.join(backupRoot, 'journal-test');
-    await fs.copy(pluginRoot, pluginBackup);
+  // Test Value Gate: multi-publication history checks must settle their process
+  // tree before timeout cleanup removes the bare remote on Windows.
+  it('rejects stable Plugin identity reuse and downgrade after a deletion without remote or formal state writes', async ({ task }) => {
+    await isolatedPublisherCase(task.name);
+  }, process.platform === 'win32' ? 60_000 : 30_000);
 
-    const first = await publishHistoryFixture({ root, remote });
-    await fs.remove(pluginRoot);
-    await setCatalogVersion(root, '1.1.0');
-    await commitAll(root, 'remove plugin');
-    await publishHistoryFixture({ root, remote, previous: first });
-
-    await fs.copy(pluginBackup, pluginRoot);
-    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
-    await setCatalogVersion(root, '1.2.0');
-    await commitAll(root, 'readd changed plugin at reused version');
-    const remoteBeforeReuse = await git(remote, ['show-ref']);
-    await expect(plan(root)).rejects.toThrow(/maps to different content/u);
-    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0'))).resolves.toBe(false);
-    await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBeforeReuse);
-
-    await setPluginVersion(root, '0.1.0');
-    await commitAll(root, 'lower readded plugin version');
-    const remoteBeforeDowngrade = await git(remote, ['show-ref']);
-    await expect(plan(root)).rejects.toThrow(/must not be lower than previous/u);
-    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0'))).resolves.toBe(false);
-    await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBeforeDowngrade);
-  });
-
-  it('reuses unchanged beta Plugin identity after deletion', async () => {
-    const { root, remote } = await createWorkspace('1.0.0-beta.1');
-    const pluginRoot = path.join(root, 'plugins', 'journal-test');
-    await addHistoryKeeperPlugin(root);
-    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
-    await commitAll(root, 'prepare original beta plugin');
-    const backupRoot = await temporaryRoot('aw-catalog-beta-plugin-backup-');
-    const pluginBackup = path.join(backupRoot, 'journal-test');
-    await fs.copy(pluginRoot, pluginBackup);
-
-    const first = await publishHistoryFixture({ root, remote, branch: 'catalog/beta' });
-    expect(await publishedPluginVersion(first)).toBe('0.1.0-beta.1');
-    await fs.remove(pluginRoot);
-    await setCatalogVersion(root, '1.0.0-beta.2');
-    await commitAll(root, 'remove beta plugin');
-    const removed = await publishHistoryFixture({ root, remote, branch: 'catalog/beta', previous: first });
-
-    await fs.copy(pluginBackup, pluginRoot);
-    await setCatalogVersion(root, '1.0.0-beta.3');
-    await commitAll(root, 'readd unchanged beta plugin');
-    const unchanged = await plan(root, 'catalog/beta');
-    expect(unchanged.parent).toBe(removed.commit);
-    expect(await publishedPluginVersion(unchanged)).toBe('0.1.0-beta.1');
-    await expect(apply(root, unchanged)).resolves.toMatchObject({ state: 'published' });
-  });
+  it('reuses unchanged beta Plugin identity after deletion', async ({ task }) => {
+    await isolatedPublisherCase(task.name);
+  }, process.platform === 'win32' ? 60_000 : 30_000);
 
   it('continues beta Plugin identity after repeated deletion and restoration', async () => {
     const { root, remote } = await createWorkspace('1.0.0-beta.1');

@@ -175,7 +175,7 @@ Release unit/integration 覆盖 schema 2 CLI target 更新的五包同步、Cata
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
 
-Catalog publisher 的少量取消敏感用例通过独立 Node 子进程执行已构建的 CLI，避免在子进程内重复启动 Vitest。父测试负责隔离环境、超时、进程树收尾和目录清理；子进程保持路径围栏、禁用网络 fetch 和真实 native CLI 的保护。其余用例继续验证源码入口；运行前需完成 `pnpm build`。
+Catalog publisher 的少量取消敏感用例通过独立 Node 子进程执行已构建的 CLI，避免在子进程内重复启动 Vitest。父测试负责隔离环境、超时、进程树收尾和目录清理；子进程保持路径围栏、禁用网络 fetch 和真实 native CLI 的保护。稳定版删除后版本复用／降级及 beta 删除后原身份复用也使用该边界，记录构建历史、发布、恢复、plan 和 apply 阶段；这两个多轮发布用例仅在 Windows 使用 60 秒预算，其它平台保持 30 秒。超时仍须确认进程树收尾后清理目录，未确认则保留。其余用例继续验证源码入口；运行前需完成 `pnpm build`。
 
 Catalog publisher 测试必须覆盖 plan 的授权身份、`apply --expected-plan-digest --yes`、journal 的 `prepared|uncertain|published`、相同 journal plan 的对账或续跑、不同 plan 的 version 提升，以及 branch/tag 都存在、都缺失、只缺一个和冲突。对于 `prepared` 或 `uncertain`，journal 或隔离 repo 缺失或损坏时必须停止并提升版本；`published` journal 缺失时 immutable tag 仍占用版本。首次写入前 fixture 保留隔离 repo；成功 fixture 只保留 JSON journal。测试使用本地 bare remote，不访问真实网络。
 
