@@ -150,11 +150,10 @@ describe('native platform lifecycle', () => {
     ['claude-marketplace', [['plugin', 'install', 'demo@marketplace', '--scope', 'user'], ['plugin', 'enable', 'demo@marketplace', '--scope', 'user']]],
     ['pi-package', [['install', path.join(root, 'demo')]]],
     ['copilot-marketplace', [['plugin', 'install', 'demo@marketplace']]],
-    ['grok-cli', [['plugin', 'install', path.join(root, 'demo'), '--trust'], ['plugin', 'enable', 'demo']]],
   ] as const)('uses the fixed native lifecycle contract for %s', async (route, argv) => {
     const input = fixture(route);
     if (route.endsWith('-marketplace')) input.evidence.nativeIdentity!.registrationId = 'demo@marketplace';
-    const ctx = context(route === 'grok-cli' ? currentNativeObservation(input) : input.observation);
+    const ctx = context(input.observation);
     await executePlatformLifecycle(ctx, prepared(input));
     expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toEqual(argv);
   });
@@ -252,6 +251,19 @@ describe('native platform lifecycle', () => {
     ]);
     expect(receipt.effects.every((effect) => effect.status === 'applied')).toBe(true);
     expect(receipt.unmet).toEqual([]);
+  });
+
+  // Folder trust is not consent to install a new plugin source.
+  it('requires native source consent for a first Grok install even in a trusted neutral folder', async () => {
+    const input = fixture('grok-cli');
+    input.binding.consumers[0]!.version = '1.0.77';
+    const ctx = context(input.observation);
+    const receipt = await executePlatformLifecycle(ctx, prepared(input));
+    expect(ctx.services.publishPackage).toHaveBeenCalledTimes(1);
+    expect(ctx.runner).not.toHaveBeenCalled();
+    expect(receipt.effects.find((effect) => effect.id.includes(':register:'))).toMatchObject({ status: 'blocked', mutation: 'none',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'nativeTrustRequired' }), expect.objectContaining({ code: 'grokNativeInstallRecovery' })]) });
+    expect(receipt.after.consumers[0]!.trust).toBe('trusted');
   });
 
   it('retries a stale Grok copy when the AW source already has the current bytes', async () => {
@@ -379,6 +391,42 @@ describe('native platform lifecycle', () => {
     expect(receipt.effects.find((effect) => effect.id.includes(':unregister:'))).toMatchObject({ status: 'unknown', mutation: 'possible' });
     expect(receipt.effects.at(-1)?.status).toBe('skipped');
   });
+
+  // Pi hides an empty Project list. Only the exact successful native remove
+  // acknowledgment can confirm this operation; status itself stays unknown.
+  it.each(['confirmed', 'present', 'query-failed', 'malformed', 'wrong-source', 'write-warning', 'nonzero', 'timeout', 'cleanup-failed', 'other-version'] as const)(
+    'handles Pi Project removal acknowledgment: %s', async (boundary) => {
+      const input = fixture('pi-package');
+      input.operation = 'remove';
+      input.binding.scope = { kind: 'project', projectRoot: root };
+      input.binding.consumers[0]!.version = boundary === 'other-version' ? '1.6.0' : '1.5.0';
+      input.evidence.ownership[0]!.state = 'present';
+      input.evidence.ownership[0]!.component.identity.scope = 'project';
+      input.observation = { ...input.observation, package: 'present', ownership: 'aw', registration: 'present',
+        nativeIdentity: input.evidence.nativeIdentity!, consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'unknown', trust: 'unknown' })) };
+      const after: DeploymentObservation = { ...input.observation, registration: boundary === 'present' ? 'present' : 'unknown',
+        diagnostics: [{ code: boundary === 'query-failed' ? 'piNativeObservationUnconfirmed' : 'piProjectRegistrationNotVisible', severity: 'warning', message: 'Project scope not visible.' }] };
+      const ctx = context(after);
+      vi.mocked(ctx.runner!).mockImplementation(async (invocation) => {
+        const stdout = `Removing ${input.evidence.nativeIdentity!.sourceLocation}...\nRemoved ${boundary === 'wrong-source' ? '/other-source' : input.evidence.nativeIdentity!.sourceLocation}\n`;
+        if (boundary === 'timeout' || boundary === 'cleanup-failed') throw new NativeCliError({ invocation,
+          exitCode: boundary === 'timeout' ? 124 : 0, stdout, stderr: '',
+          ...(boundary === 'timeout' ? { reason: 'timeout' as const } : { cleanupError: new Error('cleanup unconfirmed') }) });
+        return { exitCode: boundary === 'nonzero' ? 1 : 0, stdout: boundary === 'malformed' ? 'Done\n' : stdout,
+          stderr: boundary === 'write-warning' ? 'Warning (project settings): write failed\n' : '' };
+      });
+      const receipt = await executePlatformLifecycle(ctx, prepared(input));
+      const unregister = receipt.effects.find((effect) => effect.id.includes(':unregister:'))!;
+      expect(ctx.runner).toHaveBeenCalledTimes(1);
+      expect(receipt.after.registration).toBe(after.registration);
+      if (boundary === 'confirmed') {
+        expect(unregister).toMatchObject({ status: 'applied', mutation: 'confirmed' });
+        expect(ctx.services.removeOwned).toHaveBeenCalledTimes(1);
+      } else {
+        expect(unregister.status).toBe('unknown');
+        expect(ctx.services.removeOwned).not.toHaveBeenCalled();
+      }
+    });
 
   it('preserves successful registration when activation fails', async () => {
     const input = fixture();
@@ -675,7 +723,7 @@ describe('platform inspection and native activation', () => {
     await fs.outputFile(path.join(layout.packageRoot, 'skills/demo/SKILL.md'), 'body');
     const observation = await inspectDeployment(ctx, binding);
     expect(observation).toMatchObject({ package: 'present', ownership: 'aw', registration: 'not-applicable' });
-    expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'not-observed' });
+    expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'unknown' });
     expect(observation.components).toEqual([{ id: 'skill', presence: 'present', reasonCodes: [] }]);
     await fs.remove(path.join(layout.packageRoot, 'skills/demo/SKILL.md'));
     expect((await inspectDeployment(ctx, binding)).components[0]?.presence).toBe('absent');
@@ -732,7 +780,7 @@ describe('platform inspection and native activation', () => {
     expect(candidate.prepared.plan.effects).toEqual([]);
   });
 
-  it('requires the canonical marketplace mapping even when Codex lists a cached installation', async () => {
+  it('keeps Codex native registration separate from marketplace configuration and mutation ownership', async () => {
     const ctx = await environment();
     const { binding } = fixture('codex-marketplace');
     binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/codex', configRoot: ctx.env.CODEX_HOME! };
@@ -743,7 +791,8 @@ describe('platform inspection and native activation', () => {
     const runner = vi.fn(async () => ({ exitCode: 0, stdout: JSON.stringify({
       installed: [{ pluginId: layout.nativeIdentity.registrationId, installed: true, enabled: true }], available: [],
     }), stderr: '' }));
-    expect(await inspectDeployment({ ...ctx, runner }, binding)).toMatchObject({ package: 'present', registration: 'absent', ownership: 'aw' });
+    expect(await inspectDeployment({ ...ctx, runner }, binding)).toMatchObject({ package: 'present', registration: 'present', ownership: 'aw',
+      configuration: { marketplace: 'absent' } });
     const configPath = path.join(ctx.env.CODEX_HOME!, 'config.toml');
     await expect(fs.pathExists(configPath)).resolves.toBe(false);
     await upsertCodexMarketplaceFile(configPath, layout.marketplaceName!, { source: layout.marketplaceRoot!, sourceType: 'local' });
@@ -797,7 +846,7 @@ describe('platform inspection and native activation', () => {
     { issue: 'unknown source', marketplace: 'unknown', plugin: 'valid', delayed: 'marketplace', ownership: 'unknown', registration: 'present' },
     { issue: 'invalid plugin row', marketplace: 'canonical', plugin: 'invalid', delayed: 'marketplace', ownership: 'aw', registration: 'unknown' },
     { issue: 'failed plugin read', marketplace: 'foreign', plugin: 'failed', delayed: 'marketplace', ownership: 'foreign', registration: 'unknown' },
-    { issue: 'failed marketplace read', marketplace: 'failed', plugin: 'valid', delayed: 'plugin', ownership: 'aw', registration: 'unknown' },
+    { issue: 'failed marketplace read', marketplace: 'failed', plugin: 'valid', delayed: 'plugin', ownership: 'unknown', registration: 'present' },
   ] as const)('finishes both Copilot inventories and preserves $issue', async (testCase) => {
     const ctx = await environment();
     const { binding } = fixture('copilot-marketplace');
@@ -836,7 +885,7 @@ describe('platform inspection and native activation', () => {
     expect(await pending).toMatchObject({ ownership: testCase.ownership, registration: testCase.registration });
   });
 
-  it('uses Gemini local-source metadata and does not treat home-only disable as global disable', async () => {
+  it('keeps Gemini native activation when supplemental metadata or home-only rules disagree', async () => {
     const ctx = await environment();
     const input = fixture('gemini-extension');
     input.binding.consumers[0]!.entry = { kind: 'cli', executable: '/fake/gemini', configRoot: path.join(ctx.cwd, '.gemini') };
@@ -848,16 +897,19 @@ describe('platform inspection and native activation', () => {
     await fs.outputJson(metadataPath, { type: 'local', source: layout.packageRoot });
     await fs.outputJson(path.join(installed, 'gemini-extension.json'), { name: 'demo', version: '1.0.0' });
     await fs.outputJson(path.join(ctx.cwd, '.gemini/extensions/extension-enablement.json'), { demo: { overrides: [`!${geminiScopePattern(ctx.cwd)}`] } });
-    const runner = vi.fn(async () => { throw new Error('Gemini metadata inspection must not start a client.'); });
+    const runner = vi.fn(async (_call: NativeCliInvocation) => ({ exitCode: 0, stderr: JSON.stringify([
+      { name: 'demo', path: installed, isActive: true },
+    ]), stdout: '' }));
     const observation = await inspectDeployment({ ...ctx, runner }, input.binding);
     expect(observation).toMatchObject({ registration: 'present', ownership: 'aw' });
-    expect(observation.consumers[0]?.activation).toBe('unknown');
-    expect(observation.diagnostics[0]?.code).toBe('nativeActivationScopeLimited');
+    expect(observation.consumers[0]?.activation).toBe('enabled');
+    expect(observation.configuration?.activation).toBe('absent');
     await fs.writeJson(metadataPath, { type: 'local', source: '/foreign' });
     expect((await inspectDeployment({ ...ctx, runner }, input.binding)).ownership).toBe('foreign');
     await fs.writeFile(metadataPath, '{invalid');
-    expect((await inspectDeployment({ ...ctx, runner }, input.binding)).registration).toBe('unknown');
-    expect(runner).not.toHaveBeenCalled();
+    expect(await inspectDeployment({ ...ctx, runner }, input.binding)).toMatchObject({ registration: 'present', ownership: 'unknown',
+      consumers: [{ activation: 'enabled' }] });
+    expect(runner.mock.calls.every(([call]) => call.args.join(' ') === 'extensions list --output-format json')).toBe(true);
   });
 
   it('observes user Codex activation from a neutral directory instead of the calling project overlay', async () => {

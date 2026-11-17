@@ -43,6 +43,26 @@ export async function createClaudeNativeTestRuntime(
     const args = pluginIndex < 0 ? invocation.args : invocation.args.slice(pluginIndex);
     if (args[0] !== 'plugin') throw new Error('Unexpected controlled Claude invocation.');
     const known = await fs.readJson(knownPath).catch(() => ({}));
+    if (args[1] === 'marketplace' && args[2] === 'list') {
+      const rows = Object.entries(known).map(([name, raw]) => {
+        const value = raw as { source?: { source?: string; path?: string }; installLocation?: string };
+        return { name, source: value.source?.source, path: value.source?.path, installLocation: value.installLocation };
+      });
+      return { exitCode: 0, stdout: JSON.stringify(rows), stderr: '' };
+    }
+    if (args[1] === 'list') {
+      const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} }));
+      const exactRoot = await fs.realpath(invocation.cwd ?? cwd);
+      const userSettings = await fs.readJson(path.join(claudeHome, 'settings.json')).catch(() => ({}));
+      const projectSettings = await fs.readJson(path.join(exactRoot, '.claude', 'settings.json')).catch(() => ({}));
+      const localSettings = await fs.readJson(path.join(exactRoot, '.claude', 'settings.local.json')).catch(() => ({}));
+      const enabledPlugins = { ...userSettings.enabledPlugins, ...projectSettings.enabledPlugins, ...localSettings.enabledPlugins };
+      const rows = Object.entries(installed.plugins).flatMap(([id, raw]) => (raw as Array<{ scope: string; projectPath?: string; version: string; installPath: string }>)
+        .filter((record) => record.scope === 'user' || record.projectPath === exactRoot)
+        .map((record) => ({ ...record, id, enabled: enabledPlugins[id] === true || Array.isArray(enabledPlugins[id]),
+          readFromFolder: record.installPath })));
+      return { exitCode: 0, stdout: JSON.stringify(rows), stderr: '' };
+    }
     if (args[1] === 'marketplace' && args[2] === 'add') {
       const root = args[3]!;
       const { marketplaceName } = await fs.readJson(path.join(root, 'config.json'));

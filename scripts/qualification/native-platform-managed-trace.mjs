@@ -59,7 +59,8 @@ export function createManagedTraceWriter(file) {
   } };
 }
 
-export function createManagedTraceRunner(base, { entries, client, env = process.env, emit, platform = process.platform }) {
+export function createManagedTraceRunner(base, { entries, client, env = process.env, emit, platform = process.platform,
+  nextOperationId }) {
   const targets = new Set(entries.map(canonicalFile).filter(Boolean));
   function sameFile(file, target) {
     if (file === target && typeof file === 'string') return true;
@@ -98,7 +99,7 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
         const args = prefixed ? invocation.args.slice(1) : invocation.args;
         registryList = client === 'codex' && args.length === 4
           && args.every((argument, index) => argument === ['plugin', 'marketplace', 'list', '--json'][index]);
-        details = { operationId: ++operationId, startTime: new Date().toISOString(), parentPid: process.pid,
+        details = { operationId: nextOperationId ? nextOperationId() : ++operationId, startTime: new Date().toISOString(), parentPid: process.pid,
           command: invocation.command, args: invocation.args.slice(0, 16),
           publicMarkerProvided: typeof preloadMarker === 'string' && preloadMarker.length > 0
             && invocation.env?.[PUBLIC_MARKER] === preloadMarker };
@@ -152,10 +153,92 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
       } catch { /* Never read error.message or replace a real result/error. */ }
     }
     record('start');
+    const tracedInvocation = { ...invocation, onSpawn(child) {
+      try { invocation.onSpawn?.(child); } catch { /* Diagnostic only. */ }
+      try {
+        if (Number.isSafeInteger(child?.pid) && child.pid > 0) {
+          details.childPid = child.pid;
+          record('spawn');
+        }
+      } catch { /* Diagnostics cannot affect the real runner. */ }
+    } };
     return (async () => {
-      try { const result = await base(invocation); record('finish', result); return result; }
+      try { const result = await base(tracedInvocation); record('finish', result); return result; }
       catch (error) { record('finish', error, true); throw error; }
     })();
+  };
+}
+
+function projectProcessTreeDiagnostics(diagnostics) {
+  if (!Array.isArray(diagnostics)) return undefined;
+  const selected = diagnostics.length < 2 ? diagnostics : [diagnostics[0], diagnostics.at(-1)];
+  return selected.map((diagnostic) => {
+    const record = {};
+    for (const key of ['rootPid', 'snapshotStartedAt', 'snapshotDeadline', 'markerLookupAttempts']) {
+      if (Number.isSafeInteger(diagnostic?.[key]) && diagnostic[key] >= 0) record[key] = diagnostic[key];
+    }
+    if (['observation', 'identity-observation', 'termination-start', 'termination-kill', 'termination-verification'].includes(diagnostic?.stage)) {
+      record.stage = diagnostic.stage;
+    }
+    if (['marker-lookup-failed', 'identity-lookup-failed', 'inspection-deadline-exceeded',
+      'known-process-marker-missing', 'initial-group-marker-missing', 'process-marker-unreadable',
+      'cleanup-snapshot', 'marked-process-group-changed', 'live-descendants-before-completion'].includes(diagnostic?.reason)) {
+      record.reason = diagnostic.reason;
+    }
+    if (typeof diagnostic?.markerLookupSucceeded === 'boolean' || diagnostic?.markerLookupSucceeded === null) {
+      record.markerLookupSucceeded = diagnostic.markerLookupSucceeded;
+    }
+    if (Array.isArray(diagnostic?.queries)) record.queries = diagnostic.queries.slice(0, 8).map((query) => {
+      const projected = {};
+      for (const key of ['startedAt', 'deadline', 'callbackAt', 'settledAt']) {
+        if (Number.isSafeInteger(query?.[key]) && query[key] >= 0) projected[key] = query[key];
+      }
+      if (['identity', 'marker', 'darwin-marker'].includes(query?.kind)) projected.kind = query.kind;
+      if (['returned', 'pending', 'not-called'].includes(query?.callbackState)) projected.callbackState = query.callbackState;
+      if (['pending', 'callback', 'deadline', 'synchronous-error'].includes(query?.completion)) projected.completion = query.completion;
+      if (['callback-error', 'deadline-exceeded', 'synchronous-error'].includes(query?.failureReason)) projected.failureReason = query.failureReason;
+      return projected;
+    });
+    return record;
+  });
+}
+
+// This Hosted fixture deliberately carries just its current public marker
+// through the production script environment boundary. It adds no parent env.
+export function createManagedPluginTraceRunner(base, { env = process.env, emit, nextOperationId }) {
+  let operationId = 0;
+  return function managedPluginTraceRunner(invocation, options) {
+    const marker = env[PUBLIC_MARKER];
+    if (typeof marker !== 'string' || marker.length === 0) return base(invocation, options);
+    const details = { role: 'plugin-script', operationId: nextOperationId ? nextOperationId() : ++operationId,
+      parentPid: process.pid, startTime: new Date().toISOString(), publicMarkerProvided: true };
+    const record = (phase, value, threw = false) => {
+      try {
+        const processTreeDiagnostics = phase === 'finish' ? projectProcessTreeDiagnostics(value?.processTreeDiagnostics) : undefined;
+        emit({ ...details, phase, ...(phase === 'finish' ? {
+          finishTime: new Date().toISOString(), threw,
+          exitCode: Number.isSafeInteger(value?.exitCode) ? value.exitCode : null,
+          failureCategory: value?.operationDiagnostic?.code === 'pluginProcessCleanupFailed' ? 'cleanup-unconfirmed'
+            : value?.timedOut === true ? 'timeout' : threw ? 'runner-error'
+              : value?.exitCode === 0 ? null : 'exit',
+          ...(processTreeDiagnostics ? { processTreeDiagnostics } : {}),
+        } : {}) });
+      } catch { /* Diagnostics cannot replace the original result or error. */ }
+    };
+    const tracedInvocation = { ...invocation, env: { ...invocation.env, [PUBLIC_MARKER]: marker } };
+    const tracedOptions = { ...options, onSpawn(child) {
+      try { options.onSpawn?.(child); } catch { /* Diagnostic only. */ }
+      try {
+        if (Number.isSafeInteger(child?.pid) && child.pid > 0) { details.childPid = child.pid; record('spawn'); }
+      } catch { /* Diagnostic only. */ }
+    } };
+    record('start');
+    let pending;
+    try { pending = base(tracedInvocation, tracedOptions); }
+    catch (error) { record('finish', error, true); throw error; }
+    try { Promise.prototype.then.call(pending, (result) => record('finish', result), (error) => record('finish', error, true)); }
+    catch { /* Keep the original Promise even if completion cannot be observed. */ }
+    return pending;
   };
 }
 
@@ -188,8 +271,14 @@ async function installFromEnvironment() {
   writer.emit({ phase: 'installation', state: 'loading-runner' });
   try {
     const native = await import('../../packages/cli/dist/src/utils/native-cli.js');
+    const scripts = await import('../../packages/cli/dist/src/utils/plugin-scripts.js');
     const base = native.getDefaultNativeCliRunner();
-    const wrapper = createManagedTraceRunner(base, { ...configuration, env: process.env, emit: writer.emit });
+    let operationId = 0;
+    const diagnosticOptions = { ...configuration, env: process.env, emit: writer.emit, nextOperationId: () => ++operationId };
+    const wrapper = createManagedTraceRunner(base, diagnosticOptions);
+    const pluginRunner = scripts.defaultPluginProcessRunner;
+    const pluginRun = pluginRunner.run;
+    pluginRunner.run = createManagedPluginTraceRunner((invocation, options) => pluginRun.call(pluginRunner, invocation, options), diagnosticOptions);
     native.setNativeCliRunnerOverrideForTests(native.retainNativeCliRunnerBackend(wrapper, base));
     writer.emit({ phase: 'installation', state: 'installed' });
     process.once('exit', writer.close);
@@ -199,6 +288,6 @@ async function installFromEnvironment() {
 
 // --import applies only to outer AW. The real default backend and its deadlines
 // remain in use. Synchronous trace IO has time/IO cost; this private diagnostic
-// does not provide performance evidence without instrumentation. parentPid is AW
-// only; the logical runner exposes no child identity or final native environment.
+// does not provide performance evidence without instrumentation. Spawn PIDs bind
+// logical operations, but do not prove final marker readability or exec identity.
 export const managedTraceInstalled = await installFromEnvironment();

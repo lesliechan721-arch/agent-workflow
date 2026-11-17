@@ -170,9 +170,17 @@ export function deriveSharedReferenceView(snapshot: JointDemandSnapshot, demand:
     for (const deployment of target.deploymentObservations) {
       const { after } = deployment;
       const actual = { ...reference, physicalKey: after.physicalKey };
+      const sharedActivation = target.scope === 'project' && ['codex', 'gemini', 'copilot'].includes(target.agent);
+      const scopedRegistration = target.agent === 'claude';
+      // Project activation can be inherited. User neutral activation is already
+      // independent and must not be denied by a supplemental declaration.
+      const declared = sharedActivation ? after.configuration?.activation : undefined;
       observations.push({ ...actual, complete: after.registration !== 'unknown' && after.package !== 'unknown'
-        && after.consumers.every((consumer) => consumer.activation !== 'unknown') });
-      if (after.consumers.some((consumer) => consumer.activation === 'enabled')) observed.push(actual);
+        && after.consumers.every((consumer) => consumer.activation !== 'unknown')
+        && (!sharedActivation || declared !== undefined && declared !== 'unknown')
+        && (!scopedRegistration || after.scopeRegistration !== undefined && after.scopeRegistration !== 'unknown') });
+      if (scopedRegistration ? after.scopeRegistration === 'present' : sharedActivation ? declared === 'enabled'
+        : after.consumers.some((consumer) => consumer.activation === 'enabled')) observed.push(actual);
     }
   }
   return { scopes: [...snapshot.context.scopes], projectRoot: snapshot.context.projectRoot ?? null,

@@ -139,6 +139,7 @@ describe('preApply script', () => {
         commandEnv: {
           AW_HOME: path.join(tempDir, 'aw-home'),
           PATH: 'system-executable-path',
+          AW_NATIVE_QUALIFICATION_PUBLIC_AW_MARKER: 'qualification-marker',
           path: 'ignored-executable-path',
           SYSTEMROOT: 'C:\\Windows',
           systemroot: 'Z:\\ignored-windows',
@@ -206,7 +207,7 @@ describe('preApply script', () => {
       });
       expect(`${env.HOMEDRIVE}${env.HOMEPATH}`).toBe(env.USERPROFILE);
       const outputKeys = Object.keys(env).map((key) => key.toLowerCase());
-      for (const key of ['openai_api_key', 'github_token', 'npm_config_registry', 'psmodulepath', 'winpsmodulepath', 'node_options']) {
+      for (const key of ['openai_api_key', 'github_token', 'npm_config_registry', 'psmodulepath', 'winpsmodulepath', 'node_options', 'aw_native_qualification_public_aw_marker']) {
         expect(outputKeys).not.toContain(key);
       }
       expect(Object.values(env)).not.toContain('credential-must-not-leak');
@@ -390,12 +391,14 @@ describe('preApply script', () => {
       terminateProcessTree,
     });
     const controller = new AbortController();
+    const onSpawn = vi.fn(() => { throw new Error('diagnostic callback failed'); });
     const running = runner.run({
       command: 'node.exe',
       args: ['script.js'],
       cwd: '/',
       env: {},
-    }, { timeoutMs: 2_000, signal: controller.signal });
+    }, { timeoutMs: 2_000, signal: controller.signal, onSpawn });
+    expect(onSpawn).toHaveBeenCalledExactlyOnceWith({ pid: 321 });
     let settled = false;
     void running.then(() => { settled = true; }, () => { settled = true; });
 
@@ -445,6 +448,10 @@ describe('preApply script', () => {
     });
     const observation = {
       pid: 321,
+      diagnostics: ['observation', 'termination-start', 'termination-verification'].map(stage => ({
+        capturedAt: '2026-01-01T00:00:00.000Z', stage, reason: 'marker-lookup-failed', rootPid: 321,
+        affectedPids: [], markerLookupSucceeded: false, processes: [],
+      })),
       onFailure: () => () => undefined,
       dispose: vi.fn(),
     };
@@ -472,7 +479,7 @@ describe('preApply script', () => {
     if (rejectCleanup) {
       await expect(running).rejects.toMatchObject({ cause: cleanupFailure, operationDiagnostic: {
         code: 'pluginProcessCleanupFailed', safeMessage: 'Plugin process cleanup could not be confirmed.',
-      } });
+      }, processTreeDiagnostics: [observation.diagnostics[0], observation.diagnostics.at(-1)] });
     } else {
       await expect(running).resolves.toMatchObject({ exitCode: 0, timedOut: false });
     }

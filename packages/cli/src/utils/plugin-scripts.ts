@@ -42,7 +42,14 @@ export interface PluginProcessRunner {
   run(invocation: PluginScriptInvocation, options: { timeoutMs: number; signal?: AbortSignal; maxStdoutBytes?: number }): Promise<PluginProcessResult>;
 }
 
-interface DefaultPluginProcessRunOptions { timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[]; maxStdoutBytes?: number }
+interface DefaultPluginProcessRunOptions {
+  timeoutMs: number;
+  signal?: AbortSignal;
+  sensitiveValues?: readonly string[];
+  maxStdoutBytes?: number;
+  /** Internal diagnostics only. Callback failures cannot change process execution. */
+  onSpawn?(child: { pid: number }): void;
+}
 
 class PluginProcessInputError extends Error {
   constructor(cause: unknown) {
@@ -348,6 +355,9 @@ export function createDefaultPluginProcessRunner(
       // Keep long Catalog snapshot directories accessible to libuv's Windows cwd resolution.
       const cwd = platform === 'win32' ? path.win32.toNamespacedPath(invocation.cwd) : invocation.cwd;
       const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
+      if (child.pid !== undefined) {
+        try { options.onSpawn?.({ pid: child.pid }); } catch { /* Diagnostic only. */ }
+      }
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
       let stdoutBytes = 0; let stdoutTruncated = false;
       let inputCompleted = child.stdin === null; let inputError: unknown;
@@ -368,6 +378,10 @@ export function createDefaultPluginProcessRunner(
       };
       const failCleanup = (cause: unknown): void => {
         const failure = new Error(cause instanceof Error ? cause.message : 'Plugin process cleanup could not be confirmed.', { cause });
+        const diagnostics = observation?.diagnostics;
+        if (diagnostics?.length) Object.assign(failure, {
+          processTreeDiagnostics: diagnostics.length === 1 ? [diagnostics[0]] : [diagnostics[0], diagnostics.at(-1)],
+        });
         settleImmediately(attachSafeOperationError(failure, readSafeOperationError(cause) ?? {
           code: 'pluginProcessCleanupFailed',
           safeMessage: 'Plugin process cleanup could not be confirmed.',

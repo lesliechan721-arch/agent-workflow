@@ -1754,6 +1754,12 @@ describe('five namespaced write commands', () => {
     }
     if (mode === 'unknown') {
       await fs.outputFile(path.join(claudeHome, 'plugins', 'known_marketplaces.json'), '{bad json');
+      runtime.nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+        const args = invocation.args.slice(invocation.args.indexOf('plugin'));
+        return args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'list'
+          ? { exitCode: 1, stdout: '', stderr: 'Marketplace inventory unavailable.' }
+          : nativeCliRunner(invocation);
+      });
     }
     await createNativeDependencyCatalog(sourceRoot, [definitions[1]!]);
     await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
@@ -3985,7 +3991,7 @@ describe('five namespaced write commands', () => {
     const rolePath = path.join(isolation.env.CODEX_HOME!, 'agents', "aw-team-leaf-shared-name.toml");
     const renderCountBefore = await fs.readFile(path.join(counterRoot, 'render-count.txt'));
     const projectRole = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-team-leaf-shared-name.toml');
-    const projectRoleBefore = await fs.readFile(projectRole);
+    expect(await fs.pathExists(projectRole)).toBe(false);
     const originalRole = await fs.readFile(rolePath, 'utf8');
     await fs.outputFile(rolePath, `# agent-workflows-owner: {invalid\n${originalRole.split('\n').slice(1).join('\n')}`);
     const damagedRole = await fs.readFile(rolePath);
@@ -4020,7 +4026,7 @@ describe('five namespaced write commands', () => {
     expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
     await expect(fs.pathExists(rolePath)).resolves.toBe(false);
     await expect(fs.readFile(path.join(counterRoot, 'render-count.txt'))).resolves.toEqual(renderCountBefore);
-    await expect(fs.readFile(projectRole)).resolves.toEqual(projectRoleBefore);
+    await expect(fs.pathExists(projectRole)).resolves.toBe(false);
     await expect(fs.readFile(projectIntentPath)).resolves.toEqual(projectIntent);
     await expect(fs.readFile(foreignSkill, 'utf8')).resolves.toBe('foreign\n');
 
@@ -4028,7 +4034,7 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime);
     expect(restored.overallState, JSON.stringify(restored.rebuildResults)).toBe('succeeded');
-    await expect(fs.readFile(projectRole)).resolves.toEqual(projectRoleBefore);
+    await expect(fs.pathExists(projectRole)).resolves.toBe(false);
     await expect(fs.pathExists(rolePath)).resolves.toBe(true);
     expect(parseOwnedTextHeader(await fs.readFile(rolePath, 'utf8'))?.identity)
       .toMatchObject({ pluginId: 'team/leaf', artifactKey: path.basename(rolePath), platform: 'codex', scope: 'user' });

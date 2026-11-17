@@ -37,9 +37,22 @@ interface ProcessCommandFailure {
   killed?: boolean;
 }
 
-type ProcessCommandResult =
+interface ProcessQueryDiagnostic {
+  kind: 'identity' | 'marker' | 'darwin-marker';
+  startedAt: number;
+  deadline: number;
+  callbackAt?: number;
+  settledAt?: number;
+  callbackState: 'returned' | 'pending' | 'not-called';
+  completion: 'pending' | 'callback' | 'deadline' | 'synchronous-error';
+  failureReason?: ProcessCommandFailure['reason'];
+}
+
+type ProcessCommandResult = (
   | { output: string; failure?: never }
-  | { output: null; failure: ProcessCommandFailure };
+  | { output: null; failure: ProcessCommandFailure }
+) & { query?: ProcessQueryDiagnostic };
+type ProcessCommandPromise = Promise<ProcessCommandResult> & { readonly query: ProcessQueryDiagnostic };
 
 interface PosixProcessSnapshot {
   table: Map<number, ProcessEntry>;
@@ -50,6 +63,9 @@ interface PosixProcessSnapshot {
   markerScanStartedAt?: number;
   markerLookupFailure?: ProcessCommandFailure;
   confirmedUnmarkedPids: Set<number>;
+  snapshotStartedAt?: number;
+  snapshotDeadline?: number;
+  queries?: ProcessQueryDiagnostic[];
 }
 
 interface PosixMarkerScan {
@@ -120,6 +136,10 @@ export interface ProcessTreeDiagnostic {
   affectedPids: number[];
   markerLookupSucceeded: boolean | null;
   lookupFailure?: ProcessCommandFailure;
+  snapshotStartedAt?: number;
+  snapshotDeadline?: number;
+  markerLookupAttempts?: number;
+  queries?: ProcessQueryDiagnostic[];
   processes: Array<{
     pid: number;
     present: boolean | null;
@@ -167,10 +187,12 @@ interface PosixProcessSampler {
   readonly states: Set<ObservationState>;
   identityTable?: Map<number, ProcessEntry>;
   identityFailure?: ProcessCommandFailure;
+  identityQuery?: ProcessQueryDiagnostic;
   identityScannedAt: number;
   identityInFlight?: Promise<void>;
   markerScan?: PosixMarkerScan;
   markerFailure?: ProcessCommandFailure;
+  markerQuery?: ProcessQueryDiagnostic;
   markerScannedAt: number;
   markerInFlight?: Promise<void>;
   timer?: NodeJS.Timeout;
@@ -217,19 +239,29 @@ function runCommandWithDiagnostics(
   args: string[],
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
   timeoutMs: number,
-): Promise<ProcessCommandResult> {
-  return new Promise((resolve) => {
+): ProcessCommandPromise {
+  const startedAt = Date.now();
+  const query: ProcessQueryDiagnostic = {
+    kind: command === '/usr/bin/osascript' ? 'darwin-marker'
+      : args[0] === 'eww' ? 'marker' : 'identity',
+    startedAt, deadline: startedAt + timeoutMs, callbackState: 'pending', completion: 'pending',
+  };
+  const pending = new Promise<ProcessCommandResult>((resolve) => {
     let settled = false;
-    const finish = (result: ProcessCommandResult): void => {
+    const finish = (result: ProcessCommandResult, completion: ProcessQueryDiagnostic['completion']): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      resolve(result);
+      query.settledAt = Date.now();
+      query.completion = completion;
+      if (completion === 'synchronous-error' && query.callbackState === 'pending') query.callbackState = 'not-called';
+      if (result.failure) query.failureReason = result.failure.reason;
+      resolve({ ...result, query: { ...query } });
     };
     const timeout = setTimeout(() => finish({
       output: null,
       failure: commandFailure('deadline-exceeded'),
-    }), timeoutMs);
+    }, 'deadline'), timeoutMs);
     timeout.unref();
 
     try {
@@ -241,14 +273,18 @@ function runCommandWithDiagnostics(
           windowsHide: true,
           maxBuffer: PROCESS_TREE_MAX_BUFFER_BYTES,
         },
-        (error, stdout) => finish(error
-          ? { output: null, failure: commandFailure('callback-error', error) }
-          : { output: stdout }),
+        (error, stdout) => {
+          query.callbackAt = Date.now();
+          query.callbackState = 'returned';
+          finish(error ? { output: null, failure: commandFailure('callback-error', error) }
+            : { output: stdout }, 'callback');
+        },
       );
     } catch (error) {
-      finish({ output: null, failure: commandFailure('synchronous-error', error) });
+      finish({ output: null, failure: commandFailure('synchronous-error', error) }, 'synchronous-error');
     }
   });
+  return Object.assign(pending, { query });
 }
 
 function runCommand(
@@ -374,6 +410,8 @@ async function readPosixProcessTable(
       : runCommandWithDiagnostics('ps', markerArgs, execFileImpl, timeoutMs),
   ]);
   if (identityResult.output === null) return null;
+  const queries = [identityResult.query, initialMarkerResult.query]
+    .filter((query): query is ProcessQueryDiagnostic => query !== undefined);
   let markerResult = initialMarkerResult;
   let markerLookupAttempts = marker === undefined ? 0 : 1;
   const retryTimeoutMs = timeoutMs - (Date.now() - lookupStartedAt);
@@ -385,6 +423,7 @@ async function readPosixProcessTable(
       execFileImpl,
       retryTimeoutMs,
     );
+    if (markerResult.query) queries.push(markerResult.query);
   }
   const markerOutput = markerResult.output;
   const markerScan = markerOutput === null ? undefined : parsePosixMarkerScan(markerOutput);
@@ -420,6 +459,9 @@ async function readPosixProcessTable(
     markerLookupSucceeded: marker === undefined || markerOutput !== null,
     markerLookupAttempts,
     markerScanStartedAt: lookupStartedAt,
+    snapshotStartedAt: lookupStartedAt,
+    snapshotDeadline: lookupStartedAt + timeoutMs,
+    queries,
     ...(markerResult.failure ? { markerLookupFailure: markerResult.failure } : {}),
     confirmedUnmarkedPids,
   };
@@ -428,7 +470,7 @@ async function readPosixProcessTable(
 function readPosixIdentityTable(
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
   timeoutMs = POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
-): Promise<ProcessCommandResult> {
+): ProcessCommandPromise {
   return runCommandWithDiagnostics(
     'ps',
     ['-A', '-o', 'pid=,ppid=,pgid=,state=,lstart='],
@@ -440,7 +482,7 @@ function readPosixIdentityTable(
 function readPosixMarkerOutput(
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
   timeoutMs = POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
-): Promise<ProcessCommandResult> {
+): ProcessCommandPromise {
   return runCommandWithDiagnostics(
     'ps',
     ['eww', '-A', '-o', 'pid=,ppid=,pgid=,state=,lstart=,command='],
@@ -471,6 +513,7 @@ async function confirmDarwinMarkers(
   snapshot.markerLookupAttempts += 1;
   const result = await query('/usr/bin/osascript', ['-l', 'JavaScript', '-e', DARWIN_PROCESS_MARKER_SCRIPT,
     JSON.stringify({ pids, token: Buffer.from(`\0${markerEnvironmentVariable}=${marker}\0`).toString('base64') })]);
+  if (result.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(result.query);
   if (result.output === null) return failed(result.failure);
   const markers = new Map<number, boolean | null>();
   try {
@@ -487,6 +530,7 @@ async function confirmDarwinMarkers(
     return failed(commandFailure('callback-error', { code: 'DARWIN_MARKER_RESULT_INVALID' }));
   }
   const identity = await query('ps', ['-A', '-o', 'pid=,ppid=,pgid=,state=,lstart=']);
+  if (identity.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(identity.query);
   if (identity.output === null) return failed(identity.failure);
   if (Date.now() >= deadline) return failed(commandFailure('deadline-exceeded'));
   const confirmed = parsePosixProcessTable(identity.output);
@@ -846,6 +890,12 @@ function posixDiagnostic(
     rootPgidMode: state.rootPgidMode,
     affectedPids,
     markerLookupSucceeded: snapshot?.markerLookupSucceeded ?? null,
+    ...(snapshot ? {
+      snapshotStartedAt: snapshot.snapshotStartedAt,
+      snapshotDeadline: snapshot.snapshotDeadline,
+      markerLookupAttempts: snapshot.markerLookupAttempts,
+      queries: snapshot.queries?.slice(0, 8),
+    } : {}),
     ...(snapshot?.markerLookupFailure ? { lookupFailure: snapshot.markerLookupFailure } : {}),
     processes: [...pids].sort((a, b) => a - b).map((pid) => {
       const entry = snapshot?.table.get(pid);
@@ -980,9 +1030,10 @@ async function acceptPosixSnapshot(
     retainGroupDepartures(snapshot.table);
     const remaining = confirmationDeadline - Date.now();
     snapshot.markerLookupAttempts += 1;
-    const confirmation = remaining > 0
+    const confirmation: ProcessCommandResult = remaining > 0
       ? await readPosixMarkerOutput(state.dependencies.execFile ?? defaultExecFile, remaining)
       : { output: null, failure: commandFailure('deadline-exceeded') };
+    if (confirmation.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(confirmation.query);
     if (confirmation.output === null) {
       snapshot.markerLookupSucceeded = false;
       snapshot.markerLookupFailure = confirmation.failure;
@@ -1023,9 +1074,10 @@ async function acceptPosixSnapshot(
         const identityRemaining = confirmationDeadline - queryStartedAt;
         // A forced sampler scan can reuse an older in-flight query. Start a new
         // direct lookup only after the marker confirmation callback has completed.
-        const identity = identityRemaining > 0
+        const identity: ProcessCommandResult = identityRemaining > 0
           ? await readPosixIdentityTable(state.dependencies.execFile ?? defaultExecFile, identityRemaining)
           : { output: null, failure: commandFailure('deadline-exceeded') };
+        if (identity.query && (snapshot.queries?.length ?? 0) < 8) (snapshot.queries ??= []).push(identity.query);
         const identityTable = identity.output === null ? undefined : parseCompletePosixIdentityTable(identity.output);
         const anchorConfirmed = anchor !== undefined
           && confirmed.table.get(anchor.pid)?.startTime === anchor.startTime
@@ -1293,6 +1345,11 @@ function snapshotFromSampler(
     markerLookupSucceeded,
     markerLookupAttempts: state.marker === undefined ? 0 : 1,
     markerScanStartedAt: sampler.markerScannedAt,
+    snapshotStartedAt: state.marker === undefined ? sampler.identityScannedAt : sampler.markerScannedAt,
+    snapshotDeadline: (state.marker === undefined ? sampler.identityScannedAt : sampler.markerScannedAt)
+      + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
+    queries: [sampler.identityQuery, sampler.markerQuery]
+      .filter((query): query is ProcessQueryDiagnostic => query !== undefined),
     ...(sampler.markerFailure ? { markerLookupFailure: sampler.markerFailure } : {}),
     confirmedUnmarkedPids: new Set<number>(),
   };
@@ -1308,6 +1365,11 @@ function deliverSamplerIdentity(sampler: PosixProcessSampler): void {
         {
           ...posixDiagnostic(state, undefined, 'observation', 'identity-lookup-failed'),
           lookupFailure: sampler.identityFailure,
+          ...(sampler.identityQuery ? {
+            snapshotStartedAt: sampler.identityQuery.startedAt,
+            snapshotDeadline: sampler.identityQuery.deadline,
+            queries: [sampler.identityQuery],
+          } : {}),
         },
       );
       continue;
@@ -1370,6 +1432,7 @@ function scanSamplerIdentity(
   sampler.identityInFlight = readPosixIdentityTable(sampler.execFile)
     .then((result) => {
       sampler.identityFailure = result.failure;
+      sampler.identityQuery = result.query;
       sampler.identityTable = result.output === null
         ? undefined
         : parsePosixProcessTable(result.output);
@@ -1388,6 +1451,7 @@ function runMarkerScan(
   sampler.markerInFlight = readPosixMarkerOutput(sampler.execFile)
     .then((result) => {
       sampler.markerFailure = result.failure;
+      sampler.markerQuery = result.query;
       sampler.markerScan = result.output === null ? undefined : parsePosixMarkerScan(result.output);
       return deliverSamplerMarkers(sampler, 'observation');
     })
@@ -1479,10 +1543,17 @@ async function readImmediatePosixSnapshot(
   } finally {
     if (timer) clearTimeout(timer);
   }
+  const queryMetadata = {
+    snapshotStartedAt: startedAt,
+    snapshotDeadline: deadline,
+    markerLookupAttempts: state.marker === undefined ? 0 : 1,
+    queries: [{ ...lookup.query }],
+  };
   if (result.output === null && state.marker === undefined) {
     const diagnostic = {
       ...posixDiagnostic(state, undefined, stage, 'identity-lookup-failed'),
       lookupFailure: result.failure,
+      ...queryMetadata,
     };
     latchObservationFailure(
       state,
@@ -1506,6 +1577,7 @@ async function readImmediatePosixSnapshot(
       ...posixDiagnostic(state, undefined, stage, 'marker-lookup-failed'),
       markerLookupSucceeded: false,
       lookupFailure: result.failure,
+      ...queryMetadata,
     };
     latchObservationFailure(
       state,
@@ -1524,8 +1596,8 @@ async function readImmediatePosixSnapshot(
     markerPids,
     unreadableMarkerPids: unreadableMarkerPids(markerScan, state.platform, markerPids),
     markerLookupSucceeded: true,
-    markerLookupAttempts: state.marker === undefined ? 0 : 1,
     markerScanStartedAt: startedAt,
+    ...queryMetadata,
     confirmedUnmarkedPids: new Set(),
   };
   await acceptPosixSnapshot(state, snapshot, stage, deadline);

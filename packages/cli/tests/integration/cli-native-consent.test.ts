@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
-import { geminiScopePattern } from '../../src/platforms/gemini-activation.js';
+import { geminiActivationRules, geminiPathEnabled, geminiScopePattern, readGeminiActivationSnapshot } from '../../src/platforms/gemini-activation.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
@@ -56,7 +56,15 @@ describe('CLI Gemini native consent', () => {
         versionProbes++;
         return { exitCode: 0, stdout: '0.67.0', stderr: '' };
       }
-      if (args.join(' ') === 'extensions list') return { exitCode: 0, stdout: '', stderr: '' };
+      if (args[0] === 'extensions' && args[1] === 'list') {
+        expect(args).toEqual(['extensions', 'list', '--output-format', 'json']);
+        const queryCwd = invocation.cwd ?? cwd;
+        const installed = path.join(resolvePlatformConfigRoot('gemini', { cwd, env }), 'extensions/demo');
+        const manifest = await fs.readJson(path.join(installed, 'gemini-extension.json')).catch(() => null);
+        const rules = geminiActivationRules(await readGeminiActivationSnapshot({ cwd: queryCwd, env }), 'demo');
+        return { exitCode: 0, stdout: '', stderr: JSON.stringify(manifest ? [{ name: manifest.name,
+          version: manifest.version, path: installed, isActive: geminiPathEnabled(rules, queryCwd) }] : []) };
+      }
       expect(args.slice(0, 2)).toEqual(['extensions', 'install']);
       expect(args.slice(3)).toEqual(['--consent', '--skip-settings']);
       nativeInstalls.push(invocation);

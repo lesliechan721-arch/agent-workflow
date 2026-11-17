@@ -9,16 +9,16 @@ import { qualifyClient } from './native-platform-clients.mjs';
 import { qualifyPublicAw } from './native-platform-public-aw.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 
-const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw]';
+const usage = 'node scripts/qualification/native-platforms.mjs --candidate <manifest> --client <all|codex|pi|claude|gemini|copilot|grok|opencode> --report <file> (--install | --executable <absolute-path>) [--public-aw] [--local-macos-fallback]';
 class Unverified extends Error {}
 
-export function parseArgs(args) {
+export function parseArgs(args, host = process.platform) {
   const options = {};
   const names = new Set(['candidate', 'client', 'report', 'executable', 'write-candidate', 'source-sha']);
   for (let index = 0; index < args.length; index++) {
     const key = args[index].replace(/^--/u, '');
     if (!args[index].startsWith('--') || Object.hasOwn(options, key)) throw new Error('invalid-arguments');
-    if (key === 'install' || key === 'public-aw') { options[key] = true; continue; }
+    if (key === 'install' || key === 'public-aw' || key === 'local-macos-fallback') { options[key] = true; continue; }
     if (!names.has(key) || !args[index + 1] || args[index + 1].startsWith('--')) throw new Error('invalid-arguments');
     options[key] = args[++index];
   }
@@ -30,6 +30,9 @@ export function parseArgs(args) {
     || Boolean(options.install) === Boolean(options.executable)
     || options.executable && (options.client === 'all' || !path.isAbsolute(options.executable))
     || Object.keys(options).some((key) => ['write-candidate', 'source-sha'].includes(key))) throw new Error('invalid-arguments');
+  if (options['local-macos-fallback'] && (host !== 'darwin' || options.client !== 'gemini' || !options['public-aw'])) {
+    throw new Error('invalid-arguments');
+  }
   return options;
 }
 
@@ -165,6 +168,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
       ['init', '--quiet', '--template=', '--initial-branch=qualification', project], { cwd: root, env }));
     await fs.mkdir(neutral);
     const ctx = { platform, scope, root, env, project, neutral, marketplace, launcher, clientBin: options.clientBin,
+      localMacosFallback: Boolean(options.localMacosFallback),
       pluginName: 'aw-qualification', skillName: 'aw-qualification', marketplaceName: 'aw-qualification-market',
       bundle: path.join(marketplace, 'plugins', 'aw-qualification'),
       recordCommand(command) { report.commands.push(redact(command, root, options.clientBin)); },
@@ -328,7 +332,9 @@ export async function run(options) {
       excluded: 'official-client-distribution-unavailable' },
     createdAt: new Date().toISOString(), environment: hostInfo(),
     run: { id: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
-    boundary: { credentials: 'not-provided', modelRequests: 'none', clients: 'real',
+    boundary: { fixtureTrust: options['local-macos-fallback'] ? 'authorized-local-macos-fallback' : 'hosted-only',
+      host: process.platform, hosted: process.env.GITHUB_ACTIONS === 'true',
+      credentials: 'not-provided', modelRequests: 'none', clients: 'real',
       input: 'current-aw-projection-candidate', productionQualificationChanged: false,
       publicAwRequested: Boolean(options['public-aw']),
       processNameDiagnostics: ['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
@@ -379,7 +385,7 @@ export async function run(options) {
         for (const scope of ['user', 'project']) result.scopes.push(await runScope(platform, scope, launcher));
         if (options['public-aw']) {
           result.publicAw = [];
-          for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin }));
+          for (const scope of ['user', 'project']) result.publicAw.push(await runScope(platform, scope, launcher, { publicAw: true, clientBin, localMacosFallback: options['local-macos-fallback'] }));
         }
         const scopes = [...result.scopes, ...(result.publicAw ?? [])];
         result.status = aggregateQualificationStatus(scopes.map(scope => scope.status));

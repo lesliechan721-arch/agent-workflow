@@ -278,7 +278,11 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             const inactive = !supplementOnly && (live.registration === 'absent' || live.consumers.some((consumer) => consumer.activation === 'disabled' || consumer.activation === 'blocked'
               || consumer.trust === 'blocked' || consumer.trust === 'required'));
             if (confirmedEmpty) {
-              const inactiveScope = live.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
+              const inactiveScope = live.registration === 'absent'
+                || live.package === 'absent' && live.registration === 'not-applicable'
+                || live.scopeRegistration === 'absent'
+                || binding.scope.kind === 'project' && shared && live.configuration?.activation === 'absent'
+                || live.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
               states.push(live.ownership === 'foreign' ? 'conflict' : live.package === 'unknown' || live.registration === 'unknown'
                 || live.diagnostics.length || !inactiveScope ? 'unknown'
                 : live.package === 'absent' || shared ? 'satisfied' : 'drifted');

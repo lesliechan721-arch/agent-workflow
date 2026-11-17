@@ -10,7 +10,7 @@ import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
 import { deploymentPackageComponent, inspectStaticSupplements } from '../platforms/inspection.js';
 import type { PlatformDriverState } from '../platforms/lifecycle.js';
-import { nativeRoute } from '../platforms/lifecycle-native.js';
+import { nativeRoute, piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
 import { assertGeminiProjectRules, geminiActivationEvidence, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
   geminiUserActivation, readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
@@ -280,8 +280,8 @@ async function sharedReferences(context: RebuildExecutionContext, binding: Deplo
   }
   // These routes do not expose a complete global activation inventory. An absent
   // registration is sufficient for orphan payload cleanup; otherwise keep it.
-  return observation.registration === 'absent' && observation.consumers.every((consumer) => consumer.activation === 'disabled')
-    && view?.desiredComplete === true && view.scopes.includes('user') && view.scopes.includes('project') ? 'none' : 'unknown';
+  return observation.registration === 'absent' && view?.desiredComplete === true
+    && view.scopes.includes('user') && view.scopes.includes('project') ? 'none' : 'unknown';
 }
 
 export class PlatformRebuildSession {
@@ -314,6 +314,19 @@ export class PlatformRebuildSession {
   }
   setOwnershipExecutor(executor: OwnedComponentExecutor): void { this.ownership = executor; }
   private root(): Promise<string> { return this.staging ??= fs.mkdtemp(path.join(os.tmpdir(), 'aw-deployment-')); }
+  private nativeReadContext(input: TargetInput): ReadContext {
+    const ctx = readContext(this.context, input.cwd);
+    if (input.platform === 'gemini') ctx.nativeNodeCompileCacheDir = async () => {
+      const pending = this.root();
+      try { return path.join(await pending, 'native-node-compile-cache'); }
+      catch (error) {
+        // An optional cache allocation must not poison later required staging.
+        if (this.staging === pending) this.staging = undefined;
+        throw error;
+      }
+    };
+    return ctx;
+  }
   async dispose(): Promise<void> {
     for (const result of await Promise.allSettled(this.units.values())) if (result.status === 'fulfilled') await result.value.finalized.cleanup();
     if (this.staging) await fs.remove(await this.staging);
@@ -333,7 +346,7 @@ export class PlatformRebuildSession {
     if (!result) {
       result = (async () => {
         const adapter = this.adapterFor(input.platform);
-        const ctx = readContext(this.context, input.cwd);
+        const ctx = this.nativeReadContext(input);
         const plugin = sourceIdentity(input);
         const recoveryCandidates = (this.context.recoveryCandidates ?? []).filter((candidate) => candidate.binding.platform === input.platform
           && candidate.binding.plugin.sourceIdentity === plugin.sourceIdentity && candidate.binding.plugin.pluginId === plugin.pluginId
@@ -494,19 +507,24 @@ export class PlatformRebuildSession {
   async buildTarget(input: TargetInput): Promise<DesiredTarget> {
     if (input.readOnlyInspectionPlan) return this.build(input);
     const key = this.key(input);
+    let verifyInitial: (() => Promise<void>) | undefined;
     let target = this.targets.get(key);
-    if (!target) { target = this.build(input); this.targets.set(key, target); }
+    if (!target) {
+      target = this.build(input, (check) => { verifyInitial = check; });
+      this.targets.set(key, target);
+    }
     const result = await target;
-    await result.platformDeployment?.verify();
+    if (verifyInitial) await verifyInitial();
+    else await result.platformDeployment?.verify();
     return result;
   }
-  private async build(input: TargetInput): Promise<DesiredTarget> {
+  private async build(input: TargetInput, receiveInitialVerifier?: (check: () => Promise<void>) => void): Promise<DesiredTarget> {
     const resolution = await this.resolve(input);
     if (!resolution.bindings.length) throw Object.assign(
       new Error(`platformUnavailable: ${resolution.exclusions.map((item) => item.reasonCode).join(', ') || input.platform}`),
       { deploymentExclusions: this.exclusions.get(this.key(input)) ?? [] });
     const adapter = this.adapterFor(input.platform);
-    const ctx = readContext(this.context, input.cwd);
+    const ctx = this.nativeReadContext(input);
     this.contexts.add(ctx);
     const observed = await Promise.all(resolution.bindings.map(async (binding) => ({ binding, observation: await adapter.inspect(ctx, binding), layout: await getDeploymentLayout(ctx, binding) })));
     if (input.readOnlyInspectionPlan && !input.readOnlyShallowInspectionPlan) for (const entry of observed) {
@@ -564,6 +582,7 @@ export class PlatformRebuildSession {
     const blockedReceipts: DeploymentReceipt[] = [];
     const cleanupResults: CleanupResult[] = [];
     const checks = new Map<string, () => Promise<boolean>>();
+    let initialDiscoveryCheck: (() => Promise<boolean>) | undefined;
     const priorProducers = new Map<string, ProducerIdentity[]>();
     const priorResourceRoots = new Map<string, string[]>();
     const bindingRecoveryEvidence: ManagedCommandBindingRecoveryEvidence[] = [];
@@ -661,10 +680,10 @@ export class PlatformRebuildSession {
             ownership: await inspectOwnedComponents({ components: [component], executor: this.ownership }), contentDigest: await ownedContentDigest(component),
           })) };
       };
-      const fingerprintParts = async () => ({
+      const fingerprintParts = async (discovery?: { value: unknown }) => ({
         managedCommandReview,
         source: removing ? null : await pathEvidence(input.plugin.rootDir),
-        discovery: removing ? { consumers: entry.binding.consumers, executables: await Promise.all(entry.binding.consumers.map((consumer) =>
+        discovery: discovery ? discovery.value : removing ? { consumers: entry.binding.consumers, executables: await Promise.all(entry.binding.consumers.map((consumer) =>
           consumer.entry?.kind === 'cli' ? pathEvidence(consumer.entry.executable) : null)) } : await adapter.discover(ctx),
         sharedReferenceView: this.context.sharedReferenceView,
         layout: await getDeploymentLayout(ctx, entry.binding),
@@ -676,28 +695,32 @@ export class PlatformRebuildSession {
           supplements: await Promise.all(projection.supplements.map((contribution) => pathEvidence(contribution.stagingPath))),
         }))),
       });
-      // Gemini and Copilot discovery and inspection are independent reads. Settle
+      // Discovery and inspection are independent reads for these routes. Settle
       // both before comparing or throwing, while preserving immutable priority.
-      const parallelNativeReads = entry.binding.route === 'gemini-extension' || entry.binding.route === 'copilot-marketplace';
+      const parallelNativeReads = ['gemini-extension', 'copilot-marketplace', 'pi-package'].includes(entry.binding.route);
       const initialReads = parallelNativeReads
         ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
       if (initialReads?.[0].status === 'rejected') throw initialReads[0].reason;
       const initialParts = initialReads?.[0].status === 'fulfilled' ? initialReads[0].value : await fingerprintParts();
       const initial = artifactValueDigest(initialParts);
-      const fingerprint = async (): Promise<string> => artifactValueDigest(await fingerprintParts());
+      const fingerprint = async (discovery?: { value: unknown }): Promise<string> => artifactValueDigest(await fingerprintParts(discovery));
       if (initialReads?.[1].status === 'rejected') throw initialReads[1].reason;
       let mutableBaseline = initialReads?.[1].status === 'fulfilled' ? initialReads[1].value : await currentMutable();
       const preparationObservation = entry.binding.route === 'gemini-extension' || entry.binding.route === 'antigravity-cli'
         ? mutableBaseline.observation : entry.observation;
-      checks.set(entry.binding.id, async () => {
-        if (!parallelNativeReads) return await fingerprint() === initial
+      const check = async (discovery?: { value: unknown }): Promise<boolean> => {
+        if (!parallelNativeReads) return await fingerprint(discovery) === initial
           && artifactValueDigest(await currentMutable()) === artifactValueDigest(mutableBaseline);
-        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(), currentMutable()]);
+        const [immutableRead, mutableRead] = await Promise.allSettled([fingerprint(discovery), currentMutable()]);
         if (immutableRead.status === 'rejected') throw immutableRead.reason;
         if (immutableRead.value !== initial) return false;
         if (mutableRead.status === 'rejected') throw mutableRead.reason;
         return artifactValueDigest(mutableRead.value) === artifactValueDigest(mutableBaseline);
-      });
+      };
+      checks.set(entry.binding.id, () => check());
+      if (resolution.bindings.length === 1 && ['gemini-extension', 'pi-package'].includes(entry.binding.route)) {
+        initialDiscoveryCheck = () => check({ value: initialParts.discovery });
+      }
       this.mutableChecks.set(entry.binding.id, { physicalKey: entry.binding.physicalKey,
         marketplaceRoot: entry.layout.marketplaceRoot, sourceId: entry.binding.plugin.sourceId,
         sourceIdentity: entry.binding.plugin.sourceIdentity,
@@ -712,7 +735,15 @@ export class PlatformRebuildSession {
             registration: mutableBaseline.observation.registration } };
           const onlyRegistration = mutableBaseline.observation.registration === 'absent' && current.observation.registration === 'present'
             && artifactValueDigest(withoutRegistration) === artifactValueDigest(mutableBaseline);
-          if (!onlyRegistration || await fingerprint() !== initial) {
+          const onlyMarketplace = ['codex-marketplace', 'claude-marketplace'].includes(entry.binding.route)
+            && current.observation.configuration?.marketplace === 'canonical'
+            && mutableBaseline.observation.configuration?.marketplace === 'absent'
+            && (current.observation.registration === mutableBaseline.observation.registration
+              || mutableBaseline.observation.registration === 'absent' && current.observation.registration === 'present')
+            && artifactValueDigest({ ...withoutRegistration, observation: { ...withoutRegistration.observation,
+              configuration: { ...current.observation.configuration, marketplace: mutableBaseline.observation.configuration.marketplace },
+            } }) === artifactValueDigest(mutableBaseline);
+          if ((!onlyRegistration && !onlyMarketplace) || await fingerprint() !== initial) {
             throw new Error('operationPlanStale: deployment evidence changed during source registration.');
           }
           // This is the one shared observation changed by our confirmed source
@@ -806,19 +837,24 @@ export class PlatformRebuildSession {
     target.ownedComponents = plans.flatMap((plan) => plan.evidence.ownership.map((item) => item.component));
     target.desiredOwnedComponents = target.ownedComponents;
     let frozenNativeTools: { signature: string; changes: NativeToolChange[] } | undefined;
-    const verify = async (): Promise<void> => {
-      for (const check of checks.values()) if (!await check()) throw new Error('operationPlanStale: deployment evidence changed.');
+    const verifyChecks = async (selected: Iterable<() => Promise<boolean>>): Promise<void> => {
+      for (const check of selected) if (!await check()) throw new Error('operationPlanStale: deployment evidence changed.');
       for (const plan of plans) if (!await this.verifyMarketplace(plan)) throw new Error('operationPlanStale: marketplace evidence changed.');
     };
+    const verify = (): Promise<void> => verifyChecks(checks.values());
     const canVerifyAtExecution = (): boolean => {
       const prepared = deployments[0];
       if (!prepared || deployments.length !== 1 || plans.length !== 1 || plans[0] !== prepared.plan || blockedReceipts.length
         || target.operationActions === undefined || target.operationActions.some((action) =>
           action.kind === 'runPreApply' || action.kind === 'syncManagedCommandPackage')) return false;
       const { plan, driverState } = prepared;
-      return plan.operation === 'ensure' && ['gemini-extension', 'copilot-marketplace'].includes(plan.binding.route)
+      const hiddenEmptyPiProject = piProjectRegistrationHidden(plan.binding, driverState.before)
+        && driverState.before.package === 'absent' && driverState.before.ownership === 'absent'
+        && plan.evidence.sharedReferences === 'none' && plan.evidence.ownership.every((item) => item.state === 'absent')
+        && plan.effects.every((effect) => ['publish-package', 'register'].includes(effect.kind));
+      return plan.operation === 'ensure' && ['gemini-extension', 'copilot-marketplace', 'pi-package'].includes(plan.binding.route)
         && plan.binding.platform === target.identity.platform && plan.expected.components.length > 0 && !plan.expected.unmet.length
-        && driverState.before.package !== 'unknown' && driverState.before.registration !== 'unknown'
+        && driverState.before.package !== 'unknown' && (driverState.before.registration !== 'unknown' || hiddenEmptyPiProject)
         && ['absent', 'aw', 'shared'].includes(driverState.before.ownership)
         && plan.effects.every((effect) => ['publish-package', 'register', 'refresh', 'activate'].includes(effect.kind));
     };
@@ -867,7 +903,9 @@ export class PlatformRebuildSession {
           const packageIncomplete = packageIds.size > 0 && (after.package !== 'present' || !['aw', 'shared'].includes(after.ownership)
             || nativeContentIncomplete
             || nativeRoute(plan.binding.route) && (after.registration !== 'present'
-              || after.consumers.some((consumer) => consumer.activation !== 'enabled') || untrusted));
+              || plan.binding.route !== 'pi-package' && after.consumers.some((consumer) => consumer.activation !== 'enabled')
+              || plan.binding.route === 'claude-marketplace' && after.scopeRegistration !== undefined && after.scopeRegistration !== 'present'
+              || untrusted));
           const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id)
             || !after.components.some((observed) => observed.id === component.id && observed.presence === 'present' && !observed.reasonCodes.length));
           receipt.diagnostics.push(...after.diagnostics);
@@ -1044,10 +1082,18 @@ export class PlatformRebuildSession {
               }
             }
             const emptyState = emptyStates.get(prepared.plan.binding.id);
+            const removedByCommand = piProjectRemovalConfirmed(prepared.plan, receipt);
+            const inactiveScope = removedByCommand || receipt.after.registration === 'absent'
+              || receipt.after.package === 'absent' && receipt.after.registration === 'not-applicable'
+              || receipt.after.scopeRegistration === 'absent'
+              || prepared.plan.binding.scope.kind === 'project'
+                && ['codex-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(prepared.plan.binding.route)
+                && receipt.after.configuration?.activation === 'absent'
+              || receipt.after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
             if (emptyState && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
-              && receipt.after.registration !== 'unknown' && receipt.after.package !== 'unknown'
+              && (receipt.after.registration !== 'unknown' || removedByCommand) && receipt.after.package !== 'unknown'
               && !['foreign', 'unknown'].includes(receipt.after.ownership)
-              && receipt.after.consumers.every((consumer) => !['unknown', 'enabled'].includes(consumer.activation))) {
+              && inactiveScope) {
               const residual = await inspectOwnedComponents({ components: prepared.plan.evidence.ownership
                 .filter((slot) => !('path' in slot.component) || slot.component.path !== prepared.plan.evidence.layout.packageRoot)
                 .map((slot) => slot.component), executor: this.ownership });
@@ -1062,6 +1108,19 @@ export class PlatformRebuildSession {
         return receipts;
       },
     };
+    if (initialDiscoveryCheck) {
+      const firstCheck = initialDiscoveryCheck;
+      const canReuseDiscovery = () => this.targets.size === 1 && deployments.length === 1 && plans.length === 1
+        && plans[0] === deployments[0]!.plan && !blockedReceipts.length && plans[0]!.operation === 'ensure'
+        && plans[0]!.expected.components.length > 0 && !plans[0]!.expected.unmet.length;
+      receiveInitialVerifier?.(async () => {
+        if (!canReuseDiscovery()) return verify();
+        // Only this creator reuses the discovery captured after rendering.
+        // Inspect still rereads all native facts and local copy/config evidence.
+        await verifyChecks([firstCheck]);
+        if (!canReuseDiscovery()) await verify();
+      });
+    }
     return target;
   }
 }

@@ -20,7 +20,7 @@ export interface PublicDeploymentPlan {
 
 export interface PublicDeploymentResult extends Omit<DeploymentReceipt, 'after'> {
   products: ProductInstallation[];
-  after: Pick<DeploymentObservation, 'physicalKey' | 'package' | 'registration' | 'ownership' | 'consumers' | 'components' | 'nativeIdentity'> & {
+  after: Pick<DeploymentObservation, 'physicalKey' | 'package' | 'registration' | 'scopeRegistration' | 'ownership' | 'consumers' | 'components' | 'nativeIdentity' | 'configuration'> & {
     prerequisites?: { nativeSources: {
       observation: 'complete' | 'unknown'; configurationEvidence: string;
       sources: Array<Omit<NonNullable<DeploymentObservation['prerequisites']['nativeSources']>['sources'][number], 'path'>>;
@@ -152,8 +152,14 @@ export function projectDeploymentObservation(value: NonNullable<RecoveryTarget['
           : product.entry.kind === 'directory' ? { kind: 'directory', configRoot: product.entry.configRoot }
             : { kind: 'generic', root: product.entry.root } : null })),
     after: { physicalKey: value.after.physicalKey, package: value.after.package, registration: value.after.registration,
+      ...(value.after.scopeRegistration ? { scopeRegistration: value.after.scopeRegistration } : {}),
       ownership: value.after.ownership, consumers: value.after.consumers.map((consumer) => ({ productId: consumer.productId,
         activationKey: consumer.activationKey, activation: consumer.activation, trust: consumer.trust, load: consumer.load })),
+      ...(value.after.configuration ? { configuration: { scope: value.after.configuration.scope,
+        activation: value.after.configuration.activation,
+        ...(value.after.configuration.trust ? { trust: value.after.configuration.trust } : {}),
+        ...(value.after.configuration.marketplace ? { marketplace: value.after.configuration.marketplace } : {}),
+        reasonCodes: [...value.after.configuration.reasonCodes] } } : {}),
       components: value.after.components.map((component) => ({ id: component.id, presence: component.presence, reasonCodes: [...component.reasonCodes] })),
       ...(value.after.prerequisites.nativeSources ? { prerequisites: { nativeSources: {
         observation: value.after.prerequisites.nativeSources.observation,

@@ -129,6 +129,14 @@ describe('native recovery dispatch', () => {
     const runner = async (invocation: NativeCliInvocation) => {
       const action = invocation.args[1];
       expect(invocation.args[0]).toBe('extensions');
+      if (action === 'list') {
+        expect(invocation.args).toEqual(['extensions', 'list', '--output-format', 'json']);
+        const queryCwd = invocation.cwd ?? cwd;
+        const manifest = await fs.readJson(path.join(installed, 'gemini-extension.json')).catch(() => null);
+        const rules = geminiActivationRules(await readGeminiActivationSnapshot({ cwd: queryCwd, env }), 'demo');
+        return { exitCode: 0, stdout: '', stderr: JSON.stringify(manifest ? [{ name: manifest.name,
+          version: manifest.version, path: installed, isActive: geminiPathEnabled(rules, queryCwd) }] : []) };
+      }
       expect(['install', 'update', 'uninstall']).toContain(action);
       mutations.push(action!);
       const value: Record<string, { overrides: string[] }> = await fs.pathExists(config) ? await fs.readJson(config) : {};

@@ -21,15 +21,17 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 | Cursor | Desktop 3.29 发布线；CLI build >=2026.11.05-86047df | CLI 与 Desktop，分别按各自版本序列；workspaceOpen 路径 |
 | Antigravity | CLI >=1.3.4；App 目录路由不套 CLI 数字门槛 | CLI 与已确认 App 的公开发现目录 |
 | OpenCode | 实际本地 runtime >=2.0.0，V2 API | CLI 与 Desktop 本地 server；远程连接不代表本机包可加载 |
-| Pi | 核心 >=1.0.0 | CLI；无产品名的版本输出须由官方帮助身份补证，Windows npm 入口验证 `@earendil-works/pi-coding-agent`；Agents 消费者身份/版本另验 |
+| Pi | 核心 >=1.0.0 | CLI；无产品名的版本输出须由官方帮助身份补证；固定 1.5.0 官方 npm 入口可按下述元数据规则省去 help，Windows npm 入口验证 `@earendil-works/pi-coding-agent`；Agents 消费者身份/版本另验 |
 | Gemini CLI | >=0.63.0 | CLI，preview/许可按组件判断 |
 | Copilot CLI | >=1.0.95 | 仅 CLI，保留 managed/repo overlay |
 | Grok Build | install/list JSON/enable/disable/uninstall 与 trust 接口合同 | CLI；Windows npm 入口验证 `@xai-official/grok`，没有已证明数字最低版本 |
 | generic | 无客户端条件 | notApplicable，手动选择，不默认勾选 |
 
-数字门槛是必要接口条件，不是完整运行资格。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。Copilot 官方版本句末的单个句点只在完整品牌行内规范化，随后仍走严格版本解析；其他客户端和非法版本不放宽。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。 Gemini 的 npm JS 入口每次仍运行版本 probe；版本输出只有数字时，可用邻近包元数据中的精确名称 `@google/gemini-cli`、同版本与指向本次真实入口的包内 bin 映射补充品牌身份。元数据读取有界，不是发布者签名；缺失、损坏、不匹配或越界时回到原帮助身份 probe，不缓存版本或降低最低版本条件。
+数字门槛是必要接口条件，不是完整运行资格。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。Copilot 官方版本句末的单个句点只在完整品牌行内规范化，随后仍走严格版本解析；其他客户端和非法版本不放宽。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。 Gemini 和 Pi 的 npm JS 入口每次仍运行原生版本 probe。Gemini 版本输出只有数字时，可用邻近包元数据中的精确名称 `@google/gemini-cli`、同版本与指向本次真实入口的包内 bin 映射补充品牌身份；Pi 仅在原生输出为 `1.5.0`、元数据为 `@earendil-works/pi-coding-agent@1.5.0` 且 `bin.pi` 精确指向本次 `dist/bundle/cli.js` 时省去重复 help。元数据读取有界，不是发布者签名；缺失、损坏、不匹配或越界时回到原帮助身份 probe，不缓存版本或降低最低版本条件。
 
-仅对元数据声明 `@google/gemini-cli@0.67.0`、bin 为 `bundle/gemini.js` 且 realpath 与本次 Node JS 入口一致的版本 probe，在环境副本中设置 `GEMINI_CLI_NO_RELAUNCH=true`，避免固定入口重复启动 Node；该单次 probe 上限为 10 秒。实际输出仍须通过版本与身份检查。Windows 使用原安全 npm shim 解析出的 Node 与 JS 入口；安装、更新和普通会话继续使用原环境。其他版本、入口和客户端保持原 5 秒 probe；命令整体时限、取消和进程清理不变。
+仅对元数据声明 `@google/gemini-cli@0.67.0`、bin 为 `bundle/gemini.js` 且 realpath 与本次 Node JS 入口一致的版本 probe 和精确 `extensions list --output-format json` 查询，在环境副本中设置 `GEMINI_CLI_NO_RELAUNCH=true`，避免固定入口重复启动 Node。版本 probe 仍为 10 秒，清单查询仍为原 5 秒；实际版本与清单分别通过原身份和结构检查。元数据不匹配时清单继续使用原启动方式，不否决原生结果。Windows 使用原安全 npm shim 解析出的 Node 与 JS 入口；安装、更新和普通会话继续使用原环境。其他版本、入口和客户端保持原 5 秒 probe；命令整体时限、取消和进程清理不变。
+
+Darwin 上的同一固定 Gemini 只读版本/清单 probe 可使用 Node 标准代码编译缓存：目录由当前平台重建会话的既有私有临时根惰性提供，随该会话清理；它只复用编译代码，每次版本与清单仍实际执行。保留调用方已有 `NODE_COMPILE_CACHE` 或 `NODE_DISABLE_COMPILE_CACHE` 设置；目录不可用时退回原启动，不由缓存失败否决原生结果，也不阻断后续必要 staging 重试。Node 自行校验代码与版本变动。其它平台、客户端版本、入口和 mutation 不新增此环境提示；缓存文件不进入包指纹或状态依据。
 
 普通 Skill 的有限 profile 对 Codex CLI `0.167.0`、Pi CLI `1.5.0` 在 Linux/macOS/Windows 的 x64/arm64 开放，依据[六环境原生记录](../../../scripts/qualification/evidence/native-skills-2026-11-12.json)。Copilot CLI `1.0.95` 同样仅在上述六环境开放 User/Project 普通 Skill，依据[Copilot 六环境原生记录](../../../scripts/qualification/evidence/native-copilot-skills-2026-11-12.json)；Project 证据有显式宿主信任前提，公开 AW 编排仍须另验。Claude CLI `2.1.317` 在六环境开放 User/Project 普通 Skill，依据[管理与有效启用状态记录](../../../scripts/qualification/evidence/native-claude-skills-2026-11-12.json)；Skill 发现/加载仍未知，不作为该有限管理资格的阻塞。Gemini CLI `0.67.0` 在六环境开放 User/Project 普通 Skill；User 依据[用户级原生记录](../../../scripts/qualification/evidence/native-gemini-skills-2026-11-12.json)，Project 依据[项目级管理与有效 scope 记录](../../../scripts/qualification/evidence/native-gemini-project-skills-2026-11-13.json)。Project 原生 fixture 有显式默认禁用规则与临时目录信任前提；AW 自动维护激活规则及动态消费字节的公开链仍须新 Hosted 实测。Grok CLI `1.0.77` 仅在 Linux x64/arm64、macOS arm64、Windows x64 开放 User/Project 普通 Skill；User 依据[四环境用户级原生记录](../../../scripts/qualification/evidence/native-grok-skills-2026-11-12.json)，Project 依据[四环境项目级管理与有效 scope 记录](../../../scripts/qualification/evidence/native-grok-project-skills-2026-11-13.json)，后者使用精确临时项目的固定版本经验信任状态，Skill 发现/加载仍未知，公开 AW Project 编排与动态消费字节仍须新 Hosted 实测。OpenCode CLI `2.0.0` 在上述六环境开放 User/Project 普通 Skill，依据[管理、实际消费字节与有效 scope 记录](../../../scripts/qualification/evidence/native-opencode-skills-2026-11-13.json)；POSIX 使用已批准的普通管理观察，Windows 保留实际 Job 结果，均不提升 Provider 或 OS 隔离声明。其公开 AW 全链仍由新的对应报告独立判断。记录中的 scope 限制同时用于实际部署和作者能力视图。这些有限 profile 只确认已列范围的原生管理和有效作用域，已取得的 Skill 发现证据另列；App、相邻版本、调用控制、模型采用及其他组件不继承资格。公开 AW 完整编排仍须单独验证。 验收以 AW 管理的安装和更新正确、scope 有效状态可证为准；动态渲染须额外核对平台实际消费位置的字节，普通加载/模型采用未知单独记录，不作为该管理验收的阻塞。AW 托管输出仍验证生成与更新，平台采用未知不阻塞。
 
@@ -119,13 +121,13 @@ Cursor Hook 必须在宿主，不在等待加载的包中。读取 workspace_roo
 
 Pi 核心存在不证明 Agents 消费者存在。inspect 只读返回候选身份、版本、有效 scope、enabled、trust、packageAccess、promptMode/loadExtensions 和配置 evidence。complete+空列表是缺失，unknown 是覆盖不足；停用不是缺失。多个消费者的实际共存规则未验证时保持 unverified，不代用户选执行器。声明文件使用带插件身份的角色名并拒绝覆盖冲突；AW 不注册子代理工具或生成进程管理代码。
 
-Pi 1.5.0 的事实来自公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者公开的 subagents.json。User binding 只读取用户 settings/subagents；执行所用 neutral cwd 的项目配置不参与观察或摘要。Project binding 读取用户和项目配置，项目 subagents 覆盖同名用户配置，也适用于安装在 User scope 的消费者。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。配置摘要进入 capability 和锁内 stale 检查。
+Pi 1.5.0 的原生登记来自 list 的可见包、scope 和实际路径；清单不报告 activation/trust，相关原生字段保持 unknown。公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者 subagents.json 仅提供配置补充和 Agent 消费者能力证据。User binding 只读取用户 settings/subagents；执行所用 neutral cwd 的项目配置不参与观察或摘要。Project binding 读取用户和项目配置，项目 subagents 覆盖同名用户配置，也适用于安装在 User scope 的消费者。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。配置摘要进入 capability 和锁内 stale 检查。
 
 Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`，不保证带 `./` 前缀。登记观察和消费者输入检查采用同一 AW 本地路径解释；npm、Git 与无法解析的来源保持独立，不能仅凭名称认领 AW 包。
 
 Gemini/Copilot/Grok 的 Agent 正文组合只涉及同插件本次生成角色，不能修改用户或其他插件的 Agent。Grok project 接收同 binding、同 render scope 的完整组件集合；Instructions 单独改变也使相关 Agent 包重新投影、Review 和冻结。组合输入失败不得发布缺正文的包。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
 
-Grok 1.0.77 的 list 只证明可解析的登记，inspect.enabled 不能单独证明生效或加载。配置激活、信任、组件来源及兼容来源重叠分别报告；这些事实不扩大 ownership。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，仅对精确同源、独占的登记执行已审核的 `uninstall --confirm --keep-data` 和 `install --trust`。刷新保留插件持久数据；最终移除仍使用默认卸载。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
+Grok 1.0.77 的 list 只证明可解析的登记，匹配精确来源的 inspect.enabled 是原生报告的启用状态，不能提升为加载。配置 enabled/disabled 集合仅补充展示，不覆盖原生结果；信任、有效组件来源及兼容来源重叠分别报告；这些事实不扩大 ownership。inspect.projectTrusted 是目录/运行时信任，不能授权首次安装新来源；首次 User 安装保留 AW 源包并提示用户用精确原生命令显式授予 `--trust`，随后再 sync，AW `--yes` 不授信。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，仅对精确同源、独占的登记执行已审核的 `uninstall --confirm --keep-data` 和 `install --trust`。刷新保留插件持久数据；最终移除仍使用默认卸载。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
 
 ## 3. 适配器职责与执行证据
 

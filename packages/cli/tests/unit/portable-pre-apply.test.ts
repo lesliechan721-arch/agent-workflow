@@ -54,7 +54,19 @@ async function fixture(platforms: FixtureTarget[], dependency = false, options: 
     ? [path.join(env.SystemRoot ?? 'C:\\Windows', 'System32')] : ['/usr/bin', '/bin'])].join(path.delimiter);
   const nativeCliRunner = async (call: NativeCliInvocation) => {
     if (call.args.includes('--version')) return { exitCode: 0, stdout: versions[path.basename(call.command).replace(/\.exe$/u, '') as keyof typeof versions] ?? '', stderr: '' };
-    if (path.basename(call.command).replace(/\.exe$/u, '') !== 'pi' || !['install', 'remove'].includes(call.args[0]!)) throw new Error('Unexpected fixture native mutation.');
+    if (path.basename(call.command).replace(/\.exe$/u, '') !== 'pi') throw new Error('Unexpected fixture native command.');
+    const projectTrusted = (await fs.readJson(path.join(piAgentRoot, 'trust.json')).catch(() => ({})))[await fs.realpath(call.cwd)] === true;
+    if (call.args[0] === 'list') {
+      const groups: string[] = [];
+      for (const [title, root] of [['User', piAgentRoot], ...(projectTrusted ? [['Project', path.join(call.cwd, '.pi')]] : [])]) {
+        const settings = await fs.readJson(path.join(root!, 'settings.json')).catch(() => ({}));
+        if (settings.packages?.length) groups.push(`${title} packages:\n${settings.packages.map((source: string) =>
+          `  ${source}\n    ${path.resolve(root!, source)}`).join('\n')}`);
+      }
+      return { exitCode: 0, stdout: `${groups.join('\n\n') || 'No packages installed.'}\n`, stderr: '' };
+    }
+    if (!['install', 'remove'].includes(call.args[0]!)) throw new Error('Unexpected fixture native mutation.');
+    if (call.args.includes('--local') && !projectTrusted) return { exitCode: 1, stdout: '', stderr: 'Project is not trusted.' };
     const source = call.args.filter((arg) => !arg.startsWith('--')).at(-1)!;
     const settingsPath = call.args.includes('--local') ? path.join(call.cwd, '.pi/settings.json') : path.join(piAgentRoot, 'settings.json');
     const settings = await fs.readJson(settingsPath).catch(() => ({}));
@@ -190,19 +202,8 @@ describe('Native and generic preApply execution', () => {
       target: { platform, scope: 'project', projectRoot: f.cwd }, config: { values: { value: `stored-${platform}` } },
     })]);
     const status = await f.run(['status', '--context', 'project']);
-    const qualifiedPi = platform === 'pi' && ['darwin', 'linux', 'win32'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch);
-    if (platform === 'generic' || qualifiedPi) {
+    if (platform === 'generic') {
       expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
-      if (qualifiedPi) {
-        expect(status.value.data.allSatisfied).toBe(true);
-        expect(status.value.data.inventory).toContainEqual(expect.objectContaining({
-          targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi',
-            deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
-              consumers: expect.arrayContaining([expect.objectContaining({ trust: 'trusted', load: 'unknown' })]),
-            }) })]),
-          })]),
-        }));
-      }
     } else {
       // The operation-local Skill qualification does not invent global client
       // qualification, host trust or session loading for the read-only status command.
@@ -216,7 +217,18 @@ describe('Native and generic preApply execution', () => {
             package: 'present', components: expect.arrayContaining([expect.objectContaining({ id: 'skill:demo', presence: 'present' })]),
             consumers: expect.arrayContaining([expect.objectContaining({ load: expect.stringMatching(/^(?:unknown|not-observed)$/u) })]),
           }) })]) })]) }));
-      if (status.value.diagnostics.length) {
+      if (platform === 'pi') {
+        expect(status.value.data.inventory).toContainEqual(expect.objectContaining({
+          targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi',
+            deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
+              registration: 'present', configuration: expect.objectContaining({ activation: 'enabled', trust: 'trusted' }),
+              consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', trust: 'unknown', load: 'not-observed' })]),
+            }) })]),
+          })]),
+        }));
+      } else if (platform === 'opencode') {
+        expect(status.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodeNativeObservationRequired' }));
+      } else if (status.value.diagnostics.length) {
         expect(status.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
       }
     }
@@ -224,7 +236,7 @@ describe('Native and generic preApply execution', () => {
   }, 30_000);
 
   // Pi 1.5 ignores all project settings before trust, including package Skills.
-  // A failed trust postcheck must retain actual publication/registration and report the incomplete target.
+  // Native rejection must retain the published source without granting trust or inventing native state.
   it('keeps an untrusted Pi install partial and reports the same policy in read-only status', async () => {
     const f = await fixture(['pi'], false, { trustedPi: false });
     const installed = await f.run(['install', 'team/demo', '--scope', 'project', '--yes']);
@@ -232,22 +244,28 @@ describe('Native and generic preApply execution', () => {
     expect(installed.value.data.targetResults).toContainEqual(expect.objectContaining({ target: 'pi', execution: 'partial',
       deploymentReceipts: expect.arrayContaining([expect.objectContaining({
         effects: expect.arrayContaining([expect.objectContaining({ status: 'applied', mutation: 'confirmed' })]),
-        after: expect.objectContaining({ package: 'present', registration: 'present',
-          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'blocked', trust: 'required', load: 'unknown' })]) }),
-        unmet: expect.arrayContaining([expect.objectContaining({ componentId: 'skill:demo', reasonCode: 'nativeTrustRequired' })]),
-        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'nativeTrustRequired' })]),
+        after: expect.objectContaining({ package: 'present', registration: 'unknown',
+          configuration: expect.objectContaining({ activation: 'absent', trust: 'required' }),
+          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', trust: 'unknown', load: 'not-observed' })]) }),
+        unmet: expect.arrayContaining([expect.objectContaining({ componentId: 'skill:demo' })]),
       })]),
     }));
     const skill = await fs.readFile(path.join(f.output('pi'), 'SKILL.md'));
     expect(skill.toString()).toContain('Use demo.');
-    expect((await fs.readJson(path.join(f.cwd, '.pi/settings.json'))).packages)
-      .toContain(path.dirname(path.dirname(f.output('pi'))));
+    expect(await fs.pathExists(path.join(f.cwd, '.pi/settings.json'))).toBe(false);
     expect(await fs.pathExists(path.join(f.piAgentRoot, 'trust.json'))).toBe(false);
     const status = await f.run(['status', '--context', 'project']);
     expect([3, 4], JSON.stringify(status.value)).toContain(status.exitCode);
-    expect(status.value.data.allSatisfied).toBe(false);
+    expect([false, null]).toContain(status.value.data.allSatisfied);
     expect(status.value.data.counts.ready).toBe(0);
-    expect(status.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeTrustRequired' }));
+    expect(status.value.data.inventory).toContainEqual(expect.objectContaining({
+      targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi',
+        deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
+          registration: 'unknown', configuration: expect.objectContaining({ trust: 'required' }),
+          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', trust: 'unknown' })]),
+        }) })]),
+      })]),
+    }));
     expect(await fs.readFile(path.join(f.output('pi'), 'SKILL.md'))).toEqual(skill);
     expect(await f.events()).toHaveLength(1);
   }, 30_000);

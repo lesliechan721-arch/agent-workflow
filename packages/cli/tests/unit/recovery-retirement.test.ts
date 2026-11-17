@@ -284,6 +284,32 @@ describe('retire strong state and residue', () => {
     })]);
   });
 
+  // Test Value Gate: a removed directory package has no native activation row;
+  // its unknown activation must not create a false residual or retry target.
+  it.each(['opencode', 'cursor', 'antigravity', 'grok'] as const)('completes %s directory retirement without inventing disabled activation', async (platform) => {
+    const options = location();
+    await addRoot(options, 'local/demo', 'sha256:logical');
+    backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
+    const after = { physicalKey: 'directory-package', package: 'absent', registration: 'not-applicable', ownership: 'absent',
+      components: [], nativeIdentity: null, diagnostics: [], prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } },
+      consumers: [{ productId: 'cli', activationKey: 'directory', activation: 'unknown', trust: 'unknown', load: 'unknown' }] };
+    backend.execute.mockResolvedValue({ overallState: 'succeeded',
+      rebuildResults: [{ status: 'succeeded', command: 'cleanup',
+        target: { pluginId: 'local/demo', pluginName: 'demo', platform, scope: 'user' }, actions: [], cleanupAttempted: true,
+        removed: ['directory-package'], absent: [], residual: [], quarantined: [], failures: [],
+        deploymentReceipts: [{ bindingId: 'binding', after, effects: [], unmet: [], reload: 'unknown', diagnostics: [] }] }],
+      targetResults: [{ target: { pluginId: 'local/demo', pluginName: 'demo', platform, scope: 'user' }, action: 'cleanup', state: 'completed' }],
+      platforms: [platform], plugins: ['local/demo'], warnings: [], receiptTargets: [] });
+    const result = await runRetire({ ...options, selector: 'local/demo', targets: [platform], yes: true }, {
+      inventoryCatalogSourceReferences: async () => ({ inventorySchemaVersion: 1 as const, references: [], errors: [] }),
+    });
+    expect(result).toMatchObject({ ok: true, remainingTargets: [], targetResults: [expect.objectContaining({
+      agent: platform, execution: 'applied', blockers: [], deploymentReceipts: [expect.objectContaining({
+        after: expect.objectContaining({ package: 'absent', registration: 'not-applicable', consumers: [expect.objectContaining({ activation: 'unknown' })] }),
+      })],
+    })] });
+  });
+
   it('attributes a partial Native retirement only to the target that retained output', async () => {
     const options = location();
     await addRoot(options, 'local/demo', 'sha256:logical');

@@ -17,26 +17,46 @@ import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from 
 import { createNativeDependencyCatalog, createCodexNativeTestRuntime } from '../helpers/write-command-fixture.js';
 import { syncManagedCommandPackage, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
+import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 
-// The real adapter publishes and inspects the package. Only the Pi client mutation is controlled here.
+// The real adapter publishes and inspects the package. The Pi command boundary
+// reports registration only; it does not report activation, trust or loading.
+const piRunner: NativeCliRunner = async (invocation) => {
+  if (!['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase()) || !invocation.cwd) throw new Error('Unexpected Native test command.');
+  const cwd = invocation.cwd;
+  if (invocation.args[0] === 'list') {
+    expect(invocation.args).toEqual(['list']);
+    const user = resolvePlatformConfigRoot('pi', { cwd, env: invocation.env ?? getCurrentSourceTestIsolation().env });
+    const sections: string[] = [];
+    for (const [title, root] of [['User', user], ['Project', path.join(cwd, '.pi')]] as const) {
+      const settings = await fs.readJson(path.join(root, 'settings.json')).catch(() => ({}));
+      const packages: string[] = settings.packages ?? [];
+      if (!packages.length) continue;
+      const entries: string[] = [];
+      for (const source of packages) {
+        const installed = path.resolve(root, source);
+        entries.push(`  ${source}`, ...(await fs.pathExists(installed) ? [`    ${installed}`] : []));
+      }
+      sections.push(`${title} packages:\n${entries.join('\n')}`);
+    }
+    return { exitCode: 0, stderr: '', stdout: sections.length ? `${sections.join('\n\n')}\n` : 'No packages installed.\n' };
+  }
+  if (!['install', 'remove'].includes(invocation.args[0]!) || !invocation.args.includes('--local')) throw new Error('Unexpected Native test command.');
+  const file = path.join(cwd, '.pi', 'settings.json');
+  const settings = await fs.readJson(file).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return {}; throw error;
+  });
+  const source = invocation.args.at(-1)!;
+  const packages: string[] = settings.packages ?? [];
+  await fs.outputJson(file, { ...settings, packages: invocation.args[0] === 'install'
+    ? [...new Set([...packages, source])] : packages.filter((entry) => entry !== source) });
+  return { exitCode: 0, stdout: '', stderr: '' };
+};
+
 async function runPublicLifecycle(...args: Parameters<typeof executePublicLifecycle>) {
   const [command, plugins, options, input] = args;
   return executePublicLifecycle(command, plugins, options, { ...input,
-    nativeCliRunner: input?.nativeCliRunner ?? (async (invocation) => {
-      if (!['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase())
-        || !['install', 'remove'].includes(invocation.args[0]!) || !invocation.args.includes('--local')) {
-        throw new Error('Unexpected Native test command.');
-      }
-      const file = path.join(invocation.cwd, '.pi', 'settings.json');
-      const settings = await fs.readJson(file).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return {}; throw error;
-      });
-      const source = invocation.args.at(-1)!;
-      const packages: string[] = settings.packages ?? [];
-      await fs.outputJson(file, { ...settings, packages: invocation.args[0] === 'install'
-        ? [...new Set([...packages, source])] : packages.filter((entry) => entry !== source) });
-      return { exitCode: 0, stdout: '', stderr: '' };
-    }),
+    nativeCliRunner: input?.nativeCliRunner ?? piRunner,
   });
 }
 
@@ -76,7 +96,7 @@ async function fixture(options: { active?: boolean; script?: boolean | 'fail-pi'
 // Test Value Gate: protect public results and real writes at the confirmation, source, and ownership boundaries.
 describe('public plugin lifecycle', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true, trust: true });
+    installNativeTestQualification({ discovery: true });
     const isolation = getCurrentSourceTestIsolation();
     await fs.outputJson(path.join(resolvePlatformConfigRoot('pi', { cwd: isolation.layout.fixtureCwd, env: isolation.env }), 'settings.json'), { packages: [], defaultProjectTrust: 'always' });
     const bin = path.join(isolation.layout.fixtureCwd, 'pi-controlled-bin');
@@ -124,12 +144,19 @@ describe('public plugin lifecycle', () => {
     expect(installed.status, JSON.stringify(installed)).toBe('success');
     const marker = path.join(output, '.agent-workflows-owner.json');
     await fs.writeJson(marker, { ...await fs.readJson(marker), owner: 'foreign' });
-    const status = await runPublicPluginStatus([], location);
-    expect(status.status).toBe(targets.length === 1 ? 'blocked' : 'partial');
+    const status = await runPublicPluginStatus([], location, { nativeCliRunner: piRunner });
+    // Pi list confirms its registration, but does not report activation/trust.
+    // It cannot supply a verified target beside the conflicting generic output.
+    expect(status.status).toBe('blocked');
     expect(status.data).toMatchObject({ inventory: [expect.objectContaining({ targetResults: expect.arrayContaining([
       expect.objectContaining({ target: 'generic', content: 'conflict', blockerCodes: ['portableOutputConflict'] }),
     ]) })] });
     expect(status.diagnostics).toContainEqual(expect.objectContaining({ code: 'portableOutputConflict', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project' } }));
+    if (targets.includes('pi')) expect(status.data).toMatchObject({ inventory: [expect.objectContaining({ targetResults: expect.arrayContaining([
+      expect.objectContaining({ target: 'pi', observation: 'unknown', content: 'unknown', deploymentObservations: [expect.objectContaining({
+        after: expect.objectContaining({ registration: 'present', consumers: [expect.objectContaining({ activation: 'unknown', trust: 'unknown' })] }),
+      })] }),
+    ]) })] });
   });
 
   it.each(['fetch', 'activation'] as const)('continues a healthy source when another refresh fails during %s', async (failureStage) => {
@@ -223,16 +250,18 @@ describe('public plugin lifecycle', () => {
     expect(await fs.pathExists(output)).toBe(true);
   });
 
-  it('filters one install without changing the saved target policy and reports unsatisfied status', async () => {
+  it('filters one install without changing the saved target policy and retains unknown native status', async () => {
     const { location, output }=await fixture({ targets: ['generic', 'pi'] });
     const result=await runPublicLifecycle('install', ['team/demo'], { ...location, target: ['generic'] });
     expect(result.status, JSON.stringify(result)).toBe('success');
     expect((result.data as LifecycleData).targetResults.map((target) => target.target)).toEqual(['generic']);
     expect(await fs.pathExists(output)).toBe(true);
     expect(await fs.pathExists(path.join(location.cwd, '.pi', 'skills', 'demo'))).toBe(false);
-    const status=await runPublicPluginStatus([], location);
-    expect(status.status, JSON.stringify(status)).toBe('success');
-    expect(status.data).toMatchObject({ allSatisfied: false, targetPolicy: { targets: ['generic', 'pi'] } });
+    const status=await runPublicPluginStatus([], location, { nativeCliRunner: piRunner });
+    expect(status.status, JSON.stringify(status)).toBe('partial');
+    expect(status.data).toMatchObject({ allSatisfied: null, targetPolicy: { targets: ['generic', 'pi'] }, inventory: [expect.objectContaining({
+      targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi', content: 'unknown', observation: 'unknown' })]),
+    })] });
   });
 
   it('keeps ordinary removal blocked offline while both only modes remain available', async () => {

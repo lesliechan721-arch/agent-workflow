@@ -38,6 +38,16 @@ function nativeSourceLines(after: PublicDeploymentResult['after']): string[] {
   ] : [];
 }
 
+function configurationLines(after: PublicDeploymentResult['after']): string[] {
+  const config = after.configuration;
+  const scope = after.scopeRegistration ? [`  原生独立 scope 登记：${stateLabel(after.scopeRegistration)}`] : [];
+  if (!config) return scope;
+  const activation = config.activation === 'absent' ? '无显式启用条目' : config.activation === 'unknown'
+    ? '启用条目未知' : config.activation === 'enabled' ? '显式启用' : '显式停用';
+  return [...scope, `  本地配置补充 · ${scopeLabel(config.scope)} · ${activation}（不代表原生有效状态）`,
+    ...(config.reasonCodes.length ? [`    配置诊断：${config.reasonCodes.join(', ')}`] : [])];
+}
+
 /** Text is derived from frozen plans. It does not inspect or render again. */
 export function deploymentPlanLines(plans: readonly FrozenDeploymentPlan[], technical = false): string[] {
   const groups = new Map<string, FrozenDeploymentPlan[]>();
@@ -80,6 +90,7 @@ export function deploymentResultLines(receipts: readonly PublicDeploymentResult[
     ...receipt.effects.map((effect) => `  动作 ${effect.id} · ${stateLabel(effect.status)} · ${stateLabel(effect.mutation)}`),
     `  包${stateLabel(receipt.after.package)} · 登记${stateLabel(receipt.after.registration)} · ${reloadLabels[receipt.reload] ?? receipt.reload}`,
     ...nativeSourceLines(receipt.after),
+    ...configurationLines(receipt.after),
     ...receipt.diagnostics.map((entry) => `  ! ${technical ? `${entry.code} · ` : ''}${entry.message}`),
   ]);
 }
@@ -95,5 +106,6 @@ export function deploymentObservationLines(observations: readonly PublicDeployme
     }),
     `  包${stateLabel(observation.after.package)} · 登记${stateLabel(observation.after.registration)}`,
     ...nativeSourceLines(observation.after),
+    ...configurationLines(observation.after),
   ]);
 }

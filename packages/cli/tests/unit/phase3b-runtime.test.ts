@@ -68,6 +68,7 @@ import {
   resetPluginConfigWithHelper,
 } from '../../src/utils/plugin-config-write.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 
 const SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
@@ -115,30 +116,28 @@ async function nativeFixtureRuntime(): Promise<RebuildCommandRuntime> {
   const isolation = getCurrentSourceTestIsolation();
   const env = { ...isolation.env };
   const bin = path.join(isolation.layout.fixtureCwd, 'phase-native-bin');
-  for (const executable of ['codex', 'claude', 'opencode']) await fs.outputFile(path.join(bin, `${executable}${process.platform === 'win32' ? '.exe' : ''}`), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  for (const executable of ['codex', 'opencode']) await fs.outputFile(path.join(bin, `${executable}${process.platform === 'win32' ? '.exe' : ''}`), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   env.PATH = [bin, path.dirname(process.execPath), ...(process.platform === 'win32' ? [path.join(env.SystemRoot ?? 'C:\\Windows', 'System32')] : ['/usr/bin', '/bin'])].join(path.delimiter);
+  const claude = await createClaudeNativeTestRuntime({ env, layout: isolation.layout });
   const installed = new Map<string, string>();
   const marketplaces = new Map<string, string>();
   const nativeCliRunner = async (invocation: NativeCliInvocation) => {
     const platform = path.basename(invocation.command).replace(/\.(?:exe|cmd)$/iu, '');
     const args = invocation.args;
     const result = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' });
-    if (args.includes('--version')) return result(platform === 'claude' ? '2.1.317 (Claude Code)' : platform === 'opencode' ? 'opencode 2.0.0' : 'codex-cli 0.167.0');
+    if (claude.isClaudeInvocation(invocation)) return args.includes('--version')
+      ? result('2.1.317 (Claude Code)') : claude.nativeCliRunner(invocation);
+    if (args.includes('--version')) return result(platform === 'opencode' ? 'opencode 2.0.0' : 'codex-cli 0.167.0');
     if (platform === 'opencode') throw new Error('Directory loading must not execute native mutations.');
     const configPath = path.join(env.AW_CODEX_HOME!, 'config.toml');
     if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') {
       const root = args[3]!;
       const { marketplaceName } = await fs.readJson(path.join(root, 'config.json'));
       marketplaces.set(marketplaceName, root);
-      if (platform === 'codex') await fs.appendFile(configPath,
+      await fs.appendFile(configPath,
         `\n[marketplaces.${JSON.stringify(marketplaceName)}]\nsource = ${JSON.stringify(root)}\nsource_type = "local"\n`).catch(async () => {
           await fs.outputFile(configPath, `[marketplaces.${JSON.stringify(marketplaceName)}]\nsource = ${JSON.stringify(root)}\nsource_type = "local"\n`);
         });
-      else {
-        const known = path.join(env.AW_CLAUDE_HOME!, 'plugins/known_marketplaces.json');
-        await fs.outputJson(known, { ...await fs.readJson(known).catch(() => ({})), [marketplaceName]: {
-          source: { source: 'directory', path: root }, installLocation: root } });
-      }
       return result();
     }
     const id = args[2]!;
@@ -164,26 +163,6 @@ async function nativeFixtureRuntime(): Promise<RebuildCommandRuntime> {
       }
       return result();
     }
-    const scope = args[args.indexOf('--scope') + 1] ?? 'user';
-    const settingsPath = scope === 'local' ? path.join(invocation.cwd, '.claude/settings.local.json') : path.join(env.AW_CLAUDE_HOME!, 'settings.json');
-    const settings = await fs.readJson(settingsPath).catch(() => ({}));
-    const installedPath = path.join(env.AW_CLAUDE_HOME!, 'plugins/installed_plugins.json');
-    const state = await fs.readJson(installedPath).catch(() => ({ plugins: {} }));
-    if (['install', 'update', 'uninstall'].includes(args[1]!)) {
-      const split = id.lastIndexOf('@'); const root = marketplaces.get(id.slice(split + 1))!;
-      const records = (state.plugins[id] ?? []).filter((record: { scope: string }) => record.scope !== scope);
-      if (args[1] !== 'uninstall') {
-        const packageRoot = path.join(root, 'plugins', id.slice(0, split));
-        const manifest = await fs.readJson(path.join(packageRoot, '.claude-plugin/plugin.json'));
-        records.push({ scope, version: manifest.version, installPath: packageRoot,
-          ...(scope === 'local' ? { projectPath: invocation.cwd } : {}) });
-      }
-      const plugins = { ...state.plugins }; if (records.length) plugins[id] = records; else delete plugins[id];
-      await fs.outputJson(installedPath, { plugins });
-    }
-    if (['install', 'enable', 'disable', 'uninstall'].includes(args[1]!)) await fs.outputJson(settingsPath, {
-      ...settings, enabledPlugins: { ...settings.enabledPlugins, [id]: !['disable', 'uninstall'].includes(args[1]!) },
-    });
     return result();
   };
   return { env, nativeCliRunner };

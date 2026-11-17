@@ -39,6 +39,25 @@ async function nativeFixture(cwd: string, env: NodeJS.ProcessEnv, platform: 'cod
     if (call.args.includes('--version')) return { exitCode: 0, stdout: platform === 'codex' ? 'codex-cli 0.167.0' : '2.1.317 (Claude Code)', stderr: '' };
     const args = call.args;
     if (args[0] !== 'plugin') throw new Error('Unexpected fixture native command.');
+    if (platform === 'claude' && args[1] === 'marketplace' && args[2] === 'list') {
+      return { exitCode: 0, stdout: JSON.stringify([...marketplaces].map(([name, root]) => ({
+        name, source: 'directory', path: root, installLocation: root,
+      }))), stderr: '' };
+    }
+    if (platform === 'claude' && args[1] === 'list') {
+      const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} }));
+      const exactRoot = await fs.realpath(call.cwd);
+      const user = await fs.readJson(path.join(env.CLAUDE_CONFIG_DIR!, 'settings.json')).catch(() => ({}));
+      const project = await fs.readJson(path.join(exactRoot, '.claude/settings.json')).catch(() => ({}));
+      const local = await fs.readJson(path.join(exactRoot, '.claude/settings.local.json')).catch(() => ({}));
+      const enabledPlugins = { ...user.enabledPlugins, ...project.enabledPlugins, ...local.enabledPlugins };
+      const rows = Object.entries(installed.plugins).flatMap(([id, raw]) =>
+        (raw as Array<{ scope: string; projectPath?: string; version: string; installPath: string }>)
+          .filter((record) => record.scope === 'user' || record.projectPath === exactRoot)
+          .map((record) => ({ ...record, id, enabled: enabledPlugins[id] === true || Array.isArray(enabledPlugins[id]),
+            readFromFolder: record.installPath })));
+      return { exitCode: 0, stdout: JSON.stringify(rows), stderr: '' };
+    }
     if (args[1] === 'marketplace' && args[2] === 'add') {
       const root = args[3]!;
       const { marketplaceName } = await fs.readJson(path.join(root, 'config.json'));

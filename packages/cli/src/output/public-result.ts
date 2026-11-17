@@ -117,6 +117,11 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
           for (const component of deployment.after.components) lines.push(`    Component ${component.id}: physical content ${component.presence}`);
         }
         lines.push(`  Package: ${deployment.after.package}; registration=${deployment.after.registration}`);
+        if (deployment.after.scopeRegistration) lines.push(`  Native registration in requested scope: ${deployment.after.scopeRegistration}`);
+        if (deployment.after.configuration) {
+          const config = deployment.after.configuration;
+          lines.push(`  Local configuration supplement: scope=${config.scope}; activation-entry=${config.activation}; not native effective state`);
+        }
         lines.push(...nativeSourceSummary(deployment.after.prerequisites?.nativeSources));
       }
       if (!targetEntry.deploymentReceipts?.length) for (const plan of targetEntry.deploymentPlans ?? []) {
@@ -136,6 +141,11 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
         if (!deployment.products.length) for (const gap of deployment.unmet) lines.push(`  Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
         for (const effect of deployment.effects) lines.push(`  Effect ${effect.id}: ${effect.status}; mutation=${effect.mutation}`);
         lines.push(`  Package: ${deployment.after.package}; registration=${deployment.after.registration}; reload=${deployment.reload}`);
+        if (deployment.after.scopeRegistration) lines.push(`  Native registration in requested scope: ${deployment.after.scopeRegistration}`);
+        if (deployment.after.configuration) {
+          const config = deployment.after.configuration;
+          lines.push(`  Local configuration supplement: scope=${config.scope}; activation-entry=${config.activation}; not native effective state`);
+        }
         lines.push(...nativeSourceSummary(deployment.after.prerequisites?.nativeSources));
       }
       if (verbose && entry.blockerCodes && Array.isArray(entry.blockerCodes)) lines.push(`  Blockers: ${entry.blockerCodes.join(', ')}`);

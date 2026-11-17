@@ -4,6 +4,9 @@ import fs from 'fs-extra';
 import type { AgentConsumerObservation, DeploymentBinding, DeploymentObservation, ReadContext, ScopeRef } from './contracts.js';
 import { resolvePlatformConfigRoot } from './discovery.js';
 import type { DeploymentLayout } from './layout.js';
+import { queryNativeDeployment } from './inspection-query.js';
+import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
+import { resolveUserHome } from '../utils/state-paths.js';
 
 type ObjectValue = Record<string, unknown>;
 function object(value: unknown): ObjectValue {
@@ -12,9 +15,78 @@ function object(value: unknown): ObjectValue {
 }
 const digest = (value: unknown): string => `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 
-/** Read public configuration only. Never use Pi's trust store API: it acquires a write lock. */
+function localSource(source: string, root: string, home: string): string | null {
+  if (source.startsWith('~/')) return path.resolve(home, source.slice(2));
+  if (path.isAbsolute(source) || /^\.\.?[/\\]/u.test(source) || /^aw-packages[/\\]/u.test(source)) return path.resolve(root, source);
+  return null;
+}
+
+/** Pi 1.5 list reports configured packages. It does not report activation or trust. */
+function nativeRegistration(text: string, binding: DeploymentBinding, layout: DeploymentLayout, agentRoot: string,
+  home: string): DeploymentObservation['registration'] | 'scope-not-visible' {
+  const lines = text.replace(/\u001b\[[0-9;]*m/gu, '').trimEnd().split(/\r?\n/u);
+  if (lines.length === 1 && lines[0] === 'No packages installed.') return binding.scope.kind === 'user' ? 'absent' : 'scope-not-visible';
+  let scope: 'user' | 'project' | undefined;
+  const seen = new Set<string>();
+  const entries: Array<{ scope: 'user' | 'project'; source: string; installedPath?: string }> = [];
+  for (const line of lines) {
+    if (!line) continue;
+    if (line === 'User packages:' || line === 'Project packages:') {
+      scope = line === 'User packages:' ? 'user' : 'project';
+      if (seen.has(scope)) throw new Error('piNativeListInvalid');
+      seen.add(scope);
+    } else if (line.startsWith('    ')) {
+      const previous = entries.at(-1);
+      const installedPath = line.slice(4);
+      if (!previous || previous.scope !== scope || previous.installedPath || !path.isAbsolute(installedPath)) throw new Error('piNativeListInvalid');
+      previous.installedPath = path.normalize(installedPath);
+    } else if (line.startsWith('  ') && scope) {
+      const source = line.slice(2).replace(/ \(filtered\)$/u, '');
+      if (!source || source.trim() !== source) throw new Error('piNativeListInvalid');
+      entries.push({ scope, source });
+    } else throw new Error('piNativeListInvalid');
+  }
+  if (!seen.size || [...seen].some((scope) => !entries.some((entry) => entry.scope === scope))) throw new Error('piNativeListInvalid');
+  if (!seen.has(binding.scope.kind)) return binding.scope.kind === 'project' ? 'scope-not-visible' : 'unknown';
+  const settingsRoot = binding.scope.kind === 'user' ? agentRoot : path.join(binding.scope.projectRoot, '.pi');
+  const matches = entries.filter((entry) => entry.scope === binding.scope.kind
+    && (localSource(entry.source, settingsRoot, home) === layout.packageRoot || entry.installedPath === layout.packageRoot));
+  if (!matches.length) return 'absent';
+  return matches.length === 1 && matches[0]!.installedPath === layout.packageRoot
+    && localSource(matches[0]!.source, settingsRoot, home) === layout.packageRoot ? 'present' : 'unknown';
+}
+
 export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentBinding, layout: DeploymentLayout,
   result: DeploymentObservation): Promise<void> {
+  const entry = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
+  const agentRoot = entry?.kind === 'cli' ? entry.configRoot : resolvePlatformConfigRoot('pi', ctx);
+  try {
+    if (binding.consumers.some((consumer) => consumer.version !== '1.5.0')) throw new Error('piNativeVersionUnverified');
+    const registration = nativeRegistration(await queryNativeDeployment(ctx, binding, ['list']), binding, layout,
+      agentRoot, resolveUserHome(ctx.env ?? process.env, ctx.platform ?? process.platform));
+    result.registration = registration === 'scope-not-visible' ? 'unknown' : registration;
+    if (registration === 'scope-not-visible') result.diagnostics.push({ code: 'piProjectRegistrationNotVisible', severity: 'warning',
+      message: 'Pi did not expose a Project package section. This does not prove that the project has no packages.',
+      subject: { target: 'pi', scope: 'project' } });
+    for (const consumer of result.consumers) consumer.load = 'not-observed';
+  } catch (error) {
+    rethrowFatalError(error); ctx.signal?.throwIfAborted();
+    result.diagnostics.push({ code: 'piNativeObservationUnconfirmed', severity: 'warning',
+      message: 'Pi package registration could not be confirmed with the native package list.', subject: { target: 'pi', scope: binding.scope.kind } });
+  }
+  try { await inspectPiConfiguration(ctx, binding, layout, result, agentRoot); }
+  catch (error) {
+    rethrowFatalError(error); ctx.signal?.throwIfAborted();
+    result.configuration = { scope: binding.scope.kind, activation: 'unknown', trust: 'unknown', reasonCodes: ['piConfigurationUnconfirmed'] };
+    result.prerequisites.agentConsumers = { observation: 'unknown', candidates: [], reasonCodes: ['agentConsumerDiscoveryUnverified'] };
+    result.diagnostics.push({ code: 'piConfigurationUnconfirmed', severity: 'warning',
+      message: 'Pi supplemental configuration or Agent consumer settings could not be read.', subject: { target: 'pi', scope: binding.scope.kind } });
+  }
+}
+
+/** Supplemental public files never replace native package or consumer facts. */
+async function inspectPiConfiguration(ctx: ReadContext, binding: DeploymentBinding, layout: DeploymentLayout,
+  result: DeploymentObservation, agentRoot: string): Promise<void> {
   const evidence: unknown[] = [];
   let complete = true;
   async function read(file: string, record = true): Promise<ObjectValue> {
@@ -28,8 +100,6 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
       throw error;
     }
   }
-  const entry = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
-  const agentRoot = entry?.kind === 'cli' ? entry.configRoot : await resolvePlatformConfigRoot('pi', ctx);
   const user = await read(path.join(agentRoot, 'settings.json'), false);
   const projectRoot = binding.scope.kind === 'project' ? binding.scope.projectRoot : undefined;
   const project = projectRoot ? await read(path.join(projectRoot, '.pi', 'settings.json'), false) : {};
@@ -57,22 +127,14 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
   const settings = binding.scope.kind === 'user' ? user : project;
   const packages = settings.packages ?? [];
   if (!Array.isArray(packages)) throw new Error('piPackagesInvalid');
-  function localSource(source: string, root: string): string | null {
-    if (source.startsWith('~/')) return path.resolve(ctx.env?.HOME ?? path.dirname(path.dirname(agentRoot)), source.slice(2));
-    if (path.isAbsolute(source) || source.startsWith('./') || source.startsWith('../')) return path.resolve(root, source);
-    // Pi persists packages below its settings root as bare relative paths.
-    // Recognize the AW namespace without treating remote/unknown sources as local.
-    if (/^aw-packages[/\\]/u.test(source)) return path.resolve(root, source);
-    return null;
-  }
-  result.registration = packages.some((entry) => {
+  const home = resolveUserHome(ctx.env ?? process.env, ctx.platform ?? process.platform);
+  const resolveSource = (source: string, root: string) => localSource(source, root, home);
+  const configured = packages.some((entry) => {
     const source = typeof entry === 'string' ? entry : object(entry).source;
-    return typeof source === 'string' && localSource(source, path.dirname(layout.activationPath)) === layout.packageRoot;
-  }) ? 'present' : 'absent';
-  for (const consumer of result.consumers) {
-    consumer.trust = binding.scope.kind === 'user' ? 'trusted' : projectTrust;
-    consumer.activation = result.registration === 'absent' ? 'disabled' : consumer.trust === 'trusted' ? 'enabled' : 'blocked';
-  }
+    return typeof source === 'string' && resolveSource(source, path.dirname(layout.activationPath)) === layout.packageRoot;
+  });
+  result.configuration = { scope: binding.scope.kind, activation: configured ? 'enabled' : 'absent',
+    trust: binding.scope.kind === 'user' ? 'trusted' : projectTrust, reasonCodes: [] };
   // Pi 1.5's public package/filter and trust formats are observed separately
   // from qualification of any consumer's invocation protocol.
   if (binding.consumers.some((consumer) => consumer.version !== '1.5.0')) complete = false;
@@ -126,7 +188,7 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
       const filter = typeof sourceEntry === 'string' ? { source: sourceEntry } : object(sourceEntry);
       const source = filter.source;
       if (typeof source !== 'string') throw new Error('piPackageSourceInvalid');
-      let root = localSource(source, entry.root);
+      let root = resolveSource(source, entry.root);
       if (source.startsWith('npm:')) {
         const name = source.slice(4).match(/^(@[^/]+\/[^@]+|[^@/]+)(?:@[^/]+)?$/u)?.[1];
         if (name && !name.includes('..')) root = path.join(entry.root, 'npm', 'node_modules', name);
@@ -139,7 +201,7 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
     }
     for (const extension of explicit) {
       if (typeof extension !== 'string') throw new Error('piExtensionSourceInvalid');
-      const root = localSource(extension, entry.root);
+      const root = resolveSource(extension, entry.root);
       if (!root || path.extname(root)) complete = false; else await inspectRoot(root, entry.scope, {}, entry.trust);
     }
     const autoRoot = path.join(entry.root, 'extensions');

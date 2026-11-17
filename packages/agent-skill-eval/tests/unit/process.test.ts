@@ -375,6 +375,60 @@ describe('shared provider process behavior', () => {
     }
   })
 
+  // Test Value Gate: diagnostics must identify the original query without
+  // adding calls, changing its options/deadline, or retaining process output.
+  it.each([
+    { kind: 'marker', outcome: 'deadline', elapsed: 2_000, completion: 'deadline', callbackState: 'pending' },
+    { kind: 'marker', outcome: 'callback', elapsed: 20, completion: 'callback', callbackState: 'returned' },
+    { kind: 'identity', outcome: 'throw', elapsed: 0, completion: 'synchronous-error', callbackState: 'not-called' },
+  ] as const)('retains original $kind query timing after $outcome failure', async ({ kind, outcome, elapsed, completion, callbackState }) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    const calls: Array<{ command: string; args: string[]; options: { timeout: number; windowsHide: boolean; maxBuffer: number } }> = []
+    let lateCallback: ((error: Error | null, stdout: string) => void) | undefined
+    const observation = observeProcessTree(100, 'private-marker', {
+      platform: 'darwin', enforceProcessMarker: true,
+      execFile(command, args, options, callback) {
+        calls.push({ command, args, options })
+        const queryKind = args[0] === 'eww' ? 'marker' : 'identity'
+        if (queryKind !== kind) {
+          callback(null, `100 1 100 S root-start${queryKind === 'marker' ? ' node AW_NATIVE_CLI_PROCESS_MARKER=private-marker' : ''}`)
+          return
+        }
+        if (outcome === 'throw') throw new Error('private-sync-error')
+        if (outcome === 'callback') setTimeout(() => callback(new Error('private-callback-error'), 'private-output'), 20)
+        else lateCallback = callback
+      },
+    })
+    const onFailure = vi.fn(() => observation.dispose())
+    observation.onFailure(onFailure)
+    try {
+      await vi.advanceTimersByTimeAsync(elapsed)
+      expect(onFailure).toHaveBeenCalledTimes(1)
+      expect(calls).toEqual([
+        { command: 'ps', args: ['-A', '-o', 'pid=,ppid=,pgid=,state=,lstart='],
+          options: { timeout: 2_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 } },
+        { command: 'ps', args: ['eww', '-A', '-o', 'pid=,ppid=,pgid=,state=,lstart=,command='],
+          options: { timeout: 2_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 } },
+      ])
+      expect(observation.diagnostics[0]).toMatchObject({
+        rootPid: 100, reason: `${kind}-lookup-failed`, snapshotStartedAt: 10_000, snapshotDeadline: 12_000,
+        ...(kind === 'marker' ? { markerLookupAttempts: 1 } : {}),
+        queries: expect.arrayContaining([expect.objectContaining({ kind, startedAt: 10_000, deadline: 12_000,
+          settledAt: 10_000 + elapsed, completion, callbackState })]),
+      })
+      const saved = JSON.stringify(observation.diagnostics)
+      expect(saved).not.toContain('private-')
+      lateCallback?.(new Error('private-late-error'), 'private-late-output')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(JSON.stringify(observation.diagnostics)).toBe(saved)
+      expect(calls).toHaveLength(2)
+    } finally {
+      observation.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('retries a transient POSIX marker lookup inside the original deadline', async () => {
     let marker = ''
     let markerLookups = 0
@@ -511,6 +565,13 @@ describe('shared provider process behavior', () => {
       await vi.advanceTimersByTimeAsync(outcome === 'deadline' ? 3_000 : 1_000)
       if (failure) expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining(failure) }))
       else expect(onFailure).not.toHaveBeenCalled()
+      if (outcome === 'deadline') {
+        const diagnostic = observation.diagnostics[0]
+        expect(diagnostic).toMatchObject({ markerLookupAttempts: 2,
+          queries: expect.arrayContaining([expect.objectContaining({ kind: 'marker', completion: 'deadline', callbackState: 'pending' })]) })
+        expect(diagnostic.snapshotDeadline! - diagnostic.snapshotStartedAt!).toBe(2_000)
+        expect(diagnostic.queries?.at(-1)?.deadline).toBe(diagnostic.snapshotDeadline)
+      }
       if (['regular', 'marked-bracket-arguments', 'bracket-prefix-arguments'].includes(outcome)) expect(confirmations).toBe(0)
       else expect(confirmations).toBe(1)
       phase = 'settled'

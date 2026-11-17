@@ -24,6 +24,7 @@ import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/
 import { inspectManagedCommand, publishManagedCommandBindings, readInstalledCommandProducer } from '../../src/utils/managed-command-store.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 
 const sourceIdentity = `sha256:${'a'.repeat(64)}`;
 const sessions: PlatformRebuildSession[] = [];
@@ -55,6 +56,7 @@ function skillRoot(target: Parameters<typeof packageRoot>[0]): string {
 
 async function fixture() {
   const isolation = getCurrentSourceTestIsolation();
+  const claude = await createClaudeNativeTestRuntime(isolation);
   await fs.outputFile(path.join(isolation.layout.fixtureCwd, 'pnpm-workspace.yaml'), 'packages: []\n');
   const catalogRoot = path.join(isolation.layout.rootDir, 'native-catalog');
   const pluginRoot = path.join(catalogRoot, 'plugins', 'native-skills');
@@ -177,38 +179,8 @@ console.log(JSON.stringify(plan));
             enabled: user.snapshot.plugins[pluginId]?.enabled === true || exact && project.snapshot.plugins[pluginId]?.enabled === true,
           })), available: [] }) };
       } else throw new Error(`Unexpected controlled Codex command: ${args.join(' ')}`);
-    } else if (platform === 'claude') {
-      const home = resolvePlatformConfigRoot('claude', { cwd: invocationCwd, env: isolation.env });
-      const knownPath = path.join(home, 'plugins/known_marketplaces.json');
-      const known = await fs.readJson(knownPath).catch(() => ({}));
-      if (args[1] === 'marketplace' && args[2] === 'add') {
-        const root = args[3]!;
-        const { marketplaceName } = await fs.readJson(path.join(root, 'config.json'));
-        await fs.outputJson(knownPath, { ...known, [marketplaceName]: { source: { source: 'directory', path: root }, installLocation: root } });
-      } else {
-        const id = args[2]!;
-        const scope = args[args.indexOf('--scope') + 1];
-        const settingsPath = scope === 'local' ? path.join(invocationCwd, '.claude/settings.local.json') : path.join(home, 'settings.json');
-        const settings = await fs.readJson(settingsPath).catch(() => ({}));
-        const installedPath = path.join(home, 'plugins/installed_plugins.json');
-        const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} }));
-        const records = (installed.plugins[id] ?? []).filter((record: { scope: string; projectPath?: string }) =>
-          record.scope !== scope || scope === 'local' && record.projectPath !== invocationCwd);
-        if (['install', 'update', 'uninstall'].includes(args[1]!)) {
-          if (args[1] !== 'uninstall') {
-            const marketplace = known[id.slice(id.lastIndexOf('@') + 1)];
-            const root = path.join(marketplace.installLocation, 'plugins', id.slice(0, id.lastIndexOf('@')));
-            const manifest = await fs.readJson(path.join(root, '.claude-plugin/plugin.json'));
-            records.push({ scope, ...(scope === 'local' ? { projectPath: invocationCwd } : {}), version: manifest.version, installPath: root });
-          }
-          const plugins = { ...installed.plugins };
-          if (records.length) plugins[id] = records; else delete plugins[id];
-          await fs.outputJson(installedPath, { version: 2, plugins });
-        }
-        if (['install', 'enable', 'disable', 'uninstall'].includes(args[1]!)) await fs.outputJson(settingsPath,
-          { ...settings, enabledPlugins: { ...settings.enabledPlugins, [id]: !['disable', 'uninstall'].includes(args[1]!) } });
-      }
-    } else throw new Error(`Unexpected controlled host: ${platform}`);
+    } else if (platform === 'claude') return claude.nativeCliRunner(invocation);
+    else throw new Error(`Unexpected controlled host: ${platform}`);
     return { exitCode: 0, stdout: '', stderr: '' };
   };
   const context: RebuildExecutionContext = createCommandExecutionContext({ env: isolation.env, nativeCliRunner });
@@ -295,7 +267,7 @@ describe('Native Skill package projection', () => {
       if (damage === 'missing Skill') expect(observed.deploymentObservations?.[0]?.after.components)
         .toContainEqual(expect.objectContaining({ id: 'claude-skill', presence: 'absent' }));
       expect(await fs.readFile(rendererLog, 'utf8')).toBe(rendersBefore);
-      expect(nativeCalls).toEqual([]);
+      expect(nativeCalls.filter((args) => !['plugin list --json', 'plugin marketplace list --json'].includes(args.join(' ')))).toEqual([]);
       if (damage === 'missing Skill') expect(await fs.pathExists(skillRoot)).toBe(false);
     },
   );
@@ -313,7 +285,7 @@ describe('Native Skill package projection', () => {
     expect(stale.content).toBe('drifted');
     expect(stale.blockers).toContainEqual(expect.objectContaining({ code: 'platformInputDrift' }));
     expect(await fs.readFile(rendererLog, 'utf8')).toBe(rendersBefore);
-    expect(nativeCalls).toEqual([]);
+    expect(nativeCalls.filter((args) => !['plugin list --json', 'plugin marketplace list --json'].includes(args.join(' ')))).toEqual([]);
   });
 
   it.each(['codex', 'claude'] as const)('projects %s dynamic Skills from platform user config', async (platform) => {

@@ -81,7 +81,7 @@ describe('five namespaced write commands', () => {
     expect(upgraded.dependencyPlan?.requestedPluginIds).toEqual(['team/root']);
     expect(upgraded.rebuildResults.map((entry) => entry.target.pluginName)).toEqual(['leaf', 'root']);
     expect(upgraded.dependencyPlan?.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'team/leaf', relation: 'dependency', action: 'install' }),
+      expect.objectContaining({ pluginId: 'team/leaf', relation: 'dependency', state: 'partial', action: 'reinstall' }),
     ]));
   });
 
@@ -886,13 +886,10 @@ describe('five namespaced write commands', () => {
     await timing.measure('review', 'load config controller', () => configController.load());
     const configReview = await timing.measure('review', 'prepare config', () =>
       configController.buildOperationReview(configIntent));
-    const concurrentResults = await timing.measure('command', 'concurrent reinstall and config', () => Promise.race([
-      Promise.allSettled([
-        dependencies.executeScopedTask!(reinstallPlan),
-        configController.executeOperation(configReview.reviewToken),
-      ]),
-      new Promise<never>((_resolve, reject) => setTimeout(() =>
-        reject(new Error('ABBA operation lock timeout')), 5_000)),
+    // Await both writers before fixture cleanup; the test deadline still catches deadlocks.
+    const concurrentResults = await timing.measure('command', 'concurrent reinstall and config', () => Promise.allSettled([
+      dependencies.executeScopedTask!(reinstallPlan),
+      configController.executeOperation(configReview.reviewToken),
     ]));
     const safeMessage = (message: string) => sanitizeTestDiagnostic(message, isolation.env).slice(0, 1000);
     const rejection = (result: PromiseSettledResult<unknown>) => result.status === 'rejected' ? {
@@ -946,7 +943,6 @@ describe('five namespaced write commands', () => {
         })).resolves.toMatchObject({ values: { mode: 'strict' } });
       }
     }
-    // This includes install, failure recovery and concurrent writes; the 5s lock guard stays independent.
   }, process.platform === 'win32' ? 30_000 : 15_000);
 
   it('rejects a reviewed User install after concurrent Project demand changes without touching output', async () => {

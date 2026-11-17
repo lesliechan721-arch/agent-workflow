@@ -930,6 +930,9 @@ describe('five namespaced write commands', () => {
     const userConfigBefore = await fs.readFile(userConfigPath);
     const foreignPath = path.join(isolation.layout.fixtureCwd, '.codex', 'foreign-policy.md');
     await fs.outputFile(foreignPath, 'Keep foreign project policy.\n');
+    await applyCodexConfigTransactionFile(path.join(isolation.layout.fixtureCwd, '.codex/config.toml'), {
+      upsertPluginActivations: { [nativeId('a')]: false },
+    });
     const callsBeforeProjectInstall = runtime.nativeCliRunner.mock.calls.length;
     const activationPlans: Array<Pick<FrozenDeploymentPlan, 'binding' | 'effects'> & { dependencies: string[] }> = [];
     const realBuild = PlatformRebuildSession.prototype.buildTarget;
@@ -2450,8 +2453,8 @@ describe('five namespaced write commands', () => {
         pluginId: 'team/leaf',
         resolvedScope: 'project',
         assignmentSource: 'default',
-        state: 'absent',
-        action: 'install',
+        state: 'partial',
+        action: 'reinstall',
       }),
     ]));
     const calls = runtime.nativeCliRunner.mock.calls
@@ -2530,7 +2533,7 @@ describe('five namespaced write commands', () => {
     }, runtime);
     expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
     expect(installed.dependencyPlan?.targets).toContainEqual(expect.objectContaining({
-      pluginId: 'team/leaf', resolvedScope: 'project', action: 'install',
+      pluginId: 'team/leaf', resolvedScope: 'project', state: 'partial', action: 'reinstall',
     }));
 
     const binRoot = await writeStatusSystemCodexPackage(
@@ -2961,7 +2964,7 @@ describe('five namespaced write commands', () => {
       expect(runtime.installed.has(nativeId('demo'))).toBe(true);
     }, 30_000);
 
-  it('keeps activation unconfirmed after repair when the effective host stays disabled', async () => {
+  it('reports failed activation repair when the effective host stays disabled', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-pre-apply-failure-source');
     const definitions = [{
@@ -3041,9 +3044,9 @@ describe('five namespaced write commands', () => {
     expect(synced.rebuildResults.flatMap((entry) => entry.deploymentReceipts ?? [])).toContainEqual(
       expect.objectContaining({
         after: expect.objectContaining({ registration: 'present', consumers: expect.arrayContaining([
-          expect.objectContaining({ activation: 'unknown' }),
+          expect.objectContaining({ activation: 'disabled' }),
         ]) }),
-        effects: expect.arrayContaining([expect.objectContaining({ status: 'unknown', mutation: 'confirmed' })]),
+        effects: expect.arrayContaining([expect.objectContaining({ status: 'failed', mutation: 'confirmed' })]),
       }),
     );
     expect(receipt.targetResults[0]?.actions.map((action) => action.name))

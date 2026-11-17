@@ -321,8 +321,8 @@ export async function createCodexNativeTestRuntime(
             pluginId.endsWith(`@${marketplaceName}`)).sort().map((pluginId) => ({
             pluginId,
             installed: true,
-            enabled: user.snapshot.plugins[pluginId]?.enabled === true
-              || (exact && project.snapshot.plugins[pluginId]?.enabled === true),
+            enabled: exact ? project.snapshot.plugins[pluginId]?.enabled ?? user.snapshot.plugins[pluginId]?.enabled === true
+              : user.snapshot.plugins[pluginId]?.enabled === true,
             version: installedVersions.get(pluginId) ?? '1.0.0',
           })),
           available: [],
