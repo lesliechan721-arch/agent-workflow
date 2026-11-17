@@ -11,7 +11,7 @@
     "build:dev": "node scripts/build/run-dev-build.mjs",
     "test": "pnpm --filter @lesliechan721/aw-native-runtime test && pnpm --filter @lesliechan721/agent-skill-eval test && pnpm --filter @lesliechan721/aw-plugin-core test && pnpm --filter @lesliechan721/aw test && pnpm test:workers",
     "test:unit": "pnpm --filter @lesliechan721/aw-native-runtime test && pnpm --filter @lesliechan721/agent-skill-eval test:unit && pnpm --filter @lesliechan721/aw-plugin-core test:unit && pnpm --filter @lesliechan721/aw test:unit && pnpm test:workers",
-    "test:workers": "node --test --test-concurrency=1 scripts/test/test-workers.test.mjs",
+    "test:workers": "node --test --test-concurrency=1 scripts/test/test-workers.test.mjs scripts/test/integration-shards.test.mjs",
     "test:unit:fast": "pnpm --filter @lesliechan721/aw test:unit:fast",
     "test:types": "pnpm --filter @lesliechan721/aw-plugin-core test:types",
     "test:dist:contracts": "pnpm --filter @lesliechan721/agent-skill-eval test:dist && pnpm --filter @lesliechan721/aw-plugin-core test:dist && pnpm --filter @lesliechan721/aw test:dist && pnpm --filter @lesliechan721/aw test:smoke:build",

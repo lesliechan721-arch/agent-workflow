@@ -35,12 +35,10 @@ import {
 import { prepareCatalogRelease } from '../../../../scripts/release/catalog-publication.mjs';
 import { createIsolatedTestEnv } from '../helpers/test-isolation.js';
 import { TestCommandDiagnostics } from '../helpers/test-command-diagnostics.js';
-import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
-const isolatedCaseEnv = 'AW_PUBLISHER_ISOLATED_CASE';
 const publisherTempBase = os.tmpdir();
 const publisherPackageRoot = fileURLToPath(new URL('../..', import.meta.url));
 const diagnosedCase = /^(allows a renamed remote alias|rejects a changed (remote identity|branch) during apply|stops when the pending |uses only the first-parent Catalog history)/u;
@@ -60,50 +58,32 @@ afterEach(async ({ task, signal }) => {
     roots.splice(0);
     throw error;
   }
-  // The outer scope owns this entire directory and waits for the real child tree.
-  // A timed-out child must not delete paths while its uncancelled callback still runs.
-  if (process.env[isolatedCaseEnv] === task.name && signal.aborted) {
-    getCurrentSourceTestIsolation().cleanup = async () => {
-      process.stderr.write('[catalog-publisher] Retained cancelled child state for its outer process scope.\n');
-    };
-    return;
-  }
   const cleanup = () => Promise.all(roots.splice(0).map((root) => fs.remove(root)));
   if (diagnostics) await diagnostics.stage('cleanup', cleanup);
   else await cleanup();
 });
 
-function publicationStages() {
-  return <T>(stage: string, run: () => Promise<T>): Promise<T> => diagnostics!.stage(stage, run);
-}
-
-async function isolatedPublisherCase(testName: string, run: () => Promise<void>): Promise<void> {
-  if (process.env[isolatedCaseEnv] === testName) return run();
+async function isolatedPublisherCase(testName: string): Promise<void> {
   await diagnostics!.run(async () => {
     const childRoot = await fs.mkdtemp(path.join(publisherTempBase, 'awp-'));
     roots.push(childRoot);
     const childIsolation = await createIsolatedTestEnv({ rootDir: childRoot, baseEnv: process.env });
-    // Keep all child fixtures below a path owned by this outer case, including its isolated HOME.
+    // Each case keeps its own process and fixtures. The managed command confirms tree cleanup
+    // before afterEach removes the directory, including when the Vitest signal is cancelled.
     await diagnostics!.command(process.execPath, [
-      path.resolve(publisherPackageRoot, '../../scripts/test/run-vitest.mjs'),
-      'run', '--project', 'integration', '--maxWorkers=1', '--no-file-parallelism',
-      'tests/integration/catalog-git-publisher.test.ts',
-      '-t', `^version-scoped Catalog publication journal ${testName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`,
+      path.resolve(publisherPackageRoot, 'tests/helpers/catalog-publisher-case.mjs'),
+      testName,
+      childRoot,
     ], {
-      cwd: publisherPackageRoot,
-      env: {
-        ...childIsolation.env,
-        [isolatedCaseEnv]: testName,
-      },
+      cwd: childIsolation.layout.fixtureCwd,
+      env: childIsolation.env,
       onStderr: (text) => process.stderr.write(text),
     });
   });
 }
 
 async function temporaryRoot(prefix: string): Promise<string> {
-  // The extra isolated process layer needs shorter fixture names for Windows Git checkout.
-  const rootPrefix = process.env[isolatedCaseEnv] ? 'p-' : prefix;
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), rootPrefix));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   roots.push(root);
   return root;
 }
@@ -909,73 +889,18 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       .toBe(publication.expectedCommit);
   });
 
-  it('allows a renamed remote alias when its fetch and push identity is unchanged', async ({ task }) => isolatedPublisherCase(task.name, async () => {
-    const stage = publicationStages();
-    const { root, remote } = await stage('createWorkspace', () => createWorkspace());
-    const publication = await stage('plan', () => plan(root));
-    await stage('mutation', async () => {
-      await git(root, ['remote', 'add', 'renamed', remote]);
-      await git(root, ['remote', 'remove', 'origin']);
-    });
-
-    await stage('apply', async () => {
-      await expect(applyCatalogPublicationPlan({
-        workspaceRoot: root,
-        remote: 'renamed',
-        branch: 'catalog/latest',
-        expectedPlanDigest: publication.planDigest,
-        env: process.env,
-      })).resolves.toMatchObject({ state: 'published', remote: 'renamed' });
-    });
-  }));
+  it('allows a renamed remote alias when its fetch and push identity is unchanged', async ({ task }) => {
+    await isolatedPublisherCase(task.name);
+  });
 
   it.each(['remote identity', 'branch'] as const)(
     'rejects a changed %s during apply',
-    async (changed) => isolatedPublisherCase(`rejects a changed ${changed} during apply`, async () => {
-      const stage = publicationStages();
-      const { root, remote } = await stage('createWorkspace', () => createWorkspace());
-      const publication = await stage('plan', () => plan(root));
-      const evilRemote = await stage('mutation', async () => {
-        if (changed !== 'remote identity') return undefined;
-        const alternative = await temporaryRoot('aw-catalog-journal-changed-remote-');
-        await execFileAsync('git', ['init', '--bare', '--quiet', alternative]);
-        await git(root, ['remote', 'set-url', 'origin', alternative]);
-        return alternative;
-      });
-
-      await stage('apply', async () => {
-        await expect(applyCatalogPublicationPlan({
-          workspaceRoot: root,
-          remote: 'origin',
-          branch: changed === 'branch' ? 'catalog/beta' : 'catalog/latest',
-          expectedPlanDigest: publication.planDigest,
-          env: process.env,
-        })).rejects.toThrow(/identity changed|Increase/u);
-      });
-      await stage('verify refs', async () => {
-        expect(await git(root, ['ls-remote', remote])).toBe('');
-        if (evilRemote !== undefined) expect(await git(root, ['ls-remote', evilRemote])).toBe('');
-      });
-    }),
+    async (changed) => isolatedPublisherCase(`rejects a changed ${changed} during apply`),
   );
 
   it.each(['journal', 'damaged journal', 'repository', 'damaged repository'] as const)(
     'stops when the pending %s is missing or damaged',
-    async (missing) => isolatedPublisherCase(`stops when the pending ${missing} is missing or damaged`, async () => {
-      const stage = publicationStages();
-      const { root } = await stage('createWorkspace', () => createWorkspace());
-      const publication = await stage('plan', () => plan(root));
-      await stage('mutation', async () => {
-        if (missing === 'journal') await fs.remove(publication.journalPath);
-        else if (missing === 'damaged journal') await fs.writeFile(publication.journalPath, '{ damaged');
-        else if (missing === 'repository') await fs.remove(publication.repositoryPath!);
-        else await fs.remove(path.join(publication.repositoryPath!, '.git', 'HEAD'));
-      });
-
-      await stage('apply', async () => {
-        await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
-      });
-    }),
+    async (missing) => isolatedPublisherCase(`stops when the pending ${missing} is missing or damaged`),
   );
 
   it('fails closed when the authorized digest appears in multiple schema v2 journal files', async () => {
@@ -1221,60 +1146,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBefore);
   });
 
-  it('uses only the first-parent Catalog history when a merge second parent has a misleading Plugin entry', async ({ task }) => isolatedPublisherCase(task.name, async () => {
-    const stage = publicationStages();
-    const { root, remote } = await stage('createWorkspace', () => createWorkspace('1.0.0'));
-    const pluginRoot = path.join(root, 'plugins', 'journal-test');
-    await addHistoryKeeperPlugin(root);
-    await setPluginVersion(root, '0.2.0');
-    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# First parent\n');
-    await commitAll(root, 'prepare first-parent plugin');
-    const backupRoot = await temporaryRoot('aw-catalog-first-parent-backup-');
-    const pluginBackup = path.join(backupRoot, 'journal-test');
-    await fs.copy(pluginRoot, pluginBackup);
-
-    const first = await stage('plan.first', () => plan(root));
-    await stage('apply.first', () => apply(root, first));
-    await fs.remove(pluginRoot);
-    await setCatalogVersion(root, '1.1.0');
-    await commitAll(root, 'remove first-parent plugin');
-    const removed = await stage('plan.removed', () => plan(root));
-    await stage('apply.removed', () => apply(root, removed));
-
-    await fs.copy(pluginBackup, pluginRoot);
-    await setPluginVersion(root, '9.9.0');
-    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Misleading second parent\n');
-    await setCatalogVersion(root, '9.0.0');
-    await commitAll(root, 'prepare misleading branch');
-    const misleading = await stage('plan.misleading', () => plan(root, 'catalog/misleading'));
-    await stage('apply.misleading', () => apply(root, misleading));
-
-    const firstParent = await git(remote, ['rev-parse', 'refs/heads/catalog/latest']);
-    const secondParent = await git(remote, ['rev-parse', 'refs/heads/catalog/misleading']);
-    const firstParentTree = await git(remote, ['rev-parse', `${firstParent}^{tree}`]);
-    const mergeCommit = await git(remote, [
-      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
-      'commit-tree', firstParentTree,
-      '-p', firstParent,
-      '-p', secondParent,
-      '-m', 'merge misleading publication history',
-    ]);
-    await git(remote, [
-      'update-ref', 'refs/heads/catalog/latest', mergeCommit, firstParent,
-    ]);
-
-    await fs.remove(pluginRoot);
-    await fs.copy(pluginBackup, pluginRoot);
-    await setCatalogVersion(root, '1.2.0');
-    await commitAll(root, 'readd from first-parent history');
-    const readded = await stage('plan.readded', () => plan(root));
-    expect(readded.parent).toBe(mergeCommit);
-    expect(await publishedPluginVersion(readded)).toBe('0.2.0');
-    const officialHistory = await stage('history.read', () => readCatalogPublicationPluginHistory({
-      workspaceRoot: root, remoteUrl: remote, branches: ['catalog/latest', 'catalog/beta'], env: process.env,
-    }));
-    expect(officialHistory.filter((entry) => entry.name === 'journal-test').map((entry) => entry.version))
-      .toEqual(['0.2.0']);
-    await stage('apply.readded', () => apply(root, readded));
-  }), 90_000);
+  it('uses only the first-parent Catalog history when a merge second parent has a misleading Plugin entry', async ({ task }) => {
+    await isolatedPublisherCase(task.name);
+  }, 90_000);
 });

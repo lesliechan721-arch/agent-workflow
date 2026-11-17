@@ -192,9 +192,15 @@ jobs:
           - runner: macos-15
             os: darwin
             arch: arm64
-            name: darwin arm64 / Node 24
-            integration_shard: ''
+            name: darwin arm64 / Node 24 / integration 1 of 2
+            integration_shard: 1/2
             process_lifecycle: false
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+            name: darwin arm64 / Node 24 / integration 2 of 2
+            integration_shard: 2/2
+            process_lifecycle: true
           - runner: windows-2025
             os: win32
             arch: x64
@@ -254,18 +260,16 @@ jobs:
       - run: node native-tools/windows-job/test-environment.mjs --context-file "$RUNNER_TEMP/aw-native-context.json" --github-env
         if: matrix.os == 'win32'
       - run: pnpm build
-      - run: pnpm test:integration
-        if: matrix.integration_shard == ''
-      - name: Run the Windows integration shard
-        if: matrix.integration_shard != ''
+      - name: Run the integration shard
         working-directory: packages/cli
-        run: node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --shard "${{ matrix.integration_shard }}"
+        run: node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --config vitest.integration-shard.config.ts --shard "${{ matrix.integration_shard }}"
         env:
-          AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || '1' }}
-      - name: Run Windows process lifecycle tests
-        if: matrix.os == 'win32' && matrix.process_lifecycle
+          AW_TEST_WORKERS: ${{ vars.AW_TEST_WORKERS || (matrix.os == 'win32' && '1' || '2') }}
+          AW_TEST_SHARD_PLATFORM: ${{ matrix.os }}
+      - name: Run process lifecycle tests
+        if: matrix.process_lifecycle
         working-directory: packages/cli
-        run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts
+        run: node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration ${{ matrix.os == 'win32' && 'tests/unit/test-command-diagnostics.test.ts' || '' }}
       - name: Save failed test diagnostics
         if: failure()
         uses: actions/upload-artifact@v7

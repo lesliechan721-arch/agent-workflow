@@ -1,6 +1,6 @@
 # 持续集成（CI）规范
 
-本文件面向仓库维护者，定义官方 GitHub Actions 持续集成管线的职责、触发机制、矩阵配置、Windows 两套独立三路分片规则、自动 Beta 验证复用与产物验证边界。本地测试执行参见 [测试指南](testing.md)，发版流水线参见 [官方发布与失败恢复指南](release.md)。
+本文件面向仓库维护者，定义官方 GitHub Actions 持续集成管线的职责、触发机制、矩阵配置、Windows 与 macOS 测试分片规则、自动 Beta 验证复用与产物验证边界。本地测试执行参见 [测试指南](testing.md)，发版流水线参见 [官方发布与失败恢复指南](release.md)。
 
 ---
 
@@ -30,6 +30,7 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
 - **Linux Node 22/24 普通测试**：按 Node 版本和 unit/integration 分为四个独立 runner：
   - **Unit 入口**：运行三个 package 的单元测试、`test:workers`，随后运行 `test:types`。
   - **Integration 入口**：运行普通 integration 与串行 `process-lifecycle`。
+- **macOS arm64 普通测试**：普通 integration 按历史耗时分为两个独立 runner，每片默认最多 2 workers；分片 2 随后串行运行 integration 中的 `process-lifecycle` 测试。
 - **Linux 插件环境**：Linux 插件测试执行独立的构建，并将构建出的 CLI 严格配置到 `PATH` 中。
 - **矩阵复合 Action**：插件测试由普通矩阵 job 调用共享的 `.github/actions/plugin-tests` 复合 action，与其他测试平铺显示，覆盖 Linux x64、macOS arm64 和 Windows x64。
 - **原生打包 smoke**：macOS arm64 的插件 job 和 Windows 插件分片 2 在插件合同完成后运行 `pnpm test:smoke:pack:cli`，复用该 job 的 Node、构建产物与 Windows native context，并保留失败诊断。Linux 的打包 smoke 继续由 release verification 执行；集成测试 job 不再串行等待打包测试。
@@ -44,18 +45,30 @@ CI 覆盖三个主流操作系统平台，固定使用 Node 24（另有 Linux No
 - **工作目录**：`packages/cli`。
 - **执行命令**：
   ```bash
-  node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --shard "<index>/3"
+  node ../../scripts/test/run-vitest.mjs run --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/3"
   ```
 - **并发与 Runner**：采用三个独立的 Vitest runner，默认使用 1 worker（并发解析遵循优先级：串行约束优先，其次显式参数，再环境变量 `AW_TEST_WORKERS`；CI 环境变量默认配置为 1）。
 - **完整互斥校验入口**：
   为验证各分片在测试文件分配上的严格互斥与完整性，在 `packages/cli` 目录下执行：
   ```bash
-  node ../../scripts/test/run-vitest.mjs list --project integration tests/integration --shard <index>/3 --json
+  node ../../scripts/test/run-vitest.mjs list --project integration tests/integration --config vitest.integration-shard.config.ts --shard "<index>/3" --json
   ```
   **必须使用 `list --shard --json` 检查，严禁使用 `list --filesOnly`**。
 - **分片 3 附加任务**：
   除集成测试外，分片 3 额外承接串行 `process-lifecycle` 测试（`node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration tests/unit/test-command-diagnostics.test.ts`）与诊断回归。
 - **作业超时**：该集成测试 Job 超时上限设置为 60 分钟。
+
+#### 普通集成测试的耗时分配
+
+Windows 三片与 macOS 两片使用 `packages/cli/scripts/integration-sequencer.mjs`。它从 Vitest 实际发现的文件出发，按对应平台的历史耗时从长到短，把下一文件交给当前预计耗时最短的分片；相同耗时按相对路径排序，分配不依赖本地 Vitest cache。文件不拆分，分片内继续使用 Vitest 默认排序。
+
+`packages/cli/scripts/integration-durations.json` 保存 CI 文件级测试耗时（秒）与来源 run。新增或重命名的文件使用该平台历史耗时的中位数，不会因缺少记录而漏跑；已删除文件的记录不参与测试发现。观察到持续失衡或重测试发生变化时，从成功 CI 的文件汇总刷新数据并核对来源，不按单次总 job 时长调权重。这些值用于相对分配，不是性能门槛或 wall-clock 保证。
+
+macOS job 名为 `darwin arm64 / Node 24 / integration 1 of 2` 和 `2 of 2`，使用上述命令并将分片参数改为 `<index>/2`。Windows 分片 3 和 macOS 分片 2 的串行生命周期步骤不参与普通 integration 分片。插件测试仍采用下面的独立算法。
+
+CI 显式设置 `AW_TEST_SHARD_PLATFORM` 为 `win32` 或 `darwin`；本地未设置时使用宿主平台。跨平台检查分配时可显式选择对应 profile，这只检查分配，不能代替该平台实际测试。自定义 sequencer 只允许 `--project integration`；不指定分片 config 的本地完整测试入口保持原行为。
+
+更新分片后，对每个平台运行全部 `list --shard --json`，核对各片文件集合互斥、并集等于未分片发现的集合。`pnpm test:workers` 另用真实 Vitest fixture 验证这一边界，包括耗时表中不存在的 `.tsx` 文件。
 
 #### 2.2.2 Windows 插件测试三路分片（Node File Shard）
 
