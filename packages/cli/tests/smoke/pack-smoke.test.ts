@@ -1293,10 +1293,20 @@ describe('pack smoke', () => {
         inventory: expect.arrayContaining([expect.objectContaining({ pluginId: 'packed/packed-build' })]),
       },
     });
-    if (!codexSkillQualified) {
+    if (codexSkillQualified) {
+      expect(consumedStatusReceipt.data).toMatchObject({ counts: { blocked: 0, pending: 1, unconfirmed: 0, ready: 0 } });
+      expect(consumedStatusReceipt.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'platformPackageMissing', severity: 'warning' }),
+        expect.objectContaining({ code: 'nativeRegistrationMissing', severity: 'warning' }),
+      ]));
+    } else {
       expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
     }
-    expect(consumedStatus.stderr).toBe(codexSkillQualified ? ''
+    expect(consumedStatus.stderr).toBe(codexSkillQualified ? [
+      'platformPackageMissing: The required AW source package is missing.',
+      'nativeRegistrationMissing: The native client reports no required registration.',
+      '',
+    ].join('\n')
       : 'capability-unverified: The operation could not complete (capability-unverified).\n');
     const packedRemoval = await execAw([
       'dev', 'plugin', 'remove', 'packed-build',
