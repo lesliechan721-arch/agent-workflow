@@ -11,9 +11,8 @@ import type { DeploymentObservation } from '../../src/platforms/contracts.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('native intentional empty currentness', () => {
-  // Test Value Gate: Grok's installation/load inventory must not make its own
-  // package stale; actual config, capabilities and other prerequisites still do.
-  it('separates Grok observation outputs from real package inputs without changing the observation', async () => {
+  // Test Value Gate: a different entry or native inventory must not invalidate a package when the actual renderer inputs agree.
+  it('keeps observation and discovery metadata from invalidating a dynamic package', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const rootDir = path.join(isolation.layout.fixtureCwd, 'grok-input');
     const manifestPath = path.join(rootDir, '.agents-plugin/plugin.json');
@@ -39,12 +38,12 @@ describe('native intentional empty currentness', () => {
         nativeSources: { observation: 'complete', sources: [], overlaps: [], configurationEvidence: 'before-install' },
       } };
     const units = await Promise.all(resolution.renderUnits.map(async (renderUnit) => ({ renderUnit,
-      prerequisites: observation.prerequisites,
-      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('grok') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'input', sourceId: 'local',
         sourceIdentity: plugin.sourceIdentity, platform: 'grok', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
     })));
-    const digest = async () => platformPackageInputDigest(await createPlatformInputEvidence({ plugin, binding, units }));
+    const profile = getQualifiedPlatformProfile('grok', { platform: 'linux', arch: 'x64' });
+    const digest = async () => platformPackageInputDigest(await createPlatformInputEvidence({ plugin, binding,
+      units: units.map((unit) => ({ ...unit, capabilities: adapter.capabilities({ binding, renderUnit: unit.renderUnit, observation, profile }) })) }));
     const before = await digest();
     observation.prerequisites.nativeSources = { observation: 'complete', overlaps: [], configurationEvidence: 'new-native-copy-and-cwd',
       sources: [{ name: 'input', version: '1.0.1', path: path.join(ctx.cwd, 'native'), scope: 'user', origin: 'native', enabled: true,
@@ -52,13 +51,22 @@ describe('native intentional empty currentness', () => {
     const fullObservation = structuredClone(observation);
     expect(await digest()).toBe(before);
     expect(observation).toEqual(fullObservation);
+    profile.id = 'different-qualification-baseline';
+    for (const { renderUnit } of units) {
+      const first = renderUnit.consumers[0]!;
+      renderUnit.consumers = [
+        { ...first, id: 'grok-wrapper', version: '1.0.82', entry: { kind: 'cli', executable: path.join(ctx.cwd, 'wrapper'), configRoot: first.entry!.configRoot } },
+        { ...first, id: 'different-entry', version: '1.0.83' },
+      ];
+    }
+    expect(await digest()).toBe(before);
+    for (const { renderUnit } of units) renderUnit.consumers.reverse();
+    observation.prerequisites.agentConsumers.configurationEvidence = 'different-local-observation';
+    expect(await digest()).toBe(before);
     for (const unit of units) unit.config.values.enabled = true;
     expect(await digest()).not.toBe(before);
     for (const unit of units) unit.config.values.enabled = false;
-    units[0]!.capabilities.profileId += ':changed';
-    expect(await digest()).not.toBe(before);
-    units[0]!.capabilities.profileId = getQualifiedPlatformProfile('grok').id;
-    observation.prerequisites.agentConsumers.configurationEvidence = 'real-prerequisite-change';
+    profile.kinds.skill = { ...profile.kinds.skill, status: 'unverified', reasonCodes: ['capability-unverified'] };
     expect(await digest()).not.toBe(before);
   });
 
@@ -93,7 +101,6 @@ describe('native intentional empty currentness', () => {
       capabilities: adapter.capabilities({ binding, renderUnit, observation: live, profile: getQualifiedPlatformProfile('codex') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'empty', sourceId: 'local',
         sourceIdentity: plugin.sourceIdentity, platform: 'codex', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
-      prerequisites: live.prerequisites,
     })));
     const state = await createPlatformEmptyState({ plugin, binding, units });
     expect(state.units).toHaveLength(2);
@@ -105,7 +112,6 @@ describe('native intentional empty currentness', () => {
       capabilities: adapter.capabilities({ binding: projectBinding, renderUnit, observation: live, profile: getQualifiedPlatformProfile('codex') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'empty', sourceId: 'local',
         sourceIdentity: plugin.sourceIdentity, platform: 'codex', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
-      prerequisites: live.prerequisites,
     })));
     const projectEvidence = await createPlatformInputEvidence({ plugin, binding: projectBinding, units: projectUnits });
     expect(projectEvidence.binding.id).not.toBe(state.binding.id);
@@ -117,7 +123,7 @@ describe('native intentional empty currentness', () => {
     const changedScope = { ...state, binding: { ...state.binding, scope: { kind: 'project' as const, projectRoot: ctx.cwd } } };
     expect(await matchesPlatformEmptyState({ state: changedScope, env: ctx.env })).toBe(false);
     const changedCapabilities = structuredClone(units);
-    changedCapabilities[0]!.capabilities.profileId = 'different-profile';
+    changedCapabilities[0]!.capabilities.kinds.skill = { status: 'unsupported', delivery: [], reasonCodes: ['policy-blocked'] };
     expect(await matchesPlatformEmptyState({ state: await createPlatformEmptyState({ plugin, binding, units: changedCapabilities }), env: ctx.env })).toBe(false);
     const changedConfig = structuredClone(units);
     changedConfig[0]!.config.values.enabled = true;
@@ -136,5 +142,52 @@ describe('native intentional empty currentness', () => {
     expect(await matchesPlatformEmptyState({ state: await createPlatformEmptyState({ plugin, binding, units: otherConfig }), env: ctx.env })).toBe(true);
     await fs.writeFile(path.join(rootDir, 'render.mjs'), 'throw new Error("different source bytes");\n');
     expect(await matchesPlatformEmptyState({ state: await createPlatformEmptyState({ plugin, binding, units }), env: ctx.env })).toBe(false);
+  });
+
+  // Test Value Gate: metadata and capabilities unused by a static projection cannot mark it stale.
+  it('tracks static Skills using their actual resource bytes and declared capability requirements', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const rootDir = path.join(isolation.layout.fixtureCwd, 'static-platform');
+    const manifestPath = path.join(rootDir, '.agents-plugin/plugin.json');
+    const plugin: PluginMeta = { rootDir, manifestPath, pluginId: 'local/static', sourceId: 'local', sourceIdentity: `sha256:${'a'.repeat(64)}`,
+      manifest: { schemaVersion: 4, name: 'static', version: '1.0.0', description: 'Static', platforms: ['codex'], skills: './skills',
+        marketplace: { category: 'development', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } } } };
+    await fs.outputJson(manifestPath, plugin.manifest);
+    const skill = path.join(rootDir, 'skills/demo/SKILL.md');
+    await fs.outputFile(skill, '---\nname: demo\ndescription: Demo\ndisable-model-invocation: true\n---\nRead me.\n');
+    const attachment = path.join(rootDir, 'skills/demo/attachment.bin');
+    await fs.outputFile(attachment, Buffer.from([0xff, 0x01]));
+    const adapter = getAgentPluginAdapter('codex');
+    const ctx = { cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const resolution = await adapter.resolve(ctx, { plugin: { sourceId: 'local', sourceIdentity: plugin.sourceIdentity!,
+      pluginId: plugin.pluginId!, version: '1.0.0' }, scope: { kind: 'user' }, operation: 'ensure', recoveryCandidates: [],
+      discovery: { platform: 'codex', availability: 'available', diagnostics: [], installations: [{ id: 'codex', product: 'cli',
+        availability: 'available', version: '0.167.0', reasonCodes: [], entry: { kind: 'cli', executable: '/fixture/codex',
+          configRoot: isolation.env.CODEX_HOME! } }] } });
+    const binding = resolution.bindings[0]!;
+    const observation: DeploymentObservation = { physicalKey: binding.physicalKey, package: 'absent', registration: 'absent', ownership: 'absent',
+      consumers: [], components: [], nativeIdentity: null, diagnostics: [], prerequisites: {
+        agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] },
+      } };
+    const profile = getQualifiedPlatformProfile('codex', { platform: 'linux', arch: 'x64' });
+    const units = await Promise.all(resolution.renderUnits.map(async (renderUnit) => ({ renderUnit,
+      config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, sourceId: 'local',
+        sourceIdentity: plugin.sourceIdentity, platform: 'codex', scope: renderUnit.renderScope.kind, cwd: ctx.cwd, env: ctx.env }),
+    })));
+    const digest = async () => platformPackageInputDigest(await createPlatformInputEvidence({ plugin, binding,
+      units: units.map((unit) => ({ ...unit, capabilities: adapter.capabilities({ binding, renderUnit: unit.renderUnit, observation, profile }) })) }));
+    const before = await digest();
+    await fs.outputFile(path.join(rootDir, 'unrelated.txt'), 'surplus bundle data');
+    profile.features['skill.invocation.model']!.values = ['false'];
+    profile.kinds.agent = { status: 'unverified', reasonCodes: ['capability-unverified'], delivery: [] };
+    expect(await digest()).toBe(before);
+    await fs.appendFile(skill, 'Changed Skill instructions.\n');
+    const afterBody = await digest();
+    expect(afterBody).not.toBe(before);
+    await fs.writeFile(attachment, Buffer.from([0xff, 0x02]));
+    const afterAttachment = await digest();
+    expect(afterAttachment).not.toBe(afterBody);
+    profile.features['skill.invocation.model']!.values = ['true'];
+    expect(await digest()).not.toBe(afterAttachment);
   });
 });

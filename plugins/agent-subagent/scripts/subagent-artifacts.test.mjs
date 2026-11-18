@@ -11,11 +11,11 @@ const defaultValues = Object.fromEntries(Object.entries(sourceManifest.config.fi
   .filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default]));
 // This profile controls script tests only and does not qualify a real client.
 function context(values = {}, platform = 'codex', scope = 'user', allowedOutputKinds = ['skill', 'agent']) {
-  return { schemaVersion: 1, surface: 'agent-plugin', platform, scope, allowedOutputKinds,
+  return { schemaVersion: 2, surface: 'agent-plugin', platform, scope, allowedOutputKinds,
     plugin: { pluginId: 'fixture/agent-subagent' },
     changedConfigKeys: [], previousComponents: [],
     resources: [{ kind: 'bundle', name: './skills/spawn-subagent', root: path.join(root, 'skills/spawn-subagent'), digest: 'test-resource' }],
-    platformCapabilities: { schemaVersion: 1, platform, scope, basis: 'profile', profileId: 'script-test', consumers: [],
+    platformCapabilities: { schemaVersion: 2, platform, scope, basis: 'profile',
       kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
         { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])),
       features: { 'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },

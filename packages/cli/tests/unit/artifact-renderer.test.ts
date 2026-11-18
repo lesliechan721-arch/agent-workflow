@@ -7,8 +7,8 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   COMPONENT_KINDS, getHookHandlerContract, createAwPluginRequirementsReceipt,
-  type ExpectedComponentSet, type PlatformCapabilitiesV1, type PlatformComponentPlanV3,
-  type PlatformRenderContextV1, type PluginComponent,
+  type ExpectedComponentSet, type PlatformCapabilitiesV2, type PlatformComponentPlanV3,
+  type PlatformRenderContextV2, type PluginComponent,
 } from '@lesliechan721/aw-plugin-core/manifest';
 import type { PluginMeta } from '../../src/types.js';
 import {
@@ -24,9 +24,9 @@ import { getDeploymentLayout, resolveDeployments } from '../../src/platforms/lay
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await fs.remove(root); });
 const empty: PlatformComponentPlanV3 = { version: 3, components: [], omitted: [], unmet: [] };
-function capabilities(): PlatformCapabilitiesV1 {
-  return { schemaVersion: 1, platform: 'codex', scope: 'user', basis: 'profile', profileId: 'test-profile', consumers: [],
-    kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV1['kinds'],
+function capabilities(): PlatformCapabilitiesV2 {
+  return { schemaVersion: 2, platform: 'codex', scope: 'user', basis: 'profile',
+    kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
     features: {
       'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },
       'agent.prompt-mode': { status: 'supported', reasonCodes: [], values: ['host-default'] },
@@ -63,9 +63,9 @@ function skill(name = 'task', files: Extract<PluginComponent, { kind: 'skill' }>
     'SKILL.md': { text: `---\nname: ${name}\ndescription: Run the task.\n---\nRun the task.\n` }, ...files,
   } } };
 }
-function renderer(makePlan: (context: PlatformRenderContextV1) => unknown, contexts: PlatformRenderContextV1[] = []): PluginProcessRunner {
+function renderer(makePlan: (context: PlatformRenderContextV2) => unknown, contexts: PlatformRenderContextV2[] = []): PluginProcessRunner {
   return { run: async (invocation) => {
-    const context = await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!) as PlatformRenderContextV1;
+    const context = await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!) as PlatformRenderContextV2;
     contexts.push(context);
     return { exitCode: 0, signal: null, stdout: JSON.stringify(makePlan(context)), stderr: '', timedOut: false };
   } };
@@ -78,7 +78,7 @@ function prepare(item: PluginMeta, overrides: Partial<Parameters<typeof prepareP
 describe('complete platform component preparation', () => {
   it('regenerates complete collections from zero and allows changing categories, names and counts', async () => {
     const item = await plugin();
-    const contexts: PlatformRenderContextV1[] = [];
+    const contexts: PlatformRenderContextV2[] = [];
     const runner = renderer((context) => context.allowedOutputKinds.includes('skill') ? empty : {
       ...empty, components: Array.from({ length: Number(context.config.values.count) }, (_, index) => ({
         id: `role-${index}`, name: `review-${index}`, kind: index ? 'mcp' : 'agent',
@@ -99,11 +99,11 @@ describe('complete platform component preparation', () => {
 
   it('clips every config and history field by batch authority and keeps missing facts', async () => {
     const item = await plugin();
-    const contexts: PlatformRenderContextV1[] = [];
+    const contexts: PlatformRenderContextV2[] = [];
     await prepare(item, { runner: renderer(() => empty, contexts), changedConfigKeys: ['count', 'token', 'hidden'], previousComponents: [
       { id: 'task', kind: 'skill', name: 'task', content: 'not forwarded' },
       { id: 'role', kind: 'agent', name: 'role', path: '/host/private' },
-    ] as PlatformRenderContextV1['previousComponents'] });
+    ] as PlatformRenderContextV2['previousComponents'] });
     const [skills, other] = contexts;
     expect(Object.keys(skills!.config.schema.fields)).toEqual(['count', 'absent']);
     expect(skills!.config.values).toEqual({ count: 0 });
@@ -116,6 +116,24 @@ describe('complete platform component preparation', () => {
     invalid.issues = [{ type: 'invalid-config', key: 'hidden', message: 'private-token-value' },
       { type: 'invalid-config', key: 'token', message: 'private-token-value' }];
     await prepare(item, { kinds: ['skill'], config: invalid, runner: renderer(() => empty) });
+  });
+
+  // Test Value Gate: the script observes deterministic capability facts and no discovery metadata.
+  it('passes a stable v2 capability view to both renderer batches', async () => {
+    const item = await plugin();
+    const contexts: PlatformRenderContextV2[] = [];
+    const unsorted = { ...capabilities(), profileId: 'private-baseline', consumers: [{ executable: '/host/wrapper' }] };
+    unsorted.kinds.skill.delivery.push('managed-host-resource', 'native-package');
+    unsorted.kinds.agent.reasonCodes = ['policy-blocked', 'client-missing', 'policy-blocked'];
+    unsorted.features['mcp.transport']!.values!.push('stdio');
+    await prepare(item, { capabilities: unsorted, runner: renderer(() => empty, contexts) });
+    expect(contexts).toHaveLength(2);
+    const view = contexts[0]!.platformCapabilities;
+    expect(contexts.every((context) => context.schemaVersion === 2 && JSON.stringify(context.platformCapabilities) === JSON.stringify(view))).toBe(true);
+    expect(Object.keys(view).sort()).toEqual(['basis', 'features', 'kinds', 'platform', 'schemaVersion', 'scope']);
+    expect(view.kinds.skill.delivery).toEqual(['managed-host-resource', 'native-package']);
+    expect(view.kinds.agent.reasonCodes).toEqual(['client-missing', 'policy-blocked']);
+    expect(view.features['mcp.transport']!.values).toEqual(['http', 'sse', 'stdio']);
   });
 
   it('does not call empty batches or scopes intentionally excluded by the author', async () => {
@@ -520,14 +538,14 @@ describe('complete platform component preparation', () => {
 });
 
 describe('shared renderer process boundary', () => {
-  it('uses isolated homes, exposes the v1 surface and removes the private context after completion', async () => {
+  it('uses isolated homes, exposes the v2 surface and removes the private context after completion', async () => {
     const item = await plugin(`import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
 console.log(JSON.stringify({surface: process.env.AW_PLUGIN_SURFACE, home: process.env.HOME, awHome: process.env.AW_HOME, contextPath: process.env.AW_PLUGIN_CONTEXT, schemaVersion: context.schemaVersion}));`);
-    const result = await runPreparedArtifactRenderer({ plugin: item, context: { schemaVersion: 1, surface: 'agent-plugin', platform: 'codex', scope: 'user' },
+    const result = await runPreparedArtifactRenderer({ plugin: item, context: { schemaVersion: 2, surface: 'agent-plugin', platform: 'codex', scope: 'user' },
       sensitiveValues: [], cwd: item.rootDir, commandEnv: { PATH: process.env.PATH, HOME: '/host-home', AW_HOME: '/host-aw-home' } });
     const output = result.value as { surface: string; home: string; awHome: string; contextPath: string; schemaVersion: number };
-    expect(output).toMatchObject({ surface: 'agent-plugin', schemaVersion: 1 });
+    expect(output).toMatchObject({ surface: 'agent-plugin', schemaVersion: 2 });
     expect(output.home).not.toBe('/host-home'); expect(output.awHome).not.toBe('/host-aw-home');
     expect(await fs.pathExists(output.contextPath)).toBe(false);
   });

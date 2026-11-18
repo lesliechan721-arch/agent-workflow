@@ -125,7 +125,7 @@ describe('multi-source read commands', () => {
 
     expect(exitCode).toBe(3);
     expect(result).toMatchObject({
-      schemaVersion: 1, command: 'plugin.list', status: 'blocked',
+      schemaVersion: 2, command: 'plugin.list', status: 'blocked',
       data: { items: [], coverage: { sources: [], complete: false } },
       diagnostics: [{ code: 'sourceActiveUnavailable', subject: { sourceId: 'official' } }],
     });
@@ -172,7 +172,7 @@ describe('multi-source read commands', () => {
       interactive: false,
     })).toBe(3);
     expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.status', status: 'blocked', data: { context: 'user',
+      schemaVersion: 2, command: 'plugin.status', status: 'blocked', data: { context: 'user',
         inventory: [expect.objectContaining({ pluginId: 'local/demo', targetResults: [expect.objectContaining({
           delivery: { kind: 'native', platform: 'codex' }, content: 'unknown',
         })] })],
@@ -515,7 +515,7 @@ describe('multi-source read commands', () => {
 
     expect(exitCode).toBe(4);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.list', status: 'partial',
+      schemaVersion: 2, command: 'plugin.list', status: 'partial',
       data: { items: [expect.objectContaining({ pluginId: 'good/demo' })],
         coverage: { sources: ['good'], complete: false } },
       diagnostics: [{ code: 'sourceActiveUnavailable', subject: { sourceId: 'bad' } }],
@@ -768,7 +768,7 @@ describe('multi-source read commands', () => {
       interactive: false,
     })).toBe(3);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.install', status: 'blocked',
+      schemaVersion: 2, command: 'plugin.install', status: 'blocked',
       data: { changes: { requirements: 'none' } },
       diagnostics: [expect.objectContaining({ code: 'pluginSelectorAmbiguous' })],
     });
@@ -958,7 +958,7 @@ describe('multi-source read commands', () => {
     });
     expect(filteredExit, filtered.readStdout()).toBe(0);
     expect(JSON.parse(filtered.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.status', status: 'success', data: { inventory: [] }, diagnostics: [],
+      schemaVersion: 2, command: 'plugin.status', status: 'success', data: { inventory: [] }, diagnostics: [],
     });
 
     await declarePlugin('local/demo', ['codex']);
@@ -1129,7 +1129,7 @@ describe('multi-source read commands', () => {
     });
     expect(installExit).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.install', status: 'success', data: {
+      schemaVersion: 2, command: 'plugin.install', status: 'success', data: {
         requirements: { roots: ['good/demo'] }, changes: { requirements: 'changed', outputs: 'none' },
         targetResults: [expect.objectContaining({ pluginId: 'good/demo', target: 'codex', scope: 'user',
           delivery: null, execution: 'no-op', satisfaction: 'unsupported', blockerCodes: [] })],
@@ -1182,7 +1182,7 @@ describe('multi-source read commands', () => {
       })).toBe(3);
       const payload = JSON.parse(captured.readStdout());
       expect(payload).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'plugin.status', status: 'blocked',
         diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'nativeStateUnreadable' })]),
       });

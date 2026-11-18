@@ -9,7 +9,7 @@ import { createCodexNativeObservationSession } from '../utils/codex-native-obser
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { inspectOwnedComponents, readSkillOwnerMarker } from '../utils/ownership.js';
 import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
-import { installationInvocation, platformVersionSupported, selectNativeProduct } from './discovery.js';
+import { installationInvocation, selectNativeProduct } from './discovery.js';
 import type { DeploymentBinding, DeploymentConfigurationObservation, DeploymentObservation, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
 import { inspectPiDeployment } from './inspection-pi.js';
@@ -80,6 +80,8 @@ async function inspectAntigravityCopy(binding: DeploymentBinding, layout: Deploy
       sourceId: binding.plugin.sourceId, sourceIdentity: binding.plugin.sourceIdentity, pluginId: binding.plugin.pluginId,
       platform: binding.platform, scope: binding.scope.kind, physicalKey: binding.physicalKey, artifactKey: path.basename(layout.packageRoot) } };
   const inspected = (await inspectOwnedComponents({ components: [component] })).components[0]!;
+  result.nativePackage = inspected.state === 'absent' ? 'absent'
+    : inspected.state === 'error' ? 'unknown' : 'present';
   if (inspected.state !== 'present') {
     result.ownership = inspected.state === 'foreign' ? 'foreign' : 'unknown';
     return;
@@ -179,27 +181,26 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
         // A concurrent product can invalidate the cache, not change these reads.
         session.setManager(manager);
         const observed = await session.inspectPlugin({ pluginId: nativeId, scope: binding.scope.kind });
-        if (ctx.observeNative && binding.scope.kind === 'project' && product.product === 'cli'
-          && platformVersionSupported('codex', product.version)) {
-          session.setManager(manager);
-          const trust = await session.inspectProjectTrust(binding.scope.projectRoot);
-          for (const consumer of result.consumers) if (consumer.productId === product.id && consumer.trust === 'unknown'
-            && trust.state === 'observed') consumer.trust = trust.trust === 'trusted' ? 'trusted' : 'blocked';
-          if (trust.state === 'failed') result.diagnostics.push({ code: 'nativeObservationFailed', severity: 'warning',
-            message: 'The native client could not complete its effective project trust observation.',
-            subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } });
+        const active = observed.activations[binding.scope.kind];
+        setActivation(result, active === true ? 'enabled' : active === false ? 'disabled' : 'unknown');
+        if (binding.scope.kind === 'project' && active !== undefined) {
+          // Both lists can report enabled from User inheritance alone.
+          const independent = active === true && observed.observations.user && observed.activations.user !== true;
+          result.scopeActivation = independent ? 'enabled' : active === false ? 'disabled' : 'unknown';
         }
         if (observed.observation.state !== 'observed') {
-          result.registration = 'unknown';
-          setActivation(result, 'unknown');
+          result.registration = observed.activations.user !== undefined || observed.activations.project !== undefined ? 'present' : 'unknown';
           result.diagnostics.push({ code: observed.observation.state === 'failed' ? 'nativeObservationFailed' : 'nativeObservationUnconfirmed',
             severity: 'warning', message: 'The selected native client could not confirm its registration.',
             subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } });
           break;
         }
         result.registration = observed.observation.value === 'installed' ? 'present' : 'absent';
-        const active = observed.activations[binding.scope.kind];
-        setActivation(result, active === true ? 'enabled' : active === false ? 'disabled' : 'unknown');
+        if (binding.scope.kind === 'project' && result.registration === 'present'
+          && (active === undefined || result.scopeActivation === 'unknown')) {
+          diagnostic(result, binding, 'codexProjectActivationUnconfirmed',
+            'The scoped Codex plugin list did not confirm the required Project activation. Check the workspace configuration in Codex.');
+        }
       } finally { if (!ctx.codexObservationSession) await session.dispose(); }
       break;
     }
@@ -308,7 +309,15 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
         const { root } = geminiExtensionPaths(ctx);
         const directory = path.join(root, nativeId);
         if (!nativeSourceMatches(row.path, directory)) { result.ownership = 'foreign'; break; }
-        const stats = await fs.lstat(directory);
+        const stats = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        });
+        result.nativePackage = stats ? 'present' : 'absent';
+        if (!stats) {
+          result.ownership = 'unknown';
+          break;
+        }
         if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error('nativeExtensionPathUnconfirmed');
         const metadata = await jsonFile(path.join(directory, '.gemini-extension-install.json'));
         const manifest = await jsonFile(path.join(directory, 'gemini-extension.json'));
@@ -335,9 +344,7 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
     }
     case 'grok-cli':
     case 'grok-directory':
-      await inspectGrokDeployment(ctx, binding, layout, result,
-        JSON.parse(await queryNativeDeployment(ctx, binding, ['plugin', 'list', '--json'])),
-        JSON.parse(await queryNativeDeployment(ctx, binding, ['inspect', '--json'])));
+      await inspectGrokDeployment(ctx, binding, layout, result);
       break;
     default: break;
   }

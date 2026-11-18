@@ -1246,7 +1246,7 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(0);
     const setResult = JSON.parse(setOutput.readStdout());
-    expect(setResult).toMatchObject({ schemaVersion: 1, command: 'plugin.config.set', status: 'success' });
+    expect(setResult).toMatchObject({ schemaVersion: 2, command: 'plugin.config.set', status: 'success' });
     const setReceipt = setResult.data as { sourceIdentity: string };
     expect(setReceipt).toMatchObject({
       pluginName: 'demo',
@@ -1310,7 +1310,7 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(0);
     expect(JSON.parse(confirmedReset.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.config.reset', status: 'success',
+      schemaVersion: 2, command: 'plugin.config.reset', status: 'success',
       data: { configWrite: 'succeeded', deleted: true },
     });
     await expect(fs.pathExists(stored.path)).resolves.toBe(false);

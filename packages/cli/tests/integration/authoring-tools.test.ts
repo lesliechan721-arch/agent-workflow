@@ -1152,7 +1152,7 @@ describe('authoring tools', () => {
     ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 }));
     // A successful validator result must not hide an unavailable version checker.
     expect(JSON.parse(validation.stdout)).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'dev.plugin.validate',
       status: 'success',
       data: {
@@ -1174,7 +1174,7 @@ describe('authoring tools', () => {
         cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024,
       }));
       expect(JSON.parse(completed.stdout)).toMatchObject({
-        schemaVersion: 1, command: args.slice(0, 3).join('.'), status: 'success',
+        schemaVersion: 2, command: args.slice(0, 3).join('.'), status: 'success',
         data: expect.any(Object), diagnostics: expect.any(Array), nextActions: expect.any(Array),
       });
     }
@@ -1198,7 +1198,7 @@ describe('authoring tools', () => {
       workspaceRoot,
     ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 }));
     expect(JSON.parse(unchanged.stdout)).toMatchObject({
-      schemaVersion:1,command:'dev.plugin.status',status:'success',data:{checks:[{
+      schemaVersion:2,command:'dev.plugin.status',status:'success',data:{checks:[{
         plugin:'demo',status:'unchanged',baseVersion:'0.1.0',currentVersion:'0.1.0',productionChanged:false,
       }]},
     });
@@ -1225,7 +1225,7 @@ describe('authoring tools', () => {
       workspaceRoot,
     ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 }));
     const versionResult = JSON.parse(versionCheck.stdout);
-    expect(versionResult).toMatchObject({ schemaVersion: 1, command: 'dev.plugin.status', status: 'success' });
+    expect(versionResult).toMatchObject({ schemaVersion: 2, command: 'dev.plugin.status', status: 'success' });
     expect(versionResult.data.checks[0]).toMatchObject({
       plugin: 'demo',
       status: 'versionBumped',
@@ -1350,7 +1350,7 @@ describe('authoring tools', () => {
     ], { cwd: workspaceRoot, env: process.env }).then(() => null, (error: unknown) => error as { code: number; stdout: string });
     expect(failure?.code).toBe(2);
     expect(JSON.parse(failure!.stdout)).toMatchObject({
-      schemaVersion: 1, command: 'dev.plugin.create', status: 'failed', data: {},
+      schemaVersion: 2, command: 'dev.plugin.create', status: 'failed', data: {},
       diagnostics: [expect.objectContaining({ code: 'invalidArguments', message: expect.stringContaining('--plugin-root') })],
       nextActions: expect.any(Array),
     });
@@ -3563,7 +3563,7 @@ describe('authoring tools', () => {
         'const path = await import("node:path");',
         'if (process.env.AW_CODEX_HOME || process.env.AW_CLAUDE_HOME) throw new Error("test home variable leaked");',
         'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-        'if (context.schemaVersion !== 1 || context.surface !== "agent-plugin" || Object.hasOwn(context, "paths")) throw new Error("wrong public renderer context");',
+        'if (context.schemaVersion !== 2 || context.surface !== "agent-plugin" || Object.hasOwn(context, "paths")) throw new Error("wrong public renderer context");',
         'if (!process.env.HOME || process.env.HOME !== process.env.USERPROFILE) throw new Error("missing isolated user home");',
         'const rendererHomes = [process.env.AW_HOME, process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR, process.env.HOME, ...["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"].map((key) => process.env[key])];',
         'if (rendererHomes.some((home) => !home || !path.isAbsolute(home))) throw new Error("missing isolated state home");',
@@ -3776,7 +3776,7 @@ describe('authoring tools', () => {
         "import path from 'node:path';",
         "const c = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
         `fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({scope:c.scope,kinds:c.allowedOutputKinds,schemaKeys:Object.keys(c.config.schema.fields),valueKeys:Object.keys(c.config.values),previousComponents:c.previousComponents,resources:c.resources.map(resource=>({kind:resource.kind,exists:fs.existsSync(resource.root)})),awHome:process.env.AW_HOME})+'\\n');`,
-        'if (c.surface !== "agent-plugin" || c.platformCapabilities.basis !== "profile") throw new Error("wrong context");',
+        'if (c.schemaVersion !== 2 || c.surface !== "agent-plugin" || c.platformCapabilities.schemaVersion !== 2 || c.platformCapabilities.basis !== "profile") throw new Error("wrong context");',
         'const components = [], unmet = [];',
         'if (c.allowedOutputKinds.includes("skill")) {',
         ' if (Object.hasOwn(c.config.schema.fields,"secret") || Object.hasOwn(c.config.values,"secret")) throw new Error("sensitive Skill input");',
@@ -3786,7 +3786,6 @@ describe('authoring tools', () => {
         '  else components.push({id,kind:"skill",name:id,content:{files:{"SKILL.md":{text:`---\\nname: ${id}\\ndescription: Shared Skill.\\n---\\n`},"README.md":{text:`# ${id}\\n`}}}});',
         ' }',
         '}',
-        'if (c.allowedOutputKinds.includes("agent")) unmet.push({id:"unavailable-role",kind:"agent",requiredFeatures:[{feature:"component.kind.agent"}],reasonCode:"capability-unverified"});',
         'process.stdout.write(JSON.stringify({version:3,components,omitted:[],unmet}));',
       ].join('\n'),
     });
@@ -3834,7 +3833,6 @@ describe('authoring tools', () => {
     expect(config.sources.secret).toBe('platform');
     // This explicit lower-boundary fact tests resource scanning, not client qualification.
     const capabilities=candidateProfiles.getAuthoringPlatformCapabilities('codex','user');
-    capabilities.profileId='authoring-sensitive-fixture';
     capabilities.kinds.skill={status:'supported',reasonCodes:[],delivery:['native-package']};
     const failure=await candidateRenderer.preparePlatformComponents({plugin,platform:'codex',renderScope:'user',
       kinds:['skill','agent'],capabilities,

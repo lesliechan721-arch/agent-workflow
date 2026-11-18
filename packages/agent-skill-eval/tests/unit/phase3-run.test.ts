@@ -1510,7 +1510,7 @@ describe('EvalSpec v1 execution', () => {
       'dev', 'review', 'inspect', productionSkill, '--view', 'review', '--json',
     ])
     expect(inspect.code, JSON.stringify(inspect.value)).toBe(0)
-    expect(inspect.value).toMatchObject({ schemaVersion: 1, command: 'dev.review.inspect', status: 'success', data: { fixture: true, sources: expect.any(Array) } })
+    expect(inspect.value).toMatchObject({ schemaVersion: 2, command: 'dev.review.inspect', status: 'success', data: { fixture: true, sources: expect.any(Array) } })
 
     const prepared: Array<Record<string, unknown>> = []
     for (const kind of ['baseline', 'candidate']) {
@@ -1595,7 +1595,7 @@ describe('EvalSpec v1 execution', () => {
     ]
     const accepted = await runReviewFixtureCli(data, acceptedArgs)
     expect(accepted.code).toBe(0)
-    expect(accepted.value).toMatchObject({ schemaVersion: 1, status: 'success', data: { view: 'review', skills: [{ state: 'ready' }] } })
+    expect(accepted.value).toMatchObject({ schemaVersion: 2, status: 'success', data: { view: 'review', skills: [{ state: 'ready' }] } })
     const explicitReview = await runReviewFixtureCli(data, [...acceptedArgs, '--view', 'review'])
     expect(explicitReview.code).toBe(0)
     expect(explicitReview.value).toEqual(accepted.value)
@@ -1604,7 +1604,7 @@ describe('EvalSpec v1 execution', () => {
       const result = await runReviewFixtureCli(data, ['dev', 'review', 'inspect', source, ...viewArgs, '--json'])
       expect(result.code).toBe(2)
       expect(result.value).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'dev.review.inspect',
         status: 'failed',
         data: { view: 'review', sources: expect.any(Array), skills: [] },

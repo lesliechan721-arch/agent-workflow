@@ -19,7 +19,7 @@ import { installNativeTestQualification } from '../helpers/native-execution-fixt
 // authority through installation Review and the public receipt, even when the protocol is unchanged.
 describe('native producer Review and receipt', () => {
   it.each(['package', 'skill'] as const)('shows complete %s native declarations and detects binding changes and removal', async (kind) => {
-    installNativeTestQualification({ platforms: ['opencode'], discovery: true, trust: true });
+    installNativeTestQualification({ platforms: ['opencode'], discovery: true });
     const isolated = await createIsolatedTestEnv();
     const sessions: Map<string, import('../../src/utils/plugin-scripts.js').PluginProcessResult>[] = [];
     try {

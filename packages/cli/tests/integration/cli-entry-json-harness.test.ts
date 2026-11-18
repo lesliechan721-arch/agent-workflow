@@ -25,7 +25,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'failed', data: {},
+      schemaVersion: 2, command: 'dev.catalog.publish.apply', status: 'failed', data: {},
       diagnostics: [{ code: 'invalidArguments', message: expect.any(String) }], nextActions: [],
     });
     expect(result.stdout.endsWith('\n')).toBe(true);
@@ -41,7 +41,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'failed', data: {},
+      schemaVersion: 2, command: 'dev.catalog.publish.apply', status: 'failed', data: {},
       diagnostics: [{ code: 'invalidArguments', message: expect.any(String) }],
     });
     expect(result.stderr).not.toContain(sensitivePath);
@@ -54,7 +54,7 @@ describe('CLI JSON recovery and independent command harness', () => {
     ]);
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'plugin.install',
       diagnostics: [{ code: 'invalidArguments', message: expect.any(String) }],
@@ -70,7 +70,7 @@ describe('CLI JSON recovery and independent command harness', () => {
     ]);
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'plugin.install',
       diagnostics: [{ code: 'invalidOptionValue' }],
@@ -82,7 +82,7 @@ describe('CLI JSON recovery and independent command harness', () => {
     const result = await runCliEntry(['upgrade', 'official/git-commit', '--json']);
 
     expect(result.exitCode).toBe(2);
-    expect(result.parseJsonStdout()).toMatchObject({ schemaVersion: 1, command: null, status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
+    expect(result.parseJsonStdout()).toMatchObject({ schemaVersion: 2, command: null, status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
   });
 
   it('publishes the runtime plugin capability contract with isolated stdout', async () => {
@@ -93,7 +93,7 @@ describe('CLI JSON recovery and independent command harness', () => {
     expect(result.stderr).toBe('');
     const value = result.parseJsonStdout<{ command: string; schemaVersion: number; data: { capabilities: { artifacts: Array<{ field: string; acceptedValues?: string[] }> } } }>();
     expect(value).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'dev.plugin.capabilities',
       data: {}
     });
@@ -116,7 +116,7 @@ describe('CLI JSON recovery and independent command harness', () => {
     const result = await runCliEntry(['plugin', command, '--context', 'user', '--json', '--verbose'], { cwd: root, env });
     expect(result.exitCode).toBe(0);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1, command: `plugin.${command}`, status: 'success',
+      schemaVersion: 2, command: `plugin.${command}`, status: 'success',
       data: command === 'sync' ? {
         request: { plugins: [], scope: null, context: 'user', targets: [], mode: 'apply' },
         requirements: { state: 'absent', roots: [] }, targetResults: [], remainingTargets: [],
@@ -142,7 +142,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: `plugin.config.${command}`,
       diagnostics: [{ code: 'invalidArguments', message: expect.any(String) }],
@@ -167,7 +167,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: `plugin.config.${command}`,
       diagnostics: [{
@@ -195,7 +195,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: `plugin.config.${command}`,
       diagnostics: [{
@@ -215,7 +215,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'plugin.config.set',
       diagnostics: [{
@@ -232,7 +232,7 @@ describe('CLI JSON recovery and independent command harness', () => {
       const result = await runCliEntry(['plugin', 'config', command, 'official/demo', jsonOptions, '--unknown']);
       expect(result.exitCode).toBe(2);
       expect(result.parseJsonStdout()).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'failed',
         command: `plugin.config.${command}`,
         diagnostics: [{ code: 'invalidArguments' }],
@@ -246,7 +246,7 @@ describe('CLI JSON recovery and independent command harness', () => {
       const result = await runCliEntry(['plugin', 'config', command, 'official/demo', jsonOptions, '--unknown']);
       expect(result.exitCode).toBe(2);
       expect(result.parseJsonStdout()).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'failed',
         command: `plugin.config.${command}`,
         diagnostics: [{ code: 'invalidArguments' }],
@@ -264,7 +264,7 @@ describe('CLI JSON recovery and independent command harness', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'plugin.config.set',
       diagnostics: [{ code: 'invalidArguments', message: expect.any(String) }],
@@ -320,7 +320,7 @@ describe('CLI JSON recovery and independent command harness', () => {
     });
     expect(noOp.exitCode).toBe(1);
     expect(noOp.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'plugin.config.reset',
       diagnostics: [expect.objectContaining({ code: 'configStoreMissing' })],

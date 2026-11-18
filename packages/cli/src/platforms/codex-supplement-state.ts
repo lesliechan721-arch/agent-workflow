@@ -47,14 +47,15 @@ export async function writeCodexSupplementState(ctx: ReadContext, binding: Deplo
 }
 
 export async function inspectCodexSupplementState(ctx: ReadContext, binding: DeploymentBinding,
-  inputDigest: string): Promise<DeploymentObservation['components'] | null> {
+  inputDigest: string): Promise<{ inputMatches: boolean; components: DeploymentObservation['components'] } | null> {
   try {
     const { root, filePath } = statePath(binding, ctx.env);
     await assertSafeFileMutationPath({ filePath, allowedRoot: root, label: 'Codex supplement state' });
     const stat = await fs.lstat(filePath);
     if (!stat.isFile() || stat.size > 1024 * 1024) return null;
     const state = await fs.readJson(filePath);
-    if (state?.schemaVersion !== 1 || state.bindingId !== binding.id || state.inputDigest !== inputDigest) return null;
+    if (state?.schemaVersion !== 1 || state.bindingId !== binding.id
+      || typeof state.inputDigest !== 'string' || !SHA256.test(state.inputDigest)) return null;
     const outputs = readOutputs(state.outputs, `${getDeploymentResourceKey(binding.plugin)}-`);
     if (!outputs) return null;
     const { renderUnits, supplementRoot } = await getDeploymentLayout(ctx, binding);
@@ -62,7 +63,7 @@ export async function inspectCodexSupplementState(ctx: ReadContext, binding: Dep
     if (!unit || !supplementRoot) return null;
     const components = outputs.map(({ fileName }) => ownedSupplementFile(binding, unit.physicalKey, path.join(supplementRoot, fileName)));
     const live = await inspectOwnedComponents({ components });
-    return await Promise.all(live.components.map(async ({ component, state }, index) => {
+    const observed = await Promise.all(live.components.map(async ({ component, state }, index): Promise<DeploymentObservation['components'][number]> => {
       ctx.signal?.throwIfAborted();
       const output = outputs[index]!;
       const { id } = output;
@@ -70,9 +71,11 @@ export async function inspectCodexSupplementState(ctx: ReadContext, binding: Dep
       if (state === 'foreign') return { id, presence: 'unknown', reasonCodes: ['supplementOwnershipConflict'] };
       if (state !== 'present' || component.kind !== 'owned-text-file') return { id, presence: 'unknown', reasonCodes: ['componentOutputUnconfirmed'] };
       const parsed = parseOwnedTextHeader(await fs.readFile(component.path, 'utf8'), component.identity);
-      const digest = parsed && `sha256:${createHash('sha256').update(parsed.content).digest('hex')}`;
+      if (!parsed) return { id, presence: 'unknown', reasonCodes: ['componentOutputUnconfirmed'] };
+      const digest = `sha256:${createHash('sha256').update(parsed.content).digest('hex')}`;
       return { id, presence: 'present', reasonCodes: digest === output.contentDigest ? [] : ['componentContentDrift'] };
     }));
+    return { inputMatches: state.inputDigest === inputDigest, components: observed };
   } catch {
     ctx.signal?.throwIfAborted();
     return null;

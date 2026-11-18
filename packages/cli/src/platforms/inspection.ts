@@ -9,9 +9,11 @@ import { inspectNativeDeployment } from './inspection-native.js';
 import { inspectOpenCodeDeployment } from './inspection-opencode.js';
 import { tryParseStrictSemVer } from '../utils/manifest.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
-import { projectSupplementFile } from './projection.js';
+import { cursorWorkspaceOpenCommand, projectSupplementFile } from './projection.js';
+import { cursorHookEntryCommand, cursorHooks } from './cursor-workspace-hook.js';
 import { ownedSupplementFile } from './supplement-layout.js';
 import { selectNativeProduct } from './discovery.js';
+import { assertSafeFileMutationPath } from '../utils/safe-fs.js';
 
 /** A positive operation uses one complete product path, including its exact activation scope. */
 export function selectedNativeConsumer(binding: DeploymentBinding,
@@ -22,11 +24,22 @@ export function selectedNativeConsumer(binding: DeploymentBinding,
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+/** Only these routes need a native effective activation fact for installation. */
+export function requiredDeploymentActivation(binding: DeploymentBinding, observation: DeploymentObservation, requireIndependentProject = true):
+DeploymentObservation['consumers'][number]['activation'] {
+  if (binding.route === 'grok-directory' && observation.grokScopeAuthorization === 'denied') return 'blocked';
+  if (['generic-skills', 'pi-package', 'cursor-workspace-hook', 'antigravity-directory', 'opencode-directory'].includes(binding.route)) {
+    return 'not-applicable';
+  }
+  if (requireIndependentProject && observation.scopeActivation) return observation.scopeActivation;
+  return selectedNativeConsumer(binding, observation)?.activation ?? 'unknown';
+}
+
 export function unknownDeployment(binding: DeploymentBinding, code = 'deploymentObservationUnknown'): DeploymentObservation {
   const generic = binding.route === 'generic-skills';
   return { physicalKey: binding.physicalKey, package: 'unknown', registration: generic ? 'not-applicable' : 'unknown', ownership: 'unknown',
     consumers: binding.consumers.map((product) => ({ productId: product.id, activationKey: binding.activationKey,
-      activation: generic ? 'not-applicable' : 'unknown', trust: generic ? 'not-applicable' : 'unknown', load: generic ? 'not-applicable' : 'unknown' })),
+      activation: generic ? 'not-applicable' : 'unknown', load: generic ? 'not-applicable' : 'unknown' })),
     components: [], nativeIdentity: null,
     prerequisites: { agentConsumers: { observation: binding.platform === 'pi' ? 'unknown' : 'complete', candidates: [], reasonCodes: binding.platform === 'pi' ? ['agentConsumerDiscoveryUnverified'] : [] } },
     diagnostics: [{ code, severity: 'warning', message: 'The deployment could not be fully observed. Check permissions and client status before a change.', subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } }] };
@@ -98,7 +111,18 @@ async function inspectPackageVersion(ctx: ReadContext, binding: DeploymentBindin
   } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); return undefined; }
 }
 
-/** Inspection never renders or changes trust. Explicit native observation can start app-server. */
+async function inspectCursorWorkspaceOpen(ctx: ReadContext, binding: DeploymentBinding, layout: DeploymentLayout): Promise<'present' | 'absent'> {
+  const file = layout.activationPath;
+  await assertSafeFileMutationPath({ filePath: file, allowedRoot: layout.physicalIdentity.namespaceRoot, label: 'Cursor workspaceOpen' });
+  let value: unknown;
+  try { value = await fs.readJson(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent'; throw error; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('cursorHooksInvalid');
+  const command = cursorWorkspaceOpenCommand(binding, ctx.platform);
+  return cursorHooks(value as Record<string, unknown>).entries.some((entry) => cursorHookEntryCommand(entry) === command) ? 'present' : 'absent';
+}
+
+/** Inspection does not render. Explicit OpenCode runtime observation can start a private service. */
 export async function inspectDeployment(ctx: ReadContext, binding: DeploymentBinding): Promise<DeploymentObservation> {
   let layout: DeploymentLayout;
   try { layout = await getDeploymentLayout(ctx, binding); }
@@ -148,17 +172,21 @@ export async function inspectDeployment(ctx: ReadContext, binding: DeploymentBin
     result.diagnostics.push(...unknownDeployment(binding, 'deploymentOwnershipUnreadable').diagnostics);
   }
   try {
+    if (['antigravity-directory', 'opencode-directory', 'cursor-workspace-hook', 'grok-directory'].includes(binding.route)) {
+      result.registration = 'not-applicable';
+    }
     await inspectNativeDeployment(ctx, binding, layout, result);
     if (binding.route === 'opencode-directory') await inspectOpenCodeDeployment(ctx, binding, layout, result);
-    if (['antigravity-directory', 'opencode-directory', 'cursor-workspace-hook'].includes(binding.route)) {
-      result.registration = 'not-applicable';
-      // A directory proves materialization, not host loading or project trust.
-    }
   } catch (error) {
     rethrowFatalError(error);
     ctx.signal?.throwIfAborted();
     // A later supplemental read must not discard an earlier native response.
-    result.diagnostics.push(...unknownDeployment(binding).diagnostics);
+    result.diagnostics.push(...unknownDeployment(binding, 'nativeObservationFailed').diagnostics);
+  }
+  if (binding.route === 'cursor-workspace-hook') {
+    result.workspaceOpen = 'unknown';
+    try { result.workspaceOpen = await inspectCursorWorkspaceOpen(ctx, binding, layout); }
+    catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
   }
   return result;
 }

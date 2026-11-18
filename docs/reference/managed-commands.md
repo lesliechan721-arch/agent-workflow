@@ -67,8 +67,8 @@ interface AgentCommandContextV1 {
   surface: 'agent-commands';
   platform: Platform;
   scope: 'user' | 'project'; // producer render scope
-  plugin: PlatformRenderContextV1['plugin'];
-  config: PlatformRenderContextV1['config'];
+  plugin: PlatformRenderContextV2['plugin'];
+  config: PlatformRenderContextV2['config'];
   changedConfigKeys: string[];
   requestedArtifactIds: string[];
   previousArtifacts: CommandSetArtifact[];

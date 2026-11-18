@@ -36,7 +36,7 @@ describe('managed command CLI', () => {
   it('validates before writes and requires confirmation for removal', async () => {
     const invalid = await invoke(['install', source, '--name', 'tool', '--runner', 'shell', '--entry', 'entry.mjs', '--yes', '--json']);
     expect(invalid.exitCode).toBe(2);
-    expect(invalid.receipt).toMatchObject({ schemaVersion: 1, command: 'command.install', status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
+    expect(invalid.receipt).toMatchObject({ schemaVersion: 2, command: 'command.install', status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
     await expect(fs.lstat(path.join(isolated.layout.awHomeDir, 'commands'))).rejects.toMatchObject({ code: 'ENOENT' });
     const installed = await invoke(['install', source, '--name', '工具', '--runner', 'node', '--entry', 'entry.mjs', '--json']);
     expect(installed.exitCode).toBe(0);
@@ -55,7 +55,7 @@ describe('managed command CLI', () => {
     expect(removed.receipt.data.commands).toEqual([]);
     expect(removed.receipt.data.changes).toEqual([{ kind: 'command', id, action: 'removed' }]);
     expect((await invoke(['list', '--json'])).receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: {
         commands: [],
@@ -94,7 +94,7 @@ describe('managed command CLI', () => {
     const listed = await invoke(['list', '--json']);
     expect(listed.exitCode).toBe(4);
     expect(listed.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'partial',
       data: { commands: [{ id, availability: 'unavailable' }] }
     });

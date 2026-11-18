@@ -24,7 +24,7 @@ function send(x,code=0){
  if(typeof x==='string')console.log(x);
  else{
   const {ok,command,schemaVersion,issues,...data}=x;
-  console.log(JSON.stringify({schemaVersion:1,command:route,status:ok===false?'failed':'success',data,
+  console.log(JSON.stringify({schemaVersion:2,command:route,status:ok===false?'failed':'success',data,
    diagnostics:(issues??[]).map(issue=>({code:issue.code,severity:ok===false?'error':'warning',message:issue.message??issue.code})),nextActions:[]}));
  }
  process.exitCode=code;

@@ -59,7 +59,7 @@ async function inspectCommands(host, args, environment, workspace) {
       clearTimeout(timer);
       try {
         const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        if (value.schemaVersion !== 1 || value.command !== `command.${args[0]}` || !Array.isArray(value.data?.commands) ||
+        if (value.schemaVersion !== 2 || value.command !== `command.${args[0]}` || !Array.isArray(value.data?.commands) ||
           !(code === 0 && value.status === 'success' ||
             args[0] === 'list' && code === 4 && value.status === 'partial')) throw new Error();
         resolve(value.data);

@@ -50,7 +50,7 @@ describe('OpenCode native deployment observation', () => {
     const result = await item.observe(async () => { calls += 1; throw new Error('Unexpected native process'); }, false);
     expect(calls).toBe(0);
     expect(result).toMatchObject({ package: 'absent', ownership: 'unknown', registration: 'not-applicable',
-      consumers: [{ activation: 'unknown', trust: 'unknown', load: 'unknown' }] });
+      consumers: [{ activation: 'unknown', load: 'unknown' }] });
   });
 
   // Test Value Gate: exact native activation and loading must survive contradictory local scope and ownership evidence.
@@ -59,7 +59,7 @@ describe('OpenCode native deployment observation', () => {
     item.binding.consumers.push({ id: 'desktop', product: 'app', availability: 'available', version: '2.0.0', reasonCodes: [],
       entry: { kind: 'directory', configRoot: path.dirname(item.layout.activationPath) } });
     item.result.consumers.push({ productId: 'desktop', activationKey: item.binding.activationKey,
-      activation: 'unknown', trust: 'unknown', load: 'unknown' });
+      activation: 'unknown', load: 'unknown' });
     const calls: NativeCliInvocation[] = [];
     const result = await item.observe(async (invocation) => {
       calls.push(invocation);
@@ -79,8 +79,8 @@ describe('OpenCode native deployment observation', () => {
     expect(calls).toHaveLength(1);
     expect(result).toMatchObject({ package: 'absent', ownership: 'unknown', registration: 'not-applicable',
       configuration: { activation: 'disabled' }, consumers: [
-        { productId: 'client', activation: 'enabled', load: 'observed', trust: 'unknown' },
-        { productId: 'desktop', activation: 'unknown', load: 'unknown', trust: 'unknown' },
+        { productId: 'client', activation: 'enabled', load: 'observed' },
+        { productId: 'desktop', activation: 'unknown', load: 'unknown' },
       ] });
   });
 
@@ -105,7 +105,7 @@ describe('OpenCode native deployment observation', () => {
     const row: Record<string, unknown> = item.row('failed');
     if (!includeId) delete row.id;
     await item.observe(async (invocation) => item.response(invocation, [row]));
-    expect(item.result.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'not-observed' });
+    expect(item.result.consumers[0]).toMatchObject({ activation: 'unknown', load: 'not-observed' });
     expect(item.result.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodePluginLoadFailed' }));
   });
 
@@ -125,7 +125,7 @@ describe('OpenCode native deployment observation', () => {
         if (kind === 'invalid-json') response.stdout = 'ID VERSION SOURCE';
         return response;
       });
-      expect(item.result.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'unknown' });
+      expect(item.result.consumers[0]).toMatchObject({ activation: 'unknown', load: 'unknown' });
       expect(item.result.registration).toBe('not-applicable');
       expect(item.result.configuration?.activation).toBe('disabled');
       expect(item.result.diagnostics.length).toBeGreaterThan(0);
@@ -139,7 +139,7 @@ describe('OpenCode native deployment observation', () => {
     item.result.ownership = 'aw';
     await item.observe(async () => ({ exitCode: 1, stdout: '', stderr: 'HTTP 500 failed' }));
     expect(item.result).toMatchObject({ package: 'present', ownership: 'aw',
-      consumers: [{ activation: 'unknown', trust: 'unknown', load: 'unknown' }] });
+      consumers: [{ activation: 'unknown', load: 'unknown' }] });
     expect(item.result.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodeNativeObservationFailed' }));
   });
 

@@ -209,7 +209,6 @@ describe('plugin scripts staging smoke', () => {
     // These explicit lower-boundary facts exercise the real artifact closure.
     // They do not qualify a Codex client or claim model/tool execution support.
     const capabilities = profiles.getAuthoringPlatformCapabilities('codex', 'user');
-    capabilities.profileId = 'smoke-fixture:guide-closure';
     capabilities.kinds.skill = { status: 'supported', reasonCodes: [], delivery: ['native-package'] };
     for (const [feature, values] of [
       ['agent.execution', ['isolated-context']], ['agent.prompt-mode', ['host-default']],

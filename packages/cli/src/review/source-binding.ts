@@ -32,6 +32,7 @@ import {
 import type { CatalogSourceResolution, PluginMeta, Scope } from '../types.js'
 import { resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js'
 import { getProfileRenderScopes } from '../platforms/layout.js'
+import { getQualifiedPlatformProfile, toPlatformCapabilitiesView } from '../platforms/capabilities.js'
 import { artifactValueDigest } from '../utils/artifact-plan.js'
 import { getAuthoringPlatformCapabilities } from './platform-profile.js'
 import type { ComponentPreparationBinding } from './skill-materialization.js'
@@ -695,8 +696,8 @@ async function currentWorkspaceProfile(options: {
   offlineConfig?: ReviewProfileConfig
 }): Promise<AwSourceBindingProfile> {
   for (const unit of options.binding.preparation) {
-    const current = getAuthoringPlatformCapabilities(unit.platform, unit.renderScope)
-    if (unit.profileId !== current.profileId || unit.capabilitiesDigest !== artifactValueDigest(current)) {
+    const current = toPlatformCapabilitiesView(getAuthoringPlatformCapabilities(unit.platform, unit.renderScope))
+    if (unit.profileId !== getQualifiedPlatformProfile(unit.platform).id || unit.capabilitiesDigest !== artifactValueDigest(current)) {
       throw new Error('The bound platform capability profile changed; prepare again.')
     }
   }

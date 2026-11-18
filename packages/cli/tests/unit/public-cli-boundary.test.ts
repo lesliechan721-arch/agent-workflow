@@ -23,7 +23,7 @@ async function invoke(args: string[], options: Parameters<typeof runCli>[1] = {}
 }
 
 describe('public CLI result boundary', () => {
-  // Test Value Gate: the explicit status mode must be accepted and disclose native startup effects in both outputs.
+  // Test Value Gate: explicit runtime observation only discloses startup when it enters a supporting route.
   it.each([false, true])('keeps user-only status free of app-server startup (observeNative=%s)', async (observeNative) => {
     const { env, layout } = getCurrentSourceTestIsolation();
     const calls: string[][] = [];
@@ -36,8 +36,8 @@ describe('public CLI result boundary', () => {
     });
     const result = JSON.parse(output.stdout);
     expect(result.command).toBe('plugin.status');
-    expect(result.diagnostics.some((entry: { code: string }) => entry.code === 'nativeObservationSideEffects')).toBe(observeNative);
-    expect(output.stderr.includes('nativeObservationSideEffects')).toBe(observeNative);
+    expect(result.diagnostics.some((entry: { code: string }) => entry.code === 'nativeObservationSideEffects')).toBe(false);
+    expect(output.stderr.includes('nativeObservationSideEffects')).toBe(false);
     expect(calls.some((args) => args.includes('app-server'))).toBe(false);
     expect(output.prompts).toBe(0);
   });
@@ -126,7 +126,7 @@ describe('public CLI result boundary', () => {
   it('keeps an identified command and safe option diagnostics before normalization', async () => {
     const output = await invoke(['dev', 'catalog', 'create', '--unknown=/private/customer-secret', '--json']);
     expect(output.code).toBe(2);
-    expect(JSON.parse(output.stdout)).toMatchObject({ schemaVersion: 1, command: 'dev.catalog.create', status: 'failed', data: {} });
+    expect(JSON.parse(output.stdout)).toMatchObject({ schemaVersion: 2, command: 'dev.catalog.create', status: 'failed', data: {} });
     expect(output.stdout + output.stderr).not.toContain('customer-secret');
     expect(output.prompts).toBe(0);
   });

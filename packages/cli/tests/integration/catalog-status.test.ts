@@ -59,7 +59,7 @@ describe('Catalog static status CLI', () => {
       io: output.io,
     })).toBe(0);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'dev.catalog.status',
       diagnostics: [],
@@ -96,7 +96,7 @@ describe('Catalog static status CLI', () => {
       io: output.io,
     })).toBe(0);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       diagnostics: [],
       data: { git: { checked: true, clean: false } }
@@ -113,7 +113,7 @@ describe('Catalog static status CLI', () => {
       io: output.io,
     })).toBe(0);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       diagnostics: [],
       data: {
@@ -129,7 +129,7 @@ describe('Catalog static status CLI', () => {
     expect(await runCli(['dev', 'catalog', 'status', '--preflight', '--json'], { io: output.io })).toBe(2);
     expect(output.stderr()).toContain('--preflight');
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'dev.catalog.status',
       diagnostics: [{ code: 'invalidArguments', message: expect.stringContaining('--preflight') }],

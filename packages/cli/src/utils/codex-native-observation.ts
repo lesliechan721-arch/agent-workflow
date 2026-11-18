@@ -1,13 +1,4 @@
-import path from 'node:path';
-import fs from 'fs-extra';
-import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
-import { getMinimumAgentVersion } from './agent-version.js';
-import { compareStrictSemVer, tryParseStrictSemVer } from '@lesliechan721/aw-plugin-core/semver';
 import { createSafeNeutralCwd } from '../intent/scope-context.js';
-import { createCodexConfigReadInput, observeCodexExactProjectTrust, parseCodexConfigReadOutput,
-  type CodexProjectTrustObservation } from './codex-config-observation.js';
-import { getCodexHome } from './state-paths.js';
-
 import {
   buildCodexPluginListJsonInvocation,
   NativeCliError,
@@ -69,8 +60,6 @@ export interface CodexNativeObservationSnapshot {
 }
 
 export interface CodexNativeObservationSession {
-  /** Explicit status observation only. Ordinary plugin inspection never starts app-server. */
-  inspectProjectTrust(projectRoot: string): Promise<CodexProjectTrustObservation>;
   inspectPlugin(options: {
     pluginId: string;
     scope?: 'user' | 'project' | 'both';
@@ -114,7 +103,6 @@ export async function createCodexNativeObservationSession(options: {
   let manager: CodexManager | undefined = options.manager ?? SYSTEM_CODEX_MANAGER;
   const snapshots = new Map<string, Promise<CodexObservationEntries>>();
   const pendingReads = new Set<Promise<unknown>>();
-  let projectTrust: Promise<CodexProjectTrustObservation> | undefined;
   let cleanupFailure: NativeCliError | undefined;
   let generation = 0;
   let disposal: Promise<void> | undefined;
@@ -157,46 +145,6 @@ export async function createCodexNativeObservationSession(options: {
     CodexObservationScope[] => scope === 'user' ? ['neutral'] : ['exact', 'neutral'];
 
   return {
-    async inspectProjectTrust(projectRoot) {
-      if (disposal) throw new Error('codexObservationSessionDisposed');
-      if (projectRoot !== options.exactCwd) return { state: 'unknown' };
-      if (!projectTrust) {
-        const selectedManager = manager;
-        projectTrust = (async (): Promise<CodexProjectTrustObservation> => {
-          if (!options.runner || selectedManager?.kind !== 'system' || !selectedManager.version
-            || !tryParseStrictSemVer(selectedManager.version)
-            || compareStrictSemVer(selectedManager.version, getMinimumAgentVersion('codex')) < 0) {
-            return { state: 'unknown' };
-          }
-          try {
-            // Alternate spellings need Codex's full path loader. This reader
-            // only accepts the already canonical exact project path.
-            if (!path.isAbsolute(projectRoot) || await fs.realpath(projectRoot) !== projectRoot) return { state: 'unknown' };
-            // This trust-only read must not start background plugin updates.
-            // The overridden features are not evidence of the user's settings.
-            const result = await runNativeCli({ command: selectedManager.command,
-              args: [...selectedManager.argsPrefix, 'app-server', '--stdio', '-c', 'features.plugins=false'], agentKind: 'codex',
-              cwd: projectRoot, env: options.env, timeoutMs: DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
-              input: createCodexConfigReadInput(projectRoot) }, options.runner);
-            if (result.exitCode !== 0 || Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) > 1024 * 1024) {
-              return { state: 'failed' };
-            }
-            return observeCodexExactProjectTrust(parseCodexConfigReadOutput(result.stdout), projectRoot, getCodexHome(options.env));
-          } catch (error) {
-            if (error instanceof NativeCliError && error.cleanupError) {
-              cleanupFailure ??= error;
-              throw error;
-            }
-            if (error instanceof Error && error.name === 'AbortError') throw error;
-            return { state: 'failed' };
-          }
-        })();
-        const pending = projectTrust;
-        pendingReads.add(pending);
-        void pending.then(() => pendingReads.delete(pending), () => pendingReads.delete(pending));
-      }
-      return projectTrust;
-    },
     async snapshot(marketplace, scope = 'both') {
       if (disposal) throw new Error('codexObservationSessionDisposed');
       const capturedGeneration = generation;
@@ -242,7 +190,6 @@ export async function createCodexNativeObservationSession(options: {
       };
     },
     setManager(nextManager) {
-      if (manager?.version !== nextManager?.version) projectTrust = undefined;
       if (manager?.kind === nextManager?.kind
         && manager?.command === nextManager?.command
         && manager?.argsPrefix.length === nextManager?.argsPrefix.length
@@ -253,11 +200,9 @@ export async function createCodexNativeObservationSession(options: {
       manager = nextManager;
       generation += 1;
       snapshots.clear();
-      projectTrust = undefined;
     },
     invalidate(marketplace) {
       generation += 1;
-      projectTrust = undefined;
       if (!marketplace) {
         snapshots.clear();
         return;

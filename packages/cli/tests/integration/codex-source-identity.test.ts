@@ -83,7 +83,7 @@ async function createNativeRuntime(isolation: ReturnType<typeof getCurrentSource
 }
 
 describe('Codex source-qualified native identity', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true }); });
+  beforeEach(() => { installNativeTestQualification({ platforms: ['codex'], discovery: true }); });
   // Test Value Gate: a selected User root cannot replace a sibling shared package or read caller project state.
   it('keeps a sibling package and ignores poisoned caller project state during User recovery', async () => {
     const isolation = getCurrentSourceTestIsolation();

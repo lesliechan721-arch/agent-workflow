@@ -89,7 +89,7 @@ describe('installed native declaration across Catalog and producer sync', () => 
     expect(await run(['source', 'sync', 'team']))
       .toMatchObject({
         exitCode: 0, stderr: '', receipt: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           status: 'success',
           data: {}
         }
@@ -99,7 +99,7 @@ describe('installed native declaration across Catalog and producer sync', () => 
     const installed = await run([...packageSync, '--yes']);
     expect(installed, JSON.stringify(installed)).toMatchObject({
       exitCode: 0, stderr: '', receipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success',
         data: {}
       }
@@ -129,7 +129,7 @@ describe('installed native declaration across Catalog and producer sync', () => 
     expect(await run(['source', 'sync', 'team', '--yes']))
       .toMatchObject({
         exitCode: 0, stderr: '', receipt: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           status: 'success',
           data: {}
         }
@@ -172,7 +172,7 @@ describe('installed native declaration across Catalog and producer sync', () => 
     const updated = await run([...packageSync, '--yes'], confirmation);
     expect(updated, JSON.stringify(updated)).toMatchObject({
       exitCode: 0, stderr: '', receipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success',
         data: {}
       }

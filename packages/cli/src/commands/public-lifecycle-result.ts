@@ -22,7 +22,7 @@ export interface PublicDeploymentPlan {
 
 export interface PublicDeploymentResult extends Omit<DeploymentReceipt, 'after'> {
   products: ProductInstallation[];
-  after: Pick<DeploymentObservation, 'physicalKey' | 'package' | 'registration' | 'scopeRegistration' | 'ownership' | 'consumers' | 'components' | 'nativeIdentity' | 'configuration'> & {
+  after: Pick<DeploymentObservation, 'physicalKey' | 'package' | 'nativePackage' | 'registration' | 'scopeRegistration' | 'scopeActivation' | 'ownership' | 'consumers' | 'components' | 'nativeIdentity' | 'configuration' | 'workspaceOpen'> & {
     prerequisites?: { nativeSources: {
       observation: 'complete' | 'unknown'; configurationEvidence: string;
       sources: Array<Omit<NonNullable<DeploymentObservation['prerequisites']['nativeSources']>['sources'][number], 'path'>>;
@@ -84,7 +84,26 @@ const messages: Record<string, string> = {
   operationReviewStale: 'The operation evidence changed. Review the current state and repeat the request.',
   pluginSelectorAmbiguous: 'The plugin name is ambiguous. Use a source-qualified plugin ID.',
   pluginUnavailable: 'The plugin is not available in the selected Active Catalog.',
-  nativeTrustUnconfirmed: 'The native client effective trust state could not be observed. Registration and activation do not establish trust.',
+  nativeActivationDisabled: 'The selected scope is disabled in the native client.',
+  nativeActivationUnconfirmed: 'The native client did not confirm effective activation for the selected scope.',
+  nativeActivationBlocked: 'The native client blocked activation in the selected scope.',
+  grokProjectAuthorizationDenied: 'Grok denied authorization for the selected project. Review it in Grok before syncing.',
+  deploymentOwnershipConflict: 'The native deployment conflicts with another owner or registration.',
+  platformPackageMissing: 'The required AW source package is missing.',
+  nativeRegistrationMissing: 'The native client reports no required registration.',
+  nativeRegistrationUnconfirmed: 'The native client did not confirm registration for the selected deployment.',
+  nativePackageMissing: 'The registered native client copy is missing.',
+  nativePackageContentDrift: 'The native client copy is out of date.',
+  nativePackageContentUnconfirmed: 'The native client copy could not be verified.',
+  platformInputDrift: 'The plugin inputs changed and its deployment needs to be synced.',
+  platformContentDrift: 'The deployed plugin content changed and needs to be synced.',
+  platformExpectationUnconfirmed: 'The package projection could not be verified.',
+  platformPreparationPartial: 'The package has only a partial projection.',
+  componentOutputMissing: 'A required deployed component is missing.',
+  componentOutputUnconfirmed: 'The deployed component output could not be verified.',
+  dynamicExpectationUnconfirmed: 'The required dynamic output could not be verified.',
+  cursorWorkspaceOpenMissing: 'The selected scope is missing the managed Cursor workspaceOpen entry.',
+  cursorWorkspaceOpenUnconfirmed: 'The managed Cursor workspaceOpen entry could not be verified.',
   outputsRetainedRequirements: 'Requirements were retained. A later sync can deploy these outputs again.',
   stateInventoryFailed: 'The local output inventory is incomplete. Inspect the detected location before recovery.',
 };
@@ -125,7 +144,12 @@ export function inventoryRecoveryActions(values: readonly Pick<RecoveryDiagnosti
     const subject = diagnostic.subject;
     const identity = [subject?.pluginId, subject?.target, subject?.scope].filter(Boolean).join(' / ') || 'The affected inventory scope';
     let message: string;
-    if (subject?.field === 'nativeSource' && subject.target === 'gemini') {
+    if (subject?.field === 'nativeSource' && subject.target === 'grok') {
+      const source = detail.path;
+      message = `${identity}: With the same Grok client and configuration root, ${source
+        ? `run Grok with arguments ${JSON.stringify(['plugin', 'install', source, '--trust'])}`
+        : 'locate the retained AW source in the operation review and install it in Grok with --trust'}. This grants Grok trust for the source. Then run aw plugin sync ${subject.pluginId} --context user --target grok.`;
+    } else if (subject?.field === 'nativeSource' && subject.target === 'gemini') {
       const workspace = diagnostics.find((entry) => entry.subject?.field === 'workspace'
         && entry.subject.pluginId === subject.pluginId && entry.subject.scope === subject.scope)?.detail?.path;
       message = `${identity}: The native permission protocol is unconfirmed. ${detail.path
@@ -200,12 +224,14 @@ export function projectDeploymentObservation(value: NonNullable<RecoveryTarget['
           : product.entry.kind === 'directory' ? { kind: 'directory', configRoot: product.entry.configRoot }
             : { kind: 'generic', root: product.entry.root } : null })),
     after: { physicalKey: value.after.physicalKey, package: value.after.package, registration: value.after.registration,
+      ...(value.after.nativePackage ? { nativePackage: value.after.nativePackage } : {}),
+      ...(value.after.workspaceOpen ? { workspaceOpen: value.after.workspaceOpen } : {}),
       ...(value.after.scopeRegistration ? { scopeRegistration: value.after.scopeRegistration } : {}),
+      ...(value.after.scopeActivation ? { scopeActivation: value.after.scopeActivation } : {}),
       ownership: value.after.ownership, consumers: value.after.consumers.map((consumer) => ({ productId: consumer.productId,
-        activationKey: consumer.activationKey, activation: consumer.activation, trust: consumer.trust, load: consumer.load })),
+        activationKey: consumer.activationKey, activation: consumer.activation, load: consumer.load })),
       ...(value.after.configuration ? { configuration: { scope: value.after.configuration.scope,
         activation: value.after.configuration.activation,
-        ...(value.after.configuration.trust ? { trust: value.after.configuration.trust } : {}),
         ...(value.after.configuration.marketplace ? { marketplace: value.after.configuration.marketplace } : {}),
         reasonCodes: [...value.after.configuration.reasonCodes] } } : {}),
       components: value.after.components.map((component) => ({ id: component.id, presence: component.presence, reasonCodes: [...component.reasonCodes] })),

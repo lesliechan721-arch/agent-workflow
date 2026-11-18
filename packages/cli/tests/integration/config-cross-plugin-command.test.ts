@@ -188,7 +188,7 @@ async function createCommandPackageReferenceFixture(options: {
 }
 
 describe('cross-plugin public config apply', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true, trust: true }); });
+  beforeEach(() => { installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true }); });
   // Test Value Gate: config apply discovers installed packages without platform intent,
   // preserves foreign source packages, and skips unchanged effective inputs.
   it('refreshes only installed consumer packages from the matching source without platform intent', async () => {
@@ -211,7 +211,7 @@ describe('cross-plugin public config apply', () => {
     const repaired = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"remote"}]', '--apply', '--yes']);
     expect(repaired, JSON.stringify(repaired)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: {
           apply: {
             state: 'succeeded', targetResults: [],
@@ -230,7 +230,7 @@ describe('cross-plugin public config apply', () => {
     const unchanged = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"remote"},{"key":"other"}]', '--apply', '--yes']);
     expect(unchanged, JSON.stringify(unchanged)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: { apply: { reason: 'noEffectiveConfigChange' } }
       }
     });
@@ -251,7 +251,7 @@ describe('cross-plugin public config apply', () => {
     const failed = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"next"}]', '--apply', '--yes']);
     expect(failed, JSON.stringify(failed)).toMatchObject({
       exitCode: 4, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'partial',
         data: {
           configWrite: 'succeeded',
@@ -423,7 +423,7 @@ describe('cross-plugin public config apply', () => {
     const initial = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
     expect(initial, JSON.stringify(initial)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success'
       }
     });
@@ -439,7 +439,7 @@ describe('cross-plugin public config apply', () => {
     const savedOnly = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"unrelated"}]']);
     expect(savedOnly, JSON.stringify(savedOnly)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: {
           configWrite: 'succeeded',
           apply: { reason: 'notRequested' }
@@ -454,7 +454,7 @@ describe('cross-plugin public config apply', () => {
     const saved = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"remote"}]', '--apply', '--yes']);
     expect(saved, JSON.stringify(saved)).toMatchObject({
       exitCode: 4, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'partial',
         data: {
           configWrite: 'succeeded',
@@ -484,7 +484,7 @@ describe('cross-plugin public config apply', () => {
     const recovered = await run(['plugin', 'sync', 'team/consumer', '--target', 'codex', '--context', 'user', '--yes']);
     expect(recovered, JSON.stringify(recovered)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success'
       }
     });

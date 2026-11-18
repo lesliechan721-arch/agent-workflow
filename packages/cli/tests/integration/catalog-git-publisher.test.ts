@@ -470,7 +470,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     expect(exitCode).toBe(1);
     const failure = JSON.parse(output.stdout()) as { diagnostics: Array<{ code: string; message: string }> };
     expect(failure).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'dev.catalog.publish.plan', diagnostics: [expect.objectContaining({ code: 'remoteReadFailed' })], data: {}
     });
@@ -525,7 +525,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     });
 
     expect(exitCode).toBe(1);
-    expect(JSON.parse(output.stdout())).toMatchObject({ schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'failed', data: {}, diagnostics: [{ code: 'catalogPublicationFailed', message: 'Catalog publication identity changed. Increase the Catalog version and create a new plan.' }] });
+    expect(JSON.parse(output.stdout())).toMatchObject({ schemaVersion: 2, command: 'dev.catalog.publish.apply', status: 'failed', data: {}, diagnostics: [{ code: 'catalogPublicationFailed', message: 'Catalog publication identity changed. Increase the Catalog version and create a new plan.' }] });
     const combined = `${output.stdout()}\n${output.stderr()}`;
     for (const sensitive of [
       root,
@@ -755,7 +755,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       '--expected-plan-digest', publication.planDigest, '--yes', '--json',
     ], { cwd: root, env: process.env, io: output.io })).toBe(4);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'partial',
+      schemaVersion: 2, command: 'dev.catalog.publish.apply', status: 'partial',
       data: {
         state: 'uncertain', journalState: 'uncertain',
         remoteWriteAttempted: true, remoteVerified: false,

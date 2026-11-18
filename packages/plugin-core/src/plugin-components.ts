@@ -62,34 +62,25 @@ export interface ResolvedPermissionDefinition {
 }
 export interface ResolvedInvocationPolicy { platform: PlatformId; permissions: ResolvedPermissionDefinition[] }
 export interface CapabilityFact { status: Support; reasonCodes: string[] }
-export interface PlatformCapabilitiesV1 {
-  schemaVersion: 1; platform: PlatformId; scope: Scope; basis: 'local' | 'profile'; profileId: string;
-  consumers: Array<{
-    id: string; product: 'cli' | 'app' | 'generic'; version: string | null;
-    agentConsumers?: Array<{
-      id: string; version: string | null; enabled: 'yes' | 'no' | 'unknown'; packageAccess: 'allowed' | 'denied' | 'unknown';
-      scope?: Scope; trust?: 'trusted' | 'required' | 'blocked' | 'unknown';
-      settings?: { promptMode: 'host-default' | 'append' | 'replace' | 'unknown'; loadExtensions: 'yes' | 'no' | 'host-default' | 'unknown' };
-      configurationEvidence?: string;
-    }>;
-  }>;
+export interface PlatformCapabilitiesV2 {
+  schemaVersion: 2; platform: PlatformId; scope: Scope; basis: 'local' | 'profile';
   kinds: Record<ComponentKind, CapabilityFact & { delivery: Array<'native-package' | 'native-extension' | 'managed-host-resource' | 'generic-files'> }>;
   features: Record<string, CapabilityFact & { values?: string[]; maxBytes?: number }>;
 }
-export interface PlatformRenderContextV1 {
-  schemaVersion: 1; surface: 'agent-plugin'; platform: PlatformId; scope: Scope;
+export interface PlatformRenderContextV2 {
+  schemaVersion: 2; surface: 'agent-plugin'; platform: PlatformId; scope: Scope;
   plugin: { pluginId: string; name: string; version: string };
   config: {
     schema: PluginConfigDefinition; values: Record<string, PluginConfigValue>;
     sources: Record<string, 'default' | 'common' | 'platform' | 'missing'>; issues: PluginConfigValidationIssue[];
   };
-  changedConfigKeys: string[]; allowedOutputKinds: ComponentKind[]; platformCapabilities: PlatformCapabilitiesV1;
+  changedConfigKeys: string[]; allowedOutputKinds: ComponentKind[]; platformCapabilities: PlatformCapabilitiesV2;
   resources: Array<{ kind: 'bundle' | 'runtime-import'; name: string; root: string; digest: string }>;
   previousComponents: Array<{ id: string; kind: ComponentKind; name: string }>;
 }
 export interface AgentCommandContextV1 {
   schemaVersion: 1; surface: 'agent-commands'; platform: Exclude<PlatformId, 'generic'>; scope: Scope;
-  plugin: PlatformRenderContextV1['plugin']; config: PlatformRenderContextV1['config']; changedConfigKeys: string[];
+  plugin: PlatformRenderContextV2['plugin']; config: PlatformRenderContextV2['config']; changedConfigKeys: string[];
   requestedArtifactIds: string[]; previousArtifacts: import('./managed-commands.js').CommandSetArtifact[];
   producers: Array<{ set: string; componentId: string; resourceRoot: string }>;
 }
@@ -139,8 +130,8 @@ function lazyValidator<T>(ref: string): () => ValidateFunction<T> {
 }
 const getComponentValidator = lazyValidator<PluginComponent>(`${componentSchema.$id}#/$defs/pluginComponent`);
 const getPlanValidator = lazyValidator<PlatformComponentPlanV3>(`${componentSchema.$id}#/$defs/platformComponentPlanV3`);
-const getCapabilitiesValidator = lazyValidator<PlatformCapabilitiesV1>(`${componentSchema.$id}#/$defs/platformCapabilitiesV1`);
-const getContextValidator = lazyValidator<PlatformRenderContextV1>(`${componentSchema.$id}#/$defs/platformRenderContextV1`);
+const getCapabilitiesValidator = lazyValidator<PlatformCapabilitiesV2>(`${componentSchema.$id}#/$defs/platformCapabilitiesV2`);
+const getContextValidator = lazyValidator<PlatformRenderContextV2>(`${componentSchema.$id}#/$defs/platformRenderContextV2`);
 const getCommandContextValidator = lazyValidator<AgentCommandContextV1>(`${componentSchema.$id}#/$defs/agentCommandContextV1`);
 const getRequirementValidator = lazyValidator<FeatureRequirement>(`${manifestSchema.$id}#/$defs/featureRequirement`);
 function assertSchema<T>(getValidator: () => ValidateFunction<T>, value: unknown, field: string): asserts value is T {
@@ -158,7 +149,7 @@ function safeRelativePath(value: string, field: string): string {
 export function assertFeatureRequirement(value: unknown): asserts value is FeatureRequirement {
   assertSchema(getRequirementValidator, value, 'feature requirement');
 }
-export function assertPlatformCapabilities(value: unknown): asserts value is PlatformCapabilitiesV1 {
+export function assertPlatformCapabilities(value: unknown): asserts value is PlatformCapabilitiesV2 {
   assertSchema(getCapabilitiesValidator, value, 'platform capabilities');
   for (const fact of [...Object.values(value.kinds), ...Object.values(value.features)]) {
     if (fact.reasonCodes.some((code) => !CAPABILITY_REASON_CODES.includes(code as typeof CAPABILITY_REASON_CODES[number]))) {
@@ -186,7 +177,7 @@ export function assertPlatformCapabilities(value: unknown): asserts value is Pla
     if (fact.status !== 'supported' && (fact.values?.length ?? 0) > 0) throw new Error(`Invalid platform capabilities: unsupported feature ${feature} cannot grant values.`);
   }
 }
-export function assertPlatformRenderContext(value: unknown): asserts value is PlatformRenderContextV1 {
+export function assertPlatformRenderContext(value: unknown): asserts value is PlatformRenderContextV2 {
   assertSchema(getContextValidator, value, 'platform render context');
   assertPlatformCapabilities(value.platformCapabilities);
   if (value.platform !== value.platformCapabilities.platform || value.scope !== value.platformCapabilities.scope) throw new Error('Invalid platform render context: capability platform/scope mismatch.');
@@ -285,12 +276,12 @@ export function getComponentFeatureRequirements(component: PluginComponent, opti
   }
   return [...merged.values()];
 }
-export function getPlatformCapabilityFact(feature: string, capabilities: PlatformCapabilitiesV1): CapabilityFact & { values?: string[]; maxBytes?: number } {
+export function getPlatformCapabilityFact(feature: string, capabilities: PlatformCapabilitiesV2): CapabilityFact & { values?: string[]; maxBytes?: number } {
   const entry = PLATFORM_FEATURE_REGISTRY[feature];
   if (!entry) throw new Error(`Unknown platform feature ${feature}.`);
   return entry.derivedFromKind ? capabilities.kinds[entry.derivedFromKind] : capabilities.features[feature] ?? { status: 'unsupported', reasonCodes: ['interface-unsupported'] };
 }
-export function getUnmetFeatureRequirements(requirements: readonly FeatureRequirement[], capabilities: PlatformCapabilitiesV1): FeatureRequirement[] {
+export function getUnmetFeatureRequirements(requirements: readonly FeatureRequirement[], capabilities: PlatformCapabilitiesV2): FeatureRequirement[] {
   return requirements.flatMap((requirement): FeatureRequirement[] => {
     assertFeatureRequirement(requirement);
     const fact = getPlatformCapabilityFact(requirement.feature, capabilities);
@@ -303,9 +294,9 @@ export function getUnmetFeatureRequirements(requirements: readonly FeatureRequir
 const RESERVED_COMPONENT_FILES = new Set(['.agent-workflows-owner.json', '.aw-runtime-config.json', 'scripts/aw-runtime-config.mjs', '.aw-command-producer.json', '.agents-plugin/aw-codex-native-render.json', '.aw-runtime-native-receipt.json']);
 export interface ComponentPlanValidationOptions {
   platform: PlatformId; scope?: Scope; allowedOutputKinds: readonly ComponentKind[];
-  platformCapabilities: PlatformCapabilitiesV1;
+  platformCapabilities: PlatformCapabilitiesV2;
   configKeys?: readonly string[]; nonSensitiveConfigKeys?: readonly string[]; requiredAwCapabilities?: readonly string[];
-  resources?: PlatformRenderContextV1['resources']; sourceDirs?: readonly string[];
+  resources?: PlatformRenderContextV2['resources']; sourceDirs?: readonly string[];
   staticComponents?: readonly PluginComponent[];
 }
 export function assertPluginComponent(value: unknown, options: Pick<ComponentPlanValidationOptions, 'platform'> & { phase?: 'source' | 'target' }): asserts value is PluginComponent {
@@ -382,12 +373,12 @@ export function assertPlatformComponentPlan(value: unknown, options: ComponentPl
     }
   }
 }
-function reasonForMissing(component: PluginComponent, requirements: FeatureRequirement[], capabilities: PlatformCapabilitiesV1): string {
+function reasonForMissing(component: PluginComponent, requirements: FeatureRequirement[], capabilities: PlatformCapabilitiesV2): string {
   return requirements.flatMap((requirement) => getPlatformCapabilityFact(requirement.feature, capabilities).reasonCodes)[0]
     ?? capabilities.kinds[component.kind].reasonCodes[0] ?? 'interface-unsupported';
 }
 /** Keeps only the explicitly separable coverage subset. Other semantics remain mandatory. */
-export function partitionStaticPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV1): ExpectedComponentSet {
+export function partitionStaticPluginComponents(components: readonly PluginComponent[], capabilities: PlatformCapabilitiesV2): ExpectedComponentSet {
   assertPlatformCapabilities(capabilities);
   const result: ExpectedComponentSet = { components: [], omitted: [], unmet: [], sources: {} };
   const identities = new Set<string>();
@@ -451,7 +442,7 @@ export function resolveInvocationPolicy(manifest: NormalizedPluginManifest, plat
 }
 export async function normalizeStaticPluginComponents(options: {
   pluginRoot: string; staticResourceRoot?: string; manifest: NormalizedPluginManifest; platform: PlatformId;
-  capabilities: PlatformCapabilitiesV1; allowedOutputKinds?: readonly ComponentKind[];
+  capabilities: PlatformCapabilitiesV2; allowedOutputKinds?: readonly ComponentKind[];
 }): Promise<ExpectedComponentSet> {
   const { manifest, platform, pluginRoot } = options;
   const staticRoot = options.staticResourceRoot ?? pluginRoot;

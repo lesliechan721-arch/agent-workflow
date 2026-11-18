@@ -102,7 +102,7 @@ CLI/TUI 共用 adapter 注册表和发现结果。实际入口、配置根、版
 
 discover、prepare、materialize、原生 mutation 与 postcheck 的错误只阻断真实依赖分组，其他平台继续。参数错误、共同强配置损坏、无法取得唯一锁、共同授权缺失和用户中断仍可整体停止。共享发布失败只阻断其消费者，不回滚其他平台成功。
 
-包、注册、activation、trust、组件 presence 与 load 各自保留。ComponentGap.requiredFeatures 必填，完整传递冻结 feature/values、缺口 ID 与 componentId；无能力要求的执行错误使用空数组。不能将缺少 block 或一个 Instructions audience 简化为整类缺失。
+包、登记、有效启用、组件和加载事实各自保留。单插件与分组后置检查都要求对应路由的交付事实。Grok 许可、Pi Agents 消费者授权和 Gemini 安装同意各有自己的门禁。OpenCode 可选运行观测不影响目录交付。ComponentGap.requiredFeatures 必填，完整传递冻结 feature/values、缺口 ID 与 componentId；无能力要求的执行错误使用空数组。不能将缺少 block 或一个 Instructions audience 简化为整类缺失。
 
 原生动作回执与后续只读状态分开：Pi Project remove 的精确成功确认可完成本次撤销及专属包清理，即使有效 list 未显示 Project 段；registration 仍保留 unknown。命令、清单与归属边界见[状态证据](config-and-status.md#31-只读观察)。Grok 首次 User 来源须先由用户显式原生授信，目录信任和 AW --yes 均不能代替。
 

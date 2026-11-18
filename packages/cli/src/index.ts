@@ -3,7 +3,7 @@ import { describeNativeToolClosure } from './utils/native-tool-review.js';
 
 import { preparePublicConfigConfirmation } from './commands/public-config-confirmation.js';
 import { createPublicCommandInterruption } from './commands/public-interruption.js';
-import { commandResult, publicExitCode, renderPublicResult, safePublicMessage, type CommandResult, type Confirmation } from './output/public-result.js';
+import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, publicExitCode, renderPublicResult, safePublicMessage, type CommandResult, type Confirmation } from './output/public-result.js';
 import { projectReceipt } from './output/receipt-projection.js';
 import { geminiNativeConsentDiagnostic } from './output/native-consent.js';
 import { runPublicLifecycle } from './commands/public-lifecycle.js';
@@ -2800,7 +2800,7 @@ function configurePublicCommands(program: Command, options: CliRuntimeOptions, i
     .action(async (selector: string) => { io.result?.(await runPublicPluginShow(selector, { cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.show'))); });
   plugin.command('status').description('Inspect requirements, outputs, and coverage').argument('[plugins...]')
     .addOption(strictValueOption('--context <context>', 'Observation context', ['user', 'project']))
-    .option('--observe-native', 'Start a supported native client to observe trust or plugin loading')
+    .option('--observe-native', 'Start OpenCode when selected to observe plugin loading')
     .action(async (plugins: string[], raw: Record<string, unknown>) => { io.result?.(await runPublicPluginStatus(plugins, { ...raw, cwd: options.cwd ?? process.cwd(), env: options.env, cliVersion: resolveCliVersion() }, context('plugin.status', raw))); });
 
   devPlugin.command('remove').description('Delete one owned plugin source tree').argument('<plugin>')
@@ -2883,7 +2883,7 @@ function helpResult(program: Command, selected: Command): CommandResult {
     arguments: selected.registeredArguments.map((argument) => ({ name: argument.name(), required: argument.required, variadic: argument.variadic, description: argument.description })),
     options: [...selected.options, ...(selected === program ? [] : program.options)].map((option) => ({ flags: option.flags, description: option.description, required: option.mandatory, choices: option.argChoices ?? null, conflicts: [] })),
     commands: selected.commands.map((command) => ({ command: commandId(command), description: command.description() })),
-    resultSchema: { schemaVersion: 1, statuses: ['success', 'partial', 'blocked', 'failed'] },
+    resultSchema: { schemaVersion: CLI_OUTPUT_SCHEMA_VERSION, statuses: ['success', 'partial', 'blocked', 'failed'] },
     rules: commandId(selected) === 'plugin.install' ? ['--scope is required.', '--only requirements cannot use --target or --script-timeout.'] : commandId(selected) === 'plugin.remove' ? ['--scope is required.', '--only outputs requires --target.', '--force cannot use --only requirements.', '--keep-dependencies cannot use --only.', '--delete-config cannot use --only.'] : [],
     effects: selected.options.some((option) => option.long === '--yes') ? ['Important effects require --yes.'] : [],
     examples: [selected === program ? ['aw', 'plugin', 'list'] : ['aw', ...commandId(selected).split('.'), '--help']],
@@ -2960,7 +2960,7 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
     if (options.diagnostics?.verbose || awArgs.includes('--verbose')) for (const line of stderr) io.stderr(`${safePublicMessage(line.trim())}\n`);
     return interruption.exitCode ? interruption.cleanupFailed ? 1 : interruption.exitCode : publicExitCode(result, invalid);
   };
-  if (presentation.version) return emit(commandResult('version', { version: resolveCliVersion(), resultSchemaVersion: 1 }));
+  if (presentation.version) return emit(commandResult('version', { version: resolveCliVersion(), resultSchemaVersion: CLI_OUTPUT_SCHEMA_VERSION }));
   if (selected && presentation.help || argv.length === 0 && !context.interactive || selected === program && json) {
     const target = selected ?? program;
     if (!json) { target.configureOutput({ writeOut: io.stdout }); target.outputHelp(); return 0; }

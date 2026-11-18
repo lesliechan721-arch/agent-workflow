@@ -485,7 +485,7 @@ describe('native deployment state authority', () => {
     const observed = await inspectDeployment(item.ctx, item.binding);
     expect(observed).toMatchObject({ registration: 'present', scopeRegistration: registered });
     expect(observed.consumers[0]?.activation).toBe('enabled');
-    expect(observed.consumers[0]?.trust).toBe('unknown');
+    expect(observed.consumers[0]).not.toHaveProperty('trust');
   });
 
   // Test Value Gate: another project's local record cannot authorize this scope.

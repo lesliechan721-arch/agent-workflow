@@ -4,7 +4,7 @@ import {
   normalizeCommandDefinitions,
   normalizeCommandRelativeFile,
   type ExpectedComponentSet,
-  type PlatformCapabilitiesV1,
+  type PlatformCapabilitiesV2,
   type PlatformComponentPlanV3,
   type ComponentKind,
   type PlatformTarget,
@@ -103,8 +103,8 @@ export function validateArtifactPlan(options: {
 
 export function validatePlatformComponentPlan(options: {
   plan: unknown; platform: PlatformTarget; scope: Scope; allowedOutputKinds: readonly ComponentKind[];
-  platformCapabilities: PlatformCapabilitiesV1; configKeys?: readonly string[]; nonSensitiveConfigKeys?: readonly string[];
-  resources?: import('@lesliechan721/aw-plugin-core/manifest').PlatformRenderContextV1['resources']; sourceDirs?: readonly string[];
+  platformCapabilities: PlatformCapabilitiesV2; configKeys?: readonly string[]; nonSensitiveConfigKeys?: readonly string[];
+  resources?: import('@lesliechan721/aw-plugin-core/manifest').PlatformRenderContextV2['resources']; sourceDirs?: readonly string[];
   requiredAwCapabilities?: readonly string[];
 }): PlatformComponentPlanV3 {
   assertPlatformComponentPlan(options.plan, options);

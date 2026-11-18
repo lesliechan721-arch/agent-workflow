@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PLATFORM_TARGETS, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
@@ -12,11 +13,14 @@ import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-i
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { getQualifiedPlatformProfile, getPlatformCapabilities } from '../../src/platforms/capabilities.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
+import { cursorWorkspaceOpenCommand } from '../../src/platforms/projection.js';
+import { writeCodexSupplementState } from '../../src/platforms/codex-supplement-state.js';
+import { ownedSupplementFile, supplementRelativePath } from '../../src/platforms/supplement-layout.js';
 import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import { readDemand } from '../../src/recovery/demand.js';
 import { createPlatformEmptyState, createPlatformInputEvidence, platformPackageInputDigest, readPlatformPackageContentDigest, writePlatformEmptyState } from '../../src/utils/platform-empty-state.js';
 import { resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
-import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { writeOwnedTextFile, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { NativeCliError, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import { runCli } from '../../src/index.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
@@ -24,7 +28,6 @@ import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture } 
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import * as platformCapabilities from '../../src/platforms/capabilities.js';
 import { isolateCodexAppDiscoveryQueries } from '../helpers/native-execution-fixture.js';
-import { configReadResponse } from '../helpers/codex-config-observation-fixture.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -71,7 +74,7 @@ async function client(platform: PlatformTarget, env: NodeJS.ProcessEnv, version?
       : invocation.args.includes('--help') && platform === 'grok' ? 'plugin install list enable disable uninstall update --json' : platform === 'codex' ? JSON.stringify({ installed: [], available: [] }) : '[]' }));
   return runner;
 }
-async function fixture(platform: PlatformTarget = 'opencode', options: { dynamic?: boolean; mixed?: boolean; version?: string; empty?: boolean; scope?: 'user' | 'project'; available?: boolean } = {}) {
+async function fixture(platform: PlatformTarget = 'opencode', options: { dynamic?: boolean; artifactScopes?: Array<'user' | 'project'>; mixed?: boolean; version?: string; empty?: boolean; scope?: 'user' | 'project'; available?: boolean } = {}) {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = path.join(isolation.layout.fixtureCwd, 'project');
   const source = path.join(isolation.layout.fixtureCwd, 'catalog');
@@ -88,7 +91,7 @@ async function fixture(platform: PlatformTarget = 'opencode', options: { dynamic
     if (options.mixed) manifest.extensions = { instructions: [{ name: 'context', title: 'Context', content: 'Use this context.', coverage: ['main'] }] };
     if (!options.empty && !options.dynamic) manifest.skills = './skills';
     if (options.dynamic) {
-      manifest.artifacts = { configKeys: [] };
+      manifest.artifacts = { configKeys: [], ...(options.artifactScopes ? { scopes: options.artifactScopes } : {}) };
       manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
     }
   });
@@ -142,19 +145,27 @@ async function materializeCodexSkill(value: Awaited<ReturnType<typeof fixture>>)
     `[marketplaces.${JSON.stringify(layout.marketplaceName!)}]\nsource_type = "local"\nsource = ${JSON.stringify(layout.marketplaceRoot!)}\n`);
   if (value.scope === 'project') await fs.outputFile(path.join(value.cwd, '.codex/config.toml'),
     `[plugins.${JSON.stringify(id)}]\nenabled = true\n`);
-  await fs.outputJson(path.join(layout.packageRoot, '.codex-plugin/plugin.json'), { name: layout.nativeIdentity.packageId, version: '1.0.0' });
+  return materializeStatusSkill(value, 'codex', { binding, layout, renderUnits, component });
+}
+
+async function materializeStatusSkill(value: Awaited<ReturnType<typeof fixture>>, platform: PlatformTarget,
+  placed: Awaited<ReturnType<typeof placement>>) {
+  const { binding, layout, renderUnits, component } = placed;
+  if (component.kind !== 'owned-directory') throw new Error('Expected native package.');
+  const manifestFile = ['opencode', 'pi'].includes(platform) ? 'package.json' : `.${platform}-plugin/plugin.json`;
+  await fs.outputJson(path.join(layout.packageRoot, manifestFile), { name: layout.nativeIdentity.packageId, version: '1.0.0' });
   const skill = path.join(layout.packageRoot, 'skills/example/SKILL.md');
   await fs.outputFile(skill, '---\nname: example\ndescription: Example.\n---\nExample.\n');
-  const adapter = getAgentPluginAdapter('codex');
+  const adapter = getAgentPluginAdapter(platform);
   const ctx = { cwd: value.cwd, env: value.env, runner: value.runner };
   const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
   const plugin = demand.roots![0]!.plugin!;
   const observation = await adapter.inspect(ctx, binding);
   const input = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
-    renderUnit, prerequisites: observation.prerequisites,
-    capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('codex') }),
+    renderUnit,
+    capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile(platform) }),
     config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
-      sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'codex',
+      sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform,
       scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
   }))) });
   await writeSkillOwnerMarker({ skillRoot: component.path, allowedRoot: component.allowedRoot, identity: component.identity,
@@ -191,7 +202,7 @@ describe('public status through platform adapters', () => {
     const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
     const plugin = demand.roots![0]!.plugin!;
     const input = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
-      renderUnit, prerequisites: observation.prerequisites,
+      renderUnit,
       capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('antigravity') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'antigravity',
@@ -205,14 +216,14 @@ describe('public status through platform adapters', () => {
         nativeProjection: { ...projection, contentDigest: (await readPlatformPackageContentDigest(nativeRoot))! } });
     }
     const result = target(await value.read());
-    expect(result.content).toBe(state === 'old' ? 'drifted' : 'unknown');
-    if (state === 'old') expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'nativePackageContentDrift' }));
-    else expect(result.blockers).not.toContainEqual(expect.objectContaining({ code: 'nativePackageContentDrift' }));
+    expect(result.content).toBe(state === 'old' ? 'drifted' : 'satisfied');
+    if (state === 'old') expect(result.reasons).toContainEqual(expect.objectContaining({ code: 'nativePackageContentDrift' }));
+    else expect(result.reasons ?? []).not.toContainEqual(expect.objectContaining({ code: 'nativePackageContentDrift' }));
   });
 
   // Test Value Gate: a current AW source is insufficient when Grok still has
   // an old or unreadable installation; only matching native bytes are current.
-  it.each(['current', 'old', 'missing'] as const)('checks Grok native copy bytes with a %s installation', async (state) => {
+  it.each(['current', 'old', 'missing', 'inspect failed'] as const)('checks Grok native copy bytes with a %s installation', async (state) => {
     const value = await fixture('grok', { available: true });
     qualifySkill('grok');
     const { binding, layout, renderUnits, component } = await placement(value, 'grok');
@@ -248,7 +259,7 @@ describe('public status through platform adapters', () => {
     const demand = await readDemand({ scope: value.scope, cwd: value.cwd, env: value.env });
     const plugin = demand.roots![0]!.plugin!;
     const input = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
-      renderUnit, prerequisites: observation.prerequisites,
+      renderUnit,
       capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('grok') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'grok',
@@ -258,151 +269,209 @@ describe('public status through platform adapters', () => {
       nativeProjection: { ...projection, inputDigest: platformPackageInputDigest(input) } });
     if (state === 'old') await fs.outputFile(path.join(nativeRoot, skill), 'Old installed content.\n');
     if (state === 'missing') await fs.remove(nativeRoot);
+    if (state === 'inspect failed') {
+      const installedProbe = value.runner.getMockImplementation()!;
+      value.runner.mockImplementation(async (invocation) => invocation.args[0] === 'inspect'
+        ? { exitCode: 1, stderr: 'Grok inspect failed.', stdout: '' } : installedProbe(invocation));
+    }
     const result = target(await value.read());
-    expect(result.content).toBe(state === 'current' ? 'satisfied' : state === 'old' ? 'drifted' : 'unknown');
-    if (state !== 'current') expect(result.blockers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: state === 'old' ? 'nativePackageContentDrift' : 'nativePackageContentUnconfirmed' }),
+    expect(result.content).toBe(state === 'current' ? 'satisfied' : state === 'old' ? 'drifted' : state === 'missing' ? 'absent' : 'unknown');
+    if (state === 'old' || state === 'missing') expect(result.reasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: state === 'old' ? 'nativePackageContentDrift' : 'nativePackageMissing' }),
     ]));
+    if (state === 'inspect failed') expect(result).toMatchObject({
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'nativeObservationFailed' })]),
+      deploymentObservations: [{ after: { package: 'present', registration: 'present', nativePackage: 'present',
+        nativeIdentity: { registrationId: 'native-demo' }, consumers: [{ activation: 'unknown' }] } }],
+    });
   });
 
-  // Test Value Gate: the public flag must affect only project trust and preserve package, activation, and ownership checks.
+  // A scoped list can independently confirm Project enablement, prove it disabled,
+  // or leave it unknown even though the neutral inventory confirms registration.
   it.each([
-    { mode: 'ordinary', enabled: false, trust: 'trusted' as const, expected: 'unknown', exit: 3 },
-    { mode: 'trusted', enabled: true, trust: 'trusted' as const, expected: 'satisfied', exit: 0 },
-    { mode: 'denied', enabled: true, trust: 'untrusted' as const, expected: 'drifted', exit: 3 },
-    { mode: 'parent-only', enabled: true, trust: 'trusted' as const, expected: 'unknown', exit: 3 },
-  ])('projects $mode native trust through the real CLI status path', async ({ mode, enabled, trust, expected, exit }) => {
-    vi.spyOn(platformCapabilities, 'getQualifiedPlatformProfile').mockReturnValue(
-      getQualifiedPlatformProfile('codex', { platform: 'darwin', arch: 'arm64' }));
+    { mode: 'no local entry', neutral: true, exact: true, activation: 'enabled', content: 'unknown', exit: 3 },
+    { mode: 'independent', neutral: false, exact: true, activation: 'enabled', content: 'satisfied', exit: 0 },
+    { mode: 'ambiguous', neutral: true, exact: true, activation: 'enabled', content: 'unknown', exit: 3 },
+    { mode: 'not applied', neutral: false, exact: false, activation: 'disabled', content: 'drifted', exit: 0 },
+    { mode: 'no scoped evidence', neutral: true, exact: undefined, activation: 'unknown', content: 'unknown', exit: 3 },
+  ])('projects Codex $mode activation through CLI status without starting app-server', async ({ mode, neutral, exact, activation, content, exit }) => {
+    qualifySkill('codex');
     isolateCodexAppDiscoveryQueries();
     const value = await fixture('codex', { available: true, scope: 'project' });
-    await materializeCodexSkill(value);
+    const { layout } = await materializeCodexSkill(value);
+    if (mode === 'no local entry') await fs.remove(path.join(value.cwd, '.codex', 'config.toml'));
     const probe = value.runner.getMockImplementation()!;
     value.runner.mockImplementation(async (invocation) => {
-      if (!invocation.args.includes('app-server')) return probe(invocation);
-      const cwd = invocation.cwd!;
-      const initialized = `${JSON.stringify({ id: 1, result: { userAgent: 'aw/0.167.0' } })}\n`;
-      const response = `${JSON.stringify({ id: 2, result: configReadResponse(cwd, value.env.CODEX_HOME!, trust,
-        mode === 'parent-only' ? path.dirname(cwd) : cwd) })}\n`;
-      invocation.input!.onStdout(initialized);
-      invocation.input!.onStdout(response);
-      return { exitCode: 0, stdout: initialized + response, stderr: '' };
+      if (!invocation.args.includes('list')) return probe(invocation);
+      const enabled = invocation.cwd === value.cwd ? exact : neutral;
+      return { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        installed: enabled === undefined ? [] : [{ pluginId: layout.nativeIdentity.registrationId, installed: true, enabled }], available: [],
+      }) };
     });
     const before = await snapshot(value.isolation.layout.rootDir);
     const captured = createCapturedCliIo();
-    const code = await runCli(['plugin', 'status', 'local/demo', '--context', 'project', ...(enabled ? ['--observe-native'] : []), '--json'], {
+    const code = await runCli(['plugin', 'status', '--context', 'project', '--observe-native', '--json'], {
       cwd: value.cwd, env: value.env, io: captured.io, nativeCliRunner: value.runner,
     });
     const result = JSON.parse(captured.readStdout());
     expect(code, JSON.stringify(result)).toBe(exit);
+    expect(result).toMatchObject({ schemaVersion: 2,
+      status: exit === 0 ? 'success' : 'blocked',
+      data: { allSatisfied: content === 'unknown' ? null : content === 'satisfied',
+        inSync: neutral ? false : content === 'unknown' ? null : content === 'satisfied',
+        counts: { blocked: 0, pending: content === 'drifted' ? 1 : 0, unconfirmed: content === 'unknown' ? 1 : 0, ready: content === 'satisfied' ? 1 : 0 } } });
     const observed = result.data.inventory[0].targetResults[0];
-    expect(observed.content).toBe(expected);
-    expect(observed.deploymentObservations[0].after.consumers[0]).toMatchObject({
-      activation: 'enabled', trust: mode === 'trusted' ? 'trusted' : mode === 'denied' ? 'blocked' : 'unknown', load: 'unknown',
-    });
-    expect(value.runner.mock.calls.filter(([invocation]) => invocation.args.includes('app-server'))).toHaveLength(enabled ? 1 : 0);
-    expect(result.diagnostics.some((entry: { code: string }) => entry.code === 'nativeObservationSideEffects')).toBe(enabled);
-    expect(result.diagnostics.some((entry: { code: string }) => entry.code === 'nativeTrustRequired')).toBe(mode === 'denied');
+    expect(observed.content).toBe(content);
+    const after = observed.deploymentObservations[0].after;
+    expect(after).toMatchObject({ package: 'present', registration: 'present', consumers: [{ activation, load: 'unknown' }] });
+    if (mode === 'no scoped evidence') expect(after).not.toHaveProperty('scopeActivation');
+    else expect(after.scopeActivation).toBe(content === 'unknown' ? 'unknown' : activation);
+    expect(after.consumers[0]).not.toHaveProperty('trust');
+    expect(after.configuration).not.toHaveProperty('trust');
+    expect(value.runner.mock.calls.some(([invocation]) => invocation.args.includes('app-server'))).toBe(false);
+    expect(result.diagnostics.some((entry: { code: string }) => entry.code === 'nativeObservationSideEffects')).toBe(false);
+    if (mode === 'not applied') {
+      expect(result.nextActions).toContainEqual(expect.objectContaining({
+        argv: ['aw', 'plugin', 'sync', 'local/demo', '--context', 'project', '--target', 'codex'],
+      }));
+      const text = createCapturedCliIo();
+      expect(await runCli(['plugin', 'status', '--context', 'project'], {
+        cwd: value.cwd, env: value.env, io: text.io, nativeCliRunner: value.runner,
+      })).toBe(0);
+      expect(text.readStdout()).toContain('Disabled');
+    }
+    if (content === 'unknown') {
+      const explicit = createCapturedCliIo();
+      expect(await runCli(['plugin', 'status', 'local/demo', '--context', 'project', '--json'], {
+        cwd: value.cwd, env: value.env, io: explicit.io, nativeCliRunner: value.runner,
+      })).toBe(3);
+      expect(JSON.parse(explicit.readStdout()).data.coverage.requestComplete).toBe(false);
+    }
     expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
   });
 
-  // Test Value Gate: qualified static user Skills need no independent Hook/project trust;
-  // status must verify materialization without claiming a host session loaded it or writing state.
-  it('confirms qualified static Codex user Skills without claiming project trust or host load', async () => {
-    const profile = getQualifiedPlatformProfile('codex', { platform: 'darwin', arch: 'arm64' });
-    vi.spyOn(platformCapabilities, 'getQualifiedPlatformProfile').mockReturnValue(profile);
+  it('uses inherited Codex activation for a User-provided Project dependency without blocking its consumer', async () => {
+    qualifySkill('codex');
+    isolateCodexAppDiscoveryQueries();
+    const value = await fixture('codex', { available: true });
+    await createDependencyCatalogSnapshotFixture(value.source, [
+      { name: 'demo', configureManifest: (manifest) => { manifest.platforms = ['codex']; manifest.skills = './skills'; delete manifest.extensions; } },
+      { name: 'consumer', dependencies: ['demo'], configureManifest: (manifest) => { manifest.platforms = ['codex']; delete manifest.extensions; } },
+    ]);
+    await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0', impactConfirmed: true });
+    await addRoot({ cwd: value.cwd, env: value.env, scope: 'project' }, 'local/consumer', value.logicalIdentity);
+    await materializeCodexSkill(value);
+    const status = await readRecoveryStatus({ cwd: value.cwd, env: value.env, context: 'project', nativeCliRunner: value.runner });
+    expect(status.allSatisfied, JSON.stringify(status)).toBe(true);
+    const project = status.inventory?.find((entry) => entry.pluginId === 'local/consumer')?.targetResults[0];
+    expect(project).toMatchObject({ scope: 'project', content: 'satisfied', blockers: [] });
+    expect(project?.deploymentObservations).toContainEqual(expect.objectContaining({
+      after: expect.objectContaining({ scopeActivation: 'unknown', registration: 'present',
+        consumers: [expect.objectContaining({ activation: 'enabled' })] }),
+    }));
+    expect(project?.reasons ?? []).not.toContainEqual(expect.objectContaining({ code: 'codexProjectActivationUnconfirmed' }));
+  });
+
+  it.each(['codex-cli 0.167.0', 'codex-cli 0.168.0'])('confirms a current Codex User package through %s without host load', async (version) => {
+    qualifySkill('codex');
+    isolateCodexAppDiscoveryQueries();
+    const value = await fixture('codex', { available: true, version });
+    await materializeCodexSkill(value);
+    const status = await value.read();
+    expect(status).toMatchObject({ allSatisfied: true, inSync: true, counts: { blocked: 0, ready: 1 } });
+    expect(target(status)).toMatchObject({ content: 'satisfied', observation: 'verified', deploymentObservations: [
+      { after: { consumers: [{ activation: 'enabled', load: 'unknown' }] } },
+    ] });
+  });
+
+  it('reports a changed Codex package as pending while retaining registration and activation', async () => {
+    qualifySkill('codex');
+    isolateCodexAppDiscoveryQueries();
+    const value = await fixture('codex', { available: true });
+    const { skill } = await materializeCodexSkill(value);
+    await fs.appendFile(skill, 'Changed bytes.\n');
+    const status = await value.read();
+    expect(status).toMatchObject({ allSatisfied: false, inSync: false, counts: { blocked: 0, pending: 1 } });
+    expect(target(status)).toMatchObject({ content: 'drifted', blockers: [],
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'platformContentDrift' })]),
+      deploymentObservations: [{ after: { package: 'present', registration: 'present', consumers: [{ activation: 'enabled' }] } }],
+    });
+  });
+
+  it('reports known Codex package drift when a new renderer also needs initial supplement evidence', async () => {
+    qualifySkill('codex');
     isolateCodexAppDiscoveryQueries();
     const value = await fixture('codex', { available: true });
     await materializeCodexSkill(value);
-    const before = await snapshot(value.isolation.layout.rootDir);
-    const captured = createCapturedCliIo();
-    const exit = await runCli(['plugin', 'status', 'local/demo', '--context', 'user', '--json'], {
-      cwd: value.cwd, env: value.env, io: captured.io, nativeCliRunner: value.runner,
+    await fs.outputFile(path.join(value.source, 'plugins/demo/render.mjs'), 'throw new Error("Must not render in status");');
+    await createCatalogSnapshotFixture(value.source, 'demo', [], 'Demo', (manifest) => {
+      manifest.platforms = ['codex'];
+      manifest.artifacts = { configKeys: [] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
     });
-    const result = JSON.parse(captured.readStdout());
-    expect(exit, JSON.stringify(result)).toBe(0);
-    expect(result).toMatchObject({ status: 'success', diagnostics: [], data: { allSatisfied: true,
-      counts: { blocked: 0, unconfirmed: 0, ready: 1 }, inventory: [{ targetResults: [{ content: 'satisfied', observation: 'verified',
-        deploymentObservations: [{ after: { consumers: [{ trust: 'not-applicable', load: 'unknown' }] } }] }] }] } });
-    expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
+    await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0', impactConfirmed: true });
+    const output = createCapturedCliIo();
+    expect(await runCli(['plugin', 'status', 'local/demo', '--context', 'user', '--json'], {
+      cwd: value.cwd, env: value.env, nativeCliRunner: value.runner, io: output.io,
+    }), output.readStdout()).toBe(0);
+    const result = JSON.parse(output.readStdout());
+    expect(result).toMatchObject({ status: 'success', data: { coverage: { requestComplete: true },
+      counts: { pending: 1, blocked: 0, unconfirmed: 0 }, inventory: [{ targetResults: [{ content: 'drifted', blockerCodes: [],
+        deploymentObservations: [{ after: { registration: 'present', consumers: [{ activation: 'enabled' }] } }],
+      }] }] },
+      diagnostics: expect.arrayContaining(['platformInputDrift', 'dynamicExpectationUnconfirmed']
+        .map((code) => expect.objectContaining({ code, severity: 'warning' }))),
+    });
   });
 
-  // Test Value Gate: a component-specific trust applicability fact must not hide
-  // project trust, incomplete expectations, stale bytes, or rejected trust. An
-  // additional unqualified App must retain unknown facts without blocking the CLI.
+  // A complete role-only projection does not require a shared package slot.
+  // Older matching owner evidence remains useful when only the role input digest changed.
   it.each([
-    { name: 'project scope', scope: 'project' as const },
-    { name: 'dynamic expectations', dynamic: true },
-    { name: 'mixed components', mixed: true },
-    { name: 'another client version', version: 'codex-cli 0.168.0' },
-    { name: 'no exact qualification', unqualified: true },
-    { name: 'content drift', drift: true },
-    { name: 'failed native observation', unreadable: true },
-    { name: 'an additional App consumer', app: true },
-    { name: 'blocked trust', blocked: true },
-  ])('reports Codex trust applicability for $name', async (options) => {
-    const profile = getQualifiedPlatformProfile('codex', { platform: 'darwin', arch: 'arm64' });
-    if ('unqualified' in options) delete profile.qualifiedConsumers;
-    vi.spyOn(platformCapabilities, 'getQualifiedPlatformProfile').mockReturnValue(profile);
+    { mode: 'project only', scopes: ['project'] as const, expected: 'satisfied' },
+    { mode: 'package deliberately empty', scopes: undefined, expected: 'satisfied' },
+    { mode: 'old role inputs', scopes: ['project'] as const, expected: 'drifted' },
+    { mode: 'damaged role receipt', scopes: ['project'] as const, expected: 'unknown' },
+    { mode: 'unproved package', scopes: undefined, expected: 'unknown' },
+  ])('inspects Codex dynamic role evidence for $mode without a package', async ({ mode, scopes, expected }) => {
     isolateCodexAppDiscoveryQueries();
-    const value = await fixture('codex', { available: true, ...options });
+    const value = await fixture('codex', { available: true, dynamic: true, scope: 'project', artifactScopes: scopes ? [...scopes] : undefined });
+    const { binding, layout, renderUnits } = await placement(value, 'codex');
+    const ctx = { cwd: value.cwd, env: value.env, runner: value.runner };
     const adapter = getAgentPluginAdapter('codex');
-    if ('app' in options) {
-      const discover = adapter.discover;
-      vi.spyOn(adapter, 'discover').mockImplementation(async (ctx) => {
-        const result = await discover(ctx);
-        const cli = result.installations[0]!;
-        return { ...result, installations: [...result.installations, { ...cli, id: `${cli.id}:app`, product: 'app' }] };
-      });
+    const demand = await readDemand({ ...ctx, scope: 'project' });
+    const plugin = demand.roots![0]!.plugin!;
+    const observation = await adapter.inspect(ctx, binding);
+    const inputs = await createPlatformInputEvidence({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
+      renderUnit,
+      capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('codex') }),
+      config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
+        sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'codex',
+        scope: renderUnit.renderScope.kind, cwd: value.cwd, env: value.env, referencePlugins: demand.plugins }),
+    }))) });
+    const unit = inputs.units.find((entry) => entry.output === 'supplement')!;
+    const fileName = supplementRelativePath(binding, { kind: 'agent', name: 'reviewer' });
+    const content = 'name = "reviewer"\ndescription = "Reviews changes"\ndeveloper_instructions = "Check the diff"\n';
+    const file = ownedSupplementFile(binding, unit.physicalKey, path.join(layout.supplementRoot!, fileName));
+    await writeOwnedTextFile({ ...file, content });
+    const inputDigest = mode === 'old role inputs' ? `sha256:${'a'.repeat(64)}` : unit.inputDigest;
+    await writeCodexSupplementState(ctx, binding, mode === 'damaged role receipt' ? 'broken' : inputDigest,
+      [{ id: 'role', fileName, contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}` }]);
+    if (mode === 'package deliberately empty') await writePlatformEmptyState({ state: { ...inputs, kind: 'aw-platform-empty-state',
+      result: 'intentional-empty', units: inputs.units.filter((entry) => entry.output === 'package') }, env: value.env });
+    const captured = createCapturedCliIo();
+    expect(await runCli(['plugin', 'status', 'local/demo', '--context', 'project', '--json'], {
+      ...ctx, nativeCliRunner: value.runner, io: captured.io,
+    })).toBe(expected === 'unknown' ? 3 : 0);
+    const result = JSON.parse(captured.readStdout());
+    expect(result.data.inventory[0].targetResults[0]).toMatchObject({
+      content: expected, blockerCodes: [], deploymentObservations: [{ after: { registration: 'absent', package: 'absent' } }],
+    });
+    if (mode === 'old role inputs') {
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'platformInputDrift', severity: 'warning' }));
+      expect(result.nextActions).toContainEqual(expect.objectContaining({
+        argv: ['aw', 'plugin', 'sync', 'local/demo', '--context', 'project', '--target', 'codex'],
+      }));
     }
-    const { skill } = await materializeCodexSkill(value);
-    if ('drift' in options) await fs.appendFile(skill, 'Changed bytes.\n');
-    if ('unreadable' in options) {
-      const probe = value.runner.getMockImplementation()!;
-      value.runner.mockImplementation(async (invocation) => invocation.args.includes('list')
-        ? { exitCode: 1, stdout: '', stderr: 'Controlled unavailable observation.' } : probe(invocation));
-    }
-    if ('blocked' in options) {
-      const inspect = adapter.inspect;
-      vi.spyOn(adapter, 'inspect').mockImplementation(async (ctx, binding) => {
-        const observation = await inspect(ctx, binding);
-        for (const consumer of observation.consumers) consumer.trust = 'blocked';
-        return observation;
-      });
-    }
-    const before = await snapshot(value.isolation.layout.rootDir);
-    if ('scope' in options) {
-      const captured = createCapturedCliIo();
-      expect(await runCli(['plugin', 'status', 'local/demo', '--context', 'project', '--json'], {
-        cwd: value.cwd, env: value.env, io: captured.io, nativeCliRunner: value.runner,
-      })).toBe(3);
-      const result = JSON.parse(captured.readStdout());
-      expect(result).toMatchObject({ status: 'blocked', diagnostics: expect.arrayContaining([
-        expect.objectContaining({ code: 'nativeTrustUnconfirmed', severity: 'warning', subject: { pluginId: 'local/demo', target: 'codex', scope: 'project' } }),
-      ]), data: { allSatisfied: null, counts: { blocked: 0, unconfirmed: 1, ready: 0 } } });
-      const observed = result.data.inventory[0].targetResults[0];
-      expect(observed).toMatchObject({ content: 'unknown', satisfaction: 'unknown', deploymentObservations: [{
-        after: { consumers: [{ activation: 'enabled', trust: 'unknown', load: 'unknown' }] },
-      }] });
-    } else if ('app' in options) {
-      const status = await value.read();
-      expect(status.allSatisfied).toBe(true);
-      expect(target(status).content).toBe('satisfied');
-      const consumers = target(status).deploymentObservations!.flatMap((entry) => entry.after.consumers);
-      expect(consumers).toHaveLength(2);
-      expect(consumers.find((consumer) => !consumer.productId.endsWith(':app')))
-        .toMatchObject({ trust: 'not-applicable', load: 'unknown' });
-      expect(consumers.find((consumer) => consumer.productId.endsWith(':app')))
-        .toMatchObject({ trust: 'unknown', load: 'unknown' });
-    } else {
-      const status = await value.read();
-      expect(status.allSatisfied).not.toBe(true);
-      expect(target(status).content).not.toBe('satisfied');
-      const observations = target(status).deploymentObservations!;
-      expect(observations.length).toBeGreaterThan(0);
-      expect(observations.flatMap((entry) => entry.after.consumers).every((consumer) => consumer.trust !== 'not-applicable')).toBe(true);
-    }
-    expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
     expect(await fs.pathExists(value.sentinel)).toBe(false);
   });
 
@@ -461,7 +530,7 @@ describe('public status through platform adapters', () => {
   it('keeps the full dynamic expectation unknown without running the renderer', async () => {
     const value = await fixture('opencode', { available: true, dynamic: true });
     const status = await value.read();
-    expect(target(status)).toMatchObject({ content: 'unknown', observation: 'unknown', blockers: expect.arrayContaining([
+    expect(target(status)).toMatchObject({ content: 'unknown', observation: 'unknown', reasons: expect.arrayContaining([
       expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' }),
     ]) });
     expect(await fs.pathExists(value.sentinel)).toBe(false);
@@ -476,7 +545,7 @@ describe('public status through platform adapters', () => {
     const plugin = demand.roots![0]!.plugin!;
     const observation = await adapter.inspect({ cwd: value.cwd, env: value.env, runner: value.runner }, binding);
     const state = await createPlatformEmptyState({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
-      renderUnit, prerequisites: observation.prerequisites,
+      renderUnit,
       capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('opencode') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'opencode',
@@ -492,7 +561,7 @@ describe('public status through platform adapters', () => {
       manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
     });
     await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0', impactConfirmed: true });
-    expect(target(await value.read())).toMatchObject({ content: 'unknown', observation: 'unknown', blockers: expect.arrayContaining([
+    expect(target(await value.read())).toMatchObject({ content: 'unknown', observation: 'unknown', reasons: expect.arrayContaining([
       expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' }),
     ]) });
     expect(await fs.pathExists(value.sentinel)).toBe(false);
@@ -514,7 +583,7 @@ describe('public status through platform adapters', () => {
     expect(observation.configuration).toMatchObject({ scope, activation: 'absent' });
     expect(observation.consumers).toEqual([expect.objectContaining({ activation: 'enabled' })]);
     const state = await createPlatformEmptyState({ plugin, binding, units: await Promise.all(renderUnits.map(async (renderUnit) => ({
-      renderUnit, prerequisites: observation.prerequisites,
+      renderUnit,
       capabilities: adapter.capabilities({ binding, renderUnit, observation, profile: getQualifiedPlatformProfile('codex') }),
       config: await resolveArtifactRenderConfig({ manifest: plugin.manifest, pluginName: 'demo', sourceId: 'local',
         sourceIdentity: value.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity, platform: 'codex',
@@ -543,6 +612,80 @@ describe('public status through platform adapters', () => {
     expect(target(status).content).toBe('conflict');
     expect(target(status).deploymentObservations?.[0]?.after.ownership).toBe('foreign');
     expect(await snapshot(layout.packageRoot)).toEqual(before);
+  });
+
+  // Hook output belongs to an exact scope and is required for Cursor discovery.
+  it.each(['present', 'absent', 'wrong-scope', 'unreadable'] as const)('checks Cursor workspaceOpen %s against a current Project package', async (entry) => {
+    qualifySkill('cursor');
+    const value = await fixture('cursor', { available: true, scope: 'project' });
+    const placed = await placement(value, 'cursor');
+    const { binding, layout } = await materializeStatusSkill(value, 'cursor', placed);
+    if (entry === 'unreadable') await fs.outputFile(layout.activationPath, '{ malformed');
+    else if (entry !== 'absent') {
+      const command = cursorWorkspaceOpenCommand(entry === 'wrong-scope' ? { ...binding, scope: { kind: 'user' } } : binding);
+      await fs.outputJson(layout.activationPath, { version: 1, hooks: { workspaceOpen: [{ command }] } });
+    }
+    const status = await value.read();
+    expect(target(status)).toMatchObject({ content: entry === 'present' ? 'satisfied' : entry === 'unreadable' ? 'unknown' : 'drifted',
+      blockers: [], deploymentObservations: [{ after: { package: 'present', registration: 'not-applicable',
+        workspaceOpen: entry === 'wrong-scope' ? 'absent' : entry === 'unreadable' ? 'unknown' : entry } }] });
+  });
+
+  it.each([true, false])('keeps ordinary Pi Project readiness tied to native list visibility (%s)', async (listed) => {
+    qualifySkill('pi');
+    const value = await fixture('pi', { available: true, scope: 'project' });
+    const placed = await placement(value, 'pi');
+    const probe = value.runner.getMockImplementation()!;
+    value.runner.mockImplementation(async (invocation) => invocation.args.includes('list')
+      ? { exitCode: 0, stderr: '', stdout: listed
+        ? `Project packages:\n  ${placed.layout.packageRoot}\n    ${placed.layout.packageRoot}\n` : 'No packages installed.' }
+      : probe(invocation));
+    await materializeStatusSkill(value, 'pi', placed);
+    const status = await value.read();
+    expect(target(status)).toMatchObject({ content: listed ? 'satisfied' : 'unknown', blockers: [], deploymentObservations: [
+      { after: { package: 'present', registration: listed ? 'present' : 'unknown', consumers: [{ activation: 'unknown' }] } },
+    ] });
+    if (!listed) expect(target(status).reasons).toContainEqual(expect.objectContaining({ code: 'piProjectRegistrationNotVisible' }));
+  });
+
+  // Runtime service failure remains visible without changing directory delivery or coverage.
+  it.each([false, true])('keeps OpenCode ready with an optional failed load (observeNative=%s)', async (observeNative) => {
+    qualifySkill('opencode');
+    const value = await fixture('opencode', { available: true });
+    const placed = await placement(value, 'opencode');
+    const { layout } = await materializeStatusSkill(value, 'opencode', placed);
+    const probe = value.runner.getMockImplementation()!;
+    value.runner.mockImplementation(async (invocation) => {
+      if (!invocation.args.includes('api')) return probe(invocation);
+      return { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        location: { directory: invocation.cwd }, data: [{ source: { type: 'local', path: layout.packageRoot },
+          features: { server: true }, state: { status: 'failed', error: 'fixture load failure' } }],
+      }) };
+    });
+    const before = await snapshot(value.isolation.layout.rootDir);
+    const io = createCapturedCliIo();
+    expect(await runCli(['plugin', 'status', '--context', 'user', '--json', ...(observeNative ? ['--observe-native'] : [])], {
+      cwd: value.cwd, env: value.env, io: io.io, nativeCliRunner: value.runner,
+    })).toBe(0);
+    expect(JSON.parse(io.readStdout())).toMatchObject({ schemaVersion: 2, status: 'success', data: { allSatisfied: true, inSync: true,
+      counts: { blocked: 0, pending: 0, unconfirmed: 0, ready: 1 }, inventory: [{ targetResults: [{ content: 'satisfied',
+        deploymentObservations: [{ after: { consumers: [{ load: observeNative ? 'not-observed' : 'unknown' }] } }] }] }] },
+      diagnostics: expect.arrayContaining((observeNative ? ['nativeObservationSideEffects', 'opencodePluginLoadFailed']
+        : ['opencodeNativeObservationRequired']).map((code) => expect.objectContaining({ code, severity: 'warning',
+          subject: { pluginId: 'local/demo', target: 'opencode', scope: 'user' } }))) });
+    expect(value.runner.mock.calls.filter(([invocation]) => invocation.args.includes('api'))).toHaveLength(observeNative ? 1 : 0);
+    expect(await snapshot(value.isolation.layout.rootDir)).toEqual(before);
+    if (observeNative) {
+      await removeRoot({ cwd: value.cwd, env: value.env, scope: 'user' }, 'local/demo');
+      const residue = createCapturedCliIo();
+      expect(await runCli(['plugin', 'status', 'local/demo', '--context', 'user', '--json', '--observe-native'], {
+        cwd: value.cwd, env: value.env, io: residue.io, nativeCliRunner: value.runner,
+      })).toBe(0);
+      expect(JSON.parse(residue.readStdout())).toMatchObject({ data: { inventory: [], extraObserved: [{
+        pluginId: 'local/demo', target: 'opencode', deploymentObservations: [{ after: { consumers: [{ load: 'not-observed' }] } }],
+      }] }, diagnostics: expect.arrayContaining(['nativeObservationSideEffects', 'opencodePluginLoadFailed'].map((code) =>
+        expect.objectContaining({ code, severity: 'warning', subject: { pluginId: 'local/demo', target: 'opencode', scope: 'user' } }))) });
+    }
   });
 
   it('keeps owned Native materialization separate from unknown host activation and load', async () => {
@@ -694,7 +837,7 @@ describe('status safety and recovery evidence', () => {
     const { layout } = await placement(value);
     await fs.outputFile(path.join(layout.packageRoot, 'foreign.txt'), 'foreign');
     expect(target(await value.read())).toMatchObject({ content: 'conflict', blockers: expect.arrayContaining([
-      expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' }),
+      expect.objectContaining({ code: 'deploymentOwnershipConflict' }),
     ]) });
     expect(await fs.readFile(path.join(layout.packageRoot, 'foreign.txt'), 'utf8')).toBe('foreign');
     expect(await fs.pathExists(value.sentinel)).toBe(false);

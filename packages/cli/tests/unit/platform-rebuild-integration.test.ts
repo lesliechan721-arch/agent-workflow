@@ -10,7 +10,7 @@ import { executeRebuildOperation, prepareRebuildOperation } from '../../src/comm
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
-import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { readSkillOwnerMarker, SKILL_OWNER_MARKER, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { createNoopReporter } from '../../src/output/reporter.js';
 import { createNoopDebugLogger } from '../../src/output/debug-log.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
@@ -117,7 +117,7 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
   const plugin = await readPluginManifest(root, { mode: 'bundle' });
   Object.assign(plugin, { sourceId: 'team', pluginId: 'team/evidence-demo', sourceIdentity: `sha256:${'d'.repeat(64)}` });
   const reads: { discovery?: () => Promise<void>; inspection?: () => Promise<void>; mutation?: () => void | Promise<void>;
-    geminiInstallSource?: () => string; antigravityInstallSource?: () => string } = {};
+    geminiInstallSource?: () => string; antigravityInstallSource?: () => string; copilotActivation?: () => boolean } = {};
   const inventories = platform === 'pi' ? ['list'] : platform === 'gemini' ? ['extensions list --output-format json'] : platform === 'antigravity' ? ['plugin list --json'] : ['plugin marketplace list --json', 'plugin list --json'];
   let layout: Awaited<ReturnType<typeof getDeploymentLayout>> | undefined;
   let marketplaceAdded = false;
@@ -156,7 +156,7 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
       const enabledPlugins = { ...user.enabledPlugins, ...project.enabledPlugins, ...local.enabledPlugins };
       const rows = args[1] === 'marketplace' ? marketplaceAdded ? [{ name: layout!.marketplaceName, source: layout!.marketplaceRoot }] : []
         : installed ? [{ name: layout!.nativeIdentity.packageId, marketplace: layout!.marketplaceName,
-          source: layout!.marketplaceRoot, enabled: enabledPlugins[layout!.nativeIdentity.registrationId!] !== false }] : [];
+          source: layout!.marketplaceRoot, enabled: reads.copilotActivation?.() ?? enabledPlugins[layout!.nativeIdentity.registrationId!] !== false }] : [];
       return { exitCode: 0, stdout: JSON.stringify(rows), stderr: '' };
     }
     await reads.mutation?.();
@@ -341,10 +341,10 @@ describe('native evidence checks', () => {
       expect(recovered.status, JSON.stringify(recovered)).toBe('succeeded');
       expect(item.runner.mock.calls.filter(([invocation]) => invocation.args[1] === 'uninstall')).toEqual([]);
       expect(await fs.readFile(path.join(installed, 'skills/check/SKILL.md'), 'utf8')).toContain('Revision 2.');
-      await retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!);
+      await retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!, { refresh: true });
       await fs.remove(installed);
       await fs.copy(oldCopy, installed);
-      await expect(retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!)).rejects.toThrow('deploymentPostcheckFailed');
+      await expect(retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!, { refresh: true })).rejects.toThrow('deploymentPostcheckFailed');
       expect(recovered.deploymentReceipts?.[0]?.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeInstallContentPostcheckFailed' }));
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
@@ -418,7 +418,7 @@ describe('native evidence checks', () => {
       expect(recovered.deploymentReceipts?.[0]?.after.nativePackageContentDigest).toBe(bundle.contentDigest);
       const relativeOutput = plan.projections.flatMap((projection) => projection.components)[0]!.relativeOutputs[0]!;
       expect(await fs.readFile(path.join(installed, relativeOutput), 'utf8')).toContain('Revision 3.');
-      await retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!);
+      await retry.target.platformDeployment!.postcheck(recovered.deploymentReceipts!, { refresh: true });
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
 
@@ -563,7 +563,7 @@ describe('native evidence checks', () => {
       expect(mutationReads.every((count) => count === 1)).toBe(true);
       expect([discovery, inspection]).toEqual([2, 3]);
       expect(installed.deploymentReceipts?.[0]?.after).toMatchObject({ package: 'present', registration: 'present', ownership: 'aw' });
-      await item.target.platformDeployment!.postcheck(installed.deploymentReceipts!);
+      await item.target.platformDeployment!.postcheck(installed.deploymentReceipts!, { refresh: true });
       expect([discovery, inspection]).toEqual([2, 4]);
       const changed = path.join(item.root, 'changed-after-execution');
       await fs.outputFile(changed, 'Changed.');
@@ -590,7 +590,7 @@ describe('native evidence checks', () => {
       expect(mutationReads).toEqual([]);
       expect([discovery, inspection]).toEqual([1, 2]);
       expect(synced.deploymentReceipts?.[0]?.after).toMatchObject({ package: 'present', registration: 'present', ownership: 'aw' });
-      await target.platformDeployment!.postcheck(synced.deploymentReceipts!);
+      await target.platformDeployment!.postcheck(synced.deploymentReceipts!, { refresh: true });
       expect([discovery, inspection]).toEqual([1, 3]);
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
@@ -708,6 +708,75 @@ describe('native evidence checks', () => {
         deploymentReceipts: [expect.objectContaining({ diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'operationPlanStale' })]) })] });
       expect(discovery).toBe(3);
       expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: a local no-op can disagree with effective native activation.
+  it('fails the final check when an unchanged Copilot entry is disabled in native inventory', async () => {
+    const item = await nativeEvidenceFixture('copilot', { scope: 'project' });
+    try {
+      const installed = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(installed.status, JSON.stringify(installed)).toBe('succeeded');
+      await item.context.platformRebuildSession!.dispose();
+      item.reads.copilotActivation = () => false;
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget({ ...item.input, command: 'sync' });
+      await integration.sealMarketplaceGenerations([target]);
+      const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
+      expect(result).toMatchObject({ status: 'failed', error: { phase: 'postcheck.inspect' }, deploymentReceipts: [
+        { effects: [expect.objectContaining({ status: 'unchanged' })], after: { package: 'present', registration: 'present',
+          consumers: [expect.objectContaining({ activation: 'disabled' })] },
+        diagnostics: [expect.objectContaining({ code: 'deploymentPostcheckFailed' })] },
+      ] });
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: an owned package with all paths present can have the wrong bytes.
+  it('checks the package bytes after successful registration and activation', async () => {
+    const item = await nativeEvidenceFixture('copilot');
+    try {
+      const [component] = item.target.platformDeployment!.plans[0]!.projections.flatMap((projection) => projection.components);
+      const skillPath = path.join(item.layout.packageRoot, component!.relativeOutputs[0]!);
+      item.reads.mutation = async () => { await fs.appendFile(skillPath, '\nChanged during native activation.\n'); };
+      const result = await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver });
+      expect(result).toMatchObject({ status: 'failed', error: { phase: 'postcheck.inspect' }, deploymentReceipts: [
+        { after: { package: 'present', registration: 'present', ownership: 'aw',
+          consumers: [expect.objectContaining({ activation: 'enabled' })] },
+        unmet: [expect.objectContaining({ componentId: component!.id })] },
+      ] });
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: same-byte refresh may repair metadata only while ownership is established.
+  it('repairs an owned projection without touching the package and preserves a marker removed after review', async () => {
+    const item = await nativeEvidenceFixture('copilot');
+    try {
+      expect((await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver })).status).toBe('succeeded');
+      const root = item.layout.packageRoot;
+      const markerPath = path.join(root, SKILL_OWNER_MARKER);
+      const installedMarker = await fs.readJson(markerPath);
+      const skillPath = path.join(root, installedMarker.nativeProjection.components[0].relativeOutputs[0]);
+      const originalSkill = await fs.stat(skillPath);
+      for (const removeAfterReview of [false, true]) {
+        await item.context.platformRebuildSession!.dispose();
+        await fs.outputJson(markerPath, { ...installedMarker, nativeProjection: { ...installedMarker.nativeProjection, inputDigest: 'invalid' } });
+        const integration = createRebuildIntegration({ context: item.context });
+        const target = await integration.buildTarget({ ...item.input, command: 'sync' });
+        await integration.sealMarketplaceGenerations([target]);
+        expect(target.platformDeployment!.plans[0]!.effects).toEqual([]);
+        if (removeAfterReview) target.operationActions = undefined;
+        const driver = removeAfterReview ? { ...integration.driver, applyManagedCommands: () => fs.remove(markerPath) } : integration.driver;
+        const result = await executeRebuildOperation({ command: 'sync', target, driver });
+        if (removeAfterReview) {
+          expect(result).toMatchObject({ status: 'failed', deploymentReceipts: [{ effects: [],
+            diagnostics: [expect.objectContaining({ code: 'operationPlanStale' })] }] });
+          expect(await fs.pathExists(markerPath)).toBe(false);
+        } else {
+          expect(result.status, JSON.stringify(result)).toBe('succeeded');
+          expect(await fs.readJson(markerPath)).toEqual(installedMarker);
+        }
+        expect(await fs.stat(skillPath)).toMatchObject({ ino: originalSkill.ino, mtimeMs: originalSkill.mtimeMs });
+      }
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
 
@@ -940,7 +1009,7 @@ describe('shared marketplace generation', () => {
       await projectIntegration.sealMarketplaceGenerations([project]);
       const before = project.platformDeployment!.deployments[0]!.driverState.before;
       expect(before).toMatchObject({ registration: 'present', scopeRegistration: 'absent',
-        consumers: [expect.objectContaining({ activation: 'enabled', trust: 'unknown' })] });
+        consumers: [expect.objectContaining({ activation: 'enabled' })] });
       const plan = project.platformDeployment!.plans[0]!;
       expect(plan.effects).toContainEqual(expect.objectContaining({ kind: 'register' }));
       item.claude.nativeCliRunner.mockClear();
@@ -969,7 +1038,7 @@ describe('shared marketplace generation', () => {
       const currentProject = await getAgentPluginAdapter('claude').inspect({ cwd: input.cwd, env: item.context.env,
         runner: item.context.nativeCliRunner }, plan.binding);
       expect(currentProject).toMatchObject({ package: 'present', ownership: 'aw', registration: 'present', scopeRegistration: 'present',
-        consumers: [expect.objectContaining({ activation: 'enabled', trust: 'unknown' })] });
+        consumers: [expect.objectContaining({ activation: 'enabled' })] });
     } finally { await item.context.platformRebuildSession?.dispose(); }
   });
 
@@ -1112,10 +1181,15 @@ async function registrationFixture(options: { platform?: 'codex' | 'claude'; fai
       const scope = platform === 'claude' ? binding.scope.kind === 'project' ? 'local' : 'user' : 'global';
       const active = platform === 'claude' ? enabled.has(scope) : (await readCodexConfigFile(path.join(binding.scope.kind === 'project'
         ? path.join(binding.scope.projectRoot, '.codex') : product.entry!.kind === 'cli' ? product.entry!.configRoot : '', 'config.toml'))).snapshot.plugins[layout.nativeIdentity.registrationId!]?.enabled === true;
+      const marker = present && await readSkillOwnerMarker({ skillRoot: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot) });
+      const components = await Promise.all((marker && marker.nativeProjection?.components || []).map(async ({ id, relativeOutputs }) => ({
+        id, presence: (await Promise.all(relativeOutputs.map((file) => fs.pathExists(path.join(layout.packageRoot, file))))).every(Boolean)
+          ? 'present' as const : 'absent' as const, reasonCodes: [],
+      })));
       return { physicalKey: binding.physicalKey, package: present ? 'present' : 'absent', ownership: present ? 'aw' : 'absent',
         registration: installed.has(scope) ? 'present' : 'absent', nativeIdentity: layout.nativeIdentity,
         consumers: binding.consumers.map((consumer) => ({ productId: consumer.id, activationKey: binding.activationKey,
-          activation: active ? 'enabled' : 'disabled', trust: 'trusted', load: 'not-observed' })), components: [],
+          activation: active ? 'enabled' : 'disabled', load: 'not-observed' })), components,
         prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
     },
   };

@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getPlatformFeatureRegistry, type PlatformCapabilitiesV1 } from '@lesliechan721/aw-plugin-core/manifest';
+import { getPlatformFeatureRegistry, type PlatformCapabilitiesV2 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { createRebuildIntegration, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
 import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
@@ -35,7 +35,7 @@ afterEach(async () => {
 
 // Test-only qualification facts permit successful orchestration. They do not
 // qualify a real client; resolution, projection, ownership and status stay real.
-function qualifySkillCapabilities(input: PlatformCapabilitiesV1): PlatformCapabilitiesV1 {
+function qualifySkillCapabilities(input: PlatformCapabilitiesV2): PlatformCapabilitiesV2 {
   const capabilities = structuredClone(input);
   capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
   for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) {
@@ -129,12 +129,6 @@ console.log(JSON.stringify(plan));
     },
     capabilities(input: Parameters<typeof adapter.capabilities>[0]) {
       return qualifySkillCapabilities(adapter.capabilities(input));
-    },
-    async inspect(...args: Parameters<typeof adapter.inspect>) {
-      const observation = await adapter.inspect(...args);
-      // A controlled host supplies trust explicitly, without claiming model load.
-      for (const consumer of observation.consumers) { consumer.trust = 'trusted'; consumer.load = 'not-observed'; }
-      return observation;
     },
   }]));
   vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => adapters.get(platform)!);
@@ -260,10 +254,14 @@ describe('Native Skill package projection', () => {
       }
 
       const observed = await inspect();
-      expect(observed.content).toBe(damage === 'invalid projection evidence' ? 'unknown' : 'drifted');
+      const expectedContent = damage === 'missing Skill' ? 'absent'
+        : damage === 'invalid projection evidence' ? 'unknown' : 'drifted';
+      expect(observed.content).toBe(expectedContent);
       expect(observed.deploymentObservations?.[0]?.after).toMatchObject({ package: 'present', ownership: 'aw' });
-      expect(observed.blockers).toContainEqual(expect.objectContaining({ code:
-        damage === 'invalid projection evidence' ? 'platformExpectationUnconfirmed' : 'platformContentDrift' }));
+      expect(observed.blockers).toEqual([]);
+      expect(observed.reasons).toContainEqual(expect.objectContaining({ code: damage === 'missing Skill'
+        ? 'componentOutputMissing'
+        : damage === 'invalid projection evidence' ? 'platformExpectationUnconfirmed' : 'platformContentDrift' }));
       if (damage === 'missing Skill') expect(observed.deploymentObservations?.[0]?.after.components)
         .toContainEqual(expect.objectContaining({ id: 'claude-skill', presence: 'absent' }));
       expect(await fs.readFile(rendererLog, 'utf8')).toBe(rendersBefore);
@@ -283,7 +281,8 @@ describe('Native Skill package projection', () => {
     await writePluginConfigStore({ ...config, platform: 'claude', values: { mode: 'changed' } });
     const stale = await inspect();
     expect(stale.content).toBe('drifted');
-    expect(stale.blockers).toContainEqual(expect.objectContaining({ code: 'platformInputDrift' }));
+    expect(stale.blockers).toEqual([]);
+    expect(stale.reasons).toContainEqual(expect.objectContaining({ code: 'platformInputDrift' }));
     expect(await fs.readFile(rendererLog, 'utf8')).toBe(rendersBefore);
     expect(nativeCalls.filter((args) => !['plugin list --json', 'plugin marketplace list --json'].includes(args.join(' ')))).toEqual([]);
   });

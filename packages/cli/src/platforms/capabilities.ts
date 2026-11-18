@@ -1,8 +1,7 @@
-import { COMPONENT_KINDS, getPlatformFeatureRegistry, type PlatformCapabilitiesV1, type PlatformId, type Scope } from '@lesliechan721/aw-plugin-core/manifest';
+import { COMPONENT_KINDS, getPlatformFeatureRegistry, type PlatformCapabilitiesV2, type PlatformId, type Scope } from '@lesliechan721/aw-plugin-core/manifest';
 import { compareStrictSemVer } from '../utils/manifest.js';
-import { identityDigest } from './identity.js';
 import type { CapabilityInput, QualifiedPlatformProfile } from './contracts.js';
-import { platformVersionSupported, selectNativeProduct } from './discovery.js';
+import { platformVersionSupported } from './discovery.js';
 
 const PROFILE_BASELINES: Record<PlatformId, string> = {
   codex: '0.155.0', claude: '2.1.292', cursor: 'desktop-3.29_cli-2026.11.05-86047df',
@@ -28,8 +27,8 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
       reasonCodes: supported ? [] : [generic ? 'interface-unsupported' : 'capability-unverified'],
       delivery: generic ? supported ? ['generic-files'] : [] : [supplement ? 'managed-host-resource'
         : platform === 'pi' || platform === 'opencode' || platform === 'gemini' ? 'native-extension' : 'native-package'] }];
-  })) as PlatformCapabilitiesV1['kinds'];
-  const features: PlatformCapabilitiesV1['features'] = Object.fromEntries(Object.entries(getPlatformFeatureRegistry()).filter(([, definition]) => !definition.derivedFromKind).map(([id, definition]) => [id, {
+  })) as PlatformCapabilitiesV2['kinds'];
+  const features: PlatformCapabilitiesV2['features'] = Object.fromEntries(Object.entries(getPlatformFeatureRegistry()).filter(([, definition]) => !definition.derivedFromKind).map(([id, definition]) => [id, {
     status: platform === 'generic' ? 'unsupported' : 'unverified', reasonCodes: [platform === 'generic' ? 'interface-unsupported' : 'capability-unverified'],
     ...(definition.values ? { values: [] } : {}),
   }]));
@@ -86,7 +85,7 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
   return profile;
 }
 /** Apply recorded scope limits to both local and authoring capability views. */
-export function getQualifiedKindsForScope(profile: QualifiedPlatformProfile, scope: Scope): PlatformCapabilitiesV1['kinds'] {
+export function getQualifiedKindsForScope(profile: QualifiedPlatformProfile, scope: Scope): PlatformCapabilitiesV2['kinds'] {
   const kinds = structuredClone(profile.kinds);
   for (const kind of COMPONENT_KINDS) {
     const records = profile.qualificationEvidence?.filter((record) => record.kinds.includes(kind));
@@ -96,7 +95,22 @@ export function getQualifiedKindsForScope(profile: QualifiedPlatformProfile, sco
   }
   return kinds;
 }
-export function getPlatformCapabilities(input: CapabilityInput, basis: 'local' | 'profile' = 'local'): PlatformCapabilitiesV1 {
+/** The renderer and persistent input evidence consume the same capability facts. */
+export function toPlatformCapabilitiesView(input: PlatformCapabilitiesV2): PlatformCapabilitiesV2 {
+  const sorted = <T extends string>(values: readonly T[]): T[] => [...new Set(values)].sort();
+  const kinds = Object.fromEntries(COMPONENT_KINDS.map((kind) => {
+    const { status, reasonCodes, delivery } = input.kinds[kind];
+    return [kind, { status, reasonCodes: sorted(reasonCodes), delivery: sorted(delivery) }];
+  })) as PlatformCapabilitiesV2['kinds'];
+  const features = Object.fromEntries(Object.keys(input.features).sort().map((id) => {
+    const { status, reasonCodes, values, maxBytes } = input.features[id]!;
+    return [id, { status, reasonCodes: sorted(reasonCodes),
+      ...(values === undefined ? {} : { values: sorted(values) }), ...(maxBytes === undefined ? {} : { maxBytes }) }];
+  }));
+  return { schemaVersion: 2, platform: input.platform, scope: input.scope, basis: input.basis, kinds, features };
+}
+
+export function getPlatformCapabilities(input: CapabilityInput): PlatformCapabilitiesV2 {
   const { binding, renderUnit, profile, observation } = input;
   if (profile.platform !== binding.platform) throw new Error('platformProfileMismatch');
   // A shared user package does not extend a user-only record to project activation.
@@ -111,8 +125,9 @@ export function getPlatformCapabilities(input: CapabilityInput, basis: 'local' |
     }
   }
   if (binding.platform === 'codex' && (profile.kinds.skill.status === 'supported' || kinds.agent.status === 'supported')) {
-    const product = selectNativeProduct(consumers);
-    if (product?.product !== 'cli' || !platformVersionSupported('codex', product.version)) {
+    const qualifiedCli = consumers.some((consumer) => consumer.product === 'cli' && consumer.entry?.kind === 'cli'
+      && consumer.availability === 'available' && platformVersionSupported('codex', consumer.version));
+    if (!qualifiedCli) {
       if (kinds.agent.status === 'supported') {
         kinds.agent = { ...kinds.agent, status: 'unverified', reasonCodes: ['capability-unverified'] };
       }
@@ -125,11 +140,13 @@ export function getPlatformCapabilities(input: CapabilityInput, basis: 'local' |
   }
   // Excluded entries remain facts. They do not revoke another complete path.
   const available = consumers.some((consumer) => consumer.availability === 'available' || consumer.availability === 'notApplicable');
-  for (const consumer of available ? [] : consumers) {
-    const reason = consumer.availability === 'missing' ? 'client-missing' : consumer.availability === 'unsupported' ? 'version-unsupported' : 'capability-unverified';
+  if (!available && consumers.length) {
+    const reasons = consumers.map(({ availability }) => availability === 'missing' ? 'client-missing'
+      : availability === 'unsupported' ? 'version-unsupported' : 'capability-unverified');
+    const status = consumers.some((consumer) => consumer.availability === 'unknown') ? 'unverified' : 'unsupported';
     for (const fact of [...Object.values(kinds), ...Object.values(features)]) {
-      fact.status = consumer.availability === 'unknown' ? 'unverified' : 'unsupported';
-      fact.reasonCodes = [...new Set([...fact.reasonCodes, reason])];
+      fact.status = status;
+      fact.reasonCodes.push(...reasons);
       if ('values' in fact) fact.values = [];
     }
   }
@@ -164,8 +181,7 @@ export function getPlatformCapabilities(input: CapabilityInput, basis: 'local' |
       if (coverage?.values) coverage.values = coverage.values.filter((value) => value === 'main');
     }
   }
-  return { schemaVersion: 1, platform: binding.platform, scope: renderUnit.renderScope.kind, basis, profileId: profile.id,
-    consumers: consumers.map((consumer) => ({ id: identityDigest({ productId: consumer.id }), product: consumer.product, version: consumer.version,
-      ...(binding.platform === 'pi' ? { agentConsumers: observation.prerequisites.agentConsumers.candidates.filter((candidate) => candidate.productId === consumer.id)
-        .map(({ id, version, scope, enabled, trust, packageAccess, settings, configurationEvidence }) => ({ id, version, scope: scope.kind, enabled, trust, packageAccess, settings, configurationEvidence })) } : {}) })), kinds, features };
+  return toPlatformCapabilitiesView({
+    schemaVersion: 2, platform: binding.platform, scope: renderUnit.renderScope.kind, basis: 'local', kinds, features,
+  });
 }

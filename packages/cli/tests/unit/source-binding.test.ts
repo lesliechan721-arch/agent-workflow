@@ -20,6 +20,7 @@ import {
   type AwSourceBindingWorkspaceValidationContext,
 } from '../../src/review/source-binding.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
+import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
 import type { PluginMeta } from '../../src/types.js';
 
@@ -40,7 +41,7 @@ const unusedContext = {
 function preparation() {
   const capabilities = getAuthoringPlatformCapabilities('generic', 'project');
   return [{
-plugin: 'fixture', platform: 'generic' as const, renderScope: 'project' as const, profileId: capabilities.profileId,
+plugin: 'fixture', platform: 'generic' as const, renderScope: 'project' as const, profileId: getQualifiedPlatformProfile('generic').id,
     capabilitiesDigest: artifactValueDigest(capabilities), expectedDigest: digest, resourceDigest: digest, renderInputDigest: digest, outputs: [],
     components: [{ id: 'skill:fixture', kind: 'skill' as const, name: 'fixture', source: 'static' as const }], omitted: [], unmet: []
 }];

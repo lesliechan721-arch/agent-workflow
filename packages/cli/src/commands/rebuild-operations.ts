@@ -909,13 +909,17 @@ export async function executeRebuildOperation(options: {
       const failure = receipts.flatMap((receipt) => receipt.effects).find((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status));
       const gaps = receipts.flatMap((receipt) => receipt.unmet);
       const diagnostics = receipts.flatMap((receipt) => receipt.diagnostics).filter((item) => item.severity === 'error');
-      const result = failure || gaps.length || diagnostics.length
+      let result = failure || gaps.length || diagnostics.length
         ? failed(options.command, options.target, accumulator, 'native.write', failure?.diagnostics.map((item) => `${item.code}: ${item.message}`).join('; ') || 'platformComponentsUnmet')
         : succeeded(options.command, options.target, accumulator);
-      result.deploymentReceipts = receipts;
       if (result.status === 'succeeded' && options.command !== 'cleanup' && options.command !== 'uninstall') {
-        options.driver.deferPostcheck?.(options.target, () => options.target.platformDeployment!.postcheck(receipts));
+        const deployment = options.target.platformDeployment;
+        if (options.driver.deferPostcheck?.(options.target, () => deployment.postcheck(receipts, { refresh: true })) !== true) {
+          try { await deployment.postcheck(receipts); }
+          catch (error) { result = failed(options.command, options.target, accumulator, 'postcheck.inspect', errorMessage(error)); }
+        }
       }
+      result.deploymentReceipts = receipts;
       return result;
     } catch (error) { return failed(options.command, options.target, accumulator, 'preflight', errorMessage(error)); }
   }

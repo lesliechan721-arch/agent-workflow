@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { resolveReviewSelection } from '../../src/review/review-selection.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
+import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
 import { normalizeReviewProfileConfig } from '../../src/review/review-profile.js';
 import {
@@ -51,7 +52,7 @@ function preparation(plugin: string, skill: string) {
   const capabilities = getAuthoringPlatformCapabilities('codex', 'user');
   const digest = `sha256:${'a'.repeat(64)}`;
   return [{
-plugin, platform: 'codex' as const, renderScope: 'user' as const, profileId: capabilities.profileId,
+plugin, platform: 'codex' as const, renderScope: 'user' as const, profileId: getQualifiedPlatformProfile('codex').id,
     capabilitiesDigest: artifactValueDigest(capabilities), expectedDigest: digest, resourceDigest: digest, renderInputDigest: digest, outputs: [],
     components: [{ id: `skill:${skill}`, kind: 'skill' as const, name: skill, source: 'static' as const }], omitted: [], unmet: []
 }];

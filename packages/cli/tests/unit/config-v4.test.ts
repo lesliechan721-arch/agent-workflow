@@ -47,13 +47,12 @@ function fixture() {
 async function subagentRuntimeComponents(plugin: PluginMeta, config: Awaited<ReturnType<typeof resolveEffectivePluginConfig>>): Promise<PluginComponent[]> {
   const { renderArtifactPlan } = await import('../../../../plugins/agent-subagent/scripts/render-artifacts.mjs');
   const capabilities = getAuthoringPlatformCapabilities('codex', 'user');
-  capabilities.profileId = 'synthetic-runtime-snapshot';
   capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
   for (const [feature, values] of [['agent.execution', ['isolated-context']], ['agent.prompt-mode', ['host-default']],
     ['skill.runtime-config', ['aw.installed-runtime-config.v2']]] as const) {
     capabilities.features[feature] = { status: 'supported', reasonCodes: [], values: [...values] };
   }
-  const plan = await renderArtifactPlan({ schemaVersion: 1, surface: 'agent-plugin', platform: 'codex', scope: 'user',
+  const plan = await renderArtifactPlan({ schemaVersion: 2, surface: 'agent-plugin', platform: 'codex', scope: 'user',
     plugin: { pluginId: 'team/executor-config', name: plugin.manifest.name, version: plugin.manifest.version },
     config: selectPlatformRenderConfig({ resolved: { ...config, mode: 'artifact-render', targetScope: 'user' },
       keys: plugin.manifest.artifacts!.configKeys, nonSensitive: true }),

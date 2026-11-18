@@ -27,7 +27,7 @@ import {
 } from './catalog-workspace-resolution.js'
 
 export const IMPLEMENTED_AW_CAPABILITIES = [
-  'aw.cli-output.v1',
+  'aw.cli-output.v2',
   'aw.plugin-manifest.v4',
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
@@ -42,6 +42,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-config-summary.v1',
   'aw.plugin-pre-apply.v1',
   'aw.platform-components.v3',
+  'aw.platform-render-context.v2',
   'aw.managed-commands.v1',
   'aw.native-tools.v2',
   'aw.claude.sandbox-exclusions.v1',

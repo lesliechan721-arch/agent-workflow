@@ -28,7 +28,7 @@ const send = (value, code = 0) => {
   else {
     const { ok, command, schemaVersion, issues, ...data } = value;
     console.log(JSON.stringify({
-      schemaVersion: 1, command: route, status: ok === false ? 'failed' : 'success',
+      schemaVersion: 2, command: route, status: ok === false ? 'failed' : 'success',
       data, diagnostics: issues ?? [], nextActions: [],
     }));
   }

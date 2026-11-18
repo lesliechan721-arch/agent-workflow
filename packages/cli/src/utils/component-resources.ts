@@ -8,12 +8,12 @@ import {
   createAwPluginRequirementsReceipt,
   getUnmetFeatureRequirements,
   type ExpectedComponentSet,
-  type PlatformCapabilitiesV1,
-  type PlatformRenderContextV1,
+  type PlatformCapabilitiesV2,
+  type PlatformRenderContextV2,
   type PluginComponent,
   type SourceRef,
 } from '@lesliechan721/aw-plugin-core/manifest';
-import type { PluginMeta } from '../types.js';
+import type { PlatformTarget, PluginMeta } from '../types.js';
 import { assertNoSensitiveConfigValues, calculateFileDigest } from './plugin-scripts.js';
 import { artifactValueDigest } from './artifact-plan.js';
 import { validateRuntimeSkillClosure } from './runtime-skill-closure.js';
@@ -27,7 +27,7 @@ export interface VerifiedComponentFile {
   mode?: number;
 }
 export interface VerifiedResourceClosure {
-  resources: PlatformRenderContextV1['resources'];
+  resources: PlatformRenderContextV2['resources'];
   files: VerifiedComponentFile[];
   bundleFiles: Array<{ path: string; bytes: Buffer; mode?: number; componentIds?: string[] }>;
   commandResources: VerifiedCommandResource[];
@@ -43,7 +43,7 @@ export interface VerifiedCommandResource extends CommandResourceReference {
 }
 
 /** Only literal package paths are portable. Shell expansion is not a resource declaration. */
-export function commandResourceReferences(value: string, shell: boolean, platform: PlatformCapabilitiesV1['platform'], executable?: string): CommandResourceReference[] {
+export function commandResourceReferences(value: string, shell: boolean, platform: PlatformCapabilitiesV2['platform'], executable?: string): CommandResourceReference[] {
   const rootVariable = platform === 'codex' ? '${CODEX_PLUGIN_ROOT}/' : platform === 'claude' ? '${CLAUDE_PLUGIN_ROOT}/' : undefined;
   const tokens = shell ? [...value.matchAll(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'`;&|<>]+/gu)].map((match) => ({ text: match[0], start: match.index }))
     : [{ text: value, start: 0 }];
@@ -121,9 +121,9 @@ async function directoryDigest(root: string): Promise<string> {
   return artifactValueDigest(entries);
 }
 
-export async function resolvePlatformComponentResources(plugin: PluginMeta): Promise<PlatformRenderContextV1['resources']> {
+export async function resolvePlatformComponentResources(plugin: PluginMeta): Promise<PlatformRenderContextV2['resources']> {
   const root = await fs.realpath(plugin.rootDir);
-  const resources: PlatformRenderContextV1['resources'] = [];
+  const resources: PlatformRenderContextV2['resources'] = [];
   for (const sourceDir of plugin.manifest.artifacts?.sourceDirs ?? []) {
     const directory = await regularPath(root, sourceDir, true);
     resources.push({ kind: 'bundle', name: sourceDir, root: directory, digest: await directoryDigest(directory) });
@@ -137,14 +137,39 @@ export async function resolvePlatformComponentResources(plugin: PluginMeta): Pro
   return resources;
 }
 
+export async function resolveStaticPlatformResourceRoot(pluginRoot: string, platform: PlatformTarget): Promise<string> {
+  const platformRoot = path.join(pluginRoot, platform);
+  return await fs.pathExists(platformRoot) ? platformRoot : pluginRoot;
+}
+
+/** Read only the bundle bytes used by the admitted static components. */
+export async function readStaticComponentResourceInputs(options: {
+  plugin: PluginMeta; expected: ExpectedComponentSet; staticResourceRoot: string; capabilities: PlatformCapabilitiesV2;
+}): Promise<unknown> {
+  const root = await fs.realpath(options.plugin.rootDir);
+  const skillSources = await Promise.all(options.expected.components.flatMap((component) =>
+    component.kind === 'skill' ? Object.entries(component.content.files).flatMap(([file, resource]) =>
+      'source' in resource && resource.source.kind === 'bundle' ? [{ componentId: component.id, file, source: resource.source.path }] : []) : [])
+    .map(async ({ componentId, file, source }) => {
+      const location = await regularPath(root, source, false);
+      return { componentId, file, digest: await calculateFileDigest(location), executable: !!((await fs.stat(location)).mode & 0o111) };
+    }));
+  const { bundleFiles } = await collectBundleResources({ ...options, resources: [], sensitiveValues: [] });
+  return {
+    skillSources,
+    commandFiles: bundleFiles.map(({ path: file, bytes, mode }) =>
+      ({ file, digest: `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`, mode })),
+  };
+}
+
 const RESERVED_FILES = new Set([
   '.agent-workflows-owner.json', 'owner.json', 'aw-plugin-requirements.json', '.aw-command-producer.json',
   '.aw-runtime-config.json', 'scripts/aw-runtime-config.mjs', '.aw-runtime-native-receipt.json',
 ]);
 
 export async function verifyPlatformComponentResources(options: {
-  plugin: PluginMeta; expected: ExpectedComponentSet; resources: PlatformRenderContextV1['resources'];
-  capabilities: PlatformCapabilitiesV1; sensitiveValues: readonly string[]; staticResourceRoot?: string;
+  plugin: PluginMeta; expected: ExpectedComponentSet; resources: PlatformRenderContextV2['resources'];
+  capabilities: PlatformCapabilitiesV2; sensitiveValues: readonly string[]; staticResourceRoot?: string;
 }): Promise<VerifiedResourceClosure> {
   const bundleRoot = await fs.realpath(options.plugin.rootDir);
   const files: VerifiedComponentFile[] = [];
@@ -242,8 +267,8 @@ async function validateSkillClosure(component: PluginComponent, files: Record<st
 }
 
 async function collectBundleResources(options: {
-  plugin: PluginMeta; expected: ExpectedComponentSet; resources: PlatformRenderContextV1['resources'];
-  sensitiveValues: readonly string[]; staticResourceRoot?: string; capabilities: PlatformCapabilitiesV1;
+  plugin: PluginMeta; expected: ExpectedComponentSet; resources: PlatformRenderContextV2['resources'];
+  sensitiveValues: readonly string[]; staticResourceRoot?: string; capabilities: PlatformCapabilitiesV2;
 }): Promise<Pick<VerifiedResourceClosure, 'bundleFiles' | 'commandResources'>> {
   const root = await fs.realpath(options.plugin.rootDir);
   const output = new Map<string, { path: string; bytes: Buffer; mode?: number; componentIds: string[] }>();

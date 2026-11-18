@@ -3,18 +3,19 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { createMarketplaceManifestEntry, normalizeStaticPluginComponents, resolveInvocationPolicy, type ProducerIdentity } from '@lesliechan721/aw-plugin-core/manifest';
-import type { DeploymentBinding, DeploymentExclusion, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationContext, MutationOutcome, PreparedDeployment,
+import type { DeploymentBinding, DeploymentExclusion, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, HostContribution, MutationContext, MutationOutcome, PreparedDeployment,
   PreparationEvidence, ProjectionResult, ReadContext, RenderUnit, Resolution } from '../platforms/contracts.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
-import { deploymentPackageComponent, inspectStaticSupplements, selectedNativeConsumer } from '../platforms/inspection.js';
+import { deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
 import type { PlatformDriverState } from '../platforms/lifecycle.js';
-import { nativeRoute, piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
+import { piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
 import { assertGeminiProjectRules, geminiActivationEvidence, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
   geminiUserActivation, readGeminiActivationSnapshot } from '../platforms/gemini-activation.js';
 import { cursorWorkspaceOpenCommand } from '../platforms/projection.js';
+import { cursorHookEntryCommand, cursorHooks } from '../platforms/cursor-workspace-hook.js';
 import { ownedSupplementFile, staticSupplementFiles } from '../platforms/supplement-layout.js';
 import { projectPlatformMarketplace } from '../platforms/projection-marketplace.js';
 import { readStrictNamespacedMarketplaceRoot } from '../utils/local-marketplace.js';
@@ -48,13 +49,27 @@ export interface PreparedPlatformTarget {
   verify(): Promise<void>;
   canVerifyAtExecution(): boolean;
   execute(options?: { verifyBeforeExecution: true }): Promise<DeploymentReceipt[]>;
-  postcheck(receipts: readonly DeploymentReceipt[]): Promise<void>;
+  postcheck(receipts: readonly DeploymentReceipt[], options?: { refresh: true }): Promise<void>;
 }
 interface UnitPreparation {
   unit: RenderUnit;
   prepared: PreparedPlatformComponents;
   finalized: FinalizedPlatformComponents;
   evidenceInput: Parameters<typeof createPlatformInputEvidence>[0]['units'][number];
+}
+
+function nativeCopyIncomplete(binding: DeploymentBinding, after: DeploymentObservation, contentDigest: string): boolean {
+  return ['gemini-extension', 'antigravity-cli', 'grok-cli'].includes(binding.route)
+    && after.nativePackageContentDigest !== contentDigest;
+}
+
+function packageDeliveryConfirmed(binding: DeploymentBinding, after: DeploymentObservation, contentDigest: string): boolean {
+  return after.package === 'present' && ['aw', 'shared'].includes(after.ownership)
+    && !nativeCopyIncomplete(binding, after, contentDigest)
+    && ['present', 'not-applicable'].includes(after.registration)
+    && ['enabled', 'not-applicable'].includes(requiredDeploymentActivation(binding, after))
+    && (binding.route !== 'cursor-workspace-hook' || after.workspaceOpen === 'present')
+    && (binding.route !== 'claude-marketplace' || after.scopeRegistration === undefined || after.scopeRegistration === 'present');
 }
 
 /** Fingerprints are operation-local evidence; they confer no ownership or deletion rights. */
@@ -81,7 +96,7 @@ async function ownedContentDigest(component: OwnedComponent): Promise<string | u
     } else if (component.locator.kind === 'cursor-workspace-hook') {
       const locator = component.locator;
       const entries = cursorHooks(await jsonObject(locator.hooksPath)).entries;
-      if (entries.some((entry) => entryCommand(entry) === locator.command)) value = { version: 1, hooks: { workspaceOpen: [{ command: locator.command }] } };
+      if (entries.some((entry) => cursorHookEntryCommand(entry) === locator.command)) value = { version: 1, hooks: { workspaceOpen: [{ command: locator.command }] } };
     }
     return value === undefined ? undefined : `sha256:${crypto.createHash('sha256').update(`${JSON.stringify(value, null, 2)}\n`).digest('hex')}`;
   }
@@ -157,30 +172,19 @@ async function jsonObject(file: string): Promise<Record<string, unknown>> {
   return value as Record<string, unknown>;
 }
 
-/** Cursor has one fixed hook slot; this does not interpret arbitrary JSON patches. */
-function cursorHooks(value: Record<string, unknown>): { hooks: Record<string, unknown>; entries: unknown[] } {
-  const hooks = value.hooks ?? {};
-  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) throw new Error('cursorHooksInvalid');
-  const entries = (hooks as Record<string, unknown>).workspaceOpen ?? [];
-  if (!Array.isArray(entries)) throw new Error('cursorHooksInvalid');
-  return { hooks: hooks as Record<string, unknown>, entries };
-}
-function entryCommand(value: unknown): string | undefined {
-  return value && typeof value === 'object' && 'command' in value && typeof value.command === 'string' ? value.command : undefined;
-}
 export const platformOwnership: OwnedComponentExecutor = {
   async inspectShared(component) {
     if (component.locator.kind !== 'cursor-workspace-hook') throw new Error('sharedOwnershipUnsupported');
     const locator = component.locator;
     const { entries } = cursorHooks(await jsonObject(locator.hooksPath));
-    return entries.some((entry) => entryCommand(entry) === locator.command) ? 'present' : 'absent';
+    return entries.some((entry) => cursorHookEntryCommand(entry) === locator.command) ? 'present' : 'absent';
   },
   async removeShared(component) {
     if (component.locator.kind !== 'cursor-workspace-hook') throw new Error('sharedOwnershipUnsupported');
     const locator = component.locator;
     const value = await jsonObject(locator.hooksPath);
     const { hooks, entries } = cursorHooks(value);
-    const retained = entries.filter((entry) => entryCommand(entry) !== locator.command);
+    const retained = entries.filter((entry) => cursorHookEntryCommand(entry) !== locator.command);
     if (retained.length === entries.length) return;
     await atomicReplaceSafeFile({ filePath: component.locator.hooksPath, allowedRoot: path.dirname(component.locator.hooksPath),
       content: `${JSON.stringify({ ...value, hooks: { ...hooks, workspaceOpen: retained } }, null, 2)}\n`, label: 'Cursor workspaceOpen' });
@@ -572,7 +576,7 @@ export class PlatformRebuildSession {
             cwd: input.cwd, env: this.context.env, signal: this.context.signal, scriptTimeoutMs: this.context.scriptTimeoutMs,
             packagePreparationCache: this.context.packagePreparationCache });
           return { unit: commonUnit, prepared: finalized.prepared, finalized,
-            evidenceInput: { renderUnit: commonUnit, capabilities, config, prerequisites: bindingEntry.observation.prerequisites } };
+            evidenceInput: { renderUnit: commonUnit, capabilities, config } };
         })();
         this.units.set(unit.physicalKey, promise);
       }
@@ -667,7 +671,7 @@ export class PlatformRebuildSession {
         const contribution = projections.flatMap((projection) => projection.supplements).find((item) => item.destination === locator.hooksPath);
         if (!contribution) continue;
         const { entries } = cursorHooks(await jsonObject(contribution.stagingPath));
-        const command = entries.map(entryCommand).find((value) => value !== undefined);
+        const command = entries.map(cursorHookEntryCommand).find((value) => value !== undefined);
         if (!command) throw new Error('cursorWorkspaceHookInvalid');
         component.locator.command = command;
       }
@@ -830,7 +834,13 @@ export class PlatformRebuildSession {
             emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty' });
           } else if (entry.binding.route === 'codex-marketplace' && input.plugin.manifest.artifacts) {
             const supplement = inputEvidence.units.find((unit) => unit.output === 'supplement');
-            if (supplement) supplementInputDigests.set(entry.binding.id, supplement.inputDigest);
+            if (supplement) {
+              supplementInputDigests.set(entry.binding.id, supplement.inputDigest);
+              if (!projections.some((projection) => projection.bundle)) {
+                emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty',
+                  units: inputEvidence.units.filter((unit) => unit.output === 'package') });
+              }
+            }
           }
         }
       }
@@ -890,13 +900,13 @@ export class PlatformRebuildSession {
         return changes;
       },
       verify,
-      postcheck: async (receipts) => {
+      postcheck: async (receipts, options) => {
         let incomplete = false;
         for (const { plan } of deployments) {
           if (!['ensure', 'reinstall'].includes(plan.operation) || !plan.expected.components.length) continue;
           const receipt = receipts.find((entry) => entry.bindingId === plan.binding.id);
           if (!receipt) continue;
-          const after = await adapter.inspect(ctx, plan.binding);
+          const after = options?.refresh ? await adapter.inspect(ctx, plan.binding) : receipt.after;
           const supplementFiles = plan.projections.filter((projection) => plan.evidence.renderUnits?.some((unit) =>
             unit.id === projection.renderUnitId && unit.output === 'supplement')).flatMap((projection) => projection.supplements
             .filter((contribution) => contribution.kind === 'owned-file'));
@@ -904,52 +914,59 @@ export class PlatformRebuildSession {
           const supplements = await inspectStaticSupplements(ctx, plan.binding,
             plan.expected.components.filter((component) => supplementIds.has(component.id)));
           after.components = [...after.components.filter((component) => !supplementIds.has(component.id)), ...supplements.components];
-          receipt.after = after;
+          if (options?.refresh) {
+            receipt.after = after;
+            receipt.diagnostics.push(...after.diagnostics);
+          }
           const packageIds = new Set(plan.projections.filter((projection) => projection.bundle)
             .flatMap((projection) => projection.components.map((component) => component.id)));
-          const consumer = selectedNativeConsumer(plan.binding, after);
-          const untrusted = consumer?.trust === 'required' || consumer?.trust === 'blocked';
-          const nativeContentIncomplete = ['gemini-extension', 'antigravity-cli'].includes(plan.binding.route) && packageIds.size > 0
-            && (!after.nativePackageContentDigest || after.nativePackageContentDigest !== plan.projections.find((projection) => projection.bundle)?.bundle?.contentDigest);
-          const packageIncomplete = packageIds.size > 0 && (after.package !== 'present' || !['aw', 'shared'].includes(after.ownership)
-            || nativeContentIncomplete
-            || nativeRoute(plan.binding.route) && (after.registration !== 'present'
-              || plan.binding.route !== 'pi-package' && consumer?.activation !== 'enabled'
-              || plan.binding.route === 'claude-marketplace' && after.scopeRegistration !== undefined && after.scopeRegistration !== 'present'
-              || untrusted));
-          const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id)
-            || !after.components.some((observed) => observed.id === component.id && observed.presence === 'present' && !observed.reasonCodes.length));
-          receipt.diagnostics.push(...after.diagnostics);
-          if (!gaps.length) {
-            const inputDigest = supplementInputDigests.get(plan.binding.id);
-            if (inputDigest && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
-              try {
-                await writeCodexSupplementState(ctx, plan.binding, inputDigest, supplementFiles.map((file) => ({
-                  id: file.id, fileName: path.basename(file.destination), contentDigest: file.contentDigest,
-                })));
-              } catch {
-                ctx.signal?.throwIfAborted();
-                receipt.diagnostics.push({ code: 'componentOutputUnconfirmed', severity: 'warning',
-                  message: 'The scope-local Codex output could not be recorded. Run sync to restore the status evidence.',
-                  subject: { target: plan.binding.platform, pluginId: plan.binding.plugin.pluginId, scope: plan.binding.scope.kind } });
+          const bundle = plan.projections.find((projection) => projection.bundle)?.bundle;
+          const requiredActivation = requiredDeploymentActivation(plan.binding, after);
+          const nativeContentIncomplete = bundle && nativeCopyIncomplete(plan.binding, after, bundle.contentDigest);
+          const packageIncomplete = bundle && (!packageDeliveryConfirmed(plan.binding, after, bundle.contentDigest)
+            || await readPlatformPackageContentDigest(plan.evidence.layout.packageRoot) !== bundle.contentDigest);
+          const delivered = new Set(after.components.filter((component) => component.presence === 'present' && !component.reasonCodes.length)
+            .map((component) => component.id));
+          const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id) || !delivered.has(component.id));
+          const inputDigest = supplementInputDigests.get(plan.binding.id);
+          if (inputDigest && [...supplementIds].every((id) => delivered.has(id))
+            && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+            try {
+              await writeCodexSupplementState(ctx, plan.binding, inputDigest, supplementFiles.map((file) => ({
+                id: file.id, fileName: path.basename(file.destination), contentDigest: file.contentDigest,
+              })));
+              const emptyPackage = emptyStates.get(plan.binding.id);
+              if (!gaps.length && emptyPackage && after.package === 'absent' && after.registration === 'absent') {
+                await writePlatformEmptyState({ state: emptyPackage, env: this.context.env });
               }
+            } catch {
+              ctx.signal?.throwIfAborted();
+              receipt.diagnostics.push({ code: 'componentOutputUnconfirmed', severity: 'warning',
+                message: 'The scope-local Codex output could not be recorded. Run sync to restore the status evidence.',
+                subject: { target: plan.binding.platform, pluginId: plan.binding.plugin.pluginId, scope: plan.binding.scope.kind } });
             }
-            continue;
           }
+          if (!gaps.length) continue;
           incomplete = true;
-          const code = untrusted ? 'nativeTrustRequired' : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
+          const code = plan.binding.route === 'grok-directory' && requiredActivation === 'blocked' ? 'grokProjectAuthorizationDenied'
+            : plan.binding.route === 'codex-marketplace' && after.scopeActivation === 'unknown' ? 'codexProjectActivationUnconfirmed'
+              : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
           receipt.diagnostics.push({ code, severity: 'error',
             message: code === 'nativeInstallContentPostcheckFailed' && plan.binding.route === 'gemini-extension'
               ? `The actual Gemini copy does not confirm the frozen package bytes. In the same workspace, review and run aw plugin sync ${plan.binding.plugin.pluginId} --context ${plan.binding.scope.kind} --target gemini --native-consent.`
               : code === 'nativeInstallContentPostcheckFailed'
-                ? 'The actual Antigravity copy does not confirm the frozen package bytes. Check status and sync the affected target.'
-                : 'The final grouped observation does not confirm the requested deployment. Check status and sync the affected target.',
+                ? 'The installed native copy does not confirm the frozen package bytes. Check status and sync the affected target.'
+                : code === 'grokProjectAuthorizationDenied'
+                  ? 'Grok denied authorization for the selected project. Review the project in Grok before syncing.'
+                  : code === 'codexProjectActivationUnconfirmed'
+                    ? 'Codex reports effective activation but does not distinguish this project from User inheritance.'
+                    : 'The final observation does not confirm the requested deployment. Check status and sync the affected target.',
             subject: { target: plan.binding.platform, pluginId: plan.binding.plugin.pluginId, scope: plan.binding.scope.kind } });
           receipt.unmet.push(...gaps.map((component) => ({ id: `postcheck:${plan.binding.id}:${component.id}`,
             componentId: component.id, kind: component.kind, reasonCode: code, requiredFeatures: [],
             productIds: plan.binding.consumers.map((consumer) => consumer.id) })));
         }
-        if (incomplete) throw new Error('deploymentPostcheckFailed: the final grouped observation does not confirm the requested deployment.');
+        if (incomplete) throw new Error('deploymentPostcheckFailed: the final observation does not confirm the requested deployment.');
       },
       execute: async (options) => {
         let verifiedPlan: FrozenDeploymentPlan | undefined;
@@ -1016,7 +1033,7 @@ export class PlatformRebuildSession {
                 const { hooks, entries } = cursorHooks(value);
                 const desired = cursorHooks(await jsonObject(contribution.stagingPath)).entries;
                 await atomicReplaceSafeFile({ filePath: component.locator.hooksPath, allowedRoot: path.dirname(component.locator.hooksPath), label: 'Cursor workspaceOpen',
-                  content: `${JSON.stringify({ ...value, hooks: { ...hooks, workspaceOpen: [...entries.filter((item) => entryCommand(item) !== locator.command), ...desired] } }, null, 2)}\n` });
+                  content: `${JSON.stringify({ ...value, hooks: { ...hooks, workspaceOpen: [...entries.filter((item) => cursorHookEntryCommand(item) !== locator.command), ...desired] } }, null, 2)}\n` });
               } else if (component.kind === 'shared-config' && component.locator.kind === 'claude-permissions') {
                 const content = await jsonObject(contribution.stagingPath);
                 if (content.kind !== 'claude-permissions') throw new Error('platformContributionUnsupported');
@@ -1071,7 +1088,8 @@ export class PlatformRebuildSession {
               subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } });
             continue;
           }
-          if (prepared.plan.evidence.retainPackage || receipt.effects.some((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status))) continue;
+          if (prepared.plan.evidence.retainPackage || receipt.diagnostics.some((diagnostic) => diagnostic.code === 'operationPlanStale')
+            || receipt.effects.some((effect) => ['failed', 'unknown', 'blocked', 'skipped'].includes(effect.status))) continue;
           try {
             const candidates = [...preparedUnits.values()].flatMap((unit) => unit.finalized.commandCandidates)
               .filter((candidate) => candidate.producer.kind !== 'package' && candidate.producer.placementKey === prepared.plan.binding.physicalKey);
@@ -1087,14 +1105,17 @@ export class PlatformRebuildSession {
             const bundle = prepared.plan.projections.find((projection) => projection.bundle)?.bundle;
             const packageOwner = prepared.plan.evidence.ownership.find((slot) => 'path' in slot.component && slot.component.path === root)?.component;
             if (bundle && packageOwner?.kind === 'owned-directory' && prepared.plan.evidence.contentMatches
+              && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
+              && packageDeliveryConfirmed(prepared.plan.binding, receipt.after, bundle.contentDigest)
               && await readPlatformPackageContentDigest(root) === bundle.contentDigest) {
               const projection: NativeProjectionEvidence = { components: mappings, contentDigest: bundle.contentDigest,
                 inputDigest: inputDigests.get(prepared.plan.binding.id)!, preparation: prepared.plan.expected.unmet.length || commandPreparationFailed ? 'partial' : 'complete',
                 physicalIdentity: (await getDeploymentLayout(ctx, prepared.plan.binding)).physicalIdentity };
               const marker = await readSkillOwnerMarker({ skillRoot: root, allowedRoot: packageOwner.allowedRoot, expectedIdentity: packageOwner.identity });
-              if (artifactValueDigest(marker?.nativeProjection) !== artifactValueDigest(projection)) {
+              if (marker && (!marker.nativeProjection || artifactValueDigest(marker.nativeProjection) !== artifactValueDigest(projection))) {
                 await writeSkillOwnerMarker({ skillRoot: root, allowedRoot: packageOwner.allowedRoot, identity: packageOwner.identity, nativeProjection: projection });
                 for (const check of this.mutableChecks.values()) if (check.physicalKey === prepared.plan.binding.physicalKey) await check.rebase();
+                receipt.after = await adapter.inspect(ctx, prepared.plan.binding);
               }
             }
             const packageRemoved = !await fs.pathExists(root);
@@ -1116,7 +1137,8 @@ export class PlatformRebuildSession {
                 && ['codex-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(prepared.plan.binding.route)
                 && receipt.after.configuration?.activation === 'absent'
               || receipt.after.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
-            if (emptyState && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
+            if (emptyState && !prepared.plan.expected.components.length && !receipt.unmet.length
+              && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
               && (receipt.after.registration !== 'unknown' || removedByCommand) && receipt.after.package !== 'unknown'
               && !['foreign', 'unknown'].includes(receipt.after.ownership)
               && inactiveScope) {

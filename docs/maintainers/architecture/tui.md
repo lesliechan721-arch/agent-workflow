@@ -32,7 +32,7 @@ TUI 的 Store 页面只读取同一 status 服务。清理 Review 从 dry-run �
 
 ## 清单与位置状态
 
-TUI 插件清单先显式选择个人或当前项目，再读取所选范围需求与现场；进入页面不授权写入。已确认缺失或不完整的目标进入统一恢复 Prepare/Review，来源阻断、无法确认目标和可重试失败分别显示。局部重查保留查询、焦点和旧快照，失败时标记旧快照未确认；`H` 重新加载完整会话。partial 结果保留精确失败目标与原请求。
+TUI 插件清单先显式选择个人或当前项目，再读取所选范围需求与现场；进入页面不授权写入。确认缺失、停用或待同步的目标进入统一恢复 Prepare/Review。详情保留包、登记、范围启用和组件事实。来源阻断、无法确认目标和可重试失败分别显示。局部重查保留查询、焦点和旧快照，失败时标记旧快照未确认；`H` 重新加载完整会话。partial 结果保留精确失败目标与原请求。
 
 TUI 插件清单按显式 scope 组合当前 Catalog summary、统一恢复 status inventory、可识别的 config store 和 live ownership。已移除插件的声明、禁用 activation、Native、AW 输出、Portable 与 config-only 残留仍可见，进入独立“停用已移除插件”任务；普通 cleanup 只清理所选现场且不改强配置。新增安装只接受健康 Catalog summary 中符合资格的插件。foreign 与 shared 内容保留；成功后重新读取 Intent、Catalog、live ownership 与设置事实决定是否继续显示。
 
@@ -74,7 +74,7 @@ TUI 批量写入支持添加、同步、重建、移除和普通清理；force c
 
 平台 Review 消费冻结的 deploymentPlans，按平台及实际产品面展示组件、原生动作、补足位置、共享影响、preApply 与重载要求。unmet 保留具体 requiredFeatures 的 feature/values 和 componentId，例如缺少 block 或 plugin-agents 覆盖。准备失败的平台也进入 Review，不因无动作而消失。
 
-进度在独立平台失败后继续。结果先显示各平台完成情况，再展开产品面、组件和位置；包发布、注册、激活、观测与运行加载分别呈现。未知写入保留 possible/unknown，不作为安全缺失。重试只选择本次未完成且可精确定位的目标，重新取证与 Review，不重复成功平台。
+进度在独立平台失败后继续。结果先显示各平台完成情况，再展开产品面、组件和位置；包发布、登记、有效启用、组件与运行加载分别呈现。已确认交付可显示就绪，加载仍可保留未知。未知写入保留 possible/unknown，不作为安全缺失。重试只选择本次未完成且可精确定位的目标，重新取证与 Review，不重复成功平台。
 
 TUI 的部署与来源变更入口在进入 Review 前先进入 `ReviewPreparing`。普通 `ReviewPreparing` 只执行当前 intent 的验证和证据采集，不执行写入。用户显式选择“刷新并同步”是唯一例外：它在建立插件 Review 前刷新相关来源，并可切换可重建的 Active 弱状态；Esc 只取消后续 Review 和插件写入，不回滚已完成的 Active 刷新。一次成功的 TUI load 固定可用来源的 Active snapshot 子集，并保留其它来源的失败证据；子集 digest 只包含成功来源。同一 session 的浏览、设置、status、依赖 preview 和 Review 都读取该固定子集。load 只读取 source config、catalog state 和 Active store；它不 fetch 或同步，并在本地读取完成后立即进入 ready。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
 

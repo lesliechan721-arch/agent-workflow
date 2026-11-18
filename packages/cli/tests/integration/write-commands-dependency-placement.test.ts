@@ -142,7 +142,7 @@ async function createIntentRoundTripFixture(nativeProviders = false) {
 describe('five namespaced write commands', () => {
   let defaultNativeRuntime: Awaited<ReturnType<typeof createCodexNativeTestRuntime>>;
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true, trust: true });
+    installNativeTestQualification({ discovery: true });
     defaultNativeRuntime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
@@ -1200,7 +1200,7 @@ describe('five namespaced write commands', () => {
     expect(syncResults).toHaveLength(1);
     const syncReceipt = syncResults[0];
     expect(syncReceipt).toMatchObject({
-      schemaVersion: 1, command: 'plugin.sync', status: 'success',
+      schemaVersion: 2, command: 'plugin.sync', status: 'success',
       data: {
         targetResults: expect.arrayContaining([
           expect.objectContaining({ pluginId: 'team/b', target: 'codex', scope: 'user', execution: 'applied', content: 'satisfied', blockerCodes: [] }),

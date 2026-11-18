@@ -76,7 +76,7 @@ describe('plugin capabilities command', () => {
       io: output.io,
     })).toBe(2);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1, command: 'dev.plugin.capabilities', status: 'failed', data: {},
+      schemaVersion: 2, command: 'dev.plugin.capabilities', status: 'failed', data: {},
       diagnostics: [{ code: 'invalidArguments' }],
     });
   });

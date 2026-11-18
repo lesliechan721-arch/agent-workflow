@@ -28,6 +28,7 @@ import {
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
 import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
+import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 
@@ -153,7 +154,7 @@ async function writeInspectionBinding(workspaceRoot: string, options: Omit<Param
   const dynamic = Boolean(plugin.manifest.artifacts && !plugin.manifest.skills);
   return writeAwSourceBinding({
 ...options, preparation: [{
-      plugin: plugin.manifest.name, platform: options.profile.platform, renderScope: options.profile.scope, profileId: capabilities.profileId,
+      plugin: plugin.manifest.name, platform: options.profile.platform, renderScope: options.profile.scope, profileId: getQualifiedPlatformProfile(options.profile.platform).id,
       capabilitiesDigest: artifactValueDigest(capabilities), expectedDigest: `sha256:${'a'.repeat(64)}`,
       resourceDigest: `sha256:${'b'.repeat(64)}`, renderInputDigest: `sha256:${'c'.repeat(64)}`, outputs: [],
       components: names.map(name => ({ id: dynamic ? name : `skill:${name}`, kind: 'skill' as const, name, source: dynamic ? 'dynamic' as const : 'static' as const })), omitted: [], unmet: [],

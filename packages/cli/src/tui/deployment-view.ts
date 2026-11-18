@@ -4,7 +4,7 @@ import type { ComponentUnmet } from '@lesliechan721/aw-plugin-core/manifest';
 import { agentLabel, scopeLabel } from './glossary.js';
 
 const stateLabels: Record<string, string> = { present: '存在', absent: '缺失', unknown: '未知', 'not-applicable': '不适用',
-  enabled: '已启用', disabled: '未启用', blocked: '受阻', trusted: '已信任', required: '需要信任',
+  enabled: '已启用', disabled: '已停用', blocked: '受阻',
   observed: '已观察到加载', 'not-observed': '尚未观察到加载', available: '可用', missing: '未安装', unsupported: '不支持', notApplicable: '无需客户端',
   applied: '已完成', unchanged: '未改变', failed: '失败', skipped: '已跳过', confirmed: '已确认变更', possible: '可能已变更', none: '无变更' };
 const stateLabel = (state: string): string => stateLabels[state] ?? state;
@@ -40,7 +40,12 @@ function nativeSourceLines(after: PublicDeploymentResult['after']): string[] {
 
 function configurationLines(after: PublicDeploymentResult['after']): string[] {
   const config = after.configuration;
-  const scope = after.scopeRegistration ? [`  原生独立 scope 登记：${stateLabel(after.scopeRegistration)}`] : [];
+  const scope = [
+    ...(after.scopeRegistration ? [`  当前范围独立登记：${stateLabel(after.scopeRegistration)}`] : []),
+    ...(after.scopeActivation ? [`  当前范围独立启用：${stateLabel(after.scopeActivation)}`] : []),
+    ...(after.nativePackage ? [`  原生消费副本：${stateLabel(after.nativePackage)}`] : []),
+    ...(after.workspaceOpen ? [`  当前范围 workspaceOpen：${stateLabel(after.workspaceOpen)}`] : []),
+  ];
   if (!config) return scope;
   const activation = config.activation === 'absent' ? '无显式启用条目' : config.activation === 'unknown'
     ? '启用条目未知' : config.activation === 'enabled' ? '显式启用' : '显式停用';
@@ -80,7 +85,7 @@ export function deploymentResultLines(receipts: readonly PublicDeploymentResult[
       const observation = receipt.after.consumers.find((consumer) => consumer.productId === product.id);
       return [
         `  → ${product.product === 'app' ? 'App' : product.product === 'cli' ? 'CLI' : '通用输出'} · ${product.version ?? '版本未取得'} · ${stateLabel(product.availability)}`,
-        `    启用 ${observation ? stateLabel(observation.activation) : '未知'} · ${observation ? stateLabel(observation.load) : '加载未知'} · 信任 ${observation ? stateLabel(observation.trust) : '未知'}`,
+        `    启用 ${observation ? stateLabel(observation.activation) : '未知'} · ${observation ? stateLabel(observation.load) : '加载未知'}`,
         ...receipt.after.components.map((component) => `    组件 ${component.id} · 物理内容${stateLabel(component.presence)}`),
         ...receipt.unmet.filter((gap) => !gap.productIds.length || gap.productIds.includes(product.id)).map((gap) => `    ! 缺失 ${componentGapText(gap)}`),
         ...(technical && product.entry ? [`    安装入口 ${product.entry.kind === 'cli' ? product.entry.executable : product.entry.kind === 'directory' ? product.entry.configRoot : product.entry.root}`] : []),
@@ -100,7 +105,7 @@ export function deploymentObservationLines(observations: readonly PublicDeployme
     ...observation.products.flatMap((product) => {
       const consumer = observation.after.consumers.find((item) => item.productId === product.id);
       return [`  → ${product.product === 'app' ? 'App' : product.product === 'cli' ? 'CLI' : '通用输出'} · ${product.version ?? '版本未取得'}`,
-        `    启用 ${consumer ? stateLabel(consumer.activation) : '未知'} · ${consumer ? stateLabel(consumer.load) : '加载未知'} · 信任 ${consumer ? stateLabel(consumer.trust) : '未知'}`,
+        `    启用 ${consumer ? stateLabel(consumer.activation) : '未知'} · ${consumer ? stateLabel(consumer.load) : '加载未知'}`,
         ...observation.after.components.map((component) => `    组件 ${component.id} · 物理内容${stateLabel(component.presence)}`),
         ...(technical ? [`    物理身份 ${observation.after.physicalKey}`] : [])];
     }),

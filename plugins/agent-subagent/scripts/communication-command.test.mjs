@@ -30,14 +30,14 @@ await fs.appendFile(${JSON.stringify(capture)},JSON.stringify({args,home:process
 const list=args[1]==='list';
 const commands=list?state.commands:state.commands.filter(c=>c.id===args[2]);
 const partial=commands.some(c=>c.availability!=='ready');
-process.stdout.write(JSON.stringify({schemaVersion:1,command:list?'command.list':'command.show',status:partial?'partial':'success',data:{commands,packages:[],changes:[]},diagnostics:[],nextActions:[]}));
+process.stdout.write(JSON.stringify({schemaVersion:state.schemaVersion,command:list?'command.list':'command.show',status:partial?'partial':'success',data:{commands,packages:[],changes:[]},diagnostics:[],nextActions:[]}));
 process.exitCode=partial?4:0;`);
   const host = { schemaVersion: 1, nodeExecutable: process.execPath, cliEntry, awHome: directory };
   const environment = { AW_HOME: directory, AW_COMMAND_HOST: JSON.stringify(host), SOURCE_HOME: '/foreign' };
   const snapshot = { installedIdentity, resourceRoot, effectiveValues: { subagentCommands: [{ key: 'agy', adapter: 'antigravity',
     env: { AW_HOME: '/foreign', AW_COMMAND_HOST: '{}' }, envFrom: { ORDINARY: 'SOURCE_HOME' } }] } };
   const selected = () => selectExecution(snapshot, { executor: 'agy' });
-  const save = (commands = [target]) => fs.writeFile(stateFile, JSON.stringify({ commands }));
+  const save = (commands = [target], schemaVersion = 2) => fs.writeFile(stateFile, JSON.stringify({ commands, schemaVersion }));
   await save();
   return { directory, target, host, environment, snapshot, selected, save,
     calls: async () => (await fs.readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse),
@@ -64,6 +64,12 @@ test('communication selects the installed producer despite unrelated failures an
   ]);
   assert.equal(JSON.stringify(prepared.request).includes(f.host.cliEntry), false);
   assert.equal(Object.hasOwn(prepared.request, 'communicationLaunch'), false);
+});
+
+test('communication rejects an otherwise valid v1 AW result', async (t) => {
+  const f = await fixture(t);
+  await f.save([f.target], 1);
+  await assert.rejects(f.prepare(), { code: 'managedCommandUnavailable' });
 });
 
 test('communication refuses missing, ambiguous, foreign and changed launches without a fallback', async (t) => {

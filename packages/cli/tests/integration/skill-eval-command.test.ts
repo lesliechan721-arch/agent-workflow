@@ -28,7 +28,6 @@ function installCodexSkillTestQualification(): void {
   const profile = vi.spyOn(authorProfile, 'getAuthoringPlatformCapabilities').mockImplementation((platform, scope) => {
     const capabilities = getCapabilities(platform, scope)
     if (platform !== 'codex') return capabilities
-    capabilities.profileId = `test-qualified:${capabilities.profileId}`
     capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] }
     capabilities.kinds.agent = { ...capabilities.kinds.agent, status: 'unverified', reasonCodes: ['capability-unverified'] }
     for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) {
@@ -659,7 +658,7 @@ describe('aw dev eval commands', () => {
       '--json',
     ], { cwd: fixture.root, env: fixture.env, io: validation.io }), validation.stdout() + validation.stderr()).toBe(0)
     expect(JSON.parse(validation.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       // Validation runs in a child process with the production profile; the
       // parent-only Eval fixture qualification does not apply to this command.
@@ -740,7 +739,7 @@ describe('aw dev eval commands', () => {
     ], { cwd: fixture.root, env: fixture.env, io: command.io }), command.stdout()).toBe(0)
     const receipt = JSON.parse(command.stdout())
     expect(receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'dev.eval.prepare',
       data: {
@@ -968,7 +967,7 @@ describe('aw dev eval commands', () => {
       'dev', 'eval', 'check', '--json',
     ], { cwd: fixture.root, env: fixture.env, io: doctor.io }), doctor.stdout()).toBe(0)
     expect(JSON.parse(doctor.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         providers: ['codex-trigger', 'codex-conversation'],
         codex: { requestedExecutable: 'fixture-isolated-codex' },
@@ -1159,7 +1158,7 @@ describe('aw dev eval commands', () => {
     ], { cwd: fixture.root, env: fixture.env, io: legacyManifest.io })).toBe(1)
     expect(legacyManifest.stdout(), legacyManifest.stderr()).not.toBe('')
     expect(JSON.parse(legacyManifest.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ message: expect.stringContaining('unknown field "schemaVersion"') }),

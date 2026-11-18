@@ -9,6 +9,7 @@ AW 各模块采用独立版本演进，不要将不同合同的版本号混淆�
 | 合同对象 | 当前版本 | 作用 |
 | --- | --- | --- |
 | Plugin Manifest | `schemaVersion: 4` | 插件源码元数据与声明入口结构 |
+| Platform Render Context | `schemaVersion: 2` | 动态生成器的输入与稳定平台能力 |
 | Platform Component Plan | `version: 3` | 五类平台组件的完整动态期望集合 |
 | Config Definition | `schemaVersion: 5` | Manifest 内的配置声明、引用、校验与展示定义 |
 | Config Store | `schemaVersion: 6` | 用户配置持久化存储 Envelope 格式 |
@@ -91,7 +92,7 @@ aw dev plugin capabilities --surface config --json
 - `skills`：插件相对目录路径字符串，指向 Skill 集合所在的目录，规范目录固定为 `"./skills"`（不是可任选目录）。注意 `skills` 是路径字符串，严禁书写为对象。
 - `requires.aw.capabilities`：声明插件生产行为所必需的 AW 能力标识集合。仅声明实际依赖的能力，不要用 CLI 版本字符串替代：
   - `aw.plugin-recovery.v2`：插件生产内容实际调用当前 User/Project 生命周期入口时声明。
-  - `aw.cli-output.v1`：脚本读取统一 CLI JSON 外壳时声明。
+  - `aw.cli-output.v2`：脚本读取统一 CLI JSON 外壳时声明。消费者按顶层 `schemaVersion: 2` 读取响应。参见[统一结果结构](cli.md#2-统一结果结构)。
   - `aw.plugin-config.v5`：使用 Config Definition v5 时声明。
   - `aw.plugin-config-unique-by.v1`：使用对象数组唯一键声明时派生要求。
   - `aw.plugin-config-value-ref.v1`：使用本地值引用时派生要求。

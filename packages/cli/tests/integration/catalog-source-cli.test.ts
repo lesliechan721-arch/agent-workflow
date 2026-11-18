@@ -51,7 +51,7 @@ describe('source auto-check CLI', () => {
     ]);
     expect(added.exitCode, added.stderr).toBe(0);
     expect(added.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'source.add',
       data: {
@@ -87,7 +87,7 @@ describe('source auto-check CLI', () => {
     ]);
     expect(disabled.exitCode, disabled.stderr).toBe(0);
     expect(disabled.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: {
         changed: true,
@@ -106,7 +106,7 @@ describe('source auto-check CLI', () => {
     ]);
     expect(enabled.exitCode, enabled.stderr).toBe(0);
     expect(enabled.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: {
         changed: true,
@@ -124,7 +124,7 @@ describe('source auto-check CLI', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'source.update',
       diagnostics: [{ code: 'invalidArguments' }],
@@ -140,7 +140,7 @@ describe('source auto-check CLI', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'source.update',
       diagnostics: [{ code: 'invalidArguments' }],
@@ -164,7 +164,7 @@ describe('source auto-check CLI', () => {
     const blocked = await runJson(['source', 'remove', 'team', '--json']);
     expect(blocked.exitCode).toBe(3);
     expect(blocked.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'blocked',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
       data: {
@@ -179,7 +179,7 @@ describe('source auto-check CLI', () => {
     ]);
     expect(removed.exitCode, removed.stderr).toBe(0);
     expect(removed.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: {
         changed: true,
@@ -203,7 +203,7 @@ describe('source auto-check CLI', () => {
     const clean = await runJson(['source', 'update', 'clean', '--primary', '--json']);
     expect(clean.exitCode, clean.stderr).toBe(0);
     expect(clean.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         primaryChange: { fromSourceId: 'official', toSourceId: 'clean' },
         primarySourceId: 'clean'
@@ -226,7 +226,7 @@ describe('source auto-check CLI', () => {
     const blocked = await runJson(['source', 'update', 'affected', '--primary', '--json']);
     expect(blocked.exitCode).toBe(3);
     expect(blocked.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
       data: {
         primaryChange: { fromSourceId: 'clean', toSourceId: 'affected' },
@@ -243,7 +243,7 @@ describe('source auto-check CLI', () => {
     ]);
     expect(confirmed.exitCode, confirmed.stderr).toBe(0);
     expect(confirmed.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         primaryChange: { fromSourceId: 'clean', toSourceId: 'affected' },
         primarySourceId: 'affected'
@@ -264,7 +264,7 @@ describe('source auto-check CLI', () => {
     ]);
     expect(blocked.exitCode).toBe(3);
     expect(blocked.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'blocked',
       command: 'source.add',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
@@ -282,7 +282,7 @@ describe('source auto-check CLI', () => {
     ]);
     expect(confirmed.exitCode, confirmed.stderr).toBe(0);
     expect(confirmed.json).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'source.add',
       diagnostics: [],

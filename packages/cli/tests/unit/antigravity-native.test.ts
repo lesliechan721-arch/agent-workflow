@@ -43,7 +43,7 @@ describe('Antigravity native copy', () => {
   it('compares actual same-version copy bytes and keeps model observations unknown', async () => {
     const item = await fixture();
     expect(await item.inspect()).toMatchObject({ ownership: 'aw', registration: 'present', nativePackageContentDigest: item.digest,
-      consumers: [{ activation: 'enabled', trust: 'unknown', load: 'unknown' }],
+      consumers: [{ activation: 'enabled', load: 'unknown' }],
       components: [{ id: 'skill:check', presence: 'present', reasonCodes: [] }] });
     const nextDigest = await item.publish('Revision 2.\n');
     expect(nextDigest).not.toBe(item.digest);

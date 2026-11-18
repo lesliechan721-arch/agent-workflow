@@ -148,7 +148,7 @@ describe('recovery status satisfaction', () => {
     expect(status.allSatisfied).toBeNull();
     expect(status.inventory![0]!.targetResults[0]).toMatchObject({
       delivery: { kind: 'native', platform: 'cursor' }, content: 'unknown', observation: 'unknown',
-      blockers: [expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })],
+      reasons: [expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })],
     });
   });
 
@@ -178,7 +178,7 @@ describe('recovery status satisfaction', () => {
     expect(invocations).toContainEqual(['cursor-agent', '--version']);
     expect(status.inventory![0]!.targetResults[0]).toMatchObject({
       delivery: { kind: 'native', platform: 'cursor' }, content: 'unknown',
-      blockers: expect.arrayContaining([expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })]),
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })]),
       deploymentObservations: [expect.objectContaining({
         products: [expect.objectContaining({ product: 'cli', version: '2026.11.05-86047df' })],
         after: expect.objectContaining({ package: 'absent', nativeIdentity: expect.objectContaining({ route: 'cursor-workspace-hook' }) }),

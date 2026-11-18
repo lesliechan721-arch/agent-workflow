@@ -30,7 +30,7 @@ export interface DemandSnapshot {
   preferences: PreferencesObservation;
   roots: DemandRoot[] | null;
   plugins: PluginMeta[];
-  targetRequirements?: Array<{ pluginId: string; target: AgentId }>;
+  targetRequirements?: Array<{ pluginId: string; target: AgentId; inheritsUserNative?: boolean }>;
   userProviders?: Partial<Record<AgentId, string[]>>;
   errors: Diagnostic[];
   catalogOperationContext?: CatalogOperationContext;

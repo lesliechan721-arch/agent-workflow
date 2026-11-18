@@ -125,7 +125,7 @@ describe('public native consumer observation', () => {
       const repeat = await test.observe();
       expect(test.queryCwds.size).toBe(2);
       expect(repeat.prerequisites.nativeSources?.configurationEvidence).toBe(before.prerequisites.nativeSources?.configurationEvidence);
-      expect(before.consumers[0]?.trust).toBe(trusted === true ? 'trusted' : trusted === false ? 'required' : 'unknown');
+      expect(before.grokScopeAuthorization).toBe(trusted === true ? 'granted' : trusted === false ? 'denied' : 'unknown');
       const target = await test.prepare();
       const result = await executeRebuildOperation({ command: 'sync', target, driver: test.integration.driver });
       expect(result.status).toBe('failed');
@@ -159,7 +159,7 @@ describe('public native consumer observation', () => {
       const refreshed = await executeRebuildOperation({ command: 'reinstall', target, driver: test.integration.driver });
       expect(refreshed.status, JSON.stringify(refreshed)).toBe('succeeded');
       expect(refreshed.deploymentReceipts?.[0]?.after.consumers).toMatchObject([
-        { activation: 'enabled', trust: 'trusted' }, { activation: 'unknown', trust: 'unknown', load: 'unknown' },
+        { activation: 'enabled' }, { activation: 'unknown', load: 'unknown' },
       ]);
       expect(refreshed.deploymentReceipts?.flatMap((receipt) => receipt.unmet)).toEqual([]);
     } finally { await test.context.platformRebuildSession?.dispose(); }
@@ -197,7 +197,7 @@ describe('public native consumer observation', () => {
     await fs.outputFile(item.layout.activationPath, '{');
     const native = await inspectDeployment(item.ctx, item.binding);
     expect(native.registration).toBe('present');
-    expect(native.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'not-observed' });
+    expect(native.consumers[0]).toMatchObject({ activation: 'unknown', load: 'not-observed' });
     expect(native.configuration).toMatchObject({ scope: project ? 'project' : 'user', activation: 'unknown' });
     item.setPiList('User packages:\n  npm:another-package\n');
     expect((await inspectDeployment(item.ctx, item.binding)).registration).toBe(project ? 'unknown' : 'absent');
@@ -223,8 +223,8 @@ describe('public native consumer observation', () => {
       return { exitCode: 1, stdout: '', stderr: 'query unavailable' };
     };
     const observation = await inspectDeployment(item.ctx, item.binding);
-    expect(observation).toMatchObject({ registration: 'unknown', configuration: { activation: 'enabled', trust: 'trusted' } });
-    expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'unknown' });
+    expect(observation).toMatchObject({ registration: 'unknown', configuration: { activation: 'enabled' } });
+    expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', load: 'unknown' });
   });
 
   it.each(['missing-path', 'unexpected-text'] as const)('does not complete Pi registration from %s output', async (format) => {
@@ -308,7 +308,7 @@ describe('public native consumer observation', () => {
     item.setPiList(list);
     const result = await inspectDeployment(item.ctx, item.binding);
     expect(result.registration).toBe('unknown');
-    expect(result.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown' });
+    expect(result.consumers[0]).toMatchObject({ activation: 'unknown' });
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'piNativeObservationUnconfirmed' }));
   });
 
@@ -326,11 +326,11 @@ describe('public native consumer observation', () => {
     const result = await inspectDeployment(item.ctx, item.binding);
     if (boundary === 'known') {
       expect(result.registration).toBe('not-applicable');
-      expect(result.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'trusted', load: 'not-observed' });
+      expect(result.consumers[0]).toMatchObject({ activation: 'enabled', load: 'not-observed' });
     } else {
-      expect(result.registration).toBe('unknown');
-      expect(result.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown' });
-      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'deploymentObservationUnknown' }));
+      expect(result.registration).toBe('not-applicable');
+      expect(result.consumers[0]).toMatchObject({ activation: 'unknown' });
+      expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeObservationFailed' }));
     }
   });
 
@@ -375,9 +375,10 @@ describe('public native consumer observation', () => {
     expect((await item.caps()).kinds.agent.reasonCodes).toEqual(['policy-blocked']);
     await fs.outputJson(path.join(item.host, 'subagents.json'), { packageAgents: ['example'] });
     const allowed = await item.caps();
-    expect(allowed.consumers[0]?.agentConsumers?.[0]).toMatchObject({ scope: 'user', packageAccess: 'allowed', trust: 'trusted',
+    expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.candidates[0]).toMatchObject({
+      scope: { kind: 'user' }, packageAccess: 'allowed', trust: 'trusted',
       settings: { promptMode: 'unknown', loadExtensions: 'unknown' } });
-    expect(allowed.kinds.agent.status).toBe('unverified');
+    expect(allowed.kinds.agent).toMatchObject({ status: 'unverified', reasonCodes: ['capability-unverified'] });
     await consumer(root, '99.0.0');
     expect((await inspectDeployment(item.ctx, item.binding)).prerequisites.agentConsumers.candidates[0]).toMatchObject({ version: '99.0.0', packageAccess: 'unknown' });
   });
@@ -422,9 +423,9 @@ describe('public native consumer observation', () => {
       agents: [], mcpServers: [], hooks: [{ source: { path: installed } }],
     }) });
     const disabled = await inspectDeployment(item.ctx, item.binding);
-    expect(disabled.registration).toBe('present');
+    expect(disabled).toMatchObject({ registration: 'present', grokScopeAuthorization: 'denied' });
     expect(disabled.ownership).toBe('absent');
-    expect(disabled.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'required', load: 'not-observed' });
+    expect(disabled.consumers[0]).toMatchObject({ activation: 'enabled', load: 'not-observed' });
     expect(disabled.configuration).toMatchObject({ scope: 'user', activation: 'disabled' });
     expect(disabled.prerequisites.nativeSources).toMatchObject({ overlaps: [name], sources: [
       { version: '1.0.0', origin: 'native', effectiveComponents: [] },
@@ -434,7 +435,7 @@ describe('public native consumer observation', () => {
     ] });
     active = true; await fs.outputFile(config, `[plugins]\nenabled=["${name}"]\ndisabled=[]\n`);
     const enabled = await inspectDeployment(item.ctx, item.binding);
-    expect(enabled.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'required', load: 'observed' });
+    expect(enabled.consumers[0]).toMatchObject({ activation: 'enabled', load: 'observed' });
     expect(enabled.ownership).toBe('absent');
     expect(enabled.prerequisites.nativeSources?.configurationEvidence).not.toBe(disabled.prerequisites.nativeSources?.configurationEvidence);
   });
@@ -448,8 +449,8 @@ describe('public native consumer observation', () => {
       plugins: [{ name: item.layout.nativeIdentity.packageId, scope: 'project', path: item.layout.packageRoot, enabled: false }], skills: [], agents: [], mcpServers: [],
     }) });
     const observation = await inspectDeployment(item.ctx, item.binding);
-    expect(observation).toMatchObject({ registration: 'not-applicable', package: 'present', ownership: 'foreign' });
-    expect(observation.consumers[0]).toMatchObject({ activation: 'disabled', trust: 'required', load: 'not-observed' });
+    expect(observation).toMatchObject({ registration: 'not-applicable', package: 'present', ownership: 'foreign', grokScopeAuthorization: 'denied' });
+    expect(observation.consumers[0]).toMatchObject({ activation: 'disabled', load: 'not-observed' });
   });
 
   // Test Value Gate: supplemental parse failures must preserve native enabled,
@@ -469,7 +470,7 @@ describe('public native consumer observation', () => {
     }) });
     const observation = await inspectDeployment(item.ctx, item.binding);
     expect(observation.registration).toBe('not-applicable');
-    expect(observation.consumers[0]).toMatchObject({ activation: 'enabled', trust: 'trusted', load: 'observed' });
+    expect(observation.consumers[0]).toMatchObject({ activation: 'enabled', load: 'observed' });
     expect(observation.configuration).toMatchObject({ scope: 'project', activation: 'unknown', reasonCodes: ['grokConfigurationUnconfirmed'] });
     expect(observation.prerequisites.nativeSources).toMatchObject({ observation: 'unknown', sources: [
       { path: item.layout.packageRoot, effectiveComponents: ['skills:native-skill'] }, { path: compatibility, origin: 'unknown' },

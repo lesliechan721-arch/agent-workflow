@@ -24,13 +24,14 @@ describe('AW capability CLI commands', () => {
     expect(result.exitCode, result.stdout + result.stderr).toBe(0)
 
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'self.describe',
       status: 'success',
       data: {
         awVersion: expect.any(String),
         coreVersion: expect.any(String),
         capabilities: expect.arrayContaining([
+          'aw.cli-output.v2',
           'aw.self-check.v2',
           'aw.skill-eval.v3',
           'aw.review-preparation.v2',
@@ -39,9 +40,11 @@ describe('AW capability CLI commands', () => {
         capabilitySetDigest: expect.stringMatching(/^sha256:/u)
       },
     })
+    const { data } = result.parseJsonStdout<{ data: { capabilities: string[] } }>()
+    expect(data.capabilities).not.toContain('aw.cli-output.v1')
   })
 
-  it.each(['aw.future-feature.v3', 'aw.review-publication.v1'])(
+  it.each(['aw.future-feature.v3', 'aw.review-publication.v1', 'aw.cli-output.v1'])(
     'returns a single blocked JSON object and exit 3 for unsupported %s',
     async (capability) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-missing-'))

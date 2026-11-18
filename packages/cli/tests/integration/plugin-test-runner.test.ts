@@ -1322,7 +1322,7 @@ describe('plugin test native preparation', () => {
     } finally { runner.mockRestore(); }
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'dev.plugin.test',
       data: { exitCode: 0 }
@@ -1345,7 +1345,7 @@ describe('plugin test native preparation', () => {
     } finally { runner.mockRestore(); }
     expect(result.exitCode).toBe(1);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'dev.plugin.test',
       data: { exitCode: 1 }

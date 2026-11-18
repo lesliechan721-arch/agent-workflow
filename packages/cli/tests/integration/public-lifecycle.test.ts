@@ -145,16 +145,15 @@ describe('public plugin lifecycle', () => {
     const marker = path.join(output, '.agent-workflows-owner.json');
     await fs.writeJson(marker, { ...await fs.readJson(marker), owner: 'foreign' });
     const status = await runPublicPluginStatus([], location, { nativeCliRunner: piRunner });
-    // Pi list confirms its registration, but does not report activation/trust.
-    // It cannot supply a verified target beside the conflicting generic output.
-    expect(status.status).toBe('blocked');
+    // The exact Pi package registration supplies an independent verified target.
+    expect(status.status).toBe(targets.includes('pi') ? 'partial' : 'blocked');
     expect(status.data).toMatchObject({ inventory: [expect.objectContaining({ targetResults: expect.arrayContaining([
       expect.objectContaining({ target: 'generic', content: 'conflict', blockerCodes: ['portableOutputConflict'] }),
     ]) })] });
     expect(status.diagnostics).toContainEqual(expect.objectContaining({ code: 'portableOutputConflict', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project' } }));
     if (targets.includes('pi')) expect(status.data).toMatchObject({ inventory: [expect.objectContaining({ targetResults: expect.arrayContaining([
-      expect.objectContaining({ target: 'pi', observation: 'unknown', content: 'unknown', deploymentObservations: [expect.objectContaining({
-        after: expect.objectContaining({ registration: 'present', consumers: [expect.objectContaining({ activation: 'unknown', trust: 'unknown' })] }),
+      expect.objectContaining({ target: 'pi', observation: 'verified', content: 'satisfied', deploymentObservations: [expect.objectContaining({
+        after: expect.objectContaining({ registration: 'present', consumers: [expect.objectContaining({ activation: 'unknown' })] }),
       })] }),
     ]) })] });
   });

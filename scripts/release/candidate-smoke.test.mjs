@@ -142,8 +142,8 @@ test('installed entrypoints require a successful JSON version result matching th
     await fs.writeFile(path.join(packageRoot, 'index.js'), 'export {};\n');
   }
   const result = {
-    schemaVersion: 1, command: 'version', status: 'success',
-    data: { version: manifest.version, resultSchemaVersion: 1 }, diagnostics: [], nextActions: [],
+    schemaVersion: 2, command: 'version', status: 'success',
+    data: { version: manifest.version, resultSchemaVersion: 2 }, diagnostics: [], nextActions: [],
   };
   const writeVersion = (stdout) => fs.writeFile(path.join(cliRoot, 'bin.js'), [
     '#!/usr/bin/env node',
@@ -154,10 +154,11 @@ test('installed entrypoints require a successful JSON version result matching th
   await writeVersion(`${JSON.stringify(result)}\n`);
   await checkInstalledEntrypoints(installed, env);
   for (const invalid of [
-    { ...result, schemaVersion: 2 },
+    { ...result, schemaVersion: 1 },
     { ...result, command: 'help' },
     { ...result, status: 'failed' },
-    { ...result, data: { version: '9.2.0-beta.4' } },
+    { ...result, data: { ...result.data, version: '9.2.0-beta.4' } },
+    { ...result, data: { ...result.data, resultSchemaVersion: 1 } },
   ]) {
     await writeVersion(JSON.stringify(invalid));
     await assert.rejects(checkInstalledEntrypoints(installed, env), { code: 'ERR_ASSERTION' });

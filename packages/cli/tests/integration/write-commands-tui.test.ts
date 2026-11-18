@@ -40,7 +40,7 @@ import {
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true, trust: true });
+    installNativeTestQualification({ discovery: true });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 

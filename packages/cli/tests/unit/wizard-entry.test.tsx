@@ -19,7 +19,7 @@ describe('scoped write command entry', () => {
       'plugin', 'remove', 'team/demo', '--scope', 'user', '--only', 'requirements', '--json',
     ], { ...location, interactive: true, io: captured.io, tuiRunner: { launch } as never })).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.remove', status: 'success',
+      schemaVersion: 2, command: 'plugin.remove', status: 'success',
       data: { request: { scope: 'user', mode: 'requirements-only' }, requirements: { roots: [] },
         changes: { requirements: 'changed', outputs: 'none' }, targetResults: [] },
     });

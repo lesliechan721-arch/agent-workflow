@@ -52,7 +52,7 @@ async function readPublicStatus(options: {
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true });
+    installNativeTestQualification({ platforms: ['codex'], discovery: true });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 
@@ -365,7 +365,7 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     })).resolves.toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.config.set', status: 'success',
+      schemaVersion: 2, command: 'plugin.config.set', status: 'success',
       data: { configWrite: 'succeeded', apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
       diagnostics: expect.any(Array), nextActions: expect.any(Array),
     });
@@ -487,7 +487,7 @@ describe('five namespaced write commands', () => {
     ]);
     expect(rejected.exitCode, rejected.stdout).toBe(3);
     expect(JSON.parse(rejected.stdout)).toMatchObject({
-      schemaVersion: 1, command: 'plugin.config.get', status: 'blocked',
+      schemaVersion: 2, command: 'plugin.config.get', status: 'blocked',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'identityMismatch' })]),
       nextActions: expect.any(Array),
     });

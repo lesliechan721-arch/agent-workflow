@@ -7,8 +7,8 @@ import {
   selectPluginConfigProfile,
   type ComponentKind,
   type ExpectedComponentSet,
-  type PlatformCapabilitiesV1,
-  type PlatformRenderContextV1,
+  type PlatformCapabilitiesV2,
+  type PlatformRenderContextV2,
   assertNoDuplicateHookHandlers,
   type PlatformTarget,
   type PluginConfigCompiledDefinition,
@@ -16,6 +16,7 @@ import {
   type RuntimeConfigSnapshot,
 } from '@lesliechan721/aw-plugin-core/manifest';
 import type { NormalizedPluginManifest, PluginArtifactRenderScriptEntry, PluginConfigSchema, PluginMeta, Scope } from '../types.js';
+import { toPlatformCapabilitiesView } from '../platforms/capabilities.js';
 import type { PluginConfigIssue, PluginConfigSource, PluginConfigStore, PluginConfigValue } from './plugin-config.js';
 import { assertReadyPluginConfigStore, readPluginConfigStore, resolveEffectivePluginConfig } from './plugin-config.js';
 import {
@@ -240,8 +241,8 @@ export interface PreparedPlatformComponents {
 
 export async function preparePlatformComponents(options: {
   plugin: PluginMeta; platform: PlatformTarget; renderScope: Scope; kinds: readonly ComponentKind[];
-  capabilities: PlatformCapabilitiesV1; config: ResolvedArtifactRenderConfig; cwd: string;
-  staticExpected?: ExpectedComponentSet; staticResourceRoot?: string; previousComponents?: PlatformRenderContextV1['previousComponents'];
+  capabilities: PlatformCapabilitiesV2; config: ResolvedArtifactRenderConfig; cwd: string;
+  staticExpected?: ExpectedComponentSet; staticResourceRoot?: string; previousComponents?: PlatformRenderContextV2['previousComponents'];
   changedConfigKeys?: string[]; commandEnv?: NodeJS.ProcessEnv; scriptTimeoutMs?: number;
   signal?: AbortSignal; runner?: PluginProcessRunner; preparedResults?: Map<string, PluginProcessResult>;
 }): Promise<PreparedPlatformComponents> {
@@ -251,23 +252,22 @@ export async function preparePlatformComponents(options: {
   const target = await resolveArtifactRendererTarget(options.plugin);
   const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, options.config.values, options.platform);
   try {
+    const capabilities = toPlatformCapabilitiesView(options.capabilities);
     const resources = await resolvePlatformComponentResources(options.plugin);
     const sets: ExpectedComponentSet[] = [options.staticExpected ?? await normalizeStaticPluginComponents({
       pluginRoot: options.plugin.rootDir, staticResourceRoot: options.staticResourceRoot, manifest: options.plugin.manifest, platform: options.platform,
-      capabilities: options.capabilities, allowedOutputKinds: options.kinds,
+      capabilities, allowedOutputKinds: options.kinds,
     })];
-    const contexts: PlatformRenderContextV1[] = [];
-    for (const allowedOutputKinds of resolvePlatformComponentBatches({ ...options, manifest: options.plugin.manifest })) {
-      const nonSensitive = allowedOutputKinds.includes('skill');
+    const contexts: PlatformRenderContextV2[] = [];
+    for (const { allowedOutputKinds, config } of resolvePlatformComponentBatches({ ...options, manifest: options.plugin.manifest })) {
       const keys = options.plugin.manifest.artifacts!.configKeys;
-      const config = selectPlatformRenderConfig({ resolved: options.config, keys, nonSensitive });
       if (config.issues.length) throw new Error(`Invalid AW config for ${options.plugin.manifest.name}: ${config.issues.map((issue) => issue.path.field).join(', ')}.`);
-      const context: PlatformRenderContextV1 = {
-        schemaVersion: 1, surface: 'agent-plugin', platform: options.platform, scope: options.renderScope,
+      const context: PlatformRenderContextV2 = {
+        schemaVersion: 2, surface: 'agent-plugin', platform: options.platform, scope: options.renderScope,
         plugin: { pluginId: options.plugin.pluginId ?? `${options.plugin.sourceId ?? 'authoring'}/${options.plugin.manifest.name}`,
           name: options.plugin.manifest.name, version: options.plugin.manifest.version },
         config, changedConfigKeys: (options.changedConfigKeys ?? []).filter((key) => Object.hasOwn(config.sources, key)),
-        allowedOutputKinds, platformCapabilities: options.capabilities, resources,
+        allowedOutputKinds, platformCapabilities: capabilities, resources,
         previousComponents: (options.previousComponents ?? []).filter((entry) => allowedOutputKinds.includes(entry.kind))
           .map(({ id, kind, name }) => ({ id, kind, name })),
       };
@@ -275,7 +275,7 @@ export async function preparePlatformComponents(options: {
       contexts.push(context);
       const rendered = await runPreparedArtifactRenderer({ ...options, context, sensitiveValues });
       const plan = validatePlatformComponentPlan({ plan: rendered.value, platform: options.platform, scope: options.renderScope,
-        allowedOutputKinds, platformCapabilities: options.capabilities, configKeys: keys,
+        allowedOutputKinds, platformCapabilities: capabilities, configKeys: keys,
         nonSensitiveConfigKeys: selectPlatformRenderConfigKeys({ resolved: options.config, keys, nonSensitive: true }),
         resources, sourceDirs: options.plugin.manifest.artifacts?.sourceDirs,
         requiredAwCapabilities: options.plugin.manifest.requires?.aw.capabilities });
@@ -285,7 +285,7 @@ export async function preparePlatformComponents(options: {
     const expected = mergeExpectedComponentSets(sets);
     assertNoDuplicateHookHandlers(expected.components, options.platform);
     const closure = await verifyPlatformComponentResources({ plugin: options.plugin, expected, resources,
-      capabilities: options.capabilities, sensitiveValues, staticResourceRoot: options.staticResourceRoot });
+      capabilities, sensitiveValues, staticResourceRoot: options.staticResourceRoot });
     // Only the exact static receipt, already matched to the verified manifest above, is metadata rather than plugin text.
     const scannedComponents = expected.components.map((component) => component.kind === 'skill' && expected.sources[component.id] === 'static'
       ? { ...component, content: { files: Object.fromEntries(Object.entries(component.content.files).filter(([file]) => file !== 'aw-plugin-requirements.json')) } }
@@ -299,9 +299,8 @@ export async function preparePlatformComponents(options: {
     });
     const evidence: PlatformComponentPreparationEvidence = {
       manifestDigest: target.manifestDigest!, ...(target.rendererDigest ? { rendererDigest: target.rendererDigest } : {}),
-      configDigest: artifactValueDigest(selectPlatformRenderConfig({ resolved: options.config,
-        keys: options.plugin.manifest.artifacts?.configKeys ?? [], nonSensitive: false })),
-      capabilitiesDigest: artifactValueDigest(options.capabilities), resourceDigest: closure.digest,
+      configDigest: artifactValueDigest(contexts.map(({ allowedOutputKinds, config }) => ({ allowedOutputKinds, config }))),
+      capabilitiesDigest: artifactValueDigest(capabilities), resourceDigest: closure.digest,
       renderInputDigest: artifactValueDigest({ contexts, static: sets[0], manifestDigest: target.manifestDigest,
         rendererDigest: target.rendererDigest, resources: closure.digest }),
     };

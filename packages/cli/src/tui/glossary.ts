@@ -62,6 +62,16 @@ export function recoveryReason(code: string): string {
     deliveryUnsupported: '此 Agent 或位置不受支持', sourceIdentityMismatch: '插件来源身份已变化',
     evidenceUnavailable: '暂时无法核实现场，请重新检查', operationReviewStale: '状态已变化，请重新准备',
     configInvalid: '插件设置需要修正', invalidConfig: '插件设置需要修正',
+    nativeActivationDisabled: '此范围已停用', nativeActivationUnconfirmed: '此范围启用状态未确认',
+    nativeRegistrationMissing: '原生登记缺失', nativeRegistrationUnconfirmed: '原生登记未确认',
+    platformInputDrift: '插件输入变化，需要同步', platformContentDrift: '插件内容变化，需要同步',
+    platformPackageMissing: 'AW 源包缺失', nativePackageMissing: '原生消费副本缺失',
+    nativePackageContentDrift: '原生消费副本需要刷新', nativePackageContentUnconfirmed: '原生消费副本未确认',
+    componentOutputMissing: '必需的插件组件缺失', componentOutputUnconfirmed: '插件组件未确认',
+    cursorWorkspaceOpenMissing: '此范围缺少 Cursor workspaceOpen 入口',
+    cursorWorkspaceOpenUnconfirmed: '此范围的 Cursor workspaceOpen 入口未确认',
+    grokProjectAuthorizationDenied: 'Grok 拒绝了当前项目授权',
+    opencodeNativeObservationRequired: '尚未观察 OpenCode 运行时加载',
   };
   return labels[code] ?? '当前无法完成，请查看详情';
 }

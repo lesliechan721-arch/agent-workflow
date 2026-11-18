@@ -177,7 +177,7 @@ describe('public AW_HOME mutation command lock', () => {
   });
 
   it('does not acquire the mutation lock for a dependency-plan preview', async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true });
+    installNativeTestQualification({ platforms: ['codex'], discovery: true });
     const { isolation } = await configureCatalog();
     await syncCatalogSourceGeneration({
       sourceId: 'team',

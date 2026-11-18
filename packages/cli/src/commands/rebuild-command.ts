@@ -3734,7 +3734,7 @@ async function runRebuildCommandInSession(
             if (observed.every((observation) => observation.package === 'absent' || observation.registration === 'absent')) return 'absent';
             if (observed.some((observation) => observation.package === 'absent' || observation.registration === 'absent'
               || observation.package === 'present' && observation.packageVersion !== entry.plugin.manifest.version
-              || observation.consumers.some((consumer) => consumer.activation !== 'enabled' || consumer.trust === 'required' || consumer.trust === 'blocked' || consumer.trust === 'unknown')
+              || observation.consumers.some((consumer) => consumer.activation !== 'enabled')
               || observation.components.some((component) => component.presence !== 'present' || component.reasonCodes.length > 0))) return 'partial';
             return inspected.state;
           };

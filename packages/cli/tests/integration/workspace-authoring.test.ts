@@ -36,7 +36,7 @@ function capture() {
 function readResult(stdout: string, command: string) {
   const result = JSON.parse(stdout);
   expect(result).toMatchObject({
-    schemaVersion: 1,
+    schemaVersion: 2,
     command,
     data: expect.any(Object),
     diagnostics: expect.any(Array),

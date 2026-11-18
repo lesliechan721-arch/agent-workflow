@@ -202,7 +202,7 @@ describe('CLI entry', () => {
     'rejects incomplete %s arguments without starting the TUI', async (command) => {
       const output = capture();
       expect(await runCli(['plugin', command, '--scope', 'user', '--json'], { interactive: true, io: output.io })).toBe(2);
-      expect(JSON.parse(output.stdout())).toMatchObject({ schemaVersion: 1, command: `plugin.${command}`, status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
+      expect(JSON.parse(output.stdout())).toMatchObject({ schemaVersion: 2, command: `plugin.${command}`, status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
       expect(output.stderr()).toContain('invalidArguments');
     });
 
@@ -210,7 +210,7 @@ describe('CLI entry', () => {
     'rejects incomplete config %s arguments without starting the TUI', async (command) => {
       const output = capture();
       expect(await runCli(['plugin', 'config', command, '--json'], { interactive: true, io: output.io })).toBe(2);
-      expect(JSON.parse(output.stdout())).toMatchObject({ schemaVersion: 1, command: `plugin.config.${command}`, status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
+      expect(JSON.parse(output.stdout())).toMatchObject({ schemaVersion: 2, command: `plugin.config.${command}`, status: 'failed', data: {}, diagnostics: [{ code: 'invalidArguments' }] });
       expect(output.stdout()).not.toContain('\u001B[');
     });
 });

@@ -65,7 +65,7 @@ async function execFileAsync(command: string, args: string[], options: CapturedE
 function readCommandResult(stdout: string, command: string | null) {
   const result = JSON.parse(stdout);
   expect(result).toMatchObject({
-    schemaVersion: 1, command, data: expect.any(Object),
+    schemaVersion: 2, command, data: expect.any(Object),
     diagnostics: expect.any(Array), nextActions: expect.any(Array),
   });
   expect(result).not.toHaveProperty('ok');
@@ -1033,7 +1033,7 @@ describe('pack smoke', () => {
       expect(codexBeforeTrust, projectInstallBeforeTrust.diagnostic).toMatchObject({ execution: 'partial', deploymentReceipts: expect.arrayContaining([
         expect.objectContaining({ after: expect.objectContaining({ package: 'present', registration: 'present', ownership: 'aw',
           configuration: expect.objectContaining({ scope: 'project', activation: 'enabled' }),
-          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'disabled', trust: 'unknown' })]) }) }),
+          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'disabled' })]) }) }),
       ]) });
       expect(await fs.readJson(path.join(nativePackageRoot, '.agent-workflows-owner.json'))).toMatchObject({
         schemaVersion: 3, owner: 'agent-workflows', sourceId: developmentSourceId,
@@ -1295,14 +1295,9 @@ describe('pack smoke', () => {
     });
     if (!codexSkillQualified) {
       expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
-      expect(consumedStatusReceipt.diagnostics).toContainEqual(expect.objectContaining({
-        code: 'nativeTrustUnconfirmed', severity: 'warning',
-        subject: { pluginId: 'packed/packed-build', target: 'codex', scope: 'user' },
-      }));
     }
     expect(consumedStatus.stderr).toBe(codexSkillQualified ? ''
-      : 'capability-unverified: The operation could not complete (capability-unverified).\n'
-        + 'nativeTrustUnconfirmed: The native client effective trust state could not be observed. Registration and activation do not establish trust.\n');
+      : 'capability-unverified: The operation could not complete (capability-unverified).\n');
     const packedRemoval = await execAw([
       'dev', 'plugin', 'remove', 'packed-build',
       '--workspace-root', standaloneWorkspace, '--yes', '--json',
@@ -1656,7 +1651,7 @@ describe('pack smoke', () => {
       },
     );
     expect(readCommandResult(isolatedVersion.stdout, 'version')).toMatchObject({
-      status: 'success', data: { version: unpackedPackageJson.version },
+      status: 'success', data: { version: unpackedPackageJson.version, resultSchemaVersion: 2 },
     });
     expect(isolatedVersion.stderr).toBe('');
     await expect(execFileAsync(

@@ -180,7 +180,7 @@ describe('multi-source performance budgets', () => {
   });
 
   beforeEach(() => {
-    installNativeTestQualification({ discovery: true, trust: true });
+    installNativeTestQualification({ discovery: true });
     const gitResolve = catalogGitProviderInternal.resolve;
     const pathResolve = catalogPathProviderInternal.resolve;
     fanoutProviderInvocations = 0;

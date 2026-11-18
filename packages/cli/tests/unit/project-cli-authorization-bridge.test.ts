@@ -29,7 +29,7 @@ describe('scoped CLI authorization bridge', () => {
       ...(confirmed ? ['--yes'] : []), '--json',
     ], { cwd, env, interactive: false, io: output.io })).toBe(confirmed ? 0 : 3);
     expect(JSON.parse(output.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.remove', status: confirmed ? 'success' : 'blocked',
+      schemaVersion: 2, command: 'plugin.remove', status: confirmed ? 'success' : 'blocked',
       data: {
         confirmation: { required: true, provided: confirmed, effects: [expect.objectContaining({
           code: 'removeOwnedOutput', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project' },

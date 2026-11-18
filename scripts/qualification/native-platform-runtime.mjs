@@ -277,11 +277,12 @@ export async function acquireClient(platform, root) {
       ...(platform === 'opencode' ? { lockFileSha256: sha256(lockBytes), entrySelection: 'fixed-official-optional-native-package; parent-placeholder-not-executed' } : {}) } };
 }
 
-const bundleDirectories = ['packages/cli/dist', 'packages/cli/plugins-dist', 'packages/plugin-core/dist', 'packages/agent-skill-eval/dist', 'scripts/qualification'];
-export async function candidateFiles() {
+const bundleDirectories = ['packages/cli/dist', 'packages/cli/plugins-dist', 'packages/plugin-core/dist',
+  'packages/plugin-core/schemas', 'packages/agent-skill-eval/dist', 'scripts/qualification'];
+export async function candidateFiles(root = repoRoot) {
   const files = {};
   async function walk(relative) {
-    const absolute = path.join(repoRoot, relative);
+    const absolute = path.join(root, relative);
     const stat = await fs.lstat(absolute);
     if (stat.isSymbolicLink()) throw new Error('candidate-symlink');
     if (stat.isDirectory()) for (const name of (await fs.readdir(absolute)).sort()) await walk(`${relative}/${name}`);
@@ -292,17 +293,17 @@ export async function candidateFiles() {
   return files;
 }
 
-export async function writeCandidate(output, sourceSha) {
+export async function writeCandidate(output, sourceSha, root = repoRoot) {
   if (!/^[a-f0-9]{40}$/u.test(sourceSha ?? '')) throw new Error('candidate-source-sha-required');
-  const files = await candidateFiles();
+  const files = await candidateFiles(root);
   await fs.writeFile(output, JSON.stringify({ schemaVersion: 1, sourceSha, files }, null, 2) + '\n');
 }
 
-export async function verifyCandidate(file) {
+export async function verifyCandidate(file, root = repoRoot) {
   const bytes = await fs.readFile(file);
   const manifest = JSON.parse(bytes);
   if (manifest.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(manifest.sourceSha ?? '')) throw new Error('invalid-candidate-manifest');
-  const files = await candidateFiles();
+  const files = await candidateFiles(root);
   if (JSON.stringify(files) !== JSON.stringify(manifest.files)) throw new Error('candidate-content-mismatch');
   if (process.env.GITHUB_SHA && process.env.GITHUB_SHA !== manifest.sourceSha) throw new Error('candidate-source-mismatch');
   return { sourceSha: manifest.sourceSha, manifestSha256: sha256(bytes), files: Object.keys(files).length };
@@ -328,9 +329,7 @@ export async function renderPackage(ctx, revision) {
         configRoot: resolvePlatformConfigRoot(platform, { cwd: ctx.project, env: ctx.env }) } });
   }
   // Explicit test candidate only. No production profile is changed or qualified by rendering.
-  const capabilities = { schemaVersion: 1, platform, scope: renderScope, basis: 'profile',
-    profileId: platform === 'antigravity' && ctx.observeAgent === true
-      ? 'qualification-candidate:skill-and-uninvoked-agent-scope-observer' : 'qualification-candidate:ordinary-skill-only', consumers: [], features: {},
+  const capabilities = { schemaVersion: 2, platform, scope: renderScope, basis: 'profile', features: {},
     kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
       { status: kind === 'skill' ? 'supported' : 'unverified', reasonCodes: kind === 'skill' ? [] : ['capability-unverified'], delivery: [platform === 'opencode' ? 'native-extension' : 'native-package'] }])) };
   const components = [{ id: 'skill:qualification', kind: 'skill', name: ctx.skillName, content: { files: {

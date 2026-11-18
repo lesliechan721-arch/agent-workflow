@@ -173,7 +173,7 @@ it.each(['codex', 'pi'] as const)('keeps the %s Skill profile host and product l
       expect(capabilities.kinds.agent.status).toBe('supported');
       expect(capabilities.features['skill.invocation.manual']).toMatchObject({ status: 'supported', values: ['true'] });
       expect(capabilities.features['skill.visibility']).toMatchObject({ status: 'supported', values: ['visible'] });
-      expect(capabilities.features['skill.invocation.model']).toMatchObject({ status: 'supported', values: ['true', 'false'] });
+      expect(capabilities.features['skill.invocation.model']).toMatchObject({ status: 'supported', values: ['false', 'true'] });
     } else {
       expect(capabilities.kinds.agent.status).not.toBe('supported');
       expect(capabilities.features['skill.invocation.manual']!.status).toBe('unverified');

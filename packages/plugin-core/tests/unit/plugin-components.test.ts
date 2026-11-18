@@ -6,14 +6,14 @@ import {
   assertAgentCommandContext, assertPlatformCapabilities, assertPlatformComponentPlan, assertPlatformRenderContext,
   COMPONENT_KINDS, getHookHandlerContract, getComponentFeatureRequirements, getUnmetFeatureRequirements, normalizeStaticPluginComponents,
   partitionStaticPluginComponents, PLATFORM_FEATURE_REGISTRY, validatePluginManifest,
-  type PlatformCapabilitiesV1, type PlatformComponentPlanV3, type PlatformRenderContextV1, type PluginComponent,
+  type PlatformCapabilitiesV2, type PlatformComponentPlanV3, type PlatformRenderContextV2, type PluginComponent,
 } from '../../src/manifest.js';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
-function capabilities(): PlatformCapabilitiesV1 {
-  return { schemaVersion: 1, platform: 'codex', scope: 'user', basis: 'profile', profileId: 'test-qualified', consumers: [],
-    kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV1['kinds'],
+function capabilities(): PlatformCapabilitiesV2 {
+  return { schemaVersion: 2, platform: 'codex', scope: 'user', basis: 'profile',
+    kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
     features: Object.fromEntries(Object.values(PLATFORM_FEATURE_REGISTRY).filter((entry) => !entry.id.startsWith('hook.native.') && entry.id !== 'hook.matcher' && !entry.derivedFromKind).map((entry) => [entry.id, { status: 'supported', reasonCodes: [], ...(entry.values ? { values: entry.id.startsWith('hook.common.') ? entry.values.filter((feedback) => Object.hasOwn(getHookHandlerContract('codex', 'common', entry.id.slice('hook.common.'.length)).protocol!.responses, feedback)) : [...entry.values] } : {}) }])),
   };
 }
@@ -74,17 +74,11 @@ describe('platform component contract', () => {
     expect(getUnmetFeatureRequirements([{ feature: 'mcp.transport', values: ['sse'] }], profile)).toEqual([{ feature: 'mcp.transport', values: ['sse'] }]);
     for (const features of [{ future: { status: 'supported', reasonCodes: [] } }, { 'mcp.transport': { status: 'supported', reasonCodes: [], values: ['invented'] } }]) expect(() => assertPlatformCapabilities({ ...profile, features })).toThrow();
   });
-  it('retains observed consumer scope, unknown settings and evidence without adding qualification defaults', () => {
-    const profile = capabilities();
-    profile.consumers = [{ id: 'pi-cli', product: 'cli', version: '1.5.0', agentConsumers: [{
-      id: 'pi-subagents', version: null, enabled: 'unknown', packageAccess: 'unknown', scope: 'project', trust: 'unknown',
-      settings: { promptMode: 'unknown', loadExtensions: 'host-default' }, configurationEvidence: `sha256:${'a'.repeat(64)}`,
-    }] }];
-    const original = structuredClone(profile);
-    assertPlatformCapabilities(profile);
-    expect(profile).toEqual(original);
-    profile.consumers[0]!.agentConsumers![0]!.configurationEvidence = '/host/private/settings.json';
-    expect(() => assertPlatformCapabilities(profile)).toThrow();
+  it('keeps local discovery evidence outside the public capability schema', () => {
+    const local = { ...capabilities(), platform: 'pi', basis: 'local', features: {} };
+    assertPlatformCapabilities(local);
+    expect(() => assertPlatformCapabilities({ ...local, profileId: 'qualification-baseline' })).toThrow(/additional properties/u);
+    expect(() => assertPlatformCapabilities({ ...local, consumers: [{ id: 'pi-cli', product: 'cli', version: '1.5.0' }] })).toThrow(/additional properties/u);
   });
   it('derives kind gaps from the three-state kind fact, including generic, without independent overrides', () => {
     for (const status of ['supported', 'unsupported', 'unverified'] as const) {
@@ -131,12 +125,13 @@ describe('platform component contract', () => {
     await expect(normalizeStaticPluginComponents({ pluginRoot: root, manifest, platform: 'codex', capabilities: profile })).rejects.toThrow(/ordinary/u);
   });
 });
-function context(): PlatformRenderContextV1 {
-  return { schemaVersion: 1, surface: 'agent-plugin', platform: 'codex', scope: 'user', plugin: { pluginId: 'test/example', name: 'example', version: '1.0.0' }, config: { schema: { schemaVersion: 5, fields: { optional: { type: 'string' } } }, values: {}, sources: { optional: 'missing' }, issues: [] }, changedConfigKeys: ['optional'], allowedOutputKinds: ['skill'], platformCapabilities: capabilities(), resources: [], previousComponents: [] };
+function context(): PlatformRenderContextV2 {
+  return { schemaVersion: 2, surface: 'agent-plugin', platform: 'codex', scope: 'user', plugin: { pluginId: 'test/example', name: 'example', version: '1.0.0' }, config: { schema: { schemaVersion: 5, fields: { optional: { type: 'string' } } }, values: {}, sources: { optional: 'missing' }, issues: [] }, changedConfigKeys: ['optional'], allowedOutputKinds: ['skill'], platformCapabilities: capabilities(), resources: [], previousComponents: [] };
 }
 describe('renderer input contract', () => {
   it('preserves missing config facts and enforces batch, whitelist and scope boundaries', () => {
     const input = context(); assertPlatformRenderContext(input);
+    expect(() => assertPlatformRenderContext({ ...input, schemaVersion: 1 })).toThrow(/render context/u);
     expect(() => assertPlatformRenderContext({ ...input, requestedArtifactIds: [] })).toThrow();
     expect(() => assertPlatformRenderContext({ ...input, platform: 'claude' })).toThrow(/mismatch/u);
     expect(() => assertPlatformRenderContext({ ...input, allowedOutputKinds: ['skill', 'agent'] })).toThrow(/separate/u);

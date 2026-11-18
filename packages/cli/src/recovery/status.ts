@@ -13,14 +13,14 @@ import type { CatalogOperationContext } from '../utils/catalog-operation-context
 import { runNativeCli, type NativeCliRunner } from '../utils/native-cli.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { createCodexNativeObservationSession, type CodexNativeObservationSession } from '../utils/codex-native-observation.js';
-import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { inspectCodexSupplementState } from '../platforms/codex-supplement-state.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { createPlatformInputEvidence, matchesPlatformEmptyState, platformPackageInputDigest, readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
-import { getDeploymentLayout } from '../platforms/layout.js';
-import { deploymentPackageComponent, inspectStaticSupplements } from '../platforms/inspection.js';
+import { getDeploymentLayout, hasSharedUserPackage } from '../platforms/layout.js';
+import { deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
+import { resolveStaticPlatformResourceRoot } from '../utils/component-resources.js';
 import { readSkillOwnerMarker } from '../utils/ownership.js';
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import { resolvePartialCatalogOperationContext } from '../utils/catalog-operation-context.js';
@@ -30,7 +30,6 @@ import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies
 import { installationInvocation, selectNativeProduct, type ReadContext } from '../platforms/discovery.js';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
-import { selectedNativeConsumer } from '../platforms/inspection.js';
 import { measureRecoveryPerformanceStage } from './performance.js';
 import { createNativeQuerySession } from '../platforms/inspection-query.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
@@ -42,12 +41,12 @@ export interface NativeObservation {
   platform: PlatformName;
   content: NonNullable<RecoveryTarget['content']>;
   blockers: RecoveryDiagnostic[];
+  reasons?: RecoveryDiagnostic[];
   assumedActivation?: boolean;
   backend?: unknown;
   deploymentObservations?: RecoveryTarget['deploymentObservations'];
   deploymentExclusions?: RecoveryTarget['deploymentExclusions'];
   intentionalEmpty?: boolean;
-  inputDrift?: boolean;
   expectationConfirmed?: boolean;
 }
 export interface RecoveryStatus {
@@ -143,7 +142,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
       }
       for (const root of roots) {
         options.signal?.throwIfAborted();
-        const observation: NativeObservation = { pluginId: root.pluginId, expectedVersion: root.plugin?.manifest.version, platform, content: 'unknown', blockers: [], deploymentObservations: [] };
+        const observation: NativeObservation = { pluginId: root.pluginId, expectedVersion: root.plugin?.manifest.version, platform, content: 'unknown', blockers: [], reasons: [], deploymentObservations: [] };
         observations.push(observation);
         try {
           const plugin = root.plugin!;
@@ -170,12 +169,15 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
           const emptyMatches: boolean[] = [];
           const currentMatches: boolean[] = [];
           const versions: Array<string | undefined> = [];
+          const staticResourceRoot = await resolveStaticPlatformResourceRoot(plugin.rootDir, platform);
           for (const binding of resolution.bindings) {
+            const subject = { pluginId: root.pluginId, target: platform, scope: binding.scope.kind };
+            const warn = (code: string) => observation.reasons!.push({ ...diagnostic(code), subject });
+            const block = (code: string) => observation.blockers.push({ ...diagnostic(code), subject });
             const live = await measureRecoveryPerformanceStage(options, 'status.adapter.inspect', () => adapter.inspect(ctx, binding));
             versions.push(live.packageVersion);
             options.signal?.throwIfAborted();
             observation.deploymentObservations!.push({ bindingId: binding.id, products: binding.consumers, after: live });
-            observation.blockers.push(...live.diagnostics.map((entry) => ({ code: entry.code, message: entry.message })));
             const shared = ['codex-marketplace', 'claude-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(binding.route);
             const scopedNativeConsumer = shared ? live.registration === 'present'
               && live.consumers.some((consumer) => consumer.activation === 'enabled')
@@ -185,23 +187,26 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               existing.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope });
             }
             const unmet = [];
-            const staticComponents: PluginComponent[] = [];
             const staticSupplements: PluginComponent[] = [];
+            const dynamicUnits = new Set<(typeof resolution.renderUnits)[number]['output']>();
             const inputUnits: Parameters<typeof createPlatformInputEvidence>[0]['units'] = [];
             const profile = getQualifiedPlatformProfile(platform);
             let expectedCount = 0;
             let packageExpectedCount = 0;
             for (const unit of resolution.renderUnits.filter((unit) => binding.renderUnitIds.includes(unit.id))) {
+              const artifacts = plugin.manifest.artifacts;
+              if (artifacts && unit.kinds.length && (!artifacts.scopes || artifacts.scopes.includes(unit.renderScope.kind))) {
+                dynamicUnits.add(unit.output);
+              }
               const capabilities = adapter.capabilities({ binding, renderUnit: unit, observation: live,
                 profile });
-              const expected = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir,
+              const expected = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot,
                 manifest: plugin.manifest, platform, capabilities, allowedOutputKinds: unit.kinds });
               expectedCount += expected.components.length;
-              staticComponents.push(...expected.components);
               if (unit.output === 'supplement') staticSupplements.push(...expected.components);
               else packageExpectedCount += expected.components.length;
               unmet.push(...expected.unmet);
-              inputUnits.push({ renderUnit: unit, capabilities, prerequisites: live.prerequisites,
+              inputUnits.push({ renderUnit: unit, capabilities,
                 config: await resolveArtifactRenderConfig({ pluginName: plugin.manifest.name, sourceId: binding.plugin.sourceId,
                   sourceIdentity: binding.plugin.sourceIdentity, logicalIdentity: plugin.catalogLogicalIdentity,
                   manifest: plugin.manifest, platform, scope: unit.renderScope.kind,
@@ -211,36 +216,67 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             const supplements = await inspectStaticSupplements(ctx, binding, staticSupplements);
             const inputEvidence = await createPlatformInputEvidence({ plugin, binding, units: inputUnits });
             const supplementInput = inputEvidence.units.find((unit) => unit.output === 'supplement');
-            const recordedSupplements = binding.route === 'codex-marketplace' && plugin.manifest.artifacts && supplementInput
+            const recordedSupplements = binding.route === 'codex-marketplace' && dynamicUnits.has('supplement') && supplementInput
               ? await inspectCodexSupplementState(ctx, binding, supplementInput.inputDigest) : null;
             if (recordedSupplements) {
               const staticIds = new Set(supplements.components.map((component) => component.id));
-              supplements.components.push(...recordedSupplements.filter((component) => !staticIds.has(component.id)));
+              const dynamicComponents = recordedSupplements.components.filter((component) => !staticIds.has(component.id));
+              supplements.components.push(...dynamicComponents);
+              expectedCount += dynamicComponents.length;
             }
             const supplementConflict = supplements.components.some((component) => component.reasonCodes.includes('supplementOwnershipConflict'));
-            const supplementDrift = supplements.components.some((component) => component.presence === 'absent'
-              || component.reasonCodes.includes('componentContentDrift'));
+            const supplementMissing = supplements.components.some((component) => component.presence === 'absent');
+            const supplementDrift = supplements.components.some((component) => component.reasonCodes.includes('componentContentDrift'));
             const supplementUnknown = supplements.components.some((component) => component.presence === 'unknown');
-            if (supplementConflict) observation.blockers.push(diagnostic('supplementOwnershipConflict'));
-            else if (supplementDrift) observation.blockers.push(diagnostic('platformContentDrift'));
-            else if (supplementUnknown) observation.blockers.push(diagnostic('componentOutputUnconfirmed'));
+            const supplementInputDrift = Boolean(recordedSupplements && !recordedSupplements.inputMatches
+              && recordedSupplements.components.every((component) => component.presence === 'present'));
+            if (supplementConflict) block('supplementOwnershipConflict');
+            if (supplementDrift) warn('platformContentDrift');
+            if (supplementInputDrift) warn('platformInputDrift');
+            if (supplementMissing) warn('componentOutputMissing');
+            if (supplementUnknown && !supplementConflict) warn('componentOutputUnconfirmed');
             if (supplements.owned && !existing.some((target) => target.pluginId === root.pluginId && target.agent === platform && target.scope === demand.scope)) {
               owned.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope });
               existing.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope });
             }
             const confirmedEmpty = Boolean(plugin.manifest.artifacts && expectedCount === 0 && unmet.length === 0
               && await matchesPlatformEmptyState({ state: { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty' }, env: context.env }));
-            const dynamicSupplementsUnconfirmed = Boolean(plugin.manifest.artifacts && !confirmedEmpty && !recordedSupplements
-              && inputUnits.some(({ renderUnit }) => renderUnit.output === 'supplement'
-                && (!plugin.manifest.artifacts?.scopes || plugin.manifest.artifacts.scopes.includes(renderUnit.renderScope.kind))));
+            const confirmedEmptyPackage = binding.route === 'codex-marketplace' && recordedSupplements !== null
+              && dynamicUnits.has('package') && packageExpectedCount === 0
+              && await matchesPlatformEmptyState({ state: { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty',
+                units: inputEvidence.units.filter((unit) => unit.output === 'package') }, env: context.env });
+            const dynamicSupplementsUnconfirmed = dynamicUnits.has('supplement') && !confirmedEmpty
+              && !recordedSupplements?.inputMatches && !supplementInputDrift;
+            const hasPackageExpectation = packageExpectedCount > 0 || dynamicUnits.has('package') && !confirmedEmpty && !confirmedEmptyPackage;
+            const inheritsUserNative = demand.targetRequirements?.find((item) => item.pluginId === root.pluginId
+              && item.target === platform)?.inheritsUserNative;
+            const requiredActivation = requiredDeploymentActivation(binding, live, !inheritsUserNative);
+            for (const entry of live.diagnostics) {
+              if (entry.code === 'codexProjectActivationUnconfirmed' && inheritsUserNative && requiredActivation === 'enabled') continue;
+              const destination = entry.severity === 'error' || (hasPackageExpectation || confirmedEmpty || confirmedEmptyPackage) && NATIVE_READ_ERRORS.has(entry.code)
+                ? observation.blockers : observation.reasons!;
+              destination.push({ code: entry.code, message: entry.message, subject: { ...subject, ...entry.subject }, detail: entry.detail });
+            }
+            const requiresScopeRegistration = binding.route === 'claude-marketplace' && !inheritsUserNative;
+            const registration = requiresScopeRegistration ? live.scopeRegistration ?? 'unknown' : live.registration;
+            const ownershipConflict = live.ownership === 'foreign' || live.ownership === 'shared';
+            if (ownershipConflict) block('deploymentOwnershipConflict');
+            const missing = hasPackageExpectation && (live.package === 'absent' && packageExpectedCount > 0
+              || registration === 'absent' && (packageExpectedCount > 0 || live.package === 'present')
+              || live.nativePackage === 'absent');
+            if (missing) {
+              if (live.package === 'absent') warn('platformPackageMissing');
+              if (registration === 'absent') warn('nativeRegistrationMissing');
+              if (live.nativePackage === 'absent') warn('nativePackageMissing');
+            }
             let inputDrift = false;
-            let currentProjection = false;
             let packageExpectationConfirmed = false;
-            let packageOnlySkills = false;
             let projectionUnconfirmed = false;
+            let componentMissing = false;
+            let componentUnknown = false;
             let nativeContentDrift = false;
             let nativeContentUnconfirmed = false;
-            if (live.package === 'present' && live.ownership === 'aw') {
+            if (hasPackageExpectation && live.package === 'present' && live.ownership === 'aw' && !missing) {
               const layout = await getDeploymentLayout(ctx, binding);
               const marker = await readSkillOwnerMarker({ skillRoot: layout.packageRoot, allowedRoot: path.dirname(layout.packageRoot),
                 expectedIdentity: deploymentPackageComponent(binding, layout).identity });
@@ -250,76 +286,72 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 nativeContentUnconfirmed = !contentDigest || !live.nativePackageContentDigest;
                 nativeContentDrift = Boolean(contentDigest && live.nativePackageContentDigest
                   && contentDigest !== live.nativePackageContentDigest);
-                if (nativeContentUnconfirmed) observation.blockers.push(diagnostic('nativePackageContentUnconfirmed'));
-                else if (nativeContentDrift) observation.blockers.push(diagnostic('nativePackageContentDrift'));
+                if (nativeContentUnconfirmed) warn('nativePackageContentUnconfirmed');
+                if (nativeContentDrift) warn('nativePackageContentDrift');
               }
-              projectionUnconfirmed = !projection || projection.preparation !== 'complete';
+              projectionUnconfirmed = !projection || projection.preparation !== 'complete' || !contentDigest;
               const packageInputDigest = platformPackageInputDigest(inputEvidence);
-              packageExpectationConfirmed = projection?.preparation === 'complete' && projection.inputDigest === packageInputDigest;
               inputDrift = Boolean(projection && (projection.inputDigest !== packageInputDigest
-                || projection.contentDigest !== contentDigest));
-              if (projectionUnconfirmed) observation.blockers.push(diagnostic(projection?.preparation === 'partial'
-                ? 'platformPreparationPartial' : 'platformExpectationUnconfirmed'));
-              else if (inputDrift) observation.blockers.push(diagnostic(projection!.inputDigest !== packageInputDigest
-                ? 'platformInputDrift' : 'platformContentDrift'));
-              currentProjection = Boolean(projection && !inputDrift && projection.preparation === 'complete'
-                && projection.components.length > 0 && projection.components.every((component) =>
-                  live.components.some((observed) => observed.id === component.id && observed.presence === 'present'))
-                && !supplementConflict && !supplementDrift && !supplementUnknown && !dynamicSupplementsUnconfirmed
-                && !nativeContentDrift && !nativeContentUnconfirmed);
-              packageOnlySkills = Boolean(projection?.components.every(({ nativeName, relativeOutputs }) =>
-                relativeOutputs.includes(`skills/${nativeName}/SKILL.md`)
-                && relativeOutputs.every((output) => output.startsWith(`skills/${nativeName}/`))));
-              if (currentProjection) expectedCount = Math.max(expectedCount, projection!.components.length);
-            }
-            // These user-scope component sets have no additional trust gate.
-            // Applicability requires current package and scoped-output evidence.
-            const selectedProduct = selectNativeProduct(binding.consumers);
-            const selectedConsumer = selectedNativeConsumer(binding, live);
-            const qualifiedUserRoles = inputUnits.some(({ renderUnit, capabilities }) => renderUnit.output === 'supplement'
-              && capabilities.kinds.agent.status === 'supported' && capabilities.features['agent.execution']?.status === 'supported');
-            const ordinaryStaticSkills = !plugin.manifest.artifacts && staticComponents.length > 0
-              && staticComponents.every((component) => component.kind === 'skill') && staticSupplements.length === 0
-              && selectedProduct?.version === '0.167.0'
-              && profile.qualifiedConsumers?.skill?.some((qualified) => qualified.product === selectedProduct.product && qualified.version === selectedProduct.version);
-            if (binding.route === 'codex-marketplace' && binding.scope.kind === 'user'
-              && (ordinaryStaticSkills || qualifiedUserRoles && recordedSupplements !== null && packageOnlySkills)
-              && unmet.length === 0 && currentProjection
-              && live.registration === 'present' && profile.kinds.skill.status === 'supported'
-              && selectedProduct?.product === 'cli'
-              && selectedConsumer?.activation === 'enabled' && selectedConsumer.trust === 'unknown') {
-              selectedConsumer.trust = 'not-applicable';
+                || contentDigest && projection.contentDigest !== contentDigest));
+              if (projectionUnconfirmed) warn(projection?.preparation === 'partial'
+                ? 'platformPreparationPartial' : 'platformExpectationUnconfirmed');
+              else if (inputDrift) warn(projection!.inputDigest !== packageInputDigest
+                ? 'platformInputDrift' : 'platformContentDrift');
+              if (inputDrift && dynamicSupplementsUnconfirmed) warn('dynamicExpectationUnconfirmed');
+              componentMissing = live.components.some((component) => component.presence === 'absent');
+              componentUnknown = live.components.some((component) => component.presence === 'unknown'
+                && !component.reasonCodes.includes('nativePackageContentDrift'));
+              if (componentMissing) warn('componentOutputMissing');
+              if (componentUnknown && !nativeContentUnconfirmed) warn('componentOutputUnconfirmed');
+              packageExpectationConfirmed = Boolean(!projectionUnconfirmed && projection!.inputDigest === packageInputDigest
+                && projection!.components.length > 0);
+              if (packageExpectationConfirmed) expectedCount = Math.max(expectedCount, projection!.components.length);
             }
             live.components.push(...supplements.components);
-            observation.inputDrift ||= inputDrift || supplementDrift || nativeContentDrift;
-            currentMatches.push(confirmedEmpty || currentProjection || recordedSupplements !== null && packageExpectationConfirmed);
+            currentMatches.push(!dynamicUnits.size || confirmedEmpty || packageExpectationConfirmed || missing
+              || recordedSupplements !== null && !hasPackageExpectation);
             emptyMatches.push(confirmedEmpty);
-            observation.blockers.push(...unmet.map((entry) => diagnostic(entry.reasonCode)));
-            const requiresComponents = expectedCount > 0 || unmet.length > 0 || Boolean(plugin.manifest.artifacts);
-            if (!confirmedEmpty && requiresComponents && selectedConsumer && [selectedConsumer].some((consumer) =>
-              consumer.trust === 'required' || consumer.trust === 'blocked')
-              && !observation.blockers.some((entry) => entry.code === 'nativeTrustRequired')) {
-              observation.blockers.push(diagnostic('nativeTrustRequired'));
-            }
-            const supplementOnly = !plugin.manifest.artifacts && staticSupplements.length > 0 && packageExpectedCount === 0;
-            const absent = !supplementOnly && live.package === 'absent' && ['absent', 'not-applicable'].includes(live.registration);
-            const consumers = selectedConsumer ? [selectedConsumer] : [];
-            const unknown = !supplementOnly && (live.package === 'unknown' || live.registration === 'unknown'
-              || !consumers.length || consumers.some((consumer) => consumer.activation === 'unknown' || consumer.trust === 'unknown'));
-            const inactive = !supplementOnly && (live.registration === 'absent' || consumers.some((consumer) => consumer.activation === 'disabled' || consumer.activation === 'blocked'
-              || consumer.trust === 'blocked' || consumer.trust === 'required'));
+            for (const entry of unmet) block(entry.reasonCode);
+
+            const inactiveScope = live.registration === 'absent'
+              || live.package === 'absent' && live.registration === 'not-applicable'
+              || live.scopeRegistration === 'absent'
+              || binding.scope.kind === 'project' && shared && live.configuration?.activation === 'absent'
+              || live.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
             if (confirmedEmpty) {
-              const inactiveScope = live.registration === 'absent'
-                || live.package === 'absent' && live.registration === 'not-applicable'
-                || live.scopeRegistration === 'absent'
-                || binding.scope.kind === 'project' && shared && live.configuration?.activation === 'absent'
-                || live.consumers.every((consumer) => ['disabled', 'not-applicable'].includes(consumer.activation));
-              states.push(live.ownership === 'foreign' ? 'conflict' : live.package === 'unknown' || live.registration === 'unknown'
-                || live.diagnostics.length || !inactiveScope ? 'unknown'
+              states.push(ownershipConflict ? 'conflict' : live.package === 'unknown' || live.registration === 'unknown'
+                || live.ownership === 'unknown' || observation.blockers.length || !inactiveScope ? 'unknown'
                 : live.package === 'absent' || shared ? 'satisfied' : 'drifted');
-            } else states.push(live.ownership === 'foreign' || supplementConflict ? 'conflict' : projectionUnconfirmed || supplementUnknown || nativeContentUnconfirmed ? 'unknown' : inputDrift || supplementDrift || nativeContentDrift ? 'drifted' : unmet.length || dynamicSupplementsUnconfirmed ? 'unknown'
-              : !expectedCount ? absent ? 'satisfied' : unknown ? 'unknown' : 'drifted'
-                : absent ? 'absent' : unknown ? 'unknown' : inactive ? 'drifted' : supplementOnly || live.package === 'present' ? 'satisfied' : 'unknown');
+              continue;
+            }
+            if (hasPackageExpectation && !missing) {
+              if (registration === 'unknown') warn('nativeRegistrationUnconfirmed');
+              if (requiredActivation === 'unknown') warn('nativeActivationUnconfirmed');
+              if (requiredActivation === 'disabled') warn('nativeActivationDisabled');
+              if (requiredActivation === 'blocked') block(binding.route === 'grok-directory'
+                ? 'grokProjectAuthorizationDenied' : 'nativeActivationBlocked');
+              if (binding.route === 'cursor-workspace-hook') {
+                if (live.workspaceOpen === 'absent') warn('cursorWorkspaceOpenMissing');
+                if (live.workspaceOpen === 'unknown') warn('cursorWorkspaceOpenUnconfirmed');
+              }
+            }
+            if (ownershipConflict || supplementConflict) states.push('conflict');
+            else if (confirmedEmptyPackage && (live.package === 'unknown' || live.registration === 'unknown' || live.ownership === 'unknown')) states.push('unknown');
+            else if (confirmedEmptyPackage && !inactiveScope) {
+              warn('platformContentDrift');
+              states.push('drifted');
+            }
+            else if (unmet.length || hasPackageExpectation && registration === 'unknown') states.push('unknown');
+            else if (missing) states.push('absent');
+            else if (supplementUnknown || hasPackageExpectation && (live.package === 'unknown' || live.ownership === 'unknown'
+              || requiredActivation === 'unknown' || live.workspaceOpen === 'unknown'
+              || componentUnknown || nativeContentUnconfirmed || projectionUnconfirmed)) states.push('unknown');
+            else if (componentMissing || supplementMissing && !dynamicSupplementsUnconfirmed) states.push('absent');
+            else if (hasPackageExpectation && ['disabled', 'blocked'].includes(requiredActivation)
+              || live.workspaceOpen === 'absent' && live.package === 'present' || inputDrift || supplementDrift || supplementInputDrift || nativeContentDrift) states.push('drifted');
+            else if (dynamicSupplementsUnconfirmed || hasPackageExpectation && !packageExpectationConfirmed) states.push('unknown');
+            else if (!expectedCount) states.push(live.package === 'absent' && ['absent', 'not-applicable'].includes(live.registration) ? 'satisfied' : 'drifted');
+            else states.push('satisfied');
           }
           observation.intentionalEmpty = emptyMatches.length === resolution.bindings.length && emptyMatches.every(Boolean);
           observation.expectationConfirmed = currentMatches.length === resolution.bindings.length && currentMatches.every(Boolean);
@@ -420,6 +452,7 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
           if (native.deploymentObservations) target.deploymentObservations = native.deploymentObservations;
           if (native.deploymentExclusions) target.deploymentExclusions = native.deploymentExclusions;
           target.blockers.push(...native.blockers);
+          if (native.reasons?.length) target.reasons = [...native.reasons];
           errors.push(...native.blockers.filter((entry) => NATIVE_READ_ERRORS.has(entry.code))
             .map((entry) => ({ ...entry, pluginId: root.pluginId })));
           target.backend = { ...(native.assumedActivation ? { assumedActivation: true } : {}),
@@ -464,13 +497,13 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
           errors.push({ ...diagnostic('portableObservationFailed'), pluginId: root.pluginId });
         }
       }
-      const confirmedEmpty = delivery?.kind === 'native' && options.nativeObservations.some((entry) =>
+      const dynamicExpectationConfirmed = delivery?.kind === 'native' && options.nativeObservations.some((entry) =>
         entry.pluginId === root.pluginId && entry.platform === delivery.platform && (entry.intentionalEmpty === true || entry.expectationConfirmed === true));
-      if (delivery?.kind === 'native' && root.plugin?.manifest.artifacts && !confirmedEmpty) {
-        const inputDrift = delivery?.kind === 'native' && options.nativeObservations.some((entry) =>
-          entry.pluginId === root.pluginId && entry.platform === delivery.platform && entry.inputDrift === true);
-        if (target.content !== 'conflict' && !inputDrift) target.content = 'unknown';
-        target.blockers.push(diagnostic('dynamicExpectationUnconfirmed'));
+      if (delivery?.kind === 'native' && root.plugin?.manifest.artifacts && !dynamicExpectationConfirmed) {
+        if (target.content === 'satisfied' || target.content === 'absent') target.content = 'unknown';
+        if (target.content === 'unknown') {
+          target.reasons = [...target.reasons ?? [], diagnostic('dynamicExpectationUnconfirmed')];
+        }
       }
       target.observation = target.content === 'satisfied' ? 'verified'
         : target.content === 'absent' ? 'missing' : 'unknown';
@@ -867,7 +900,9 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
       userProviders: demand.scope === 'project' ? Object.fromEntries((snapshot.preferences?.targets ?? []).map((target) => [target,
         plan.placements.filter((item) => item.scope === 'user' && item.target === target
           && !nodes.some((project) => project.scope === 'project' && project.pluginId === item.pluginId && project.target === item.target)).map((item) => item.pluginId)])) : {},
-      targetRequirements: nodes.map((item) => ({ pluginId: item.pluginId, target: item.target })), roots: demand.roots === null ? null : [...new Map(nodes.map((item) => [item.pluginId, {
+      targetRequirements: nodes.map((item) => ({ pluginId: item.pluginId, target: item.target,
+        ...(item.scope === 'user' && demand.scope === 'project' ? { inheritsUserNative: true } : {}) })),
+      roots: demand.roots === null ? null : [...new Map(nodes.map((item) => [item.pluginId, {
       pluginId: item.pluginId, sourceId: item.plugin.sourceId!, sourceState: 'ready' as const,
       blockers: [], plugin: item.plugin,
     }])).values()] };
@@ -904,29 +939,16 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
         const providers = requirement.dependencies.map((id) => {
           const provider = plan.placements.find((item) => item.pluginId === id && item.target === requirement.target
             && item.contributions.some((contribution) => contribution.scope === demand.scope && contribution.root === root.pluginId));
-          const actual = allTargets.find((item) => item.pluginId === id && item.agent === requirement.target && item.scope === provider?.scope);
-          if (demand.scope === 'project' && provider?.scope === 'user' && ['codex', 'claude', 'gemini', 'copilot'].includes(requirement.target)) {
-            const activation = allTargets.find((item) => item.pluginId === id && item.agent === requirement.target && item.scope === 'project');
-            if (actual?.content !== 'satisfied') return actual;
-            if (requirement.target === 'codex' && activation && activation.blockers.length === 0) {
-              const backend = activation.backend as { assumedActivation?: boolean; live?: StatusScopedTarget } | undefined;
-              const surface = analyzeCodexSurface(provider.plugin.manifest);
-              const completeUserCapability = surface.components.every((component) => !component.scopes.includes('project') || component.scopes.includes('user'));
-              const effective = surface.nativeKinds.length === 0 || backend?.live?.components.some((component) =>
-                component.kind === 'activation' && component.metadata?.effective === true);
-              const supported = surface.nativeKinds.length === 0 || backend?.live?.sharedComponents?.some((component) =>
-                component.kind === 'systemConsumer' && component.state === 'compatible');
-              if (completeUserCapability && effective && supported && !backend?.assumedActivation) {
-                return { ...activation, content: 'satisfied' as const, observation: 'verified' as const };
-              }
-            }
-            return activation;
-          }
-          return actual;
+          if (!provider) return undefined;
+          // These observations check the same physical package and the demand's own effective scope.
+          const scope = hasSharedUserPackage(requirement.target) ? demand.scope : provider.scope;
+          return allTargets.find((item) => item.pluginId === id && item.agent === requirement.target && item.scope === scope);
         });
         const ownProvider = providers.find((provider) => provider?.pluginId === root.pluginId);
         if (ownProvider?.installedVersion) target.installedVersion = ownProvider.installedVersion;
         target.blockers.push(...providers.flatMap((item) => item?.blockers ?? []));
+        const reasons = providers.flatMap((item) => item?.reasons ?? []);
+        if (reasons.length) target.reasons = reasons;
         const componentGaps = providers.flatMap((item) => item?.componentGaps ?? []);
         if (componentGaps.length) target.componentGaps = [...new Map(componentGaps.map((gap) =>
           [JSON.stringify([gap.providerPluginId, gap.agent, gap.renderScope, gap.id]), gap])).values()];

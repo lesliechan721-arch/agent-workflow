@@ -4,8 +4,31 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { preparePublicClientPath } from './native-platform-public-aw.mjs';
-import { readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
+import { assertPublicStatus, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { clients } from './native-platform-runtime.mjs';
+
+// Test Value Gate: the grader must fail when a status from the real runner
+// calls an installed but disabled target ready, or omits its installed facts.
+test('grades v2 disabled status separately from native installation facts', () => {
+  const ctx = { platform: 'antigravity', scope: 'user', pluginName: 'fixture', skillName: 'fixture' };
+  const pluginId = 'qualification/fixture';
+  const target = { pluginId, target: 'antigravity', scope: 'user', delivery: { kind: 'native', platform: 'antigravity' },
+    content: 'drifted', satisfaction: 'pending', blockerCodes: [], deploymentObservations: [{ products: [{ id: 'cli', product: 'cli', version: '1.3.4' }],
+      after: { package: 'present', registration: 'present', ownership: 'aw', nativeIdentity: { packageId: 'fixture' },
+        components: [{ id: 'skill:fixture', presence: 'present', reasonCodes: [] }], consumers: [{ productId: 'cli', activation: 'disabled' }] } }] };
+  const result = { schemaVersion: 2, command: 'plugin.status', status: 'success', diagnostics: [],
+    nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'sync', pluginId, '--context', 'user', '--target', 'antigravity'] }],
+    data: { context: 'user',
+    coverage: { scopes: ['user'] }, allSatisfied: false, inSync: false, counts: { blocked: 0, pending: 1, unconfirmed: 0, ready: 0 },
+    inventory: [{ pluginId, sourceState: 'ready', blockerCodes: [], targetResults: [target] }] } };
+  const expected = { content: 'drifted', activation: 'disabled' };
+  assert.equal(assertPublicStatus(result, ctx, pluginId, expected).deployment.registration, 'present');
+  target.content = 'satisfied';
+  assert.throws(() => assertPublicStatus(result, ctx, pluginId, expected), { code: 'ERR_ASSERTION' });
+  target.content = 'drifted';
+  target.deploymentObservations[0].after.registration = 'unknown';
+  assert.throws(() => assertPublicStatus(result, ctx, pluginId, expected), { code: 'ERR_ASSERTION' });
+});
 
 // Test Value Gate: Antigravity's inventory path, rather than the AW staging
 // file or version alone, must prove the rendered body in both fresh scopes.

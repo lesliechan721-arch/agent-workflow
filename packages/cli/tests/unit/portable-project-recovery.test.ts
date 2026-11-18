@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createScopeContext } from '../../src/intent/scope-context.js';
 import { writeAwSourceBinding } from '../../src/review/source-binding.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
+import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
 import { portableJsonDigest, portableSkillTreeDigest } from '../../src/portable/historical-materialization.js';
 import { executePortableRecovery, inspectPortableExtraInstalled, inspectPortableRecovery, inspectPortableResidue,
@@ -45,7 +46,7 @@ vi.mock('../../src/portable/commands.js', () => ({
     const capabilities = getAuthoringPlatformCapabilities(options.platform, options.scope);
     await writeAwSourceBinding({ rootDir: options.out, ...binding,
       preparation: [{ plugin: 'root', platform: options.platform, renderScope: options.scope,
-        profileId: capabilities.profileId, capabilitiesDigest: artifactValueDigest(capabilities),
+        profileId: getQualifiedPlatformProfile(options.platform).id, capabilitiesDigest: artifactValueDigest(capabilities),
         expectedDigest: portableJsonDigest(selectedSkills), resourceDigest: portableJsonDigest(state.content),
         renderInputDigest: binding.profile.inputDigest, outputs: [],
         components: selectedSkills.map((candidate) => ({ id: `skill:${candidate.name}`, kind: 'skill',

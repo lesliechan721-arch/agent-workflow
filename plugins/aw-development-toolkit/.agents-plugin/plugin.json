@@ -49,7 +49,7 @@
         "aw.skill-validation.v2",
         "aw.managed-commands.v1",
         "aw.claude.sandbox-exclusions.v1",
-        "aw.cli-output.v1"
+        "aw.cli-output.v2"
       ]
     }
   },

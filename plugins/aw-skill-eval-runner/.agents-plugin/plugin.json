@@ -38,7 +38,7 @@
     "aw": {
       "capabilities": [
         "aw.skill-eval.v3",
-        "aw.cli-output.v1"
+        "aw.cli-output.v2"
       ]
     }
   },

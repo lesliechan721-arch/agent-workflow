@@ -29,7 +29,7 @@ it('loads an OpenCode local package without an SDK install and registers a Skill
     renderUnit: { id: 'unit', physicalKey: 'physical', renderScope: { kind: 'project', projectRoot: path.join(root, 'project') },
       output: 'package', kinds: ['skill'], consumers: [] },
     capabilities: {
-      schemaVersion: 1, platform: 'opencode', scope: 'project', basis: 'profile', profileId: 'test', consumers: [],
+      schemaVersion: 2, platform: 'opencode', scope: 'project', basis: 'profile',
       kinds: {
         skill: { status: 'supported', reasonCodes: [], delivery: ['native-package'] },
         mcp: { status: 'unsupported', reasonCodes: [], delivery: [] },
