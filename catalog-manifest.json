@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.72",
+  "catalogVersion": "0.1.0-beta.73",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "9c865fd81887c26a050d674d4192a1a803baeafc"
+    "sourceHead": "c40a5a6d1233b1fdb7d97249197d6a067112f8e2"
   },
   "entries": [
     {
@@ -125,7 +125,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.6",
+      "version": "0.1.0-beta.7",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -149,9 +149,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:12f38df2a4198ad5850f821892422663d530edae0651a28f4d04e09a4a51be98",
-      "manifestDigest": "sha256:eb413b7bb89ce761ef3f876f274757b0974842e824a4eedd2ef866fb408e099b",
-      "contentDigest": "sha256:0268eea035a1666fefde8e7e132c23a225be7c269dd2eb67a004bd9eaaa8d531"
+      "artifactDigest": "sha256:d31d7562562fc772502c1a08ef2f36f50bbc4c6923e5d93c7fa5bb36fc9b9b40",
+      "manifestDigest": "sha256:6d3f554df6e6c051718444ea59bcb32489b5d216512c4794b0dc143b2cfc903f",
+      "contentDigest": "sha256:bd3fb6d6facba24e42ce7d05776d82c7015a7931682b83760f16b2fd914eaaa1"
     },
     {
       "name": "aw-development-toolkit",
@@ -311,7 +311,7 @@
           "CODEX"
         ]
       },
-      "version": "0.2.0-beta.28",
+      "version": "0.2.0-beta.29",
       "dependencies": [
         "agent-subagent"
       ],
@@ -332,9 +332,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:52b043f069a87e41d20f741c5bf367b4a469e6a4e42d67939f36aafee422d2b8",
-      "manifestDigest": "sha256:f57bd5a423df8e90c76fdc8b5414ce6422a75458725deb577a01f255d679a1c8",
-      "contentDigest": "sha256:00c631ad699cc2c52516695b0b72961b80166e0e6df2ac8a484b9cbf401bab10"
+      "artifactDigest": "sha256:3b87385f70062b23bd4a16ef45760812bcf95ee5e3f2c3fcb1e2e84d1230edec",
+      "manifestDigest": "sha256:9ed201f69b893e4ce36f5f55ba313444ec38b8ffc1b5c752c5c43d4a14a4d06c",
+      "contentDigest": "sha256:b14e9d0e91482592276dd6b91889735a151650686e0d34c0d75784e64c3aec0e"
     },
     {
       "name": "decision-kit",
@@ -357,7 +357,7 @@
           "CODEX"
         ]
       },
-      "version": "0.1.0-beta.10",
+      "version": "0.1.0-beta.11",
       "dependencies": [
         "human-content"
       ],
@@ -370,9 +370,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:95278fee5755e4346cf129702e0d82df6a31b397fb83f0645bfd7162c28e6174",
-      "manifestDigest": "sha256:5df8d882fa4f477319cb459e9546ac8de5ccaf996a563f303f7f8e55596302af",
-      "contentDigest": "sha256:de46d0ab17b5f400e5a51e907cef91740a1e0729f886f5b03a033b6bb3dfd409"
+      "artifactDigest": "sha256:acfc4c4d2669e9bfb52f812c1d994dec616f731764f22dacff1c973e2773129d",
+      "manifestDigest": "sha256:1daed5e0e486c4a06bb20e218dd3e31f70475a7c02eac4474c5feef332509b0c",
+      "contentDigest": "sha256:07922610285b480e5f6531d82a5bf03090b30e3e4715ce957479ac6977ce4c13"
     },
     {
       "name": "dev-workflow",

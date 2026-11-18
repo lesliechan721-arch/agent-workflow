@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.28",
+  "version": "0.2.0-beta.29",
   "description": "在 Codex 中组织只读技术第二意见和大范围事实调查。",
   "marketplace": {
     "category": "workflow",
@@ -112,14 +112,9 @@
                     "allowCustom": true,
                     "presets": [
                       {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
+                        "id": "gpt-6.2-astra",
+                        "title": "gpt-6.2-astra",
+                        "value": "gpt-6.2-astra"
                       },
                       {
                         "id": "gpt-6-astra",
@@ -127,24 +122,24 @@
                         "value": "gpt-6-astra"
                       },
                       {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
+                        "id": "gpt-6.2-sol",
+                        "title": "gpt-6.2-sol",
+                        "value": "gpt-6.2-sol"
                       },
                       {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
                       },
                       {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
+                        "id": "gpt-6.1-terra",
+                        "title": "gpt-6.1-terra",
+                        "value": "gpt-6.1-terra"
                       },
                       {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
                       }
                     ]
                   },
@@ -212,14 +207,9 @@
                   "allowCustom": true,
                   "presets": [
                     {
-                      "id": "gpt-6.1-sol",
-                      "title": "gpt-6.1-sol",
-                      "value": "gpt-6.1-sol"
-                    },
-                    {
-                      "id": "gpt-6-luna",
-                      "title": "gpt-6-luna",
-                      "value": "gpt-6-luna"
+                      "id": "gpt-6.2-astra",
+                      "title": "gpt-6.2-astra",
+                      "value": "gpt-6.2-astra"
                     },
                     {
                       "id": "gpt-6-astra",
@@ -227,24 +217,24 @@
                       "value": "gpt-6-astra"
                     },
                     {
-                      "id": "gpt-6-sol",
-                      "title": "gpt-6-sol",
-                      "value": "gpt-6-sol"
+                      "id": "gpt-6.2-sol",
+                      "title": "gpt-6.2-sol",
+                      "value": "gpt-6.2-sol"
                     },
                     {
-                      "id": "gpt-5.6-luna",
-                      "title": "gpt-5.6-luna",
-                      "value": "gpt-5.6-luna"
+                      "id": "gpt-6.1-sol",
+                      "title": "gpt-6.1-sol",
+                      "value": "gpt-6.1-sol"
                     },
                     {
-                      "id": "gpt-5.6-terra",
-                      "title": "gpt-5.6-terra",
-                      "value": "gpt-5.6-terra"
+                      "id": "gpt-6.1-terra",
+                      "title": "gpt-6.1-terra",
+                      "value": "gpt-6.1-terra"
                     },
                     {
-                      "id": "gpt-5.6-sol",
-                      "title": "gpt-5.6-sol",
-                      "value": "gpt-5.6-sol"
+                      "id": "gpt-6-luna",
+                      "title": "gpt-6-luna",
+                      "value": "gpt-6-luna"
                     }
                   ]
                 },
@@ -344,14 +334,9 @@
                     "allowCustom": true,
                     "presets": [
                       {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
+                        "id": "gpt-6.2-astra",
+                        "title": "gpt-6.2-astra",
+                        "value": "gpt-6.2-astra"
                       },
                       {
                         "id": "gpt-6-astra",
@@ -359,24 +344,24 @@
                         "value": "gpt-6-astra"
                       },
                       {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
+                        "id": "gpt-6.2-sol",
+                        "title": "gpt-6.2-sol",
+                        "value": "gpt-6.2-sol"
                       },
                       {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
                       },
                       {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
+                        "id": "gpt-6.1-terra",
+                        "title": "gpt-6.1-terra",
+                        "value": "gpt-6.1-terra"
                       },
                       {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
                       }
                     ]
                   },
@@ -444,14 +429,9 @@
                   "allowCustom": true,
                   "presets": [
                     {
-                      "id": "gpt-6.1-sol",
-                      "title": "gpt-6.1-sol",
-                      "value": "gpt-6.1-sol"
-                    },
-                    {
-                      "id": "gpt-6-luna",
-                      "title": "gpt-6-luna",
-                      "value": "gpt-6-luna"
+                      "id": "gpt-6.2-astra",
+                      "title": "gpt-6.2-astra",
+                      "value": "gpt-6.2-astra"
                     },
                     {
                       "id": "gpt-6-astra",
@@ -459,24 +439,24 @@
                       "value": "gpt-6-astra"
                     },
                     {
-                      "id": "gpt-6-sol",
-                      "title": "gpt-6-sol",
-                      "value": "gpt-6-sol"
+                      "id": "gpt-6.2-sol",
+                      "title": "gpt-6.2-sol",
+                      "value": "gpt-6.2-sol"
                     },
                     {
-                      "id": "gpt-5.6-luna",
-                      "title": "gpt-5.6-luna",
-                      "value": "gpt-5.6-luna"
+                      "id": "gpt-6.1-sol",
+                      "title": "gpt-6.1-sol",
+                      "value": "gpt-6.1-sol"
                     },
                     {
-                      "id": "gpt-5.6-terra",
-                      "title": "gpt-5.6-terra",
-                      "value": "gpt-5.6-terra"
+                      "id": "gpt-6.1-terra",
+                      "title": "gpt-6.1-terra",
+                      "value": "gpt-6.1-terra"
                     },
                     {
-                      "id": "gpt-5.6-sol",
-                      "title": "gpt-5.6-sol",
-                      "value": "gpt-5.6-sol"
+                      "id": "gpt-6-luna",
+                      "title": "gpt-6-luna",
+                      "value": "gpt-6-luna"
                     }
                   ]
                 },
@@ -576,14 +556,9 @@
                     "allowCustom": true,
                     "presets": [
                       {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
+                        "id": "gpt-6.2-astra",
+                        "title": "gpt-6.2-astra",
+                        "value": "gpt-6.2-astra"
                       },
                       {
                         "id": "gpt-6-astra",
@@ -591,24 +566,24 @@
                         "value": "gpt-6-astra"
                       },
                       {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
+                        "id": "gpt-6.2-sol",
+                        "title": "gpt-6.2-sol",
+                        "value": "gpt-6.2-sol"
                       },
                       {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
                       },
                       {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
+                        "id": "gpt-6.1-terra",
+                        "title": "gpt-6.1-terra",
+                        "value": "gpt-6.1-terra"
                       },
                       {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
                       }
                     ]
                   },
@@ -676,14 +651,9 @@
                   "allowCustom": true,
                   "presets": [
                     {
-                      "id": "gpt-6.1-sol",
-                      "title": "gpt-6.1-sol",
-                      "value": "gpt-6.1-sol"
-                    },
-                    {
-                      "id": "gpt-6-luna",
-                      "title": "gpt-6-luna",
-                      "value": "gpt-6-luna"
+                      "id": "gpt-6.2-astra",
+                      "title": "gpt-6.2-astra",
+                      "value": "gpt-6.2-astra"
                     },
                     {
                       "id": "gpt-6-astra",
@@ -691,24 +661,24 @@
                       "value": "gpt-6-astra"
                     },
                     {
-                      "id": "gpt-6-sol",
-                      "title": "gpt-6-sol",
-                      "value": "gpt-6-sol"
+                      "id": "gpt-6.2-sol",
+                      "title": "gpt-6.2-sol",
+                      "value": "gpt-6.2-sol"
                     },
                     {
-                      "id": "gpt-5.6-luna",
-                      "title": "gpt-5.6-luna",
-                      "value": "gpt-5.6-luna"
+                      "id": "gpt-6.1-sol",
+                      "title": "gpt-6.1-sol",
+                      "value": "gpt-6.1-sol"
                     },
                     {
-                      "id": "gpt-5.6-terra",
-                      "title": "gpt-5.6-terra",
-                      "value": "gpt-5.6-terra"
+                      "id": "gpt-6.1-terra",
+                      "title": "gpt-6.1-terra",
+                      "value": "gpt-6.1-terra"
                     },
                     {
-                      "id": "gpt-5.6-sol",
-                      "title": "gpt-5.6-sol",
-                      "value": "gpt-5.6-sol"
+                      "id": "gpt-6-luna",
+                      "title": "gpt-6-luna",
+                      "value": "gpt-6-luna"
                     }
                   ]
                 },
@@ -808,14 +778,9 @@
                     "allowCustom": true,
                     "presets": [
                       {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
+                        "id": "gpt-6.2-astra",
+                        "title": "gpt-6.2-astra",
+                        "value": "gpt-6.2-astra"
                       },
                       {
                         "id": "gpt-6-astra",
@@ -823,24 +788,24 @@
                         "value": "gpt-6-astra"
                       },
                       {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
+                        "id": "gpt-6.2-sol",
+                        "title": "gpt-6.2-sol",
+                        "value": "gpt-6.2-sol"
                       },
                       {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
                       },
                       {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
+                        "id": "gpt-6.1-terra",
+                        "title": "gpt-6.1-terra",
+                        "value": "gpt-6.1-terra"
                       },
                       {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
                       }
                     ]
                   },
@@ -908,14 +873,9 @@
                   "allowCustom": true,
                   "presets": [
                     {
-                      "id": "gpt-6.1-sol",
-                      "title": "gpt-6.1-sol",
-                      "value": "gpt-6.1-sol"
-                    },
-                    {
-                      "id": "gpt-6-luna",
-                      "title": "gpt-6-luna",
-                      "value": "gpt-6-luna"
+                      "id": "gpt-6.2-astra",
+                      "title": "gpt-6.2-astra",
+                      "value": "gpt-6.2-astra"
                     },
                     {
                       "id": "gpt-6-astra",
@@ -923,24 +883,24 @@
                       "value": "gpt-6-astra"
                     },
                     {
-                      "id": "gpt-6-sol",
-                      "title": "gpt-6-sol",
-                      "value": "gpt-6-sol"
+                      "id": "gpt-6.2-sol",
+                      "title": "gpt-6.2-sol",
+                      "value": "gpt-6.2-sol"
                     },
                     {
-                      "id": "gpt-5.6-luna",
-                      "title": "gpt-5.6-luna",
-                      "value": "gpt-5.6-luna"
+                      "id": "gpt-6.1-sol",
+                      "title": "gpt-6.1-sol",
+                      "value": "gpt-6.1-sol"
                     },
                     {
-                      "id": "gpt-5.6-terra",
-                      "title": "gpt-5.6-terra",
-                      "value": "gpt-5.6-terra"
+                      "id": "gpt-6.1-terra",
+                      "title": "gpt-6.1-terra",
+                      "value": "gpt-6.1-terra"
                     },
                     {
-                      "id": "gpt-5.6-sol",
-                      "title": "gpt-5.6-sol",
-                      "value": "gpt-5.6-sol"
+                      "id": "gpt-6-luna",
+                      "title": "gpt-6-luna",
+                      "value": "gpt-6-luna"
                     }
                   ]
                 },
@@ -1040,14 +1000,9 @@
                     "allowCustom": true,
                     "presets": [
                       {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
+                        "id": "gpt-6.2-astra",
+                        "title": "gpt-6.2-astra",
+                        "value": "gpt-6.2-astra"
                       },
                       {
                         "id": "gpt-6-astra",
@@ -1055,24 +1010,24 @@
                         "value": "gpt-6-astra"
                       },
                       {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
+                        "id": "gpt-6.2-sol",
+                        "title": "gpt-6.2-sol",
+                        "value": "gpt-6.2-sol"
                       },
                       {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
                       },
                       {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
+                        "id": "gpt-6.1-terra",
+                        "title": "gpt-6.1-terra",
+                        "value": "gpt-6.1-terra"
                       },
                       {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
                       }
                     ]
                   },
@@ -1140,14 +1095,9 @@
                   "allowCustom": true,
                   "presets": [
                     {
-                      "id": "gpt-6.1-sol",
-                      "title": "gpt-6.1-sol",
-                      "value": "gpt-6.1-sol"
-                    },
-                    {
-                      "id": "gpt-6-luna",
-                      "title": "gpt-6-luna",
-                      "value": "gpt-6-luna"
+                      "id": "gpt-6.2-astra",
+                      "title": "gpt-6.2-astra",
+                      "value": "gpt-6.2-astra"
                     },
                     {
                       "id": "gpt-6-astra",
@@ -1155,24 +1105,24 @@
                       "value": "gpt-6-astra"
                     },
                     {
-                      "id": "gpt-6-sol",
-                      "title": "gpt-6-sol",
-                      "value": "gpt-6-sol"
+                      "id": "gpt-6.2-sol",
+                      "title": "gpt-6.2-sol",
+                      "value": "gpt-6.2-sol"
                     },
                     {
-                      "id": "gpt-5.6-luna",
-                      "title": "gpt-5.6-luna",
-                      "value": "gpt-5.6-luna"
+                      "id": "gpt-6.1-sol",
+                      "title": "gpt-6.1-sol",
+                      "value": "gpt-6.1-sol"
                     },
                     {
-                      "id": "gpt-5.6-terra",
-                      "title": "gpt-5.6-terra",
-                      "value": "gpt-5.6-terra"
+                      "id": "gpt-6.1-terra",
+                      "title": "gpt-6.1-terra",
+                      "value": "gpt-6.1-terra"
                     },
                     {
-                      "id": "gpt-5.6-sol",
-                      "title": "gpt-5.6-sol",
-                      "value": "gpt-5.6-sol"
+                      "id": "gpt-6-luna",
+                      "title": "gpt-6-luna",
+                      "value": "gpt-6-luna"
                     }
                   ]
                 },
@@ -1272,14 +1222,9 @@
                     "allowCustom": true,
                     "presets": [
                       {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
+                        "id": "gpt-6.2-astra",
+                        "title": "gpt-6.2-astra",
+                        "value": "gpt-6.2-astra"
                       },
                       {
                         "id": "gpt-6-astra",
@@ -1287,24 +1232,24 @@
                         "value": "gpt-6-astra"
                       },
                       {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
+                        "id": "gpt-6.2-sol",
+                        "title": "gpt-6.2-sol",
+                        "value": "gpt-6.2-sol"
                       },
                       {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
                       },
                       {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
+                        "id": "gpt-6.1-terra",
+                        "title": "gpt-6.1-terra",
+                        "value": "gpt-6.1-terra"
                       },
                       {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
                       }
                     ]
                   },
@@ -1372,14 +1317,9 @@
                   "allowCustom": true,
                   "presets": [
                     {
-                      "id": "gpt-6.1-sol",
-                      "title": "gpt-6.1-sol",
-                      "value": "gpt-6.1-sol"
-                    },
-                    {
-                      "id": "gpt-6-luna",
-                      "title": "gpt-6-luna",
-                      "value": "gpt-6-luna"
+                      "id": "gpt-6.2-astra",
+                      "title": "gpt-6.2-astra",
+                      "value": "gpt-6.2-astra"
                     },
                     {
                       "id": "gpt-6-astra",
@@ -1387,24 +1327,24 @@
                       "value": "gpt-6-astra"
                     },
                     {
-                      "id": "gpt-6-sol",
-                      "title": "gpt-6-sol",
-                      "value": "gpt-6-sol"
+                      "id": "gpt-6.2-sol",
+                      "title": "gpt-6.2-sol",
+                      "value": "gpt-6.2-sol"
                     },
                     {
-                      "id": "gpt-5.6-luna",
-                      "title": "gpt-5.6-luna",
-                      "value": "gpt-5.6-luna"
+                      "id": "gpt-6.1-sol",
+                      "title": "gpt-6.1-sol",
+                      "value": "gpt-6.1-sol"
                     },
                     {
-                      "id": "gpt-5.6-terra",
-                      "title": "gpt-5.6-terra",
-                      "value": "gpt-5.6-terra"
+                      "id": "gpt-6.1-terra",
+                      "title": "gpt-6.1-terra",
+                      "value": "gpt-6.1-terra"
                     },
                     {
-                      "id": "gpt-5.6-sol",
-                      "title": "gpt-5.6-sol",
-                      "value": "gpt-5.6-sol"
+                      "id": "gpt-6-luna",
+                      "title": "gpt-6-luna",
+                      "value": "gpt-6-luna"
                     }
                   ]
                 },
@@ -1510,14 +1450,9 @@
                       "allowCustom": true,
                       "presets": [
                         {
-                          "id": "gpt-6.1-sol",
-                          "title": "gpt-6.1-sol",
-                          "value": "gpt-6.1-sol"
-                        },
-                        {
-                          "id": "gpt-6-luna",
-                          "title": "gpt-6-luna",
-                          "value": "gpt-6-luna"
+                          "id": "gpt-6.2-astra",
+                          "title": "gpt-6.2-astra",
+                          "value": "gpt-6.2-astra"
                         },
                         {
                           "id": "gpt-6-astra",
@@ -1525,24 +1460,24 @@
                           "value": "gpt-6-astra"
                         },
                         {
-                          "id": "gpt-6-sol",
-                          "title": "gpt-6-sol",
-                          "value": "gpt-6-sol"
+                          "id": "gpt-6.2-sol",
+                          "title": "gpt-6.2-sol",
+                          "value": "gpt-6.2-sol"
                         },
                         {
-                          "id": "gpt-5.6-luna",
-                          "title": "gpt-5.6-luna",
-                          "value": "gpt-5.6-luna"
+                          "id": "gpt-6.1-sol",
+                          "title": "gpt-6.1-sol",
+                          "value": "gpt-6.1-sol"
                         },
                         {
-                          "id": "gpt-5.6-terra",
-                          "title": "gpt-5.6-terra",
-                          "value": "gpt-5.6-terra"
+                          "id": "gpt-6.1-terra",
+                          "title": "gpt-6.1-terra",
+                          "value": "gpt-6.1-terra"
                         },
                         {
-                          "id": "gpt-5.6-sol",
-                          "title": "gpt-5.6-sol",
-                          "value": "gpt-5.6-sol"
+                          "id": "gpt-6-luna",
+                          "title": "gpt-6-luna",
+                          "value": "gpt-6-luna"
                         }
                       ]
                     },
@@ -1610,14 +1545,9 @@
                     "allowCustom": true,
                     "presets": [
                       {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
+                        "id": "gpt-6.2-astra",
+                        "title": "gpt-6.2-astra",
+                        "value": "gpt-6.2-astra"
                       },
                       {
                         "id": "gpt-6-astra",
@@ -1625,24 +1555,24 @@
                         "value": "gpt-6-astra"
                       },
                       {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
+                        "id": "gpt-6.2-sol",
+                        "title": "gpt-6.2-sol",
+                        "value": "gpt-6.2-sol"
                       },
                       {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
                       },
                       {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
+                        "id": "gpt-6.1-terra",
+                        "title": "gpt-6.1-terra",
+                        "value": "gpt-6.1-terra"
                       },
                       {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
                       }
                     ]
                   },
@@ -1749,14 +1679,9 @@
                       "allowCustom": true,
                       "presets": [
                         {
-                          "id": "gpt-6.1-sol",
-                          "title": "gpt-6.1-sol",
-                          "value": "gpt-6.1-sol"
-                        },
-                        {
-                          "id": "gpt-6-luna",
-                          "title": "gpt-6-luna",
-                          "value": "gpt-6-luna"
+                          "id": "gpt-6.2-astra",
+                          "title": "gpt-6.2-astra",
+                          "value": "gpt-6.2-astra"
                         },
                         {
                           "id": "gpt-6-astra",
@@ -1764,24 +1689,24 @@
                           "value": "gpt-6-astra"
                         },
                         {
-                          "id": "gpt-6-sol",
-                          "title": "gpt-6-sol",
-                          "value": "gpt-6-sol"
+                          "id": "gpt-6.2-sol",
+                          "title": "gpt-6.2-sol",
+                          "value": "gpt-6.2-sol"
                         },
                         {
-                          "id": "gpt-5.6-luna",
-                          "title": "gpt-5.6-luna",
-                          "value": "gpt-5.6-luna"
+                          "id": "gpt-6.1-sol",
+                          "title": "gpt-6.1-sol",
+                          "value": "gpt-6.1-sol"
                         },
                         {
-                          "id": "gpt-5.6-terra",
-                          "title": "gpt-5.6-terra",
-                          "value": "gpt-5.6-terra"
+                          "id": "gpt-6.1-terra",
+                          "title": "gpt-6.1-terra",
+                          "value": "gpt-6.1-terra"
                         },
                         {
-                          "id": "gpt-5.6-sol",
-                          "title": "gpt-5.6-sol",
-                          "value": "gpt-5.6-sol"
+                          "id": "gpt-6-luna",
+                          "title": "gpt-6-luna",
+                          "value": "gpt-6-luna"
                         }
                       ]
                     },
@@ -1849,14 +1774,9 @@
                     "allowCustom": true,
                     "presets": [
                       {
-                        "id": "gpt-6.1-sol",
-                        "title": "gpt-6.1-sol",
-                        "value": "gpt-6.1-sol"
-                      },
-                      {
-                        "id": "gpt-6-luna",
-                        "title": "gpt-6-luna",
-                        "value": "gpt-6-luna"
+                        "id": "gpt-6.2-astra",
+                        "title": "gpt-6.2-astra",
+                        "value": "gpt-6.2-astra"
                       },
                       {
                         "id": "gpt-6-astra",
@@ -1864,24 +1784,24 @@
                         "value": "gpt-6-astra"
                       },
                       {
-                        "id": "gpt-6-sol",
-                        "title": "gpt-6-sol",
-                        "value": "gpt-6-sol"
+                        "id": "gpt-6.2-sol",
+                        "title": "gpt-6.2-sol",
+                        "value": "gpt-6.2-sol"
                       },
                       {
-                        "id": "gpt-5.6-luna",
-                        "title": "gpt-5.6-luna",
-                        "value": "gpt-5.6-luna"
+                        "id": "gpt-6.1-sol",
+                        "title": "gpt-6.1-sol",
+                        "value": "gpt-6.1-sol"
                       },
                       {
-                        "id": "gpt-5.6-terra",
-                        "title": "gpt-5.6-terra",
-                        "value": "gpt-5.6-terra"
+                        "id": "gpt-6.1-terra",
+                        "title": "gpt-6.1-terra",
+                        "value": "gpt-6.1-terra"
                       },
                       {
-                        "id": "gpt-5.6-sol",
-                        "title": "gpt-5.6-sol",
-                        "value": "gpt-5.6-sol"
+                        "id": "gpt-6-luna",
+                        "title": "gpt-6-luna",
+                        "value": "gpt-6-luna"
                       }
                     ]
                   },
