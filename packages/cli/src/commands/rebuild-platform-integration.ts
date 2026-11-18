@@ -24,7 +24,8 @@ import { finalizePlatformSkillProducers, type FinalizedPlatformComponents } from
 import { cleanupOwnedComponents, createSharedOwnerToken, inspectOwnedComponents, writeOwnedTextFile,
   writeSkillOwnerMarker, type NativeProjectionEvidence, type OwnedComponent, type OwnedComponentExecutor } from '../utils/ownership.js';
 import type { CleanupResult } from '../utils/ownership.js';
-import { createPlatformEmptyState, createPlatformInputEvidence, platformPackageInputDigest, readPlatformPackageContentDigest, writePlatformEmptyState, type PlatformEmptyState } from '../utils/platform-empty-state.js';
+import { createPlatformInputEvidence, platformPackageInputDigest, readPlatformPackageContentDigest, writePlatformEmptyState, type PlatformEmptyState } from '../utils/platform-empty-state.js';
+import { writeCodexSupplementState } from '../platforms/codex-supplement-state.js';
 import { atomicReplaceSafeFile, assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import { assertManagedCommandBindingIdentities, captureManagedCommandBindingRecoveryEvidence, publishManagedCommandBindings, listManagedCommands, readInstalledCommandProducer, revokeManagedCommandBindings,
   type ManagedCommandBindingRecoveryEvidence } from '../utils/managed-command-store.js';
@@ -53,7 +54,7 @@ interface UnitPreparation {
   unit: RenderUnit;
   prepared: PreparedPlatformComponents;
   finalized: FinalizedPlatformComponents;
-  emptyInput: Parameters<typeof createPlatformEmptyState>[0]['units'][number];
+  evidenceInput: Parameters<typeof createPlatformInputEvidence>[0]['units'][number];
 }
 
 /** Fingerprints are operation-local evidence; they confer no ownership or deletion rights. */
@@ -571,7 +572,7 @@ export class PlatformRebuildSession {
             cwd: input.cwd, env: this.context.env, signal: this.context.signal, scriptTimeoutMs: this.context.scriptTimeoutMs,
             packagePreparationCache: this.context.packagePreparationCache });
           return { unit: commonUnit, prepared: finalized.prepared, finalized,
-            emptyInput: { renderUnit: commonUnit, capabilities, config, prerequisites: bindingEntry.observation.prerequisites } };
+            evidenceInput: { renderUnit: commonUnit, capabilities, config, prerequisites: bindingEntry.observation.prerequisites } };
         })();
         this.units.set(unit.physicalKey, promise);
       }
@@ -588,6 +589,7 @@ export class PlatformRebuildSession {
     const bindingRecoveryEvidence: ManagedCommandBindingRecoveryEvidence[] = [];
     const emptyStates = new Map<string, PlatformEmptyState>();
     const inputDigests = new Map<string, string>();
+    const supplementInputDigests = new Map<string, string>();
     const commandInventory = await listManagedCommands(this.context.env);
     for (const entry of observed) priorProducers.set(entry.binding.id, commandInventory.commands.flatMap((command) => {
       if (command.owner.kind !== 'plugin') return [];
@@ -820,10 +822,17 @@ export class PlatformRebuildSession {
       const expected = mergeExpectedComponentSets(units.map((unit) => unit.prepared.expected));
       evidence.retainPackage = !removing && expected.unmet.length > 0 && inspected.components.some((slot) =>
         'path' in slot.component && slot.component.path === entry.layout.packageRoot && ['present', 'partial'].includes(slot.state));
-      if (!removing) inputDigests.set(entry.binding.id, platformPackageInputDigest(await createPlatformInputEvidence({ plugin: input.plugin, binding: entry.binding, units: units.map((unit) => unit.emptyInput) })));
-      if (!removing && expected.components.length === 0 && expected.unmet.length === 0) {
-        emptyStates.set(entry.binding.id, await createPlatformEmptyState({ plugin: input.plugin, binding: entry.binding,
-          units: units.map((unit) => unit.emptyInput) }));
+      if (!removing) {
+        const inputEvidence = await createPlatformInputEvidence({ plugin: input.plugin, binding: entry.binding, units: units.map((unit) => unit.evidenceInput) });
+        inputDigests.set(entry.binding.id, platformPackageInputDigest(inputEvidence));
+        if (expected.unmet.length === 0) {
+          if (expected.components.length === 0) {
+            emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty' });
+          } else if (entry.binding.route === 'codex-marketplace' && input.plugin.manifest.artifacts) {
+            const supplement = inputEvidence.units.find((unit) => unit.output === 'supplement');
+            if (supplement) supplementInputDigests.set(entry.binding.id, supplement.inputDigest);
+          }
+        }
       }
       const result = adapter.lifecycle.prepare({ operation: operation(input), binding: entry.binding, observation: preparationObservation,
         projections, expected, evidence });
@@ -888,9 +897,10 @@ export class PlatformRebuildSession {
           const receipt = receipts.find((entry) => entry.bindingId === plan.binding.id);
           if (!receipt) continue;
           const after = await adapter.inspect(ctx, plan.binding);
-          const supplementIds = new Set(plan.projections.filter((projection) => plan.evidence.renderUnits?.some((unit) =>
+          const supplementFiles = plan.projections.filter((projection) => plan.evidence.renderUnits?.some((unit) =>
             unit.id === projection.renderUnitId && unit.output === 'supplement')).flatMap((projection) => projection.supplements
-            .filter((contribution) => contribution.kind === 'owned-file').flatMap((contribution) => contribution.componentIds)));
+            .filter((contribution) => contribution.kind === 'owned-file'));
+          const supplementIds = new Set(supplementFiles.flatMap((contribution) => contribution.componentIds));
           const supplements = await inspectStaticSupplements(ctx, plan.binding,
             plan.expected.components.filter((component) => supplementIds.has(component.id)));
           after.components = [...after.components.filter((component) => !supplementIds.has(component.id)), ...supplements.components];
@@ -910,7 +920,22 @@ export class PlatformRebuildSession {
           const gaps = plan.expected.components.filter((component) => packageIncomplete && packageIds.has(component.id)
             || !after.components.some((observed) => observed.id === component.id && observed.presence === 'present' && !observed.reasonCodes.length));
           receipt.diagnostics.push(...after.diagnostics);
-          if (!gaps.length) continue;
+          if (!gaps.length) {
+            const inputDigest = supplementInputDigests.get(plan.binding.id);
+            if (inputDigest && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
+              try {
+                await writeCodexSupplementState(ctx, plan.binding, inputDigest, supplementFiles.map((file) => ({
+                  id: file.id, fileName: path.basename(file.destination), contentDigest: file.contentDigest,
+                })));
+              } catch {
+                ctx.signal?.throwIfAborted();
+                receipt.diagnostics.push({ code: 'componentOutputUnconfirmed', severity: 'warning',
+                  message: 'The scope-local Codex output could not be recorded. Run sync to restore the status evidence.',
+                  subject: { target: plan.binding.platform, pluginId: plan.binding.plugin.pluginId, scope: plan.binding.scope.kind } });
+              }
+            }
+            continue;
+          }
           incomplete = true;
           const code = untrusted ? 'nativeTrustRequired' : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
           receipt.diagnostics.push({ code, severity: 'error',

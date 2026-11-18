@@ -279,6 +279,7 @@ describe('five namespaced write commands', () => {
     const instructionFiles = ['explore-instructions.md', 'advisor-instructions.md'];
     for (const [index, content] of initialRoleBytes.entries()) {
       const role = parseCodexRoleFile(content);
+      expect(initialSkillBytes[index]!.toString('utf8')).toContain(`\`${role.name}\` 角色`);
       expect(role.model).toBeUndefined();
       expect(role.modelReasoningEffort).toBeUndefined();
       const sharedInstructions = await fs.readFile(path.join(
@@ -289,6 +290,8 @@ describe('five namespaced write commands', () => {
     const subagentRolePath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-team-agent-subagent-subagent.toml');
     const initialSubagentRoleBytes = await fs.readFile(subagentRolePath, 'utf8');
     const installedSubagentRole = parseCodexRoleFile(initialSubagentRoleBytes);
+    expect(await fs.readFile(path.join(subagentCacheRoot, 'skills/spawn-subagent/SKILL.md'), 'utf8'))
+      .toContain(`\`${installedSubagentRole.name}\``);
     expect(installedSubagentRole.model).toBeUndefined();
     expect(installedSubagentRole.modelReasoningEffort).toBeUndefined();
     assertRoleInstructions('subagent', installedSubagentRole.developerInstructions,
@@ -384,18 +387,26 @@ describe('five namespaced write commands', () => {
     const scopedStatus = await readRecoveryStatus({ cwd, env, cliVersion: '1.0.0', targets: ['codex'], nativeCliRunner: runtime.nativeCliRunner });
     expect(scopedStatus.inventory?.filter((entry) => entry.pluginId === 'team/codex-enhance')
       .flatMap((entry) => entry.targetResults), JSON.stringify(scopedStatus)).toContainEqual(expect.objectContaining({
-        scope: 'project', providerScope: 'project', content: 'unknown', satisfaction: 'unknown',
-        blockers: expect.arrayContaining([expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })]),
+        scope: 'project', providerScope: 'project', content: 'satisfied', satisfaction: 'installed',
+        blockers: [],
       }));
-    // Read-only status cannot recreate the dynamic supplement collection. The
-    // concrete files above are verified separately without claiming host loading.
+    expect(scopedStatus.observedTargets?.flatMap((target) => target.blockers).map((blocker) => blocker.code))
+      .not.toContain('dynamicExpectationUnconfirmed');
     expect(scopedStatus.observedTargets?.flatMap((target) => target.blockers).map((blocker) => blocker.code))
       .not.toContain('platformInputDrift');
     expect(scopedStatus.observedTargets?.flatMap((target) => target.deploymentObservations ?? [])
       .flatMap((observation) => observation.after?.components ?? []).flatMap((component) => component.reasonCodes))
       .not.toContain('componentOutputMissing');
-    const userBeforeSync = await observeIntent(userLocation);
     const userRoleBytes = await Promise.all(userRoles.map((file) => fs.readFile(file)));
+    await fs.remove(userRoles[0]!);
+    const drifted = await runPublic(['plugin', 'status', 'team/codex-enhance', '--context', 'user']);
+    expect(drifted.payload).toMatchObject({ diagnostics: expect.arrayContaining([
+      expect.objectContaining({ code: 'platformContentDrift', subject: expect.objectContaining({ scope: 'user' }) }),
+    ]) });
+    expect(drifted.payload).not.toMatchObject({ diagnostics: expect.arrayContaining([
+      expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' }),
+    ]) });
+    const userBeforeSync = await observeIntent(userLocation);
     const synced = await runPublic(['plugin', 'sync', 'team/codex-enhance', '--context', 'project', '--yes']);
     expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
     await expect(observeIntent(userLocation)).resolves.toEqual(userBeforeSync);

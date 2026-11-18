@@ -39,6 +39,10 @@ Antigravity CLI `1.3.4` 在 Linux、macOS、Windows 的 x64/arm64 六环境开�
 
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
+符合现有兼容条件的 Codex CLI 支持用户可见、可手动调用的 Skill。安装时通过 `agents/openai.yaml` 的 `policy.allow_implicit_invocation` 保留作者声明的自动调用限制。禁用自动调用的 Skill 仍出现在用户的 Skill 列表中。
+
+Codex 子代理安装使用普通 Skill 的 CLI 接口门槛及 Linux、macOS、Windows 的 x64/arm64 范围。User 和 Project 支持独立上下文、宿主默认提示词组合、角色 TOML 和 AW 安装态配置读取。角色文件和角色名采用 `aw-<source>-<plugin>-<role>`，随包生成的调度 Skill 引用这个实际名称。子代理开关和会话实际使用由 Codex 决定。
+
 ### 1.2 身份与物理实例
 
 逻辑需求、产品安装、包位置、render scope 和 activation scope 分开。产品 ID 绑定平台、产品面、规范入口和配置根；版本是可变证据。部署绑定 sourceIdentity/pluginId、平台、需求 scope 与真实 route/位置。

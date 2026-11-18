@@ -16,6 +16,7 @@ import { createCodexNativeObservationSession, type CodexNativeObservationSession
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
+import { inspectCodexSupplementState } from '../platforms/codex-supplement-state.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { createPlatformInputEvidence, matchesPlatformEmptyState, platformPackageInputDigest, readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 import { getDeploymentLayout } from '../platforms/layout.js';
@@ -208,6 +209,14 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                   env: context.env, referencePlugins: demand.plugins }) });
             }
             const supplements = await inspectStaticSupplements(ctx, binding, staticSupplements);
+            const inputEvidence = await createPlatformInputEvidence({ plugin, binding, units: inputUnits });
+            const supplementInput = inputEvidence.units.find((unit) => unit.output === 'supplement');
+            const recordedSupplements = binding.route === 'codex-marketplace' && plugin.manifest.artifacts && supplementInput
+              ? await inspectCodexSupplementState(ctx, binding, supplementInput.inputDigest) : null;
+            if (recordedSupplements) {
+              const staticIds = new Set(supplements.components.map((component) => component.id));
+              supplements.components.push(...recordedSupplements.filter((component) => !staticIds.has(component.id)));
+            }
             const supplementConflict = supplements.components.some((component) => component.reasonCodes.includes('supplementOwnershipConflict'));
             const supplementDrift = supplements.components.some((component) => component.presence === 'absent'
               || component.reasonCodes.includes('componentContentDrift'));
@@ -219,14 +228,15 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               owned.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope });
               existing.push({ pluginId: root.pluginId, agent: platform, scope: demand.scope });
             }
-            const inputEvidence = await createPlatformInputEvidence({ plugin, binding, units: inputUnits });
             const confirmedEmpty = Boolean(plugin.manifest.artifacts && expectedCount === 0 && unmet.length === 0
               && await matchesPlatformEmptyState({ state: { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty' }, env: context.env }));
-            const dynamicSupplementsUnconfirmed = Boolean(plugin.manifest.artifacts && !confirmedEmpty
+            const dynamicSupplementsUnconfirmed = Boolean(plugin.manifest.artifacts && !confirmedEmpty && !recordedSupplements
               && inputUnits.some(({ renderUnit }) => renderUnit.output === 'supplement'
                 && (!plugin.manifest.artifacts?.scopes || plugin.manifest.artifacts.scopes.includes(renderUnit.renderScope.kind))));
             let inputDrift = false;
             let currentProjection = false;
+            let packageExpectationConfirmed = false;
+            let packageOnlySkills = false;
             let projectionUnconfirmed = false;
             let nativeContentDrift = false;
             let nativeContentUnconfirmed = false;
@@ -245,6 +255,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
               }
               projectionUnconfirmed = !projection || projection.preparation !== 'complete';
               const packageInputDigest = platformPackageInputDigest(inputEvidence);
+              packageExpectationConfirmed = projection?.preparation === 'complete' && projection.inputDigest === packageInputDigest;
               inputDrift = Boolean(projection && (projection.inputDigest !== packageInputDigest
                 || projection.contentDigest !== contentDigest));
               if (projectionUnconfirmed) observation.blockers.push(diagnostic(projection?.preparation === 'partial'
@@ -256,26 +267,32 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                   live.components.some((observed) => observed.id === component.id && observed.presence === 'present'))
                 && !supplementConflict && !supplementDrift && !supplementUnknown && !dynamicSupplementsUnconfirmed
                 && !nativeContentDrift && !nativeContentUnconfirmed);
+              packageOnlySkills = Boolean(projection?.components.every(({ nativeName, relativeOutputs }) =>
+                relativeOutputs.includes(`skills/${nativeName}/SKILL.md`)
+                && relativeOutputs.every((output) => output.startsWith(`skills/${nativeName}/`))));
               if (currentProjection) expectedCount = Math.max(expectedCount, projection!.components.length);
             }
-            // Codex CLI 0.167.0 loads user plugin Skills without the independent
-            // Hook/project trust gate. This is component applicability, not trust
-            // inferred from activation, and requires complete current evidence.
+            // These user-scope component sets have no additional trust gate.
+            // Applicability requires current package and scoped-output evidence.
             const selectedProduct = selectNativeProduct(binding.consumers);
             const selectedConsumer = selectedNativeConsumer(binding, live);
+            const qualifiedUserRoles = inputUnits.some(({ renderUnit, capabilities }) => renderUnit.output === 'supplement'
+              && capabilities.kinds.agent.status === 'supported' && capabilities.features['agent.execution']?.status === 'supported');
+            const ordinaryStaticSkills = !plugin.manifest.artifacts && staticComponents.length > 0
+              && staticComponents.every((component) => component.kind === 'skill') && staticSupplements.length === 0
+              && selectedProduct?.version === '0.167.0'
+              && profile.qualifiedConsumers?.skill?.some((qualified) => qualified.product === selectedProduct.product && qualified.version === selectedProduct.version);
             if (binding.route === 'codex-marketplace' && binding.scope.kind === 'user'
-              && !plugin.manifest.artifacts && staticComponents.length > 0
-              && staticComponents.every((component) => component.kind === 'skill')
-              && unmet.length === 0 && staticSupplements.length === 0 && currentProjection
+              && (ordinaryStaticSkills || qualifiedUserRoles && recordedSupplements !== null && packageOnlySkills)
+              && unmet.length === 0 && currentProjection
               && live.registration === 'present' && profile.kinds.skill.status === 'supported'
-              && selectedProduct?.product === 'cli' && selectedProduct.version === '0.167.0'
-              && profile.qualifiedConsumers?.skill?.some((qualified) => qualified.product === selectedProduct.product && qualified.version === selectedProduct.version)
+              && selectedProduct?.product === 'cli'
               && selectedConsumer?.activation === 'enabled' && selectedConsumer.trust === 'unknown') {
               selectedConsumer.trust = 'not-applicable';
             }
             live.components.push(...supplements.components);
             observation.inputDrift ||= inputDrift || supplementDrift || nativeContentDrift;
-            currentMatches.push(confirmedEmpty || currentProjection);
+            currentMatches.push(confirmedEmpty || currentProjection || recordedSupplements !== null && packageExpectationConfirmed);
             emptyMatches.push(confirmedEmpty);
             observation.blockers.push(...unmet.map((entry) => diagnostic(entry.reasonCode)));
             const requiresComponents = expectedCount > 0 || unmet.length > 0 || Boolean(plugin.manifest.artifacts);

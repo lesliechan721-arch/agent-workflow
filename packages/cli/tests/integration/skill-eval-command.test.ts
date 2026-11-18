@@ -30,6 +30,7 @@ function installCodexSkillTestQualification(): void {
     if (platform !== 'codex') return capabilities
     capabilities.profileId = `test-qualified:${capabilities.profileId}`
     capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] }
+    capabilities.kinds.agent = { ...capabilities.kinds.agent, status: 'unverified', reasonCodes: ['capability-unverified'] }
     for (const [id, feature] of Object.entries(getPlatformFeatureRegistry())) if (id.startsWith('skill.')) {
       capabilities.features[id] = { status: 'supported', reasonCodes: [], ...(feature.values ? { values: [...feature.values] } : {}) }
     }

@@ -205,9 +205,10 @@ export async function renderArtifactPlan(context) {
       const config = resolveConfigValues(context, SKILL_CONFIG_KEYS[key]);
       const sourceRoot = readSkillSourceRoot(context, key);
       const template = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
+      const roleName = context.platformCapabilities.basis === 'local' ? `aw-${context.plugin.pluginId.replace('/', '-')}-${key}` : key;
       plan.components.push({ id, kind: 'skill', name: key, requires: execution,
         content: { files: {
-          'SKILL.md': { text: renderProfiles(template, key, config) },
+          'SKILL.md': { text: renderProfiles(template, key, config).replace(`\`${key}\` 角色`, `\`${roleName}\` 角色`) },
           'README.md': { source: { kind: 'bundle', path: `skills/${key}/README.md` } },
           ...(await runtimeResourceFiles(context, key, 'assets')),
           ...(await runtimeResourceFiles(context, key, 'agents')),

@@ -2,12 +2,21 @@ import { COMPONENT_KINDS, getPlatformFeatureRegistry, type PlatformCapabilitiesV
 import { compareStrictSemVer } from '../utils/manifest.js';
 import { identityDigest } from './identity.js';
 import type { CapabilityInput, QualifiedPlatformProfile } from './contracts.js';
-import { platformVersionSupported } from './discovery.js';
+import { platformVersionSupported, selectNativeProduct } from './discovery.js';
 
 const PROFILE_BASELINES: Record<PlatformId, string> = {
   codex: '0.155.0', claude: '2.1.292', cursor: 'desktop-3.29_cli-2026.11.05-86047df',
   antigravity: 'cli-1.3.4', opencode: '2.0.0', pi: '1.0.0', gemini: '0.63.0',
   copilot: '1.0.95', grok: 'native-plugin-interface', generic: 'skills-v1',
+};
+
+const CODEX_CLI_FEATURES = {
+  'agent.execution': ['isolated-context'],
+  'agent.prompt-mode': ['host-default'],
+  'skill.invocation.manual': ['true'],
+  'skill.invocation.model': ['true', 'false'],
+  'skill.visibility': ['visible'],
+  'skill.runtime-config': ['aw.installed-runtime-config.v2'],
 };
 /** Fixed qualification evidence, not a promise inferred from the installed version. */
 export function getQualifiedPlatformProfile(platform: PlatformId, host: { platform?: NodeJS.Platform; arch?: NodeJS.Architecture } = {}): QualifiedPlatformProfile {
@@ -66,6 +75,14 @@ export function getQualifiedPlatformProfile(platform: PlatformId, host: { platfo
         'skill-loading-unverified', 'model-behavior-unverified', 'invocation-controls-unverified', 'adapter-end-to-end-not-qualified-by-this-record'],
     });
   }
+  if (platform === 'codex' && qualifiedSkillHost) {
+    // Role TOML, installed config and Skill invocation policy use the same CLI boundary.
+    profile.id += ':cli-subagents';
+    kinds.agent = { ...kinds.agent, status: 'supported', reasonCodes: [] };
+    for (const [feature, values] of Object.entries(CODEX_CLI_FEATURES)) {
+      features[feature] = { status: 'supported', reasonCodes: [], values: [...values] };
+    }
+  }
   return profile;
 }
 /** Apply recorded scope limits to both local and authoring capability views. */
@@ -91,6 +108,19 @@ export function getPlatformCapabilities(input: CapabilityInput, basis: 'local' |
     if (qualified && !consumers.some((consumer) => consumer.availability === 'available'
       && qualified.some((entry) => entry.product === consumer.product) && platformVersionSupported(binding.platform, consumer.version))) {
       kinds[kind] = { ...kinds[kind], status: 'unverified', reasonCodes: ['capability-unverified'] };
+    }
+  }
+  if (binding.platform === 'codex' && (profile.kinds.skill.status === 'supported' || kinds.agent.status === 'supported')) {
+    const product = selectNativeProduct(consumers);
+    if (product?.product !== 'cli' || !platformVersionSupported('codex', product.version)) {
+      if (kinds.agent.status === 'supported') {
+        kinds.agent = { ...kinds.agent, status: 'unverified', reasonCodes: ['capability-unverified'] };
+      }
+      for (const feature of Object.keys(CODEX_CLI_FEATURES)) {
+        if (features[feature]?.status === 'supported') {
+          features[feature] = { status: 'unverified', reasonCodes: ['capability-unverified'], values: [] };
+        }
+      }
     }
   }
   // Excluded entries remain facts. They do not revoke another complete path.
