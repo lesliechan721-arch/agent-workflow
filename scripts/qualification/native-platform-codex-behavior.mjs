@@ -151,6 +151,8 @@ async function runAppServer(ctx, baseUrl, turns) {
     'model_providers.aw_qualification.env_key': '"AW_QUALIFICATION_MODEL_KEY"',
     'model_providers.aw_qualification.request_max_retries': '0',
     'model_providers.aw_qualification.stream_max_retries': '0',
+    // Shell snapshots start a separate POSIX process group. These turns only exercise Skill and role selection.
+    'features.shell_snapshot': 'false',
     'features.multi_agent': 'true', 'features.multi_agent_v2.enabled': 'true',
     'features.multi_agent_v2.hide_spawn_agent_metadata': 'false',
   };
