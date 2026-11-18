@@ -142,6 +142,34 @@ async function withLocalResponses(respond, run) {
   }
 }
 
+export async function withoutCuratedMarketplaceSync(ctx, run) {
+  const home = await fs.realpath(ctx.env.CODEX_HOME);
+  assert.equal(path.relative(await fs.realpath(ctx.root), home), 'codex',
+    'The curated sync fixture must stay inside the qualification Codex home.');
+  const scratch = path.join(home, '.tmp');
+  await fs.mkdir(scratch, { recursive: true });
+  assert.equal(path.relative(home, await fs.realpath(scratch)), '.tmp',
+    'The curated sync fixture must stay inside the qualification Codex home.');
+  // Codex 0.167.0 opens this file before starting the built-in remote marketplace sync.
+  // A directory at this path stops that sync while keeping the local plugin cache enabled.
+  const lock = path.join(scratch, 'plugins.sync.lock');
+  const backup = await fs.mkdtemp(path.join(scratch, 'aw-responses-fixture-'));
+  const saved = path.join(backup, 'original-lock');
+  let moved = false;
+  let blocked = false;
+  try {
+    try { await fs.rename(lock, saved); moved = true; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await fs.mkdir(lock);
+    blocked = true;
+    return await run();
+  } finally {
+    if (blocked) await fs.rmdir(lock);
+    if (moved) await fs.rename(saved, lock);
+    await fs.rmdir(backup);
+  }
+}
+
 async function runAppServer(ctx, baseUrl, turns) {
   const settings = {
     model: '"gpt-5.4"', model_provider: '"aw_qualification"', approval_policy: '"never"', sandbox_mode: '"read-only"',
@@ -254,7 +282,7 @@ function skillBody(text) {
 }
 
 export async function qualifyPublicCodexManualSkill(ctx) {
-  return ctx.check('public-codex-manual-skill', async () => {
+  return ctx.check('public-codex-manual-skill', () => withoutCuratedMarketplaceSync(ctx, async () => {
     const control = path.join(ctx.env.HOME, '.agents/skills', controlSkill);
     await fs.mkdir(control, { recursive: true });
     try {
@@ -279,7 +307,7 @@ export async function qualifyPublicCodexManualSkill(ctx) {
       return { skill: name, listed: true, ordinaryInventoryContainsSkill: false, explicitSelectionLoadedBody: true,
         responsesEndpoint: 'loopback-fixture' };
     } finally { await fs.rm(control, { recursive: true, force: true }); }
-  });
+  }));
 }
 
 async function installedRole(ctx, listed, source, { plugin, skill, role }) {
@@ -315,7 +343,7 @@ export async function qualifyPublicCodexBehavior(ctx) {
       ctx.project, { timeoutMs: 180_000 });
     return { source, plugins: ['agent-subagent', 'codex-enhance'] };
   });
-  return ctx.check('public-codex-official-role-host-resolution', async () => {
+  return ctx.check('public-codex-official-role-host-resolution', () => withoutCuratedMarketplaceSync(ctx, async () => {
     const listed = await ctx.rpc();
     const projected = await Promise.all(roles.map(role => installedRole(ctx, listed, installed.source, role)));
     const scenarios = projected.map((role, index) => createRoleScenario(role, index + 1));
@@ -325,7 +353,7 @@ export async function qualifyPublicCodexBehavior(ctx) {
       return scenario.respond(request, res, sequence);
     }, url => runAppServer(ctx, url, scenarios.map(({ prompt }) => ({ prompt }))));
     return { roles: scenarios.map(scenario => scenario.evidence()), responsesEndpoint: 'loopback-fixture' };
-  });
+  }));
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {

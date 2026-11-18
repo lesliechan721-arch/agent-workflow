@@ -1,6 +1,26 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { assertManualSkillRequests, createRoleScenario } from './native-platform-codex-behavior.mjs';
+import { assertManualSkillRequests, createRoleScenario, withoutCuratedMarketplaceSync } from './native-platform-codex-behavior.mjs';
+
+test('the loopback fixture restores the refresh lock when the turn fails', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-refresh-fixture-'));
+  try {
+    const home = path.join(root, 'codex');
+    const lock = path.join(home, '.tmp', 'plugins.sync.lock');
+    await fs.mkdir(path.dirname(lock), { recursive: true });
+    await fs.writeFile(lock, 'existing test lock');
+    const failure = new Error('turn failed');
+    await assert.rejects(withoutCuratedMarketplaceSync({ root, env: { CODEX_HOME: home } }, async () => {
+      assert((await fs.stat(lock)).isDirectory());
+      throw failure;
+    }), failure);
+    assert.equal(await fs.readFile(lock, 'utf8'), 'existing test lock');
+    assert.deepEqual(await fs.readdir(path.dirname(lock)), ['plugins.sync.lock']);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
 
 function messages(user, developer) {
   return { input: [{ role: 'user', content: [{ text: user }] }, { role: 'developer', content: [{ text: developer }] }] };
