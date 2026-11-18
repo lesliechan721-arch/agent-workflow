@@ -86,7 +86,8 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
       || typeof plugin.scope !== 'string') throw new Error('grokPluginIdentityInvalid');
   }
   const effective = ['skills', 'agents', 'mcpServers'].flatMap((kind) => rows(inspect[kind]).map((row) => ({ kind, row, source: object(row.source) })));
-  const own = plugins.filter((plugin) => plugin.name === name && plugin.path === nativeRoot && plugin.scope === binding.scope.kind);
+  const own = nativeRoot === undefined ? [] : plugins.filter((plugin) => plugin.name === name
+    && path.normalize(plugin.path as string) === path.normalize(nativeRoot) && plugin.scope === binding.scope.kind);
   const hasLoadedResources = own.length === 1 && effective.some(({ source }) => source.plugin_name === name && within(nativeRoot!, source.path));
   // Scoped host authorization remains separate from consent to install a new source.
   result.grokScopeAuthorization = inspect.projectTrusted === true ? 'granted' : inspect.projectTrusted === false ? 'denied' : 'unknown';

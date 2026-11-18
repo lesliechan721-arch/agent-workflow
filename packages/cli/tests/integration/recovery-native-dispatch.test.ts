@@ -77,8 +77,9 @@ describe('native recovery dispatch', () => {
       }] : []);
       else if (args[0] === 'inspect') {
         const packageRoot = scope === 'user' ? userSource && installed : await fs.pathExists(projectPackage) ? projectPackage : undefined;
+        const reportedPath = process.platform === 'win32' && scope === 'project' ? packageRoot?.replace('\\plugins\\', '/plugins\\') : packageRoot;
         stdout = JSON.stringify({ grokVersion: '1.0.77', projectTrusted: true, plugins: packageRoot ? [
-          { name: 'demo', scope, path: packageRoot, enabled: true },
+          { name: 'demo', scope, path: reportedPath, enabled: true },
         ] : [], skills: [], agents: [], mcpServers: [] });
       } else throw new Error('Unexpected automatic native mutation.');
       return { exitCode: 0, stdout, stderr: '' };

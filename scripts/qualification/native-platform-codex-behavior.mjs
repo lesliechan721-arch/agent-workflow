@@ -285,13 +285,18 @@ function skillBody(text) {
 
 export async function qualifyPublicCodexManualSkill(ctx) {
   return ctx.check('public-codex-manual-skill', () => withoutCuratedMarketplaceSync(ctx, async () => {
-    const control = path.join(ctx.env.HOME, '.agents/skills', controlSkill);
+    // Codex 0.167.0 loads this Skill root from the isolated User config directory.
+    const control = path.join(ctx.env.CODEX_HOME, 'skills', controlSkill);
+    const controlFile = path.join(control, 'SKILL.md');
     await fs.mkdir(control, { recursive: true });
     try {
-      await fs.writeFile(path.join(control, 'SKILL.md'),
+      await fs.writeFile(controlFile,
         `---\nname: ${controlSkill}\ndescription: Implicit Skill inventory control\n---\nThis is an isolated qualification Skill.\n`);
+      const listed = await ctx.rpc(ctx.neutral);
+      const listedControl = await nativeSkill(ctx, listed, controlSkill);
+      assert.equal(listedControl.path, await fs.realpath(controlFile), 'The native inventory must list the isolated implicit control file.');
       const name = `${ctx.pluginName}:${ctx.skillName}`;
-      const skill = await nativeSkill(ctx, await ctx.rpc(ctx.neutral), name);
+      const skill = await nativeSkill(ctx, listed, name);
       const body = skillBody(await fs.readFile(ctx.publicSkillFile, 'utf8'));
       assert.equal(skillBody(await fs.readFile(skill.path, 'utf8')), body, 'The listed file must contain the current fixture body.');
       const ordinary = 'AW_NATIVE_QUALIFICATION_ORDINARY_TURN';
@@ -306,7 +311,7 @@ export async function qualifyPublicCodexManualSkill(ctx) {
       }, url => runAppServer(ctx, url, [{ prompt: ordinary }, { prompt: explicit, skill }]));
       assert.equal(requests.size, 2, 'Both manual Skill turns must reach the loopback Responses fixture.');
       assertManualSkillRequests(requests.get(ordinary), requests.get(explicit), { name, description: skill.description, body });
-      return { skill: name, listed: true, ordinaryInventoryContainsSkill: false, explicitSelectionLoadedBody: true,
+      return { skill: name, listed: true, implicitControlListed: true, ordinaryInventoryContainsSkill: false, explicitSelectionLoadedBody: true,
         responsesEndpoint: 'loopback-fixture' };
     } finally { await fs.rm(control, { recursive: true, force: true }); }
   }));
