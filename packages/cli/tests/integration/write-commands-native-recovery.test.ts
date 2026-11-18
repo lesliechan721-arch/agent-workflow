@@ -4,6 +4,8 @@ import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.
 import { render } from 'ink-testing-library';
 import { readRecoveryStatus, type RecoveryStatus } from '../../src/recovery/status.js';
 import * as platformRegistry from '../../src/platforms/registry.js';
+import * as manifests from '../../src/utils/manifest.js';
+import * as catalogContexts from '../../src/utils/catalog-operation-context.js';
 import { writePreferences, createEmptyPreferences } from '../../src/intent/deployment-preferences.js';
 import { setRebuildCommandTestHooksForTests, type RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
@@ -3256,6 +3258,32 @@ describe('five namespaced write commands', () => {
     });
   }, 30_000);
 
+  it('keeps Native residue visible for bare and qualified selectors without Intent roots', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'undeclared-native-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
+    const config = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'team', type: 'path', primary: true, path: sourceRoot },
+    ] }, expectedDigest: config.digest, env: isolation.env });
+    const runtime = await createCodexNativeTestRuntime(isolation);
+    await expect(installFixturePlugin(['team/demo'], { cwd: isolation.layout.fixtureCwd,
+      platform: 'codex', scope: 'project' }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    for (const scope of ['user', 'project'] as const) await writeIntentFixture({ scope,
+      cwd: isolation.layout.fixtureCwd, env: isolation.env }, { roots: [] });
+    const read = (plugins?: string[]) => readRecoveryStatus({ cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      context: 'project', targets: ['codex'], plugins, nativeCliRunner: runtime.nativeCliRunner });
+    const full = await read();
+    const qualified = await read(['team/demo']);
+    const bare = await read(['demo']);
+    const facts = (value: RecoveryStatus) => value.extraObserved.map(({ pluginId, agent, scope, content }) =>
+      ({ pluginId, agent, scope, content }));
+    expect(facts(full), JSON.stringify(full)).toContainEqual(expect.objectContaining({ pluginId: 'team/demo', agent: 'codex' }));
+    expect(facts(qualified)).toEqual(facts(full));
+    expect(facts(bare)).toEqual(facts(full));
+    expect(bare.inventory).toEqual([]);
+  });
+
   it('reports observed registration through one read-only system Codex discovery per scope', async () => {
     const isolation = getCurrentSourceTestIsolation();
     nativeQualification.restore();
@@ -3281,9 +3309,16 @@ describe('five namespaced write commands', () => {
     }, { ...installedRuntime, env: fixedEnv })).resolves.toMatchObject({ overallState: 'succeeded' });
     isolateCodexAppDiscoveryQueries();
     const statusRunner = vi.fn(installedRuntime.nativeCliRunner);
+    const manifestReads = vi.spyOn(manifests, 'readPluginManifest');
+    const catalogReads = vi.spyOn(catalogContexts, 'resolvePartialCatalogOperationContext');
     const status = await readRecoveryStatus({ cwd: isolation.layout.fixtureCwd,
       env: fixedEnv, nativeCliRunner: statusRunner,
       cliVersion: '1.0.0', targets: ['codex'], context: 'project' });
+    expect(catalogReads).toHaveBeenCalledTimes(1);
+    // One integrity-validation read and one demand-graph read; neither repeats for User/Project.
+    expect(manifestReads).toHaveBeenCalledTimes(2);
+    catalogReads.mockRestore();
+    manifestReads.mockRestore();
     const projectTarget = observedTarget(status, 'team/demo', 'project');
     expect(projectTarget.content, JSON.stringify(projectTarget)).toBe('satisfied');
     expect(projectTarget.deploymentObservations).toContainEqual(expect.objectContaining({
@@ -3296,7 +3331,7 @@ describe('five namespaced write commands', () => {
     const versionCalls = statusRunner.mock.calls.filter(([invocation]) =>
       invocation.args.at(-1) === '--version');
     const invocationSummary = versionCalls.map(([{ command, args, cwd }]) => ({ command, args, cwd }));
-    expect(versionCalls, JSON.stringify(invocationSummary)).toHaveLength(2);
+    expect(versionCalls, JSON.stringify(invocationSummary)).toHaveLength(1);
     const versionInvocation = versionCalls[0]![0];
     const selectedPrefix = versionInvocation.args.slice(0, -1);
     const expectedLauncher = await fs.realpath(process.platform === 'win32'
@@ -3307,7 +3342,7 @@ describe('five namespaced write commands', () => {
     const projectCwd = await fs.realpath(isolation.layout.fixtureCwd);
     const projectVersionCalls = versionCalls.filter(([invocation]) => invocation.cwd === projectCwd);
     const userVersionCalls = versionCalls.filter(([invocation]) => invocation.cwd !== projectCwd);
-    expect(projectVersionCalls, JSON.stringify(invocationSummary)).toHaveLength(1);
+    expect(projectVersionCalls, JSON.stringify(invocationSummary)).toHaveLength(0);
     expect(userVersionCalls, JSON.stringify(invocationSummary)).toHaveLength(1);
     expect(path.basename(userVersionCalls[0]![0].cwd)).toMatch(/^aw-user-neutral-/u);
     expect(versionCalls.every(([invocation]) => invocation.command === versionInvocation.command

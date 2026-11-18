@@ -253,6 +253,7 @@ export interface QualifiedPlatformProfile {
   /** Qualification is explicit per capability; a version match alone grants none. */
   kinds: PlatformCapabilitiesV1['kinds'];
   features: PlatformCapabilitiesV1['features'];
+  /** Exact historical evidence; runtime management uses the product's interface minimum. */
   qualifiedConsumers?: Partial<Record<ComponentKind, Array<{ product: ProductInstallation['product']; version: string }>>>;
   /** Recorded scope limits apply to both runtime and authoring kind views. */
   qualificationEvidence?: Array<{ reference: string; product: ProductInstallation['product']; version: string;

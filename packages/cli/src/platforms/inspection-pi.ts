@@ -61,7 +61,6 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
   const entry = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
   const agentRoot = entry?.kind === 'cli' ? entry.configRoot : resolvePlatformConfigRoot('pi', ctx);
   try {
-    if (binding.consumers.some((consumer) => consumer.version !== '1.5.0')) throw new Error('piNativeVersionUnverified');
     const registration = nativeRegistration(await queryNativeDeployment(ctx, binding, ['list']), binding, layout,
       agentRoot, resolveUserHome(ctx.env ?? process.env, ctx.platform ?? process.platform));
     result.registration = registration === 'scope-not-visible' ? 'unknown' : registration;
@@ -137,7 +136,6 @@ async function inspectPiConfiguration(ctx: ReadContext, binding: DeploymentBindi
     trust: binding.scope.kind === 'user' ? 'trusted' : projectTrust, reasonCodes: [] };
   // Pi 1.5's public package/filter and trust formats are observed separately
   // from qualification of any consumer's invocation protocol.
-  if (binding.consumers.some((consumer) => consumer.version !== '1.5.0')) complete = false;
   const candidates: AgentConsumerObservation[] = [];
   const userSubagents = await read(path.join(agentRoot, 'subagents.json'));
   const projectSubagents = projectRoot ? await read(path.join(projectRoot, '.pi', 'subagents.json')) : {};

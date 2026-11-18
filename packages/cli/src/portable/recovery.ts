@@ -439,7 +439,7 @@ export interface PortableExtraObservation {
   agent: PortableAgent;
   physicalPath: string;
   observation: 'verified' | 'unknown';
-  content: 'satisfied' | 'drifted';
+  content: 'satisfied' | 'drifted' | 'unknown';
   contentState?: 'current' | 'stale' | 'damaged' | 'unknown';
   logicalIdentity?: string;
 }
@@ -452,6 +452,7 @@ export async function inspectPortableExtraInstalled(options: {
   context: ScopeContext;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  plugins?: ReadonlySet<string>;
 }): Promise<PortableExtraInspection> {
   options.signal?.throwIfAborted();
   const targets: PortableExtraObservation[] = [];
@@ -461,15 +462,18 @@ export async function inspectPortableExtraInstalled(options: {
     if (layout.scope !== options.scope) return { targets, complete: false };
     for (const agent of PORTABLE_PLATFORM_TARGETS) {
       const scanned = await scanPortableSkills({ destinationRoot: layout.targetRoot(agent), platform: agent,
-        scope: options.scope, signal: options.signal });
+        scope: options.scope, signal: options.signal, ...(options.plugins ? { checkContent: (identity: PortableOwnerIdentity) =>
+          options.plugins!.has(identity.pluginId) || options.plugins!.has(identity.pluginId.split('/')[1]!) } : {}) });
       complete &&= scanned.complete;
       for (const target of scanned.targets) {
         const owner = target.owner ?? target.recoverableIdentity;
         if (!owner) continue;
+        const shallow = target.ownership === 'aw' && target.observation === 'unknown'
+          && target.installedDigest === undefined && target.blocker === undefined;
         targets.push({ pluginId: owner.pluginId, skill: target.skill, agent, physicalPath: target.physicalPath,
           logicalIdentity: owner.logicalIdentity, contentState: target.contentState,
           observation: target.observation === 'satisfied' ? 'verified' : 'unknown',
-          content: target.observation === 'satisfied' ? 'satisfied' : 'drifted' });
+          content: shallow ? 'unknown' : target.observation === 'satisfied' ? 'satisfied' : 'drifted' });
       }
     }
   } catch (error) {

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
 import { withNativeToolRemovalImpact } from '../utils/native-tool-review.js';
 
 import fs from 'fs-extra';
@@ -289,6 +290,7 @@ export interface RebuildReviewPreflightEvidence {
 }
 
 export interface RebuildCommandResult {
+  recoveryDiagnostics?: import('../recovery/receipt.js').RecoveryDiagnostic[];
   deploymentExclusions?: OperationPlan['deploymentExclusions'];
   platforms: string[];
   plugins: string[];
@@ -5792,7 +5794,18 @@ export async function runRebuildCommand(
   const renderResults = options.runtime?.preparedArtifactRenderResults ?? new Map();
   options = { ...options, runtime: { ...options.runtime, commandResults, preparedArtifactRenderResults: renderResults,
     managedCommandProducerCache: options.runtime?.managedCommandProducerCache ?? new Map() } };
-  const withCommands = (result: RebuildCommandResult): RebuildCommandResult => {
+  const withCommands = async (result: RebuildCommandResult): Promise<RebuildCommandResult> => {
+    if (options.command === 'cleanup' && (!options.runtime?.previewOperationPlan || result.overallState !== 'succeeded')) {
+      const inventory = await inventoryCatalogSourceReferences({ cwd: executionInput.context.executionCwd,
+        env: executionInput.context.env, scope: options.commandOptions.scope });
+      const selectedErrors = cleanupInventoryErrorsForSelection({ inventory, selectors: options.pluginNames,
+        platforms: selectedPlatforms(options.commandOptions.platform), scope: options.commandOptions.scope, all: options.all === true });
+      if (selectedErrors.length) {
+        result.recoveryDiagnostics = selectedErrors.map(inventoryRecoveryDiagnostic);
+        result.overallState = result.overallState === 'partial' || result.targetResults.some((target) => target.state === 'completed')
+          || result.rebuildResults.some((entry) => entry.removed.length > 0 || entry.quarantined.length > 0) ? 'partial' : 'failed';
+      }
+    }
     const exclusions = result.operationPlan?.deploymentExclusions ?? result.deploymentExclusions
       ?? result.rebuildResults.flatMap((entry) => entry.deploymentExclusions ?? []);
     if (exclusions.length) result = { ...result, deploymentExclusions: exclusions };

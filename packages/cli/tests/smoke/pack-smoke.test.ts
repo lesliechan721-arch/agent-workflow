@@ -1086,9 +1086,12 @@ describe('pack smoke', () => {
           expect.objectContaining({
             pluginId: `${developmentSourceId}/packed-build`, target: 'claude',
             delivery: { kind: 'native', platform: 'claude' }, observation: 'unknown',
-            execution: 'not-run', blockerCodes: ['noSupportedComponents'],
+            // The fixture meets the interface minimum, but cannot supply the marketplace inventory protocol.
+            execution: 'not-run', blockerCodes: [codexSkillQualified ? 'deploymentOwnershipUnconfirmed' : 'noSupportedComponents'],
             deploymentPlans: expect.arrayContaining([expect.objectContaining({ effects: [],
-              expected: expect.objectContaining({ components: [], unmet: expect.arrayContaining([expect.objectContaining({ id: 'skill:packed-native', kind: 'skill',
+              expected: expect.objectContaining(codexSkillQualified ? {
+                components: expect.arrayContaining([expect.objectContaining({ id: 'skill:packed-native', kind: 'skill' })]), unmet: [],
+              } : { components: [], unmet: expect.arrayContaining([expect.objectContaining({ id: 'skill:packed-native', kind: 'skill',
                 reasonCode: 'capability-unverified', requiredFeatures: [{ feature: 'component.kind.skill' }] })]),
               }),
             })]),

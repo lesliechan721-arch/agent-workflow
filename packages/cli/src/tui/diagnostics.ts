@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { redactString } from '../output/redact.js';
 import { collectSensitiveTokenRepresentations } from '../utils/sensitive-content.js';
+import type { Diagnostic } from '../output/public-result.js';
 
 export type DiagnosticImpactState = 'blocked' | 'preserved' | 'degraded';
 
@@ -32,6 +33,8 @@ export interface DiagnosticTechnicalViewModel {
   context?: Array<{ key: DiagnosticContextKey; value: string }>;
   sanitizedCause?: string;
   checks?: string[];
+  /** Scanner locations use the public recovery validator, not raw error text. */
+  recoveryDiagnostics?: Array<Pick<Diagnostic, 'code' | 'subject' | 'detail'>>;
 }
 
 export interface DiagnosticSummaryViewModel {

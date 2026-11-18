@@ -1,13 +1,15 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 import { observePortableSkill, portableOwnedTreeDigest, publishPortableSkill, removePortableSkill,
   scanPortableSkills, type PortableOwnerIdentity } from '../../src/portable/writer.js';
 import { portableJsonDigest } from '../../src/portable/historical-materialization.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { createScopeContext } from '../../src/intent/scope-context.js';
+import { inspectPortableExtraInstalled } from '../../src/portable/recovery.js';
 
 async function fixture() {
   const isolated = getCurrentSourceTestIsolation();
@@ -35,6 +37,85 @@ async function fixture() {
 }
 
 describe('AW Portable writer', () => {
+  // Test Value Gate: precise queries keep known residual identities while only
+  // reading selected content; default scans still inspect every owned package.
+  it('skips unrelated Portable content without treating it as healthy or removable', async () => {
+    const value = await fixture();
+    await value.install();
+    const unrelated = path.join(value.destinationRoot, 'beta');
+    await fs.copy(value.output, unrelated);
+    const markerPath = path.join(unrelated, SKILL_OWNER_MARKER);
+    await fs.writeJson(markerPath, { ...await fs.readJson(markerPath), pluginId: 'team/unrelated', skill: 'beta' });
+    await fs.appendFile(path.join(unrelated, 'README.md'), 'Unrelated damaged content.\n');
+    const inspect = () => scanPortableSkills({ destinationRoot: value.destinationRoot, platform: 'generic', scope: 'project',
+      checkContent: (identity) => identity.pluginId === 'team/plugin' });
+    const reads = vi.spyOn(fs, 'readFile');
+    try {
+      const selected = await inspect();
+      expect(selected).toMatchObject({ complete: true, targets: [
+        { skill: 'alpha', ownership: 'aw', observation: 'satisfied' },
+        { skill: 'beta', ownership: 'aw', observation: 'unknown', contentState: 'unknown',
+          recoverableIdentity: { pluginId: 'team/unrelated' } },
+      ] });
+      const beta = selected.targets.find((target) => target.skill === 'beta')!;
+      expect(beta.installedDigest).toBeUndefined();
+      expect(reads.mock.calls.some(([file]) => String(file) === path.join(value.output, 'README.md'))).toBe(true);
+      expect(reads.mock.calls.some(([file]) => String(file).startsWith(`${unrelated}${path.sep}`)
+        && String(file) !== markerPath)).toBe(false);
+      await expect(removePortableSkill({ destinationRoot: value.destinationRoot, identity: beta.recoverableIdentity!, observed: beta, force: true }))
+        .rejects.toThrow('operationReviewStale');
+      reads.mockClear();
+      const full = await scanPortableSkills({ destinationRoot: value.destinationRoot, platform: 'generic', scope: 'project' });
+      expect(full.targets.find((target) => target.skill === 'beta')).toMatchObject({ observation: 'drifted', contentState: 'damaged' });
+      expect(reads.mock.calls.some(([file]) => String(file) === path.join(unrelated, 'README.md'))).toBe(true);
+      await fs.appendFile(path.join(value.output, 'README.md'), 'Selected damaged content.\n');
+      expect((await inspect()).targets.find((target) => target.skill === 'alpha'))
+        .toMatchObject({ observation: 'drifted', contentState: 'damaged' });
+    } finally { reads.mockRestore(); }
+  });
+
+  // Test Value Gate: unknown identity and unsafe marker paths cannot be hidden
+  // by an apparently unrelated selection or provide complete request coverage.
+  it.each(['unknown-marker', 'marker-link', 'output-link'] as const)('keeps %s Portable coverage incomplete during selection', async (kind) => {
+    const value = await fixture();
+    await value.install();
+    const markerPath = path.join(value.output, SKILL_OWNER_MARKER);
+    if (kind === 'unknown-marker') await fs.writeFile(markerPath, '{broken');
+    else {
+      const foreign = path.join(value.root, 'foreign');
+      await fs.copy(value.output, foreign);
+      const link = kind === 'marker-link' ? markerPath : value.output;
+      await fs.remove(link);
+      await fs.symlink(kind === 'marker-link' ? path.join(foreign, SKILL_OWNER_MARKER) : foreign, link,
+        kind === 'marker-link' ? 'file' : 'junction');
+    }
+    const scanned = await scanPortableSkills({ destinationRoot: value.destinationRoot, platform: 'generic', scope: 'project', checkContent: () => false });
+    expect(scanned.complete).toBe(false);
+    expect(scanned.targets[0]).toMatchObject({ observation: kind === 'unknown-marker' ? 'unknown' : 'conflict' });
+  });
+
+  // Test Value Gate: the extra inventory exposes shallow residuals as unknown,
+  // and a bare selector for an installed plugin still receives content checks.
+  it('projects selected and shallow extra Portable observations without hiding residuals', async () => {
+    const value = await fixture();
+    await value.install();
+    await fs.ensureDir(path.join(value.root, '.git'));
+    const destination = path.join(value.root, '.agents', 'skills');
+    await fs.move(value.destinationRoot, destination);
+    const isolated = getCurrentSourceTestIsolation();
+    const context = await createScopeContext({ scope: 'project', cwd: value.root, env: isolated.env, readOnly: true });
+    try {
+      const options = { scope: 'project' as const, context, env: isolated.env };
+      expect(await inspectPortableExtraInstalled({ ...options, plugins: new Set(['other/selected']) })).toMatchObject({ complete: true,
+        targets: [{ pluginId: 'team/plugin', observation: 'unknown', content: 'unknown' }] });
+      await fs.appendFile(path.join(destination, 'alpha', 'README.md'), 'Damaged selected content.\n');
+      expect(await inspectPortableExtraInstalled({ ...options, plugins: new Set(['plugin']) })).toMatchObject({ complete: true,
+        targets: [{ pluginId: 'team/plugin', observation: 'unknown', content: 'drifted', contentState: 'damaged' }] });
+      expect(await inspectPortableExtraInstalled(options)).toMatchObject({ complete: true,
+        targets: [{ pluginId: 'team/plugin', content: 'drifted', contentState: 'damaged' }] });
+    } finally { await context.dispose(); }
+  });
+
   // Test Value Gate: a complete real copy must remain usable after the temporary source disappears.
   it('publishes a complete independent copy and preserves executable files', async () => {
     const value = await fixture();

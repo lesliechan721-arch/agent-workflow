@@ -423,7 +423,7 @@ describe('five namespaced write commands', () => {
     const stale = await controller.startForceCleanupReview(candidate!);
     await fs.appendFile(agentPath, 'changed\n');
     expect(await controller.executeScopedTask(stale)).toMatchObject({ kind: 'recovery', receipt: {
-      ok: false, outputsMayHaveChanged: false, blockers: [expect.objectContaining({ code: 'operationReviewStale' })],
+      ok: false, outputsMayHaveChanged: false, blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]),
     } });
     expect(await fs.readFile(agentPath, 'utf8')).toBe(original.toString() + 'changed\n');
     const reviewed = await controller.startForceCleanupReview(candidate!);

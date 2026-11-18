@@ -15,6 +15,7 @@ import { prepareGeminiFixtureTrust, observeNativeWorkingDirectory, readSkills as
 import './native-platform-process-names.test.mjs';
 import './native-platform-marker-confirmations.test.mjs';
 import './native-platform-process-query-timings.test.mjs';
+import './native-platform-acquisition.test.mjs';
 import './native-platform-copilot-skills.test.mjs';
 import './native-platform-gemini-skills.test.mjs';
 import './native-platform-linux-environment.test.mjs';
@@ -443,6 +444,37 @@ test('Linux native Gemini diagnostics retain a strict missing-marker failure', {
         assert(error.qualificationMarkerRows?.length > 0);
         assert(error.qualificationMarkerRows.every(row => row.markerMatches === false && row.commandForm));
         assert(!JSON.stringify(error.qualificationMarkerRows).includes('deliberately-incorrect-marker'));
+        return true;
+      });
+    });
+  } finally {
+    for (const [index, key] of keys.entries()) {
+      if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index];
+    }
+  }
+});
+
+// Test Value Gate: Darwin direct/RPC execution must retain existing query
+// timings on success and audit failure without changing process acceptance.
+test('Darwin native execution retains query timing and strict marker failures', {
+  skip: process.platform !== 'darwin', timeout: 30_000,
+}, async () => {
+  const keys = ['GITHUB_ACTIONS', 'AW_NATIVE_QUALIFICATION_PROCESS_NAMES'];
+  const saved = keys.map(key => process.env[key]);
+  process.env.GITHUB_ACTIONS = 'true'; process.env.AW_NATIVE_QUALIFICATION_PROCESS_NAMES = '1';
+  try {
+    await publicProcessFixture(async options => {
+      const success = await execute(nodeLauncher, ['-e', 'process.stdout.write("controlled output")'], options);
+      assertCommand(success); assert.equal(success.stdout, 'controlled output');
+      assert.equal(success.containmentMode, 'verified-observed');
+      assert(success.processQueryTimings.records.some(record => record.queryKind === 'identity-ps'));
+      const script = "require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),5000)'],"
+        + "{env:{...process.env,AW_AGENT_SKILL_EVAL_PROCESS_MARKER:'deliberately-incorrect-marker'},stdio:'ignore'});"
+        + 'setTimeout(()=>process.exit(0),7000);';
+      await assert.rejects(execute(nodeLauncher, ['-e', script], options), error => {
+        assert.match(error.message, /lost its process marker/);
+        assert(error.publicAwProcessQueryTimings.records.some(record => record.queryKind === 'marker-ps'));
+        assert(!JSON.stringify(error.publicAwProcessQueryTimings).includes('deliberately-incorrect-marker'));
         return true;
       });
     });

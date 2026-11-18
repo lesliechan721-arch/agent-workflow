@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { PLATFORM_TARGETS, type PlatformTarget } from '@lesliechan721/aw-plugin-core';
+import { tryParseStrictSemVer } from '@lesliechan721/aw-plugin-core/semver';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS, MINIMUM_AGENT_VERSIONS } from '../constants.js';
 import { discoverCodexExecutables, rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { extractStrictSemVerTokenFromVersionOutput } from '../utils/agent-version.js';
@@ -33,6 +34,11 @@ export interface DiscoveryResult {
   installations: ProductInstallation[];
   diagnostics: Diagnostic[];
 }
+/** Prefer the CLI product for native management, preserving discovery order within each product. */
+export function selectNativeProduct(products: readonly ProductInstallation[]): ProductInstallation | undefined {
+  const usable = (product: ProductInstallation): boolean => product.availability === 'available' && product.entry?.kind === 'cli';
+  return products.find((product) => product.product === 'cli' && usable(product)) ?? products.find(usable);
+}
 export interface ReadContext {
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -41,7 +47,11 @@ export interface ReadContext {
   signal?: AbortSignal;
   /** Replaces only external process probes, including OS identity queries. */
   runner?: NativeCliRunner;
+  /** Read-only operation snapshot only. Do not reuse across writes or commands. */
+  discoveryCache?: Map<string, { runner?: NativeCliRunner; result: Promise<DiscoveryResult> }>;
   codexObservationSession?: import('../utils/codex-native-observation.js').CodexNativeObservationSession;
+  /** Explicitly owned by one read-only status operation; never pass into writes. */
+  nativeQuerySession?: import('./inspection-query.js').NativeQuerySession;
   /** Optional private session directory for native Node code compilation. */
   nativeNodeCompileCacheDir?: () => Promise<string>;
   /** Explicit status observation may start a supported native app-server or private local server. */
@@ -74,6 +84,17 @@ const cliProfiles = {
   copilot: { names: ['copilot'], minimum: '1.0.95', identity: /(?:GitHub Copilot|Copilot CLI)/iu, packageName: '@github/copilot' },
   grok: { names: ['grok'], identity: /\bgrok\b/iu, packageName: '@xai-official/grok' },
 } as const;
+/** The same interface minimum applies to discovery and ordinary capability use. */
+export function platformVersionSupported(platform: PlatformTarget, version: string | null): boolean {
+  if (platform === 'generic') return true;
+  if (platform === 'cursor') return version !== null && /^\d{4}\.\d{2}\.\d{2}-[a-z0-9]+$/u.test(version)
+    && version >= cliProfiles.cursor.minimum;
+  // Grok is gated by its native management interface, not a numeric minimum.
+  if (platform === 'grok') return version === null || tryParseStrictSemVer(version) !== null;
+  if (!version || !tryParseStrictSemVer(version)) return false;
+  const minimum = platform === 'codex' ? MINIMUM_AGENT_VERSIONS.codex : cliProfiles[platform].minimum;
+  return compareStrictSemVer(version, minimum) >= 0;
+}
 const MAX_PROBE_OUTPUT_BYTES = 1024 * 1024;
 const GEMINI_NPM_VERSION_PROBE_TIMEOUT_MS = 10_000;
 
@@ -268,8 +289,7 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
         if (platform === 'grok') product.availability = 'available';
       }
       else {
-        const minimum = 'minimum' in profile ? profile.minimum : undefined;
-        const compatible = !minimum || (platform === 'cursor' ? version >= minimum : compareStrictSemVer(version, minimum) >= 0);
+        const compatible = platformVersionSupported(platform, version);
         product.availability = compatible ? 'available' : 'unsupported';
         product.reasonCodes = compatible ? [] : ['clientVersionUnsupported'];
       }
@@ -310,7 +330,7 @@ async function discoverCodex(ctx: ReadContext): Promise<DiscoveryResult> {
       const version = extractStrictSemVerTokenFromVersionOutput(output);
       if (!version || !/\bcodex(?:-cli)?\b/iu.test(output) || candidate.expectedVersion && version !== candidate.expectedVersion) throw new Error('clientIdentityUnconfirmed');
       product.version = version;
-      product.availability = compareStrictSemVer(version, MINIMUM_AGENT_VERSIONS.codex) >= 0 ? 'available' : 'unsupported';
+      product.availability = platformVersionSupported('codex', version) ? 'available' : 'unsupported';
       product.reasonCodes = product.availability === 'available' ? [] : ['clientVersionUnsupported'];
     } catch (error) { rethrowFatalError(error); ctx.signal?.throwIfAborted(); }
     products.push(product);
@@ -360,7 +380,7 @@ async function appRuntime(platform: AppPlatform, root: string, product: ProductI
   }
   if (!version) { product.availability = 'unknown'; product.reasonCodes = ['clientRuntimeVersionUnknown']; return; }
   product.version = version;
-  product.availability = compareStrictSemVer(version, '2.0.0') >= 0 ? 'available' : 'unsupported';
+  product.availability = platformVersionSupported('opencode', version) ? 'available' : 'unsupported';
   product.reasonCodes = product.availability === 'available' ? [] : ['clientRuntimeVersionUnsupported'];
   const remote = readEnvironmentValue(ctx.env ?? process.env, 'OPENCODE_SERVER_URL', ctx.platform);
   if (remote) {
@@ -482,6 +502,30 @@ async function discoverApps(platform: AppPlatform, ctx: ReadContext): Promise<{ 
 }
 
 export async function discoverPlatform(platform: PlatformTarget, ctx: ReadContext): Promise<DiscoveryResult> {
+  ctx.signal?.throwIfAborted();
+  if (!ctx.discoveryCache) return discoverPlatformUncached(platform, ctx);
+  const env = ctx.env ?? process.env;
+  const host = ctx.platform ?? process.platform;
+  let configRoot: string;
+  try { configRoot = resolvePlatformConfigRoot(platform, ctx); }
+  catch { return discoverPlatformUncached(platform, ctx); }
+  // Discovery probes only client identity and management interfaces. Scope does
+  // not change those facts; relative PATH/config inputs must still stay distinct.
+  const searchPath = readEnvironmentValue(env, 'PATH', host)?.split(host === 'win32' ? ';' : ':')
+    .map((directory) => path.resolve(ctx.cwd, directory.replace(/^"|"$/gu, '')));
+  const key = JSON.stringify({ platform, searchPath, configRoot,
+    home: resolveUserHome(env, host), env: Object.entries(env).sort(([a], [b]) => a.localeCompare(b)),
+    host, arch: ctx.arch ?? process.arch,
+    macApplicationsDirectories: ctx.macApplicationsDirectories, windowsApplicationsDirectories: ctx.windowsApplicationsDirectories,
+    linuxDesktopDirectories: ctx.linuxDesktopDirectories });
+  let cached = ctx.discoveryCache.get(key);
+  if (!cached || cached.runner !== ctx.runner) {
+    cached = { runner: ctx.runner, result: discoverPlatformUncached(platform, ctx) };
+    ctx.discoveryCache.set(key, cached);
+  }
+  return structuredClone(await cached.result);
+}
+async function discoverPlatformUncached(platform: PlatformTarget, ctx: ReadContext): Promise<DiscoveryResult> {
   try {
     ctx.signal?.throwIfAborted();
     if (platform === 'generic') {

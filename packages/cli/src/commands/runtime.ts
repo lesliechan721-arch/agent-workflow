@@ -20,8 +20,8 @@ import type { PublicCommandInterruption } from './public-interruption.js';
 import { resolveAwHome } from '../utils/paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import type { Scope } from '../types.js';
-import { createInkPrompt } from '../tui/prompt.js';
-import { createInkTuiRunner, type TuiRunner } from '../tui/runner.js';
+import type { InkPromptOptions } from '../tui/prompt.js';
+import type { TuiRunner } from '../tui/runner.js';
 
 export type {
   CommandEvent,
@@ -354,6 +354,23 @@ export function validateCliConfigPromptResult(
   }
 
   return result;
+}
+
+function createDeferredInkPrompt(options: InkPromptOptions): CliPrompt {
+  let prompt: Promise<CliPrompt> | undefined;
+  const load = (): Promise<CliPrompt> => prompt ??= import('../tui/prompt.js')
+    .then(({ createInkPrompt }) => createInkPrompt(options));
+  return {
+    select: async (input) => (await load()).select!(input),
+    multiSelect: async (input) => (await load()).multiSelect!(input),
+    confirm: async (input) => (await load()).confirm!(input),
+    input: async (input) => (await load()).input!(input),
+    password: async (input) => (await load()).password!(input),
+    selectPlatform: async (input) => (await load()).selectPlatform!(input),
+    selectScope: async (input) => (await load()).selectScope!(input),
+    selectPlugins: async (input) => (await load()).selectPlugins!(input),
+    configurePlugin: async (input) => (await load()).configurePlugin!(input),
+  };
 }
 
 function createUnavailablePrompt(): CliPrompt {
@@ -1092,12 +1109,17 @@ export function createCliExecutionContext(
   );
   const debugLogger = input.debugLogger ?? createFileDebugLogger(diagnostics);
   const prompt = input.prompt ?? (interactive
-    ? createInkPrompt({
+    ? createDeferredInkPrompt({
         input: stdin,
         outputSink: promptOutputSink,
       })
     : createUnavailablePrompt());
-  const tuiRunner = input.tuiRunner ?? createInkTuiRunner();
+  const tuiRunner: TuiRunner = input.tuiRunner ?? {
+    launch: async (request) => {
+      const { createInkTuiRunner } = await import('../tui/runner.js');
+      return createInkTuiRunner().launch(request);
+    },
+  };
   const commandContext = createCommandExecutionContext({
     ...input,
     env,

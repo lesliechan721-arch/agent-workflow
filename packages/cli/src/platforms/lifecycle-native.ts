@@ -3,7 +3,7 @@ import { NativeCliError, runNativeCliChecked, type NativeCliInput, type NativeCl
 import { installationInvocation } from './discovery.js';
 import type { DeploymentBinding, DeploymentObservation, DeploymentReceipt, FrozenDeploymentPlan, InstallRoute, MutationContext, MutationOutcome, NativeIdentity, PlannedEffect, PreparationEvidence, PreparedDeployment } from './contracts.js';
 import type { PlatformDriverState } from './lifecycle.js';
-import { inspectDeployment } from './inspection.js';
+import { inspectDeployment, selectedNativeConsumer } from './inspection.js';
 import { assertGeminiNativeOwner, assertGeminiProjectRules, assertGeminiRefreshSource, assertGeminiReplacementContent,
   finishGeminiNativeMutation, geminiActivationEvidence, geminiActivationRules, geminiRefreshNeedsReplacement,
   readGeminiActivationSnapshot, restoreGeminiReplacementActivation } from './gemini-activation.js';
@@ -25,7 +25,7 @@ function blocked(code: string): never {
 /** A valid list can hide an empty or untrusted Project scope. Query failures cannot. */
 export function piProjectRegistrationHidden(binding: DeploymentBinding, observation: DeploymentObservation): boolean {
   return binding.route === 'pi-package' && binding.scope.kind === 'project'
-    && binding.consumers.length > 0 && binding.consumers.every((consumer) => consumer.version === '1.5.0')
+    && binding.consumers.length > 0
     && observation.physicalKey === binding.physicalKey && observation.registration === 'unknown'
     && observation.diagnostics.some((diagnostic) => diagnostic.code === 'piProjectRegistrationNotVisible')
     && !observation.diagnostics.some((diagnostic) => ['piNativeObservationUnconfirmed', 'deploymentPostcheckFailed'].includes(diagnostic.code));
@@ -74,6 +74,7 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
   prepared: PreparedDeployment<PlatformDriverState>, effect: PlannedEffect): Promise<MutationOutcome> {
   const { binding, evidence } = prepared.plan;
   const { identity, product, before } = prepared.driverState;
+  const beforeConsumer = selectedNativeConsumer(binding, before);
   if (!identity) blocked('nativeIdentityUnconfirmed');
   if (!product && !(effect.kind === 'deactivate' && binding.route === 'codex-marketplace')) blocked('clientInstallEntryUnavailable');
   const scope = binding.scope.kind === 'user' ? 'user' : 'local';
@@ -104,7 +105,7 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       return ctx.services.setActivation(binding, identity, enabled);
     }
     if (binding.route === 'pi-package') return { mutation: 'none', changed: false };
-    if (enabled && before.consumers.some((consumer) => consumer.trust === 'required' || consumer.trust === 'blocked')) {
+    if (enabled && (beforeConsumer?.trust === 'required' || beforeConsumer?.trust === 'blocked')) {
       blocked('nativeTrustRequired');
     }
     if (binding.route === 'gemini-extension') {
@@ -116,9 +117,10 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       if (current.physicalKey === binding.physicalKey && current.ownership === 'aw'
         && current.registration === 'present' && current.nativeIdentity !== null && current.nativeIdentity.registrationId === identity.registrationId
         && current.nativeIdentity.sourceLocation === identity.sourceLocation
-        && binding.consumers.length > 0 && current.consumers.length === binding.consumers.length
-        && binding.consumers.every((consumer) => current.consumers.filter((observed) => observed.productId === consumer.id
-          && observed.activation === (enabled ? 'enabled' : 'disabled')).length === 1)) {
+        && (enabled ? selectedNativeConsumer(binding, current)?.activation === 'enabled'
+          : binding.consumers.length > 0 && current.consumers.length === binding.consumers.length
+            && binding.consumers.every((consumer) => current.consumers.filter((observed) => observed.productId === consumer.id
+              && observed.activation === 'disabled').length === 1))) {
         return { mutation: 'none', changed: false };
       }
       await run(['plugin', enabled ? 'enable' : 'disable', id, '--scope', scope]);
@@ -163,7 +165,7 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
     }
     case 'pi-package': {
       const result = await run([effect.kind === 'unregister' ? 'remove' : 'install', ...(binding.scope.kind === 'project' ? ['--local'] : []), identity.sourceLocation]);
-      if (effect.kind === 'unregister' && binding.scope.kind === 'project' && product?.version === '1.5.0'
+      if (effect.kind === 'unregister' && binding.scope.kind === 'project'
         && !result.stderr.trim() && result.stdout.replace(/\u001b\[[0-9;]*m/gu, '').replace(/\r\n/gu, '\n').trimEnd()
           === `Removing ${identity.sourceLocation}...\nRemoved ${identity.sourceLocation}`) {
         return { mutation: 'confirmed', changed: true, unregisterConfirmed: true };
@@ -171,9 +173,12 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       break;
     }
     case 'gemini-extension': {
+      const fixedConsentContract = product?.version === '0.67.0';
       if (effect.kind === 'register' || effect.kind === 'refresh') {
         if (ctx.geminiNativeConsent !== prepared.plan) blocked('nativeConsentRequired');
-        if (product?.version !== '0.67.0') blocked('nativeConsentVersionUnsupported');
+        // Separate stdout/stderr pipes do not frame the complete authorization
+        // text. Only the recorded client contract is safe for automatic answers.
+        if (!fixedConsentContract) blocked('nativeConsentProtocolUnconfirmed');
       }
       if (!ctx.geminiActivationSnapshot) blocked('nativeActivationEvidenceUnknown');
       const snapshot = await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);
@@ -211,10 +216,12 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
           throw Object.assign(failure,
             { mutation: confirmed ? 'confirmed' : (error as { mutation?: string })?.mutation === 'none' ? 'none' : 'possible' });
         }
-      } else if (effect.kind === 'refresh') await run(['extensions', 'update', identity.packageId],
-        geminiConsentInput('refresh', evidence.layout.packageRoot, cwd, identity.packageId));
-      else await run(['extensions', 'install', evidence.layout.packageRoot, '--consent', '--skip-settings'],
-        geminiConsentInput('register', evidence.layout.packageRoot, cwd, identity.packageId));
+      } else {
+        const operation = effect.kind === 'refresh' ? 'refresh' : 'register';
+        const consent = geminiConsentInput(operation, evidence.layout.packageRoot, cwd, identity.packageId);
+        await run(operation === 'refresh' ? ['extensions', 'update', identity.packageId]
+          : ['extensions', 'install', evidence.layout.packageRoot, '--consent', '--skip-settings'], consent);
+      }
       try {
         await finishGeminiNativeMutation(ctx, evidence, binding, identity, effect.kind, snapshot);
         Object.assign(ctx.geminiActivationSnapshot, geminiActivationEvidence(snapshot));
@@ -237,8 +244,7 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       // Only an existing exact, exclusive native registration can be refreshed
       // with --trust. First install and recovery require explicit host consent.
       if (effect.kind === 'register') blocked('nativeTrustRequired');
-      if (effect.kind !== 'unregister' && (!before.consumers.length
-        || binding.consumers.some((product) => !before.consumers.some((consumer) => consumer.productId === product.id && consumer.trust === 'trusted')))) blocked('nativeTrustRequired');
+      if (effect.kind !== 'unregister' && beforeConsumer?.trust !== 'trusted') blocked('nativeTrustRequired');
       if (effect.kind === 'unregister' || effect.kind === 'refresh') {
         const current = await (ctx.inspect ? ctx.inspect(binding) : inspectDeployment(ctx, binding));
         if (!grokRegistrationOwned(binding, evidence, current, identity)) blocked('nativeIdentityUnconfirmed');

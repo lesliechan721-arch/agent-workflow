@@ -116,6 +116,8 @@ export async function observePortableSkill(options: {
   expectedDigest?: string;
   configDigest?: string;
   physicalPath?: string;
+  /** Read-only inventory may skip bytes only after the complete identity and path are known. */
+  checkContent?: (identity: PortableOwnerIdentity) => boolean;
 }): Promise<PortableSkillObservation> {
   validatePortableSkillName(options.skill);
   const physicalPath = options.physicalPath ?? path.join(options.destinationRoot, options.skill);
@@ -146,7 +148,7 @@ export async function observePortableSkill(options: {
     if (!markerStat) return finish({ ownership: 'external', observation: 'conflict',
       blocker: 'portableOutputConflict' }, { dev: stat.dev, ino: stat.ino, marker: 'absent' });
     if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
-      return finish({ ownership: 'external', observation: 'conflict', blocker: 'portableOutputConflict' }, 'marker-type');
+      return finish({ ownership: options.checkContent ? 'unknown' : 'external', observation: 'conflict', blocker: 'portableOutputConflict' }, 'marker-type');
     }
     const raw = await fs.readFile(markerPath, 'utf8');
     const evidence = { dev: stat.dev, ino: stat.ino, marker: portableJsonDigest(raw) };
@@ -167,6 +169,9 @@ export async function observePortableSkill(options: {
       return finish({ ownership: 'external', observation: 'conflict', blocker: 'portableOutputConflict' }, evidence);
     }
     const owner = parseOwner(parsed);
+    if (options.checkContent && !options.checkContent(identity)) {
+      return finish({ ownership: 'aw', owner, recoverableIdentity: identity }, { ...evidence, content: 'not-requested' });
+    }
     const installedDigest = await portableOwnedTreeDigest(physicalPath);
     if (!owner) return finish({ ownership: 'aw', observation: 'drifted', contentState: 'damaged',
       installedDigest, recoverableIdentity: identity, blocker: 'portableOwnerDamaged' }, evidence);
@@ -198,6 +203,7 @@ export async function scanPortableSkills(options: {
   platform: PortableAgent;
   scope: Scope;
   signal?: AbortSignal;
+  checkContent?: (identity: PortableOwnerIdentity) => boolean;
 }): Promise<{ targets: PortableSkillObservation[]; complete: boolean }> {
   const targets: PortableSkillObservation[] = [];
   try {
@@ -211,12 +217,14 @@ export async function scanPortableSkills(options: {
     for (const entry of await fs.readdir(options.destinationRoot, { withFileTypes: true })) {
       options.signal?.throwIfAborted();
       try { validatePortableSkillName(entry.name); } catch { continue; }
-      const target = await observePortableSkill({ destinationRoot: options.destinationRoot, skill: entry.name });
+      const target = await observePortableSkill({ destinationRoot: options.destinationRoot, skill: entry.name, checkContent: options.checkContent });
       const identity = target.owner ?? target.recoverableIdentity;
       if (identity && (identity.platform !== options.platform || identity.scope !== options.scope)) continue;
       // Markerless and foreign resources are not AW inventory or adoption candidates.
       if (target.ownership === 'external') continue;
-      if (target.observation === 'unknown' || target.observation === 'conflict') complete = false;
+      const shallow = target.ownership === 'aw' && identity && target.contentState === 'unknown'
+        && target.installedDigest === undefined && target.blocker === undefined;
+      if ((target.observation === 'unknown' || target.observation === 'conflict') && !shallow) complete = false;
       targets.push(target);
     }
     return { targets, complete };

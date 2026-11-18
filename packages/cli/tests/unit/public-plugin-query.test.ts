@@ -1,8 +1,9 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { runPublicPluginShow } from '../../src/commands/public-plugin-query.js';
+import { runPublicPluginShow, runPublicPluginStatus } from '../../src/commands/public-plugin-query.js';
+import * as recoveryStatus from '../../src/recovery/status.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
@@ -12,6 +13,32 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 // Test Value Gate: public inspection must distinguish declared static inputs from an unknown dynamic set without executing author code.
 describe('public plugin component query', () => {
+  it('reports a complete selection without changing global unknown status or the selection shape', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const read = vi.spyOn(recoveryStatus, 'readRecoveryStatus').mockResolvedValue({
+      schemaVersion: 1, kind: 'aw-recovery-status', scope: 'user', ok: true,
+      intent: { state: 'absent' }, selection: { agents: ['codex'], origin: 'preference', preferences: 'valid' },
+      inventory: [{ pluginId: 'team/dependency', source: 'team', sourceState: 'ready', blockers: [], targetResults: [{
+        pluginId: 'team/dependency', agent: 'codex', scope: 'user', delivery: { kind: 'native', platform: 'codex' },
+        execution: 'not-run', observation: 'verified', content: 'satisfied', blockers: [], requiredBy: ['team/root'],
+        relation: 'dependency', providerScope: 'user', requirementScope: 'project',
+      }] }],
+      extraObserved: [], errors: [], allSatisfied: null, inSync: null,
+      coverage: { native: false, portable: true, requestComplete: true },
+      counts: { ready: 1, blocked: 0, pending: 0, unconfirmed: 0 },
+    });
+    try {
+      const result = await runPublicPluginStatus(['team/dependency'], { cwd: layout.fixtureCwd, env, context: 'user', target: ['codex'] });
+      expect(result.status).toBe('success');
+      expect(result.data).toMatchObject({
+        selection: { plugins: ['team/dependency'], targets: ['codex'], targetOrigin: 'argument' },
+        allSatisfied: null, inSync: null, coverage: { native: false, requestComplete: true },
+        inventory: [{ pluginId: 'team/dependency', targetResults: [{ requiredBy: ['team/root'], relation: 'dependency', providerScope: 'user', requirementScope: 'project' }] }],
+      });
+      expect(read).toHaveBeenCalledWith(expect.objectContaining({ plugins: ['team/dependency'], targets: ['codex'] }));
+    } finally { read.mockRestore(); }
+  });
+
   it('shows five static declaration kinds and leaves dynamic names and counts unprepared', async () => {
     const { env, layout } = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(layout.fixtureCwd, 'query-source');

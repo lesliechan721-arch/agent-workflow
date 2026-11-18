@@ -57,7 +57,10 @@ flowchart TD
   - `observation`：为现场观测事实枚举（`'verified' | 'missing' | 'unknown'`）；
   - `content`：为现场内容匹配事实枚举（`'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown'`）。两者均为**机器状态事实，绝非内容签名或哈希摘要**。
 - **独立额外残留（extraObserved）**：磁盘上观测到的额外未管理残留记录在 `data.extraObserved` 列表中，**绝不混入 `counts.unconfirmed`**。
-- **错误与覆盖**：完整诊断进入顶层 `diagnostics`；data 保留实际 coverage，明确其它项目未观察。
+- **错误与覆盖**：完整诊断进入顶层 `diagnostics`；data 保留实际 coverage，明确其它项目未观察。清单错误保留稳定细分原因、安全位置和相关 scope；坏 header 只提供诊断线索，不授予 owner 权限。已证明独立的错误不传播到无关目标，不能证明无关时保留对应覆盖缺口；共享位置和真实依赖的影响仍传播。重复用户文件错误合并，不能丢失作用范围。
+- **精确选择**：先解析完整必要依赖、provider、共享位置和碰撞关系，再对所选插件/target 观察。显式选择依赖时 inventory 包含该依赖及 requiredBy、需求和提供者 scope，不把它提升为 Intent root。无过滤查询仍按直接根聚合。
+- **已有现场**：没有 Intent 的短名称与来源限定查询都保留匹配的 Native 残留。显式 Native-only target 不读取独立 generic 目录；按插件选择时，无关 Portable 输出仅检查安全路径和身份，内容保持 unknown。选中输出仍完整检查，无法确认范围的损坏保留覆盖缺口，浅观察不提供删除授权。
+- **全局与本次完成**：selection 保留 plugins/targets 数组及 targetOrigin。allSatisfied/inSync 继续总结授权读取上下文；明确不满足优先为 false，尚未观察的需求或残留使结论为 null，完整满足才为 true。可选 coverage.requestComplete 表示本次选择及必要依赖/共享/碰撞证据是否完整；未选目标未观察不单独使精确请求失败。
 
 ### 2.2 平台、产品面与组件事实
 
@@ -69,11 +72,11 @@ DeploymentObservation 分开保存 package、registration、ownership、各产�
 
 原生清单明确提供安装 scope 时，可选 scopeRegistration 保存当前 binding scope 的独立登记事实。Claude 的 user 记录属于 User，精确 projectPath 的 local 记录属于当前 Project；继承的 User/managed 记录仍参与原生有效 registration/activation，不冒充独立项目登记。没有此类原生字段的平台不填写 scopeRegistration，也不从配置推导这个原生字段。
 
-Codex CLI 0.167.0 的用户级普通 Skill 没有独立的 Hook 或项目配置信任门槛。status 仅在以下事实全部成立时，将当前组件集合的未知 trust 标为 `not-applicable`：完整静态集合非空且只含 Skill，无动态 artifacts、unmet 或补足；当前平台的精确 CLI/版本已合格；包为 AW 所有，完整投影输入与内容字节匹配，原生登记存在且 neutral 用户激活已确认。明确的拒信或阻断事实保持。此判定不标记 `trusted`，不改变 load，不启动宿主会话或创建持久状态；项目级、其他版本/产品面、混合或动态集合不适用。
+Codex CLI 0.167.0 的用户级普通 Skill 没有独立的 Hook 或项目配置信任门槛。status 仅在以下事实全部成立时，将当前组件集合的未知 trust 标为 `not-applicable`：完整静态集合非空且只含 Skill，无动态 artifacts、unmet 或补足；当前平台的精确 CLI/版本已合格；包为 AW 所有，完整投影输入与内容字节匹配，原生登记存在且 neutral 用户激活已确认。明确的拒信或阻断事实保持。其他版本的普通管理资格不提供此 trust 豁免证据；只有登记、activation 或包字节仍保持 trust unknown。此判定不标记 `trusted`，不改变 load，不启动宿主会话或创建持久状态；项目级、其他版本/产品面、混合或动态集合不适用。
 
 Codex 的项目 activation 仍受宿主有效配置信任门槛控制。单个用户 TOML 中的声明、原生登记或 activation 不能代替合并配置及路径规则的证据。普通 status 不启动 app-server，无法确认时 content/trust 保持 unknown；公开 status 通过 `nativeTrustUnconfirmed` warning 说明该缺口，保留原计数和非成功结果。
 
-`aw plugin status --observe-native` 只对当前项目 binding 显式观察有效信任。它限定为当前平台已合格的 Codex CLI 0.167.0，App、其他版本或无项目 binding 均不启动 app-server。会话沿原环境和原 CODEX_HOME 运行，不替换宿主配置根；仅在该进程临时覆盖 `features.plugins=false`，避免原生插件同步或自动升级。这保留所观察的 trust/project 层语义，但返回的 features 不是用户原来的有效 feature 配置，不用于任何状态判断。只发送 `initialize`（experimentalApi）、`initialized` 和带精确项目 cwd 的 `config/read`（includeLayers）。必须先收到 initialize 成功响应，再发送后两条消息，收到 config 响应后关闭 stdin，并等待正式 runner 的客户端退出和进程清理；已有响应不能覆盖超时、输入错误或清理未确认。规范通知不提供信任证据；重复、无效或不完整响应保持失败。
+`aw plugin status --observe-native` 只对当前项目 binding 显式观察有效信任。它限定为满足接口最低条件的 Codex CLI，App 或无项目 binding 不启动 app-server。不同版本仍须通过同一必要字段、身份和配置层语义校验；未知或矛盾响应保持 unknown。会话沿原环境和原 CODEX_HOME 运行，不替换宿主配置根；仅在该进程临时覆盖 `features.plugins=false`，避免原生插件同步或自动升级。这保留所观察的 trust/project 层语义，但返回的 features 不是用户原来的有效 feature 配置，不用于任何状态判断。只发送 `initialize`（experimentalApi）、`initialized` 和带精确项目 cwd 的 `config/read`（includeLayers）。必须先收到 initialize 成功响应，再发送后两条消息，收到 config 响应后关闭 stdin，并等待正式 runner 的客户端退出和进程清理；已有响应不能覆盖超时、输入错误或清理未确认。规范通知不提供信任证据；重复、无效或不完整响应保持失败。
 
 信任提取仅支持与 realpath 相同的精确项目路径。`config.projects[projectRoot].trust_level` 必须明确为 trusted/untrusted，其 origin 必须对应当前 CODEX_HOME 的有效 user 层与同一版本，且存在唯一的精确 `projectRoot/.codex` project 层。只有明确 trusted 且该 project 层没有 disabledReason 时才标记 trusted；明确 untrusted 且该层被禁用时标记 blocked。只有父仓库 trust、别名路径、托管或云端来源、缺层、重复层或矛盾证据均保留 unknown，不重建 Codex 的完整路径或配置加载规则。信任结果仅保存在本次内存会话中，不写 AW ledger、不提升生产 profile；包、摘要、归属、registration、activation 和组件能力仍分别检查，load 不变。
 
@@ -89,17 +92,17 @@ generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有
 
 ### 3.1 只读观察
 
-状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。User 查询使用隔离 neutral cwd，Project 查询绑定精确项目。Codex 使用 scoped plugin list；Claude 使用 plugin list 和 marketplace list；Copilot 使用对应原生清单的 enabled；Gemini 0.67.0 使用 extensions list --output-format json 的 stderr JSON 清单和当前 workspace isActive，stdout 必须为空白；无效结构或两流冲突保持 unknown；Grok 使用 list/inspect 的各自字段。Pi 1.5.0 list 仅提供可见包与 scope，未报告的 activation/trust 保持 unknown；未信任项目可能被清单隐藏，缺少项目段不证明项目未安装。所有清单均不提升为模型采用证据。Codex private cache 不进入删除授权。
+状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。User 查询使用隔离 neutral cwd，Project 查询绑定精确项目。Codex 使用 scoped plugin list；Claude 使用 plugin list 和 marketplace list；Copilot 使用对应原生清单的 enabled；Gemini 使用经结构校验的 extensions list --output-format json 的 stderr JSON 清单和当前 workspace isActive，stdout 必须为空白；无效结构或两流冲突保持 unknown；Grok 使用 list/inspect 的各自字段。Pi list 仅提供可见包与 scope，未报告的 activation/trust 保持 unknown；未信任项目可能被清单隐藏，缺少项目段不证明项目未安装。所有清单均不提升为模型采用证据。Codex private cache 不进入删除授权。
 
 Pi 首次 ensure 只有在源位置、归属和物理 slot 均确认为不存在时，才可把新独占源交给原生 install。宿主命令自行执行信任门禁，AW 不授信；unknown 不允许替换或删除既有内容。成功后仅按原生 list 可报告的登记核验，不要求该接口未提供的 activation/trust；只读状态仍保留这些未知字段。
 
-Pi 1.5.0 的 Project 移除可按本次原生命令确认撤销：正式 runner 正常完成、退出 0、无 stderr，且明确回报移除精确来源。后续有效 list 仅缺少 Project 段时，这份动作回执允许继续既有 AW 专属、无共享引用的包清理，以及本次停用和有意空集合汇总；查询失败、无效输出或仍有登记均不接受。通用观察的 registration 仍为 unknown，不从 settings 或动作回执改写，也不把本次确认保存为后续状态真值。
+Pi 的 Project 移除可按本次原生命令确认撤销：正式 runner 正常完成、退出 0、无 stderr，且明确回报移除精确来源。后续有效 list 仅缺少 Project 段时，这份动作回执允许继续既有 AW 专属、无共享引用的包清理，以及本次停用和有意空集合汇总；查询失败、无效输出或仍有登记均不接受。通用观察的 registration 仍为 unknown，不从 settings 或动作回执改写，也不把本次确认保存为后续状态真值。
 
 Grok inspect.projectTrusted 仅表示当前目录与运行时信任，不是新插件来源的安装授权。首次 User 安装发布 AW 源包后返回 nativeTrustRequired，用户须用回执中的精确原生命令显式授予 --trust，再执行 AW sync；AW --yes 不代表该授权。只有已原生登记、精确同源且独占的 AW 包可按已审核计划刷新。
 
-显式 `--observe-native` 允许合格的 Codex app-server 或 OpenCode 2.0.0 CLI 的私有本地服务启动，因此可能创建 installation ID、日志、SQLite 状态和 cache，读取既有认证，加载已安装插件代码并按宿主现有配置连接外部服务。OpenCode 使用单次 --standalone API 绑定精确 location，不复用远程或版本不明的服务；active 确认当前 CLI 的启用与加载，failed 单独报告加载失败，异步激活尚未出现的条目保持 unknown，不将 CLI 结果提升为 Desktop 结果。公开结果通过 `nativeObservationSideEffects` 同时向人类和 JSON 消费者披露；该选项不要求也不执行登录、模型或账号 RPC。普通 status、TUI 和复用观察 session 的其他消费者默认不启用此模式。
+显式 `--observe-native` 允许合格的 Codex app-server 或 满足 V2 最低条件的 OpenCode CLI 私有本地服务启动，因此可能创建 installation ID、日志、SQLite 状态和 cache，读取既有认证，加载已安装插件代码并按宿主现有配置连接外部服务。OpenCode 使用单次 --standalone API 绑定精确 location，不复用远程或版本不明的服务；active 确认当前 CLI 的启用与加载，failed 单独报告加载失败，异步激活尚未出现的条目保持 unknown，不将 CLI 结果提升为 Desktop 结果。公开结果通过 `nativeObservationSideEffects` 同时向人类和 JSON 消费者披露；该选项不要求也不执行登录、模型或账号 RPC。普通 status、TUI 和复用观察 session 的其他消费者默认不启用此模式。
 
-同一次操作可以复用内存中的只读发现与观测，Review 和锁内执行不能共用过期 snapshot。Gemini、Copilot 与 Pi 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，常规检查逐次重新读取，并保留不可变输入失败与 stale 的优先级。新建单个 Pi/Gemini ensure 目标时，若同 session 仅有该目标、单 binding/plan 且无阻断或缺项，紧邻返回前的检查可复用同 build 渲染后取得的 discovery；原生事实与完整本地副本、配置、owner 等 observation 仍重新读取。此复用只交给首次创建者，缓存命中、执行和写后检查保持 fresh；并入其他可写目标时回退完整检查。首次返回检查失败不污染已构建目标的缓存，恢复输入后同 key 再准备仍执行完整检查。对 Gemini/Copilot/Pi 的单个正常非空部署，若完整动作明确没有 preApply、托管命令包写入或补足删除，可把纯准备和紧邻执行的重复完整核验合并到执行入口。入口核验失败仍走原 preflight 错误路径；只有同次调用、同一冻结计划的首个生命周期证据检查可消费该成功结果一次。每次执行仍重新核验，Pi 1.5.0 有效清单仅隐藏 Project 段时，只有包及归属均 absent、无共享引用、全部 owner 槽位为空且动作仅发布与登记，才可使用该入口核验；registration 仍为 unknown，原生安装仍可拒绝未信任项目。脚本、托管写入、多部署、blocked、其他 unknown 现场及其他平台保持原检查，写后观察、rebase 和最终状态读取不复用该结果。跨调用不缓存弱现场结论。联合准备最终只有一个无阻断的 Gemini 或 Copilot ensure 组，且没有 Portable 部署、保护或残留时，首轮原生预览已封存该组全部目标，可省去返回 Review 前同一组的重复预览。多 scope、多组、移除及未完成计划继续刷新；来源激活后重准备、锁内复核、执行前检查和写后读取保持。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
+同一次只读 status 可复用相同 Active snapshot 校验、manifest 与入口发现；复用部分 Catalog 上下文时，必须补读现场残留候选所需的缺失来源，不能因该插件已无 Intent 而漏掉已安装目标。补读只限缺失的已配置来源，结果及失败仅在本次读取内共享；原生清单按真实入口、配置根、scope、cwd 和来源区分，neutral 与 Project 不能混为一次。TUI 重新检查及下一命令使用新会话。Review、锁内执行及写后观察不能共用过期 snapshot。Gemini、Copilot 与 Pi 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，常规检查逐次重新读取，并保留不可变输入失败与 stale 的优先级。新建单个 Pi/Gemini ensure 目标时，若同 session 仅有该目标、单 binding/plan 且无阻断或缺项，紧邻返回前的检查可复用同 build 渲染后取得的 discovery；原生事实与完整本地副本、配置、owner 等 observation 仍重新读取。此复用只交给首次创建者，缓存命中、执行和写后检查保持 fresh；并入其他可写目标时回退完整检查。首次返回检查失败不污染已构建目标的缓存，恢复输入后同 key 再准备仍执行完整检查。对 Gemini/Copilot/Pi 的单个正常非空部署，若完整动作明确没有 preApply、托管命令包写入或补足删除，可把纯准备和紧邻执行的重复完整核验合并到执行入口。入口核验失败仍走原 preflight 错误路径；只有同次调用、同一冻结计划的首个生命周期证据检查可消费该成功结果一次。每次执行仍重新核验，Pi 的有效清单仅隐藏 Project 段时，只有包及归属均 absent、无共享引用、全部 owner 槽位为空且动作仅发布与登记，才可使用该入口核验；registration 仍为 unknown，原生安装仍可拒绝未信任项目。脚本、托管写入、多部署、blocked、其他 unknown 现场及其他平台保持原检查，写后观察、rebase 和最终状态读取不复用该结果。跨调用不缓存弱现场结论。联合准备最终只有一个无阻断的 Gemini 或 Copilot ensure 组，且没有 Portable 部署、保护或残留时，首轮原生预览已封存该组全部目标，可省去返回 Review 前同一组的重复预览。多 scope、多组、移除及未完成计划继续刷新；来源激活后重准备、锁内复核、执行前检查和写后读取保持。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
 
 ### 3.2 scope 与共享物理包
 

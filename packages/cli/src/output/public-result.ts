@@ -8,6 +8,7 @@ export interface Diagnostic {
   severity: 'info' | 'warning' | 'error';
   message: string;
   subject?: { pluginId?: string; sourceId?: string; target?: string; scope?: 'user' | 'project'; field?: string };
+  detail?: { reasonCode: string; path?: string; configKey?: string };
 }
 export type NextAction =
   | { kind: 'command'; argv: string[]; reason: string; requiresConfirmation: boolean }
@@ -62,8 +63,9 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   }
   if (typeof data.allSatisfied === 'boolean' || data.allSatisfied === null) lines.push(`All satisfied: ${data.allSatisfied === null ? 'unknown' : data.allSatisfied ? 'yes' : 'no'}`);
   if (data.counts && typeof data.counts === 'object') lines.push(`Status counts: ${Object.entries(data.counts).map(([key, value]) => `${key}=${String(value)}`).join(', ')}`);
-  const coverage = data.coverage as { scopes?: string[]; currentProject?: boolean; otherProjects?: string } | undefined;
+  const coverage = data.coverage as { scopes?: string[]; currentProject?: boolean; otherProjects?: string; requestComplete?: boolean } | undefined;
   if (coverage) lines.push(`Coverage: ${(coverage.scopes ?? []).join(', ')}; other projects ${coverage.otherProjects ?? 'unobserved'}`);
+  if (coverage?.requestComplete !== undefined) lines.push(`Requested selection: ${coverage.requestComplete ? 'complete' : 'incomplete'}`);
   const configFields = data.fields;
   if (Array.isArray(configFields)) for (const field of configFields as Array<{ key: string; valueState?: string; effectiveValue?: unknown; sourceLayer?: string; storedValue?: unknown; storedSourceLayer?: string }>) {
     const display = (value: unknown) => value === null || value === undefined ? '<unset>' : typeof value === 'string' ? value : JSON.stringify(value);
@@ -155,6 +157,12 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
   const confirmation = data.confirmation as Confirmation | null | undefined;
   if (confirmation?.required) for (const effect of confirmation.effects) lines.push(`Effect: ${effect.message}`);
   if (verbose) for (const diagnostic of result.diagnostics.filter((entry) => entry.severity === 'info')) lines.push(`${diagnostic.code}: ${diagnostic.message}`);
+  for (const diagnostic of result.diagnostics.filter((entry) => entry.detail)) {
+    const detail = diagnostic.detail!;
+    lines.push(`${diagnostic.code}: ${diagnostic.message}`, `  Reason: ${detail.reasonCode}`);
+    if (detail.path) lines.push(`  Location: ${detail.path}`);
+    if (detail.configKey) lines.push(`  Config key: ${detail.configKey}`);
+  }
   for (const action of result.nextActions) lines.push(action.kind === 'manual' ? `Next: ${action.message}` : `Next: ${action.argv.map((arg) => /\s/u.test(arg) ? JSON.stringify(arg) : arg).join(' ')}`);
   return `${lines.join('\n')}\n`;
 }

@@ -10,6 +10,18 @@ type PosixSignal = KillSignal | 'SIGSTOP';
 const DEFAULT_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
 const PROCESS_TREE_COMMAND_TIMEOUT_MS = 1_000;
 const POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS = 2_000;
+const DARWIN_PROCESS_TREE_COMMAND_TIMEOUT_MS = 5_000;
+// Hosted macOS scans can exceed two seconds. Reserve a bounded confirmation
+// window so a successful slow scan does not consume its own follow-up budget.
+function posixCommandTimeout(platform: NodeJS.Platform): number {
+  return platform === 'darwin' ? DARWIN_PROCESS_TREE_COMMAND_TIMEOUT_MS : POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS;
+}
+
+function posixInspectionTimeout(platform: NodeJS.Platform): number {
+  return platform === 'darwin'
+    ? DARWIN_PROCESS_TREE_COMMAND_TIMEOUT_MS + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS
+    : POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS;
+}
 const PROCESS_TREE_IDENTITY_INTERVAL_MS = 250;
 const PROCESS_TREE_MARKER_INTERVAL_MS = 1_000;
 const PROCESS_TREE_TERMINATION_GRACE_MS = 250;
@@ -66,6 +78,14 @@ interface PosixProcessSnapshot {
   snapshotStartedAt?: number;
   snapshotDeadline?: number;
   queries?: ProcessQueryDiagnostic[];
+}
+
+function confirmationDeadline(snapshot: PosixProcessSnapshot, platform: NodeJS.Platform, deadline = Infinity): number {
+  return Math.min(
+    (snapshot.markerScanStartedAt ?? Date.now()) + posixInspectionTimeout(platform),
+    Date.now() + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
+    deadline,
+  );
 }
 
 interface PosixMarkerScan {
@@ -140,6 +160,14 @@ export interface ProcessTreeDiagnostic {
   snapshotDeadline?: number;
   markerLookupAttempts?: number;
   queries?: ProcessQueryDiagnostic[];
+  sentinel?: {
+    pid: number;
+    knownStartTime: string;
+    present: boolean | null;
+    startTime?: string;
+    identityMatches: boolean | null;
+    markerMatches: boolean | null;
+  };
   processes: Array<{
     pid: number;
     present: boolean | null;
@@ -183,6 +211,7 @@ interface ObservationState {
 }
 
 interface PosixProcessSampler {
+  readonly platform: NodeJS.Platform;
   readonly execFile: NonNullable<ProcessTreeDependencies['execFile']>;
   readonly states: Set<ObservationState>;
   identityTable?: Map<number, ProcessEntry>;
@@ -397,7 +426,7 @@ async function readPosixProcessTable(
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
   markerEnvironmentVariable: string,
   marker?: string,
-  timeoutMs: number = POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
+  timeoutMs: number = posixCommandTimeout(platform),
   confirmUnmarkedPid?: number,
 ): Promise<PosixProcessSnapshot | null> {
   const identityArgs = ['-A', '-o', 'pid=,ppid=,pgid=,state=,lstart='];
@@ -460,7 +489,7 @@ async function readPosixProcessTable(
     markerLookupAttempts,
     markerScanStartedAt: lookupStartedAt,
     snapshotStartedAt: lookupStartedAt,
-    snapshotDeadline: lookupStartedAt + timeoutMs,
+    snapshotDeadline: lookupStartedAt + posixInspectionTimeout(platform),
     queries,
     ...(markerResult.failure ? { markerLookupFailure: markerResult.failure } : {}),
     confirmedUnmarkedPids,
@@ -665,7 +694,7 @@ export async function acquireProcessTreeInspectionLease(
     if (platform === 'darwin' && snapshot.table.has(sentinel.pid) && !snapshot.markerPids.has(sentinel.pid)) {
       await confirmDarwinMarkers(snapshot, [sentinel.pid], markerEnvironmentVariable, marker,
         dependencies.execFile ?? defaultExecFile,
-        snapshot.markerScanStartedAt! + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS);
+        confirmationDeadline(snapshot, platform));
       if (!snapshot.markerLookupSucceeded) throw posixMarkerLookupFailure(snapshot, 'inspection-preflight');
     }
     const entry = snapshot.table.get(sentinel.pid);
@@ -876,6 +905,8 @@ function posixDiagnostic(
     .filter((identity): identity is ProcessIdentity => identity !== undefined)
     .map((identity) => [identity.pid, identity.startTime]));
   const pids = new Set([state.pid, ...identities.keys(), ...affectedPids]);
+  const sentinel = state.lease?.sentinel;
+  const sentinelEntry = sentinel ? snapshot?.table.get(sentinel.pid) : undefined;
   for (const [pid, entry] of snapshot?.table ?? []) {
     if (pid === state.lease?.sentinel.pid) continue;
     if (snapshot?.markerPids.has(pid) ||
@@ -890,6 +921,14 @@ function posixDiagnostic(
     rootPgidMode: state.rootPgidMode,
     affectedPids,
     markerLookupSucceeded: snapshot?.markerLookupSucceeded ?? null,
+    ...(sentinel ? { sentinel: {
+      pid: sentinel.pid, knownStartTime: sentinel.startTime,
+      present: snapshot ? sentinelEntry !== undefined : null,
+      ...(sentinelEntry ? { startTime: sentinelEntry.startTime } : {}),
+      identityMatches: snapshot ? sentinelEntry?.startTime === sentinel.startTime : null,
+      markerMatches: snapshot?.markerLookupSucceeded && !snapshot.unreadableMarkerPids.has(sentinel.pid)
+        ? snapshot.markerPids.has(sentinel.pid) : null,
+    } } : {}),
     ...(snapshot ? {
       snapshotStartedAt: snapshot.snapshotStartedAt,
       snapshotDeadline: snapshot.snapshotDeadline,
@@ -966,6 +1005,7 @@ async function acceptPosixSnapshot(
   // This disposition applies only to this observation's confirmed null candidates.
   // Keep their marker rows and known identities for later, independent cleanup.
   const originalIdentityAbsentPids = new Set<number>();
+  const markerConfirmationDeadline = confirmationDeadline(snapshot, state.platform, deadline);
   const fail = (error: Error, reason: string, affectedPids: number[] = []): void => {
     if (state.failure) return;
     latchObservationFailure(state, error, posixDiagnostic(state, snapshot, stage, reason, affectedPids));
@@ -1002,10 +1042,6 @@ async function acceptPosixSnapshot(
   };
   const unreadablePids = [...snapshot.unreadableMarkerPids].filter(needsConfirmation);
   if (state.marker !== undefined && unreadablePids.length > 0) {
-    const confirmationDeadline = Math.min(
-      (snapshot.markerScanStartedAt ?? Date.now()) + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
-      deadline ?? Number.POSITIVE_INFINITY,
-    );
     const originalEntries = new Map(unreadablePids.map((pid) => [pid, snapshot.table.get(pid)!]));
     const observerEntry = snapshot.table.get(process.pid);
     const anchor = state.lease?.sentinel ?? (observerEntry
@@ -1028,7 +1064,7 @@ async function acceptPosixSnapshot(
       }
     };
     retainGroupDepartures(snapshot.table);
-    const remaining = confirmationDeadline - Date.now();
+    const remaining = markerConfirmationDeadline - Date.now();
     snapshot.markerLookupAttempts += 1;
     const confirmation: ProcessCommandResult = remaining > 0
       ? await readPosixMarkerOutput(state.dependencies.execFile ?? defaultExecFile, remaining)
@@ -1071,7 +1107,7 @@ async function acceptPosixSnapshot(
         && snapshot.table.get(pid)?.startTime === originalEntries.get(pid)?.startTime);
       if (candidates.length > 0) {
         const queryStartedAt = Date.now();
-        const identityRemaining = confirmationDeadline - queryStartedAt;
+        const identityRemaining = markerConfirmationDeadline - queryStartedAt;
         // A forced sampler scan can reuse an older in-flight query. Start a new
         // direct lookup only after the marker confirmation callback has completed.
         const identity: ProcessCommandResult = identityRemaining > 0
@@ -1086,7 +1122,7 @@ async function acceptPosixSnapshot(
           && !identityTable?.get(anchor.pid)?.state?.startsWith('Z')
           && (!state.lease || confirmedMarkers.has(anchor.pid));
         const queryCompletedAt = Date.now();
-        const trustedTable = queryCompletedAt < confirmationDeadline && anchorConfirmed
+        const trustedTable = queryCompletedAt < markerConfirmationDeadline && anchorConfirmed
           ? identityTable : undefined;
         if (trustedTable) retainGroupDepartures(trustedTable);
         for (const pid of candidates) {
@@ -1099,7 +1135,7 @@ async function acceptPosixSnapshot(
           try {
             state.dependencies.onLinuxMarkerIdentityConfirmation?.({
               rootPid: state.pid, pid, startTime, phase: 'post-marker-confirmation',
-              queryStartedAt, queryCompletedAt, deadline: confirmationDeadline, result,
+              queryStartedAt, queryCompletedAt, deadline: markerConfirmationDeadline, result,
             });
           } catch {
             // Diagnostic consumers cannot change the process inspection gate.
@@ -1126,8 +1162,7 @@ async function acceptPosixSnapshot(
     if (suspects.length > 0) {
       const confirmed = await confirmDarwinMarkers(snapshot, suspects, state.markerEnvironmentVariable, state.marker,
         state.dependencies.execFile ?? defaultExecFile,
-        Math.min((snapshot.markerScanStartedAt ?? Date.now()) + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
-          deadline ?? Number.POSITIVE_INFINITY));
+        markerConfirmationDeadline);
       if (!confirmed) {
         fail(posixMarkerLookupFailure(snapshot, stage), 'marker-lookup-failed');
         return false;
@@ -1308,10 +1343,12 @@ async function acceptPosixSnapshot(
 
 function getPosixProcessSampler(
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
+  platform: NodeJS.Platform,
 ): PosixProcessSampler {
   const existing = posixSamplers.get(execFileImpl);
   if (existing) return existing;
   const sampler: PosixProcessSampler = {
+    platform,
     execFile: execFileImpl,
     states: new Set(),
     identityScannedAt: Number.NEGATIVE_INFINITY,
@@ -1347,7 +1384,7 @@ function snapshotFromSampler(
     markerScanStartedAt: sampler.markerScannedAt,
     snapshotStartedAt: state.marker === undefined ? sampler.identityScannedAt : sampler.markerScannedAt,
     snapshotDeadline: (state.marker === undefined ? sampler.identityScannedAt : sampler.markerScannedAt)
-      + POSIX_PROCESS_TREE_COMMAND_TIMEOUT_MS,
+      + posixInspectionTimeout(state.platform),
     queries: [sampler.identityQuery, sampler.markerQuery]
       .filter((query): query is ProcessQueryDiagnostic => query !== undefined),
     ...(sampler.markerFailure ? { markerLookupFailure: sampler.markerFailure } : {}),
@@ -1429,7 +1466,7 @@ function scanSamplerIdentity(
     now - sampler.identityScannedAt < PROCESS_TREE_IDENTITY_INTERVAL_MS
   ) return Promise.resolve();
   sampler.identityScannedAt = now;
-  sampler.identityInFlight = readPosixIdentityTable(sampler.execFile)
+  sampler.identityInFlight = readPosixIdentityTable(sampler.execFile, posixCommandTimeout(sampler.platform))
     .then((result) => {
       sampler.identityFailure = result.failure;
       sampler.identityQuery = result.query;
@@ -1448,7 +1485,7 @@ function runMarkerScan(
   sampler: PosixProcessSampler,
 ): Promise<void> {
   sampler.markerScannedAt = Date.now();
-  sampler.markerInFlight = readPosixMarkerOutput(sampler.execFile)
+  sampler.markerInFlight = readPosixMarkerOutput(sampler.execFile, posixCommandTimeout(sampler.platform))
     .then((result) => {
       sampler.markerFailure = result.failure;
       sampler.markerQuery = result.query;
@@ -1670,7 +1707,7 @@ function createProcessTreeObservation(
     });
     return observation;
   }
-  const sampler = getPosixProcessSampler(execFileImpl);
+  const sampler = getPosixProcessSampler(execFileImpl, state.platform);
   const periodic = dependencies.enforceProcessMarker === true ||
     dependencies.enforceCooperativeProcessGroup === true;
   if (periodic) {

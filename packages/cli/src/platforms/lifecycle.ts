@@ -6,10 +6,11 @@ import type {
   NativeIdentity, PlannedEffect, PreparedDeployment, PrepareResult, ProductInstallation,
   ProjectionResult,
 } from './contracts.js';
-import { inspectDeployment } from './inspection.js';
+import { inspectDeployment, selectedNativeConsumer } from './inspection.js';
 import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, piProjectRegistrationHidden, routeReload } from './lifecycle-native.js';
 import { geminiConsentMessages } from './gemini-consent.js';
 import { geminiReplacementMessages } from './gemini-activation.js';
+import { selectNativeProduct } from './discovery.js';
 
 interface PreparedContribution {
   effectId: string;
@@ -115,7 +116,8 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
   }
   const identity = evidence.nativeIdentity ?? observation.nativeIdentity;
   if (identity && identity.route !== binding.route) return blocked('nativeIdentityMismatch', 'The native identity belongs to a different installation route.');
-  const product = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli' && consumer.availability === 'available') ?? null;
+  const product = selectNativeProduct(binding.consumers) ?? null;
+  const consumer = selectedNativeConsumer(binding, observation);
   if (!removing && !retainPackage && bundles.length && nativeRoute(binding.route) && !product) return blocked('clientInstallEntryUnavailable', 'The required native client entry is unavailable. Install or repair the client and retry.');
   if (!removing && !retainPackage && bundles.length && nativeRoute(binding.route) && !identity) return blocked('nativeIdentityUnconfirmed', 'The precise native package identity is unavailable. Prepare the operation again.');
   if (!removing && !retainPackage && bundles.length && binding.scope.kind === 'project' && ['codex-marketplace', 'copilot-marketplace'].includes(binding.route)
@@ -213,7 +215,7 @@ export function preparePlatformLifecycle(input: LifecyclePrepareInput): PrepareR
         && ['codex-marketplace', 'gemini-extension', 'copilot-marketplace'].includes(binding.route)
         && observation.configuration?.activation !== 'enabled';
       if (binding.route !== 'pi-package' && (operation === 'reinstall' || packageChanged || nativeCopyChanged || needsProjectEntry
-        || observation.consumers.some((consumer) => consumer.activation !== 'enabled'))) {
+        || consumer?.activation !== 'enabled')) {
         add('activate', evidence.layout.activationPath, ids);
       }
     } else if (!retainPackage && nativeRoute(binding.route) && identity && observation.registration === 'present'
@@ -350,8 +352,20 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       result.status = definite || (geminiCode !== undefined && result.mutation === 'none') ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
       const geminiMessage = consentCode ? geminiConsentMessages[consentCode] : replacementCode ? geminiReplacementMessages[replacementCode] : undefined;
       const failureDiagnostic = lifecycleDiagnostic(binding, geminiCode ?? (code === 'operationPlanStale' ? code : definite ? code : 'platformMutationFailed'),
-        geminiMessage ? `${geminiMessage} In the same workspace, review and run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini --native-consent.`
+        geminiMessage ? code === 'nativeConsentProtocolUnconfirmed' || code === 'nativeConsentPromptUnsupported'
+          ? `${geminiMessage} Back up extension ${JSON.stringify(state.identity?.packageId)} and its activation rules. Use the same Gemini client and configuration root in the identified workspace to inspect the retained installation and install the identified AW source. Review each host permission yourself. Then run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini.`
+          : `${geminiMessage} In the same workspace, review and run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini --native-consent.`
           : definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.' : 'A platform action did not complete. Check status and retry the remaining actions.');
+      if (code === 'nativeConsentProtocolUnconfirmed' || code === 'nativeConsentPromptUnsupported') {
+        failureDiagnostic.subject = { ...failureDiagnostic.subject, sourceId: binding.plugin.sourceId, field: 'nativeSource' };
+        failureDiagnostic.detail = { reasonCode: 'geminiNativeConsentSource', path: plan.evidence.layout.packageRoot };
+        const workspaceDiagnostic: Diagnostic = { ...lifecycleDiagnostic(binding, 'nativeConsentWorkspace',
+          'Review the Gemini permissions in this exact workspace with the same client and configuration root.'), severity: 'warning',
+        subject: { ...failureDiagnostic.subject, field: 'workspace' },
+        detail: { reasonCode: 'geminiNativeConsentWorkspace', path: binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd } };
+        result.diagnostics.push(workspaceDiagnostic);
+        receipt.diagnostics.push(workspaceDiagnostic);
+      }
       result.diagnostics.push(failureDiagnostic);
       if (geminiCode) receipt.diagnostics.push(failureDiagnostic);
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
@@ -374,6 +388,8 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     ctx.codexObservationSession?.invalidate(plan.evidence.layout.marketplaceName ?? undefined);
   }
   receipt.after = await observe();
+  const afterConsumer = selectedNativeConsumer(binding, receipt.after);
+  const beforeConsumer = selectedNativeConsumer(binding, state.before);
   const grokContentReady = binding.route !== 'grok-cli' || receipt.after.ownership === 'aw'
     && !!state.bundle && receipt.after.nativePackageContentDigest === state.bundle.contentDigest
     && plan.projections.filter((projection) => projection.bundle).flatMap((projection) => projection.components).every((component) =>
@@ -385,11 +401,11 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     const effect = plan.effects.find((item) => item.id === result.id)!;
     const incomplete = (effect.kind === 'register' || effect.kind === 'refresh') && (receipt.after.registration !== 'present' || !nativeContentReady
       || binding.route === 'claude-marketplace' && state.before.scopeRegistration !== undefined && receipt.after.scopeRegistration !== 'present')
-      || effect.kind === 'activate' && receipt.after.consumers.some((item) => item.activation !== 'enabled')
+      || effect.kind === 'activate' && afterConsumer?.activation !== 'enabled'
       || binding.route === 'pi-package' && effect.kind === 'unregister' && receipt.after.registration !== 'absent'
         && !(nativeRemoved && piProjectRegistrationHidden(binding, receipt.after));
     if (incomplete) {
-      result.status = receipt.after.registration === 'unknown' || receipt.after.consumers.some((item) => item.activation === 'unknown')
+      result.status = receipt.after.registration === 'unknown' || !afterConsumer || afterConsumer.activation === 'unknown'
         || binding.route === 'grok-cli' && receipt.after.components.some((component) => component.presence === 'unknown') ? 'unknown' : 'failed';
       const code = binding.route === 'gemini-extension' && !nativeContentReady ? 'nativeInstallContentPostcheckFailed' : 'nativeMutationPostcheckFailed';
       const diagnostic = lifecycleDiagnostic(binding, code, code === 'nativeInstallContentPostcheckFailed'
@@ -408,6 +424,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   // still requires byte evidence; mere existence cannot confirm those effects.
   for (const result of receipt.effects) {
     if (result.status !== 'unknown' || receipt.after.ownership !== 'aw') continue;
+    if (result.diagnostics.some((diagnostic) => diagnostic.code === 'nativeConsentPromptUnsupported')) continue;
     const effect = plan.effects.find((item) => item.id === result.id)!;
     const exactIdentity = state.identity && receipt.after.nativeIdentity
       && state.identity.packageId === receipt.after.nativeIdentity.packageId
@@ -415,8 +432,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       && state.identity.sourceLocation === receipt.after.nativeIdentity.sourceLocation;
     const verified = exactIdentity && (effect.kind === 'register' && state.before.registration === 'absent' && receipt.after.registration === 'present' && nativeContentReady
       || effect.kind === 'unregister' && state.before.registration === 'present' && receipt.after.registration === 'absent'
-      || effect.kind === 'activate' && state.before.consumers.some((item) => item.activation === 'disabled')
-        && receipt.after.consumers.length > 0 && receipt.after.consumers.every((item) => item.activation === 'enabled')
+      || effect.kind === 'activate' && beforeConsumer?.activation === 'disabled' && afterConsumer?.activation === 'enabled'
       || effect.kind === 'deactivate' && state.before.consumers.some((item) => item.activation === 'enabled')
         && receipt.after.consumers.length > 0 && receipt.after.consumers.every((item) => item.activation === 'disabled'));
     if (verified) {
@@ -430,7 +446,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     }
   }
   if ((plan.operation === 'ensure' || plan.operation === 'reinstall') && plan.expected.components.length) {
-    const untrusted = receipt.after.consumers.filter((consumer) => consumer.trust === 'required' || consumer.trust === 'blocked');
+    const untrusted = afterConsumer && (afterConsumer.trust === 'required' || afterConsumer.trust === 'blocked') ? [afterConsumer] : [];
     if (untrusted.length) {
       receipt.diagnostics.push(lifecycleDiagnostic(binding, 'nativeTrustRequired',
         'The package was prepared, but the host has not trusted this deployment. Complete trust in the host and retry.'));

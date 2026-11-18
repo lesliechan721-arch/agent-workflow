@@ -4,9 +4,10 @@ import fs from 'fs-extra';
 import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
-import { resolvePlatformConfigRoot } from './discovery.js';
+import { resolvePlatformConfigRoot, selectNativeProduct } from './discovery.js';
 import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
+import { tryParseStrictSemVer } from '@lesliechan721/aw-plugin-core/semver';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('grokObservationInvalid');
@@ -27,7 +28,9 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
   result: DeploymentObservation, listValue: unknown, inspectValue: unknown): Promise<void> {
   const list = rows(listValue);
   const inspect = object(inspectValue);
-  if (inspect.grokVersion !== '1.0.77') throw new Error('grokObservationVersionUnverified');
+  const product = selectNativeProduct(binding.consumers);
+  if (typeof inspect.grokVersion !== 'string' || !tryParseStrictSemVer(inspect.grokVersion)
+    || !product || product.version !== null && product.version !== inspect.grokVersion) throw new Error('grokObservationVersionUnverified');
   const plugins = rows(inspect.plugins);
   const name = layout.nativeIdentity.packageId;
   const matches = list.filter((row) => row.name === name);
@@ -47,6 +50,7 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
   const own = plugins.filter((plugin) => plugin.name === name && plugin.path === nativeRoot && plugin.scope === binding.scope.kind);
   const hasLoadedResources = own.length === 1 && effective.some(({ source }) => source.plugin_name === name && within(nativeRoot!, source.path));
   for (const consumer of result.consumers) {
+    if (consumer.productId !== product.id) continue;
     consumer.activation = own.length === 1 && typeof own[0]!.enabled === 'boolean' ? own[0]!.enabled ? 'enabled' : 'disabled' : 'unknown';
     // Runtime/folder trust is distinct from consent to install a new source.
     consumer.trust = typeof inspect.projectTrusted === 'boolean'

@@ -82,6 +82,62 @@ function context(after: DeploymentObservation): MutationContext {
 }
 
 describe('native platform lifecycle', () => {
+  // Test Value Gate: other product observations remain visible but cannot turn
+  // an already complete selected path into an unnecessary native activation.
+  it.each(['unknown', 'blocked'] as const)('keeps a complete Grok path unchanged with another CLI trust=%s', async (trust) => {
+    const input = grokRefreshFixture();
+    input.evidence.contentMatches = true;
+    input.observation.nativePackageContentDigest = 'bundle';
+    input.observation.consumers[0]!.activation = 'enabled';
+    input.binding.consumers.push({ ...input.binding.consumers[0]!, id: 'other-cli' });
+    input.observation.consumers.push({ ...input.observation.consumers[0]!, productId: 'other-cli', activation: 'unknown', trust });
+    const plan = prepared(input);
+    expect(plan.plan.effects).toEqual([]);
+    const ctx = context(input.observation);
+    const receipt = await executePlatformLifecycle(ctx, plan);
+    expect(ctx.runner).not.toHaveBeenCalled();
+    expect(receipt.unmet).toEqual([]);
+    expect(receipt.diagnostics.some((diagnostic) => diagnostic.code === 'nativeTrustRequired')).toBe(false);
+    expect(receipt.after.consumers[1]).toMatchObject({ productId: 'other-cli', activation: 'unknown', trust });
+  });
+
+  // Test Value Gate: refresh authority belongs to the exact frozen CLI path;
+  // another CLI's unknown state is neither permission nor a shared conflict.
+  it.each([true, false])('uses the frozen Grok refresh trust evidence (selected trusted=%s)', async (trusted) => {
+    const input = grokRefreshFixture();
+    input.observation.consumers[0]!.trust = trusted ? 'trusted' : 'required';
+    input.binding.consumers.push({ ...input.binding.consumers[0]!, id: 'other-cli' });
+    input.observation.consumers.push({ ...input.observation.consumers[0]!, productId: 'other-cli', activation: 'unknown', trust: 'unknown' });
+    const after = currentNativeObservation(input);
+    after.consumers[1]!.activation = 'unknown';
+    const ctx = context(after);
+    const receipt = await executePlatformLifecycle(ctx, prepared(input));
+    if (trusted) {
+      expect(receipt.effects.every((effect) => effect.status === 'applied')).toBe(true);
+      expect(receipt.unmet).toEqual([]);
+      expect(vi.mocked(ctx.runner!).mock.calls.map(([call]) => call.args)).toContainEqual(['plugin', 'install', path.join(root, 'demo'), '--trust']);
+    } else {
+      expect(ctx.runner).not.toHaveBeenCalled();
+      expect(receipt.effects.find((effect) => effect.id.includes(':refresh:'))).toMatchObject({ status: 'blocked', mutation: 'none' });
+      expect(receipt.unmet).toContainEqual(expect.objectContaining({ reasonCode: 'nativeTrustRequired' }));
+    }
+  });
+
+  // Test Value Gate: an unqualified App entry cannot replace the selected CLI
+  // management path; execution keeps the exact entry frozen during preparation.
+  it('uses the frozen CLI path when a shared App entry comes first', async () => {
+    const input = fixture('codex-marketplace');
+    input.binding.consumers[0]!.version = '0.169.0';
+    input.binding.consumers.unshift({ ...input.binding.consumers[0]!, id: 'app', product: 'app',
+      entry: { kind: 'cli', executable: '/fake/app', configRoot: root } });
+    const plan = prepared(input);
+    input.binding.consumers[1]!.entry = { kind: 'cli', executable: '/changed-after-review', configRoot: root };
+    const ctx = context(currentNativeObservation(input));
+    await executePlatformLifecycle(ctx, plan);
+    expect(ctx.runner).toHaveBeenCalled();
+    expect(vi.mocked(ctx.runner!).mock.calls.every(([invocation]) => invocation.command === '/fake/client')).toBe(true);
+  });
+
   it('installs frozen bytes and uses the native local source without an invented scope flag', async () => {
     const input = fixture();
     const plan = prepared(input);
@@ -419,7 +475,7 @@ describe('native platform lifecycle', () => {
       const unregister = receipt.effects.find((effect) => effect.id.includes(':unregister:'))!;
       expect(ctx.runner).toHaveBeenCalledTimes(1);
       expect(receipt.after.registration).toBe(after.registration);
-      if (boundary === 'confirmed') {
+      if (boundary === 'confirmed' || boundary === 'other-version') {
         expect(unregister).toMatchObject({ status: 'applied', mutation: 'confirmed' });
         expect(ctx.services.removeOwned).toHaveBeenCalledTimes(1);
       } else {
@@ -702,7 +758,7 @@ describe('platform inspection and native activation', () => {
     const layout = await getDeploymentLayout(ctx, binding);
     binding.physicalKey = layout.renderUnits[0]!.physicalKey;
     await fs.outputJson(layout.activationPath, { packages: ['git:https://secret-token@example.invalid/pi-subagents'] });
-    const observation = await inspectDeployment(ctx, binding);
+    const observation = await inspectDeployment({ ...ctx, runner: async () => ({ exitCode: 0, stdout: 'No packages installed.\n', stderr: '' }) }, binding);
     expect(observation.prerequisites.agentConsumers.observation).toBe('unknown');
     expect(observation.prerequisites.agentConsumers.candidates).toEqual([]);
     expect(JSON.stringify(observation)).not.toContain('secret-token');

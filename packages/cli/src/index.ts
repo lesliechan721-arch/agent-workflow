@@ -38,9 +38,6 @@ import {
   catalogStoreStatus,
 } from './commands/catalog-store.js';
 import {
-  runConsoleController,
-} from './commands/console.js';
-import {
   WizardExecutionError,
 } from './commands/wizard.js';
 import {
@@ -2980,7 +2977,10 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
     if (json) return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'invalidOptionCombination', severity: 'error', message: 'tui cannot use --json.' }] }), true);
     if (!context.interactive) return emit(commandResult('tui', {}, { status: 'blocked', diagnostics: [{ code: 'interactiveTerminalRequired', severity: 'error', message: 'The TUI requires an interactive terminal.' }] }));
     const tuiContext = createCliExecutionContext({ ...options, io, diagnostics: toCliDiagnosticsOptions('console', bareOptions ?? {}, options.diagnostics) });
-    try { return await runActionWithContext(tuiContext, () => runConsoleController(tuiContext)); }
+    try { return await runActionWithContext(tuiContext, async () => {
+      const { runConsoleController } = await import('./commands/console.js');
+      return runConsoleController(tuiContext);
+    }); }
     catch (error) { return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'tuiFailed', severity: 'error', message: safePublicMessage(error instanceof Error ? error.message : String(error)) }] })); }
   }
   // Only these adapters carry cancellation through every long-running child.

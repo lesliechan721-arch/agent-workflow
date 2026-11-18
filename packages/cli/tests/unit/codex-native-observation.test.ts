@@ -87,10 +87,10 @@ describe('Codex native observation session', () => {
       expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'observed', trust: 'trusted' });
       expect(calls).toHaveLength(1);
       session.setManager({ ...manager, version: '0.168.0' });
-      expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'unknown' });
+      expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'observed', trust: 'trusted' });
       session.setManager({ ...manager, kind: 'app' });
       expect(await session.inspectProjectTrust(cwd)).toEqual({ state: 'unknown' });
-      expect(calls).toHaveLength(1);
+      expect(calls).toHaveLength(2);
     } finally { await session.dispose(); }
   });
 

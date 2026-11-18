@@ -387,7 +387,7 @@ describe('shared provider process behavior', () => {
     const calls: Array<{ command: string; args: string[]; options: { timeout: number; windowsHide: boolean; maxBuffer: number } }> = []
     let lateCallback: ((error: Error | null, stdout: string) => void) | undefined
     const observation = observeProcessTree(100, 'private-marker', {
-      platform: 'darwin', enforceProcessMarker: true,
+      platform: 'linux', enforceProcessMarker: true,
       execFile(command, args, options, callback) {
         calls.push({ command, args, options })
         const queryKind = args[0] === 'eww' ? 'marker' : 'identity'
@@ -428,6 +428,59 @@ describe('shared provider process behavior', () => {
       vi.useRealTimers()
     }
   })
+
+  // Hosted macOS can spend most of the scan budget before an exiting row
+  // needs confirmation. Slow success must survive; stalled inspection must fail.
+  it.each(['slow-scan', 'slow-confirmation', 'scan-timeout', 'confirmation-timeout'] as const)(
+    'bounds Darwin inspection with separate scan and confirmation time: %s', async (mode) => {
+      vi.useFakeTimers()
+      const marker = 'darwin-budget-marker'
+      let markerScans = 0
+      let cleanup = false
+      const signals = vi.fn()
+      const dependencies = {
+        platform: 'darwin' as const,
+        markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+        enforceProcessMarker: true,
+        execFile(_command: string, args: string[], _options: { timeout: number },
+          callback: (error: Error | null, stdout: string) => void): void {
+          if (!args.includes('eww')) { callback(null, '100 1 100 S root-start'); return }
+          if (cleanup) { callback(null, ''); return }
+          markerScans += 1
+          if (mode === 'scan-timeout' || mode === 'confirmation-timeout' && markerScans === 2) return
+          const unreadable = mode !== 'slow-scan' && markerScans === 1
+          const output = unreadable ? '100 1 100 R root-start (node)' : ''
+          const delay = markerScans === 1 ? mode === 'slow-scan' ? 2500 : 4800 : 1000
+          setTimeout(() => callback(null, output), delay)
+        },
+        kill: signals,
+      }
+      const observation = observeProcessTree(100, marker, dependencies)
+      const startedAt = Date.now()
+      let failureAt: number | undefined
+      const onFailure = vi.fn(() => { failureAt = Date.now(); observation.dispose() })
+      observation.onFailure(onFailure)
+      try {
+        await vi.advanceTimersByTimeAsync(7000)
+        if (mode.endsWith('timeout')) {
+          expect(onFailure).toHaveBeenCalledTimes(1)
+          expect(observation.diagnostics[0]?.reason).toBe('marker-lookup-failed')
+          expect(failureAt! - startedAt).toBe(mode === 'scan-timeout' ? 5000 : 6800)
+        } else {
+          expect(onFailure).not.toHaveBeenCalled()
+          observation.dispose()
+          cleanup = true
+          await expect(terminateProcessTree(100, () => undefined, dependencies, {
+            observation, requireConfirmedCleanup: true,
+          })).resolves.toBeUndefined()
+        }
+        expect(signals).not.toHaveBeenCalled()
+      } finally {
+        observation.dispose()
+        vi.useRealTimers()
+      }
+    },
+  )
 
   it('retries a transient POSIX marker lookup inside the original deadline', async () => {
     let marker = ''

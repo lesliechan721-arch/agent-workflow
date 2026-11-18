@@ -3,11 +3,11 @@ import type { NativeCliInput } from '../utils/native-cli.js';
 
 export const geminiConsentMessages = {
   nativeConsentRequired: 'Gemini native installation or update requires --native-consent. This permits extension consent and may persist source-folder and current-workspace trust. AW --yes and TUI Review do not grant this permission.',
-  nativeConsentVersionUnsupported: 'The Gemini native consent exchange is verified only for CLI 0.67.0. Use that version before retrying with --native-consent.',
-  nativeConsentPromptUnsupported: 'Gemini requested an unknown or repeated native consent prompt. No further answer was sent. Check the retained installation and client version before retrying with --native-consent.',
+  nativeConsentProtocolUnconfirmed: 'AW cannot verify the complete Gemini permission text before answering separate output streams. Automatic native installation or update was not started.',
+  nativeConsentPromptUnsupported: 'Gemini requested an unknown, repeated, or incomplete native consent exchange. No further answer was sent. Keep the current files and review the native permissions manually.',
 };
 
-/** Fixed v0.67.0 install.ts and extensions/consent.ts; no generic yes stream. */
+/** Recorded 0.67.0 contract only. Unverified clients must use manual native consent. */
 export function geminiConsentInput(operation: 'register' | 'refresh', source: string, cwd: string, packageId: string): NativeCliInput {
   let stdout = '';
   let stderr = '';
@@ -17,8 +17,8 @@ export function geminiConsentInput(operation: 'register' | 'refresh', source: st
   const fail = (): never => { throw Object.assign(new Error(geminiConsentMessages.nativeConsentPromptUnsupported), { code: 'nativeConsentPromptUnsupported' }); };
   const clear = (): void => { stdout = ''; stderr = ''; };
   const advance = (): ReturnType<NativeCliInput['onStdout']> => {
-    const output = stripVTControlCharacters(stdout);
-    const description = stripVTControlCharacters(stderr);
+    const output = stripVTControlCharacters(stdout).replace(/\r\n/gu, '\n');
+    const description = stripVTControlCharacters(stderr).replace(/\r\n/gu, '\n');
     const sourcePrompt = 'Do you want to trust this folder and continue with the installation? [y/N]: ';
     const consentPrompt = 'Do you want to continue? [Y/n]: ';
     // v0.67.0 logs update descriptions to stderr and asks on stdout. Either
@@ -33,6 +33,7 @@ export function geminiConsentInput(operation: 'register' | 'refresh', source: st
       || /(?:^|\n)(?:Migrating|Renaming) extension [^\r\n]*(?:\r?\n|$)/u.test(description)) fail();
     if (output.endsWith(sourcePrompt)) {
       if (operation !== 'register' || sourceGranted
+        || workspaceGranted || extensionGranted
         || !output.includes('Do you trust the files in this folder?')
         || !output.includes(`The extension source at "${source}" is not trusted.`)
         || output.split(sourcePrompt).length !== 2) fail();
@@ -55,7 +56,8 @@ export function geminiConsentInput(operation: 'register' | 'refresh', source: st
     }
     // The fixed host writes each question without a newline. Refuse other
     // yes/no questions; fragments remain buffered until their suffix arrives.
-    if (/\[[^\]\r\n]*\/[^\]\r\n]*\]:\s*$/u.test(output)) fail();
+    if (/\[[^\]\r\n]*\/[^\]\r\n]*\]:\s*$/u.test(output)
+      || /\[[^\]\r\n]*\/[^\]\r\n]*\]:\s*$/u.test(description)) fail();
     return undefined;
   };
   const receive = (stream: 'stdout' | 'stderr', chunk: string): ReturnType<NativeCliInput['onStdout']> => {

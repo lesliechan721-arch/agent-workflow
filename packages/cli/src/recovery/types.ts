@@ -1,6 +1,7 @@
 import type { PlatformName, Scope } from '../types.js';
 import type { AgentId, PreferencesObservation } from '../intent/deployment-preferences.js';
 import type { IntentObservation } from '../intent/intent-store.js';
+import type { RecoveryDiagnostic } from './receipt.js';
 
 export type Delivery =
   | { kind: 'native'; platform: PlatformName }
@@ -9,7 +10,7 @@ export type Delivery =
 export type Execution = 'not-run' | 'no-op' | 'applied' | 'partial' | 'failed';
 export type Observation = 'verified' | 'missing' | 'unknown';
 export type ContentState = 'absent' | 'satisfied' | 'drifted' | 'conflict' | 'unknown';
-export interface Diagnostic { code: string; message: string }
+export interface Diagnostic extends RecoveryDiagnostic {}
 
 export interface TargetKey { pluginId: string; agent: AgentId; scope: Scope }
 export interface TargetResult extends TargetKey {

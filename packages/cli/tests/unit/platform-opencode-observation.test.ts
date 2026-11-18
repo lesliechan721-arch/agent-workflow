@@ -143,14 +143,17 @@ describe('OpenCode native deployment observation', () => {
     expect(item.result.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodeNativeObservationFailed' }));
   });
 
-  // Test Value Gate: an adjacent CLI version cannot inherit the fixed API and process lifetime contract.
-  it('does not start an unverified CLI version', async () => {
+  // Test Value Gate: newer CLIs use the actual V2 response; older CLIs do not start a service.
+  it('accepts a newer CLI response and keeps the interface minimum', async () => {
     const item = await fixture('project', '2.0.1');
     let calls = 0;
-    await item.observe(async () => { calls += 1; throw new Error('Unexpected native process'); });
-    expect(calls).toBe(0);
-    expect(item.result.consumers[0]).toMatchObject({ activation: 'unknown', load: 'unknown' });
-    expect(item.result.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodeNativeVersionUnverified' }));
+    await item.observe(async (invocation) => { calls += 1; return item.response(invocation, [item.row()]); });
+    expect(calls).toBe(1);
+    expect(item.result.consumers[0]).toMatchObject({ activation: 'enabled', load: 'observed' });
+    const old = await fixture('project', '1.9.9');
+    await old.observe(async () => { throw new Error('Unexpected native process'); });
+    expect(old.result.consumers[0]).toMatchObject({ activation: 'unknown', load: 'unknown' });
+    expect(old.result.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodeNativeVersionUnverified' }));
   });
 
   // Test Value Gate: cancellation and unconfirmed process cleanup must reach the operation owner.

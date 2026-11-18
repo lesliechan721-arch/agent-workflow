@@ -30,6 +30,7 @@ import {
   type PluginListItemViewModel,
 } from '../../src/tui/model.js';
 import { TuiRouter } from '../../src/tui/router.js';
+import { diagnosticDetailText, diagnosticDetailLines } from '../../src/tui/components.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import type { PortableInstallReceipt } from '../../src/portable/commands.js';
 import type { PlatformTarget } from '../../src/types.js';
@@ -1321,6 +1322,46 @@ describe('Portable result recheck lifecycle', () => {
 });
 
 describe('TUI v4 router and ViewModel', () => {
+  it.each([false, true])('keeps global inventory locations visible with another target error=%s', (hasTargetError) => {
+    const location = '/fixture/codex/agents/aw-unknown-review.toml';
+    const view = buildTuiViewModel({ status: status({ targets: hasTargetError
+      ? [target({ scope: 'user', state: 'error', errorCode: 'stateInventoryFailed' })] : [] }), pluginSummaries: [],
+      recoveryDiagnostics: [location, '/fixture/codex/agents/aw-other-review.toml'].map((recoveryPath) => ({ code: 'stateInventoryFailed', message: 'Inventory is incomplete.',
+        subject: { target: 'codex', scope: 'user' },
+        detail: { reasonCode: 'ownerHeaderPathValidation', path: recoveryPath } })),
+    });
+    const text = view.issues.map((entry) => diagnosticDetailText(entry.diagnostic)).join('\n');
+    expect(text).toContain(location);
+    expect(text).toContain('/fixture/codex/agents/aw-other-review.toml');
+    expect(text).toContain('Back up');
+  });
+
+  it('keeps an unsafe-to-clean native file and its manual recovery in the issue Reader', () => {
+    const location = '/fixture/codex/agents/aw-demo-agent.toml';
+    const view = buildTuiViewModel({
+      status: status(), pluginSummaries: summaries(['official', 'demo']),
+      recoveryTargets: [{
+        pluginId: 'official/demo', agent: 'codex', scope: 'user',
+        delivery: { kind: 'native', platform: 'codex' }, execution: 'not-run',
+        observation: 'unknown', content: 'unknown', requiredBy: [],
+        blockers: [{ code: 'stateInventoryFailed', message: 'Inventory is incomplete.',
+          subject: { pluginId: 'official/demo', target: 'codex', scope: 'user' },
+          detail: { reasonCode: 'ownerHeaderPathValidation', path: location, configKey: 'agents.demo.config_file' } }],
+      }],
+    });
+    const issue = view.issues.find((entry) => entry.pluginId === 'official/demo'
+      && entry.technicalDetails.some((detail) => detail.code === 'stateInventoryFailed'));
+    expect(issue).toBeDefined();
+    const text = diagnosticDetailText(issue!.diagnostic);
+    expect(text).toContain(location);
+    expect(text).toContain('agents.demo.config_file');
+    expect(text).toContain('ownerHeaderPathValidation');
+    expect(text).toContain('sync only after this inventory error is gone');
+    expect(diagnosticDetailLines(issue!.diagnostic, 100).join('\n')).toContain('location:');
+    expect(text).toMatch(/back\s?up|backup/iu);
+    expect(issue?.actions).toContainEqual(expect.objectContaining({ id: 'viewTechnical' }));
+  });
+
   it('normalizes the legacy plugin preview route to the unified detail', async () => {
     const controller = new TuiController(dependencies());
     await controller.load();

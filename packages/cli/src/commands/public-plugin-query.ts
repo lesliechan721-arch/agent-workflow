@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { Scope, CatalogManifestV7Entry } from '../types.js';
 import { commandResult, type CommandResult, type Diagnostic } from '../output/public-result.js';
-import { publicDiagnostic, projectTarget } from './public-lifecycle-result.js';
+import { inventoryRecoveryActions, publicDiagnostic, projectTarget } from './public-lifecycle-result.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
 import { observeIntent } from '../intent/intent-store.js';
 import { observePreferences, normalizeAgents } from '../intent/deployment-preferences.js';
@@ -101,7 +101,7 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
     const location = { cwd: work.projectRoot ?? options.cwd, env: context.env };
     const [status, preferences, declarations] = await Promise.all([
       readRecoveryStatus({ ...location, context: work.context, cliVersion: options.cliVersion, nativeCliRunner: context.nativeCliRunner,
-        observeNative: options.observeNative }),
+        observeNative: options.observeNative, plugins, targets: filters, debugLogger: context.debugLogger }),
       observePreferences({ ...location, scope: 'user' }),
       Promise.all(work.scopes.map(async (scope) => { const observation = await observeIntent({ ...location, scope }); return { scope, state: observation.state,
         roots: observation.state === 'valid' ? observation.value.roots.map((root) => root.pluginId) : observation.state === 'absent' ? [] : null }; })),
@@ -117,6 +117,7 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
         const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
         diagnostics.push(...target.blockers.map((error) => publicDiagnostic(error, subject,
           error.code === 'needs-preparation' && ['absent', 'drifted'].includes(target.content ?? '') ? 'warning' : 'error')));
+        diagnostics.push(...(target.reasons ?? []).map((reason) => publicDiagnostic(reason, subject, 'warning')));
         if (target.agent === 'codex' && target.content === 'unknown' && target.deploymentObservations?.some((deployment) =>
           deployment.after.consumers.some((consumer) => consumer.trust === 'unknown'))) {
           diagnostics.push(publicDiagnostic('nativeTrustUnconfirmed', subject, 'warning'));
@@ -124,7 +125,7 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
       }
     }
     const targets = inventory?.flatMap((entry) => entry.targetResults) ?? [];
-    const incomplete = !status.coverage.native || !status.coverage.portable || inventory === null || declarations.some((entry) => entry.roots === null)
+    const incomplete = !(status.coverage.requestComplete ?? (status.coverage.native && status.coverage.portable)) || inventory === null || declarations.some((entry) => entry.roots === null)
       || inventory.some((entry) => entry.sourceState !== 'ready')
       || targets.some((target) => target.content === 'unknown');
     const configurationBlocked = status.errors.some((error) => ['targetsNotConfigured', 'deploymentPreferencesInvalid', 'deploymentPreferencesUnavailable'].includes(error.code));
@@ -141,11 +142,13 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
         exclusions: preferences.state === 'valid' ? preferences.value.exclusions.map(({ plugin, target }) => ({ pluginId: plugin, target })) : preferences.state === 'absent' ? [] : null },
       selection: { plugins, targets: filters ?? status.selection.agents, targetOrigin: filters ? 'argument' : status.selection.origin }, inventory,
       extraObserved: status.extraObserved.filter((entry) => selectedPlugin(entry.pluginId) && selectedTarget(entry.agent)).map(({ pluginId, agent, scope, delivery, observation, content }) => ({ pluginId, target: agent, scope, delivery, observation, content: content ?? 'unknown' })),
-      coverage: { scopes: work.scopes, currentProject: work.context === 'project', otherProjects: 'unobserved', native: status.coverage.native, portable: status.coverage.portable },
+      coverage: { scopes: work.scopes, currentProject: work.context === 'project', otherProjects: 'unobserved', native: status.coverage.native, portable: status.coverage.portable,
+        ...(status.coverage.requestComplete !== undefined ? { requestComplete: status.coverage.requestComplete } : {}) },
       counts: { blocked: targets.filter((target) => target.blockerCodes.length).length, pending: targets.filter((target) => target.satisfaction === 'pending').length,
         unconfirmed: targets.filter((target) => target.content === 'unknown').length, ready: targets.filter((target) => target.content === 'satisfied').length },
       allSatisfied: status.allSatisfied, inSync: status.inSync },
-    { status: configurationBlocked ? 'blocked' : incomplete || hasBlockers ? validPartialResults ? 'partial' : 'blocked' : 'success', diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
+    { status: configurationBlocked ? 'blocked' : incomplete || hasBlockers ? validPartialResults ? 'partial' : 'blocked' : 'success',
+      diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()], nextActions: inventoryRecoveryActions(diagnostics) });
   } catch (error) {
     const result = queryFailure(command, failureCode(error, 'statusUnavailable'));
     result.diagnostics.unshift(...observationDiagnostics);

@@ -1,6 +1,8 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
+import { getMinimumAgentVersion } from './agent-version.js';
+import { compareStrictSemVer, tryParseStrictSemVer } from '@lesliechan721/aw-plugin-core/semver';
 import { createSafeNeutralCwd } from '../intent/scope-context.js';
 import { createCodexConfigReadInput, observeCodexExactProjectTrust, parseCodexConfigReadOutput,
   type CodexProjectTrustObservation } from './codex-config-observation.js';
@@ -161,7 +163,9 @@ export async function createCodexNativeObservationSession(options: {
       if (!projectTrust) {
         const selectedManager = manager;
         projectTrust = (async (): Promise<CodexProjectTrustObservation> => {
-          if (!options.runner || selectedManager?.kind !== 'system' || selectedManager.version !== '0.167.0') {
+          if (!options.runner || selectedManager?.kind !== 'system' || !selectedManager.version
+            || !tryParseStrictSemVer(selectedManager.version)
+            || compareStrictSemVer(selectedManager.version, getMinimumAgentVersion('codex')) < 0) {
             return { state: 'unknown' };
           }
           try {

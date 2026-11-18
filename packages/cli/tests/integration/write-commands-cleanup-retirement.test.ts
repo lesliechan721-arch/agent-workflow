@@ -5,6 +5,9 @@ import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.
 import { realpath } from 'node:fs/promises';
 import { render } from 'ink-testing-library';
 import { runRecovery } from '../../src/recovery/coordinator.js';
+import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
+import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
+import { renderOwnedTextFile } from '../../src/utils/ownership.js';
 import * as pluginConfig from '../../src/utils/plugin-config.js';
 import { prepareRetire, executeRetire, runRetire } from '../../src/recovery/retirement.js';
 import { readRecoveryStatus } from '../../src/recovery/status.js';
@@ -114,6 +117,48 @@ describe('five namespaced write commands', () => {
     installNativeTestQualification({ discovery: true, trust: true });
     defaultNativeRuntime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
+  });
+
+  it('preserves all four legacy Codex files and exposes manual recovery in normal and force cleanup', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const root = env.AW_CODEX_HOME!;
+    const entries = [
+      ['rules', 'agent-subagent', 'subagent-commands', '.rules'],
+      ['agents', 'agent-subagent', 'subagent', '.toml'],
+      ['agents', 'codex-enhance', 'codex-advisor', '.toml'],
+      ['agents', 'codex-enhance', 'codex-explore', '.toml'],
+    ] as const;
+    const files = entries.map(([directory, plugin, key, extension]) => path.join(root, directory, `aw-${plugin}-${key}${extension}`));
+    for (const [index, [, plugin, key]] of entries.entries()) await fs.outputFile(files[index]!, renderOwnedTextFile('legacy fixture\n', {
+      owner: 'agent-workflows', sourceId: 'official', pluginId: `official/${plugin}`, plugin,
+      artifactKey: key, platform: 'codex', scope: 'user',
+    }));
+    await fs.outputFile(path.join(root, 'config.toml'), entries.flatMap(([directory, , key], index) => directory === 'agents'
+      ? [`[agents.${JSON.stringify(key)}]`, `config_file = ${JSON.stringify(files[index])}`] : []).join('\n'));
+    const inventory = await inventoryCatalogSourceReferences({ cwd: layout.fixtureCwd, env, scope: 'user',
+      knownPluginNames: ['agent-subagent', 'codex-enhance'] });
+    expect(inventory.errors.filter((error) => error.kind === 'ownerHeaderPathValidation')).toHaveLength(4);
+    expect(inventory.references.some((reference) => files.includes(reference.location))).toBe(false);
+    expect(inventory.errors.map((error) => error.configKey).filter(Boolean)).toEqual(expect.arrayContaining([
+      'agents.subagent.config_file', 'agents.codex-advisor.config_file', 'agents.codex-explore.config_file',
+    ]));
+    for (const force of [false, true]) {
+      const result = await runPublicLifecycle('remove', ['official/agent-subagent', 'official/codex-enhance'], {
+        cwd: layout.fixtureCwd, env, cliVersion: '1.0.0', scope: 'user', context: 'user', target: ['codex'], only: 'outputs', yes: true, force,
+      }, { env, nativeCliRunner: defaultNativeRuntime.nativeCliRunner });
+      expect(result.status).not.toBe('success');
+      const manual = result.nextActions.filter((action) => action.kind === 'manual').map((action) => action.message).join('\n');
+      for (const file of files) {
+        expect(result.diagnostics).toContainEqual(expect.objectContaining({ detail: expect.objectContaining({ path: file }) }));
+        expect(manual).toContain(JSON.stringify(file));
+        expect(await fs.pathExists(file)).toBe(true);
+      }
+      expect(manual).toContain('Back up');
+      expect(manual).toContain('outside the host scan directories');
+    }
+    for (const [index, file] of files.entries()) await fs.move(file, path.join(layout.fixtureCwd, 'manual-backup', String(index)));
+    const recovered = await inventoryCatalogSourceReferences({ cwd: layout.fixtureCwd, env, scope: 'user' });
+    expect(recovered.errors.filter((error) => error.kind === 'ownerHeaderPathValidation')).toEqual([]);
   });
 
   it('previews and cleans selected live ownership without running the current Active renderer', async () => {

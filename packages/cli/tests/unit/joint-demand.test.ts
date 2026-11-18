@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'fs-extra';
+import path from 'node:path';
 import { deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot } from '../../src/recovery/joint-demand.js';
-import { aggregateConvergence, type RecoveryStatus } from '../../src/recovery/status.js';
+import { aggregateConvergence, readRecoveryStatus, type RecoveryStatus } from '../../src/recovery/status.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createEmptyPreferences, parsePreferences, type AgentId } from '../../src/intent/deployment-preferences.js';
 import { demandNativeProjection, resolveDelivery, type DemandSnapshot } from '../../src/recovery/demand.js';
 import type { DeploymentObservation } from '../../src/platforms/contracts.js';
@@ -20,6 +23,58 @@ function plugin(name: string, dependencies: string[] = []): PluginMeta {
   } as PluginMeta;
 }
 describe('joint requirements', () => {
+  it.each(['unknown', 'blocked'] as const)('keeps a selected dependency incomplete when its own dependency is %s', async (state) => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const input = snapshot(['a'], []);
+    input.context = { context: 'user', cwd: layout.fixtureCwd, scopes: ['user'] };
+    input.project = undefined;
+    input.user.plugins.find((entry) => entry.manifest.name === 'd')!.manifest.dependencies = ['e'];
+    input.user.plugins.push(plugin('e'));
+    input.user.preferences = { state: 'valid', value: input.preferences!, digest: 'test', rawDigest: 'test', rawBytes: Buffer.from('{}') };
+    const result = await readRecoveryStatus({ cwd: layout.fixtureCwd, env, plugins: ['local/d'], targets: ['cursor'],
+      nativeObservations: ['a', 'd', 'e'].map((name) => ({ pluginId: `local/${name}`, platform: 'cursor',
+        content: name === 'e' && state === 'unknown' ? 'unknown' : 'satisfied',
+        blockers: name === 'e' && state === 'blocked' ? [{ code: 'nativeTrustUnconfirmed', message: 'Trust unknown.' }] : [] })) }, input);
+    expect(result.inventory?.map((entry) => entry.pluginId)).toEqual(['local/d']);
+    expect(result.inventory![0]!.targetResults[0]!.content).toBe('satisfied');
+    expect(result.coverage.requestComplete).toBe(false);
+    expect(result.counts.ready).toBe(1);
+  });
+
+  it('does not let an unrelated Generic root failure change a Native-only query', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const input = snapshot(['d'], []);
+    input.context = { context: 'user', cwd: layout.fixtureCwd, scopes: ['user'] };
+    input.project = undefined;
+    input.user.preferences = { state: 'valid', value: input.preferences!, digest: 'test', rawDigest: 'test', rawBytes: Buffer.from('{}') };
+    await fs.outputFile(path.join(env.HOME!, '.agents', 'skills'), 'unrelated invalid Generic root');
+    const result = await readRecoveryStatus({ cwd: layout.fixtureCwd, env, plugins: ['local/d'], targets: ['cursor'],
+      nativeObservations: [{ pluginId: 'local/d', platform: 'cursor', content: 'satisfied', blockers: [] }] }, input);
+    expect(result.coverage.requestComplete).toBe(true);
+    expect(result.inventory![0]!.targetResults[0]!.content).toBe('satisfied');
+  });
+
+  it('projects a selected dependency while retaining unobserved global demand as unknown', async () => {
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const input = snapshot(['a', 'b'], []);
+    input.context = { context: 'user', cwd: layout.fixtureCwd, scopes: ['user'] };
+    input.project = undefined;
+    input.user.preferences = { state: 'valid', value: input.preferences!, digest: 'test', rawDigest: 'test', rawBytes: Buffer.from('{}') };
+    const observations = ['a', 'b', 'd'].map((name) => ({ pluginId: `local/${name}`, platform: 'cursor' as const,
+      content: 'satisfied' as const, blockers: [] }));
+    const selected = await readRecoveryStatus({ cwd: layout.fixtureCwd, env, plugins: ['local/d'], nativeObservations: observations }, input);
+    expect(selected.inventory).toHaveLength(1);
+    expect(selected.inventory![0]!.targetResults).toEqual([expect.objectContaining({ pluginId: 'local/d',
+      relation: 'dependency', requiredBy: ['local/a', 'local/b'], providerScope: 'user', content: 'satisfied' })]);
+    expect(selected.allSatisfied).toBeNull();
+    expect(selected.inSync).toBeNull();
+    expect(selected.coverage).toMatchObject({ requestComplete: true, native: false });
+    const full = await readRecoveryStatus({ cwd: layout.fixtureCwd, env, nativeObservations: observations }, input);
+    expect(full.allSatisfied).toBe(true);
+    expect(full.observedTargets?.find((target) => target.pluginId === 'local/d')?.content)
+      .toBe(selected.inventory![0]!.targetResults[0]!.content);
+  });
+
   // Test Value Gate: both root paths must survive while a shared dependency has one provider.
   it('expands both closures and assigns the shared dependency to user', () => {
     const input = snapshot(['a'], ['b'], ['generic']);

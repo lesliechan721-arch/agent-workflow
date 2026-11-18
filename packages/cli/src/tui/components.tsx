@@ -1,6 +1,7 @@
 import { Box, Text, useWindowSize } from 'ink';
 import type { ReactNode } from 'react';
 import stringWidth from 'string-width';
+import { inventoryRecoveryActions, publicDiagnostic } from '../commands/public-lifecycle-result.js';
 
 import {
   safeDiagnosticCode,
@@ -329,6 +330,7 @@ function diagnosticDetailRows(diagnostic: DiagnosticSummaryViewModel): Diagnosti
   if (!technical) return [];
 
   const cause = sanitizeDiagnosticCause(technical.sanitizedCause);
+  const recovery = (technical.recoveryDiagnostics ?? []).map((entry) => publicDiagnostic({ ...entry, message: '' }));
   return [
     { label: 'code', value: safeDiagnosticCode(technical.code, 'diagnosticUnavailable') },
     ...(technical.stage ? [{ label: 'stage', value: sanitizeDiagnosticText(technical.stage) }] : []),
@@ -340,6 +342,13 @@ function diagnosticDetailRows(diagnostic: DiagnosticSummaryViewModel): Diagnosti
       value: sanitizeDiagnosticText(entry.value),
     })),
     ...(cause ? [{ label: 'cause', value: cause }] : []),
+    ...recovery.flatMap(({ detail }) => detail ? [
+      { label: 'reason', value: detail.reasonCode },
+      ...(detail.path ? [{ label: 'location', value: detail.path }] : []),
+      ...(detail.configKey ? [{ label: 'config key', value: detail.configKey }] : []),
+    ] : []),
+    ...inventoryRecoveryActions(recovery).flatMap((action) => action.kind === 'manual'
+      ? [{ label: 'manual', value: action.message }] : []),
     ...(technical.checks ?? []).map((check, index) => ({
       label: `建议 ${index + 1}`,
       value: sanitizeDiagnosticText(check),

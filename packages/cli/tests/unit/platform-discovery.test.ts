@@ -66,6 +66,37 @@ async function piNpmFixture(windows = false, bin = 'dist/bundle/cli.js') {
 }
 
 describe('read-only target discovery and production selection', () => {
+  // Test Value Gate: scope reads reuse one identity probe per safe entry while
+  // changed namespaces, candidates and new operations obtain fresh evidence.
+  it('reuses discovery across scope cwd changes with the same resolved client inputs', async () => {
+    const ctx = await fixture();
+    await executable(ctx, 'codex');
+    const otherCwd = path.join(ctx.cwd, 'other-scope');
+    await fs.ensureDir(otherCwd);
+    let version = '0.169.0';
+    let calls = 0;
+    ctx.runner = async () => { calls += 1; return { exitCode: 0, stdout: `codex-cli ${version}`, stderr: '' }; };
+    ctx.discoveryCache = new Map();
+    const first = await discoverPlatform('codex', ctx);
+    first.installations[0]!.version = 'mutated-output';
+    const project = await discoverPlatform('codex', { ...ctx, cwd: otherCwd });
+    expect(calls).toBe(1);
+    expect(project.installations[0]!.version).toBe('0.169.0');
+    version = '0.170.0';
+    expect((await discoverPlatform('codex', ctx)).installations[0]!.version).toBe('0.169.0');
+    const next = await discoverPlatform('codex', { ...ctx, discoveryCache: new Map() });
+    expect(next.installations[0]!.version).toBe('0.170.0');
+    expect(calls).toBe(2);
+    const changedRoot = path.join(ctx.cwd, 'other-codex');
+    expect((await discoverPlatform('codex', { ...ctx, env: { ...ctx.env, CODEX_HOME: changedRoot } })).installations[0]!.entry)
+      .toMatchObject({ configRoot: changedRoot });
+    expect(calls).toBe(3);
+    const changedBin = path.join(ctx.cwd, 'other-bin');
+    await fs.outputFile(path.join(changedBin, 'codex'), '#!/bin/sh\n', { mode: 0o755 });
+    await discoverPlatform('codex', { ...ctx, env: { ...ctx.env, PATH: changedBin } });
+    expect(calls).toBe(4);
+  });
+
   // Test Value Gate: a failed client probe must retain independent observations and all target IDs without changing preferences.
   it('retains available, unsupported, unknown, missing, and generic facts in the public list', async () => {
     const ctx = await fixture();

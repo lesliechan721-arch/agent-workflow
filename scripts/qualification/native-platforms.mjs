@@ -208,6 +208,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           });
         } catch (error) {
           report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
+            ...(error?.publicAwProcessQueryTimings ? { processQueryTimings: error.publicAwProcessQueryTimings } : {}),
             ...(error?.qualificationMarkerIdentityConfirmations ? { markerIdentityConfirmations: error.qualificationMarkerIdentityConfirmations } : {}),
             cwd, processFailure: error?.message, processDiagnostics: error?.processTreeDiagnostics ?? [],
             ...(error?.result ? { exitCode: error.result.exitCode, signal: error.result.signal,
@@ -216,6 +217,7 @@ export async function runScope(platform, scope, launcher, options = {}) {
           throw error;
         }
         report.commands.push(redact({ rpc: platform === 'codex' ? ['initialize', 'skills/list'] : ['get_commands', 'get_state'],
+          ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
           ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           cwd, exitCode: result.exitCode, timedOut: result.timedOut, maxBufferExceeded: result.maxBufferExceeded,
           cancelled: result.cancelled, terminationReason: result.terminationReason, stderr: result.stderr }, root, options.clientBin));

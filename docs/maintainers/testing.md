@@ -175,7 +175,7 @@ Release unit/integration 覆盖 schema 2 CLI target 更新的五包同步、Cata
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
 
-Catalog publisher 的少量取消敏感用例通过独立 Node 子进程执行已构建的 CLI，避免在子进程内重复启动 Vitest。父测试负责隔离环境、超时、进程树收尾和目录清理；子进程保持路径围栏、禁用网络 fetch 和真实 native CLI 的保护。其余用例继续验证源码入口；运行前需完成 `pnpm build`。
+Catalog publisher 的少量取消敏感用例通过独立 Node 子进程执行已构建的 CLI，避免在子进程内重复启动 Vitest。父测试负责隔离环境、超时、进程树收尾和目录清理；子进程保持路径围栏、禁用网络 fetch 和真实 native CLI 的保护。稳定版删除后版本复用／降级及 beta 删除后原身份复用也使用该边界，记录构建历史、发布、恢复、plan 和 apply 阶段；这两个多轮发布用例仅在 Windows 使用 60 秒预算，其它平台保持 30 秒。超时仍须确认进程树收尾后清理目录，未确认则保留。其余用例继续验证源码入口；运行前需完成 `pnpm build`。
 
 Catalog publisher 测试必须覆盖 plan 的授权身份、`apply --expected-plan-digest --yes`、journal 的 `prepared|uncertain|published`、相同 journal plan 的对账或续跑、不同 plan 的 version 提升，以及 branch/tag 都存在、都缺失、只缺一个和冲突。对于 `prepared` 或 `uncertain`，journal 或隔离 repo 缺失或损坏时必须停止并提升版本；`published` journal 缺失时 immutable tag 仍占用版本。首次写入前 fixture 保留隔离 repo；成功 fixture 只保留 JSON journal。测试使用本地 bare remote，不访问真实网络。
 
@@ -201,6 +201,8 @@ AW_PERF_SUMMARY {"name":"..."}
 Performance gate 必须校验摘要名称集合。缺少、重复或未知名称都必须让门禁失败。
 
 性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖至少两个 Git source 与一个 Path source、large Catalog、Active store 读取、`aw source status <id> --remote`、普通 source sync、remote deadline 失败和进程清理确认；不依赖公网。TUI/Review 与公开 install/write 预算使用隔离 home 和受控 fake native runner，并通过结构化阶段事件验证单份 state snapshot、Active validation、依赖 collision 传播和 dependency plan。普通 warm 路径 provider 调用必须为零，本地 Catalog 阶段 p95 上限为 500ms；命令总时长只使用宽松的测试 runner 门槛，不代表第三方 native CLI 保证。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
+
+状态查询的性能门禁首先核对实际调用次数与检查范围：同一只读操作内，相同客户端入口的版本与 App 身份发现至多一次，相同 Active snapshot 校验与 manifest 读取不因 User/Project 重复；不同 scope/cwd 的必要清单仍分别执行。指定插件时，无关插件不得扩大 adapter inspect、原生清单和内容字节检查集合；完整依赖、共享和碰撞关系不因选择而省略。跨命令、写入复核及写后检查必须重新取证。真实耗时用相同机器与现场的预热、交错前后样本记录，不把 fake runner 预算当第三方 CLI 保证。非交互命令的启动测量单独记录，TUI 加载只在实际交互时发生。
 
 Codex 优化的主要门禁是确定性计数，不是 500ms fake runner 断言。最低层测试分别验证：成功 native CLI 的 process-table observation/scan 为 0；20 个同 marketplace target 的 project/all-scope list 不超过 2；user-only generation 不超过 1；所有 Codex list 都是 `plugin list --marketplace <name> --json`；锁内 no-op 不超过 2，真实 mutation 的 pre/post 合计不超过 4，含 Preview 的完整 TUI project mutation 不超过 6；root 和五个同源依赖只建立并提交一个 marketplace generation；plugin validate 使用一个 `cat-file --batch`，Git 总进程不超过 5。已有 timeout、abort 和进程树清理测试负责失败路径，不在 performance suite 重复。wall-clock 只保留线性时间回退、宽松 runner deadline 和显式真实 qualification 证据。
 
