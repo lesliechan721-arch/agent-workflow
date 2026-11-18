@@ -31,7 +31,7 @@ describe('native recovery dispatch', () => {
   // Confirm both a completed empty rules projection and a real scoped Markdown rule
   // through the write path, then read status without running the renderer.
   it.each(['user', 'project'] as const)('reports a complete Grok %s dynamic supplement projection ready', async (scope) => {
-    installNativeTestQualification({ platforms: ['grok'], discovery: true });
+    installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
     const { env, layout } = getCurrentSourceTestIsolation();
     const cwd = layout.fixtureCwd;
     await fs.ensureDir(path.join(cwd, '.git'));
@@ -68,7 +68,8 @@ describe('native recovery dispatch', () => {
     await setTargets({ cwd, env, scope: 'user' }, ['grok']);
     const options = { cwd, env, cliVersion: '1.0.0', scope, context: scope, targets: ['grok'], yes: true };
     let userSource: string | undefined;
-    const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
+    const nativeCliRunner = async ({ command, args }: NativeCliInvocation) => {
+      expect(command).toBe(process.execPath);
       let stdout: string;
       if (args.includes('--version')) stdout = 'grok 1.0.77';
       else if (args[0] === 'plugin' && args[1] === 'list') stdout = JSON.stringify(userSource ? [{
@@ -85,9 +86,9 @@ describe('native recovery dispatch', () => {
     const result = await runPublicLifecycle('install', ['local/demo'], options, { nativeCliRunner });
     if (scope === 'user') {
       expect(result.status, JSON.stringify(result)).toBe('partial');
-      const receipt = (result.data as LifecycleData).targetResults[0]!.deploymentReceipts![0]!;
-      expect(receipt.after.registration).toBe('absent');
-      userSource = receipt.after.nativeIdentity!.sourceLocation;
+      const receipt = (result.data as LifecycleData).targetResults[0]?.deploymentReceipts?.[0];
+      expect(receipt, JSON.stringify(result)).toMatchObject({ after: { registration: 'absent' } });
+      userSource = receipt!.after.nativeIdentity!.sourceLocation;
       await fs.copy(userSource, installed);
       expect((await runPublicLifecycle('sync', ['local/demo'], options, { nativeCliRunner })).status).toBe('success');
     } else {

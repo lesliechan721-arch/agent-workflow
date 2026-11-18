@@ -54,6 +54,7 @@ const realAdapters = new Map(registry.getAgentPluginAdapters().map((adapter) => 
 export function installNativeTestQualification(options: {
   platforms?: readonly PlatformName[];
   discovery?: boolean;
+  executable?: string;
 } = {}): { restore(): void } {
   const platforms = new Set(options.platforms ?? NATIVE_PLATFORM_TARGETS);
   const profile = vi.spyOn(capabilities, 'getQualifiedPlatformProfile').mockImplementation((platform, host) => {
@@ -85,7 +86,7 @@ export function installNativeTestQualification(options: {
         return { platform, availability: 'available' as const, diagnostics: [], installations: [{
           id: `controlled:${platform}`, product: 'cli' as const, version: versions[platform as PlatformName],
           availability: 'available' as const, reasonCodes: [], entry: { kind: 'cli' as const,
-            executable: platform, configRoot: resolvePlatformConfigRoot(platform, ctx) },
+            executable: options.executable ?? platform, configRoot: resolvePlatformConfigRoot(platform, ctx) },
         }] };
       },
     };
