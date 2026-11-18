@@ -195,12 +195,20 @@ describe('public config command', () => {
       });
     expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['old']);
     expect(await fs.readFile(renders)).toEqual(rendersBefore);
-    expect((await run(['plugin', 'status', '--context', 'user'])).payload).toMatchObject({
-      schemaVersion: 2,
-      command: 'plugin.status',
-      status: 'blocked',
-      data: { allSatisfied: false, coverage: { scopes: ['user'], otherProjects: 'unobserved' } },
-      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'platformInputDrift' })]),
+    expect(await run(['plugin', 'status', '--context', 'user'])).toMatchObject({
+      exitCode: 0,
+      payload: {
+        schemaVersion: 2,
+        command: 'plugin.status',
+        status: 'success',
+        data: {
+          allSatisfied: false,
+          counts: { pending: 1, blocked: 0 },
+          coverage: { scopes: ['user'], otherProjects: 'unobserved' },
+          inventory: [{ pluginId: 'team/demo', targetResults: [{ target: 'codex', scope: 'user', content: 'drifted', blockerCodes: [] }] }],
+        },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'platformInputDrift', severity: 'warning' })]),
+      },
     });
     expect(await fs.readFile(renders)).toEqual(rendersBefore);
     const applied = await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"applied"', '--apply', '--yes']);

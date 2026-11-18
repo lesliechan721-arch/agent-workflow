@@ -36,7 +36,7 @@ import { readClaudeSettings } from '../adapters/helpers.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import { parseOwnedTextHeader, readSkillOwnerMarker } from '../utils/ownership.js';
 import type { RebuildExecutionContext, RebuildIntegration } from './rebuild-integration.js';
-import { applyPlannedOperationAction } from './rebuild-integration.js';
+import { applyPlannedOperationAction, isNativeActivationOnlyTarget } from './rebuild-integration.js';
 import type { DesiredTarget } from './rebuild-operations.js';
 
 type TargetInput = Parameters<RebuildIntegration['buildTarget']>[0];
@@ -63,11 +63,12 @@ function nativeCopyIncomplete(binding: DeploymentBinding, after: DeploymentObser
     && after.nativePackageContentDigest !== contentDigest;
 }
 
-function packageDeliveryConfirmed(binding: DeploymentBinding, after: DeploymentObservation, contentDigest: string): boolean {
+function packageDeliveryConfirmed(binding: DeploymentBinding, after: DeploymentObservation, contentDigest: string,
+  requireIndependentActivation: boolean): boolean {
   return after.package === 'present' && ['aw', 'shared'].includes(after.ownership)
     && !nativeCopyIncomplete(binding, after, contentDigest)
     && ['present', 'not-applicable'].includes(after.registration)
-    && ['enabled', 'not-applicable'].includes(requiredDeploymentActivation(binding, after))
+    && ['enabled', 'not-applicable'].includes(requiredDeploymentActivation(binding, after, requireIndependentActivation))
     && (binding.route !== 'cursor-workspace-hook' || after.workspaceOpen === 'present')
     && (binding.route !== 'claude-marketplace' || after.scopeRegistration === undefined || after.scopeRegistration === 'present');
 }
@@ -529,6 +530,10 @@ export class PlatformRebuildSession {
       new Error(`platformUnavailable: ${resolution.exclusions.map((item) => item.reasonCode).join(', ') || input.platform}`),
       { deploymentExclusions: this.exclusions.get(this.key(input)) ?? [] });
     const adapter = this.adapterFor(input.platform);
+    // An activation-only Project action restores access to its existing User provider.
+    const requireIndependentActivation = input.platform !== 'codex' || !isNativeActivationOnlyTarget(this.context, {
+      pluginId: sourceIdentity(input).pluginId, platform: input.platform, scope: input.scope,
+    });
     const ctx = this.nativeReadContext(input);
     this.contexts.add(ctx);
     const observed = await Promise.all(resolution.bindings.map(async (binding) => ({ binding, observation: await adapter.inspect(ctx, binding), layout: await getDeploymentLayout(ctx, binding) })));
@@ -921,9 +926,12 @@ export class PlatformRebuildSession {
           const packageIds = new Set(plan.projections.filter((projection) => projection.bundle)
             .flatMap((projection) => projection.components.map((component) => component.id)));
           const bundle = plan.projections.find((projection) => projection.bundle)?.bundle;
-          const requiredActivation = requiredDeploymentActivation(plan.binding, after);
+          const requiredActivation = requiredDeploymentActivation(plan.binding, after, requireIndependentActivation);
+          if (!requireIndependentActivation && requiredActivation === 'enabled') {
+            receipt.diagnostics = receipt.diagnostics.filter((entry) => entry.code !== 'codexProjectActivationUnconfirmed');
+          }
           const nativeContentIncomplete = bundle && nativeCopyIncomplete(plan.binding, after, bundle.contentDigest);
-          const packageIncomplete = bundle && (!packageDeliveryConfirmed(plan.binding, after, bundle.contentDigest)
+          const packageIncomplete = bundle && (!packageDeliveryConfirmed(plan.binding, after, bundle.contentDigest, requireIndependentActivation)
             || await readPlatformPackageContentDigest(plan.evidence.layout.packageRoot) !== bundle.contentDigest);
           const delivered = new Set(after.components.filter((component) => component.presence === 'present' && !component.reasonCodes.length)
             .map((component) => component.id));
@@ -949,7 +957,8 @@ export class PlatformRebuildSession {
           if (!gaps.length) continue;
           incomplete = true;
           const code = plan.binding.route === 'grok-directory' && requiredActivation === 'blocked' ? 'grokProjectAuthorizationDenied'
-            : plan.binding.route === 'codex-marketplace' && after.scopeActivation === 'unknown' ? 'codexProjectActivationUnconfirmed'
+            : plan.binding.route === 'codex-marketplace' && requireIndependentActivation && after.scopeActivation === 'unknown'
+              ? 'codexProjectActivationUnconfirmed'
               : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
           receipt.diagnostics.push({ code, severity: 'error',
             message: code === 'nativeInstallContentPostcheckFailed' && plan.binding.route === 'gemini-extension'
@@ -1106,7 +1115,7 @@ export class PlatformRebuildSession {
             const packageOwner = prepared.plan.evidence.ownership.find((slot) => 'path' in slot.component && slot.component.path === root)?.component;
             if (bundle && packageOwner?.kind === 'owned-directory' && prepared.plan.evidence.contentMatches
               && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
-              && packageDeliveryConfirmed(prepared.plan.binding, receipt.after, bundle.contentDigest)
+              && packageDeliveryConfirmed(prepared.plan.binding, receipt.after, bundle.contentDigest, requireIndependentActivation)
               && await readPlatformPackageContentDigest(root) === bundle.contentDigest) {
               const projection: NativeProjectionEvidence = { components: mappings, contentDigest: bundle.contentDigest,
                 inputDigest: inputDigests.get(prepared.plan.binding.id)!, preparation: prepared.plan.expected.unmet.length || commandPreparationFailed ? 'partial' : 'complete',

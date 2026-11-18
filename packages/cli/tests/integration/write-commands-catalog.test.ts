@@ -345,12 +345,14 @@ describe('five namespaced write commands', () => {
     ]);
 
     const status = await readPublicStatus({ cwd: isolation.layout.fixtureCwd, env: isolation.env, nativeCliRunner });
-    // The transport keeps source identity, but this generation deliberately changes Skill bytes.
-    expect(status, JSON.stringify(status)).toMatchObject({ exitCode: 3, payload: {
-      command: 'plugin.status', status: 'blocked', data: { allSatisfied: false,
+    // Both generations project the same instruction even though their README and transport differ.
+    expect(status, JSON.stringify(status)).toMatchObject({ exitCode: 0, payload: {
+      command: 'plugin.status', status: 'success', diagnostics: [], data: { allSatisfied: true, inSync: true,
         inventory: expect.arrayContaining([expect.objectContaining({ pluginId: 'official/demo',
           targetResults: expect.arrayContaining([expect.objectContaining({ target: 'codex', scope: 'project',
-            content: 'drifted', blockerCodes: expect.arrayContaining(['platformInputDrift']) })]),
+            content: 'satisfied', blockerCodes: [], deploymentObservations: [expect.objectContaining({
+              after: expect.objectContaining({ package: 'present', registration: 'present', ownership: 'aw', scopeActivation: 'enabled' }),
+            })] })]),
         })]),
       },
     } });

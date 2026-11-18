@@ -138,9 +138,14 @@ describe('Codex source-qualified native identity', () => {
     const runtime = await createNativeRuntime(isolation);
     const options = (scope: 'user' | 'project') => ({ cwd, env: isolation.env, scope,
       cliVersion: '1.0.0', yes: true });
-    expect((await runRecovery('install', ['team/demo'], options('user'), runtime)).ok).toBe(true);
+    // Establish independent Project activation before the User activation can supply inheritance.
     const projectInstall = await runRecovery('install', ['team/demo'], options('project'), runtime);
     expect(projectInstall.ok, JSON.stringify(projectInstall.targetResults)).toBe(true);
+    expect(projectInstall.targetResults).toMatchObject([{ scope: 'project', deploymentReceipts: [
+      { after: { scopeActivation: 'enabled' } },
+    ] }]);
+    const userInstall = await runRecovery('install', ['team/demo'], { ...options('user'), context: 'user' }, runtime);
+    expect(userInstall.ok, JSON.stringify(userInstall.targetResults)).toBe(true);
     const strongPaths = await Promise.all([
       resolveIntentPath({ scope: 'user', cwd, env: isolation.env }),
       resolveIntentPath({ scope: 'project', cwd, env: isolation.env }),
@@ -153,8 +158,7 @@ describe('Codex source-qualified native identity', () => {
     const cacheManifest = path.join(runtime.packageRoot('demo'), '.codex-plugin', 'plugin.json');
     const packageBytes = await fs.readFile(cacheManifest);
     const projectConfigPath = path.join(cwd, '.codex', 'config.toml');
-    // Both activations can exist on disk even when user demand satisfies the project.
-    await applyCodexConfigTransactionFile(projectConfigPath, { upsertPluginActivations: { [runtime.registrationId('demo')]: true } });
+    expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins[runtime.registrationId('demo')]?.enabled).toBe(true);
     const projectCleanup = await runRecovery('cleanup', ['team/demo'], { ...options('project'), targets: ['codex'] }, runtime);
     expect(projectCleanup.ok, JSON.stringify(projectCleanup.targetResults)).toBe(true);
     expect((await readCodexConfigFile(projectConfigPath)).snapshot.plugins[runtime.registrationId('demo')]?.enabled).not.toBe(true);

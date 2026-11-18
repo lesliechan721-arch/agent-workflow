@@ -316,7 +316,7 @@ describe('native recovery dispatch', () => {
     const drifted = await readRecoveryStatus({ context: 'project', cwd, env, nativeCliRunner, targets: ['cursor'] });
     expect(drifted.allSatisfied).not.toBe(true);
     expect(drifted.inventory?.flatMap((entry) => entry.targetResults)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ agent: 'cursor', content: 'unknown', blockers: expect.arrayContaining([
+      expect.objectContaining({ agent: 'cursor', content: 'unknown', blockers: [], reasons: expect.arrayContaining([
         expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' }),
       ]) }),
     ]));

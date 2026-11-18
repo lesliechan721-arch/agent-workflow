@@ -852,16 +852,19 @@ describe('five namespaced write commands', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-shared-pre-apply-source');
     const controlPath = path.join(isolation.env.AW_HOME!, 'config-shared-pre-apply-control.txt');
     const counterPath = path.join(isolation.env.AW_HOME!, 'config-shared-pre-apply-count.txt');
+    // Claude exposes the registration scope for both roots that share the dependency.
+    const useClaude = (manifest: PluginMeta['manifest']) => { manifest.platforms = ['claude']; };
     const definitions: Array<{
       name: string;
       dependencies?: string[];
       configureManifest?: (manifest: PluginMeta['manifest']) => void;
     }> = [
-      { name: 'leaf' },
+      { name: 'leaf', configureManifest: useClaude },
       {
         name: 'root',
         dependencies: ['leaf'],
         configureManifest: (manifest) => {
+          useClaude(manifest);
           manifest.config = { schemaVersion: 5,
             fields: { mode: { type: 'string', default: 'safe' } },
           };
@@ -878,27 +881,27 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const runtime = await createCodexNativeTestRuntime(isolation);
-    const nativeCliRunner = runtime.nativeCliRunner;
+    const { runtime, nativeCliRunner, claudeHome } = await createClaudeNativeTestRuntime(isolation);
     await writePreferences({ scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env }, {
-      ...createEmptyPreferences(), targets: ['codex'],
+      ...createEmptyPreferences(), targets: ['claude'],
     });
     for (const scope of ['user', 'project'] as const) {
       const installed = await timing.measure('command', `fixture install ${scope}`, () => installFixturePlugin(['team/root'], {
         cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
+        platform: 'claude',
         scope,
       }, runtime));
       expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
     }
     const visible = await timing.measure('command', 'status', () => readRecoveryStatus({
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      cliVersion: '1.0.0', context: 'project', targets: ['codex'], nativeCliRunner }));
+      cliVersion: '1.0.0', context: 'project', targets: ['claude'], nativeCliRunner }));
     expect(visible.inventory?.filter((entry) => entry.pluginId === 'team/root')
       .flatMap((entry) => entry.targetResults).map((target) => target.scope).sort())
       .toEqual(['project', 'user']);
 
     definitions[0]!.configureManifest = (manifest) => {
+      useClaude(manifest);
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
     };
     await createNativeDependencyCatalog(sourceRoot, definitions);
@@ -925,7 +928,7 @@ describe('five namespaced write commands', () => {
       const output = createCapturedCliIo();
       const exitCode = await timing.measure('command', 'plugin config set --apply', () => runCli([
         'plugin', 'config', 'set', 'team/root', 'mode', '--value-json', JSON.stringify(mode),
-        '--context', 'project', '--platform', 'codex', '--apply', '--yes', '--json',
+        '--context', 'project', '--platform', 'claude', '--apply', '--yes', '--json',
       ], {
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
@@ -962,11 +965,11 @@ describe('five namespaced write commands', () => {
       }
     });
     expect(succeeded.receipt.data.apply.targetResults.map((result) => `${result.target.pluginId}/${(result.target as { scope: string }).scope}`).sort())
-      .toEqual(['team/leaf/user', 'team/root/project', 'team/root/user']);
+      .toEqual(['team/leaf/project', 'team/leaf/user', 'team/root/project', 'team/root/user']);
     await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('1');
 
-    const outputRoots = [isolation.env.CODEX_HOME!, path.join(isolation.env.AW_HOME!, 'platforms', 'codex'),
-      path.join(isolation.layout.fixtureCwd, '.codex')];
+    const outputRoots = [claudeHome, path.join(isolation.env.AW_HOME!, 'platforms', 'claude'),
+      path.join(isolation.layout.fixtureCwd, '.claude')];
     const readOutputs = () => Promise.all(outputRoots.map(async (root) => await fs.pathExists(root)
       ? snapshotRegularTree(root) : null));
     const outputsBeforeFailure = await readOutputs();
@@ -1593,7 +1596,8 @@ describe('five namespaced write commands', () => {
         nativeCliRunner, context: 'project', targets: ['codex'] });
       expect(missing.observedTargets).toEqual(expect.arrayContaining([expect.objectContaining({
         pluginId: 'team/demo', agent: 'codex', scope: 'project', content: 'unknown', observation: 'unknown',
-        blockers: expect.arrayContaining([expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })]),
+        blockers: [],
+        reasons: expect.arrayContaining([expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })]),
         deploymentObservations: expect.arrayContaining([expect.objectContaining({
           after: expect.objectContaining({ package: 'absent', ownership: 'absent', registration: 'present' }),
         })]),
@@ -2186,7 +2190,19 @@ describe('five namespaced write commands', () => {
         return ['add', 'remove'].includes(invocation.args[index + 1] ?? '');
       })).toEqual([]);
       const repaired = await run(true);
-      expect(repaired, JSON.stringify(repaired)).toMatchObject({ exitCode: 0, payload: { status: 'success' } });
+      expect(repaired, JSON.stringify(repaired)).toMatchObject({ exitCode: 4, payload: {
+        status: 'partial',
+        data: { targetResults: [
+          expect.objectContaining({ scope: 'user', content: 'satisfied', observation: 'verified' }),
+          expect.objectContaining({
+            scope: 'project', content: 'unknown', observation: 'unknown',
+            deploymentReceipts: [expect.objectContaining({ after: expect.objectContaining({
+              package: 'present', registration: 'present', scopeActivation: 'unknown',
+              consumers: [expect.objectContaining({ activation: 'enabled' })],
+            }) })],
+          }),
+        ] },
+      } });
       expect(JSON.stringify(repaired)).not.toContain('sensitive-value');
       expect((await fs.readJson(codexManifestPath)).skills).toBe('./skills/');
       expect(await fs.readFile(path.join(packageRoot, 'skills/safe/SKILL.md'), 'utf8')).toContain('name: safe');
