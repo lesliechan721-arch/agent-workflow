@@ -26,7 +26,7 @@ import { cleanupOwnedComponents, createSharedOwnerToken, inspectOwnedComponents,
   writeSkillOwnerMarker, type NativeProjectionEvidence, type OwnedComponent, type OwnedComponentExecutor } from '../utils/ownership.js';
 import type { CleanupResult } from '../utils/ownership.js';
 import { createPlatformInputEvidence, platformPackageInputDigest, readPlatformPackageContentDigest, writePlatformEmptyState, type PlatformEmptyState } from '../utils/platform-empty-state.js';
-import { writeCodexSupplementState } from '../platforms/codex-supplement-state.js';
+import { writePlatformSupplementState } from '../platforms/supplement-state.js';
 import { atomicReplaceSafeFile, assertSafeFileMutationPath } from '../utils/safe-fs.js';
 import { assertManagedCommandBindingIdentities, captureManagedCommandBindingRecoveryEvidence, publishManagedCommandBindings, listManagedCommands, readInstalledCommandProducer, revokeManagedCommandBindings,
   type ManagedCommandBindingRecoveryEvidence } from '../utils/managed-command-store.js';
@@ -837,11 +837,11 @@ export class PlatformRebuildSession {
         if (expected.unmet.length === 0) {
           if (expected.components.length === 0) {
             emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty' });
-          } else if (entry.binding.route === 'codex-marketplace' && input.plugin.manifest.artifacts) {
+          } else if (entry.layout.supplementRoot && input.plugin.manifest.artifacts) {
             const supplement = inputEvidence.units.find((unit) => unit.output === 'supplement');
             if (supplement) {
               supplementInputDigests.set(entry.binding.id, supplement.inputDigest);
-              if (!projections.some((projection) => projection.bundle)) {
+              if (entry.binding.route === 'codex-marketplace' && !projections.some((projection) => projection.bundle)) {
                 emptyStates.set(entry.binding.id, { ...inputEvidence, kind: 'aw-platform-empty-state', result: 'intentional-empty',
                   units: inputEvidence.units.filter((unit) => unit.output === 'package') });
               }
@@ -940,7 +940,7 @@ export class PlatformRebuildSession {
           if (inputDigest && [...supplementIds].every((id) => delivered.has(id))
             && !receipt.unmet.length && !receipt.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
             try {
-              await writeCodexSupplementState(ctx, plan.binding, inputDigest, supplementFiles.map((file) => ({
+              await writePlatformSupplementState(ctx, plan.binding, inputDigest, supplementFiles.map((file) => ({
                 id: file.id, fileName: path.basename(file.destination), contentDigest: file.contentDigest,
               })));
               const emptyPackage = emptyStates.get(plan.binding.id);
@@ -950,7 +950,7 @@ export class PlatformRebuildSession {
             } catch {
               ctx.signal?.throwIfAborted();
               receipt.diagnostics.push({ code: 'componentOutputUnconfirmed', severity: 'warning',
-                message: 'The scope-local Codex output could not be recorded. Run sync to restore the status evidence.',
+                message: 'The scope-local supplemental output could not be recorded. Run sync to restore the status evidence.',
                 subject: { target: plan.binding.platform, pluginId: plan.binding.plugin.pluginId, scope: plan.binding.scope.kind } });
             }
           }

@@ -138,39 +138,61 @@ async function qualifySharedProvider(ctx, pluginId, disableProjectProvider, rest
     const initial = await ctx.aw(['plugin', 'status', '--context', 'user']);
     const { deployment: userProvider } = assertPublicTarget(initial, ctx, pluginId, { content: 'satisfied', activation: 'enabled' });
     await ctx.aw(['plugin', 'install', dependentId, '--scope', 'project', '--target', ctx.platform, '--yes']);
-    const inherited = await ctx.aw(['plugin', 'status', pluginId, dependentId, '--context', 'project']);
-    const dependent = assertPublicTarget(inherited, { ...asProject, pluginName: dependentName }, dependentId,
-      { content: 'satisfied', activation: 'enabled' });
-    const provider = (target) => {
+    const readStatus = () => ctx.aw(['plugin', 'status', pluginId, dependentId, '--context', 'project']);
+    const dependentTarget = (result, content = 'satisfied') => assertPublicTarget(result,
+      { ...asProject, pluginName: dependentName }, dependentId, { content, activation: 'enabled' }).target;
+    const provider = (target, scopeRegistration) => {
       const deployments = target.deploymentObservations.filter(item => item.after.nativeIdentity?.packageId === ctx.pluginName);
       assert.equal(deployments.length, 1, 'The Project dependent must observe its actual User package provider.');
       assert.equal(deployments[0].after.physicalKey, userProvider.after.physicalKey);
       assert.equal(deployments[0].after.registration, 'present');
       assert.equal(deployments[0].after.package, 'present');
-      if (ctx.platform === 'claude') assert.equal(deployments[0].after.scopeRegistration, 'absent');
+      if (scopeRegistration) assert.equal(deployments[0].after.scopeRegistration, scopeRegistration);
       assert.notEqual(deployments[0].after.consumers[0].activationKey, userProvider.after.consumers[0].activationKey);
       return deployments[0];
     };
-    const inheritedProvider = provider(dependent.target);
-    assert.equal(inheritedProvider.after.consumers[0].activation, 'enabled');
-    const native = await readPublicNativeState(ctx, ctx.project, 1, { active: true });
-    const evidence = { inheritedProvider, native, dependent: dependent.target };
     try {
+      const evidence = {};
+      let settled = await readStatus();
+      if (ctx.platform === 'claude') {
+        // Claude creates a local registration for an installed Project dependency
+        // and keeps its underlying User provider package. Observe both scopes,
+        // then remove only the local registration to exercise actual inheritance.
+        const registration = userProvider.after.nativeIdentity.registrationId;
+        assert.equal(typeof registration, 'string');
+        const inventory = JSON.parse((await ctx.command(['plugin', 'list', '--json'], ctx.project)).stdout);
+        const local = inventory.filter(item => item.id === registration && item.scope === 'local');
+        assert.equal(local.length, 1);
+        assert.equal(path.relative(local[0].projectPath, ctx.project), '');
+        assert.equal(local[0].enabled, true);
+        const before = provider(dependentTarget(settled), 'present');
+        assert.equal(before.after.consumers[0].activation, 'enabled');
+        const remove = await ctx.command(['plugin', 'uninstall', registration, '--scope', 'local', '--json'], ctx.project);
+        const result = JSON.parse(remove.stdout);
+        assert.equal(result.outcome, 'ok');
+        assert.equal(result.pluginId, registration);
+        evidence.independentProjectRegistration = { native: local[0], public: before };
+        settled = await readStatus();
+      }
+      const dependent = dependentTarget(settled);
+      const inheritedProvider = provider(dependent, ctx.platform === 'claude' ? 'absent' : undefined);
+      assert.equal(inheritedProvider.after.consumers[0].activation, 'enabled');
+      const native = await readPublicNativeState(ctx, ctx.project, 1, { active: true });
+      Object.assign(evidence, { inheritedProvider, native, dependent });
       if (disableProjectProvider) {
         const disabledNative = await disableProjectProvider();
-        const result = await ctx.aw(['plugin', 'status', pluginId, dependentId, '--context', 'project']);
-        const affected = assertPublicTarget(result, { ...asProject, pluginName: dependentName }, dependentId,
-          { content: 'drifted', activation: 'enabled' });
-        const after = provider(affected.target);
+        const result = await readStatus();
+        const affected = dependentTarget(result, 'drifted');
+        const after = provider(affected);
         assert.equal(after.after.consumers[0].activation, 'disabled');
         const unaffected = assertPublicTarget(result, ctx, pluginId, { content: 'satisfied', activation: 'enabled' });
-        Object.assign(evidence, { disabledNative, disabledProvider: after, affected: affected.target, unaffectedUser: unaffected.target });
+        Object.assign(evidence, { disabledNative, disabledProvider: after, affected, unaffectedUser: unaffected.target });
       }
+      return evidence;
     } finally {
       await restoreProjectProvider?.();
       await ctx.aw(['plugin', 'remove', dependentId, '--scope', 'project', '--yes']);
     }
-    return evidence;
   });
 }
 
@@ -244,7 +266,7 @@ export async function qualifyPublicPlatformCases(ctx, { pluginId, ready, status 
     } finally { await fs.writeFile(file, before); }
   });
   if (ctx.platform === 'opencode') await ctx.check('opencode-explicit-optional-load', () => status({
-    expected: { ...ready, activation: 'enabled', load: 'observed' }, observeNative: true,
+    observeNative: true,
   }));
   if (ctx.platform === 'gemini') await ctx.check('gemini-native-disable', async () => {
     const file = path.join(ctx.env.GEMINI_CLI_HOME, '.gemini', 'extensions', 'extension-enablement.json');

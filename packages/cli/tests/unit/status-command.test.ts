@@ -14,7 +14,7 @@ import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { getQualifiedPlatformProfile, getPlatformCapabilities } from '../../src/platforms/capabilities.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
 import { cursorWorkspaceOpenCommand } from '../../src/platforms/projection.js';
-import { writeCodexSupplementState } from '../../src/platforms/codex-supplement-state.js';
+import { writePlatformSupplementState } from '../../src/platforms/supplement-state.js';
 import { ownedSupplementFile, supplementRelativePath } from '../../src/platforms/supplement-layout.js';
 import { deploymentPackageComponent } from '../../src/platforms/inspection.js';
 import { readDemand } from '../../src/recovery/demand.js';
@@ -454,7 +454,7 @@ describe('public status through platform adapters', () => {
     const file = ownedSupplementFile(binding, unit.physicalKey, path.join(layout.supplementRoot!, fileName));
     await writeOwnedTextFile({ ...file, content });
     const inputDigest = mode === 'old role inputs' ? `sha256:${'a'.repeat(64)}` : unit.inputDigest;
-    await writeCodexSupplementState(ctx, binding, mode === 'damaged role receipt' ? 'broken' : inputDigest,
+    await writePlatformSupplementState(ctx, binding, mode === 'damaged role receipt' ? 'broken' : inputDigest,
       [{ id: 'role', fileName, contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}` }]);
     if (mode === 'package deliberately empty') await writePlatformEmptyState({ state: { ...inputs, kind: 'aw-platform-empty-state',
       result: 'intentional-empty', units: inputs.units.filter((entry) => entry.output === 'package') }, env: value.env });

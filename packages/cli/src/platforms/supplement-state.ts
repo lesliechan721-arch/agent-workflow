@@ -9,7 +9,7 @@ import type { DeploymentBinding, DeploymentObservation, ReadContext } from './co
 import { getDeploymentLayout, getDeploymentResourceKey } from './layout.js';
 import { ownedSupplementFile } from './supplement-layout.js';
 
-export interface CodexSupplementOutput {
+interface PlatformSupplementOutput {
   id: string;
   fileName: string;
   contentDigest: string;
@@ -18,19 +18,20 @@ export interface CodexSupplementOutput {
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
 
 function statePath(binding: DeploymentBinding, env?: NodeJS.ProcessEnv) {
-  if (binding.route !== 'codex-marketplace' || !SHA256.test(binding.id)) throw new Error('codexSupplementStateIdentityInvalid');
+  if (!['codex-marketplace', 'grok-cli', 'grok-directory'].includes(binding.route)
+    || !SHA256.test(binding.id)) throw new Error('platformSupplementStateIdentityInvalid');
   const root = resolveAbsoluteAwHome(env);
-  return { root, filePath: path.join(root, 'platforms', 'codex', 'supplements', `${binding.id.slice(7)}.json`) };
+  return { root, filePath: path.join(root, 'platforms', binding.platform, 'supplements', `${binding.id.slice(7)}.json`) };
 }
 
-function readOutputs(value: unknown, prefix: string): CodexSupplementOutput[] | null {
+function readOutputs(value: unknown, prefix: string, extension: string): PlatformSupplementOutput[] | null {
   if (!Array.isArray(value)) return null;
   const ids = new Set<string>();
   const names = new Set<string>();
   for (const output of value) {
     if (!output || typeof output !== 'object' || typeof output.id !== 'string' || !output.id || ids.has(output.id)
       || typeof output.fileName !== 'string' || !output.fileName.startsWith(prefix)
-      || !/^[A-Za-z0-9._-]+\.toml$/u.test(output.fileName) || names.has(output.fileName.toLowerCase())
+      || !/^[A-Za-z0-9._-]+$/u.test(output.fileName) || !output.fileName.endsWith(extension) || names.has(output.fileName.toLowerCase())
       || typeof output.contentDigest !== 'string' || !SHA256.test(output.contentDigest)) return null;
     ids.add(output.id);
     names.add(output.fileName.toLowerCase());
@@ -39,24 +40,24 @@ function readOutputs(value: unknown, prefix: string): CodexSupplementOutput[] | 
 }
 
 /** Expected output evidence is rebuildable and never used to authorize cleanup. */
-export async function writeCodexSupplementState(ctx: ReadContext, binding: DeploymentBinding,
-  inputDigest: string, outputs: CodexSupplementOutput[]): Promise<void> {
+export async function writePlatformSupplementState(ctx: ReadContext, binding: DeploymentBinding,
+  inputDigest: string, outputs: PlatformSupplementOutput[]): Promise<void> {
   const { root, filePath } = statePath(binding, ctx.env);
-  await atomicReplaceSafeFile({ filePath, allowedRoot: root, label: 'Codex supplement state',
+  await atomicReplaceSafeFile({ filePath, allowedRoot: root, label: 'Platform supplement state',
     content: `${JSON.stringify({ schemaVersion: 1, bindingId: binding.id, inputDigest, outputs }, null, 2)}\n` });
 }
 
-export async function inspectCodexSupplementState(ctx: ReadContext, binding: DeploymentBinding,
+export async function inspectPlatformSupplementState(ctx: ReadContext, binding: DeploymentBinding,
   inputDigest: string): Promise<{ inputMatches: boolean; components: DeploymentObservation['components'] } | null> {
   try {
     const { root, filePath } = statePath(binding, ctx.env);
-    await assertSafeFileMutationPath({ filePath, allowedRoot: root, label: 'Codex supplement state' });
+    await assertSafeFileMutationPath({ filePath, allowedRoot: root, label: 'Platform supplement state' });
     const stat = await fs.lstat(filePath);
     if (!stat.isFile() || stat.size > 1024 * 1024) return null;
     const state = await fs.readJson(filePath);
     if (state?.schemaVersion !== 1 || state.bindingId !== binding.id
       || typeof state.inputDigest !== 'string' || !SHA256.test(state.inputDigest)) return null;
-    const outputs = readOutputs(state.outputs, `${getDeploymentResourceKey(binding.plugin)}-`);
+    const outputs = readOutputs(state.outputs, `${getDeploymentResourceKey(binding.plugin)}-`, binding.platform === 'grok' ? '.md' : '.toml');
     if (!outputs) return null;
     const { renderUnits, supplementRoot } = await getDeploymentLayout(ctx, binding);
     const unit = renderUnits.find((candidate) => candidate.output === 'supplement');

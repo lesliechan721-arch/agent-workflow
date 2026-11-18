@@ -4,8 +4,21 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { preparePublicClientPath } from './native-platform-public-aw.mjs';
-import { assertPublicStatus, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
+import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { clients } from './native-platform-runtime.mjs';
+
+// Test Value Gate: optional runtime failure cannot be reported as observed or assigned to a different scope.
+test('requires OpenCode explicit observation to report a scoped runtime outcome', () => {
+  const ctx = { scope: 'project' };
+  const pluginId = 'qualification/fixture';
+  const diagnostic = { code: 'opencodePluginLoadFailed', severity: 'warning', subject: { target: 'opencode', pluginId, scope: 'project' } };
+  assert.deepEqual(expectedOpenCodeObservation({ diagnostics: [] }, ctx, pluginId), { activation: 'enabled', load: 'observed' });
+  assert.deepEqual(expectedOpenCodeObservation({ diagnostics: [diagnostic] }, ctx, pluginId), { activation: 'unknown', load: 'not-observed' });
+  diagnostic.code = 'opencodeNativeObservationFailed';
+  assert.deepEqual(expectedOpenCodeObservation({ diagnostics: [diagnostic] }, ctx, pluginId), { activation: 'unknown', load: 'unknown' });
+  diagnostic.subject.scope = 'user';
+  assert.throws(() => expectedOpenCodeObservation({ diagnostics: [diagnostic] }, ctx, pluginId));
+});
 
 // Test Value Gate: the grader must fail when a status from the real runner
 // calls an installed but disabled target ready, or omits its installed facts.

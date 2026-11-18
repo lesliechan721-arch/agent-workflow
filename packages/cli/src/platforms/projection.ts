@@ -267,7 +267,7 @@ export function projectSupplementFile(binding: DeploymentBinding, component: Plu
   }
   if (binding.platform === 'grok' && component.kind === 'instruction') {
     if (component.content.paths?.length) throw new Error('platformProjectionInstructionPathsUnsupported');
-    return { relativePath, content: component.content.content };
+    return { relativePath, content: component.content.content.replace(/\r\n/gu, '\n') };
   }
   throw new Error('platformProjectionSupplementKindUnsupported');
 }

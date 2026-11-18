@@ -78,7 +78,7 @@ Codex 的 neutral 清单提供 User 状态，精确工作目录的清单提供 P
 
 包内 nativeProjection 绑定 sourceIdentity、physicalKey、冻结 PhysicalIdentity 及包单元内组件到原生输出的映射；包外补足不能作为包内相对路径检查。共享包的输入摘要只绑定固定包渲染单元，不包含各 activation scope 的补足。只读状态核对输入、实际字节及物理位置，不运行 renderer。Antigravity、Gemini 与 Grok 的 `nativePackageContentDigest` 只来自实际安装副本读取，不从 AW 源包反推；旧副本显示 drifted，确认副本缺失显示 absent，无法核验副本时保留 unknown 或实际归属冲突。Antigravity 的精确副本 owner、完整旧字节及可写条件见[原生路由](platforms.md#2-原生包正文与-lifecycle-路由)。Grok 来源清单不参与 renderer 或能力计算，故不纳入包输入摘要；完整来源、原始配置现场摘要与副本事实仍保留在锁内 stale 校验及状态展示中。输入摘要包括 renderer 的 configKeys，以及当前平台、实际渲染 scope 下 Skill producer 动态命令集的 refreshKeys 和非敏感校验依赖；命令配置单独变化也必须显示漂移。静态补足按当前 manifest、固定布局及 owner 核对实际内容。动态补足没有可核验的完整集合时保持 unknown，即使包内投影完整，也不能据此推断补足齐全；不能从已移除的 artifacts.targets 推断结果。
 
-Codex 完整动态准备成功且后置复核通过时，记录该绑定的完整角色补足集合。status 核对 AW 归属和实际文件字节。摘要过期且已确认旧产物时显示待同步。记录缺失、损坏或文件无法核对时保留 unknown。重新 sync 可重建记录。只在 Project 生成角色时，核对参与渲染的范围。若同一轮也生成过有意为空的包，则另核对现有空结果记录的包单元和实际缺席。
+Codex 与 Grok 完整动态准备成功且后置复核通过时，记录该绑定完整的角色或规则补足集合，包括有意为空的集合。status 核对 AW 归属和实际文件字节。摘要过期且已确认旧产物时显示待同步。记录缺失、损坏或文件无法核对时保留 unknown。重新 sync 可重建记录。Codex 只在 Project 生成角色时，核对参与渲染的范围。若同一轮也生成过有意为空的包，则另核对现有空结果记录的包单元和实际缺席。
 
 成功有意空集合使用既有 platforms 命名空间内可重建的空结果 receipt。它绑定精确 binding/scope、全部 render units 与可只读复算的来源、资源、配置和派生能力结论；不是安装或删除凭证。缺失、损坏或过期时提示重新准备。匹配 receipt 后仍检查实际包、注册、激活与补足，不能掩盖撤销失败或 foreign 残留。它不使用包含 staging 或旧现场的操作 fingerprint。
 

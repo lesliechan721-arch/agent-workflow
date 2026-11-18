@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import { clients, sha256, fixedClientVersion } from './native-platform-runtime.mjs';
 import { readCopilotSkills } from './native-platform-copilot-skills.mjs';
 import { readGeminiSkills } from './native-platform-gemini-skills.mjs';
-import { assertPublicStatus, publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
+import { assertPublicStatus, expectedOpenCodeObservation, publicFixtureVersion, readPublicNativeState, readPublicRemovedNativeScope, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { preparePublicOpenCodeObservation, capturePublicOpenCodePublication, readPublicOpenCodeSkills } from './native-platform-opencode-public.mjs';
 import { qualifyPiAgentPermission, qualifyPublicPlatformCases } from './native-platform-public-cases.mjs';
 
@@ -403,7 +403,8 @@ export async function qualifyPublicAw(ctx) {
       ...(observeNative ? ['--observe-native'] : [])];
     const options = expected.content === 'unknown' || expected.blockerCodes?.length ? { expectedExitCode: 3, expectedStatus: 'blocked' } : undefined;
     const result = await ctx.aw(command, cwd, options);
-    const evidence = assertPublicStatus(result, ctx, pluginId, expected);
+    const runtime = observeNative && ctx.platform === 'opencode' ? expectedOpenCodeObservation(result, ctx, pluginId) : undefined;
+    const evidence = assertPublicStatus(result, ctx, pluginId, { ...expected, ...runtime });
     if (diagnostic) assert(result.diagnostics.some(item => item.code === diagnostic && item.severity === (expected.blockerCodes?.includes(diagnostic) ? 'error' : 'warning')
       && item.subject?.target === ctx.platform && item.subject.scope === ctx.scope), `Public status must report ${diagnostic} for this scope.`);
     assert.equal(result.diagnostics.some(item => item.code === 'nativeObservationSideEffects'), observeNative,

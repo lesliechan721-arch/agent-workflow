@@ -15,7 +15,7 @@ import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { createCodexNativeObservationSession, type CodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
-import { inspectCodexSupplementState } from '../platforms/codex-supplement-state.js';
+import { inspectPlatformSupplementState } from '../platforms/supplement-state.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { createPlatformInputEvidence, matchesPlatformEmptyState, platformPackageInputDigest, readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 import { getDeploymentLayout, hasSharedUserPackage } from '../platforms/layout.js';
@@ -216,8 +216,8 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             const supplements = await inspectStaticSupplements(ctx, binding, staticSupplements);
             const inputEvidence = await createPlatformInputEvidence({ plugin, binding, units: inputUnits });
             const supplementInput = inputEvidence.units.find((unit) => unit.output === 'supplement');
-            const recordedSupplements = binding.route === 'codex-marketplace' && dynamicUnits.has('supplement') && supplementInput
-              ? await inspectCodexSupplementState(ctx, binding, supplementInput.inputDigest) : null;
+            const recordedSupplements = dynamicUnits.has('supplement') && supplementInput
+              ? await inspectPlatformSupplementState(ctx, binding, supplementInput.inputDigest) : null;
             if (recordedSupplements) {
               const staticIds = new Set(supplements.components.map((component) => component.id));
               const dynamicComponents = recordedSupplements.components.filter((component) => !staticIds.has(component.id));
@@ -247,6 +247,7 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 units: inputEvidence.units.filter((unit) => unit.output === 'package') }, env: context.env });
             const dynamicSupplementsUnconfirmed = dynamicUnits.has('supplement') && !confirmedEmpty
               && !recordedSupplements?.inputMatches && !supplementInputDrift;
+            if (dynamicSupplementsUnconfirmed) warn('dynamicExpectationUnconfirmed');
             const hasPackageExpectation = packageExpectedCount > 0 || dynamicUnits.has('package') && !confirmedEmpty && !confirmedEmptyPackage;
             const inheritsUserNative = demand.targetRequirements?.find((item) => item.pluginId === root.pluginId
               && item.target === platform)?.inheritsUserNative;
@@ -297,7 +298,6 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
                 ? 'platformPreparationPartial' : 'platformExpectationUnconfirmed');
               else if (inputDrift) warn(projection!.inputDigest !== packageInputDigest
                 ? 'platformInputDrift' : 'platformContentDrift');
-              if (inputDrift && dynamicSupplementsUnconfirmed) warn('dynamicExpectationUnconfirmed');
               componentMissing = live.components.some((component) => component.presence === 'absent');
               componentUnknown = live.components.some((component) => component.presence === 'unknown'
                 && !component.reasonCodes.includes('nativePackageContentDrift'));
@@ -501,7 +501,7 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
         entry.pluginId === root.pluginId && entry.platform === delivery.platform && (entry.intentionalEmpty === true || entry.expectationConfirmed === true));
       if (delivery?.kind === 'native' && root.plugin?.manifest.artifacts && !dynamicExpectationConfirmed) {
         if (target.content === 'satisfied' || target.content === 'absent') target.content = 'unknown';
-        if (target.content === 'unknown') {
+        if (target.content === 'unknown' && !target.reasons?.some((entry) => entry.code === 'dynamicExpectationUnconfirmed')) {
           target.reasons = [...target.reasons ?? [], diagnostic('dynamicExpectationUnconfirmed')];
         }
       }

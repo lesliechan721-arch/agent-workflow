@@ -8,6 +8,21 @@ export const publicFixtureVersion = revision => `0.1.${Math.min(revision, 2) - 1
 
 const directoryRegistration = ctx => ctx.platform === 'opencode' || ctx.platform === 'grok' && ctx.scope === 'project';
 
+export function expectedOpenCodeObservation(result, ctx, pluginId) {
+  const optionalOutcomes = {
+    opencodeNativeObservationFailed: 'unknown',
+    opencodeNativeActivationPending: 'unknown',
+    opencodePluginLoadFailed: 'not-observed',
+  };
+  const outcomes = result.diagnostics.filter(item => Object.hasOwn(optionalOutcomes, item.code));
+  if (!outcomes.length) return { activation: 'enabled', load: 'observed' };
+  const outcome = single(outcomes, 'opencode-optional-observation-ambiguous');
+  assert.equal(outcome.severity, 'warning');
+  assert.deepEqual({ pluginId: outcome.subject?.pluginId, target: outcome.subject?.target, scope: outcome.subject?.scope },
+    { pluginId, target: 'opencode', scope: ctx.scope });
+  return { activation: 'unknown', load: optionalOutcomes[outcome.code] };
+}
+
 export function assertPublicTarget(result, ctx, pluginId, expected) {
   const inventory = result.data?.inventory?.filter(item => item.pluginId === pluginId
     && item.targetResults.some(target => target.scope === ctx.scope && target.target === ctx.platform));

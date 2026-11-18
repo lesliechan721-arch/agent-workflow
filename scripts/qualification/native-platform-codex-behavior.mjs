@@ -188,9 +188,11 @@ async function runAppServer(ctx, baseUrl, turns) {
   const env = { ...ctx.env, AW_QUALIFICATION_MODEL_KEY: fixtureToken, OPENAI_API_KEY: fixtureToken, OPENAI_BASE_URL: baseUrl,
     NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1' };
   const rpc = ['initialize', 'thread/start', 'turn/start', 'turn/completed'];
+  // The empty directory avoids Codex's Git inspection during these User sessions.
+  const cwd = ctx.neutral;
   const result = await execute({ executable: process.execPath, prefix: [fileURLToPath(import.meta.url)] }, [], {
-    cwd: ctx.project, env, timeoutMs: 50_000, nativeClient: 'codex',
-    stdin: JSON.stringify({ launcher: ctx.launcher, cwd: ctx.project, args, turns }),
+    cwd, env, timeoutMs: 50_000, nativeClient: 'codex',
+    stdin: JSON.stringify({ launcher: ctx.launcher, cwd, args, turns }),
   }).catch(error => {
     ctx.recordCommand({ rpc, processFailure: error?.message, processDiagnostics: error?.processTreeDiagnostics ?? [] });
     throw error;
@@ -261,8 +263,8 @@ async function driveAppServer({ launcher, cwd, args, turns }) {
 }
 
 async function nativeSkill(ctx, list, name) {
-  const rows = list.data.filter(row => path.resolve(row.cwd) === path.resolve(ctx.project));
-  assert.equal(rows.length, 1, 'The host must return a Skill row for the isolated project.');
+  const rows = list.data.filter(row => path.resolve(row.cwd) === path.resolve(ctx.neutral));
+  assert.equal(rows.length, 1, 'The host must return a Skill row for the neutral directory.');
   assert.deepEqual(rows[0].errors, []);
   const matches = rows[0].skills.filter(skill => skill.name === name);
   assert.equal(matches.length, 1, `Codex must list the installed Skill ${name}.`);
@@ -289,7 +291,7 @@ export async function qualifyPublicCodexManualSkill(ctx) {
       await fs.writeFile(path.join(control, 'SKILL.md'),
         `---\nname: ${controlSkill}\ndescription: Implicit Skill inventory control\n---\nThis is an isolated qualification Skill.\n`);
       const name = `${ctx.pluginName}:${ctx.skillName}`;
-      const skill = await nativeSkill(ctx, await ctx.rpc(), name);
+      const skill = await nativeSkill(ctx, await ctx.rpc(ctx.neutral), name);
       const body = skillBody(await fs.readFile(ctx.publicSkillFile, 'utf8'));
       assert.equal(skillBody(await fs.readFile(skill.path, 'utf8')), body, 'The listed file must contain the current fixture body.');
       const ordinary = 'AW_NATIVE_QUALIFICATION_ORDINARY_TURN';
@@ -344,7 +346,7 @@ export async function qualifyPublicCodexBehavior(ctx) {
     return { source, plugins: ['agent-subagent', 'codex-enhance'] };
   });
   return ctx.check('public-codex-official-role-host-resolution', () => withoutCuratedMarketplaceSync(ctx, async () => {
-    const listed = await ctx.rpc();
+    const listed = await ctx.rpc(ctx.neutral);
     const projected = await Promise.all(roles.map(role => installedRole(ctx, listed, installed.source, role)));
     const scenarios = projected.map((role, index) => createRoleScenario(role, index + 1));
     await withLocalResponses((request, res, sequence) => {

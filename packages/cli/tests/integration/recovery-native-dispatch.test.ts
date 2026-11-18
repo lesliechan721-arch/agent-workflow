@@ -25,8 +25,94 @@ import type { ReadContext } from '../../src/platforms/contracts.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
+import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
 
 describe('native recovery dispatch', () => {
+  // Confirm both a completed empty rules projection and a real scoped Markdown rule
+  // through the write path, then read status without running the renderer.
+  it.each(['user', 'project'] as const)('reports a complete Grok %s dynamic supplement projection ready', async (scope) => {
+    installNativeTestQualification({ platforms: ['grok'], discovery: true });
+    const { env, layout } = getCurrentSourceTestIsolation();
+    const cwd = layout.fixtureCwd;
+    await fs.ensureDir(path.join(cwd, '.git'));
+    const source = path.join(cwd, 'grok-dynamic-catalog');
+    const host = resolvePlatformConfigRoot('grok', { cwd, env });
+    const installed = path.join(host, 'installed-plugins', 'local-demo');
+    const projectPackage = path.join(cwd, '.grok', 'plugins', 'aw-local-demo');
+    const trace = path.join(cwd, 'grok-renderer-calls');
+    const components = [
+      { id: 'demo-skill', name: 'demo', kind: 'skill', content: { files: {
+        'SKILL.md': { text: '---\nname: demo\ndescription: Grok qualification fixture.\n---\nDemo Skill.\n' },
+      } } },
+      ...(scope === 'project' ? [{ id: 'demo-rule', name: 'rule', kind: 'instruction',
+        content: { title: 'Rule', content: 'Preserve the project rule.\r\n', coverage: ['main'] } }] : []),
+    ];
+    await fs.outputFile(path.join(source, 'plugins/demo/render.mjs'), `
+      import fs from 'node:fs';
+      const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+      const components = ${JSON.stringify(components)};
+      fs.appendFileSync(${JSON.stringify(trace)}, 'render\\n');
+      console.log(JSON.stringify({ version: 3,
+        components: components.filter(component => context.allowedOutputKinds.includes(component.kind)), omitted: [], unmet: [] }));
+    `);
+    await createCatalogSnapshotFixture(source, 'demo', [], 'Dynamic Grok fixture.', (manifest) => {
+      manifest.platforms = ['grok'];
+      manifest.artifacts = { configKeys: [] };
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } } };
+    });
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [
+      { id: 'local', type: 'path', primary: true, path: source },
+    ] }, expectedDigest: config.digest, env });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    await setTargets({ cwd, env, scope: 'user' }, ['grok']);
+    const options = { cwd, env, cliVersion: '1.0.0', scope, context: scope, targets: ['grok'], yes: true };
+    let userSource: string | undefined;
+    const nativeCliRunner = async ({ args }: NativeCliInvocation) => {
+      let stdout: string;
+      if (args.includes('--version')) stdout = 'grok 1.0.77';
+      else if (args[0] === 'plugin' && args[1] === 'list') stdout = JSON.stringify(userSource ? [{
+        status: 'installed', name: 'demo', repo_key: 'local-demo', version: '1.0.0', path: installed, source: userSource,
+      }] : []);
+      else if (args[0] === 'inspect') {
+        const packageRoot = scope === 'user' ? userSource && installed : await fs.pathExists(projectPackage) ? projectPackage : undefined;
+        stdout = JSON.stringify({ grokVersion: '1.0.77', projectTrusted: true, plugins: packageRoot ? [
+          { name: 'demo', scope, path: packageRoot, enabled: true },
+        ] : [], skills: [], agents: [], mcpServers: [] });
+      } else throw new Error('Unexpected automatic native mutation.');
+      return { exitCode: 0, stdout, stderr: '' };
+    };
+    const result = await runPublicLifecycle('install', ['local/demo'], options, { nativeCliRunner });
+    if (scope === 'user') {
+      expect(result.status, JSON.stringify(result)).toBe('partial');
+      const receipt = (result.data as LifecycleData).targetResults[0]!.deploymentReceipts![0]!;
+      expect(receipt.after.registration).toBe('absent');
+      userSource = receipt.after.nativeIdentity!.sourceLocation;
+      await fs.copy(userSource, installed);
+      expect((await runPublicLifecycle('sync', ['local/demo'], options, { nativeCliRunner })).status).toBe('success');
+    } else {
+      expect(result.status, JSON.stringify(result)).toBe('success');
+    }
+    const rendered = await fs.readFile(trace, 'utf8');
+    const read = () => readRecoveryStatus({ context: scope, cwd, env, nativeCliRunner });
+    const status = await read();
+    expect(status, JSON.stringify(status)).toMatchObject({ allSatisfied: true, inSync: true, counts: {
+      blocked: 0, unconfirmed: 0, pending: 0, ready: 1,
+    } });
+    if (scope === 'project') {
+      const rule = path.join(cwd, '.grok', 'rules', 'aw-local-demo-rule.md');
+      expect(await fs.readFile(rule, 'utf8')).toContain('Preserve the project rule.');
+      await fs.appendFile(rule, 'Changed rule bytes.\n');
+      const stale = await read();
+      expect(stale).toMatchObject({ counts: { blocked: 0, pending: 1 }, allSatisfied: false,
+        inventory: [{ targetResults: [{ content: 'drifted', reasons: expect.arrayContaining([
+          expect.objectContaining({ code: 'platformContentDrift' }),
+        ]) }] }],
+      });
+    }
+    expect(await fs.readFile(trace, 'utf8')).toBe(rendered);
+  });
+
   // Test Value Gate: Project retirement must use the real recovery preparation
   // after static upgrades and a same-version dynamic package refresh. Shared
   // references and a foreign sibling must keep their own bytes and activation.
