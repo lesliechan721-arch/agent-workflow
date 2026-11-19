@@ -184,8 +184,8 @@ function diagnostic(code: string): RecoveryDiagnostic {
   };
   return { code, message: messages[code] ?? `操作受阻：${code}。` };
 }
-function errorCode(error: unknown, fallback: string): string {
-  const code = (error as { code?: unknown })?.code;
+export function errorCode(error: unknown, fallback: string): string {
+  const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === 'string' && /^[A-Za-z][A-Za-z0-9-]*$/u.test(code)) return code;
   const prefix = error instanceof Error ? error.message.split(':')[0] : '';
   return /^[A-Za-z][A-Za-z0-9-]*$/u.test(prefix ?? '') ? prefix! : fallback;

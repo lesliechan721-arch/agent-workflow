@@ -548,6 +548,8 @@ describe('multi-source performance budgets', () => {
       const treeReads = () => readFile.mock.calls.filter(([file]) => file === treeDigestProbe).length;
       let lockedStart: number | undefined;
       let lockedPreparation: number | undefined;
+      let statusStart: number | undefined;
+      let finalStatus: number | undefined;
       const nativeCliRunner = vi.fn<NativeCliRunner>(async () => { throw new Error('Unexpected native CLI call'); });
       const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
         cwd, env, interactive: false, nativeCliRunner,
@@ -557,6 +559,10 @@ describe('multi-source performance budgets', () => {
           if (name === 'recovery.locked.demand' && phase === 'start') lockedStart = treeReads();
           if (name === 'recovery.locked.recheck' && phase === 'success' && lockedStart !== undefined) {
             lockedPreparation = treeReads() - lockedStart;
+          }
+          if (name === 'recovery.status' && phase === 'start') statusStart = treeReads();
+          if (name === 'recovery.status' && phase === 'success' && statusStart !== undefined) {
+            finalStatus = treeReads() - statusStart;
           }
         } },
       })));
@@ -578,10 +584,12 @@ describe('multi-source performance budgets', () => {
           materializingReview,
           review: afterReview - materializingReview,
           lockedPreparation,
+          finalStatus,
           execution: treeReads() - afterReview,
         });
         expect(result, JSON.stringify(result)).toMatchObject({
-          kind: 'recovery', receipt: { ok: true, declarationChanged: true, intent: { roots: selectors } },
+          kind: 'recovery', receipt: { ok: true, declarationChanged: true, intent: { roots: selectors },
+            allSatisfied: false, inSync: false, coverage: { scopes: ['user', 'project'] }, remainingTargets: [] },
         });
         expect(fanoutProviderInvocations).toBe(0);
         expect(nativeCliRunner).not.toHaveBeenCalled();
@@ -596,7 +604,7 @@ describe('multi-source performance budgets', () => {
       }
     }
 
-    const budget = { review: 1, lockedPreparation: 1 };
+    const budget = { review: 1, lockedPreparation: 1, finalStatus: 1 };
     const summary = { name: 'tui-install-active-tree-reads-warm', budget, cases };
     printPerfSummary(summary);
     for (const result of cases) expect(result).toMatchObject(budget);

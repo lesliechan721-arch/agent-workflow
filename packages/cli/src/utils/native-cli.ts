@@ -360,17 +360,24 @@ function isPosixProcessInspectionUnavailableError(error: Error): boolean {
     .test(error.message);
 }
 
+interface SuccessfulNativeCliOutput {
+  ready: Promise<void>;
+  canEndGrace(): boolean;
+}
+
 async function terminateNativeCliProcessGroup(
   pid: number,
   killProcess: typeof process.kill,
+  successfulOutput?: SuccessfulNativeCliOutput,
 ): Promise<void> {
   const groupPid = -pid;
-  const signalGroup = (signal: 'SIGTERM' | 'SIGKILL'): void => {
+  const signalGroup = (signal: 'SIGTERM' | 'SIGKILL'): boolean => {
     try {
       killProcess(groupPid, signal);
+      return true;
     } catch (error) {
       if (isProcessGroupMissing(error)) {
-        return;
+        return false;
       }
       throw new Error(
         `Native CLI cleanup unconfirmed: could not signal process group ${signal}.`,
@@ -393,8 +400,21 @@ async function terminateNativeCliProcessGroup(
     }
   };
 
-  signalGroup('SIGTERM');
-  await delayNativeCliCleanup(NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS);
+  const termSent = signalGroup('SIGTERM');
+  if (!termSent && successfulOutput) {
+    // Group absence allows an early check once execFile has delivered all output.
+    let graceTimer: NodeJS.Timeout | undefined;
+    const grace = new Promise<void>((resolve) => {
+      graceTimer = setTimeout(resolve, NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS);
+    });
+    await Promise.race([grace, successfulOutput.ready]);
+    if (!successfulOutput.canEndGrace()) {
+      await grace;
+    }
+    clearTimeout(graceTimer);
+  } else {
+    await delayNativeCliCleanup(NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS);
+  }
   signalGroup('SIGKILL');
   for (let elapsedMs = 0; groupExists(); elapsedMs += NATIVE_CLI_PROCESS_GROUP_POLL_MS) {
     if (elapsedMs >= NATIVE_CLI_PROCESS_GROUP_VERIFY_MS) {
@@ -414,6 +434,7 @@ function settleNativeCliTerminationCleanup(
   allowUnavailablePosixAudit: boolean,
   processTreeAuditPreparationError: Error | undefined,
   killProcess: typeof process.kill,
+  successfulOutput?: SuccessfulNativeCliOutput,
 ): Promise<Error | undefined> {
   let directKillAttempted = false;
   const killDirectChild = (): void => {
@@ -468,7 +489,7 @@ function settleNativeCliTerminationCleanup(
         ? (async () => {
             let processGroupError: Error | undefined;
             try {
-              await terminateNativeCliProcessGroup(childPid, killProcess);
+              await terminateNativeCliProcessGroup(childPid, killProcess, successfulOutput);
             } catch (error) {
               processGroupError = error instanceof Error
                 ? error
@@ -604,6 +625,7 @@ export function createExecFileNativeCliRunner(
       let terminationCause: unknown;
       let callbackError: unknown;
       let callbackOutput: { stdout: string; stderr: string } | undefined;
+      let notifySuccessfulOutput: (() => void) | undefined;
       let streamedStdout = '';
       let streamedStderr = '';
       let timeout: NodeJS.Timeout | undefined;
@@ -622,6 +644,7 @@ export function createExecFileNativeCliRunner(
         allowUnobservedWindowsProcessOnNormalCompletion: boolean = false,
         allowUnavailablePosixAudit: boolean = false,
         auditTrustedPosixFailure: boolean = false,
+        successfulOutput?: SuccessfulNativeCliOutput,
       ): Promise<Error | undefined> => {
         if (
           cleanupStrategy === 'process-group' &&
@@ -648,6 +671,7 @@ export function createExecFileNativeCliRunner(
           allowUnavailablePosixAudit,
           processTreeAuditPreparationError,
           killProcess,
+          successfulOutput,
         );
         return processTreeCleanup;
       };
@@ -829,6 +853,16 @@ export function createExecFileNativeCliRunner(
           clearTimeout(timeout);
           timeout = undefined;
         }
+        const successfulOutput: SuccessfulNativeCliOutput | undefined =
+          cleanupStrategy === 'process-group' && child.exitCode === 0 &&
+          child.signalCode == null && callbackError == null
+            ? {
+                ready: callbackOutput === undefined
+                  ? new Promise<void>((resolve) => { notifySuccessfulOutput = resolve; })
+                  : Promise.resolve(),
+                canEndGrace: () => terminationReason === undefined,
+              }
+            : undefined;
         void cleanupProcessTree(
           true,
           allowUnobservedWindowsProcessOnNormalCompletion,
@@ -839,6 +873,7 @@ export function createExecFileNativeCliRunner(
             || child.exitCode != null && child.exitCode !== 0
             || child.signalCode != null
           ),
+          successfulOutput,
         ).then(finishCallback);
       };
 
@@ -886,6 +921,7 @@ export function createExecFileNativeCliRunner(
             queueMicrotask(() => finishCallback());
             return;
           }
+          if (error == null) notifySuccessfulOutput?.();
           queueMicrotask(() => startCompletion(
             platform === 'win32' &&
             error === null &&

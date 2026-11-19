@@ -18,10 +18,11 @@ import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import { CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, type DemandSnapshot } from './demand.js';
 import { readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
-import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
+import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
 import { readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
 import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
@@ -100,14 +101,23 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
   return receipt;
 }
 
-async function readJointPreparation(command: RecoveryCommand, options: RecoveryOptions): Promise<{
+async function readJointPreparation(command: RecoveryCommand, options: RecoveryOptions, locked = false): Promise<{
+  options: RecoveryOptions;
   snapshot: JointDemandSnapshot;
   catalogReadScope?: CatalogPreparationReadScope;
 }> {
-  const catalogReadScope = command === 'install' && !options.catalogOperationContext
+  const catalogReadScope = command === 'install' && (locked || !options.catalogOperationContext)
     ? new CatalogPreparationReadScope(options) : undefined;
+  if (locked && catalogReadScope && options.catalogOperationContext) {
+    // A caller may have reviewed a subset of sources. Rebind just those IDs under
+    // the lock so a changed or removed source makes the existing Review stale.
+    const reviewed = new Set(options.catalogOperationContext.catalog.sources.map((source) => source.sourceId));
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+    const sourceIds = configSnapshot.config.sources.map((source) => source.id).filter((id) => reviewed.has(id));
+    options = { ...options, catalogOperationContext: await catalogReadScope.resolve({ configSnapshot, sourceIds }) };
+  }
   const snapshot = await readJointDemand({ ...options, catalogReadScope });
-  return { snapshot, catalogReadScope };
+  return { options, snapshot, catalogReadScope };
 }
 
 /** Complete requirements determine placement before execution selectors are applied. */
@@ -654,7 +664,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         lockWaitStartedAt = undefined;
         await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'success', acquiredAt);
         const preparation = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.demand', () =>
-          readJointPreparation(plan.command, joint.originalOptions));
+          readJointPreparation(plan.command, joint.originalOptions, true));
         const actual = preparation.snapshot;
         const currentIntent = (plan.options.scope === 'project' ? actual.project! : actual.user).intent;
         plan.receipt.intent = intentReceipt(currentIntent);
@@ -669,7 +679,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         // Recheck all backend candidates before any strong-state or output write.
         (execution.runtime?.codexObservationSession ?? plan.runtime.codexObservationSession)?.invalidate();
         const checked = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.recheck', () =>
-          prepareJointRecovery(plan.command, joint.selectors, joint.originalOptions,
+          prepareJointRecovery(plan.command, joint.selectors, preparation.options,
             { ...plan.runtime, ...execution.runtime, awHomeMutationToken: token },
             preparation.catalogReadScope ? preparation : undefined));
         const stable = !checked.blockExecution && JSON.stringify(describeRecoveryPlan(plan)) === JSON.stringify(describeRecoveryPlan(checked));
@@ -932,10 +942,35 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         receipt.outputsMayHaveChanged ||= packageResults.some((result) => result.state === 'completed');
         receipt.errors.push(...results.flatMap((result) => result.targetResults.flatMap((target) => target.blockers)));
 
-        const status = await measureRecoveryPerformanceStage(runtime, 'recovery.status', () =>
-          readRecoveryStatus({ ...joint.originalOptions, nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession, targets: undefined }));
-        receipt.allSatisfied = status.allSatisfied;
-        receipt.inSync = status.inSync;
+        const { cwd, scope, env, cliVersion } = joint.originalOptions;
+        const context = joint.snapshot.context.context;
+        let statusFailure: string | undefined;
+        try {
+          // The reviewed Catalog may still be readable after Active has moved. Bind the
+          // final read to the current sources, once per binding across both scopes.
+          const status = await measureRecoveryPerformanceStage(runtime, 'recovery.status', () =>
+            readRecoveryStatus({ cwd, scope, context, env, cliVersion, catalogReadScope: new CatalogPreparationReadScope({ env }),
+              nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession }));
+          receipt.allSatisfied = status.allSatisfied;
+          receipt.inSync = status.inSync;
+          // An unreadable source is a per-root status result. Report it for a
+          // completed target without turning unrelated pending roots into failures.
+          const unreadable = status.inventory?.find((root) => root.sourceState !== 'ready'
+            && root.targetResults.some((target) => receipt.targetResults.some((written) => written.delivery
+              && written.pluginId === root.pluginId && written.scope === target.scope && written.agent === target.agent
+              && written.observation === 'verified')));
+          statusFailure = unreadable?.blockers[0]?.code;
+        } catch (error) {
+          receipt.allSatisfied = null;
+          receipt.inSync = null;
+          statusFailure = readSafeOperationError(error)?.code ?? errorCode(error, 'statusUnavailable');
+        }
+        if (statusFailure) {
+          receipt.ok = false;
+          receipt.errors.push({ code: 'statusUnavailable', message: 'Could not read the final plugin status.',
+            detail: { reasonCode: statusFailure } });
+          receipt.recoveryActions.push(`aw plugin status --context ${context} --json`);
+        }
         return receipt;
       } });
   } catch (error) {
