@@ -18,6 +18,7 @@ describe('public Copilot discovery budget', () => {
   it.each([
     ['healthy', null], ['marketplace timeout', 'nativeMarketplaceUnconfirmed'],
     ['marketplace exit', 'nativeMarketplaceUnconfirmed'], ['invalid marketplace JSON', 'nativeMarketplaceUnconfirmed'],
+    ['invalid marketplace row', 'nativeMarketplaceUnconfirmed'],
     ['timeout with unconfirmed cleanup', 'nativeCliTimedOut'], ['unknown source format', null],
     ['configuration read failure', 'nativeConfigurationUnreadable'],
   ] as const)('installs a project with bounded requests when the final read reports %s', async (scenario, failure) => {
@@ -66,6 +67,7 @@ describe('public Copilot discovery budget', () => {
         }
         if (finalRead && scenario === 'marketplace exit') return { exitCode: 1, stdout: '', stderr: 'controlled failure' };
         if (finalRead && scenario === 'invalid marketplace JSON') return { exitCode: 0, stdout: '{', stderr: '' };
+        if (finalRead && scenario === 'invalid marketplace row') return { exitCode: 0, stdout: '[null]', stderr: '' };
         stdout = JSON.stringify(marketplaceRoot ? [{ name: marketplaceName,
           source: finalRead && scenario === 'unknown source format' ? {} : marketplaceRoot }] : []);
       } else if (args.join(' ') === 'plugin list --json') {

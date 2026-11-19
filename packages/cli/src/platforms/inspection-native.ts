@@ -43,7 +43,7 @@ function marketplaceReadDiagnostic(binding: DeploymentBinding, error: unknown): 
   // Keep ambiguous identities unconfirmed. A reasonCode identifies a failed command or unreadable response.
   const reasonCode = error instanceof NativeCliError ? error.operationDiagnostic.code
     : error instanceof SyntaxError ? 'nativeObservationInvalid'
-    : error instanceof Error && error.message === 'nativeObservationOutputLimit' ? 'nativeObservationOutputLimit' : undefined;
+    : error instanceof Error && ['nativeObservationInvalid', 'nativeObservationOutputLimit'].includes(error.message) ? error.message : undefined;
   return { code: 'nativeMarketplaceUnconfirmed', severity: 'warning',
     message: 'The native marketplace source could not be confirmed. Keep the shared package.',
     subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind },

@@ -112,7 +112,7 @@ function finalStatusReadFailure(status: RecoveryStatus, receipt: RecoveryReceipt
       && target.scope === scope && target.agent === agent;
     const root = status.inventory?.find((item) => item.pluginId === pluginId && item.targetResults.some(matches));
     const failure = root?.blockers.find((entry) => root.sourceState !== 'ready' || entry.code === 'pluginManifestUnavailable')
-      ?? root?.targetResults.find(matches)?.blockers.find((entry) => entry.code === 'pluginManifestUnavailable')
+      ?? root?.targetResults.find(matches)?.blockers.find((entry) => entry.code === 'pluginManifestUnavailable' || entry.code === 'jointDemandUnknown')
       ?? status.observedTargets?.find(matches)?.blockers.find(isTargetObservationReadError);
     if (failure) return { ...failure, subject: { pluginId, scope, target: agent } };
   }
@@ -298,6 +298,15 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         && explicitlyRemoves({ pluginId, agent: placement.target, scope }))
         .flatMap((placement) => placement.contributions.filter((item) => item.path.length > 1
           && (placement.scope === scope || item.scope === scope)).map((item) => item.root));
+      // An uninstalled consumer still owns its declaration. An unreadable closure
+      // cannot authorize retiring the current provider before a replacement is known.
+      for (const root of demand.roots) {
+        if (root.state !== 'unknown' || root.pluginId === pluginId || !targets.includes(root.target)
+          || !explicitlyRemoves({ pluginId, scope, agent: root.target })
+          || (scope !== root.scope && !(scope === 'user' && canReuseProviderAcrossScopes(root.target)))) continue;
+        if (root.dependencies.length ? root.dependencies.includes(pluginId)
+          : parsePluginId(root.pluginId).sourceId === parsePluginId(pluginId).sourceId) consumers.push(root.pluginId);
+      }
       if (consumers.length) errors.push(diagnostic('dependencyStillRequired',
         `${pluginId} 仍被 ${[...new Set(consumers)].join('、')} 依赖。使用 --force 可强制移除所选输出。`));
     }

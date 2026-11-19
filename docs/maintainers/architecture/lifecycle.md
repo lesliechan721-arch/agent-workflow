@@ -68,6 +68,8 @@ dependency placement 由 User/Project 完整需求闭包自动决定，不提供
 
 所选 scope/target 的移除会破坏其他声明或现存插件输出的依赖时，普通 remove 在需求和输出写入前以 `dependencyStillRequired` 阻断。检查按实际 provider 判断；取消另一 scope 的重复声明不影响仍有效的 provider，提供位置切换继续先验证替代目标。普通 remove 的 `--force` 允许取消所选需求并清理该 scope 的所选输出，保留其他依赖者的声明和输出；结果可能不再满足完整需求，后续 sync 可以重新安装缺失依赖。此 flag 只绕过依赖保护，不扩大 ownership、共享内容或路径删除权限，也不启用受限损坏输出恢复。
 
+项目已声明、尚未安装的插件也会保护它需要的 User 提供者。读取某个依赖的插件清单失败时，已绑定 Active 的 Catalog 依赖条目可以确认哪些根可能共用提供者。普通 remove 保留仍可能被引用的提供者及其声明。索引也无法确认闭包时，保留同来源、同目标、对应提供范围的保护。执行安装或重新放置仍需取得完整的插件清单。
+
 ## 安装、重建、卸载与清理
 
 公开重建命令是 `aw plugin sync --rebuild`，移除命令是 `aw plugin remove`；内部 action 分别为 `reinstall` 和 `uninstall`。公开 remove 取消所选需求并安全清理，底层 uninstall 只描述输出删除。普通 remove 在任何需求或输出写入前完整校验 Active；Active 不可验证时返回 blocked，两个独立 `--only` 模式提供恢复。移除需求不自动等于可以清理共享或外部输出。

@@ -28,16 +28,23 @@ async function claudeCatalog() {
   return { claude, options };
 }
 
-it('preserves the verified Claude install when its final marketplace command fails', async () => {
+it.each(['command failure', '4097 marketplace records'] as const)('preserves the verified Claude install after %s in its final marketplace query', async (scenario) => {
   const { claude, options } = await claudeCatalog();
   let finalRead = false;
   const result = await runCliEntry(['plugin', 'install', 'team/first', '--scope', 'user', '--context', 'user', '--target', 'claude', '--yes', '--json'], {
     ...options, debugLogger: { log(event) {
       if (event.data?.name === 'recovery.status' && event.data.phase === 'start') finalRead = true;
     } },
-    nativeCliRunner: (request) => finalRead && claude.isClaudeInvocation(request)
-      && request.args.slice(-4).join(' ') === 'plugin marketplace list --json'
-      ? Promise.resolve({ exitCode: 1, stdout: '', stderr: 'controlled failure' }) : claude.nativeCliRunner(request),
+    nativeCliRunner: async (request) => {
+      if (!finalRead || !claude.isClaudeInvocation(request) || request.args.slice(-4).join(' ') !== 'plugin marketplace list --json') {
+        return claude.nativeCliRunner(request);
+      }
+      if (scenario === 'command failure') return { exitCode: 1, stdout: '', stderr: 'controlled failure' };
+      const root = path.parse(options.cwd).root;
+      const rows = Array.from({ length: 4097 }, (_, index) =>
+        ({ name: `marketplace-${index}`, source: 'directory', path: path.join(root, String(index)) }));
+      return { exitCode: 0, stdout: JSON.stringify(rows), stderr: '' };
+    },
   });
   expect(result.exitCode).toBe(4);
   expect(result.parseJsonStdout()).toMatchObject({ status: 'partial', data: { remainingTargets: [],

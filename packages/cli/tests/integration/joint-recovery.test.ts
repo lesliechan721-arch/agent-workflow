@@ -83,6 +83,21 @@ async function expectSavedIntent(receipt: RecoveryReceipt, location: Parameters<
     roots: saved.value.roots.map((root) => root.pluginId) });
 }
 
+function failManifestAfterActiveCheck(file: string, stages: string[]) {
+  const readJson = fs.readJson.bind(fs);
+  let reads: number | undefined;
+  const spy = vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+    if (String(args[0]) === file && reads !== undefined && ++reads === 2) {
+      throw Object.assign(new Error('read failed'), { code: 'EIO' });
+    }
+    return readJson(...args);
+  });
+  const runtime: RebuildCommandRuntime = { debugLogger: { log: (event) => {
+    if (event.data?.phase === 'start' && stages.includes(String(event.data.name))) reads = 0;
+  } } };
+  return { runtime, restore: () => spy.mockRestore() };
+}
+
 describe('joint recovery through real Catalog and owned outputs', () => {
   beforeEach(() => { installNativeTestQualification({ discovery: true }); });
   // Public receipts must identify the saved scope and digest, independently of output execution.
@@ -335,6 +350,57 @@ describe('joint recovery through real Catalog and owned outputs', () => {
       expect(result.data).toMatchObject({ allSatisfied: current.allSatisfied, inSync: current.inSync });
     } finally { reads.mockRestore(); }
     await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+  });
+
+  it.each(['shared', 'disjoint'] as const)('attributes a final User manifest read failure to a %s Project provider', async (relation) => {
+    const shared = relation === 'shared';
+    const value = await fixture(false, ['generic'], false, { a: ['x'], x: [shared ? 'd' : 'e'], b: ['d'], d: [], e: [] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    await fs.remove(await resolveIntentPath(project));
+    expect((await runPublicLifecycle('install', ['team/a'], user)).status).toBe('success');
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
+    const fault = failManifestAfterActiveCheck(path.join(active.snapshotPath, 'plugins/x/.agents-plugin/plugin.json'), ['recovery.status']);
+    try {
+      const result = await runPublicLifecycle('install', ['team/b'], project, fault.runtime);
+      expect(result).toMatchObject({ status: shared ? 'partial' : 'success', data: { changes: { requirements: 'changed', outputs: 'changed' },
+        remainingTargets: [], targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/b', target: 'generic',
+          scope: 'project', execution: 'applied', observation: 'verified' })]) } });
+      if (shared) expect(result).toMatchObject({
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
+          subject: { pluginId: 'team/b', scope: 'project', target: 'generic' }, detail: { reasonCode: 'jointDemandUnknown' } })]),
+        nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
+          requiresConfirmation: false, reason: expect.any(String) }] });
+      else expect(result.nextActions).toEqual([]);
+    } finally { fault.restore(); }
+    await expect(fs.readFile(path.join(value.projectRoot, 'b/SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+    await expect(fs.readFile(path.join(shared ? value.userRoot : value.projectRoot, 'd/SKILL.md'), 'utf8')).resolves.toContain('Use d.');
+    await expect(fs.pathExists(path.join(shared ? value.projectRoot : value.userRoot, 'd'))).resolves.toBe(false);
+    await expect(readRecoveryStatus(project)).resolves.toMatchObject({ allSatisfied: true });
+  });
+
+  it.each(['required', 'required at recheck', 'independent'] as const)('protects an explicitly removed User provider according to its %s Project dependency', async (relation) => {
+    const required = relation !== 'independent';
+    const value = await fixture(false, ['generic'], false, { a: [], b: ['x'], x: [required ? 'a' : 'd'], d: [] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    expect((await runPublicLifecycle('install', ['team/a'], user)).status).toBe('success');
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
+    const fault = failManifestAfterActiveCheck(path.join(active.snapshotPath, 'plugins/x/.agents-plugin/plugin.json'),
+      [...(relation === 'required at recheck' ? [] : ['recovery.plan']), 'recovery.locked.demand', 'recovery.locked.recheck']);
+    const before = await observeIntent(user);
+    try {
+      const result = await runPublicLifecycle('remove', ['team/a'], user, fault.runtime);
+      if (required) {
+        expect(result).toMatchObject({ status: 'blocked', data: { changes: { requirements: 'none', outputs: 'none' } },
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: relation === 'required at recheck'
+            ? 'operationReviewStale' : 'dependencyStillRequired' })]) });
+        expect(await observeIntent(user)).toEqual(before);
+      } else expect(result.data).toMatchObject({ changes: { requirements: 'changed', outputs: 'changed' } });
+    } finally { fault.restore(); }
+    await expect(fs.pathExists(path.join(value.userRoot, 'a/SKILL.md'))).resolves.toBe(required);
+    await expect(fs.pathExists(path.join(value.projectRoot, 'a'))).resolves.toBe(false);
+    await expect(observeIntent(project)).resolves.toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
   });
 
   it.each(['changed', 'invalid'] as const)('detects a %s second Intent before any output write', async (state) => {

@@ -1,8 +1,8 @@
 import type { PluginMeta, Scope } from '../types.js';
 import { resolveWorkContext, type WorkContext } from '../intent/work-context.js';
 import { createEmptyPreferences, type AgentId, type DeploymentPreferences } from '../intent/deployment-preferences.js';
-import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
-import { readDemand, resolveDelivery, type DemandSnapshot, type ReadDemandOptions } from './demand.js';
+import { resolvePluginDependencyClosure, resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { readDemand, resolveDelivery, type DemandRoot, type DemandSnapshot, type ReadDemandOptions } from './demand.js';
 import type { RecoveryDiagnostic } from './receipt.js';
 import type { NativeSharedReference, NativeSharedReferenceView } from '../utils/native-demand.js';
 import type { RecoveryStatus } from './status.js';
@@ -77,6 +77,17 @@ export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' |
   return { context, user, project, preferences };
 }
 
+/** An Active index can bound the references to protect when the bundle manifest cannot be read. */
+function protectedCatalogDependencies(demand: DemandSnapshot, root: DemandRoot): string[] {
+  if (root.sourceState !== 'ready' || !(root.unreadableDependency || root.blockers.includes('pluginManifestUnavailable'))) return [];
+  const source = demand.catalogOperationContext?.catalog.sources.find((entry) => entry.sourceId === root.sourceId)?.resolution;
+  if (!source) return [];
+  try {
+    return resolvePluginDependencyClosure(source.manifest.entries, [root.pluginId.split('/')[1]!])
+      .map((entry) => `${root.sourceId}/${entry.name}`);
+  } catch { return []; }
+}
+
 export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPlan {
   const result: JointDemandPlan = { roots: [], placements: [], errors: [], complete: true };
   const preferences = snapshot.preferences;
@@ -91,6 +102,7 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
   const placements = new Map<string, JointPlacement>();
   for (const demand of demands) {
     for (const root of demand.roots ?? []) {
+      const protectedDependencies = protectedCatalogDependencies(demand, root);
       for (const target of preferences.targets) {
         const entry: JointRootTarget = { pluginId: root.pluginId, scope: demand.scope, target,
           state: 'required', dependencies: [], blockers: [] };
@@ -98,12 +110,14 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
         if (excluded.has(`${root.pluginId}\0${target}`)) { entry.state = 'excluded'; continue; }
         if (!root.plugin || root.blockers.length) {
           entry.state = 'unknown'; result.complete = false;
+          entry.dependencies = protectedDependencies;
           entry.blockers = root.blockers.map((code) => ({ code, pluginId: root.pluginId, message: `${root.pluginId}: ${code}` }));
           continue;
         }
         if (root.unreadableDependency && resolveDelivery(root.plugin.manifest, target, demand.scope)) {
           entry.state = 'unknown';
           result.complete = false;
+          entry.dependencies = protectedDependencies;
           entry.blockers.push({ code: 'pluginManifestUnavailable', pluginId: root.pluginId,
             message: `无法读取 ${root.pluginId} 所需的 ${root.unreadableDependency} 清单。` });
           continue;
@@ -148,8 +162,7 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
       }
     }
   }
-  // Unknown providers protect their complete source closure. Dependency contracts
-  // are validated above and currently permit only names from the same source.
+  // When the indexed closure is also unavailable, protect the whole matching source.
   if (!result.complete) {
     const sourceIdentity = (demand: DemandSnapshot, pluginId: string): string => {
       const sourceId = pluginId.split('/')[0]!;
@@ -159,7 +172,9 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
     const uncertainUser = result.roots.filter((entry) => entry.scope === 'user' && entry.state === 'unknown');
     for (const entry of result.roots.filter((entry) => entry.scope === 'project' && entry.state === 'required')) {
       if (snapshot.user.roots !== null && !uncertainUser.some((user) => user.target === entry.target
-        && sourceIdentity(snapshot.user, user.pluginId) === sourceIdentity(snapshot.project!, entry.pluginId))) continue;
+        && sourceIdentity(snapshot.user, user.pluginId) === sourceIdentity(snapshot.project!, entry.pluginId)
+        && (!user.dependencies.length || user.pluginId.split('/')[0] !== entry.pluginId.split('/')[0]
+          || user.dependencies.some((id) => entry.dependencies.includes(id))))) continue;
       entry.state = 'unknown'; entry.blockers.push({ code: 'jointDemandUnknown', message: '完整需求未知，不能确定项目提供位置。' });
     }
   }
