@@ -81,8 +81,10 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
     ? canonicalFile(path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')) : undefined;
   const preloadMarker = env[PUBLIC_MARKER];
   const preloadMarkers = markerValues(process.env, env);
+  const sharedProviderTiming = Boolean(queryEntry) && env.AW_NATIVE_QUALIFICATION_CODEX_SHARED_TIMING === '1';
   let operationId = 0;
   let unmatchedCount = 0;
+  let systemQueryCount = 0;
   return function managedTraceRunner(invocation) {
     let details;
     let registryList;
@@ -103,8 +105,7 @@ export function createManagedTraceRunner(base, { entries, client, env = process.
           command: invocation.command, args: invocation.args.slice(0, 16),
           publicMarkerProvided: typeof preloadMarker === 'string' && preloadMarker.length > 0
             && invocation.env?.[PUBLIC_MARKER] === preloadMarker };
-      } else if (unmatchedCount < 8) {
-        unmatchedCount += 1;
+      } else if (sharedProviderTiming && sameFile(commandFile, queryEntry) ? ++systemQueryCount <= 64 : ++unmatchedCount <= 8) {
         // Fixed facts only: unmatched calls must not expose paths, argv or env.
         const absolute = (value) => typeof value === 'string' && path.isAbsolute(value);
         const insensitiveMatch = (file) => process.platform === 'win32' && typeof file === 'string'
@@ -281,7 +282,12 @@ async function installFromEnvironment() {
     pluginRunner.run = createManagedPluginTraceRunner((invocation, options) => pluginRun.call(pluginRunner, invocation, options), diagnosticOptions);
     native.setNativeCliRunnerOverrideForTests(native.retainNativeCliRunnerBackend(wrapper, base));
     writer.emit({ phase: 'installation', state: 'installed' });
-    process.once('exit', writer.close);
+    process.once('exit', () => {
+      if (process.env.AW_NATIVE_QUALIFICATION_CODEX_SHARED_TIMING === '1') {
+        writer.emit({ phase: 'aw-exit', time: new Date().toISOString() });
+      }
+      writer.close();
+    });
     return true;
   } catch { writer.emit({ phase: 'installation', state: 'runner-install-failed' }); writer.close(); return false; }
 }

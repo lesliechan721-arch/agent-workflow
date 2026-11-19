@@ -146,6 +146,35 @@ async function readManagedTrace(file) {
   } catch (error) { return { state: error.code === 'ENOENT' ? 'not-created' : 'unavailable', records }; }
 }
 
+// Project only fixed stage names and times from this fixture's own debug log.
+// A timeout can interrupt its final JSON line.
+export async function readSharedProviderStages(file) {
+  const records = [];
+  let handle;
+  try {
+    handle = await fs.open(file, 'r');
+    const limit = 256 * 1024;
+    const input = Buffer.alloc(limit + 1);
+    const { bytesRead } = await handle.read(input);
+    const text = input.toString('utf8', 0, Math.min(bytesRead, limit));
+    for (const line of text.split('\n').slice(0, -1)) {
+      const { time, event } = JSON.parse(line);
+      if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(time)
+        || !['performance:stage', 'rebuild:action'].includes(event?.type)) continue;
+      const { name, phase, durationMs } = event.data ?? {};
+      if (!['recovery.plan', 'recovery.lock.wait', 'recovery.locked.demand', 'recovery.locked.recheck',
+        'recovery.child.plan', 'recovery.child.execute', 'recovery.status', 'status.discovery',
+        'status.adapter.inspect', 'status.inventory', 'status.demand', 'target.build', 'inspect',
+        'native.write', 'artifacts.write', 'postcheck.inspect'].includes(name)
+        || !['start', 'success', 'failure'].includes(phase)) continue;
+      records.push({ time, name, phase, ...(Number.isSafeInteger(durationMs) && durationMs >= 0 ? { durationMs } : {}) });
+      if (records.length === 256) return { state: 'limited', records };
+    }
+    return { state: bytesRead > limit || !text.endsWith('\n') ? 'partial' : 'captured', records };
+  } catch { return { state: 'unavailable', records }; }
+  finally { await handle?.close().catch(() => {}); }
+}
+
 // Observe only this isolated fixture's generated marketplace entries, using
 // the same parser as ownership inspection. Never retain the complete config.
 export async function readQualificationCodexSources(home) {
@@ -266,18 +295,27 @@ export async function runScope(platform, scope, launcher, options = {}) {
           && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
         const traceFile = trace ? path.join(root, `managed-native-${report.commands.length}.jsonl`) : undefined;
         const sourceDiagnostic = trace && platform === 'codex' && process.platform === 'win32';
+        const sharedArgs = ['plugin', 'install', `qualification/${ctx.pluginName}-dependent`, '--scope', 'project', '--target', 'codex', '--yes'];
+        const stageLog = sourceDiagnostic && args.length === sharedArgs.length && args.every((arg, i) => arg === sharedArgs[i])
+          ? path.join(root, `shared-provider-${report.commands.length}.log`) : undefined;
         const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
+          ...(stageLog ? { AW_NATIVE_QUALIFICATION_CODEX_SHARED_TIMING: '1' } : {}),
           AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform,
           AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
           AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([launcher.prefix[0] ?? launcher.executable,
             ctx.publicClientEntry, ctx.publicAlternateClientEntry].filter(Boolean)) } : env;
         let result;
+        const startedAt = new Date().toISOString();
+        const start = performance.now();
+        const jobTiming = () => ({ startedAt, returnedAt: new Date().toISOString(), elapsedMs: performance.now() - start, timeoutMs });
         try {
           result = await executePublicAw({ executable: process.execPath, prefix: [
             ...(trace ? ['--import', pathToFileURL(path.join(repoRoot, 'scripts/qualification/native-platform-managed-trace.mjs')).href] : []),
-            path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json'], { cwd, env: commandEnv, timeoutMs });
+            path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json', ...(stageLog ? ['--debug', '--log-file', stageLog] : [])],
+          { cwd, env: commandEnv, timeoutMs });
         } catch (error) {
           report.commands.push(redact({ aw: args, cwd, processFailure: error?.message,
+            ...(stageLog ? { jobTiming: jobTiming(), awStages: await readSharedProviderStages(stageLog) } : {}),
             ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
             ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}),
             processDiagnostics: error?.publicAwProcessDiagnostics ?? [],
@@ -290,8 +328,10 @@ export async function runScope(platform, scope, launcher, options = {}) {
               failureSummary: publicAwFailureSummary(error.result.stdout) } : {}) }, root, options.clientBin));
           throw error;
         }
+        const timing = stageLog ? jobTiming() : undefined;
         const nativeManagedTrace = trace ? await readManagedTrace(traceFile) : undefined;
         report.commands.push(redact({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+          ...(stageLog ? { jobTiming: timing, awStages: await readSharedProviderStages(stageLog) } : {}),
           ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
           ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           ...(trace ? { nativeManagedTrace } : {}),

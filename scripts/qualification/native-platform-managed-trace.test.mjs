@@ -137,6 +137,18 @@ test('samples completed Windows Codex PowerShell queries in the eight unmatched 
     assert.equal(records.length,8); assert.equal(records.every(record=>record.commandRole==='windows-system-powershell'),selected);
     if(!selected) assert(records.every(record=>Object.entries(record).every(([key,value])=>key==='phase'||typeof value==='boolean')));
   }
+  const records = [];
+  const wrapped = createManagedTraceRunner(() => Promise.resolve({ exitCode: 0 }), {
+    entries: [entry], client: 'codex', platform: 'win32',
+    env: { SystemRoot: system, AW_NATIVE_QUALIFICATION_CODEX_SHARED_TIMING: '1' }, emit: record => records.push(record),
+  });
+  for (let i = 0; i < 66; i++) {
+    await wrapped({ command: other, args: [] });
+    await wrapped(invocation);
+  }
+  assert.equal(records.filter(row => row.commandRole === 'windows-system-powershell').length, 64);
+  assert.equal(records.length, 72);
+  assert(!JSON.stringify(records).includes('private-encoded-command'));
 });
 
 // Test Value Gate: private diagnostics retain the invocation fields, including
