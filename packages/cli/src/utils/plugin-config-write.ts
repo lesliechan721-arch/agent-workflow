@@ -53,7 +53,7 @@ import {
   syncPluginManagedCommandPackage,
   type ManagedCommandPackageDiscovery,
 } from './managed-command-materialization.js';
-import { listManagedCommandPackages, managedCommandDiagnostic, readInstalledCommandProducer } from './managed-command-store.js';
+import { captureManagedCommandPackageEvidence, listManagedCommandPackages, managedCommandDiagnostic, type ManagedCommandPackageEvidence } from './managed-command-store.js';
 import {
   collectSensitivePluginConfigValues,
   redactPluginScriptOutput,
@@ -68,7 +68,6 @@ import {
 import fs from 'fs-extra';
 import path from 'node:path';
 import { parsePluginId } from './multi-source-catalog.js';
-import crypto from 'node:crypto';
 
 export interface PluginConfigWriteRequest {
   updates?: Record<string, unknown>;
@@ -141,7 +140,7 @@ interface InternalConfigApplyTargetResult extends Omit<ReceiptTargetResult, 'sta
 interface ConfigApplyDiscovery {
   targets: ReceiptTargetIdentity[];
   failures: ReceiptTargetResult[];
-  commandPackages?: ManagedCommandPackageDiscovery['packages'];
+  commandPackages?: Array<ManagedCommandPackageDiscovery['packages'][number] & { expectedPackage?: ManagedCommandPackageEvidence }>;
   commandDiscoveryErrors?: ManagedCommandPackageDiscovery['errors'];
   plugins?: readonly PluginMeta[];
 }
@@ -674,7 +673,7 @@ async function reinstallVisibleTargets(options: {
         try {
           result = await syncPluginManagedCommandPackage({
             plugin: options.plugin, packageKey: target.packageKey, scope: target.producer.scope,
-            cwd: options.cwd, env: options.env, managedCommandProducerCache,
+            cwd: options.cwd, env: options.env, managedCommandProducerCache, expectedPackage: target.expectedPackage,
             referencePlugins: options.rebuildRuntime?.referencePlugins,
             event: options.changedConfigKeys?.length ? 'refresh' : 'install',
             changedConfigKeys: options.changedConfigKeys ?? [],
@@ -1169,7 +1168,7 @@ async function prepareConfigApplyPackages(options: ApplyPluginConfigOptions, plu
   const entries = await Promise.all(packages.map(async (target) => {
     const plugin = plugins.find((entry) => entry.manifest.name === target.producer.pluginName)!;
     const installed = inventory.packages.find((entry) => entry.id === target.packageId);
-    let recordDigest: string | undefined;
+    let expectedPackage: ManagedCommandPackageEvidence | undefined;
     let blocker: ReturnType<typeof managedCommandDiagnostic> | undefined;
     if (!target.installed || !installed) {
       blocker = { code: 'configApplyRequiresExistingOutput', message: 'Configuration apply requires an existing command package. Run package sync first.' };
@@ -1177,12 +1176,11 @@ async function prepareConfigApplyPackages(options: ApplyPluginConfigOptions, plu
       blocker = { code: 'commandPackageDeclarationMissing', message: 'The installed command package is no longer declared by this plugin.' };
     } else {
       try {
-        const record = await readInstalledCommandProducer(installed.resourceRoot);
-        recordDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex')}`;
         await assertManagedCommandPackageNativeToolsUnchanged({ plugin, producer: target.producer, env });
+        expectedPackage = await captureManagedCommandPackageEvidence(installed);
       } catch (error) { blocker = managedCommandDiagnostic(error); }
     }
-    return { target, recordDigest, blocker };
+    return { target, expectedPackage, blocker };
   }));
   const errors = [...new Map(discoveries.flatMap((discovery) => discovery.errors).map((error) => [JSON.stringify(error), error])).values()];
   const evidence = { packages: entries, errors };
@@ -1214,7 +1212,7 @@ async function prepareConfigApplyPackages(options: ApplyPluginConfigOptions, plu
       let executionContext: Awaited<ReturnType<typeof createScopeContext>> | undefined;
       try {
         executionContext = await createScopeContext({ scope, cwd: options.cwd, env });
-        for (const { target, blocker } of selected) {
+        for (const { target, expectedPackage, blocker } of selected) {
           if (blocker) {
             const result: CommandProducerResult = { producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
               errors: [blocker], recoveryActions: [target.declared
@@ -1227,7 +1225,7 @@ async function prepareConfigApplyPackages(options: ApplyPluginConfigOptions, plu
           const applied = await reinstallVisibleTargets({ plugin, scope, cwd: executionContext.executionCwd, env: executionContext.env,
             changedConfigKeys: [...target.refreshKeys],
             rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken: token, referencePlugins, managedCommandProducerCache: cache },
-            discovered: { targets: [], failures: [], commandPackages: [target], commandDiscoveryErrors: [] } });
+            discovered: { targets: [], failures: [], commandPackages: [{ ...target, expectedPackage }], commandDiscoveryErrors: [] } });
           results.push(...('commandResults' in applied ? applied.commandResults ?? [] : []));
         }
         return results;

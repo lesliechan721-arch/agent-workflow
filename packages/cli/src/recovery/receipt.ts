@@ -65,3 +65,11 @@ export interface RecoveryReceipt {
   configChanged: boolean;
   outputsMayHaveChanged: boolean;
 }
+
+export function isRecoveryReviewStaleBeforeExecution(receipt: RecoveryReceipt): boolean {
+  return receipt.blockers.some(({ code }) => code === 'operationReviewStale')
+    && !receipt.configChanged && !receipt.declarationChanged && !receipt.preferencesChanged
+    && !receipt.outputsMayHaveChanged && !receipt.commandResults?.length
+    && receipt.targetResults.every((target) => target.execution === 'not-run'
+      || target.execution === 'no-op' && (target.satisfaction === 'excluded' || target.satisfaction === 'unsupported'));
+}

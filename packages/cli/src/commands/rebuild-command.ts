@@ -10,6 +10,7 @@ import { withNativeToolRemovalImpact } from '../utils/native-tool-review.js';
 import fs from 'fs-extra';
 import { NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 import { nativeInstallResources } from './rebuild-platform-integration.js';
+import { resolvePlatformConfigRoot } from '../platforms/discovery.js';
 import { getDeploymentLayout } from '../platforms/layout.js';
 import type { DeploymentExclusion } from '../platforms/contracts.js';
 import type { ScopeContext } from '../intent/scope-context.js';
@@ -2497,15 +2498,24 @@ async function runRebuildCommandInSession(
   const retainedPackageActions: OperationAction[] = retainedPackages.map((entry) => ({ ...entry, kind: 'retainManagedCommandPackage', pluginId: `${entry.producer.sourceId}/${entry.producer.pluginName}`, scope: entry.producer.scope }));
   const readInventory = options.runtime?.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
+  const inventoryRequest = { cwd: options.commandOptions.cwd, env: runtimeEnv, scope: options.commandOptions.scope };
+  const readCurrentInventory = (): Promise<CatalogSourceReferenceInventory> => {
+    if (!admission || !options.runtime?.batchInstallPlatform) return readInventory(inventoryRequest);
+    // The inventory includes other hosts' registries and owner markers. Sample them
+    // outside any target or script lease, while sibling publishers are between writes.
+    const roots = [resolveAwHome(runtimeEnv), resolveRepoRootSync(inventoryRequest.cwd),
+      ...NATIVE_PLATFORM_TARGETS.map((platform) => resolvePlatformConfigRoot(platform, inventoryRequest))];
+    return admission.run(roots.map((value) => ({ kind: 'path', value, access: 'read' })), () => readInventory(inventoryRequest),
+      options.runtime.signal);
+  };
   const readCache = preparationReads(options.runtime);
   let ordinaryInventory: Promise<CatalogSourceReferenceInventory> | undefined;
   const readOrdinaryInventory = (): Promise<CatalogSourceReferenceInventory> => {
     if (ordinaryInventory) return ordinaryInventory;
-    const request = { cwd: options.commandOptions.cwd, env: runtimeEnv, scope: options.commandOptions.scope };
-    const key = JSON.stringify([request.cwd, request.scope, Object.entries(request.env).sort(([a], [b]) => a.localeCompare(b))]);
+    const key = JSON.stringify([inventoryRequest.cwd, inventoryRequest.scope, Object.entries(runtimeEnv).sort(([a], [b]) => a.localeCompare(b))]);
     let reads = readCache?.inventories.get(readInventory);
     if (readCache && !reads) readCache.inventories.set(readInventory, reads = new Map());
-    ordinaryInventory = reads?.get(key) ?? measureCommandPerformanceStage(options.runtime, 'inventory', () => readInventory(request));
+    ordinaryInventory = reads?.get(key) ?? measureCommandPerformanceStage(options.runtime, 'inventory', readCurrentInventory);
     reads?.set(key, ordinaryInventory);
     return ordinaryInventory;
   };
@@ -5050,11 +5060,7 @@ async function runRebuildCommandInSession(
         if ((options.command === 'cleanup' && !cleanupForce)
           || (options.command === 'uninstall' && !uninstallForce)
           || options.command === 'sync') {
-          const removalStateInventory = await readInventory({
-            cwd: options.commandOptions.cwd,
-            env: runtimeEnv,
-            scope: options.commandOptions.scope,
-          });
+          const removalStateInventory = await readCurrentInventory();
           if (options.command !== 'cleanup') {
             const checked = options.command === 'uninstall'
               ? omitSelectedPluginConfigErrors(removalStateInventory, preflightTargets)

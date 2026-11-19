@@ -159,6 +159,30 @@ function finalStatusReadFailure(status: RecoveryStatus, receipt: RecoveryReceipt
   return undefined;
 }
 
+function staleBeforeFirstWrite(plan: RecoveryPlan): RecoveryReceipt {
+  const stale = diagnostic('operationReviewStale');
+  if (!isInstallBatch(plan.command)) {
+    plan.receipt.blockers.push(stale);
+    return mergeReceipts(plan, []);
+  }
+  const receipt = structuredClone(plan.receipt);
+  receipt.ok = false;
+  receipt.blockers.push(stale);
+  receipt.errors = [...receipt.blockers];
+  receipt.commandResults = [];
+  receipt.nativeToolChanges = [];
+  receipt.remainingTargets = [];
+  receipt.recoveryActions = ['确认依据已改变，请重新准备本次操作。'];
+  receipt.targetResults = receipt.targetResults.map((target) => {
+    if (target.satisfaction === 'excluded' || target.satisfaction === 'unsupported') return target;
+    const { pluginId, agent, scope, delivery, relation, requiredBy, requirementScope, providerScope } = target;
+    receipt.remainingTargets.push({ pluginId, agent, scope, delivery });
+    return { pluginId, agent, scope, delivery, relation, requiredBy, requirementScope, providerScope,
+      execution: 'not-run', observation: 'unknown', content: 'unknown', satisfaction: 'unknown', blockers: [stale] };
+  });
+  return receipt;
+}
+
 async function readJointPreparation(command: RecoveryCommand, options: RecoveryOptions, locked = false, suppliedReads?: CatalogPreparationReadScope): Promise<{
   options: RecoveryOptions;
   snapshot: JointDemandSnapshot;
@@ -851,9 +875,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           plan.receipt.blockers.push(describeStrongStateProblem({ kind: 'intent', scope: plan.options.scope,
             state: currentIntent.state, filePath: await resolveIntentPath(plan.options) }));
         }
-        if (snapshotEvidence(actual) !== joint.evidence) {
-          plan.receipt.blockers.push(diagnostic('operationReviewStale')); return mergeReceipts(plan, []);
-        }
+        if (snapshotEvidence(actual) !== joint.evidence) return staleBeforeFirstWrite(plan);
         if (plan.blockExecution) return plan.receipt;
         // Recheck all backend candidates before any strong-state or output write.
         (execution.runtime?.codexObservationSession ?? plan.runtime.codexObservationSession)?.invalidate();
@@ -865,7 +887,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         lockedPlan = checked;
         const parallel = isInstallBatch(plan.command) && !joint.children.some((child) => child.command === 'cleanup');
         const children = parallel ? checked.joint!.children : joint.children;
-        if (!stable) { plan.receipt.blockers.push(diagnostic('operationReviewStale')); return mergeReceipts(plan, []); }
+        if (!stable) return staleBeforeFirstWrite(plan);
         performanceRuntime.signal?.throwIfAborted();
         if (joint.originalOptions.preferences) {
           const saved = await writePreferences({ ...plan.options, scope: 'user', token }, joint.originalOptions.preferences);

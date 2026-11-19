@@ -37,6 +37,7 @@ import {
   syncManagedCommandPackage,
   validateManagedCommandResource,
   type InstalledCommandSet,
+  type ManagedCommandPackageEvidence,
 } from './managed-command-store.js';
 import { resolveCanonicalRepoProjectKey } from './state-paths.js';
 import { validateManagedCommandPackageClosure } from './managed-command-closure.js';
@@ -299,6 +300,7 @@ export async function syncPluginManagedCommandPackage(options: {
   signal?: AbortSignal;
   scriptTimeoutMs?: number;
   managedCommandProducerCache?: Map<string, Promise<CommandProducerResult>>;
+  expectedPackage?: ManagedCommandPackageEvidence;
 }): Promise<CommandProducerResult> {
   const producer = await managedCommandProducerIdentity({ ...options, producer: { kind: 'package', packageKey: options.packageKey } });
   const key = getCommandPackageId(producer);
@@ -310,7 +312,7 @@ export async function syncPluginManagedCommandPackage(options: {
         candidate = await prepareManagedCommandPackage(options);
         const old = await listManagedCommandPackages(options.env);
         const previousIds = old.packages.find((entry) => entry.id === key)?.sets.flatMap((set) => set.commandIds) ?? [];
-        const synced = await syncManagedCommandPackage({ producer, sourceDirectory: candidate.resourceRoot, sets: candidate.sets, nativeTools: candidate.nativeTools, env: options.env });
+        const synced = await syncManagedCommandPackage({ producer, sourceDirectory: candidate.resourceRoot, sets: candidate.sets, nativeTools: candidate.nativeTools, env: options.env, expectedPackage: options.expectedPackage });
         return { producer, state: 'completed' as const, commandIds: synced.commandIds, removedCommandIds: previousIds.filter((id) => !synced.commandIds.includes(id)), errors: [], recoveryActions: [] };
       } catch (error) {
         if (recoveryInterruptionCode(error, options.signal) || readSafeOperationError(error)) throw error;

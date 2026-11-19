@@ -10,7 +10,7 @@ import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
-import type { RecoveryReceipt } from '../recovery/receipt.js';
+import { isRecoveryReviewStaleBeforeExecution, type RecoveryReceipt } from '../recovery/receipt.js';
 import { safeDiagnosticCode } from './diagnostics.js';
 import { recoveryReason } from './glossary.js';
 import type { OperationHistoryRecord, OperationHistoryTarget, SafeOperationDiagnostic } from './operation-history.js';
@@ -68,8 +68,7 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   const verified = targets.some(({ state }) => state === 'completed' || state === 'kept');
   const changed = receipt.configChanged || receipt.declarationChanged || receipt.preferencesChanged || receipt.outputsMayHaveChanged;
   const state = receipt.ok ? 'succeeded' : verified || changed ? 'partial' : 'blocked';
-  const staleBeforeExecution = !changed && [...receipt.blockers, ...receipt.errors].some(({ code }) => code === 'operationReviewStale')
-    && receipt.targetResults.every(({ execution }) => execution === 'not-run') && !receipt.commandResults?.length;
+  const staleBeforeExecution = isRecoveryReviewStaleBeforeExecution(receipt);
   return {
     summary: {
       ...identity,

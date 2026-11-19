@@ -63,13 +63,16 @@ it('distinguishes stale before execution from a stale target after a sibling was
     targetResults: positions.map((position) => ({ ...position, execution: 'not-run', observation: 'unknown', blockers: [], requiredBy: [] })),
   };
   const identity = { recordId: 'batch', epoch: 0, operationId: 'sync', createdAtMs: 0 };
+  // The joint receipt records a policy-excluded target as a verified no-op.
+  receipt.targetResults[1] = { ...receipt.targetResults[1]!, execution: 'no-op', observation: 'verified', satisfaction: 'excluded' };
   expect(projectScopedRecoveryHistory(receipt, identity).summary.effects).toMatchObject({
     preApplyExternalEffect: 'notStarted', finalVerification: 'notStarted',
   });
 
   receipt.blockers = [];
+  receipt.errors = [stale];
   receipt.targetResults[0] = { ...receipt.targetResults[0]!, execution: 'applied', observation: 'verified', content: 'satisfied' };
-  receipt.targetResults[1]!.blockers = [stale];
+  receipt.targetResults[1] = { ...receipt.targetResults[1]!, execution: 'not-run', observation: 'unknown', satisfaction: 'pending', blockers: [stale] };
   receipt.outputsMayHaveChanged = true;
   receipt.remainingTargets = [positions[1]!];
   expect(projectScopedRecoveryHistory(receipt, identity).summary).toMatchObject({ state: 'partial',

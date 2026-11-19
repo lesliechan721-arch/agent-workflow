@@ -650,17 +650,19 @@ describe('scoped inventory in Ink', () => {
       { pluginId: 'official/other' }],
       agents: ['codex', 'claude', 'generic'] });
     const previousPreferences = await observePreferences(location);
+    const targetStale = { code: 'operationReviewStale', message: '确认依据已改变。' };
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
       command: 'sync', ok: false, intent: { state: 'valid', roots: ['official/demo', 'official/other'] },
       requestedRoots: ['official/demo', 'official/other'], requestedTargets: [], selection: {
         agents: ['codex', 'claude', 'generic'], origin: 'preference', preferences: 'valid',
-      }, blockers: [], errors: [], targetResults: [
+      }, blockers: [], errors: [targetStale], targetResults: [
         { pluginId: 'official/demo', agent: 'codex', scope: 'user',
           delivery: { kind: 'native', platform: 'codex' }, execution: 'failed',
           observation: 'missing', blockers: [], requiredBy: ['official/demo'] },
         { pluginId: 'official/demo', agent: 'claude', scope: 'user',
           delivery: { kind: 'native', platform: 'claude' }, execution: 'not-run',
-          observation: 'unknown', blockers: [], requiredBy: ['official/demo'] },
+          observation: 'unknown', blockers: [targetStale], requiredBy: ['official/demo'],
+          recoveryActions: ['aw plugin sync official/demo --context user --target claude'] },
         { pluginId: 'official/demo', agent: 'generic', scope: 'user',
           delivery: null, execution: 'not-run', observation: 'unknown',
           blockers: [{ code: 'deliveryUnsupported', message: 'blocked' }], requiredBy: ['official/demo'] },
@@ -698,6 +700,22 @@ describe('scoped inventory in Ink', () => {
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('重试明确失败项（2）'));
     expect(checkedFrame(instance, sizes[0]!)).toContain('检查未确认项（2）');
     expect(checkedFrame(instance, sizes[0]!)).toContain('重试明确失败项（2）');
+    expect(checkedFrame(instance, sizes[0]!)).not.toContain('重新准备本次操作');
+    await press(instance, 'd');
+    const details = await readScopedPages(instance, sizes[0]!);
+    expect(details).toContain('applied · verified');
+    expect(details).not.toContain('本次未执行');
+    const copy = vi.spyOn(clipboard, 'copyToClipboard').mockResolvedValue();
+    try {
+      await press(instance, 'y');
+      await vi.waitFor(() => expect(copy).toHaveBeenCalled());
+      const fullText = copy.mock.calls[0]![0];
+      expect(fullText).toContain('受阻 operationReviewStale');
+      expect(fullText).toContain('aw plugin sync official/demo --context user --target claude');
+      expect(fullText).not.toContain('全局错误：operationReviewStale');
+      expect(fullText).not.toContain('本次未执行');
+    } finally { copy.mockRestore(); }
+    await press(instance, 'd');
     await focusAction(instance, '重试明确失败项（2）');
     await press(instance, '\r');
     await vi.waitFor(() => expect(prepareScopedTask).toHaveBeenCalledTimes(2));
@@ -983,6 +1001,9 @@ describe('scoped inventory in Ink', () => {
       const staleReceipt = structuredClone(base);
       staleReceipt.blockers = [{ code: 'operationReviewStale', message: '确认依据已改变，请重新检查并确认。' }];
       staleReceipt.errors = [...staleReceipt.blockers];
+      staleReceipt.targetResults = [{ pluginId: 'official/demo', agent: 'generic', scope: 'project',
+        delivery: null, execution: 'no-op', observation: 'verified', satisfaction: 'excluded',
+        blockers: [], requiredBy: ['official/demo'] }];
       const cleanPlan = { ...reviewPlan, plan: { ...reviewPlan.plan, receipt: base } } as ScopedTuiPlan;
       const prepareScopedTask = vi.fn().mockResolvedValueOnce(reviewPlan).mockResolvedValue(cleanPlan);
       const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),

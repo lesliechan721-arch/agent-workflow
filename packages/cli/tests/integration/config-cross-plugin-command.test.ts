@@ -101,6 +101,7 @@ async function createCommandPackageReferenceFixture(options: {
   foreignSource?: boolean;
   withClaude?: boolean;
   mixedScopes?: boolean;
+  preApplyPackageChange?: 'move' | 'edit' | 'unbind';
   packagePlatforms?: Array<'codex' | 'claude'>;
   initialSelection?: 'final' | 'next';
 } = {}) {
@@ -112,6 +113,7 @@ async function createCommandPackageReferenceFixture(options: {
   if (options.mixedScopes) execFileSync('git', ['init', '-q'], { cwd });
   const renders = path.join(cwd, 'package-renders.jsonl');
   const scripts = path.join(cwd, 'package-pre-apply.jsonl');
+  const packageToChange = path.join(cwd, 'package-to-change.json');
   const fail = path.join(cwd, 'provider-render-fails');
   const packageKeys = options.mixedScopes ? ['personal', 'workspace'] : ['personal', 'uninstalled'];
   for (const name of ['provider', 'consumer']) {
@@ -129,6 +131,12 @@ async function createCommandPackageReferenceFixture(options: {
     await fs.outputFile(path.join(root, 'pre-apply.mjs'), [
       "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(0,'utf8'));",
       `fs.appendFileSync(${JSON.stringify(scripts)},JSON.stringify({plugin:c.plugin.name,platform:c.target.platform})+'\\n');`,
+      ...(name === 'consumer' && options.preApplyPackageChange ? [
+        `const trigger=${JSON.stringify(packageToChange)}; if(fs.existsSync(trigger)){const {root,binding}=JSON.parse(fs.readFileSync(trigger,'utf8'));`,
+        { move: "fs.renameSync(root,root+'.saved');", edit: "fs.writeFileSync(root+'/resource/config.json','external bytes');",
+          unbind: 'fs.unlinkSync(binding);' }[options.preApplyPackageChange],
+        'fs.unlinkSync(trigger);}',
+      ] : []),
     ].join('\n'));
   }
   await createDependencyCatalogSnapshotFixture(sourceRoot, ['provider', 'middle', 'consumer'].map((name) => ({
@@ -194,7 +202,7 @@ async function createCommandPackageReferenceFixture(options: {
   expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0 });
   const resource = (await packages()).packages.find((entry) => entry.producer.sourceId === 'team')!.resourceRoot;
   const config = path.join(resource, 'config.json');
-  return { cwd, env, renders, scripts, fail, source, run, setSelected, packages, resource, config, dependencies };
+  return { cwd, env, renders, scripts, fail, source, run, setSelected, packages, resource, config, dependencies, packageToChange };
 }
 
 describe('cross-plugin public config apply', () => {
@@ -292,6 +300,42 @@ describe('cross-plugin public config apply', () => {
     expect(packageRecovered, JSON.stringify(packageRecovered)).toMatchObject({ exitCode: 0 });
     expect(await fs.readJson(config)).toEqual({ selected: 'next' });
   }, 30_000);
+
+  it.each(['move', 'edit', 'unbind'] as const)('preserves a package after a confirmed preApply %s and refreshes its sibling', async (change) => {
+    const { env, run, setSelected, packages, packageToChange } = await createCommandPackageReferenceFixture({ preApplyPackageChange: change });
+    const installed = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
+    expect(installed.exitCode, JSON.stringify(installed.payload.diagnostics)).toBe(0);
+    const inventory = (await packages()).packages;
+    const affected = inventory.find((item) => item.producer.key === 'personal')!;
+    const sibling = inventory.find((item) => item.producer.key === 'uninstalled')!;
+    const root = path.dirname(affected.resourceRoot);
+    const binding = path.join(env.AW_HOME!, 'commands', 'bindings', affected.sets[0]!.commandIds[0]! + '.json');
+    await fs.writeJson(packageToChange, { root, binding });
+    await setSelected('next');
+
+    const result = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user',
+      '--value-json', '[{"key":"next"}]', '--apply', '--yes']);
+    expect(await fs.pathExists(packageToChange)).toBe(false);
+    expect(result.exitCode, JSON.stringify(result.payload)).toBe(4);
+    expect(result.payload.data).toMatchObject({ configWrite: 'succeeded', apply: { state: 'partial' } });
+    expect(result.payload.data.apply.commandResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ producer: expect.objectContaining({ key: 'personal' }), state: 'failed', blockerCodes: [
+        change === 'move' ? 'configApplyRequiresExistingOutput' : 'operationReviewStale'] }),
+      expect.objectContaining({ producer: expect.objectContaining({ key: 'uninstalled' }), state: 'completed' }),
+    ]));
+    expect(result.payload.nextActions).toContainEqual(expect.objectContaining({
+      argv: ['aw', 'command', 'package', 'sync', 'team/consumer', 'personal', '--scope', 'user'], requiresConfirmation: true }));
+    if (change === 'move') {
+      expect(await fs.pathExists(root)).toBe(false);
+      expect(await fs.readJson(path.join(root + '.saved', 'resource', 'config.json'))).toEqual({ selected: 'native' });
+    } else if (change === 'edit') {
+      expect(await fs.readFile(path.join(affected.resourceRoot, 'config.json'), 'utf8')).toBe('external bytes');
+    } else {
+      expect(await fs.pathExists(binding)).toBe(false);
+      expect(await fs.readJson(path.join(affected.resourceRoot, 'config.json'))).toEqual({ selected: 'native' });
+    }
+    expect(await fs.readJson(path.join(sibling.resourceRoot, 'config.json'))).toEqual({ selected: 'next' });
+  }, 60_000);
 
   it('reports the shared packages when native provider preflight blocks their owner', async () => {
     const { run, setSelected, fail, config } = await createCommandPackageReferenceFixture({ withClaude: true });
@@ -509,6 +553,34 @@ describe('cross-plugin public config apply', () => {
     const sourceRoot = path.join(cwd, 'cross-config-source');
     const trace = path.join(cwd, 'pre-apply.jsonl');
     let failProvider = false;
+    // Release the Codex child while Claude is in the middle of publishing its registration.
+    const claudeWriting = Promise.withResolvers<void>();
+    const codexRequestedInventory = Promise.withResolvers<void>();
+    const { inventoryCatalogSourceReferences: scan } = await import('../../src/utils/catalog-source-references.js');
+    const scoped = await import('../../src/recovery/coordinator.js');
+    const execute = scoped.executeCheckedScopedInstall;
+    const scopedSpy = vi.spyOn(scoped, 'executeCheckedScopedInstall').mockImplementation(async (plan, execution) => {
+      if (!failProvider || execution.runtime.batchInstallPlatform !== 'codex') return execute(plan, execution);
+      await claudeWriting.promise;
+      const admission = execution.runtime.installAdmission!;
+      return execute(plan, { ...execution, runtime: { ...execution.runtime,
+        installAdmission: {
+          get exclusiveGeneration() { return admission.exclusiveGeneration; },
+          run(resources, action, signal) {
+            const result = admission.run(resources, action, signal);
+            if (resources.some((resource) => resource.kind === 'path' && resource.access === 'read')) codexRequestedInventory.resolve();
+            return result;
+          },
+        },
+        inventoryCatalogSourceReferences(request) {
+          const result = scan(request);
+          // An unprotected scan sees the unfinished file before the native call can complete.
+          codexRequestedInventory.resolve(result.then(() => undefined));
+          return result;
+        },
+      } });
+    });
+    test.onTestFinished(() => scopedSpy.mockRestore());
     const { native, codex } = await timing.measure('fixture', 'catalog-and-clients', async () => {
       for (const name of ['provider', 'consumer']) {
         const pluginRoot = path.join(sourceRoot, 'plugins', name);
@@ -548,8 +620,17 @@ describe('cross-plugin public config apply', () => {
       const codex = await createCodexNativeTestRuntime(isolation, { rejectAdd: (id) => failProvider && id.startsWith('provider@') });
       return { native, codex };
     });
-    const runner = vi.fn(async (invocation: NativeCliInvocation) => isClaudeInvocation(invocation)
-      ? native.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation));
+    const runner = vi.fn(async (invocation: NativeCliInvocation) => {
+      if (failProvider && isClaudeInvocation(invocation) && invocation.args.includes('update')) {
+        const before = await fs.readFile(native.installedPath);
+        await fs.writeFile(native.installedPath, '{');
+        claudeWriting.resolve();
+        try {
+          await codexRequestedInventory.promise;
+        } finally { await fs.writeFile(native.installedPath, before); }
+      }
+      return isClaudeInvocation(invocation) ? native.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
+    });
     const run = (args: string[]) => timing.measure('command',
       args.slice(0, args[0] === 'plugin' && args[1] === 'config' ? 3 : 2).join(' '), async (sequence) => {
         const output = createCapturedCliIo();
@@ -589,6 +670,7 @@ describe('cross-plugin public config apply', () => {
     expect((await fs.readJson(providerBinding)).effectiveValues.registry).toEqual([]);
     await fs.writeFile(trace, '');
     failProvider = true;
+    const applyCalls = runner.mock.calls.length;
     const saved = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user', '--value-json', '[{"key":"remote"}]', '--apply', '--yes']);
     expect(saved, JSON.stringify(saved)).toMatchObject({
       exitCode: 4, payload: {
@@ -607,6 +689,10 @@ describe('cross-plugin public config apply', () => {
       expect.objectContaining({ target: expect.objectContaining({ pluginName: 'provider', platform: 'claude' }), state: 'completed' }),
       expect.objectContaining({ target: expect.objectContaining({ pluginName: 'consumer', platform: 'codex' }), state: 'skipped', errorCode: 'dependencyApplyFailed' }),
     ]));
+    const codexAdds = runner.mock.calls.slice(applyCalls).map(([invocation]) => invocation)
+      .filter((invocation) => !isClaudeInvocation(invocation) && invocation.args.includes('add'))
+      .flatMap((invocation) => invocation.args.filter((arg) => arg.includes('@')));
+    expect(codexAdds.map((id) => id.split('@')[0])).toEqual(['provider']);
     expect(saved.payload.diagnostics).toContainEqual(expect.objectContaining({
       code: 'dependencyApplyFailed',
       subject: { pluginId: 'team/consumer', target: 'codex', scope: 'user' }

@@ -299,8 +299,11 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     const project = { ...value.options, scope: 'project' as const };
     // A first install has no saved root from which to derive its Catalog identity.
     await Promise.all([fs.remove(await resolveIntentPath(user)), fs.remove(await resolveIntentPath(project))]);
+    await writePreferences(user, { schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['generic', 'cursor'],
+      exclusions: [{ plugin: 'team/b', target: 'generic' }] });
     const before = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
-    const plan = await prepareRecovery('install', ['team/a'], change === 'new Active with caller context'
+    const selectors = ['team/a', 'team/b'];
+    const plan = await prepareRecovery('install', selectors, change === 'new Active with caller context'
       ? { ...user, catalogOperationContext: await resolveCatalogOperationContext({ env: user.env }) } : user);
     expect(plan.receipt.blockers).toEqual([]);
     if (change === 'same-path damage') {
@@ -315,12 +318,49 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     }
 
     const receipt = await executeRecovery(plan);
-    expect(receipt).toMatchObject({ ok: false, declarationChanged: false, outputsMayHaveChanged: false,
+    expect(receipt).toMatchObject({ ok: false, declarationChanged: false, preferencesChanged: false, outputsMayHaveChanged: false,
       blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]) });
+    const pending = [{ pluginId: 'team/d', agent: 'generic', scope: 'user' }, { pluginId: 'team/a', agent: 'generic', scope: 'user' }];
+    expect(receipt.requestedTargets).toEqual(plan.receipt.requestedTargets);
+    expect(receipt.remainingTargets).toMatchObject(pending);
+    expect(receipt.targetResults).toMatchObject([
+      ...pending.map((target) => ({ ...target, execution: 'not-run', observation: 'unknown', content: 'unknown',
+        requiredBy: ['team/a'], blockers: [{ code: 'operationReviewStale' }] })),
+      ...plan.receipt.targetResults.filter((target) => target.satisfaction === 'unsupported' || target.satisfaction === 'excluded'),
+    ]);
     await expect(observeIntent(user)).resolves.toEqual({ state: 'absent' });
     await expect(observeIntent(project)).resolves.toEqual({ state: 'absent' });
     await expect(fs.pathExists(value.userRoot)).resolves.toBe(false);
     await expect(fs.pathExists(value.projectRoot)).resolves.toBe(false);
+    if (change === 'new Active') {
+      const retry = await prepareRecovery('install', selectors, user);
+      expect(retry.receipt.blockers).toEqual([]);
+      expect((await executeRecovery(retry))).toMatchObject({ ok: true, declarationChanged: true, remainingTargets: [] });
+      await expect(fs.readFile(path.join(value.userRoot, 'a', 'SKILL.md'), 'utf8')).resolves.toContain('Use a.');
+      await expect(fs.pathExists(path.join(value.userRoot, 'b'))).resolves.toBe(false);
+    }
+  });
+
+  it('asks the CLI user to review the original install when a verified provider changes before writing', async () => {
+    const value = await fixture();
+    const user = { ...value.options, context: 'user' as const, scope: 'user' as const };
+    expect((await runPublicLifecycle('sync', ['team/a'], user)).status).toBe('success');
+    const review = await prepareRecovery('install', ['team/b'], user);
+    try {
+      expect(review.receipt.targetResults[0]).toMatchObject({ pluginId: 'team/d', observation: 'verified', content: 'satisfied' });
+    } finally { await review.context.dispose(); }
+    const provider = path.join(value.userRoot, 'd', 'SKILL.md');
+    const result = await runPublicLifecycle('install', ['team/b'], user, { debugLogger: { log: async (event) => {
+      if (event.data?.name === 'recovery.lock.wait' && event.data.phase === 'start') await fs.appendFile(provider, '\nChanged outside AW.\n');
+    } } });
+    const positions = ['team/d', 'team/b'].map((id) => ({ pluginId: id, target: 'generic', scope: 'user' }));
+    expect(result).toMatchObject({ status: 'blocked', data: {
+      requirements: { roots: ['team/a'] }, changes: { requirements: 'none', preferences: 'none', outputs: 'none' },
+      targetResults: positions.map((position) => ({ ...position, execution: 'not-run', observation: 'unknown', content: 'unknown' })),
+      remainingTargets: positions,
+    }, nextActions: [{ kind: 'manual', message: expect.stringContaining('original plugin install request') }] });
+    await expect(fs.readFile(provider, 'utf8')).resolves.toContain('Changed outside AW.');
+    await expect(fs.pathExists(path.join(value.userRoot, 'b'))).resolves.toBe(false);
   });
 
   it('shares the public CLI source preparation across the initial Review and independently checks Active under the lock', async () => {
@@ -755,6 +795,10 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(result.ok).toBe(false);
     expect(result.declarationChanged).toBe(false);
     expect(result.blockers.some((item) => item.code === 'operationReviewStale')).toBe(true);
+    expect(result.remainingTargets).toEqual(plan.receipt.requestedTargets);
+    expect(result.targetResults).toMatchObject(['team/d', 'team/a'].map((pluginId) => ({
+      pluginId, agent: 'generic', scope: 'user', execution: 'not-run', observation: 'unknown', content: 'unknown',
+    })));
     if (state === 'invalid') {
       expect(result.intent).toMatchObject({ state: 'invalid', roots: null, digest: expect.any(String) });
       expect(result.errors.some((item) => item.code === 'pluginIntentStateInvalid')).toBe(true);

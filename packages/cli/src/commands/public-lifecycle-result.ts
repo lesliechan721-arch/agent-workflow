@@ -1,5 +1,5 @@
 import type { Scope, CommandProducerResult } from '../types.js';
-import type { RecoveryReceipt, RecoveryTarget, RecoveryDiagnostic } from '../recovery/receipt.js';
+import { isRecoveryReviewStaleBeforeExecution, type RecoveryReceipt, type RecoveryTarget, type RecoveryDiagnostic } from '../recovery/receipt.js';
 import type { NativeToolChange } from '../utils/native-tool-review.js';
 import path from 'node:path';
 import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../output/public-result.js';
@@ -358,7 +358,10 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
       result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', data.request.context, '--json'],
         reason: 'Recheck the current status after the completed writes.', requiresConfirmation: false });
     }
-    if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
+    if ((receipt.command === 'sync' || receipt.command === 'install') && isRecoveryReviewStaleBeforeExecution(receipt)) {
+      result.nextActions.push({ kind: 'manual',
+        message: `Review the original plugin ${receipt.command} request again with the same plugins, context, scope, targets and options.` });
+    } else if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
     else for (const target of data.remainingTargets) {
       if (result.diagnostics.some((entry) => entry.subject?.pluginId === target.pluginId
         && entry.subject.target === target.target && entry.detail

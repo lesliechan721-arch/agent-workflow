@@ -164,7 +164,7 @@ import {
 } from './model.js';
 import type { ScopedTuiPlan } from './scoped-flow.js';
 import { managedCommandRecoveryPlanChanges } from './operation-review-planner.js';
-import type { RecoveryReceipt, RecoveryTarget } from '../recovery/receipt.js';
+import { isRecoveryReviewStaleBeforeExecution, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
 import type { ConfigRouteLayer, PluginInstallFilter, TuiPageContext, TuiRoute } from './router.js';
@@ -377,12 +377,19 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
   return [...new Set(lines)].join('\n');
 }
 
+function scopedResultErrors(receipt: RecoveryReceipt): RecoveryReceipt['errors'] {
+  // Child errors are also aggregated on the receipt. Keep a target's stale reason on its own row.
+  if (!receipt.targetResults.some((target) => target.blockers.some(({ code }) => code === 'operationReviewStale'))
+    || receipt.blockers.some(({ code }) => code === 'operationReviewStale')) return receipt.errors;
+  return receipt.errors.filter(({ code }) => code !== 'operationReviewStale');
+}
+
 function scopedResultSummary(receipt: RecoveryReceipt): string {
   return [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(receipt.scope), ...recoveryTargetLines(receipt, true),
     ...(receipt.declarationChanged ? ['插件清单已保存。'] : []),
     ...(receipt.preferencesChanged ? ['Agent 选择已保存。'] : []),
     ...(receipt.configChanged ? ['插件设置已保存。'] : []),
-    ...[...new Set([...receipt.errors, ...receipt.blockers].map((entry) => recoveryReason(entry.code)))]
+    ...[...new Set([...scopedResultErrors(receipt), ...receipt.blockers].map((entry) => recoveryReason(entry.code)))]
       .map((reason) => `! ${reason}`),
     ...(receipt.commandResults?.length ? [`命令包：${receipt.commandResults.filter((entry) => entry.errors.length === 0).length} 项完成，${receipt.commandResults.filter((entry) => entry.errors.length > 0).length} 项需处理；详情中可查看恢复方法。`] : []),
   ].join('\n');
@@ -439,11 +446,9 @@ function scopedCommandPlanText(plan: Extract<ScopedTuiPlan, { kind: 'recovery' }
 function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
   if (!technical) return scopedResultSummary(receipt);
   const diagnostics = [...new Map([
-    ...receipt.errors.map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
+    ...scopedResultErrors(receipt).map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
     ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
   ]).values()];
-  const reviewStale = [...receipt.blockers, ...receipt.errors]
-    .some((entry) => entry.code === 'operationReviewStale');
   return [
     `范围：${receipt.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
     `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
@@ -453,7 +458,7 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     `输出可能改变：${receipt.outputsMayHaveChanged ? '是' : '否'}`,
     ...diagnostics,
     ...receipt.targetResults.flatMap((target) => target.reasons?.map((reason) => `${reason.code} · ${reason.message}`) ?? []),
-    ...(reviewStale ? ['本次未执行，需要重新准备。'] : []),
+    ...(isRecoveryReviewStaleBeforeExecution(receipt) ? ['本次未执行，需要重新准备。'] : []),
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无交付'} · ${target.execution} · ${target.observation}${target.blockers.length ? ` · 受阻 ${target.blockers.map((blocker) => blocker.code).join('、')}` : ''}`),
     ...receipt.targetResults.flatMap((target) => target.deploymentReceipts ? deploymentResultLines(target.deploymentReceipts.map(projectDeploymentReceipt), true)
       : target.deploymentObservations ? deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation), true) : []),
@@ -4888,10 +4893,7 @@ export function ConsoleAppV4(props: {
       const unknownTargets = flow.receipt?.targetResults.filter((target) =>
         target.observation === 'unknown'
         && !retryKeys.has(`${target.pluginId}\0${target.agent}\0${target.scope}`)) ?? [];
-      const reviewStale = flow.receipt
-        ? [...flow.receipt.blockers, ...flow.receipt.errors]
-          .some((entry) => entry.code === 'operationReviewStale')
-        : false;
+      const reviewStale = flow.receipt && isRecoveryReviewStaleBeforeExecution(flow.receipt);
       actions = [
         { label: route.name === 'issueDetail' ? '返回问题详情'
           : route.name === 'pluginWriteTask' ? '返回插件任务'
