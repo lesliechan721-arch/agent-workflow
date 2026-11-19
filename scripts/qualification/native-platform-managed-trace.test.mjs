@@ -200,6 +200,37 @@ test('associates a native spawn with one operation and preserves a failing callb
   assert.equal(records[0].publicMarkerProvided, false);
 });
 
+// Test Value Gate: repeated real queries must leave room for the later native
+// writes or the hosted report would lack evidence of which clients applied them.
+test('retains both native installs after a query-heavy batch', async (t) => {
+  const { root, entry: claude, other: pi } = await fixture(t);
+  const file = path.join(root, 'mixed.jsonl');
+  const writer = createManagedTraceWriter(file);
+  let pid = 10;
+  const runner = createManagedTraceRunner(async (invocation) => {
+    invocation.onSpawn?.({ pid: ++pid });
+    return { exitCode: 0 };
+  }, { entries: [claude, pi], client: 'claude-pi', emit: writer.emit });
+  try {
+    for (let index = 0; index < 100; index++) {
+      await runner({ command: claude, args: ['plugin', 'list', '--json'] });
+      await runner({ command: process.execPath, args: [pi, 'list'] });
+    }
+    await runner({ command: claude, args: ['plugin', 'install', 'fixture'] });
+    await runner({ command: process.execPath, args: [pi, 'install', '/fixture'] });
+  } finally { writer.close(); }
+  const records = (await fs.readFile(file, 'utf8')).trimEnd().split('\n').map(JSON.parse);
+  const installs = records.filter(record => record.nativeOperation === 'install');
+  assert.equal(installs.length, 6);
+  for (const client of ['claude', 'pi']) {
+    const spawn = installs.find(record => record.nativeClient === client && record.phase === 'spawn');
+    const finish = installs.find(record => record.operationId === spawn?.operationId && record.phase === 'finish');
+    assert(Number.isFinite(Date.parse(spawn?.spawnTime)));
+    assert.equal(finish?.exitCode, 0);
+    assert(records.some(record => record.nativeClient === client && record.phase === 'spawn' && record.nativeOperation === 'list'));
+  }
+});
+
 test('throws the original error and captures safe exit, timeout, and cleanup metadata only', async (t) => {
   const { entry } = await fixture(t);
   const invocation = { command: entry, args: ['install', 'fixture'] };

@@ -29,7 +29,7 @@ export async function observeNativeWorkingDirectory(ctx) {
 
 // Expose the acquired client to public AW discovery. Only the temporary npm
 // prefix or this scope's private bin is writable; no user launcher is changed.
-export async function preparePublicClientPath(ctx) {
+async function preparePublicClientEntry(ctx) {
   const directory = ctx.clientBin ?? path.join(ctx.root, 'client-bin');
   await fs.mkdir(directory, { recursive: true });
   assert(ctx.launcher.prefix.length <= 1, 'Public AW requires a direct client entry.');
@@ -53,15 +53,40 @@ export async function preparePublicClientPath(ctx) {
     try { await fs.symlink(entry, destination); }
     catch (error) { if (error.code !== 'EEXIST') throw error; assert.equal(await fs.realpath(destination), await fs.realpath(entry)); }
   }
-  const systemDirectories = windows ? [path.join(ctx.env.SystemRoot, 'System32')] : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  return { directory, entry: await fs.realpath(destination) };
+}
+
+export async function preparePublicClientPaths(contexts) {
+  const { env, project } = contexts[0];
+  const clients = [];
+  for (const ctx of contexts) clients.push(await preparePublicClientEntry(ctx));
+  const windows = process.platform === 'win32';
+  const systemDirectories = windows ? [path.join(env.SystemRoot, 'System32')] : ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   if (windows) {
     const { resolveWindowsPathCommand } = await import('../../packages/cli/dist/src/utils/windows-npm-shim.js');
-    const git = await resolveWindowsPathCommand('git', ctx.project, ctx.env);
+    const git = await resolveWindowsPathCommand('git', project, env);
     assert(git, 'Public authoring requires the runner Git executable.');
     systemDirectories.push(path.dirname(git));
   }
-  ctx.env.PATH = [directory, path.dirname(process.execPath), ...systemDirectories].join(path.delimiter);
-  return fs.realpath(destination);
+  env.PATH = [...new Set(clients.map(({ directory }) => directory)), path.dirname(process.execPath), ...systemDirectories].join(path.delimiter);
+  return clients.map(({ entry }) => entry);
+}
+
+export async function preparePublicClientPath(ctx) {
+  const [entry] = await preparePublicClientPaths([ctx]);
+  return entry;
+}
+
+export async function assertPublicClientDiscovery(result, ctx, expectedEntry) {
+  const target = result.data.availability.find((item) => item.id === ctx.platform);
+  assert.equal(target?.availability, 'available', `Public AW must find ${ctx.platform}.`);
+  let found = false;
+  for (const product of target.installations) {
+    if (product.product === 'cli' && product.version === fixedClientVersion(ctx.platform) && product.entry?.kind === 'cli'
+      && await fs.realpath(product.entry.executable) === expectedEntry) found = true;
+  }
+  assert(found, `Public AW must discover the acquired fixed-version ${ctx.platform} client.`);
+  return { platform: ctx.platform, version: fixedClientVersion(ctx.platform), availability: target.availability };
 }
 
 async function readGrokSkills(ctx, cwd, revision, present) {
@@ -249,11 +274,11 @@ async function grokStatusFiles(ctx) {
   })]));
 }
 
-export async function writePublicFixtureRevision(ctx, plugin, revision) {
+export async function writePublicFixtureRevision(ctx, plugin, revision, platforms = [ctx.platform]) {
   const manifestPath = path.join(plugin, '.agents-plugin', 'plugin.json');
   const skillPath = path.join(plugin, 'skills', ctx.skillName);
     const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-    manifest.platforms = [ctx.platform]; manifest.skills = './skills'; manifest.version = publicFixtureVersion(revision);
+    manifest.platforms = platforms; manifest.skills = './skills'; manifest.version = publicFixtureVersion(revision);
     ctx.publicSkillFile = revision === 3 ? path.join(ctx.root, 'expected-dynamic-SKILL.md') : path.join(skillPath, 'SKILL.md');
     if (revision === 3) await fs.rm(path.join(plugin, 'skills'), { recursive: true, force: true });
     else await fs.mkdir(skillPath, { recursive: true });
@@ -279,7 +304,7 @@ export async function writePublicFixtureRevision(ctx, plugin, revision) {
     await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 }
 
-async function requireProductionSkillProfile(ctx) {
+export async function requireProductionSkillProfile(ctx) {
   const { getQualifiedPlatformProfile, getQualifiedKindsForScope } = await import('../../packages/cli/dist/src/platforms/capabilities.js');
   const profile = getQualifiedPlatformProfile(ctx.platform);
   if (getQualifiedKindsForScope(profile, ctx.scope).skill.status !== 'supported'
@@ -313,18 +338,8 @@ export async function qualifyPublicAw(ctx) {
   }
   const expectedEntry = await preparePublicClientPath(ctx);
   ctx.publicClientEntry = expectedEntry;
-  await ctx.check('public-target-discovery', async () => {
-    const result = await ctx.aw(['target', 'set', ctx.platform]);
-    const target = result.data.availability.find((item) => item.id === ctx.platform);
-    assert.equal(target.availability, 'available');
-    let found = false;
-    for (const product of target.installations) {
-      if (product.product === 'cli' && product.version === fixedClientVersion(ctx.platform) && product.entry?.kind === 'cli'
-        && await fs.realpath(product.entry.executable) === expectedEntry) found = true;
-    }
-    assert(found, 'Public AW must discover the acquired fixed-version client.');
-    return { platform: ctx.platform, version: fixedClientVersion(ctx.platform), availability: target.availability };
-  });
+  await ctx.check('public-target-discovery', async () => assertPublicClientDiscovery(
+    await ctx.aw(['target', 'set', ctx.platform]), ctx, expectedEntry));
   // Production qualification remains authoritative. Never inject a candidate
   // profile or use --force to turn a missing capability into public success.
   if (ctx.platform !== 'antigravity') await requireProductionSkillProfile(ctx);

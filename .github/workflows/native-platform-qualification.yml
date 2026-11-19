@@ -125,7 +125,11 @@ jobs:
         if: env.QUALIFICATION_CLIENT != 'antigravity-user'
         shell: bash
         run: |
-          node scripts/qualification/native-platforms.mjs --candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --public-aw --report "$RUNNER_TEMP/native-results/report.json"
+          args=(--candidate "$RUNNER_TEMP/native-candidate/candidate.json" --client "$QUALIFICATION_CLIENT" --install --public-aw --report "$RUNNER_TEMP/native-results/report.json")
+          if [[ "$QUALIFICATION_CLIENT" == 'all' && ( "$RUNNER_OS" == 'Linux' || "$RUNNER_OS" == 'Windows' ) ]]; then
+            args+=(--mixed-native-aw)
+          fi
+          node scripts/qualification/native-platforms.mjs "${args[@]}"
       - name: Verify the Antigravity User harness on this host
         if: env.QUALIFICATION_CLIENT == 'antigravity-user'
         run: node --test --test-concurrency=1 scripts/qualification/native-platform-antigravity-management.test.mjs scripts/qualification/native-platform-antigravity-distributions.test.mjs scripts/qualification/native-platform-antigravity-user.test.mjs

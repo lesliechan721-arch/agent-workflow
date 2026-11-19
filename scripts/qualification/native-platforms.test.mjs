@@ -12,6 +12,7 @@ import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { prepareGeminiFixtureTrust, observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
+import { assertMixedInstallReceipt, mixedNativeInstallIntervals } from './native-platform-public-batch.mjs';
 import './native-platform-process-names.test.mjs';
 import './native-platform-marker-confirmations.test.mjs';
 import './native-platform-process-query-timings.test.mjs';
@@ -195,6 +196,10 @@ test('requires an explicit client acquisition mode and rejects ambiguous inputs'
   assert.throws(() => parseArgs(['--write-candidate', 'file', '--source-sha', 'abc', '--install']), /invalid-arguments/);
   assert.equal(parseArgs([...base, '--install']).install, true);
   assert.equal(parseArgs([...base, '--install', '--public-aw'])['public-aw'], true);
+  const all = ['--candidate', 'candidate.json', '--client', 'all', '--report', 'report.json', '--install'];
+  assert.equal(parseArgs([...all, '--public-aw', '--mixed-native-aw'])['mixed-native-aw'], true);
+  assert.throws(() => parseArgs([...all, '--mixed-native-aw']), /invalid-arguments/);
+  assert.throws(() => parseArgs([...base, '--install', '--public-aw', '--mixed-native-aw']), /invalid-arguments/);
   assert.equal(parseArgs(['--candidate', 'candidate.json', '--client', 'opencode', '--report', 'report.json', '--install']).client, 'opencode');
   assert.throws(() => parseArgs([...base, '--install', '--public-aw', '--public-aw']), /invalid-arguments/);
   assert.throws(() => parseArgs(['--write-candidate', 'file', '--source-sha', 'abc', '--public-aw']), /invalid-arguments/);
@@ -204,6 +209,49 @@ test('requires an explicit client acquisition mode and rejects ambiguous inputs'
   assert.equal(versionFrom('opencode v2.2.6\n'), '2.2.6');
   assert.equal(versionFrom('opencode v2.2.6-preview'), null);
   assert.equal(versionFrom('unknown'), null);
+});
+
+// Test Value Gate: a green AW envelope must not pass the two-client run when
+// either client's target or its actual native registration is absent.
+test('requires an applied native registration for both targets in one public batch', () => {
+  const pluginId = 'qualification/aw-qualification';
+  const target = platform => ({ pluginId, target: platform, scope: 'user', execution: 'applied', observation: 'verified', content: 'satisfied',
+    deploymentPlans: [{ bindingId: platform, effects: [{ id: `register-${platform}`, kind: 'register' }] }],
+    deploymentReceipts: [{ bindingId: platform, effects: [{ id: `register-${platform}`, status: 'applied', mutation: 'confirmed' }] }] });
+  const fixture = () => ({ command: 'plugin.install', status: 'success', data: {
+    request: { plugins: [pluginId], targets: ['claude', 'pi'], scope: 'user' },
+    changes: { requirements: 'changed' }, targetResults: [target('claude'), target('pi')],
+  } });
+  assert.deepEqual(assertMixedInstallReceipt(fixture(), pluginId).map(item => item.platform), ['claude', 'pi']);
+  const missing = fixture();
+  missing.data.targetResults.pop();
+  assert.throws(() => assertMixedInstallReceipt(missing, pluginId));
+  const noMutation = fixture();
+  noMutation.data.targetResults[1].deploymentReceipts[0].effects[0].mutation = 'none';
+  assert.throws(() => assertMixedInstallReceipt(noMutation, pluginId), /pi must confirm its native mutation/u);
+  const wrongBinding = fixture();
+  wrongBinding.data.targetResults[1].deploymentReceipts[0].bindingId = 'claude';
+  assert.throws(() => assertMixedInstallReceipt(wrongBinding, pluginId), /pi must apply its native registration/u);
+});
+
+// Test Value Gate: query overlap cannot become write-overlap evidence and an
+// interrupted trace must preserve unknown overlap alongside any observed rows.
+test('reports only complete native installation intervals when measuring the batch overlap', () => {
+  const actual = (operationId, nativeClient, first, last, nativeOperation = 'install') => {
+    const base = { operationId, nativeClient, nativeOperation, startTime: new Date(first).toISOString() };
+    return [{ ...base, phase: 'start' }, { ...base, phase: 'finish', finishTime: new Date(last).toISOString(), exitCode: 0 }];
+  };
+  const claude = actual(1, 'claude', 100, 200);
+  const pi = actual(2, 'pi', 150, 220);
+  const list = actual(3, 'pi', 120, 240, 'list');
+  const trace = { state: 'captured', records: [...claude, ...list, ...pi] };
+  const result = mixedNativeInstallIntervals(trace);
+  assert.equal(result.overlapMs, 50);
+  assert.deepEqual(result.commands.map(command => command.operationId), [1, 2]);
+  assert.equal(mixedNativeInstallIntervals({ ...trace, records: [...claude, ...list, ...actual(2, 'pi', 201, 220)] }).overlapMs, 0);
+  const partial = mixedNativeInstallIntervals({ ...trace, records: trace.records.slice(0, -1) });
+  assert.equal(partial.overlapMs, null);
+  assert.equal(partial.commands[1].finishTime, null);
 });
 
 // Test Value Gate: local trust is an explicit Gemini public-fixture permission,
