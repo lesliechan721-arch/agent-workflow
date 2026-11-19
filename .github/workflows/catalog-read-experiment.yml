@@ -104,12 +104,23 @@ jobs:
           done
           node "$probe" --serial "$builds/serial" --four "$builds/four" --eight "$builds/eight" \
             --catalog "$input/serial/catalog" --output "$input/comparison.json"
+      - name: Observe Catalog file pages after remounting an isolated APFS image
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: bash scripts/qualification/catalog-reads/remount-macos.sh "$RUNNER_TEMP/catalog-read-input" "$RUNNER_TEMP/catalog-read-builds"
+      - name: Read after remounting an isolated NTFS VHD
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/qualification/catalog-reads/remount-windows.ps1 -InputDirectory "$env:RUNNER_TEMP/catalog-read-input" -BuildDirectory "$env:RUNNER_TEMP/catalog-read-builds"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: catalog-reads-${{ matrix.runner }}
           path: |
             ${{ runner.temp }}/catalog-read-input/*-first.json
+            ${{ runner.temp }}/catalog-read-input/*-remounted.json
             ${{ runner.temp }}/catalog-read-input/comparison.json
             ${{ runner.temp }}/catalog-read-input/archive.json
           if-no-files-found: error

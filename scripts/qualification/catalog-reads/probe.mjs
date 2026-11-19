@@ -39,8 +39,8 @@ async function validate(buildRoot, catalog, expectedDigest = activeDigest) {
   return { elapsedMs, snapshotDigest: result.snapshotDigest, manifestSHA256: hash(JSON.stringify(result.manifest)) };
 }
 
-function linuxFilePages(mode, catalog) {
-  const script = fileURLToPath(new URL('./linux-cache.py', import.meta.url));
+function filePages(mode, catalog) {
+  const script = fileURLToPath(new URL('./file-pages.py', import.meta.url));
   const pages = JSON.parse(execFileSync('python3', [script, mode, catalog], { encoding: 'utf8' }));
   assert.equal(pages.regularFiles, fixtureFiles);
   return pages;
@@ -243,16 +243,28 @@ if (options.worker === 'memory') {
   assert.equal(fixture.snapshotDigest, activeDigest);
   assert.equal(fixture.regularFiles, fixtureFiles);
   await report({ archiveSHA256, ...fixture });
-} else if (options.mode === 'read-once') {
+} else if (options.mode === 'read-once' || options.mode === 'remounted-read') {
   const catalog = await fs.realpath(options.catalog);
   const workspaceSHA256 = await variantDigest(options.root);
   await core(options.root);
-  const before = process.platform === 'linux' ? linuxFilePages('evict', catalog) : null;
+  const remounted = options.mode === 'remounted-read';
+  let before = null;
+  let cacheState = 'first application read after extraction, OS page cache unverified';
+  if (process.platform === 'linux') {
+    before = filePages('evict', catalog);
+    cacheState = before.residentPages === 0
+      ? 'regular file pages evicted and checked before validation'
+      : 'some regular file pages still resident';
+  } else if (process.platform === 'darwin' && remounted) {
+    before = filePages('inspect', catalog);
+    cacheState = before.residentPages === 0
+      ? 'read-only APFS after remount, no regular file pages reported resident'
+      : 'read-only APFS after remount, some regular file pages still resident';
+  } else if (remounted) {
+    cacheState = 'read-only NTFS after VHD remount, system file cache unverified';
+  }
   const result = await validate(options.root, catalog);
-  const after = before ? linuxFilePages('inspect', catalog) : null;
-  const cacheState = before
-    ? (before.residentPages === 0 ? 'regular file pages evicted and checked before validation' : 'some regular file pages still resident')
-    : 'first application read after extraction, OS page cache unverified';
+  const after = before ? filePages('inspect', catalog) : null;
   await report({ host, workspaceSHA256, cacheState, pagesBefore: before, pagesAfter: after, result });
 } else {
   const variants = { serial: options.serial, four: options.four, eight: options.eight };

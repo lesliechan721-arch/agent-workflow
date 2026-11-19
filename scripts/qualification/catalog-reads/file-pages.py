@@ -1,4 +1,4 @@
-"""Evict and inspect the Catalog regular-file pages owned by this Linux runner."""
+"""Inspect Catalog file pages, with optional per-file eviction on Linux."""
 
 import ctypes
 import json
@@ -12,6 +12,8 @@ def main():
     mode = sys.argv[1]
     if mode not in {"evict", "inspect"}:
         raise ValueError(f"Unexpected cache operation: {mode}")
+    if mode == "evict" and not sys.platform.startswith("linux"):
+        raise ValueError("POSIX_FADV_DONTNEED is used only on Linux.")
     root = Path(sys.argv[2])
     files = sorted(file for file in root.rglob("*") if file.is_file())
     mincore = ctypes.CDLL(None, use_errno=True).mincore
