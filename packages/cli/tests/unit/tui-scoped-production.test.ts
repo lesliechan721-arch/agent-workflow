@@ -1,3 +1,4 @@
+import { Hash } from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -19,7 +20,7 @@ import { readCatalogSnapshotLogicalIdentity, resolveCatalogStoreLocation } from 
 import { readCatalogGenerationState, resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile, removeCodexMarketplace } from '../../src/utils/codex-config.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
-import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { createCatalogSnapshotFixture, git, rewriteActiveCatalogCapabilities } from '../helpers/catalog-source-fixture.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { getPlatformCapabilities } from '../../src/platforms/capabilities.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -131,6 +132,30 @@ describe('scoped TUI production reads', () => {
       capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
       return capabilities;
     });
+  });
+
+  it('scans the Active snapshot once when opening home without declarations', async () => {
+    const value = await fixture(true);
+    for (const scope of ['user', 'project'] as const) await removeRoot({ ...value, scope }, 'local/demo');
+    const active = (await readCatalogGenerationState(value.env)).sources.local!.active!;
+    const digests = vi.spyOn(Hash.prototype, 'digest');
+    const home = await createTuiControllerDependencies(value.context).loadStatus(new AbortController().signal);
+    expect(home.catalogGenerations).toMatchObject([{ sourceId: 'local', state: 'ready' }]);
+    expect(digests.mock.results.filter((result) => result.value === active.snapshotDigest.slice('sha256:'.length))).toHaveLength(1);
+  });
+
+  it('shows an incompatible Active when the configured path also changed', async () => {
+    const value = await fixture(true);
+    await rewriteActiveCatalogCapabilities({ sourceId: 'local', env: value.env,
+      requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'] });
+    const config = await readCatalogSourcesConfigSnapshot(value.env);
+    const newPath = path.join(path.dirname(value.source), 'new-catalog');
+    await fs.copy(value.source, newPath);
+    await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: config.digest,
+      config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', path: newPath, primary: true }] } });
+    const home = await createTuiControllerDependencies(value.context).loadStatus(new AbortController().signal);
+    expect(home.payload.catalog.sources).toMatchObject([{ id: 'local', errorCode: 'catalogGenerationIdentityMismatch' }]);
+    expect(home.catalogGenerations).toMatchObject([{ sourceId: 'local', state: 'incompatible', errorCode: 'awCapabilityUnsupported' }]);
   });
   // Test Value Gate: an exact root removal must retain the reviewed dependency cleanup after the last declaration is removed.
   it('removes an exact last Native root and deactivates its orphan dependency while preserving shared packages', async () => {
@@ -356,6 +381,52 @@ describe('scoped TUI production reads', () => {
     }
   });
 
+  // Test Value Gate: an alias can keep the same plugin ID while switching to a different workspace after Home loads.
+  it('requires reloading Home before reviewing an install from a replacement workspace', async () => {
+    const value = await fixture(true);
+    const controller = new TuiController(createTuiControllerDependencies(value.context));
+    const prepare = (selector: string) => controller.prepareScopedTask({
+      kind: 'recovery', command: 'install', scope: 'user', selectors: [selector],
+    });
+    try {
+      await controller.load();
+      expect(controller.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('1.0.0');
+
+      const replacement = path.join(path.dirname(value.source), 'replacement');
+      await fs.copy(path.join(value.source, 'plugins/demo/skills'), path.join(replacement, 'plugins/demo/skills'));
+      await createCatalogSnapshotFixture(replacement, 'demo', [], 'Replacement workspace', (manifest) => {
+        manifest.version = '2.0.0';
+        manifest.platforms = ['generic'];
+        manifest.skills = './skills';
+      });
+      const configured = await readCatalogSourcesConfigSnapshot(value.env);
+      await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: configured.digest,
+        config: { ...configured.config, sources: [{ id: 'local', type: 'path', primary: true, path: replacement }] },
+      });
+      await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0', impactConfirmed: true });
+
+      for (const selector of ['local/demo', 'demo']) {
+        const preparation = prepare(selector).then(async (review) => {
+          await controller.discardScopedPlan(review);
+          return review.kind === 'recovery' ? review.plan.receipt.blockers.map(({ code }) => code) : review.kind;
+        });
+        await expect(preparation).rejects.toMatchObject({
+          code: 'catalogSessionReloadRequired', message: expect.stringContaining('按 H'),
+        });
+      }
+      await controller.load();
+      expect(controller.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('2.0.0');
+      for (const [selector, code] of [['local/demo', 'sourceIdentityConflict'], ['local/missing', 'pluginUnavailable']] as const) {
+        const review = await prepare(selector);
+        try {
+          expect(review).toMatchObject({ kind: 'recovery', plan: { receipt: {
+            blockers: expect.arrayContaining([expect.objectContaining({ code })]),
+          } } });
+        } finally { await controller.discardScopedPlan(review); }
+      }
+    } finally { controller.dispose(); }
+  });
+
   it.each(['configuration', 'Active'] as const)('rebinds the catalog when %s changes during the first home read', async (change) => {
     const value = await fixture(true);
     const entered = Promise.withResolvers<void>();
@@ -450,7 +521,8 @@ describe('scoped TUI production reads', () => {
     await addRoot({ ...value, scope: 'user' }, 'damaged/demo', sources.damaged!.active!.logicalIdentity);
     await addRoot({ ...value, scope: 'project' }, 'alias/demo', sources.alias!.active!.logicalIdentity);
     await removeRoot({ ...value, scope: 'project' }, 'local/demo');
-    const controller = new TuiController(createTuiControllerDependencies(value.context));
+    const dependencies = createTuiControllerDependencies(value.context);
+    const controller = new TuiController(dependencies);
     try {
       await controller.load();
       const local = controller.getCatalogGeneration('local')?.active;
@@ -459,6 +531,14 @@ describe('scoped TUI production reads', () => {
       expect(controller.getCatalogGeneration('damaged')?.state).toBe('ready');
       const { snapshotRoot } = resolveCatalogStoreLocation({ ...sources.damaged!.active!, env: value.env });
       await fs.writeFile(path.join(snapshotRoot, 'plugins/demo/README.md'), 'Demo\n');
+      // A source mutation may retain the previous session's healthy entries.
+      dependencies.beginCatalogSession!({ reuseValidatedGenerations: true });
+      const reloaded = await dependencies.loadStatus(new AbortController().signal);
+      expect(reloaded.catalogGenerations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceId: 'damaged', state: 'repairRequired', errorCode: 'catalogGenerationMetadataInvalid' }),
+        expect.objectContaining({ sourceId: 'alias', state: 'ready' }),
+        expect.objectContaining({ sourceId: 'local', state: 'ready' }),
+      ]));
       expect(await controller.reloadCatalog({ sourceId: 'damaged' })).toBe(true);
       expect(controller.getCatalogGeneration('damaged')).toMatchObject({
         state: 'repairRequired', errorCode: 'catalogGenerationMetadataInvalid',

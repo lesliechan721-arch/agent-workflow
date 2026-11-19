@@ -14,7 +14,7 @@ CLI 的非交互规则不改变 TUI 配置编辑、草稿和 Review。TUI 直接
 
 ## 来源与插件更新
 
-TUI 初始 load 不访问网络，也不等待 freshness 检查。首页一次读取中，User 和 Project 各插件共用本次绑定的 Active 完整性校验。首页核对各来源的代次、可用状态与配置。读取期间发生变化时，重试重新取证。若同一加载中已读取的来源又切换了 Active，首页会重新读取。只有当前加载完成后，它读到的来源和状态才供详情、范围清单和 Review 使用。准备普通安装时会重新校验所选来源。若它已切换，先提示按 `H` 重载，再准备安装。进入 ready 后，每个 session 只为 `autoCheck` 开启的 source 自动检查一次：primary 先开始，其它 source 最多并发两个。关闭 `autoCheck` 的来源只在用户显式检查时 probe。健康 Git Active 先只解析远端 ref；ref 未变化时不 fetch，固定 commit 不联网；ref 变化时才 fetch 并完整验证。检查结果只进入 session-private overlay，不修改统一恢复状态、Active、固定的 session Catalog 子集、插件列表或 target revision。远端失败只显示 `checkFailed`，健康 Active 仍可浏览。reload 不重复全量检查；退出时取消所有 probe，session、token 和 source fingerprint 拒绝迟到结果。
+TUI 初始 load 不访问网络，也不等待 freshness 检查。首页一次读取中，User 和 Project 各插件共用本次绑定的 Active 完整性校验。首页核对各来源的代次、可用状态与配置，发现读取期间切换了 Active 或来源配置有变时，会重新读取。只有当前加载完成后，它读到的来源和状态才供详情、范围清单和 Review 使用。准备普通安装时会重新校验所选来源。若它已切换，先提示按 `H` 重载，再准备安装。进入 ready 后，每个 session 只为 `autoCheck` 开启的 source 自动检查一次：primary 先开始，其它 source 最多并发两个。关闭 `autoCheck` 的来源只在用户显式检查时 probe。健康 Git Active 先只解析远端 ref；ref 未变化时不 fetch，固定 commit 不联网；ref 变化时才 fetch 并完整验证。检查结果只进入 session-private overlay，不修改统一恢复状态、Active、固定的 session Catalog 子集、插件列表或 target revision。远端失败只显示 `checkFailed`，健康 Active 仍可浏览。reload 不重复全量检查；退出时取消所有 probe，session、token 和 source fingerprint 拒绝迟到结果。
 
 TUI generation 使用 generation status v2 的 Active compatibility 投影。健康但 unsupported 的 Active 显示为 `incompatible`，技术详情显示 required 和 missing capability ID；不显示 available capability 全集，也不把该状态显示为损坏或提供重新下载修复动作。
 

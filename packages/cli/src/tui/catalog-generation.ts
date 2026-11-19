@@ -1,5 +1,6 @@
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { resolveActiveCatalogGeneration } from '../utils/catalog-generation-resolver.js';
+import type { CatalogOperationContext, CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import { readCatalogGenerationStatus } from '../utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import {
@@ -41,6 +42,7 @@ function shortDigest(value: string): string {
 
 export async function loadCatalogGenerationViewModels(options: {
   env?: NodeJS.ProcessEnv;
+  preparation?: { scope: CatalogPreparationReadScope; context?: CatalogOperationContext };
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
   onStage?: (event: CatalogGenerationLoadStageEvent) => void | Promise<void>;
@@ -67,13 +69,17 @@ export async function loadCatalogGenerationViewModels(options: {
     const instruction = `aw source sync ${source.id}`;
     const wasValidated = options.validatedStoreEntries?.size ?? 0;
     try {
-      const active = await resolveActiveCatalogGeneration({
+      const prepared = options.preparation && await options.preparation.scope.resolveActiveGeneration(
+        source.id, options.preparation.context?.catalog.sources.find((item) => item.sourceId === source.id)?.resolution,
+      );
+      const active = prepared?.active ?? await resolveActiveCatalogGeneration({
         sourceId: source.id,
         env,
         validatedStoreEntries: options.validatedStoreEntries,
         validatingStoreEntries: options.validatingStoreEntries,
       });
-      if ((options.validatedStoreEntries?.size ?? 0) > wasValidated) fullValidationCount += 1;
+      if (prepared) options.validatedStoreEntries?.set(active.storeKey, prepared.sessionEntry);
+      if (prepared ? !prepared.reused : (options.validatedStoreEntries?.size ?? 0) > wasValidated) fullValidationCount += 1;
       else reusedValidationCount += 1;
       return {
         sourceId: source.id,
@@ -102,8 +108,8 @@ export async function loadCatalogGenerationViewModels(options: {
       const statusEntry = await readCatalogGenerationStatus({
         sourceId: source.id,
         env,
-        validatedStoreEntries: options.validatedStoreEntries,
-        validatingStoreEntries: options.validatingStoreEntries,
+        validatedStoreEntries: options.preparation ? undefined : options.validatedStoreEntries,
+        validatingStoreEntries: options.preparation ? undefined : options.validatingStoreEntries,
       })
         .then((status) => status.sources[0])
         .catch(() => undefined);
@@ -129,6 +135,7 @@ export async function loadCatalogGenerationViewModels(options: {
             digestShort: shortDigest(statusEntry.active.snapshotDigest),
           },
           errorCode: 'awCapabilityUnsupported',
+          ...(!statusEntry.configMatchesActive ? { configMismatch: true } : {}),
           state: 'incompatible',
           compatibility,
           technicalCommand: instruction,

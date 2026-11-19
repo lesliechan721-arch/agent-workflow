@@ -239,13 +239,13 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         checkInstallCatalog?.(demand.catalogOperationContext, requested);
         snapshot = { ...snapshot, [scope]: demand };
       } else if (checkInstallCatalog && catalogReadScope
-        && proposed.errors.some((error) => ['sourceMissing', 'sourceActiveUnavailable', 'pluginUnavailable'].includes(error.code))) {
-        // A missing plugin can also be an ordinary planner error on the accepted generation.
+        && proposed.errors.some((error) => ['sourceMissing', 'sourceActiveUnavailable', 'pluginUnavailable', 'sourceIdentityConflict'].includes(error.code))) {
+        // The same error on the accepted generation remains an ordinary planner diagnostic.
         const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
-        const requestedSources = new Set(selectors.map((selector) => parsePluginId(selector).sourceId));
+        const requestedSources = new Set(proposed.roots.map((root) => parsePluginId(root).sourceId));
         const sourceIds = configSnapshot.config.sources.map((source) => source.id)
           .filter((id) => requestedSources.has(id) || requestedSources.has(undefined));
-        checkInstallCatalog(await catalogReadScope.resolve({ configSnapshot, sourceIds }), selectors);
+        checkInstallCatalog(await catalogReadScope.resolve({ configSnapshot, sourceIds }), proposed.roots);
       }
     }
   } else if (command === 'uninstall') {
