@@ -8,7 +8,7 @@ import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS, MINIMUM_AGENT_VERSIONS } from '
 import { discoverCodexExecutables, rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { extractStrictSemVerTokenFromVersionOutput } from '../utils/agent-version.js';
 import { compareStrictSemVer } from '../utils/manifest.js';
-import { runNativeCli, type NativeCliInvocation, type NativeCliRunner } from '../utils/native-cli.js';
+import { NativeCliError, runNativeCli, type NativeCliInvocation, type NativeCliRunner } from '../utils/native-cli.js';
 import { getCodexHome, getClaudeHome, readEnvironmentValue, resolveUserHome } from '../utils/state-paths.js';
 import { resolveWindowsNpmCommand } from '../utils/windows-npm-shim.js';
 import { assertTestReadablePath } from '../utils/test-path-fence.js';
@@ -258,7 +258,7 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
   const candidates = await cliPaths(profile.names, ctx);
   const diagnostics: Diagnostic[] = candidates.incomplete ? [diagnostic(platform, 'clientEntryUnresolved',
     'A client entry could not be inspected safely. Repair its permissions or launcher and check again.')] : [];
-  for (const executable of candidates.paths) {
+  const checkCandidate = async (executable: string): Promise<{ product: ProductInstallation; failure?: Diagnostic }> => {
     const entry: HostEntry = { kind: 'cli', executable, configRoot: resolvePlatformConfigRoot(platform, ctx) };
     const product = installation(platform, 'cli', entry, 'unknown', null, ['clientProbeFailed']);
     try {
@@ -306,9 +306,24 @@ async function discoverCli(platform: keyof typeof cliProfiles, ctx: ReadContext)
     } catch (error) {
       rethrowFatalError(error);
       ctx.signal?.throwIfAborted();
-      diagnostics.push(diagnostic(platform, product.reasonCodes[0]!, 'The client identity, version, or read-only interface could not be confirmed. Repair the client and check again.'));
+      return { product, failure: diagnostic(platform, product.reasonCodes[0]!,
+        'The client identity, version, or read-only interface could not be confirmed. Repair the client and check again.') };
     }
-    products.push(product);
+    return { product };
+  };
+  // Each Pi entry still proves its own identity, including the version-to-help fallback.
+  const batchSize = platform === 'pi' ? 2 : 1;
+  for (let start = 0; start < candidates.paths.length; start += batchSize) {
+    const batch = await Promise.allSettled(candidates.paths.slice(start, start + batchSize).map(checkCandidate));
+    // An earlier cancellation must not hide a sibling's unconfirmed cleanup.
+    const cleanupFailure = batch.find((item) => item.status === 'rejected'
+      && item.reason instanceof NativeCliError && item.reason.cleanupError);
+    if (cleanupFailure?.status === 'rejected') throw cleanupFailure.reason;
+    for (const item of batch) {
+      if (item.status === 'rejected') throw item.reason;
+      products.push(item.value.product);
+      if (item.value.failure) diagnostics.push(item.value.failure);
+    }
   }
   return result(platform, products, diagnostics);
 }

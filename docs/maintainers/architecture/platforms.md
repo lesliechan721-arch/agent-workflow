@@ -29,6 +29,8 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 
 数字门槛是必要接口条件，不是完整运行资格。已开放的普通 Skill 使用同一接口最低条件，不要求版本等于历史实测值；OS、架构、产品、scope 与组件限制仍分别检查。一个完整受支持入口即可提供当前能力，其他入口的资格缺口不能单独降级该入口。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。Copilot 官方版本句末的单个句点只在完整品牌行内规范化，随后仍走严格版本解析；其他客户端和非法版本不放宽。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。 Gemini 和 Pi 的 npm JS 入口每次仍运行原生版本 probe。Gemini 版本输出只有数字时，可用邻近包元数据中的精确名称 `@google/gemini-cli`、同版本与指向本次真实入口的包内 bin 映射补充品牌身份；Pi 仅在原生输出为 `1.5.0`、元数据为 `@earendil-works/pi-coding-agent@1.5.0` 且 `bin.pi` 精确指向本次 `dist/bundle/cli.js` 时省去重复 help。元数据读取有界，不是发布者签名；缺失、损坏、不匹配或越界时回到原帮助身份 probe，不缓存版本或降低最低版本条件。
 
+Pi 的一次只读发现最多并行检查两个独立入口。每个入口先读自身版本，再按上述条件决定是否执行 help。候选与普通失败诊断保持 PATH 顺序。取消或失败时等待本批全部探测结束，优先报告未确认的进程清理错误。
+
 仅对元数据声明 `@google/gemini-cli@0.67.0`、bin 为 `bundle/gemini.js` 且 realpath 与本次 Node JS 入口一致的版本 probe 和精确 `extensions list --output-format json` 查询，在环境副本中设置 `GEMINI_CLI_NO_RELAUNCH=true`，避免固定入口重复启动 Node。版本 probe 仍为 10 秒，清单查询仍为原 5 秒；实际版本与清单分别通过原身份和结构检查。元数据不匹配时清单继续使用原启动方式，不否决原生结果。Windows 使用原安全 npm shim 解析出的 Node 与 JS 入口；安装、更新和普通会话继续使用原环境。其他版本、入口和客户端保持原 5 秒 probe；命令整体时限、取消和进程清理不变。
 
 Darwin 上的同一固定 Gemini 只读版本/清单 probe 可使用 Node 标准代码编译缓存：目录由当前平台重建会话的既有私有临时根惰性提供，随该会话清理；它只复用编译代码，每次版本与清单仍实际执行。保留调用方已有 `NODE_COMPILE_CACHE` 或 `NODE_DISABLE_COMPILE_CACHE` 设置；目录不可用时退回原启动，不由缓存失败否决原生结果，也不阻断后续必要 staging 重试。Node 自行校验代码与版本变动。其它平台、客户端版本、入口和 mutation 不新增此环境提示；缓存文件不进入包指纹或状态依据。
