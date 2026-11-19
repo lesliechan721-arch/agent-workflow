@@ -1516,86 +1516,104 @@ function overlayPortableRuntimeFiles(files, manifest, pluginDir, skillKey, runti
   }
 }
 
-async function validateAuthorComponentFixtures(pluginDir, manifest, runtimeImports, tools, referenceContext, referencePlugins, skillValidationTools, validationOptions) {
-  if (!manifest.skills && !manifest.artifacts && !(manifest.managedCommands?.sets?.length || manifest.managedCommands?.packages?.length)) return;
+async function prepareSourceComponentFixture(root, pluginDir, manifest, runtimeImports, tools) {
+  const packageRoot = manifest.scripts?.node?.packageRoot;
+  if (packageRoot) {
+    const installedModules = path.join(pluginDir, packageRoot, 'node_modules');
+    if (fs.statSync(installedModules, { throwIfNoEntry: false })?.isDirectory()) {
+      const destination = path.join(root, packageRoot, 'node_modules');
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      // Source validation uses already installed declared dependencies. It does
+      // not install packages or publish this temporary dependency link.
+      fs.symlinkSync(installedModules, destination, 'junction');
+    }
+  }
+  const fixtureManifest = structuredClone(manifest);
+  for (const reference of fixtureManifest.artifacts?.runtimeImports ?? []) {
+    const input = runtimeImports?.artifactImports.get(reference.name);
+    if (!input) throw new Error(`Unresolved runtime input: ${reference.name}`);
+    const relative = `./.agents-plugin/runtime-imports/${reference.name}`;
+    const destination = path.join(root, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, input.bytes, { mode: input.mode });
+    reference.resolved = { path: relative, digest: input.digest, providerPluginId: input.providerPluginId,
+      providerVersion: input.providerVersion, source: input.source, requiredCapabilities: input.requiredCapabilities,
+      capabilitySetDigest: input.capabilitySetDigest };
+  }
+  if (manifest.nativeTools) {
+    const reader = path.join(root, normalizeRelativePath(manifest.nativeTools.reader ?? './.aw/native-tool-reader.mjs'));
+    fs.mkdirSync(path.dirname(reader), { recursive: true });
+    fs.writeFileSync(reader, createNativeToolReaderSource());
+  }
+  // Apply the declared static source projection before the shared normalizer reads it.
+  for (const platform of resolveSupportedPlatforms(manifest)) {
+    if (manifest.mcpServers) {
+      const relative = normalizeRelativePath(manifest.mcpServers);
+      const input = fs.readFileSync(path.join(pluginDir, relative), 'utf8');
+      const output = path.join(root, platform, relative);
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      fs.writeFileSync(output, renderTemplateForPlatform(manifest, relative, input, platform));
+    }
+    const sourceRoot = manifest.skills && path.join(pluginDir, manifest.skills);
+    if (!sourceRoot || !fs.existsSync(sourceRoot)) continue;
+    for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || await isAuthorOnlySkillDirectory(path.join(sourceRoot, entry.name))) continue;
+      const files = new Map();
+      collectArtifactSourceFiles(path.join(sourceRoot, entry.name), `static Skill ${entry.name}`, files,
+        (relative, bytes) => isTemplateTextFile(relative)
+          ? Buffer.from(renderTemplateForPlatform(manifest, `${normalizeRelativePath(manifest.skills)}/${entry.name}/${relative}`, bytes.toString('utf8'), platform)) : bytes);
+      overlayPortableRuntimeFiles(files, manifest, pluginDir, entry.name, runtimeImports, platform);
+      for (const [relative, bytes] of files) {
+        const output = path.join(root, platform, 'skills', entry.name, relative);
+        fs.mkdirSync(path.dirname(output), { recursive: true });
+        const original = path.join(sourceRoot, entry.name, relative);
+        const projection = (manifest.buildConfig?.skillRuntimeFiles ?? []).find((file) =>
+          file.skill === entry.name && file.target === relative && (!file.platforms?.length || file.platforms.includes(platform)));
+        const mode = projection?.source ? fs.statSync(path.join(pluginDir, projection.source)).mode
+          : fs.existsSync(original) ? fs.statSync(original).mode : 0o644;
+        fs.writeFileSync(output, bytes, { mode: mode & 0o111 ? 0o755 : 0o644 });
+      }
+    }
+  }
+  for (const platform of resolveSupportedPlatforms(manifest)) {
+    const skillsRoot = path.join(root, platform, 'skills');
+    if (!fs.existsSync(skillsRoot)) continue;
+    for (const entry of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const generated = (manifest.buildConfig?.generatedSkillRuntimeFiles ?? [])
+        .filter((file) => file.skill === entry.name && (!file.platforms?.length || file.platforms.includes(platform)))
+        .map((file) => file.target);
+      await tools.validateRuntimeSkillClosure(path.join(skillsRoot, entry.name), { declaredGeneratedFiles: new Set(generated) });
+    }
+  }
+  const manifestPath = path.join(root, '.agents-plugin', 'plugin.json');
+  fs.writeFileSync(manifestPath, JSON.stringify(fixtureManifest));
+  return { rootDir: root, manifestPath, manifest: fixtureManifest };
+}
+
+async function validateAuthorComponentFixtures(pluginDir, sourceManifest, runtimeImports, tools, referenceContext, referencePlugins, skillValidationTools, validationOptions) {
+  const builtBundle = validationOptions.builtBundle;
+  if (!builtBundle && !sourceManifest.skills && !sourceManifest.artifacts
+      && !(sourceManifest.managedCommands?.sets?.length || sourceManifest.managedCommands?.packages?.length)) return;
   if (runtimeImports === null) return;
   const tempRoot = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'aw-author-components-'));
   const packagePreparationCache = new Map();
   try {
     const root = path.join(tempRoot, 'plugin');
-    fs.cpSync(pluginDir, root, { recursive: true, filter: (source) => !['.git', 'node_modules'].includes(path.basename(source)) });
-    const packageRoot = manifest.scripts?.node?.packageRoot;
-    if (packageRoot) {
-      const installedModules = path.join(pluginDir, packageRoot, 'node_modules');
-      if (fs.statSync(installedModules, { throwIfNoEntry: false })?.isDirectory()) {
-        const destination = path.join(root, packageRoot, 'node_modules');
-        fs.mkdirSync(path.dirname(destination), { recursive: true });
-        // Source validation uses already installed declared dependencies. It does
-        // not install packages or publish this temporary dependency link.
-        fs.symlinkSync(installedModules, destination, 'junction');
-      }
+    if (builtBundle) {
+      // Preserve the renderer's shipped dependencies without exposing the publication snapshot to writes.
+      fs.cpSync(builtBundle, root, { recursive: true });
+    } else {
+      fs.cpSync(pluginDir, root, {
+        recursive: true, filter: (source) => !['.git', 'node_modules'].includes(path.basename(source)),
+      });
     }
-    const fixtureManifest = structuredClone(manifest);
-    for (const reference of fixtureManifest.artifacts?.runtimeImports ?? []) {
-      const input = runtimeImports?.artifactImports.get(reference.name);
-      if (!input) throw new Error(`Unresolved runtime input: ${reference.name}`);
-      const relative = `./.agents-plugin/runtime-imports/${reference.name}`;
-      const destination = path.join(root, relative);
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.writeFileSync(destination, input.bytes, { mode: input.mode });
-      reference.resolved = { path: relative, digest: input.digest, providerPluginId: input.providerPluginId,
-        providerVersion: input.providerVersion, source: input.source, requiredCapabilities: input.requiredCapabilities,
-        capabilitySetDigest: input.capabilitySetDigest };
-    }
-    if (manifest.nativeTools) {
-      const reader = path.join(root, normalizeRelativePath(manifest.nativeTools.reader ?? './.aw/native-tool-reader.mjs'));
-      fs.mkdirSync(path.dirname(reader), { recursive: true });
-      fs.writeFileSync(reader, createNativeToolReaderSource());
-    }
-    // Apply the declared static source projection before the shared normalizer reads it.
-    for (const platform of resolveSupportedPlatforms(manifest)) {
-      if (manifest.mcpServers) {
-        const relative = normalizeRelativePath(manifest.mcpServers);
-        const input = fs.readFileSync(path.join(pluginDir, relative), 'utf8');
-        const output = path.join(root, platform, relative);
-        fs.mkdirSync(path.dirname(output), { recursive: true });
-        fs.writeFileSync(output, renderTemplateForPlatform(manifest, relative, input, platform));
-      }
-      const sourceRoot = manifest.skills && path.join(pluginDir, manifest.skills);
-      if (!sourceRoot || !fs.existsSync(sourceRoot)) continue;
-      for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
-        if (!entry.isDirectory() || await isAuthorOnlySkillDirectory(path.join(sourceRoot, entry.name))) continue;
-        const files = new Map();
-        collectArtifactSourceFiles(path.join(sourceRoot, entry.name), `static Skill ${entry.name}`, files,
-          (relative, bytes) => isTemplateTextFile(relative)
-            ? Buffer.from(renderTemplateForPlatform(manifest, `${normalizeRelativePath(manifest.skills)}/${entry.name}/${relative}`, bytes.toString('utf8'), platform)) : bytes);
-        overlayPortableRuntimeFiles(files, manifest, pluginDir, entry.name, runtimeImports, platform);
-        for (const [relative, bytes] of files) {
-          const output = path.join(root, platform, 'skills', entry.name, relative);
-          fs.mkdirSync(path.dirname(output), { recursive: true });
-          const original = path.join(sourceRoot, entry.name, relative);
-          const projection = (manifest.buildConfig?.skillRuntimeFiles ?? []).find((file) =>
-            file.skill === entry.name && file.target === relative && (!file.platforms?.length || file.platforms.includes(platform)));
-          const mode = projection?.source ? fs.statSync(path.join(pluginDir, projection.source)).mode
-            : fs.existsSync(original) ? fs.statSync(original).mode : 0o644;
-          fs.writeFileSync(output, bytes, { mode: mode & 0o111 ? 0o755 : 0o644 });
-        }
-      }
-    }
-    for (const platform of resolveSupportedPlatforms(manifest)) {
-      const skillsRoot = path.join(root, platform, 'skills');
-      if (!fs.existsSync(skillsRoot)) continue;
-      for (const entry of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const generated = (manifest.buildConfig?.generatedSkillRuntimeFiles ?? [])
-          .filter((file) => file.skill === entry.name && (!file.platforms?.length || file.platforms.includes(platform)))
-          .map((file) => file.target);
-        await tools.validateRuntimeSkillClosure(path.join(skillsRoot, entry.name), { declaredGeneratedFiles: new Set(generated) });
-      }
-    }
-    const manifestPath = path.join(root, '.agents-plugin', 'plugin.json');
-    fs.writeFileSync(manifestPath, JSON.stringify(fixtureManifest));
-    const plugin = { rootDir: root, manifestPath, manifest: fixtureManifest, sourceId: 'authoring',
+    const fixture = builtBundle
+      ? await tools.readPluginManifest(root, { mode: 'bundle' })
+      : await prepareSourceComponentFixture(root, pluginDir, sourceManifest, runtimeImports, tools);
+    const { manifest } = fixture;
+    if (manifest.name !== sourceManifest.name) throw new Error('Built bundle plugin does not match the source plugin.');
+    const plugin = { ...fixture, sourceId: 'authoring',
       sourceIdentity: `sha256:${createHash('sha256').update(fs.realpathSync(pluginDir)).digest('hex')}` };
     const plugins = [plugin, ...(referencePlugins ?? runtimeImports?.referencePlugins ?? []).filter((entry) => entry.manifest.name !== manifest.name)];
     const env = await tools.createIsolatedSkillEnv(process.env, path.join(tempRoot, 'state'));
@@ -1633,7 +1651,7 @@ async function validateAuthorComponentFixtures(pluginDir, manifest, runtimeImpor
           const pending = (manifest.buildConfig?.generatedSkillRuntimeFiles ?? []).filter((file) =>
             (!file.platforms?.length || file.platforms.includes(platform))
             && !fs.existsSync(path.join(root, platform, 'skills', file.skill, file.target)));
-          if (cause.message.startsWith('Invalid runtime Skill closure:') && cause.message.endsWith(' is missing.')
+          if (!builtBundle && cause.message.startsWith('Invalid runtime Skill closure:') && cause.message.endsWith(' is missing.')
             && pending.some((file) => cause.message.includes(JSON.stringify(file.target)))) {
             warn(`component profile unverified (${platform}/${scope}): declared generated runtime files require a staging build; ${cause.message}`);
           } else error(`component profile fixture (${platform}/${scope}): ${cause.message}`);
@@ -2123,6 +2141,11 @@ async function validatePluginDir(pluginDir, options) {
     error(e.message);
     return;
   }
+  if (options.builtBundle) {
+    await validateAuthorComponentFixtures(pluginDir, manifest, undefined, cliManifestTools, referenceContext,
+      referencePlugins, skillValidationTools, options);
+    return;
+  }
   validatePlatformFieldSupport(manifest);
 
   validateNameMatchesDirectory(pluginDir, manifest);
@@ -2137,7 +2160,12 @@ async function validatePluginDir(pluginDir, options) {
     repoRoot: options.repoRoot,
     cliManifestTools,
   });
-  await validateAuthorComponentFixtures(pluginDir, manifest, runtimeImports, cliManifestTools, referenceContext, referencePlugins, skillValidationTools, options);
+  if (manifest.scripts?.node?.build && manifest.scripts?.artifacts?.render) {
+    warn('Component profiles require a staging build; source validation has not verified them.');
+  } else {
+    await validateAuthorComponentFixtures(pluginDir, manifest, runtimeImports, cliManifestTools, referenceContext,
+      referencePlugins, skillValidationTools, options);
+  }
   validateMcpContent(pluginDir, manifest);
   validateExtensionNameUniqueness(manifest);
   await validateSkills(pluginDir, manifest, options, skillValidationTools);
@@ -2185,6 +2213,7 @@ function parseArgs(argv) {
     claudeSkillProfile: 'current',
     versionBase: 'HEAD',
     workspaceRoot: null,
+    builtBundle: null,
     json: args.includes('--json'),
   };
 
@@ -2225,13 +2254,14 @@ function parseArgs(argv) {
       options.versionBase = value;
       continue;
     }
-    if (arg === '--workspace-root') {
+    if (arg === '--workspace-root' || arg === '--built-bundle') {
       const value = args[index + 1];
       if (!value || value.startsWith('--')) {
-        exitCliError('--workspace-root requires a value.', options.json);
+        exitCliError(`${arg} requires a value.`, options.json);
       }
       index += 1;
-      options.workspaceRoot = value;
+      if (arg === '--workspace-root') options.workspaceRoot = value;
+      else options.builtBundle = path.resolve(value);
       continue;
     }
     if (!arg.startsWith('--')) {
@@ -2282,6 +2312,7 @@ async function main() {
     repoRoot,
     gitRoot,
     enforceCanonicalRoot: requestedWorkspaceRoot !== null,
+    builtBundle: args.builtBundle,
   });
 
   if (args.json) {

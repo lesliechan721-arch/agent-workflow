@@ -335,42 +335,47 @@ export async function materializeSourceHead(options: {
   }
 }
 
-export async function validateCatalogPublicationPlugins(
-  catalogWorkspace: CatalogWorkspace,
+async function validateCatalogPublicationPlugin(
+  plugin: CatalogWorkspace['plugins'][number],
+  workspaceRoot: string,
   env: NodeJS.ProcessEnv,
+  builtBundle?: string,
 ): Promise<void> {
   const validator = path.join(resolveCliPackageRoot(), 'dist', 'authoring', 'scripts', 'validate-plugin.mjs');
-  for (const plugin of catalogWorkspace.plugins) {
-    try {
-      await execFileAsync(process.execPath, [
-        validator,
-        plugin.rootDir,
-        '--workspace-root', catalogWorkspace.workspaceRoot,
-        '--json',
-      ], {
-        cwd: catalogWorkspace.workspaceRoot,
-        env,
-        encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
-      });
-    } catch (error) {
-      let details = '';
-      if (typeof error === 'object' && error !== null && 'stdout' in error && typeof error.stdout === 'string') {
-        try {
-          const result = JSON.parse(error.stdout) as { errors?: Array<{ message?: unknown }> };
-          details = (result.errors ?? [])
-            .map((entry) => typeof entry.message === 'string' ? entry.message : '')
-            .filter(Boolean)
-            .join('; ');
-        } catch {
-          // Keep the public validator failure bounded to its plugin identity.
+  try {
+    await execFileAsync(process.execPath, [
+      validator,
+      plugin.rootDir,
+      '--workspace-root', workspaceRoot,
+      ...(builtBundle ? ['--built-bundle', builtBundle] : []),
+      '--json',
+    ], {
+      cwd: workspaceRoot,
+      env,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch (error) {
+    let details = '';
+    if (typeof error === 'object' && error !== null && 'stdout' in error && typeof error.stdout === 'string') {
+      try {
+        const result = JSON.parse(error.stdout) as { errors?: unknown } | null;
+        if (Array.isArray(result?.errors)) {
+          details = sanitizeCatalogPublicationMessage(
+            result.errors.filter((entry) => typeof entry === 'string' && entry.trim()).join('; '),
+            env,
+            builtBundle ? [workspaceRoot, builtBundle] : [workspaceRoot],
+          );
         }
+      } catch {
+        // Keep the failure bounded to its plugin identity if the validator could not emit JSON.
       }
-      throw new CatalogPublicationInspectionError(
-        'pluginValidationFailed',
-        `Plugin ${plugin.manifest.name} failed public source validation before Catalog publication${details ? `: ${details}` : '.'}`,
-      );
     }
+    const phase = builtBundle ? 'built bundle' : 'public source';
+    throw new CatalogPublicationInspectionError(
+      'pluginValidationFailed',
+      `Plugin ${plugin.manifest.name} failed ${phase} validation before Catalog publication${details ? `: ${details}` : '.'}`,
+    );
   }
 }
 
@@ -628,7 +633,9 @@ export async function prepareCatalogPublicationInspection(options: {
         'Catalog owner URL still uses the example.invalid placeholder. Set plugins/marketplace-source.json owner.url before publication.',
       );
     }
-    await validateCatalogPublicationPlugins(catalogWorkspace, env);
+    for (const plugin of catalogWorkspace.plugins) {
+      await validateCatalogPublicationPlugin(plugin, catalogWorkspace.workspaceRoot, env);
+    }
     const catalogVersion = catalogWorkspace.metadata.catalog.version;
     const tag = `catalog-v${catalogVersion}`;
     await publicationGit(
@@ -697,6 +704,12 @@ export async function prepareCatalogPublicationInspection(options: {
       });
     } catch (error) {
       throw inspectionError('catalogPreparationFailed', error);
+    }
+    for (const plugin of catalogWorkspace.plugins) {
+      if (plugin.manifest.scripts?.node?.build && plugin.manifest.scripts?.artifacts?.render) {
+        const builtBundle = path.join(prepared.outputRoot, 'plugins', plugin.manifest.name);
+        await validateCatalogPublicationPlugin(plugin, catalogWorkspace.workspaceRoot, env, builtBundle);
+      }
     }
     const preparedHead = await publicationGit(repoRoot, ['rev-parse', '--verify', 'HEAD'], env, 'sourceDrift', 'Could not recheck the source Git HEAD.');
     const preparedStatus = await publicationGit(repoRoot, [

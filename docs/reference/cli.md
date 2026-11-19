@@ -39,7 +39,7 @@ Gemini `0.67.0` 同版本动态刷新会在精确 AW 所有权、来源和旧副
 
 普通 Gemini sync 每次比较实际原生副本与本次冻结包体；AW 源包已更新，也不能省略落后副本的 refresh。副本 owner、包体或数据无法确认时保持未完成。处理阻断数据或修复安装现场后，普通许可 sync 会按新读取的副本状态重试，不要求重新发布源包；status 的旧副本显示 drifted，无法确认的副本显示 unknown。
 
-`aw dev plugin validate` 默认保留当前共同来源的合法 frontmatter，由能力准备报告目标缺口；显式 `--claude-skill-profile minimum` 仅对声明的 Claude 目标要求 2.1.88 字段，`--strict-agent-skills` 优先使用严格 Portable 字段集，模板与普通源码适用同一规则。
+`aw dev plugin validate` 默认保留当前共同来源的合法 frontmatter，由能力准备报告目标缺口。显式 `--claude-skill-profile minimum` 仅对声明的 Claude 目标要求 2.1.88 字段，`--strict-agent-skills` 优先使用严格 Portable 字段集，模板与普通源码适用同一规则。同时声明 Node 构建和动态 renderer 时，源码校验提示组件仍需构建验证，`aw dev catalog publish plan` 按发布合同校验构建后的组件。 [Catalog 发布计划](catalog.md#41-发布命令接口与两阶段授权)
 
 ### 1.1 本机 target 选择
 

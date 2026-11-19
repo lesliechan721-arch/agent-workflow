@@ -32,6 +32,81 @@ async function runAw(cliEntry: string, workspaceRoot: string, args: string[]) {
   });
 }
 
+it('validates the built dynamic Skill before preparing a publication plan', async () => {
+  temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-built-catalog-smoke-'));
+  const workspaceRoot = path.join(temporaryRoot, 'workspace');
+  const remoteUrl = path.join(temporaryRoot, 'catalog.git');
+  const cliEntry = path.resolve(import.meta.dirname, '../../dist/index.js');
+  await fs.ensureDir(workspaceRoot);
+  await execFileAsync('git', ['init', '--bare', '--quiet', remoteUrl]);
+  const git = (...args: string[]) => execFileAsync('git', args, { cwd: workspaceRoot });
+  await git('init', '--quiet');
+  await git('remote', 'add', 'origin', remoteUrl);
+  await runAw(cliEntry, workspaceRoot, [
+    'dev', 'catalog', 'create', '--workspace-root', workspaceRoot, '--catalog-version', '91.0.1',
+    '--owner-url', 'https://catalog.example.com/build-demo',
+  ]);
+  await runAw(cliEntry, workspaceRoot, [
+    'dev', 'plugin', 'create', 'build-demo', '--description', 'Built dynamic Skill.', '--no-skills',
+    '--workspace-root', workspaceRoot,
+  ]);
+  const pluginRoot = path.join(workspaceRoot, 'plugins', 'build-demo');
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  await fs.writeJson(manifestPath, {
+    ...await fs.readJson(manifestPath),
+    platforms: ['generic'],
+    scripts: {
+      node: { build: { runner: 'node', path: './build.mjs' } },
+      artifacts: { render: { runner: 'node', path: './render.mjs' } },
+    },
+    artifacts: { configKeys: [], sourceDirs: ['./runtime'] },
+  });
+  await fs.outputFile(path.join(pluginRoot, 'runtime', 'entry.mjs'), 'import "unbundled-fixture-dependency";\n');
+  await fs.writeFile(path.join(pluginRoot, 'render.mjs'), `
+import fs from 'node:fs';
+const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+const components = context.allowedOutputKinds.includes('skill') ? [{
+  id: 'built-skill', kind: 'skill', name: 'built-skill', content: { files: {
+    'SKILL.md': { text: '---\\nname: built-skill\\ndescription: A built dynamic Skill.\\n---\\nRun \\x60node scripts/entry.mjs\\x60.\\n' },
+    'README.md': { text: '# Built Skill\\n' },
+    'scripts/entry.mjs': { source: { kind: 'bundle', path: 'runtime/entry.mjs' } },
+  } },
+}] : [];
+console.log(JSON.stringify({ version: 3, components, omitted: [], unmet: [] }));
+`);
+  const buildEntry = path.join(pluginRoot, 'build.mjs');
+  const commit = async (message: string) => {
+    await git('add', '.');
+    await git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--quiet', '-m', message);
+  };
+  const plan = () => runAw(cliEntry, workspaceRoot, [
+    'dev', 'catalog', 'publish', 'plan', '--workspace-root', workspaceRoot,
+    '--remote', 'origin', '--branch', 'catalog/build-smoke', '--json',
+  ]);
+
+  await fs.writeFile(buildEntry, 'export {};\n');
+  await commit('Source with a missing build output');
+  const failure = await plan().then(() => null, (error: unknown) => error as { stdout: string });
+  expect(failure).not.toBeNull();
+  expect(JSON.parse(failure!.stdout).diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      code: 'pluginValidationFailed',
+      message: expect.stringMatching(/built bundle.*unbundled-fixture-dependency/iu),
+    }),
+  ]));
+  await expect(fs.pathExists(path.join(workspaceRoot, '.aw', 'publish', '91.0.1', 'journal.json'))).resolves.toBe(false);
+
+  await fs.writeFile(buildEntry, `
+import { writeFileSync } from 'node:fs';
+writeFileSync(new URL('./runtime/entry.mjs', import.meta.url), 'export const bundled = true;\\n');
+`);
+  await commit('Produce the self-contained runtime entry');
+  expect(JSON.parse((await plan()).stdout)).toMatchObject({
+    status: 'success',
+    data: { prepared: true, state: 'prepared' },
+  });
+});
+
 it('publishes complete v3 dynamic source through the built public CLI and Git provider', async () => {
   temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-catalog-smoke-'));
   const workspaceRoot = path.join(temporaryRoot, 'workspace');
