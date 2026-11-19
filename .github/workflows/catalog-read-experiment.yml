@@ -1,0 +1,102 @@
+name: Catalog read experiment
+
+on:
+  push:
+    branches: [perf/test-phase-two-catalog-reads]
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: 53e39d212bab59251a88eeb3372c00ed1d63da6a
+          path: catalog-source
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Build and verify the fixed public Catalog
+        working-directory: catalog-source
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          node packages/cli/dist/index.js dev catalog build --workspace-root "$PWD" --json > /dev/null
+          node ../scripts/qualification/catalog-reads/probe.mjs --mode fixture --root "$PWD" --catalog .aw/catalog
+          tar -C .aw -czf "$RUNNER_TEMP/catalog.tgz" catalog
+          cd "$RUNNER_TEMP"
+          sha256sum catalog.tgz > catalog.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: catalog-read-fixture
+          path: |
+            ${{ runner.temp }}/catalog.tgz
+            ${{ runner.temp }}/catalog.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  measure:
+    needs: fixture
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Build the three Core variants from the same checkout
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          bash scripts/qualification/catalog-reads/build-variants.sh "$RUNNER_TEMP/catalog-read-builds"
+      - uses: actions/download-artifact@v4
+        with:
+          name: catalog-read-fixture
+          path: ${{ runner.temp }}/catalog-read-input
+      - name: Compare first reads, warm reads, validation errors and memory
+        shell: bash
+        run: |
+          probe=scripts/qualification/catalog-reads/probe.mjs
+          input="$RUNNER_TEMP/catalog-read-input"
+          builds="$RUNNER_TEMP/catalog-read-builds"
+          node "$probe" --mode archive --catalog "$input" --output "$input/archive.json"
+          for variant in serial four eight; do
+            mkdir "$input/$variant"
+            tar -xzf "$input/catalog.tgz" -C "$input/$variant"
+            node "$probe" --mode read-once --root "$builds/$variant" --catalog "$input/$variant/catalog" --output "$input/$variant-first.json"
+          done
+          node "$probe" --serial "$builds/serial" --four "$builds/four" --eight "$builds/eight" \
+            --catalog "$input/serial/catalog" --output "$input/comparison.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: catalog-reads-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/catalog-read-input/*-first.json
+            ${{ runner.temp }}/catalog-read-input/comparison.json
+            ${{ runner.temp }}/catalog-read-input/archive.json
+          if-no-files-found: error
+          retention-days: 7

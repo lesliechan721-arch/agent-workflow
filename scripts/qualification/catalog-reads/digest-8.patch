@@ -1,0 +1,86 @@
+--- a/packages/plugin-core/src/workspace.ts
++++ b/packages/plugin-core/src/workspace.ts
+@@ -1,4 +1,5 @@
+ import crypto from 'node:crypto';
++import { open } from 'node:fs/promises';
+ import path from 'node:path';
+ import { isDeepStrictEqual } from 'node:util';
+
+@@ -1246,27 +1247,59 @@
+
+ async function digestDirectory(root: string, observedFiles?: Map<string, CatalogDigestFile>): Promise<string> {
+   const entries: string[] = [];
++  const batchWidth = 8;
++  const inspect = async (filePath: string, relative: string) => {
++    const stat = await fs.lstat(filePath);
++    if (stat.isSymbolicLink()) throw new Error(`Generated output contains a symbolic link: ${relative}`);
++    if (stat.isDirectory()) return { kind: 'directory' as const, filePath };
++    if (!stat.isFile()) throw new Error(`Generated output contains an unsupported entry: ${relative}`);
++
++    // Entry digests only need the bytes of JSON files with version normalization.
++    const versioned = observedFiles && (
++      [...VERSIONED_CATALOG_MANIFEST_PATHS].some((manifest) => relative.endsWith(`/${manifest}`))
++      || path.posix.basename(relative) === AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME
++    );
++    const hash = crypto.createHash('sha256');
++    // Limit the extra buffering for large ordinary files in a parallel batch.
++    if (!versioned && stat.size > 1024 * 1024) {
++      const file = await open(filePath, 'r');
++      try {
++        for await (const chunk of file.createReadStream({ autoClose: false })) hash.update(chunk);
++      } finally {
++        await file.close();
++      }
++      return { kind: 'file' as const, filePath, relative, digest: hash.digest('hex'), stat };
++    }
++    const bytes = await fs.readFile(filePath);
++    return { kind: 'file' as const, filePath, relative, digest: hash.update(bytes).digest('hex'),
++      stat, bytes: versioned ? bytes : undefined };
++  };
++
+   const walk = async (directory: string): Promise<void> => {
+-    for (const name of (await fs.readdir(directory)).sort()) {
+-      const filePath = path.join(directory, name);
+-      const relative = path.relative(root, filePath).split(path.sep).join('/');
+-      if (relative === GENERATED_OUTPUT_MARKER_FILENAME) continue;
+-      const stat = await fs.lstat(filePath);
+-      if (stat.isSymbolicLink()) throw new Error(`Generated output contains a symbolic link: ${relative}`);
+-      if (stat.isDirectory()) await walk(filePath);
+-      else if (stat.isFile()) {
+-        const bytes = await fs.readFile(filePath);
+-        const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+-        entries.push(`${relative}\0${digest}`);
+-        // Entry digests can reuse this read. Retain bytes only for the small JSON
+-        // files whose content digest normalizes the embedded plugin version.
+-        if (observedFiles) {
+-          const versioned = [...VERSIONED_CATALOG_MANIFEST_PATHS].some((manifest) => relative.endsWith(`/${manifest}`))
+-            || path.posix.basename(relative) === AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME;
+-          observedFiles.set(filePath, { digest: `sha256:${digest}`, stat, ...(versioned ? { bytes } : {}) });
++    const names = (await fs.readdir(directory)).sort();
++    for (let offset = 0; offset < names.length; offset += batchWidth) {
++      const batch = names.slice(offset, offset + batchWidth).flatMap((name) => {
++        const filePath = path.join(directory, name);
++        const relative = path.relative(root, filePath).split(path.sep).join('/');
++        if (relative === GENERATED_OUTPUT_MARKER_FILENAME) return [];
++        return [inspect(filePath, relative)];
++      });
++      // Settle every read before descending. Consume results in the traversal
++      // order so digest order and the first error on a static tree are stable.
++      for (const result of await Promise.allSettled(batch)) {
++        if (result.status === 'rejected') throw result.reason;
++        const entry = result.value;
++        if (entry.kind === 'directory') {
++          await walk(entry.filePath);
++          continue;
+         }
++        entries.push(`${entry.relative}\0${entry.digest}`);
++        observedFiles?.set(entry.filePath, {
++          digest: `sha256:${entry.digest}`,
++          stat: entry.stat,
++          ...(entry.bytes ? { bytes: entry.bytes } : {}),
++        });
+       }
+-      else throw new Error(`Generated output contains an unsupported entry: ${relative}`);
+     }
+   };
+   await walk(root);
