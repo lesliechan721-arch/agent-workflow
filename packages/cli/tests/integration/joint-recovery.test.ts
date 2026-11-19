@@ -8,6 +8,7 @@ import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.j
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { writeIntent, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
@@ -128,6 +129,34 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(status.coverage.scopes).toEqual(['user', 'project']);
     expect(status.allSatisfied).toBe(true);
   }, 30000);
+  it.each(['same-path damage', 'new Active'] as const)('rejects install after %s between Review and confirmation', async (change) => {
+    const value = await fixture();
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    // A first install has no saved root from which to derive its Catalog identity.
+    await Promise.all([fs.remove(await resolveIntentPath(user)), fs.remove(await resolveIntentPath(project))]);
+    const before = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
+    const plan = await prepareRecovery('install', ['team/a'], user);
+    expect(plan.receipt.blockers).toEqual([]);
+    if (change === 'same-path damage') {
+      const file = path.join(before.snapshotPath, 'plugins', 'b', 'generic', 'skills', 'b', 'README.md');
+      const times = await fs.stat(file);
+      await fs.writeFile(file, 'Use x.\n');
+      await fs.utimes(file, times.atime, times.mtime);
+    } else {
+      await fs.appendFile(path.join(value.source, 'catalog-manifest.json'), '\n');
+      const changed = await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: user.cliVersion, env: user.env });
+      expect(changed.active?.snapshotDigest).not.toBe(before.snapshotDigest);
+    }
+
+    const receipt = await executeRecovery(plan);
+    expect(receipt).toMatchObject({ ok: false, declarationChanged: false, outputsMayHaveChanged: false,
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]) });
+    await expect(observeIntent(user)).resolves.toEqual({ state: 'absent' });
+    await expect(observeIntent(project)).resolves.toEqual({ state: 'absent' });
+    await expect(fs.pathExists(value.userRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(value.projectRoot)).resolves.toBe(false);
+  });
   it.each(['changed', 'invalid'] as const)('detects a %s second Intent before any output write', async (state) => {
     const value = await fixture();
     const plan = await prepareRecovery('sync', ['team/a'], value.options);

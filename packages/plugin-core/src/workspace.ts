@@ -1517,6 +1517,18 @@ type CatalogSnapshotValidationResult = {
   snapshotDigest: string;
 };
 
+/** A transport read can serve several entry checks in the same preparation. */
+export async function readCatalogSnapshotTransport(snapshotDirectory: string): Promise<CatalogSnapshotValidationResult & {
+  validateEntries(pluginNames?: readonly string[]): Promise<void>;
+}> {
+  const validation = await validateCatalogSnapshotTransport(snapshotDirectory);
+  return {
+    ...structuredClone(validation),
+    validateEntries: (pluginNames = validation.manifest.entries.map((entry) => entry.name)) =>
+      validateCatalogPluginEntriesComplete(validation, pluginNames),
+  };
+}
+
 async function validateCatalogPluginEntriesComplete(
   validation: CatalogSnapshotValidationResult,
   pluginNames: readonly string[],

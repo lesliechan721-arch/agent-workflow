@@ -16,6 +16,7 @@ import { createNoopDebugLogger } from '../../src/output/debug-log.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import type { ProductInstallation } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import { withNativeObservationBatch } from '../../src/platforms/inspection-query.js';
 import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
@@ -229,6 +230,45 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
 }
 
 describe('native evidence checks', () => {
+  // Test Value Gate: a shared ordinary read must not hide native registration
+  // changing between the post-render baseline and the final verification.
+  it('shares ordinary Pi inventories and rereads registration before returning a target', async () => {
+    const item = await nativeEvidenceFixture('pi');
+    await item.context.platformRebuildSession!.dispose();
+    const adapter: typeof item.adapter = { ...item.adapter, lifecycle: { ...item.adapter.lifecycle,
+      prepare(input) {
+        const result = item.adapter.lifecycle.prepare(input);
+        item.changeRegistration();
+        return result;
+      },
+    } };
+    item.runner.mockClear();
+    const inventoryCwds = () => item.runner.mock.calls.flatMap(([request]) =>
+      request.args.join(' ') === 'list' ? [request.cwd] : []);
+    await withNativeObservationBatch({ runner: item.runner }, async (nativeObservationBatch) => {
+      const context = { ...item.context, preparedArtifactRenderResults: new Map(), nativeObservationBatch };
+      const session = new PlatformRebuildSession(context, () => adapter);
+      try {
+        const integration = createRebuildIntegration({ context: { ...context, platformRebuildSession: session } });
+        const inspected = await integration.buildTarget({ ...item.input, readOnlyInspectionPlan: true });
+        expect(inspected.platformObservations?.[0]?.observation.registration).toBe('absent');
+        expect(inventoryCwds()).toHaveLength(1);
+
+        await expect(integration.buildTarget(item.input)).rejects.toThrow('operationPlanStale');
+        expect(inventoryCwds()).toHaveLength(3);
+        expect(new Set(inventoryCwds()).size).toBe(3);
+
+        await expect(integration.buildTarget(item.input)).rejects.toThrow('operationPlanStale');
+        expect(inventoryCwds()).toHaveLength(4);
+        const refreshed = await integration.buildTarget({ ...item.input, readOnlyInspectionPlan: true });
+        expect(refreshed.platformObservations?.[0]?.observation.registration).toBe('present');
+        expect(inventoryCwds()).toHaveLength(5);
+      } finally { await session.dispose(); }
+    });
+    expect(await Promise.all(inventoryCwds().map((cwd) => fs.pathExists(cwd)))).toEqual([false, false, false, false, false]);
+    expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);
+  });
+
   // Test Value Gate: code-cache writes must not stale package evidence or survive
   // the session that owns the existing private staging root.
   it('shares a private Gemini code-cache directory and removes it with staging', async () => {

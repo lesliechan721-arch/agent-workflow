@@ -8,6 +8,7 @@ import { observeIntent, resolveIntentPath, type IntentObservation } from '../int
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
 import {
   resolvePartialCatalogOperationContext,
+  type CatalogPreparationReadScope,
   type CatalogOperationContext,
 } from '../utils/catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
@@ -43,6 +44,7 @@ export interface ReadDemandOptions {
   preferences?: PreferencesObservation;
   catalogOperationContext?: CatalogOperationContext;
   signal?: AbortSignal;
+  catalogReadScope?: CatalogPreparationReadScope;
   /** Shared only by reads within one operation, never carried into execution. */
   resolveCatalog?: () => Promise<{ context: CatalogOperationContext; configured: Set<string> }>;
   manifestReads?: Map<string, Promise<PluginMeta>>;
@@ -95,7 +97,7 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
       context ??= await resolvePartialCatalogOperationContext({
         env: options.env, configSnapshot: snapshot, signal: options.signal,
         sourceIds: [...new Set(roots.map((root) => root.sourceId))].filter((id) => configured.has(id)),
-      });
+      }, options.catalogReadScope);
     }
   } catch (error) {
     options.signal?.throwIfAborted();

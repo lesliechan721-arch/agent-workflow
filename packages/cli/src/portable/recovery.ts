@@ -3,7 +3,7 @@ import path from 'node:path';
 import { isPortablePlatformTarget, PORTABLE_PLATFORM_TARGETS, type ComponentUnmet } from '@lesliechan721/aw-plugin-core';
 
 import { withAwHomeMutationLock, type AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
-import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import type { CatalogOperationContext, CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import type { ScopeContext } from '../intent/scope-context.js';
 import { validatePortableSkillDirectory, validatePortableSkillName } from '../utils/dynamic-skill-tree.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
@@ -165,7 +165,8 @@ async function observeUnpreparedOwnedTargets(options: {
   });
 }
 
-async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMaterialize: boolean): Promise<PortablePreparation> {
+async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMaterialize: boolean,
+  catalogReadScope?: CatalogPreparationReadScope): Promise<PortablePreparation> {
   rawOptions.signal?.throwIfAborted();
   const options = { ...rawOptions, agents: selectedAgents(rawOptions.agents), env: rawOptions.context.env };
   const layout = portableRecoveryLayout(options.context);
@@ -183,7 +184,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
     let stage: PortablePreparationDiagnostic['stage'] = 'catalog-binding';
     try {
       const { providerConfigs = [], ...bindingInput } = await resolvePortableCatalogBindingInput({
-        ...options, platform: agent, cwd: layout.cwd });
+        ...options, platform: agent, cwd: layout.cwd, catalogReadScope });
       const generation = path.join(layout.generationRoot, portableJsonDigest(options.selector).slice(7),
         portableJsonDigest({ platform: agent, bindingInput }).slice(7));
       base.generations![agent] = generation;
@@ -202,7 +203,7 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
         }
         stage = 'materialize';
         await materializePortableSkillsToDirectory({ ...options, platform: agent, cwd: layout.cwd,
-          out: generation, allowEmpty: true, allowUnmet: true });
+          out: generation, allowEmpty: true, allowUnmet: true }, catalogReadScope);
       }
       stage = 'materialization-read';
       const materialized = await readHistoricalPortableMaterialization({ generationRoot: layout.generationRoot,
@@ -282,11 +283,13 @@ async function collectPreparation(rawOptions: PortableRecoveryOptions, allowMate
   return finalizePreparation(base);
 }
 
-export async function preparePortableRecovery(options: PortableRecoveryOptions): Promise<PortablePreparation> {
-  return collectPreparation(options, true);
+export async function preparePortableRecovery(options: PortableRecoveryOptions,
+  catalogReadScope?: CatalogPreparationReadScope): Promise<PortablePreparation> {
+  return collectPreparation(options, true, catalogReadScope);
 }
-export async function inspectPortableRecovery(options: PortableRecoveryOptions): Promise<PortablePreparation> {
-  return options.cleanup ? preparePortableCleanup(options.cleanup) : collectPreparation(options, false);
+export async function inspectPortableRecovery(options: PortableRecoveryOptions,
+  catalogReadScope?: CatalogPreparationReadScope): Promise<PortablePreparation> {
+  return options.cleanup ? preparePortableCleanup(options.cleanup) : collectPreparation(options, false, catalogReadScope);
 }
 
 export interface PortableCleanupOptions {

@@ -23,7 +23,7 @@ import { deploymentPackageComponent, inspectStaticSupplements, requiredDeploymen
 import { resolveStaticPlatformResourceRoot } from '../utils/component-resources.js';
 import { readSkillOwnerMarker } from '../utils/ownership.js';
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
-import { resolvePartialCatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { resolvePartialCatalogOperationContext, type CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
@@ -31,7 +31,7 @@ import { installationInvocation, selectNativeProduct, type ReadContext } from '.
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnostic.js';
 import { measureRecoveryPerformanceStage } from './performance.js';
-import { createNativeQuerySession } from '../platforms/inspection-query.js';
+import { withNativeObservationBatch } from '../platforms/inspection-query.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 
 export interface NativeObservation {
@@ -73,6 +73,7 @@ export interface ReadRecoveryStatusOptions {
   nativeCliRunner?: NativeCliRunner;
   codexObservationSession?: CodexNativeObservationSession;
   catalogOperationContext?: CatalogOperationContext;
+  catalogReadScope?: CatalogPreparationReadScope;
   /** Sources observed within one read-only operation, including residual outputs. */
   catalogSources?: Map<string, CatalogOperationContext['catalog']['sources'][number]>;
   scope?: Scope;
@@ -97,6 +98,14 @@ const NATIVE_READ_ERRORS = new Set(['nativeStateUnreadable', 'stateInventoryFail
   'configInvalid', 'componentInspectionFailed', 'targetInspectionFailed', 'codexNativeObservationFailed',
   'nativeObservationFailed', 'nativeObservationUnavailable']);
 function diagnostic(code: string): RecoveryDiagnostic { return { code, message: `目标尚未满足：${code}。` }; }
+
+function withStatusNativeQueries<T, Options extends ReadRecoveryStatusOptions>(options: Options,
+  read: (options: Options) => Promise<T>): Promise<T> {
+  if (options.nativeQuerySession) return read(options);
+  return withNativeObservationBatch({ runner: options.nativeCliRunner, signal: options.signal }, (batch) => read({ ...options,
+    discoveryCache: options.discoveryCache ?? batch.discoveryCache, nativeQuerySession: batch.nativeQuerySession,
+    nativeCliRunner: batch.runner }));
+}
 
 async function readAdapterObservations(options: ReadRecoveryStatusOptions, context: ScopeContext,
   demand: DemandSnapshot): Promise<{ observations: NativeObservation[];
@@ -466,7 +475,7 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
           const portable = await inspectPortableRecovery({ scope: options.scope, context: options.context,
             selector: root.pluginId, agents: [agent as import('../portable/recovery-layout.js').PortableAgent], env: options.env, signal: options.signal,
             cliVersion: options.cliVersion ?? '0.0.0', catalogOperationContext: demand.catalogOperationContext,
-            excludedPluginIds: demand.userProviders?.[agent] });
+            excludedPluginIds: demand.userProviders?.[agent] }, options.catalogReadScope);
           options.signal?.throwIfAborted();
           target.blockers.push(...portable.blockers.map((code) => portablePreparationDiagnostic(portable, diagnostic(code),
             agent as import('../portable/recovery-layout.js').PortableAgent)));
@@ -556,7 +565,7 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
   try {
     options.signal?.throwIfAborted();
     const demand = options.demandOverride ?? await readDemand({ scope: options.scope, cwd: context.executionCwd, env: context.env,
-      catalogOperationContext: options.catalogOperationContext, signal: options.signal });
+      catalogOperationContext: options.catalogOperationContext, signal: options.signal, catalogReadScope: options.catalogReadScope });
     options.signal?.throwIfAborted();
     options.onDemand?.(demand);
     options.signal?.throwIfAborted();
@@ -583,7 +592,7 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
           const sourceIds = missing.filter((id) => configured.has(id));
           if (sourceIds.length) {
             const additional = await resolvePartialCatalogOperationContext({ env: context.env, signal: options.signal,
-              configSnapshot: config, sourceIds });
+              configSnapshot: config, sourceIds }, options.catalogReadScope);
             for (const source of additional.catalog.sources) catalogSources.set(source.sourceId, source);
           }
         }
@@ -620,7 +629,8 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
       targetRequirements: demand.targetRequirements ? [...demand.targetRequirements,
         ...candidates.map((entry) => ({ pluginId: `${entry.sourceId}/${entry.pluginName}`, target: entry.platform as PlatformName }))] : undefined };
     const adapters = options.nativeObservations ? { observations: [], existing: [], owned: [] }
-      : await readAdapterObservations({ ...options, targets: [...new Set([...selectedAgents, ...candidates.map((entry) => entry.platform!)])] }, context, observationDemand);
+      : await withStatusNativeQueries({ ...options, targets: [...new Set([...selectedAgents, ...candidates.map((entry) => entry.platform!)])] },
+        (nativeOptions) => readAdapterObservations(nativeOptions, context, observationDemand));
     const roots = new Set(demand.roots?.map((root) => root.pluginId) ?? []);
     const queue = [...(demand.roots ?? []).map((root) => root.plugin).filter((plugin) => plugin !== undefined)];
     const byId = new Map(demand.plugins.map((plugin) => [plugin.pluginId, plugin]));
@@ -780,19 +790,14 @@ export async function readRecoveryStatus(options: ReadRecoveryStatusOptions & {
   onDemand?: (demand: DemandSnapshot) => string[] | undefined;
   onNativeStatus?: (status: RecoveryStatus, demand: DemandSnapshot) => void | Promise<void>;
 }, preparedDemand?: JointDemandSnapshot): Promise<RecoveryStatus> {
-  const nativeQuerySession = createNativeQuerySession();
-  try {
-    return await readRecoveryStatusWithQueries({ ...options, nativeQuerySession }, preparedDemand);
-  } finally {
-    await nativeQuerySession.dispose();
-  }
+  return withStatusNativeQueries(options, (nativeOptions) => readRecoveryStatusWithQueries(nativeOptions, preparedDemand));
 }
 
 async function readRecoveryStatusWithQueries(options: ReadRecoveryStatusOptions & {
   onDemand?: (demand: DemandSnapshot) => string[] | undefined;
   onNativeStatus?: (status: RecoveryStatus, demand: DemandSnapshot) => void | Promise<void>;
 }, preparedDemand?: JointDemandSnapshot): Promise<RecoveryStatus> {
-  options = { ...options, discoveryCache: new Map(), catalogSources: new Map() };
+  options = { ...options, discoveryCache: options.discoveryCache ?? new Map(), catalogSources: new Map() };
   const snapshot = preparedDemand ?? await measureRecoveryPerformanceStage(options, 'status.demand', () => readJointDemand(options));
   if (options.codexObservationSession || options.nativeObservations) {
     return readRecoveryStatusInSession(options, snapshot);
@@ -836,7 +841,7 @@ async function checkUndeclaredSelection(options: ReadRecoveryStatusOptions, snap
     const missing = [...wanted].filter((id) => configured.has(id) && !sources.has(id));
     if (missing.length) {
       const context = await resolvePartialCatalogOperationContext({ sourceIds: missing, configSnapshot: config,
-        env: options.env, signal: options.signal });
+        env: options.env, signal: options.signal }, options.catalogReadScope);
       for (const source of context.catalog.sources) sources.set(source.sourceId, source);
     }
     for (const selector of selectors) {

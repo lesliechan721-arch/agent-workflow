@@ -62,7 +62,7 @@ export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' |
       ? intent.value.roots.map((root) => root.pluginId.split('/')[0]!) : []))].filter((id) => configured.has(id));
     const resolved = options.catalogOperationContext ?? await resolvePartialCatalogOperationContext({
       env: options.env, configSnapshot: snapshot, signal: options.signal, sourceIds,
-    });
+    }, options.catalogReadScope);
     return { context: resolved, configured };
   })());
   const shared = { resolveCatalog, manifestReads: options.manifestReads ?? new Map<string, Promise<PluginMeta>>() };

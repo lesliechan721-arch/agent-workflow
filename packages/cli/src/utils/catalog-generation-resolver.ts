@@ -50,32 +50,45 @@ export interface ResolvedActiveCatalogPluginShallow {
   plugin: PluginMeta;
 }
 
+type CatalogPreparationStoreBinding = Pick<CatalogGenerationSetSource,
+  'sourceId' | 'sourceIdentity' | 'sourceConfigFingerprint' | 'logicalIdentity' | 'resolvedCommit'
+  | 'manifestDigest' | 'snapshotDigest' | 'snapshotPath'> & Pick<CatalogGenerationActiveV1, 'requestedRef'>;
+
+export function createCatalogPreparationStoreKey(binding: CatalogPreparationStoreBinding): string {
+  return JSON.stringify([binding.sourceId, binding.sourceIdentity, binding.sourceConfigFingerprint,
+    binding.logicalIdentity, binding.requestedRef, binding.resolvedCommit, binding.manifestDigest, binding.snapshotDigest, binding.snapshotPath]);
+}
+
 export async function readValidatedCatalogGenerationStoreEntry(options: {
   logicalIdentity: string;
   snapshotDigest: string;
   env: NodeJS.ProcessEnv;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
+  preparationBinding?: Omit<CatalogPreparationStoreBinding, 'snapshotPath'>;
 }): Promise<CatalogStoreEntry> {
-  const storeKey = createCatalogStoreKey(options.logicalIdentity, options.snapshotDigest);
-  const cached = options.validatedStoreEntries?.get(storeKey);
+  const key = options.preparationBinding
+    ? createCatalogPreparationStoreKey({ ...options.preparationBinding, snapshotPath: resolveCatalogStoreLocation(options).snapshotRoot })
+    : createCatalogStoreKey(options.logicalIdentity, options.snapshotDigest);
+  const cached = options.validatedStoreEntries?.get(key);
   if (cached) return cached;
-  let pending = options.validatingStoreEntries?.get(storeKey);
+  let pending = options.validatingStoreEntries?.get(key);
   if (!pending) {
     pending = readCatalogStoreEntry({
       logicalIdentity: options.logicalIdentity,
       snapshotDigest: options.snapshotDigest,
       env: options.env,
+      reuseTransport: options.preparationBinding !== undefined,
     });
-    options.validatingStoreEntries?.set(storeKey, pending);
+    options.validatingStoreEntries?.set(key, pending);
   }
   try {
     const entry = await pending;
-    options.validatedStoreEntries?.set(storeKey, entry);
+    options.validatedStoreEntries?.set(key, entry);
     return entry;
   } finally {
-    if (options.validatingStoreEntries?.get(storeKey) === pending) {
-      options.validatingStoreEntries.delete(storeKey);
+    if (options.validatingStoreEntries?.get(key) === pending) {
+      options.validatingStoreEntries.delete(key);
     }
   }
 }
@@ -102,6 +115,7 @@ async function resolveFromState(options: {
   requireCompatibility: boolean;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
+  reuseTransport?: boolean;
 }): Promise<ResolvedActiveCatalogGeneration> {
   if (!options.active) {
     throw new CatalogGenerationError({
@@ -119,13 +133,22 @@ async function resolveFromState(options: {
     sourceId: options.source.id,
     message: `Active Catalog snapshot for source "${options.source.id}" does not match the current source configuration. Run aw source sync ${options.source.id}.`,
   });
-  const storeKey = createCatalogStoreKey(options.active.logicalIdentity, options.active.snapshotDigest);
-  const entry = await readValidatedCatalogGenerationStoreEntry({
+  const binding = {
+    sourceId: options.source.id,
+    sourceConfigFingerprint: options.active.sourceConfigFingerprint,
+    sourceIdentity: options.active.sourceIdentity,
     logicalIdentity: options.active.logicalIdentity,
+    resolvedCommit: options.active.resolvedCommit,
+    manifestDigest: options.active.manifestDigest,
     snapshotDigest: options.active.snapshotDigest,
+  };
+  const entry = await readValidatedCatalogGenerationStoreEntry({
+    logicalIdentity: binding.logicalIdentity,
+    snapshotDigest: binding.snapshotDigest,
     env: options.env,
     validatedStoreEntries: options.validatedStoreEntries,
     validatingStoreEntries: options.validatingStoreEntries,
+    preparationBinding: options.reuseTransport ? { ...binding, requestedRef: options.active.requestedRef } : undefined,
   });
   if (entry.metadata.manifestDigest !== options.active.manifestDigest) {
     throw new CatalogGenerationError({
@@ -146,15 +169,9 @@ async function resolveFromState(options: {
     });
   }
   return {
-    sourceId: options.source.id,
-    sourceConfigFingerprint: options.active.sourceConfigFingerprint,
-    sourceIdentity: options.active.sourceIdentity,
-    logicalIdentity: options.active.logicalIdentity,
+    ...binding,
     catalogVersion: entry.metadata.catalogVersion,
-    resolvedCommit: options.active.resolvedCommit,
-    manifestDigest: options.active.manifestDigest,
-    snapshotDigest: options.active.snapshotDigest,
-    storeKey,
+    storeKey: createCatalogStoreKey(binding.logicalIdentity, binding.snapshotDigest),
     snapshotPath: entry.snapshotRoot,
     manifest: entry.manifest,
     active: options.active,
@@ -324,6 +341,7 @@ export async function resolveCatalogGenerationSet(options: {
   controlSnapshot?: CatalogGenerationControlSnapshot;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
+  reuseTransport?: boolean;
 } = {}): Promise<CatalogGenerationSet> {
   const env = options.env ?? process.env;
   const control = options.controlSnapshot ?? await readCatalogGenerationControlSnapshot({ env });
@@ -348,6 +366,7 @@ export async function resolveCatalogGenerationSet(options: {
     requireCompatibility: true,
     validatedStoreEntries: options.validatedStoreEntries,
     validatingStoreEntries: options.validatingStoreEntries,
+    reuseTransport: options.reuseTransport,
   })));
   const sources = resolved.map(({ active: _active, ...source }) => source);
   const primarySourceId = control.configSnapshot.config.sources.find((source) => source.primary)!.id;

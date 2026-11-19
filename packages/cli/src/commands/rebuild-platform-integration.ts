@@ -57,6 +57,9 @@ interface UnitPreparation {
   finalized: FinalizedPlatformComponents;
   evidenceInput: Parameters<typeof createPlatformInputEvidence>[0]['units'][number];
 }
+interface TargetResolution extends Resolution {
+  ordinaryEvidence?: { discovery: string; observations: Map<string, string> };
+}
 
 function nativeCopyIncomplete(binding: DeploymentBinding, after: DeploymentObservation, contentDigest: string): boolean {
   return ['gemini-extension', 'antigravity-cli', 'grok-cli'].includes(binding.route)
@@ -292,7 +295,7 @@ async function sharedReferences(context: RebuildExecutionContext, binding: Deplo
 
 export class PlatformRebuildSession {
   private readonly targets = new Map<string, Promise<DesiredTarget>>();
-  private readonly resolutions = new Map<string, Promise<Resolution>>();
+  private readonly resolutions = new Map<string, Promise<TargetResolution>>();
   private readonly units = new Map<string, Promise<UnitPreparation>>();
   private readonly published = new Map<string, Promise<{ mutation: 'none' | 'confirmed' | 'possible'; changed: boolean }>>();
   private readonly nativeEffects = new Map<string, Promise<MutationOutcome>>();
@@ -333,6 +336,12 @@ export class PlatformRebuildSession {
     };
     return ctx;
   }
+  private ordinaryReadContext(ctx: ReadContext, platform: TargetInput['platform']): ReadContext {
+    // By the time a writable target is recorded, a renderer or a fresh
+    // evidence check may have run. End the earlier observation batch there.
+    const batch = this.targets.size === 0 && platform !== 'codex' ? this.context.nativeObservationBatch : undefined;
+    return batch ? { ...ctx, ...batch } : ctx;
+  }
   async dispose(): Promise<void> {
     for (const result of await Promise.allSettled(this.units.values())) if (result.status === 'fulfilled') await result.value.finalized.cleanup();
     if (this.staging) await fs.remove(await this.staging);
@@ -344,7 +353,7 @@ export class PlatformRebuildSession {
   }
   freezeMarketplaceCandidates(): void { this.marketplaceCandidatesFrozen = true; }
   private key(input: TargetInput): string { return artifactValueDigest({ plugin: sourceIdentity(input), platform: input.platform, scope: input.scope, cwd: input.scope === 'project' ? input.cwd : null, operation: operation(input) }); }
-  private resolve(input: TargetInput): Promise<Resolution> {
+  private resolve(input: TargetInput): Promise<TargetResolution> {
     const key = this.key(input);
     // Inspection of a shared package does not request activation in that scope.
     if (!input.readOnlyInspectionPlan) this.requestedOperations.set(key, input);
@@ -352,7 +361,7 @@ export class PlatformRebuildSession {
     if (!result) {
       result = (async () => {
         const adapter = this.adapterFor(input.platform);
-        const ctx = this.nativeReadContext(input);
+        const ctx = this.ordinaryReadContext(this.nativeReadContext(input), input.platform);
         const plugin = sourceIdentity(input);
         const recoveryCandidates = (this.context.recoveryCandidates ?? []).filter((candidate) => candidate.binding.platform === input.platform
           && candidate.binding.plugin.sourceIdentity === plugin.sourceIdentity && candidate.binding.plugin.pluginId === plugin.pluginId
@@ -374,7 +383,8 @@ export class PlatformRebuildSession {
           const unitIds = new Set(resolution.bindings.flatMap((binding) => binding.renderUnitIds));
           resolution.renderUnits = resolution.renderUnits.filter((unit) => unitIds.has(unit.id));
         }
-        return resolution;
+        return ctx.discoveryCache ? { ...resolution,
+          ordinaryEvidence: { discovery: artifactValueDigest(discovery), observations: new Map<string, string>() } } : resolution;
       })();
       this.resolutions.set(key, result);
     }
@@ -525,6 +535,8 @@ export class PlatformRebuildSession {
     return result;
   }
   private async build(input: TargetInput, receiveInitialVerifier?: (check: () => Promise<void>) => void): Promise<DesiredTarget> {
+    const ctx = this.nativeReadContext(input);
+    const ordinaryCtx = this.ordinaryReadContext(ctx, input.platform);
     const resolution = await this.resolve(input);
     if (!resolution.bindings.length) throw Object.assign(
       new Error(`platformUnavailable: ${resolution.exclusions.map((item) => item.reasonCode).join(', ') || input.platform}`),
@@ -534,9 +546,22 @@ export class PlatformRebuildSession {
     const requireIndependentActivation = input.platform !== 'codex' || !isNativeActivationOnlyTarget(this.context, {
       pluginId: sourceIdentity(input).pluginId, platform: input.platform, scope: input.scope,
     });
-    const ctx = this.nativeReadContext(input);
     this.contexts.add(ctx);
-    const observed = await Promise.all(resolution.bindings.map(async (binding) => ({ binding, observation: await adapter.inspect(ctx, binding), layout: await getDeploymentLayout(ctx, binding) })));
+    const observed = await Promise.all(resolution.bindings.map(async (binding) => ({ binding,
+      observation: await adapter.inspect(ordinaryCtx, binding), layout: await getDeploymentLayout(ctx, binding) })));
+    const { ordinaryEvidence } = resolution;
+    if (ordinaryEvidence && (ordinaryCtx.nativeQuerySession || !input.readOnlyInspectionPlan)) {
+      // Keep the first observation used for placement, including for targets
+      // built after the observation batch has already ended.
+      for (const { binding, observation } of observed) {
+        const digest = artifactValueDigest(observation);
+        const previous = ordinaryEvidence.observations.get(binding.id);
+        if (previous === undefined) ordinaryEvidence.observations.set(binding.id, digest);
+        else if (!input.readOnlyInspectionPlan && previous !== digest) {
+          throw new Error('operationPlanStale: deployment evidence changed after the ordinary observation.');
+        }
+      }
+    }
     if (input.readOnlyInspectionPlan && !input.readOnlyShallowInspectionPlan) for (const entry of observed) {
       const unit = entry.layout.renderUnits.find((candidate) => candidate.output === 'supplement');
       if (!unit) continue;
@@ -713,10 +738,17 @@ export class PlatformRebuildSession {
         ? await Promise.allSettled([fingerprintParts(), currentMutable()]) : null;
       if (initialReads?.[0].status === 'rejected') throw initialReads[0].reason;
       const initialParts = initialReads?.[0].status === 'fulfilled' ? initialReads[0].value : await fingerprintParts();
+      if (!removing && ordinaryEvidence && ordinaryEvidence.discovery !== artifactValueDigest(initialParts.discovery)) {
+        throw new Error('operationPlanStale: client discovery changed after the ordinary observation.');
+      }
       const initial = artifactValueDigest(initialParts);
       const fingerprint = async (discovery?: { value: unknown }): Promise<string> => artifactValueDigest(await fingerprintParts(discovery));
       if (initialReads?.[1].status === 'rejected') throw initialReads[1].reason;
       let mutableBaseline = initialReads?.[1].status === 'fulfilled' ? initialReads[1].value : await currentMutable();
+      const ordinaryObservation = ordinaryEvidence?.observations.get(entry.binding.id);
+      if (ordinaryObservation !== undefined && ordinaryObservation !== artifactValueDigest(mutableBaseline.observation)) {
+        throw new Error('operationPlanStale: deployment evidence changed after the ordinary observation.');
+      }
       const preparationObservation = entry.binding.route === 'gemini-extension' || entry.binding.route === 'antigravity-cli'
         ? mutableBaseline.observation : entry.observation;
       const check = async (discovery?: { value: unknown }): Promise<boolean> => {

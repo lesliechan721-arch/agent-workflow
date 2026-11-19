@@ -192,6 +192,10 @@ Catalog publisher 测试必须覆盖 plan 的授权身份、`apply --expected-pl
 
 ## Performance Tests
 
+TUI 安装的离线性能门禁经过真实的 Review 和确认入口。对同一来源，比较一个与三个 Project 根，并保留 User 共用的依赖。预热物化后，Review 和锁内复查各只扫描一次整树。冷物化在每次发布前独立扫描。门禁还核对实际写出的 Skill 和 provider 调用次数。
+
+真实客户端复测使用 `node scripts/qualification/plugin-install-latency.mjs --build-root <已构建仓库> --catalog <固定的本地快照目录> --target <平台> --plugin <插件名>`。首次记录构建产物摘要与 Active Catalog 摘要，后续运行传 `--expected-build-digest <构建摘要>` 和 `--expected-active-digest <Catalog 摘要>`。每次使用临时 home 和项目，将首页加载、Review 和确认执行分别计时，统计完成的整树摘要、实际启动的原生命令与回执。对照构建应共用一个 Catalog，在同一台机器预热后交错测量，并核对每轮的客户端版本。
+
 性能测试位于 `packages/cli/tests/perf/`。每个预算必须输出一条具有唯一名称的结构化摘要：
 
 ```text

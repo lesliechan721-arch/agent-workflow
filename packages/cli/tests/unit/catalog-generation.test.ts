@@ -29,7 +29,7 @@ import {
   resolveCatalogStoreLocation,
 } from '../../src/utils/catalog-generation-store.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
-import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import {
@@ -69,6 +69,29 @@ async function configurePathSource(sourcePath: string): Promise<void> {
   await replaceCatalogSourcesConfig({ config, expectedDigest: current.digest, env: isolation.env });
 }
 
+async function arrangeSharedStoreSources(sharedPath = false) {
+  const env = getCurrentSourceTestIsolation().env;
+  const firstRoot = fixturePath('preparation-first');
+  const secondRoot = fixturePath('preparation-copy');
+  await createCatalogSnapshotFixture(firstRoot);
+  if (!sharedPath) await fs.copy(firstRoot, secondRoot);
+  const first = { id: 'team', type: 'path' as const, path: firstRoot, primary: true };
+  const second = { id: 'mirror', type: 'path' as const, path: sharedPath ? firstRoot : secondRoot, primary: false };
+  const configure = async (sources: Array<typeof first | typeof second>) => {
+    const { digest } = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources }, expectedDigest: digest, env });
+  };
+  await configure([first, second]);
+  const sync = async (sourceId: string) => (await syncCatalogSourceGeneration({ sourceId, cliVersion: '1.0.0', env, impactConfirmed: true })).active!;
+  const initial = await sync(first.id);
+  const mirror = await sync(second.id);
+  expect(mirror).toMatchObject({ logicalIdentity: initial.logicalIdentity, snapshotDigest: initial.snapshotDigest });
+  if (sharedPath) expect(mirror.sourceIdentity).toBe(initial.sourceIdentity);
+  else expect(mirror.sourceIdentity).not.toBe(initial.sourceIdentity);
+  const { snapshotRoot } = resolveCatalogStoreLocation({ ...initial, env });
+  return { env, initial, marketplaceFile: path.join(snapshotRoot, '.claude-plugin', 'marketplace.json'), configure, sync, first, second };
+}
+
 async function arrangeDamagedInactiveCandidate(name: string) {
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = fixturePath(name);
@@ -106,6 +129,72 @@ async function arrangeDamagedInactiveCandidate(name: string) {
 }
 
 describe('Catalog Active store and state', () => {
+  it.each(['another alias', 'a rebound alias'] as const)('checks a shared store again when first resolving %s', async (scenario) => {
+    const { env, first, second, initial, marketplaceFile, configure, sync } = await arrangeSharedStoreSources();
+    const readScope = new CatalogPreparationReadScope({ env });
+    const previous = await readScope.resolve({ sourceIds: [first.id] });
+    expect(previous.catalog.sources[0]?.resolution?.snapshotDigest).toBe(initial.snapshotDigest);
+    const nextSourceId = scenario === 'another alias' ? second.id : first.id;
+    if (scenario === 'a rebound alias') {
+      await configure([{ ...first, path: second.path }]);
+      const rebound = await sync(first.id);
+      expect(rebound).toMatchObject({ logicalIdentity: initial.logicalIdentity, snapshotDigest: initial.snapshotDigest });
+      expect(rebound.sourceIdentity).not.toBe(initial.sourceIdentity);
+    }
+    await fs.writeFile(marketplaceFile, 'damaged marketplace\n');
+    const result = await readScope.resolve({ sourceIds: [nextSourceId] });
+    expect(result.catalog.sources[0]).toMatchObject({ sourceId: nextSourceId, error: { code: 'catalogGenerationMetadataInvalid' } });
+    expect(result.generationSet.sources).toEqual([]);
+  });
+
+  it('shares an in-flight transport read only within the same source binding', async () => {
+    const { env, first, second, marketplaceFile } = await arrangeSharedStoreSources(true);
+    const readScope = new CatalogPreparationReadScope({ env });
+    const readFile = vi.spyOn(fs, 'readFile');
+    try {
+      const sources = [first.id, first.id, second.id];
+      const results = await Promise.all(sources.map((sourceId) => readScope.resolve({ sourceIds: [sourceId] })));
+      expect(results.map((context) => context.catalog.sources[0]?.resolution?.sourceId)).toEqual(sources);
+      // This raw marketplace read occurs once during each transport digest.
+      expect(readFile.mock.calls.filter(([file]) => file === marketplaceFile)).toHaveLength(2);
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
+  it('checks each requested closure and accepts transport evidence only from the bound Active resolution', async () => {
+    const env = getCurrentSourceTestIsolation().env;
+    const sourceRoot = fixturePath('preparation-transport');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'consumer', dependencies: ['provider'] }, { name: 'provider' }, { name: 'other' },
+    ]);
+    await configurePathSource(sourceRoot);
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
+    const cancellation = new AbortController();
+    const readScope = new CatalogPreparationReadScope({ env, signal: cancellation.signal });
+    const { catalog } = await readScope.resolve({ sourceIds: ['team'] });
+    const source = catalog.sources[0]!.resolution!;
+    await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['consumer']))
+      .rejects.toThrow(/provider/u);
+    await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['provider', 'consumer']))
+      .resolves.toBeUndefined();
+
+    const unrelated = path.join(source.rootDir, 'plugins', 'other', 'README.md');
+    const bytes = await fs.readFile(unrelated);
+    await fs.appendFile(unrelated, 'unreviewed bytes');
+    // A caller that brings only the original manifest and digests must read the tree.
+    await expect(CatalogPreparationReadScope.validateEntries(readScope, { ...source }, ['provider', 'consumer']))
+      .rejects.toThrow(/does not match/u);
+    cancellation.abort();
+    await expect(CatalogPreparationReadScope.validateEntries(readScope, source, ['provider', 'consumer']))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    const retry = new CatalogPreparationReadScope({ env });
+    const damaged = await retry.resolve({ sourceIds: ['team'] });
+    expect(damaged.catalog.sources[0]?.error).toMatchObject({ code: 'catalogGenerationMetadataInvalid' });
+    await fs.writeFile(unrelated, bytes);
+    const repaired = await retry.resolve({ sourceIds: ['team'] });
+    expect(repaired.catalog.sources[0]?.resolution?.snapshotDigest).toBe(source.snapshotDigest);
+  });
   it('automatically replaces a damaged inactive candidate during ordinary sync', async () => {
     const fixture = await arrangeDamagedInactiveCandidate('inactive-candidate-repair');
 

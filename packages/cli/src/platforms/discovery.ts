@@ -48,9 +48,9 @@ export interface ReadContext {
   /** Replaces only external process probes, including OS identity queries. */
   runner?: NativeCliRunner;
   /** Read-only operation snapshot only. Do not reuse across writes or commands. */
-  discoveryCache?: Map<string, { runner?: NativeCliRunner; result: Promise<DiscoveryResult> }>;
+  discoveryCache?: Map<string, Array<{ runner?: NativeCliRunner; signal?: AbortSignal; result: Promise<DiscoveryResult> }>>;
   codexObservationSession?: import('../utils/codex-native-observation.js').CodexNativeObservationSession;
-  /** Explicitly owned by one read-only status operation; never pass into writes. */
+  /** Ordinary observations in one read-only phase. Never pass into independent checks or writes. */
   nativeQuerySession?: import('./inspection-query.js').NativeQuerySession;
   /** Optional private session directory for native Node code compilation. */
   nativeNodeCompileCacheDir?: () => Promise<string>;
@@ -518,12 +518,19 @@ export async function discoverPlatform(platform: PlatformTarget, ctx: ReadContex
     host, arch: ctx.arch ?? process.arch,
     macApplicationsDirectories: ctx.macApplicationsDirectories, windowsApplicationsDirectories: ctx.windowsApplicationsDirectories,
     linuxDesktopDirectories: ctx.linuxDesktopDirectories });
-  let cached = ctx.discoveryCache.get(key);
-  if (!cached || cached.runner !== ctx.runner) {
-    cached = { runner: ctx.runner, result: discoverPlatformUncached(platform, ctx) };
-    ctx.discoveryCache.set(key, cached);
+  let entries = ctx.discoveryCache.get(key);
+  if (!entries) {
+    entries = [];
+    ctx.discoveryCache.set(key, entries);
   }
-  return structuredClone(await cached.result);
+  let cached = entries.find((entry) => entry.runner === ctx.runner && entry.signal === ctx.signal);
+  if (!cached) {
+    cached = { runner: ctx.runner, signal: ctx.signal, result: discoverPlatformUncached(platform, ctx) };
+    entries.push(cached);
+  }
+  const result = await cached.result;
+  ctx.signal?.throwIfAborted();
+  return structuredClone(result);
 }
 async function discoverPlatformUncached(platform: PlatformTarget, ctx: ReadContext): Promise<DiscoveryResult> {
   try {

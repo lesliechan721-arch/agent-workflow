@@ -44,6 +44,6 @@ export function createPerfSummary(
   };
 }
 
-export function printPerfSummary(summary: PerfSummary): void {
+export function printPerfSummary(summary: { name: string }): void {
   console.log(`${PERF_SUMMARY_PREFIX}${JSON.stringify(summary)}`);
 }

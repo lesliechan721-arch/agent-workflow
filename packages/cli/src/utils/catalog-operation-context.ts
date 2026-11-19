@@ -6,6 +6,7 @@ import type {
 import { CatalogGenerationError } from './catalog-generation-error.js';
 import {
   calculateCatalogGenerationSetDigest,
+  createCatalogPreparationStoreKey,
   resolveCatalogGenerationSet,
 } from './catalog-generation-resolver.js';
 import {
@@ -13,6 +14,7 @@ import {
   type CatalogGenerationControlSnapshot,
 } from './catalog-generation-control-snapshot.js';
 import type { CatalogStoreEntry } from './catalog-generation-store.js';
+import { validateCatalogSnapshotComplete, validateCatalogSnapshotPluginEntriesComplete } from './catalog-snapshot.js';
 import type { CatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import type { MultiSourceCatalogResolution } from './multi-source-catalog.js';
 
@@ -29,6 +31,58 @@ export interface ResolveCatalogOperationContextOptions {
   signal?: AbortSignal;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
+  reuseTransport?: boolean;
+}
+
+type PreparationCatalogOptions = Pick<ResolveCatalogOperationContextOptions, 'sourceIds' | 'configSnapshot'>;
+
+/** Bound Active evidence may be used by consumers of a single read-only preparation. */
+export class CatalogPreparationReadScope {
+  readonly #options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal };
+  readonly #validatedStoreEntries = new Map<string, CatalogStoreEntry>();
+  readonly #validatingStoreEntries = new Map<string, Promise<CatalogStoreEntry>>();
+  readonly #bindings = new WeakMap<CatalogSourceResolution,
+    Pick<CatalogSourceResolution, 'sourceId' | 'sourceIdentity' | 'requestedRef' | 'resolvedCommit'> & { entry: CatalogStoreEntry }>();
+
+  constructor(options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal }) {
+    this.#options = { env: options.env, signal: options.signal };
+  }
+
+  async resolve(input: PreparationCatalogOptions, requireAll = false): Promise<CatalogOperationContext> {
+    this.#options.signal?.throwIfAborted();
+    const resolve = requireAll ? resolveCatalogOperationContext : resolvePartialCatalogOperationContext;
+    const context = await resolve({
+      ...input, ...this.#options,
+      validatedStoreEntries: this.#validatedStoreEntries,
+      validatingStoreEntries: this.#validatingStoreEntries,
+      reuseTransport: true,
+    });
+    for (const generation of context.generationSet.sources) {
+      const resolution = context.catalog.sources.find((source) => source.sourceId === generation.sourceId)?.resolution;
+      if (!resolution) continue;
+      const { sourceId, sourceIdentity, requestedRef, resolvedCommit } = resolution;
+      const entry = this.#validatedStoreEntries.get(createCatalogPreparationStoreKey({ ...generation, requestedRef }));
+      if (entry) this.#bindings.set(resolution, { sourceId, sourceIdentity, requestedRef, resolvedCommit, entry });
+    }
+    return context;
+  }
+
+  static async validateEntries(readScope: CatalogPreparationReadScope | undefined, source: CatalogSourceResolution,
+    pluginNames?: readonly string[]): Promise<void> {
+    const signal = readScope ? readScope.#options.signal : undefined;
+    signal?.throwIfAborted();
+    const binding = readScope ? readScope.#bindings.get(source) : undefined;
+    if (binding?.entry.validateEntries && binding.sourceId === source.sourceId
+      && binding.sourceIdentity === source.sourceIdentity && binding.requestedRef === source.requestedRef
+      && binding.resolvedCommit === source.resolvedCommit && binding.entry.snapshotRoot === source.rootDir
+      && binding.entry.metadata.logicalIdentity === source.logicalIdentity
+      && binding.entry.metadata.snapshotDigest === source.snapshotDigest
+      && binding.entry.metadata.manifestDigest === source.manifestDigest) {
+      await binding.entry.validateEntries(pluginNames);
+    } else if (pluginNames) await validateCatalogSnapshotPluginEntriesComplete(source.rootDir, pluginNames);
+    else await validateCatalogSnapshotComplete(source.rootDir);
+    signal?.throwIfAborted();
+  }
 }
 
 export function selectCatalogOperationContext(
@@ -124,7 +178,9 @@ async function createContext(options: {
 
 export async function resolveCatalogOperationContext(
   options: ResolveCatalogOperationContextOptions = {},
+  readScope?: CatalogPreparationReadScope,
 ): Promise<CatalogOperationContext> {
+  if (readScope) return readScope.resolve(options, true);
   const env = options.env ?? process.env;
   options.signal?.throwIfAborted();
   const control = await readCatalogGenerationControlSnapshot({
@@ -137,13 +193,16 @@ export async function resolveCatalogOperationContext(
     controlSnapshot: control,
     validatedStoreEntries: options.validatedStoreEntries,
     validatingStoreEntries: options.validatingStoreEntries,
+    reuseTransport: options.reuseTransport,
   });
   return createContext({ generationSet, control, signal: options.signal });
 }
 
 export async function resolvePartialCatalogOperationContext(
   options: ResolveCatalogOperationContextOptions = {},
+  readScope?: CatalogPreparationReadScope,
 ): Promise<CatalogOperationContext> {
+  if (readScope) return readScope.resolve(options);
   const env = options.env ?? process.env;
   const control = await readCatalogGenerationControlSnapshot({
     env,
@@ -158,6 +217,7 @@ export async function resolvePartialCatalogOperationContext(
         controlSnapshot: control,
         validatedStoreEntries: options.validatedStoreEntries,
         validatingStoreEntries: options.validatingStoreEntries,
+        reuseTransport: options.reuseTransport,
       });
       return { sourceId, context: await createContext({ generationSet, control, signal: options.signal }) };
     } catch (error) {

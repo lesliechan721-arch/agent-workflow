@@ -28,9 +28,8 @@ import {
 } from '../utils/manifest.js';
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import type { CatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
-import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
-import { validateCatalogSnapshotPluginEntriesComplete } from '../utils/catalog-snapshot.js';
 import {
   AwCapabilityUnsupportedError,
   IMPLEMENTED_AW_CAPABILITIES,
@@ -96,6 +95,7 @@ export interface MaterializePortableSkillsFromCatalogOptions {
   signal?: AbortSignal;
   configSnapshot?: CatalogSourcesConfigSnapshot;
   catalogOperationContext?: CatalogOperationContext;
+  catalogReadScope?: CatalogPreparationReadScope;
 }
 
 interface CandidateTree {
@@ -246,6 +246,7 @@ function assertNoUnresolvedTemplates(candidate: CandidateTree): void {
 async function resolvePortableCatalogPlugins(options: {
   source: CatalogSourceResolution;
   requestedPlugin: PluginMeta;
+  catalogReadScope?: CatalogPreparationReadScope;
 }): Promise<PluginMeta[]> {
   const entriesByName = new Map(options.source.manifest.entries.map((entry) => [entry.name, entry]));
   const closureNames: string[] = [];
@@ -266,7 +267,7 @@ async function resolvePortableCatalogPlugins(options: {
     closureNames.push(name);
   };
   visit(options.requestedPlugin.manifest.name);
-  await validateCatalogSnapshotPluginEntriesComplete(options.source.rootDir, closureNames);
+  await CatalogPreparationReadScope.validateEntries(options.catalogReadScope, options.source, closureNames);
   const plugins = await Promise.all(closureNames.map((name) => readPluginManifest(
     path.join(options.source.rootDir, 'plugins', name),
     { mode: 'bundle' },
@@ -294,7 +295,7 @@ export async function resolvePortableCatalogBindingInput(
       ? { operationContext: options.catalogOperationContext }
       : {}),
     consume: async ({ source, plugin: requestedPlugin }) => {
-      const plugins = await resolvePortableCatalogPlugins({ source, requestedPlugin });
+      const plugins = await resolvePortableCatalogPlugins({ source, requestedPlugin, catalogReadScope: options.catalogReadScope });
       const inputs = await resolvePortableProfileBindingInputs({
         plugins,
         pluginName: requestedPlugin.manifest.name,
@@ -333,7 +334,7 @@ export async function materializePortableSkillsFromCatalog(
         ? { operationContext: options.catalogOperationContext }
         : {}),
       consume: async ({ pluginId: resolvedPluginId, source, plugin: requestedPlugin }) => {
-        const plugins = await resolvePortableCatalogPlugins({ source, requestedPlugin });
+        const plugins = await resolvePortableCatalogPlugins({ source, requestedPlugin, catalogReadScope: options.catalogReadScope });
         const materialized = await materializePortableSkills({
           plugins,
           pluginId: resolvedPluginId,
