@@ -4,16 +4,14 @@
 
 ## 安装
 
-当前 AW 尚未验证本插件所需的独立子代理上下文、提示词组合和安装态配置读取能力。Codex、Claude Code 的安装会报告能力未验证，无法完成 `spawn-subagent` Skill、受控命令和通用角色的部署；普通 Skills 的有限资格不满足这些前提。以下命令用于请求安装，结果中的未满足项必须先解决，才能使用下文能力。
+通过 AW 支持的 Codex CLI 安装 `spawn-subagent`、受控命令和通用角色。安装完成后请开一个新的 Codex 会话使用。
 
 ```bash
 aw target set codex
 aw plugin install agent-subagent --scope user
-aw target set claude
-aw plugin install agent-subagent --scope user
 ```
 
-Codex 和 Claude Code 的适配包含 `spawn-subagent` Skill、受控命令和通用角色，声明 user/project 两种安装范围；实际部署受上述能力条件限制。共享配置在个人层维护；项目安装没有独立配置。
+Codex 支持 user 和 project 安装。共享配置在个人层维护，项目安装复用个人配置。Claude Code 的独立子代理上下文、提示词组合和安装态配置读取仍待验证。
 
 Antigravity、Cursor、OpenCode、Pi、Gemini CLI、GitHub Copilot CLI 与 Grok Build 按已核验的独立上下文能力提供通用角色。没有取得受控命令和安装态配置运行闭包资格的平台，调度 Skill 显示依赖未满足。Pi 使用用户已有且启用的兼容角色消费者；本插件只提供声明，不安装或替换执行器、不注册执行工具。`generic` 不提供原生角色。
 

@@ -3,14 +3,14 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "aw-skill-eval-runner",
-    "version": "0.1.0-beta.10"
+    "version": "0.1.0-beta.11"
   },
   "requiredCapabilities": [
-    "aw.cli-output.v1",
+    "aw.cli-output.v2",
     "aw.plugin-manifest.v4",
     "aw.plugin-skills.v1",
     "aw.portable-skills.v1",
     "aw.skill-eval.v3"
   ],
-  "digest": "sha256:ab1908b034601bbd5522321fd33f0a8015a69e399a2612d548aca23d04e8a1f3"
+  "digest": "sha256:1a92f3e3631184831b286e960150f28b595d7ed06834be5a5ecdc15a20b8e09d"
 }

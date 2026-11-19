@@ -150,8 +150,8 @@ async function runtimeResourceFiles(context, key, relative) {
 const PLATFORMS = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'];
 
 function validateContext(context) {
-  if (context?.schemaVersion !== 1 || context.surface !== 'agent-plugin') {
-    throw new Error('A PlatformRenderContext v1 with surface=agent-plugin is required.');
+  if (context?.schemaVersion !== 2 || context.surface !== 'agent-plugin') {
+    throw new Error('A PlatformRenderContext v2 with surface=agent-plugin is required.');
   }
   if (!PLATFORMS.includes(context.platform)) throw new Error(`Unsupported platform: ${context.platform}`);
   if (!Array.isArray(context.allowedOutputKinds) || new Set(context.allowedOutputKinds).size !== context.allowedOutputKinds.length
@@ -159,8 +159,8 @@ function validateContext(context) {
     throw new Error('allowedOutputKinds must contain distinct component kinds.');
   }
   const capabilities = context.platformCapabilities;
-  if (capabilities?.schemaVersion !== 1 || capabilities.platform !== context.platform || capabilities.scope !== context.scope) {
-    throw new Error('Matching platformCapabilities v1 are required.');
+  if (capabilities?.schemaVersion !== 2 || capabilities.platform !== context.platform || capabilities.scope !== context.scope) {
+    throw new Error('Matching platformCapabilities v2 are required.');
   }
 }
 
@@ -205,9 +205,10 @@ export async function renderArtifactPlan(context) {
       const config = resolveConfigValues(context, SKILL_CONFIG_KEYS[key]);
       const sourceRoot = readSkillSourceRoot(context, key);
       const template = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
+      const roleName = context.platformCapabilities.basis === 'local' ? `aw-${context.plugin.pluginId.replace('/', '-')}-${key}` : key;
       plan.components.push({ id, kind: 'skill', name: key, requires: execution,
         content: { files: {
-          'SKILL.md': { text: renderProfiles(template, key, config) },
+          'SKILL.md': { text: renderProfiles(template, key, config).replace(`\`${key}\` 角色`, `\`${roleName}\` 角色`) },
           'README.md': { source: { kind: 'bundle', path: `skills/${key}/README.md` } },
           ...(await runtimeResourceFiles(context, key, 'assets')),
           ...(await runtimeResourceFiles(context, key, 'agents')),

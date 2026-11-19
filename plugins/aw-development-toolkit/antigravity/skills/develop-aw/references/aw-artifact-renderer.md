@@ -6,7 +6,7 @@
 
 Manifest v4 的 artifacts 声明 configKeys、可选 sourceDirs/runtimeImports/scopes；不预枚举动态 ID。scripts.artifacts.render 指向 Node 入口。仅有托管命令 renderer 时可以不声明 artifacts。
 
-从 AW_PLUGIN_CONTEXT 文件读取 schemaVersion=1、surface=agent-plugin、platform、实际 render scope、plugin、config、changedConfigKeys、allowedOutputKinds、platformCapabilities、resources 和 previousComponents。resources 是已核验只读入口，不是宿主写入位置；previousComponents 只有本批身份，不含正文或配置。
+从 AW_PLUGIN_CONTEXT 文件读取 schemaVersion=2、surface=agent-plugin、platform、实际 render scope、plugin、config、changedConfigKeys、allowedOutputKinds、platformCapabilities、resources 和 previousComponents。resources 是已核验只读入口，不是宿主写入位置；previousComponents 只有本批身份，不含正文或配置。platformCapabilities 使用 v2 的 platform、scope、basis、kinds 和 features，客户端身份和探测详情留在宿主。
 
 每 render unit 按 Skill/非 Skill 权限分批。Skill 批次只见非敏感配置及依赖，非 Skill 批次不能输出 Skill；交集为空不调用。按 allowedOutputKinds 选择本批类别，不能从前一批输出发现下一批。changedConfigKeys 仅供优化，仍返回本批完整集合。配置从零新增组件和能力依据变化同样重新准备。
 
