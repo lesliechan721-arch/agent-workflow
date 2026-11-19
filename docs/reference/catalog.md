@@ -137,7 +137,8 @@ aw dev catalog publish apply --workspace-root "$workspace" \
 - **Remote 与 Branch 选择**：
   Remote 按显式参数、`origin`、唯一 remote 的顺序选择；存在多个且无 `origin` 时必须明确指定。Branch 使用显式参数或固定默认 `catalog`，不从当前 Git 工作分支推断。无论使用何种默认值，apply 都必须取得完整 `planDigest` 的显式授权。
 - **Plan 阶段**：
-  从已提交 source HEAD 的隔离 Git 仓库中验证插件、构建快照并核验 snapshot。返回规范化的 Workspace identity、source HEAD、remote identity、branch、parent、tag、snapshot digest 以及 `expectedCommit`。`planDigest` 授权 canonical `{ descriptor, expectedCommit }` 结构。快照中 `.aw-generated.json` 的 `workspaceIdentity` 必须与 descriptor 中的 identity 严格相等（因为 marker 自身不计入 snapshot digest）。
+  从已提交的 source HEAD 提取隔离源码，先验证源码，再构建并核验快照。同时声明 Node 构建和动态 renderer 的插件使用同一次构建的 bundle 验证组件和运行时依赖闭包，验证通过后才生成计划。
+  返回规范化的 Workspace identity、source HEAD、remote identity、branch、parent、tag、snapshot digest 以及 `expectedCommit`。`planDigest` 授权 canonical `{ descriptor, expectedCommit }` 结构。快照中 `.aw-generated.json` 的 `workspaceIdentity` 必须与 descriptor 中的 identity 严格相等（因为 marker 自身不计入 snapshot digest）。
   若 `owner.url` 的 host 为 `example.invalid`，plan 与 apply 以 `catalogMetadataIncomplete` 错误直接阻断。
 - **Apply 阶段**：
   仅使用授权的 `planDigest` 在 `.aw/publish/*/journal.json` 中唯一定位对应 journal，不需要 Catalog version 参数。它重新核验所选 Workspace identity、remote identity digest、branch、授权摘要、pending repo 以及远端 refs。**它不要求当前工作树的 source HEAD、clean 状态或 metadata version 仍等于 plan，也不重新 build 或 re-validate source**。remote alias 名称允许变化，但 remote identity digest 与 branch 必须完全一致。

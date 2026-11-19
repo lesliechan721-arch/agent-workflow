@@ -20,8 +20,9 @@ async function fixture(platform = 'generic') {
   await fs.outputFile(path.join(plugin, 'README.md'), '# Fixture\n');
   return { root, plugin };
 }
-async function validate(plugin: string) {
-  const result = await execute(process.execPath, [path.resolve(import.meta.dirname, '../../authoring/scripts/validate-plugin.mjs'), plugin, '--json'],
+async function validate(plugin: string, builtBundle?: string) {
+  const result = await execute(process.execPath, [path.resolve(import.meta.dirname, '../../authoring/scripts/validate-plugin.mjs'),
+    plugin, ...(builtBundle ? ['--built-bundle', builtBundle] : []), '--json'],
     { maxBuffer: 1024 * 1024 }).catch((cause: { stdout: string; stderr: string }) => ({ stdout: cause.stdout, stderr: cause.stderr }));
   expect(result.stderr).toBe('');
   return JSON.parse(result.stdout) as { ok: boolean; errors: string[]; warnings: string[] };
@@ -64,7 +65,7 @@ console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:context.all
   });
 
   it('uses an already installed declared renderer dependency without changing its source', async () => {
-    const { plugin } = await fixture();
+    const { root, plugin } = await fixture();
     const manifestPath = path.join(plugin, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.scripts.node = { packageRoot: './scripts' };
@@ -84,6 +85,12 @@ console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:context.all
       "import plan from 'source-render-contract'; console.log(JSON.stringify(plan));\n");
     expect(await validate(plugin)).toMatchObject({ ok: true, errors: [] });
     expect(await fs.readFile(path.join(installedPackage, 'index.mjs'), 'utf8')).toBe(dependencySource);
+
+    const bundle = path.join(root, 'bundle');
+    await fs.copy(plugin, bundle);
+    await fs.remove(installedPackage);
+    expect(await validate(plugin, bundle)).toMatchObject({ ok: true, errors: [] });
+    expect(await fs.readFile(path.join(bundle, 'scripts/node_modules/source-render-contract/index.mjs'), 'utf8')).toBe(dependencySource);
   });
 
   it('preserves invocation metadata in source when its target profile cannot enforce it', async () => {
