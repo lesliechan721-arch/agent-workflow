@@ -46,9 +46,12 @@ export interface JointDemandPlan {
 }
 
 export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' | 'preferences'> & {
-  scope?: Scope; context?: Scope; preferences?: DeploymentPreferences;
+  scope?: Scope; context?: Scope; preferences?: DeploymentPreferences; expectedProjectRoot?: string;
 }): Promise<JointDemandSnapshot> {
   const context = await resolveWorkContext(options);
+  if (options.expectedProjectRoot && context.projectRoot !== options.expectedProjectRoot) {
+    throw new Error('projectRootUnavailable: the reviewed project root is no longer available.');
+  }
   const { preferences: draftPreferences, ...readOptions } = options;
   const [userIntent, projectIntent] = await Promise.all([
     options.intent ?? observeIntent({ ...options, scope: 'user' }),

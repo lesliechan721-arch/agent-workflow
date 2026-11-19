@@ -78,6 +78,7 @@ export interface ReadRecoveryStatusOptions {
   catalogSources?: Map<string, CatalogOperationContext['catalog']['sources'][number]>;
   scope?: Scope;
   context?: Scope;
+  expectedProjectRoot?: string;
   demandOverride?: DemandSnapshot;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -97,6 +98,10 @@ export interface ReadRecoveryStatusOptions {
 const NATIVE_READ_ERRORS = new Set(['nativeStateUnreadable', 'stateInventoryFailed', 'configReadFailed',
   'configInvalid', 'componentInspectionFailed', 'targetInspectionFailed', 'codexNativeObservationFailed',
   'nativeObservationFailed', 'nativeObservationUnavailable']);
+export function isTargetObservationReadError({ code }: RecoveryDiagnostic): boolean {
+  return NATIVE_READ_ERRORS.has(code) || code === 'portableObservationFailed' || code === 'portablePreparationFailed'
+    || /(?:VerificationFailed|ReadFailed|LockInvalid)/u.test(code);
+}
 function diagnostic(code: string): RecoveryDiagnostic { return { code, message: `目标尚未满足：${code}。` }; }
 
 function withStatusNativeQueries<T, Options extends ReadRecoveryStatusOptions>(options: Options,
@@ -496,7 +501,7 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
           if (gaps.length && target.content !== 'conflict') target.content = 'unknown';
           target.backend = observed.map((entry) => ({ skill: entry.skill, agent: entry.agent,
             ownership: entry.ownership, observation: entry.observation, associatedAgents: entry.associatedAgents }));
-          if (target.blockers.some((entry) => /(?:VerificationFailed|ReadFailed|LockInvalid)/u.test(entry.code))) {
+          if (target.blockers.some(isTargetObservationReadError)) {
             errors.push({ ...diagnostic('portableObservationFailed'), pluginId: root.pluginId });
           }
         } catch (error) {

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { preparePublicClientPath } from './native-platform-public-aw.mjs';
+import { verifyCodexSharedProviderRemoval } from './native-platform-public-cases.mjs';
 import { assertPublicStatus, expectedOpenCodeObservation, readPublicRemovedNativeScope, readPublicNativeState, readDynamicConsumerContent } from './native-platform-public-state.mjs';
 import { clients } from './native-platform-runtime.mjs';
 
@@ -100,14 +101,15 @@ test('prepares an isolated POSIX client PATH with system administration helpers'
   assert.equal(await fs.realpath(path.join(clientBin, 'gemini')), entry);
 });
 
-function removalFixture(platform = 'codex', scope = 'user') {
-  const pluginName = 'aw-qualification';
+function removalFixture(platform = 'codex', scope = 'user', {
+  root = path.join(os.tmpdir(), 'aw-public-state-fixture'), pluginName = 'aw-qualification', version = '0.1.1',
+} = {}) {
   const pluginId = `qualification/${pluginName}`;
-  const project = path.join(os.tmpdir(), 'aw-public-state-fixture', 'project');
-  const neutral = path.join(os.tmpdir(), 'aw-public-state-fixture', 'neutral');
+  const project = path.join(root, 'project');
+  const neutral = path.join(root, 'neutral');
   const calls = [];
   const row = { name: pluginName, pluginId: `${pluginName}@fixture`, installed: true,
-    version: '0.1.1', enabled: false };
+    version, enabled: false };
   const rows = new Map([[project, [structuredClone(row)]], [neutral, [structuredClone(row)]]]);
   const ctx = { platform, scope, pluginName, project, neutral, async command(args, cwd) {
     calls.push({ args, cwd });
@@ -136,6 +138,51 @@ function removalFixture(platform = 'codex', scope = 'user') {
     request: { plugins: [pluginId], targets: [platform], scope }, targetResults: [target] } };
   return { ctx, pluginId, result, plan, receipt, target, rows, calls };
 }
+
+// Test Value Gate: a successful removal and a disabled native inventory cannot
+// establish that the independent Project activation and declaration are gone,
+// or that the previously shared User provider still satisfies its requirement.
+test('requires fresh cleanup and surviving provider evidence for Codex Project dependent removal', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-shared-provider-removal-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const dependent = removalFixture('codex', 'project', { root, pluginName: 'aw-qualification-dependent', version: '0.1.0' });
+  const pluginName = 'aw-qualification';
+  const pluginId = `qualification/${pluginName}`;
+  const skillName = pluginName;
+  const dependentId = dependent.pluginId;
+  const registrationId = `${dependent.ctx.pluginName}@fixture`;
+  dependent.receipt.after.nativeIdentity.registrationId = registrationId;
+  const removal = dependent.result;
+  removal.data.changes = { requirements: 'changed' };
+  removal.data.requirements = { state: 'valid', roots: [] };
+  const userProvider = {
+    products: dependent.plan.products,
+    after: { physicalKey: 'provider-physical', package: 'present', registration: 'present', ownership: 'aw',
+      nativeIdentity: { packageId: pluginName }, components: [{ id: `skill:${skillName}`, presence: 'present', reasonCodes: [] }],
+      consumers: [{ productId: 'codex-cli', activation: 'enabled', activationKey: 'user-provider-activation' }] },
+  };
+  const providerTarget = { pluginId, scope: 'user', target: 'codex', delivery: dependent.target.delivery, blockerCodes: [],
+    observation: 'verified', content: 'satisfied', satisfaction: 'installed', deploymentObservations: [structuredClone(userProvider)] };
+  const declarations = [{ scope: 'user', state: 'valid', roots: [pluginId] }, { scope: 'project', state: 'valid', roots: [] }];
+  const ctx = { ...dependent.ctx, scope: 'user', pluginName, skillName, async aw(args) {
+    assert.deepEqual(args, ['plugin', 'status', '--context', 'project']);
+    return { data: { requirements: { declarations },
+      inventory: [{ pluginId, sourceState: 'ready', blockerCodes: [], targetResults: [providerTarget] }] } };
+  } };
+  const verify = () => verifyCodexSharedProviderRemoval(ctx,
+    { pluginId, dependentId, userProvider, dependentDeployment: dependent.receipt, removal });
+  assert.equal((await verify()).native.retainedRegistration, true);
+  declarations[1].roots.push(dependentId);
+  await assert.rejects(verify, { code: 'ERR_ASSERTION' });
+  declarations[1].roots.pop();
+  providerTarget.deploymentObservations[0].after.physicalKey = 'replacement-physical';
+  await assert.rejects(verify, { code: 'ERR_ASSERTION' });
+  providerTarget.deploymentObservations[0].after.physicalKey = userProvider.after.physicalKey;
+  const config = path.join(ctx.project, '.codex', 'config.toml');
+  await fs.mkdir(path.dirname(config), { recursive: true });
+  await fs.writeFile(config, `[plugins."${registrationId}"]\nenabled = false\n`);
+  await assert.rejects(verify, { code: 'ERR_ASSERTION' });
+});
 
 // Test Value Gate: a successful shared-retention remove may leave its exact
 // disabled registration, but both fresh working directories must be off.

@@ -23,7 +23,7 @@ import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, type DemandSnapshot } from './demand.js';
 import { readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
 import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
-import { readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
+import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
 import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
@@ -99,6 +99,23 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
   receipt.recoveryActions = [...new Set(receipts.flatMap((item) => item.recoveryActions))];
   receipt.ok = receipt.blockers.length === 0 && receipts.every((item) => item.ok);
   return receipt;
+}
+
+function finalStatusReadFailure(status: RecoveryStatus, receipt: RecoveryReceipt): RecoveryDiagnostic | undefined {
+  const completed = receipt.targetResults.filter((target) => target.delivery && target.observation === 'verified');
+  const strongStateError = status.errors.find((error) => error.code === 'deploymentPreferencesInvalid'
+    || error.code === 'pluginIntentStateInvalid' && (error.subject?.scope === receipt.scope
+      || completed.some((target) => target.scope === error.subject?.scope)));
+  if (strongStateError) return strongStateError;
+  for (const { pluginId, scope, agent } of completed) {
+    const matches = (target: RecoveryReceipt['targetResults'][number]) => target.pluginId === pluginId
+      && target.scope === scope && target.agent === agent;
+    const root = status.inventory?.find((item) => item.pluginId === pluginId && item.targetResults.some(matches));
+    const failure = root?.blockers.find((entry) => root.sourceState !== 'ready' || entry.code === 'pluginManifestUnavailable')
+      ?? status.observedTargets?.find(matches)?.blockers.find(isTargetObservationReadError);
+    if (failure) return { ...failure, subject: { pluginId, scope, target: agent } };
+  }
+  return undefined;
 }
 
 async function readJointPreparation(command: RecoveryCommand, options: RecoveryOptions, locked = false): Promise<{
@@ -944,31 +961,26 @@ export async function executeJointRecovery(plan: RecoveryPlan,
 
         const { cwd, scope, env, cliVersion } = joint.originalOptions;
         const context = joint.snapshot.context.context;
-        let statusFailure: string | undefined;
+        let statusFailure: RecoveryDiagnostic | undefined;
         try {
           // The reviewed Catalog may still be readable after Active has moved. Bind the
           // final read to the current sources, once per binding across both scopes.
           const status = await measureRecoveryPerformanceStage(runtime, 'recovery.status', () =>
-            readRecoveryStatus({ cwd, scope, context, env, cliVersion, catalogReadScope: new CatalogPreparationReadScope({ env }),
+            readRecoveryStatus({ cwd, scope, context, env, cliVersion, expectedProjectRoot: joint.snapshot.context.projectRoot,
+              catalogReadScope: new CatalogPreparationReadScope({ env }),
               nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession }));
           receipt.allSatisfied = status.allSatisfied;
           receipt.inSync = status.inSync;
-          // An unreadable source is a per-root status result. Report it for a
-          // completed target without turning unrelated pending roots into failures.
-          const unreadable = status.inventory?.find((root) => root.sourceState !== 'ready'
-            && root.targetResults.some((target) => receipt.targetResults.some((written) => written.delivery
-              && written.pluginId === root.pluginId && written.scope === target.scope && written.agent === target.agent
-              && written.observation === 'verified')));
-          statusFailure = unreadable?.blockers[0]?.code;
+          statusFailure = finalStatusReadFailure(status, receipt);
         } catch (error) {
           receipt.allSatisfied = null;
           receipt.inSync = null;
-          statusFailure = readSafeOperationError(error)?.code ?? errorCode(error, 'statusUnavailable');
+          statusFailure = diagnostic(readSafeOperationError(error)?.code ?? errorCode(error, 'statusUnavailable'));
         }
         if (statusFailure) {
           receipt.ok = false;
           receipt.errors.push({ code: 'statusUnavailable', message: 'Could not read the final plugin status.',
-            detail: { reasonCode: statusFailure } });
+            subject: statusFailure.subject, detail: { reasonCode: statusFailure.code } });
           receipt.recoveryActions.push(`aw plugin status --context ${context} --json`);
         }
         return receipt;

@@ -14,7 +14,7 @@ import { resolveCatalogGenerationStatePath } from '../../src/utils/catalog-gener
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { writeIntent, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
-import { setTargets } from '../../src/intent/deployment-preferences.js';
+import { resolvePreferencesPath, setTargets } from '../../src/intent/deployment-preferences.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
@@ -204,13 +204,14 @@ describe('joint recovery through real Catalog and owned outputs', () => {
       targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/b', scope: 'project', execution: 'applied', observation: 'verified' })]) });
   });
 
-  it.each(['project unavailable', 'damaged Store'] as const)('preserves completed installation and a read-only recheck after final status finds %s', async (fault) => {
+  it.each(['project unavailable', 'parent project visible', 'damaged Store'] as const)('preserves completed installation and a read-only recheck after final status finds %s', async (fault) => {
     const value = await fixture();
     const project = { ...value.options, scope: 'project' as const };
+    if (fault === 'parent project visible') await git(path.dirname(value.cwd), ['init', '--quiet']);
     await fs.remove(await resolveIntentPath(project));
     const active = await resolveActiveCatalogGeneration({ env: project.env, sourceId: 'team' });
-    const marker = fault === 'project unavailable' ? path.join(value.cwd, '.git')
-      : path.join(active.snapshotPath, '.agents', 'plugins', 'marketplace.json');
+    const marker = fault === 'damaged Store' ? path.join(active.snapshotPath, '.agents', 'plugins', 'marketplace.json')
+      : path.join(value.cwd, '.git');
     const saved = path.join(value.cwd, 'saved-marker');
     const result = await runPublicLifecycle('install', ['team/b'], project, {
       debugLogger: { log: async (event) => {
@@ -226,10 +227,62 @@ describe('joint recovery through real Catalog and owned outputs', () => {
       targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/b', target: 'generic', scope: 'project',
         execution: 'applied', observation: 'verified' })]) },
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
-        detail: { reasonCode: fault === 'project unavailable' ? 'projectRootUnavailable' : 'sourceActiveUnavailable' } })]),
+        detail: { reasonCode: fault === 'damaged Store' ? 'sourceActiveUnavailable' : 'projectRootUnavailable' } })]),
       nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
         requiresConfirmation: false, reason: expect.any(String) }] });
     await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+    await expect(observeIntent(project)).resolves.toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
+  });
+
+  it.each([
+    ['requested output', 'portableObservationFailed'],
+    ['requested Intent', 'pluginIntentStateInvalid'],
+    ['deployment preferences', 'deploymentPreferencesInvalid'],
+    ['other scope Intent', null],
+    ['other scope output', null],
+    ['requested content drift', null],
+  ] as const)('reports the completed install against a fresh status read with %s affected', async (fault, failure) => {
+    const value = await fixture(false, ['generic'], false, { a: [], b: [] });
+    const project = { ...value.options, scope: 'project' as const };
+    const user = { ...value.options, scope: 'user' as const };
+    const projectIntent = await resolveIntentPath(project);
+    await fs.remove(projectIntent);
+    if (fault === 'other scope output') expect((await runRecovery('sync', ['team/a'], user)).ok).toBe(true);
+    const output = path.join(value.projectRoot, 'b', 'SKILL.md');
+    const affected = fault === 'requested Intent' ? projectIntent
+      : fault === 'other scope Intent' ? await resolveIntentPath(user)
+      : fault === 'deployment preferences' ? await resolvePreferencesPath(project)
+      : fault === 'other scope output' ? path.join(value.userRoot, 'a', 'SKILL.md') : output;
+    const readFile = fs.readFile.bind(fs);
+    const reads = vi.spyOn(fs, 'readFile');
+    try {
+      const result = await runPublicLifecycle('install', ['team/b'], project, {
+        debugLogger: { log: async (event) => {
+          if (event.data?.name !== 'recovery.status' || event.data.phase !== 'start') return;
+          if (fault === 'requested content drift') await fs.appendFile(output, 'Local edit.\n');
+          else reads.mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+            if (String(args[0]) === affected) throw Object.assign(new Error('read failed'), { code: 'EIO' });
+            return readFile(...args);
+          });
+        } },
+      });
+      const current = await readRecoveryStatus(project);
+      expect(result.data).toMatchObject({ changes: { requirements: 'changed', outputs: 'changed' },
+        allSatisfied: current.allSatisfied, inSync: current.inSync, remainingTargets: [],
+        targetResults: [expect.objectContaining({ pluginId: 'team/b', scope: 'project', target: 'generic',
+          execution: 'applied', observation: 'verified' })] });
+      if (failure) {
+        expect(result).toMatchObject({ status: 'partial',
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable', detail: { reasonCode: failure } })]),
+          nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
+            requiresConfirmation: false, reason: expect.any(String) }] });
+      } else {
+        expect(result.status).toBe('success');
+        expect(result.nextActions).toEqual([]);
+        expect(current.allSatisfied).not.toBe(true);
+      }
+    } finally { reads.mockRestore(); }
+    await expect(fs.readFile(output, 'utf8')).resolves.toContain('Use b.');
     await expect(observeIntent(project)).resolves.toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
   });
 

@@ -67,8 +67,8 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
   ]);
   const errors: Diagnostic[] = [];
   if (intent.state !== 'absent' && intent.state !== 'valid') {
-    errors.push(describeStrongStateProblem({ kind: 'intent', scope: options.scope,
-      state: intent.state, filePath: await resolveIntentPath(options) }));
+    errors.push({ ...describeStrongStateProblem({ kind: 'intent', scope: options.scope,
+      state: intent.state, filePath: await resolveIntentPath(options) }), subject: { scope: options.scope } });
   }
   if (preferences.state === 'invalid' || preferences.state === 'unreadable') {
     errors.push(describeStrongStateProblem({ kind: 'preferences', scope: 'user',
