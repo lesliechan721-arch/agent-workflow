@@ -14,7 +14,7 @@ CLI 的非交互规则不改变 TUI 配置编辑、草稿和 Review。TUI 直接
 
 ## 来源与插件更新
 
-TUI 初始 load 不访问网络，也不等待 freshness 检查。首页一次读取中，User 和 Project 各插件共用本次绑定的 Active 完整性校验。重载或配置变化触发的重试重新取证。只有当前加载完成后，它读到的来源和状态才供随后打开的详情、范围清单和 Review 使用。进入 ready 后，每个 session 只为 `autoCheck` 开启的 source 自动检查一次：primary 先开始，其它 source 最多并发两个。关闭 `autoCheck` 的来源只在用户显式检查时 probe。健康 Git Active 先只解析远端 ref；ref 未变化时不 fetch，固定 commit 不联网；ref 变化时才 fetch 并完整验证。检查结果只进入 session-private overlay，不修改统一恢复状态、Active、固定的 session Catalog 子集、插件列表或 target revision。远端失败只显示 `checkFailed`，健康 Active 仍可浏览。reload 不重复全量检查；退出时取消所有 probe，session、token 和 source fingerprint 拒绝迟到结果。
+TUI 初始 load 不访问网络，也不等待 freshness 检查。首页一次读取中，User 和 Project 各插件共用本次绑定的 Active 完整性校验。首页核对各来源的代次、可用状态与配置。读取期间发生变化时，重试重新取证。若同一加载中已读取的来源又切换了 Active，首页会重新读取。只有当前加载完成后，它读到的来源和状态才供详情、范围清单和 Review 使用。准备普通安装时会重新校验所选来源。若它已切换，先提示按 `H` 重载，再准备安装。进入 ready 后，每个 session 只为 `autoCheck` 开启的 source 自动检查一次：primary 先开始，其它 source 最多并发两个。关闭 `autoCheck` 的来源只在用户显式检查时 probe。健康 Git Active 先只解析远端 ref；ref 未变化时不 fetch，固定 commit 不联网；ref 变化时才 fetch 并完整验证。检查结果只进入 session-private overlay，不修改统一恢复状态、Active、固定的 session Catalog 子集、插件列表或 target revision。远端失败只显示 `checkFailed`，健康 Active 仍可浏览。reload 不重复全量检查；退出时取消所有 probe，session、token 和 source fingerprint 拒绝迟到结果。
 
 TUI generation 使用 generation status v2 的 Active compatibility 投影。健康但 unsupported 的 Active 显示为 `incompatible`，技术详情显示 required 和 missing capability ID；不显示 available capability 全集，也不把该状态显示为损坏或提供重新下载修复动作。
 
@@ -154,7 +154,7 @@ TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配�
 
 控制台进程由一个 Session Host 持有当前 Controller、进度 feed 和 session epoch。`h` 只清除当前导航 flow、Review ticket、临时进度和草稿，并回到唯一根帧；它保留本次加载的状态 snapshot、来源检查时间和 session cache。`H` 先保护所有草稿，再取消并等待本 session 的只读请求；确认没有写操作后，才销毁旧订阅并用新的 runtime dependencies、进度 feed 和 Controller 读取本地状态。迟到响应必须同时受 session epoch 和 Controller 内的 flow、frame 或 request identity 保护。执行中 `h`/`H` 只覆盖一个待处理导航；Esc 只撤销该导航。只有 succeeded Result 才自动执行待处理导航，且先把结果交给共享 history owner；partial、stale、blocked 或无法确认清理结果都停留在 Result。Session Host 不用取消 signal 中断写操作，也不新增持久状态。正常退出和异常退出都必须在 session reporter 仍绑定时封闭新入口，等待现有写操作，再取消并等待只读请求，最后释放 Controller。
 
-范围清单重查使用同一会话的 Catalog 快照。若当前 Active generation 或来源配置已变化，保留旧结果及查询、焦点、滚动和选择状态，明确提示按 `H` 重新加载；清单、详情、内容和设置定义不得混用新旧快照。恢复和退役的准备阶段把取消信号传至来源探测、Native 读取、Portable 准备及 renderer；取消向上传播 `AbortError` 并释放操作 context，不继续准备后续组。准备信号不保留给已确认的写入。
+范围清单重查使用同一会话的 Catalog 快照。若当前 Active generation 或来源配置已变化，保留旧结果及查询、焦点、滚动和选择状态，明确提示按 `H` 重新加载；清单、详情、内容和设置定义不得混用新旧快照。普通单项和批量安装在准备 Review 时核对每个所选来源的现行绑定。若与详情所用的会话快照不同，须按 `H` 重新加载后再准备安装。其他来源的换代不阻断所选来源。恢复和退役的准备阶段把取消信号传至来源探测、Native 读取、Portable 准备及 renderer；取消向上传播 `AbortError` 并释放操作 context，不继续准备后续组。准备信号不保留给已确认的写入。
 
 会话导航待办只保存 `h/H` 意图，不授权丢弃草稿。写入成功后，SessionHost 等待本次操作消费的外部草稿清理，再检查剩余草稿；外部草稿确认绑定内存中的 owner、flow 和 revision。失败或部分成功取消待办并保留结果。历史、诊断和报告是会话级只读页面，不依赖业务状态加载成功，也不因关闭页面而丢弃父流程草稿。返回首页统一复位路由和界面焦点。
 

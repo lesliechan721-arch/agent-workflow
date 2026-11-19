@@ -103,6 +103,7 @@ import type {
 import {
   extractPortableError,
   TuiConfigInvalidStoreError,
+  TuiOperationBlockedError,
   userIssueKey,
 } from './controller.js';
 import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
@@ -3014,7 +3015,7 @@ export function ConsoleAppV4(props: {
       if (scopedFlowToken.current !== token) return;
       scopedFlowBusy.current = false;
       setScopedFlow({ stage: 'result', scope: request.scope,
-        errorCode: safeDiagnosticCode(error instanceof Error ? error.message : undefined,
+        errorCode: safeDiagnosticCode(error instanceof TuiOperationBlockedError ? error.code : error instanceof Error ? error.message : undefined,
           'recoveryPreparationFailed'), focus: 0 });
     });
   };

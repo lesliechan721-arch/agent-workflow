@@ -170,7 +170,7 @@ export async function prepareJointRecovery(command: RecoveryCommand, selectors: 
 }
 
 async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors: readonly string[],
-  options: RecoveryOptions, runtime: RebuildCommandRuntime, snapshot: JointDemandSnapshot,
+  { checkInstallCatalog, ...options }: RecoveryOptions, runtime: RebuildCommandRuntime, snapshot: JointDemandSnapshot,
   { catalogReadScope, nativeObservationBatch }: RecoveryPreparationReads): Promise<RecoveryPlan> {
   // Status observes saved requirements, before projecting proposed declarations.
   // Reuse them only within this preparation; execution reads them again under the lock.
@@ -236,7 +236,16 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         requested = proposed.roots;
         if (proposed.changed) declaration = { scope, value: proposed.state };
         const demand = await readDemand({ ...options, catalogReadScope, preferences: undefined, scope, intent: asObservation(proposed.state) });
+        checkInstallCatalog?.(demand.catalogOperationContext, requested);
         snapshot = { ...snapshot, [scope]: demand };
+      } else if (checkInstallCatalog && catalogReadScope
+        && proposed.errors.some((error) => ['sourceMissing', 'sourceActiveUnavailable', 'pluginUnavailable'].includes(error.code))) {
+        // A missing plugin can also be an ordinary planner error on the accepted generation.
+        const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+        const requestedSources = new Set(selectors.map((selector) => parsePluginId(selector).sourceId));
+        const sourceIds = configSnapshot.config.sources.map((source) => source.id)
+          .filter((id) => requestedSources.has(id) || requestedSources.has(undefined));
+        checkInstallCatalog(await catalogReadScope.resolve({ configSnapshot, sourceIds }), selectors);
       }
     }
   } else if (command === 'uninstall') {

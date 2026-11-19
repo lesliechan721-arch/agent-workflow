@@ -88,6 +88,7 @@ import {
   type ConfigSaveBatchGroup,
   type ReviewPreparationStageId,
   type TuiControllerDependencies,
+  type TuiStatusLoadResult,
 } from './controller.js';
 import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
 import {
@@ -105,6 +106,7 @@ import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
   calculateCatalogGenerationSetDigest,
+  createCatalogPreparationStoreKey,
   resolveActiveCatalogGeneration,
 } from '../utils/catalog-generation-resolver.js';
 import {
@@ -138,6 +140,7 @@ import { readCatalogGenerationState } from '../utils/catalog-generation-state.js
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { CatalogProviderCompatibilityError } from '../utils/catalog-public-error.js';
 import { loadCatalogGenerationViewModels } from './catalog-generation.js';
+import { recoveryReason } from './glossary.js';
 import {
   executePortableRetry,
   installPortableSkills,
@@ -156,6 +159,27 @@ import {
   inspectCatalogStoreTask,
   prepareCatalogStoreTask,
 } from './catalog-store-task.js';
+
+function installSourceBinding(catalog: CatalogOperationContext | undefined, sourceId: string): string | undefined {
+  const generation = catalog?.generationSet.sources.find((source) => source.sourceId === sourceId);
+  const resolution = catalog?.catalog.sources.find((source) => source.sourceId === sourceId)?.resolution;
+  return generation && resolution && createCatalogPreparationStoreKey({ ...generation, requestedRef: resolution.requestedRef });
+}
+
+function homeGenerationsMatch(catalog: CatalogOperationContext, generations: Awaited<ReturnType<typeof loadCatalogGenerationViewModels>>,
+  configured: Awaited<ReturnType<typeof listCatalogSources>>): boolean {
+  if (generations.length !== catalog.catalog.sources.length) return false;
+  return generations.every((view) => {
+    const bound = catalog.generationSet.sources.find((source) => source.sourceId === view.sourceId);
+    const source = catalog.catalog.sources.find((item) => item.sourceId === view.sourceId);
+    if (!bound) return source?.error !== undefined && catalogSourceErrorCode(source.error)
+      === (view.configMismatch ? 'catalogGenerationIdentityMismatch' : view.errorCode);
+    const config = configured.sources.find((item) => item.id === view.sourceId);
+    return view.state === 'ready' && view.active?.storeKey === bound.storeKey
+      && view.active.resolvedCommit === bound.resolvedCommit && view.active.requestedRef === source?.resolution?.requestedRef
+      && config?.sourceIdentity === bound.sourceIdentity && calculateCatalogSourceConfigFingerprint(config) === bound.sourceConfigFingerprint;
+  });
+}
 
 function reusableCandidateEvidenceIsComplete(
   candidate: CatalogSessionReusableCandidate,
@@ -1037,7 +1061,8 @@ export function createTuiControllerDependencies(
       }))).flat();
       const configured = await listCatalogSources({ env: context.env });
       signal.throwIfAborted();
-      if (result.payload.catalog.configDigest !== configured.configDigest) {
+      if (result.payload.catalog.configDigest !== configured.configDigest
+        || catalogOperationContext && !homeGenerationsMatch(catalogOperationContext, catalogGenerations, configured)) {
         if (pinnedContext) break;
         continue;
       }
@@ -1098,7 +1123,7 @@ export function createTuiControllerDependencies(
     }
     throw new TuiOperationBlockedError(
       'operationReviewStale',
-      '状态读取期间来源配置持续变化。请重试。',
+      '状态读取期间 Catalog 持续变化。请按 H 重新加载。',
     );
   };
 
@@ -2175,6 +2200,7 @@ export function createTuiControllerDependencies(
       }
       const packageInfo = await readCliPackageInfo();
       signal.throwIfAborted();
+      const pinned = sessionCatalogOperationContext;
       const plan = await prepareRecovery(request.command ?? 'sync', request.selectors, {
         signal,
         scope: request.scope, cwd: context.cwd, env: context.env,
@@ -2184,6 +2210,17 @@ export function createTuiControllerDependencies(
         ...(request.targets ? { targets: request.targets } : {}),
         ...(request.force ? { force: true } : {}),
         ...(request.refresh ? { refresh: true } : {}),
+        ...(request.command === 'install' && !request.refresh && pinned ? {
+          checkInstallCatalog(current, roots) {
+            for (const sourceId of new Set(roots.map((id) => parsePluginId(id).sourceId))) {
+              if (!sourceId) continue;
+              if (installSourceBinding(pinned, sourceId) !== installSourceBinding(current, sourceId)
+                || (pinned.generationSet.primarySourceId === sourceId) !== (current?.generationSet.primarySourceId === sourceId)) {
+                throw new TuiOperationBlockedError('catalogSessionReloadRequired', recoveryReason('catalogSessionReloadRequired'));
+              }
+            }
+          },
+        } : {}),
         ...(request.retireUnselectedTargets ? { retireUnselectedTargets: true } : {}),
         ...(request.scriptTimeoutMs !== undefined ? { scriptTimeoutMs: request.scriptTimeoutMs } : {}),
         ...(request.dependencyScopeOverrides?.length

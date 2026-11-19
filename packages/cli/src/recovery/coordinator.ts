@@ -77,6 +77,8 @@ export interface RecoveryOptions {
   preferences?: DeploymentPreferences;
   /** Read-only candidate context used before first-source activation. */
   catalogOperationContext?: import('../utils/catalog-operation-context.js').CatalogOperationContext;
+  /** Compare the selected install sources before preparing deployment previews. */
+  checkInstallCatalog?: (catalog: CatalogOperationContext | undefined, roots: readonly string[]) => void;
   signal?: AbortSignal;
   scope?: Scope;
   context?: Scope;

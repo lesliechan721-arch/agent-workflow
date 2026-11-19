@@ -267,7 +267,16 @@ describe('scoped TUI production reads', () => {
 
   it('keeps Details, inventory and Review on the accepted Active after an older home read finishes', async () => {
     const value = await fixture(true);
-    const controller = new TuiController(createTuiControllerDependencies(value.context));
+    const configured = await readCatalogSourcesConfigSnapshot(value.env);
+    await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: configured.digest,
+      config: { ...configured.config, sources: [...configured.config.sources,
+        { id: 'alias', type: 'path', primary: false, path: value.source },
+      ] } });
+    await syncCatalogSourceGeneration({ sourceId: 'alias', env: value.env, cliVersion: '1.0.0' });
+    const host = new SessionHost({ createSession: () => ({
+      controller: new TuiController(createTuiControllerDependencies(value.context)), progressFeed: createRebuildProgressFeed(),
+    }) });
+    const controller = host.snapshot.controller;
     const paused = pauseFirstCatalogStateRead(value.env);
     const olderLoad = controller.load();
     try {
@@ -305,15 +314,49 @@ describe('scoped TUI production reads', () => {
           ] },
         } });
       } finally { await controller.discardScopedPlan(review); }
+
+      await value.generation('3.0.0');
+      expect(controller.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('2.0.0');
+      for (const selectors of [['local/demo'], ['alias/demo', 'local/demo']]) {
+        await expect(controller.prepareScopedTask({
+          kind: 'recovery', command: 'install', scope: 'user', selectors,
+        })).rejects.toMatchObject({ code: 'catalogSessionReloadRequired', message: expect.stringContaining('按 H') });
+      }
+      const healthy = await controller.prepareScopedTask({
+        kind: 'recovery', command: 'install', scope: 'project', selectors: ['alias/demo'],
+      });
+      try {
+        expect(healthy).toMatchObject({ kind: 'recovery', plan: { receipt: { requestedRoots: ['alias/demo'] },
+          demand: { plugins: expect.arrayContaining([expect.objectContaining({
+            pluginId: 'alias/demo', manifest: expect.objectContaining({ version: '1.0.0' }),
+          })]) } } });
+      } finally { await controller.discardScopedPlan(healthy); }
+      const missing = await controller.prepareScopedTask({
+        kind: 'recovery', command: 'install', scope: 'project', selectors: ['alias/missing'],
+      });
+      try {
+        expect(missing).toMatchObject({ kind: 'recovery', plan: { receipt: {
+          blockers: expect.arrayContaining([expect.objectContaining({ code: 'pluginUnavailable' })]),
+        } } });
+      } finally { await controller.discardScopedPlan(missing); }
+      expect(await host.requestNavigation('reload')).toBe('completed');
+      const next = host.snapshot.controller;
+      await next.load();
+      expect(next.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('3.0.0');
+      const refreshed = await next.prepareScopedTask({ kind: 'recovery', command: 'install', scope: 'user', selectors: ['local/demo'] });
+      try {
+        expect(refreshed).toMatchObject({ kind: 'recovery', plan: { blockExecution: false,
+          demand: { plugins: [expect.objectContaining({ manifest: expect.objectContaining({ version: '3.0.0' }) })] } } });
+      } finally { await next.discardScopedPlan(refreshed); }
     } finally {
       paused.resume();
       await olderLoad;
       paused.restore();
-      controller.dispose();
+      host.dispose();
     }
   });
 
-  it('binds the new source list on retry when configuration changes during the first home read', async () => {
+  it.each(['configuration', 'Active'] as const)('rebinds the catalog when %s changes during the first home read', async (change) => {
     const value = await fixture(true);
     const entered = Promise.withResolvers<void>();
     const resume = Promise.withResolvers<void>();
@@ -329,19 +372,24 @@ describe('scoped TUI production reads', () => {
     const loading = controller.load();
     try {
       await Promise.race([entered.promise, loading.then(() => { throw new Error('Generation view was not paused.'); })]);
-      const configured = await readCatalogSourcesConfigSnapshot(value.env);
-      await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: configured.digest,
-        config: { ...configured.config, sources: [...configured.config.sources,
-          { id: 'alias', type: 'path', primary: false, path: value.source },
-        ] } });
-      await syncCatalogSourceGeneration({ sourceId: 'alias', env: value.env, cliVersion: '1.0.0' });
+      const sourceId = change === 'configuration' ? 'alias' : 'local';
+      const version = change === 'configuration' ? '1.0.0' : '2.0.0';
+      if (change === 'configuration') {
+        const configured = await readCatalogSourcesConfigSnapshot(value.env);
+        await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: configured.digest,
+          config: { ...configured.config, sources: [...configured.config.sources,
+            { id: 'alias', type: 'path', primary: false, path: value.source },
+          ] } });
+        await syncCatalogSourceGeneration({ sourceId, env: value.env, cliVersion: '1.0.0' });
+      } else await value.generation(version);
       resume.resolve();
       await loading;
       expect(controller.snapshot.phase).toBe('ready');
-      expect(controller.getCatalogGeneration('alias')?.state).toBe('ready');
-      expect(controller.getPluginDetailSubject('alias/demo')?.plugin?.version).toBe('1.0.0');
-      await controller.loadPluginContent('alias/demo');
-      expect(controller.getPluginContentOverview('alias/demo')?.evidence).toBe('catalogBundle');
+      expect(controller.getCatalogGeneration(sourceId)?.state).toBe('ready');
+      expect(controller.getPluginDetailSubject(`${sourceId}/demo`)?.plugin?.version).toBe(version);
+      await controller.loadPluginContent(`${sourceId}/demo`);
+      expect(controller.getPluginContentOverview(`${sourceId}/demo`)).toMatchObject({ evidence: 'catalogBundle', pluginVersion: version });
+      expect(await controller.refreshScopedInventory('user')).toBe(true);
     } finally {
       resume.resolve();
       await loading;
