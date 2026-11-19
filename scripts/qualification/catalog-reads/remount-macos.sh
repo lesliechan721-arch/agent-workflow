@@ -21,21 +21,21 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir "$mountpoint"
-hdiutil create -size 128m -fs APFS -volname AWCatalog -format UDRW "$image" -quiet
-hdiutil attach "$image" -mountpoint "$mountpoint" -noverify -noautoopen -quiet
+hdiutil create -size 256m -fs APFS -volname AWCatalog "$image"
+hdiutil attach "$image" -mountpoint "$mountpoint" -noverify -noautoopen
 mounted=true
 (cd "$mountpoint" && tar -xzf -) < "$input/catalog.tgz"
-hdiutil detach "$mountpoint" -quiet
+hdiutil detach "$mountpoint"
 mounted=false
 test ! -e "$mountpoint/catalog"
 
 for variant in serial four eight; do
-  hdiutil attach "$image" -mountpoint "$mountpoint" -readonly -noverify -noautoopen -quiet
+  hdiutil attach "$image" -mountpoint "$mountpoint" -readonly -noverify -noautoopen
   mounted=true
   /sbin/mount | grep -F " on $mountpoint (" | grep -F -q 'read-only'
   node "$probe" --mode remounted-read --root "$builds/$variant" --catalog "$mountpoint/catalog" \
     --output "$input/$variant-remounted.json"
-  hdiutil detach "$mountpoint" -quiet
+  hdiutil detach "$mountpoint"
   mounted=false
   test ! -e "$mountpoint/catalog"
 done

@@ -106,7 +106,6 @@ jobs:
             --catalog "$input/serial/catalog" --output "$input/comparison.json"
       - name: Observe Catalog file pages after remounting an isolated APFS image
         if: runner.os == 'macOS'
-        continue-on-error: true
         shell: bash
         run: bash scripts/qualification/catalog-reads/remount-macos.sh "$RUNNER_TEMP/catalog-read-input" "$RUNNER_TEMP/catalog-read-builds"
       - name: Read after remounting an isolated NTFS VHD
