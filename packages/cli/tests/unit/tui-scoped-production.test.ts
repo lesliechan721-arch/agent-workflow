@@ -13,6 +13,7 @@ import { addRoot, observeIntent, removeRoot } from '../../src/intent/intent-stor
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
+import { CatalogPreparationReadScope } from '../../src/utils/catalog-operation-context.js';
 import { syncCatalogSourceGeneration, type CatalogGenerationServiceRuntime } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
@@ -142,6 +143,46 @@ describe('scoped TUI production reads', () => {
     const home = await createTuiControllerDependencies(value.context).loadStatus(new AbortController().signal);
     expect(home.catalogGenerations).toMatchObject([{ sourceId: 'local', state: 'ready' }]);
     expect(digests.mock.results.filter((result) => result.value === active.snapshotDigest.slice('sha256:'.length))).toHaveLength(1);
+  });
+
+  it('drains in-flight source reads on cancellation without scanning the Active snapshot for damage', async () => {
+    const value = await fixture(true);
+    const config = await readCatalogSourcesConfigSnapshot(value.env);
+    await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: config.digest,
+      config: { ...config.config, sources: [...config.config.sources,
+        { id: 'alias', type: 'path', primary: false, path: value.source },
+      ] } });
+    await syncCatalogSourceGeneration({ sourceId: 'alias', env: value.env, cliVersion: '1.0.0' });
+    const active = (await readCatalogGenerationState(value.env)).sources.local!.active!;
+    const controller = new AbortController();
+    const digests = vi.spyOn(Hash.prototype, 'digest');
+    const siblingStarted = Promise.withResolvers<void>();
+    const releaseSibling = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    const resolveActive = CatalogPreparationReadScope.prototype.resolveActiveGeneration;
+    vi.spyOn(CatalogPreparationReadScope.prototype, 'resolveActiveGeneration').mockImplementation(async function (this: CatalogPreparationReadScope, sourceId, previous) {
+      if (sourceId === 'alias') {
+        siblingStarted.resolve();
+        await releaseSibling.promise;
+      } else {
+        await siblingStarted.promise;
+        digests.mockClear();
+        controller.abort();
+        cancelled.resolve();
+      }
+      return resolveActive.call(this, sourceId, previous);
+    });
+    const runtime = createTuiControllerDependencies(value.context);
+    let settled = false;
+    const loading = runtime.loadStatus(controller.signal).finally(() => { settled = true; });
+    const rejected = expect(loading).rejects.toMatchObject({ name: 'AbortError' });
+    try {
+      await Promise.race([cancelled.promise, loading]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+    } finally { releaseSibling.resolve(); }
+    await rejected;
+    expect(digests.mock.results.filter((result) => result.value === active.snapshotDigest.slice('sha256:'.length))).toHaveLength(0);
   });
 
   it('shows an incompatible Active when the configured path also changed', async () => {

@@ -889,10 +889,11 @@ export function createTuiControllerDependencies(
     ?? inventoryCatalogSourceReferences;
   let validatedStoreEntries = new Map<string, CatalogStoreEntry>();
   let validatingStoreEntries = new Map<string, Promise<CatalogStoreEntry>>();
-  const loadCatalogGenerations = async (entries: Map<string, CatalogStoreEntry>,
+  const loadCatalogGenerations = async (entries: Map<string, CatalogStoreEntry>, signal: AbortSignal,
     preparation?: { scope: CatalogPreparationReadScope; context?: CatalogOperationContext }) => {
     const generations = await loadCatalogGenerationViewModels({
       env: context.env,
+      signal,
       preparation,
       validatedStoreEntries: entries,
       validatingStoreEntries: new Map(),
@@ -1039,7 +1040,7 @@ export function createTuiControllerDependencies(
       });
       signal.throwIfAborted();
       const storeEntries = new Map(catalogReadScope ? undefined : sessionStoreEntries);
-      const catalogGenerations = await loadCatalogGenerations(storeEntries, catalogReadScope
+      const catalogGenerations = await loadCatalogGenerations(storeEntries, signal, catalogReadScope
         ? { scope: catalogReadScope, context: catalogOperationContext } : undefined);
       signal.throwIfAborted();
       const configStoreInventory = (await Promise.all((['user'] as const).map(async (scope) => {
