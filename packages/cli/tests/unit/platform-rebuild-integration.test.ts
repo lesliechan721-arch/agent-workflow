@@ -231,6 +231,34 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
 }
 
 describe('native evidence checks', () => {
+  // Test Value Gate: a new lock-held batch can serve placement for a cached
+  // target. Its independent final native check must still catch registration drift.
+  it('rereads Pi registration before returning a target in a new observation batch', async () => {
+    const item = await nativeEvidenceFixture('pi');
+    const binding = item.target.platformDeployment!.plans[0]!.binding;
+    const inventoryCwds = () => item.runner.mock.calls.flatMap(([request]) =>
+      request.args.join(' ') === 'list' ? [request.cwd] : []);
+    item.runner.mockClear();
+    try {
+      await withNativeObservationBatch({ runner: item.runner }, async (nativeObservationBatch) => {
+        const ctx = { cwd: item.input.cwd, env: item.context.env, ...nativeObservationBatch };
+        expect((await item.adapter.inspect(ctx, binding)).registration).toBe('absent');
+        const integration = createRebuildIntegration({ context: { ...item.context, nativeObservationBatch } });
+        const placement = await integration.buildTarget({ ...item.input, readOnlyInspectionPlan: true });
+        expect(placement.platformObservations?.[0]?.observation.registration).toBe('absent');
+        expect(inventoryCwds()).toHaveLength(1);
+
+        item.changeRegistration();
+        await expect(integration.buildTarget(item.input)).rejects.toThrow('operationPlanStale');
+        expect(new Set(inventoryCwds()).size).toBe(2);
+        const updated = await integration.buildTarget({ ...item.input, readOnlyInspectionPlan: true });
+        expect(updated.platformObservations?.[0]?.observation.registration).toBe('present');
+      });
+      expect(await Promise.all(inventoryCwds().map((cwd) => fs.pathExists(cwd)))).toEqual([false, false, false]);
+      expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
   // Test Value Gate: a shared ordinary read must not hide native registration
   // changing between the post-render baseline and the final verification.
   it('shares ordinary Pi inventories and rereads registration before returning a target', async () => {
