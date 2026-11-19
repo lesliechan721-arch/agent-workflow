@@ -119,19 +119,19 @@ const MARKETPLACE_NAME = 'aw';
 const LEGACY_MCP_OWNER_ENV = 'AW_AGENT_WORKFLOWS_OWNER';
 
 const commandPackagePreparationCaches = new WeakMap<RebuildExecutionContext, Map<string, Promise<{ action: OperationAction; candidate: ManagedCommandCandidate }>>>();
-const platformRebuildSessions = new WeakMap<Map<string, PluginProcessResult>, PlatformRebuildSession>();
+const platformRebuildSessions = new WeakMap<Map<string, PluginProcessResult>, Map<PlatformName | undefined, PlatformRebuildSession>>();
 const commandPackageCandidates = new WeakMap<Map<string, PluginProcessResult>, Map<string, Promise<PreparedManagedCommandPackage>>>();
 
 export function finalizePreparedPlatformRebuildSession(results: Map<string, PluginProcessResult>): void {
-  platformRebuildSessions.get(results)?.freezeMarketplaceCandidates();
+  for (const session of platformRebuildSessions.get(results)?.values() ?? []) session.freezeMarketplaceCandidates();
 }
 
 export async function disposePreparedPlatformRebuildSession(results: Map<string, PluginProcessResult>): Promise<void> {
-  const session = platformRebuildSessions.get(results);
+  const sessions = platformRebuildSessions.get(results);
   platformRebuildSessions.delete(results);
   const packages = commandPackageCandidates.get(results);
   commandPackageCandidates.delete(results);
-  try { await session?.dispose(); }
+  try { await Promise.all([...(sessions?.values() ?? [])].map((session) => session.dispose())); }
   finally {
     if (packages) await Promise.all([...packages.values()].map(async (candidate) => {
       const prepared = await candidate.catch(() => undefined);
@@ -205,6 +205,7 @@ export interface RebuildIntegration {
   driver: RebuildTargetDriver;
   setNativeMarketplaceEligibleTargets(targets: readonly DesiredTarget[]): void;
   prepareNativeMarketplaceGroup(target: DesiredTarget): Promise<void>;
+  postcheckCodexProvider(target: DesiredTarget): Promise<void>;
   captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
   buildTarget(options: {
     sourceId?: string;
@@ -219,6 +220,8 @@ export interface RebuildIntegration {
     command: 'install' | 'sync' | 'reinstall' | 'cleanup' | 'uninstall';
     catalog: CatalogResolution;
     readOnlyInspectionPlan?: boolean;
+    /** Fresh read window for peers undergoing the same placement check or plan verification. */
+    observationBatch?: import('../platforms/inspection-query.js').NativeObservationBatch;
     readOnlyShallowInspectionPlan?: boolean;
     includeNativeCleanupCandidate?: boolean;
     codexActivationCleanup?: Array<{
@@ -252,6 +255,8 @@ export interface RebuildExecutionContext {
   recoveryCandidates?: readonly import('../platforms/contracts.js').RecoveryCandidate[];
   sharedReferenceView?: import('../utils/native-demand.js').NativeSharedReferenceView;
   platformRebuildSession?: PlatformRebuildSession;
+  /** Concurrent native groups share a session across scopes of the same platform. */
+  batchInstallPlatform?: PlatformName;
   packagePreparationCache?: Map<string, Promise<PreparedManagedCommandPackage>>;
   interruption?: import('./public-interruption.js').PublicCommandInterruption;
   /** Validated renderer process output shared only by preparations of this operation. */
@@ -1455,6 +1460,7 @@ function createNativeDriver(options: {
 }): RebuildTargetDriver & {
   setNativeMarketplaceEligibleTargets(targets: readonly DesiredTarget[]): void;
   prepareNativeMarketplaceGroup(target: DesiredTarget): Promise<void>;
+  postcheckCodexProvider(target: DesiredTarget): Promise<void>;
   captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
 } {
   const runner = options.context.nativeCliRunner;
@@ -1530,6 +1536,42 @@ function createNativeDriver(options: {
       target.identity.marketplaceName ?? MARKETPLACE_NAME,
       target.identity.scope,
     );
+  const checkCodexInstalledVersion = async (target: DesiredTarget, pluginId: string, marketplaceName: string): Promise<void> => {
+    const scope = codexObservationScope(options.context, marketplaceName, target.identity.scope);
+    const registration = await inspectCodexPluginRegistrationLive({
+      pluginId,
+      cwd: target.identity.cwd,
+      env: options.context.env,
+      nativeCliRunner: runner,
+      manager: currentCodexManager(),
+      scope,
+      observationSession: options.context.codexObservationSession,
+    });
+    const state = requireObservedCodexNativeState(
+      registration.observation,
+      'native install postcheck',
+    );
+    requireCodexObservationCoverage(
+      registration,
+      scope,
+      'native install postcheck',
+    );
+    if (state !== 'installed') {
+      throw new Error(
+        `codexNativeInstallIncomplete: ${pluginId} is absent from Codex plugin list.`,
+      );
+    }
+    const installedEntry = registration.observation.state === 'observed'
+      && registration.observation.value === 'installed'
+      ? registration.observation.entry
+      : undefined;
+    if (installedEntry?.version !== undefined
+      && installedEntry.version !== target.identity.pluginVersion) {
+      throw new Error(
+        `codexNativeInstallIncomplete: ${pluginId} version is ${installedEntry.version}; expected ${target.identity.pluginVersion}.`,
+      );
+    }
+  };
   const groupTargets = (target: DesiredTarget): DesiredTarget[] => {
     if (!options.operationScopedNativePhases) return [target];
     const key = nativeGroupKey(target);
@@ -1847,6 +1889,22 @@ function createNativeDriver(options: {
       nativeMarketplaceEligibleTargets = new Set(eligibleTargets);
     },
     prepareNativeMarketplaceGroup: prepareNativeGroup,
+    postcheckCodexProvider: async (target) => {
+      const pending = deferredPostchecks.filter((entry) => entry.target === target);
+      deferredPostchecks = deferredPostchecks.filter((entry) => entry.target !== target);
+      // A dependent can write as soon as this returns. Read a new Codex list
+      // after the provider's writes, even when its install receipt was healthy.
+      const marketplaces = new Set((target.platformDeployment?.plans ?? []).flatMap((plan) =>
+        plan.evidence.layout.marketplaceName && plan.projections.some((projection) => projection.bundle)
+          ? [plan.evidence.layout.marketplaceName] : []));
+      if (target.requiresNative) marketplaces.add(target.identity.marketplaceName ?? MARKETPLACE_NAME);
+      for (const name of marketplaces) options.context.codexObservationSession?.invalidate(name);
+      if (!pending.length) await target.platformDeployment?.verify();
+      for (const entry of pending) await entry.postcheck();
+      for (const name of marketplaces) {
+        await checkCodexInstalledVersion(target, `${target.identity.pluginName}@${name}`, name);
+      }
+    },
     ...(options.operationScopedNativePhases ? {
       deferPostcheck: (target: DesiredTarget, postcheck: () => Promise<void>): boolean => {
         if (target.identity.platform !== 'codex') return false;
@@ -1855,40 +1913,7 @@ function createNativeDriver(options: {
           postcheck: async () => {
             if (target.requiresNative) {
               const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
-              const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
-              const registration = await inspectCodexPluginRegistrationLive({
-                pluginId,
-                cwd: target.identity.cwd,
-                env: options.context.env,
-                nativeCliRunner: runner,
-                manager: currentCodexManager(),
-                scope: observationScopeFor(target),
-                observationSession: options.context.codexObservationSession,
-              });
-              const state = requireObservedCodexNativeState(
-                registration.observation,
-                'native install postcheck',
-              );
-              requireCodexObservationCoverage(
-                registration,
-                observationScopeFor(target),
-                'native install postcheck',
-              );
-              if (state !== 'installed') {
-                throw new Error(
-                  `codexNativeInstallIncomplete: ${pluginId} is absent from Codex plugin list.`,
-                );
-              }
-              const installedEntry = registration.observation.state === 'observed'
-                && registration.observation.value === 'installed'
-                ? registration.observation.entry
-                : undefined;
-              if (installedEntry?.version !== undefined
-                && installedEntry.version !== target.identity.pluginVersion) {
-                throw new Error(
-                  `codexNativeInstallIncomplete: ${pluginId} version is ${installedEntry.version}; expected ${target.identity.pluginVersion}.`,
-                );
-              }
+              await checkCodexInstalledVersion(target, `${target.identity.pluginName}@${marketplaceName}`, marketplaceName);
             }
             await postcheck();
           },
@@ -2213,10 +2238,12 @@ export function createRebuildIntegration(options: {
     ?? commandPackageCandidates.get(renderResults) ?? new Map<string, Promise<PreparedManagedCommandPackage>>();
   commandPackageCandidates.set(renderResults, packageCache);
   options.context.packagePreparationCache = packageCache;
+  const sessions = platformRebuildSessions.get(renderResults) ?? new Map<PlatformName | undefined, PlatformRebuildSession>();
+  platformRebuildSessions.set(renderResults, sessions);
   const platformSession = options.context.platformRebuildSession
-    ?? platformRebuildSessions.get(renderResults)
+    ?? sessions.get(options.context.batchInstallPlatform)
     ?? new PlatformRebuildSession(options.context);
-  platformRebuildSessions.set(renderResults, platformSession);
+  sessions.set(options.context.batchInstallPlatform, platformSession);
   options.context.platformRebuildSession = platformSession;
   platformSession.updateContext(options.context);
   platformSession.setOwnershipExecutor(driver.ownership);
@@ -2226,6 +2253,7 @@ export function createRebuildIntegration(options: {
     driver,
     setNativeMarketplaceEligibleTargets: driver.setNativeMarketplaceEligibleTargets,
     prepareNativeMarketplaceGroup: driver.prepareNativeMarketplaceGroup,
+    postcheckCodexProvider: driver.postcheckCodexProvider,
     captureCodexPostMutationSnapshots: driver.captureCodexPostMutationSnapshots,
     buildTarget: async (input) => {
       const target = await platformSession.buildTarget(input);

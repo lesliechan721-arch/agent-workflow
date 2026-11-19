@@ -54,6 +54,7 @@ import {
 } from '../utils/plugin-config.js';
 import { readRecoveryStatus, type RecoveryStatus } from '../recovery/status.js';
 import { readJointDemand, type JointDemandSnapshot } from '../recovery/joint-demand.js';
+import { RecoveryInterruptedError } from '../recovery/interruption.js';
 import type { RecoveryTarget } from '../recovery/receipt.js';
 import { catalogSourceErrorCode, sanitizeCatalogSourceError } from '../utils/catalog-public-error.js';
 import {
@@ -2255,7 +2256,14 @@ export function createTuiControllerDependencies(
         const refreshed = await activateRecoverySourcesAndReprepare(plan.plan, { runtime: context });
         return { kind: 'recoveryReview', plan: { kind: 'recovery', scope: plan.scope, plan: refreshed } };
       }
-      const receipt = await executeRecovery(plan.plan, { yes: true, runtime: context });
+      const receipt = await executeRecovery(plan.plan, {
+        yes: true,
+        runtime: progressFeed ? { ...context, onInstallProgress: progressFeed.setInstallProgress } : context,
+      }).catch((error: unknown) => {
+        if (!(error instanceof RecoveryInterruptedError)) throw error;
+        if (context.interruption && error.code === 'processCleanupUnconfirmed') context.interruption.cleanupFailed = true;
+        return error.receipt;
+      });
       return { kind: 'recovery', receipt };
     },
     loadPluginContent,

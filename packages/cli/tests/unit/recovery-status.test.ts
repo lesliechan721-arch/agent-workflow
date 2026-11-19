@@ -1,4 +1,5 @@
 import fs from 'fs-extra';
+import { availableParallelism } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +10,7 @@ import * as registry from '../../src/platforms/registry.js';
 import type { AgentId } from '../../src/intent/deployment-preferences.js';
 import type { DemandSnapshot } from '../../src/recovery/demand.js';
 import type { ScopeContext } from '../../src/intent/scope-context.js';
+import type { NativeCliResult } from '../../src/utils/native-cli.js';
 import * as portableRecovery from '../../src/portable/recovery.js';
 import * as demandService from '../../src/recovery/demand.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -28,6 +30,23 @@ function demand(ids: string[], targets: AgentId[]): DemandSnapshot {
         platforms: ['claude', 'cursor', 'generic'], skills: './skills' } } as never })),
     plugins: [], errors: [],
   };
+}
+
+async function multiPlatformStatusFixture() {
+  const { env, layout } = getCurrentSourceTestIsolation();
+  const bin = path.join(layout.fixtureCwd, 'bin');
+  await Promise.all(['claude', 'pi'].map((name) => fs.outputFile(
+    path.join(bin, process.platform === 'win32' ? `${name}.exe` : name), 'fixture entry', { mode: 0o755 })));
+  const demandOverride = demand(['local/one', 'local/two'], ['claude', 'pi']);
+  demandOverride.plugins = await Promise.all(demandOverride.roots!.map(async ({ plugin, pluginId }) => {
+    const rootDir = path.join(layout.fixtureCwd, pluginId);
+    const name = plugin!.manifest.name;
+    await fs.outputFile(path.join(rootDir, 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: A fixture skill\n---\nHi\n`);
+    Object.assign(plugin!, { rootDir, sourceId: 'local', pluginId, sourceIdentity: `sha256:${'a'.repeat(64)}` });
+    Object.assign(plugin!.manifest, { schemaVersion: 4, version: '1.0.0', platforms: ['claude', 'pi'] });
+    return plugin!;
+  }));
+  return { cwd: layout.fixtureCwd, env: { ...env, PATH: bin }, scope: 'user' as const, demandOverride };
 }
 
 describe('recovery status satisfaction', () => {
@@ -111,6 +130,96 @@ describe('recovery status satisfaction', () => {
     expect(await fs.pathExists(observedCwd!)).toBe(false);
     expect(inspect).toHaveBeenCalledOnce();
   });
+
+  // Test Value Gate: independent native reads can overlap, and one client's
+  // failing inventory is reused by its roots without affecting other results.
+  it.skipIf(availableParallelism() < 2)('observes independent clients concurrently and shares each inventory within the observation', async () => {
+    const options = await multiPlatformStatusFixture();
+    const releaseClaude = Promise.withResolvers<void>();
+    const calls: Array<{ client: string; args: string[] }> = [];
+    const read = readScopedRecoveryStatus({ ...options, nativeCliRunner: async ({ command, args }) => {
+      const client = path.basename(command, '.exe');
+      calls.push({ client, args });
+      if (args.includes('--version')) return { exitCode: 0, stdout: client === 'claude'
+        ? '2.1.317 (Claude Code)' : 'pi-coding-agent 1.5.0', stderr: '' };
+      if (client === 'claude' && args[0] === 'plugin' && args[1] === 'list') {
+        await releaseClaude.promise;
+        return { exitCode: 1, stdout: '', stderr: '' };
+      }
+      return { exitCode: 0, stdout: client === 'claude' ? '[]' : 'No packages installed.', stderr: '' };
+    } });
+    try {
+      await vi.waitFor(() => {
+        expect(calls).toContainEqual({ client: 'claude', args: ['plugin', 'list', '--json'] });
+        expect(calls).toContainEqual({ client: 'pi', args: ['list'] });
+      });
+    } finally { releaseClaude.resolve(); await read; }
+    const status = await read;
+    expect(calls.filter(({ client, args }) => client === 'claude' && args[0] === 'plugin' && args[1] === 'list')).toHaveLength(1);
+    expect(calls.filter(({ client, args }) => client === 'pi' && args[0] === 'list')).toHaveLength(1);
+    expect(status.inventory!.map(({ pluginId, targetResults }) => [pluginId, ...targetResults.map(({ agent }) => agent)]))
+      .toEqual([['local/one', 'claude', 'pi'], ['local/two', 'claude', 'pi']]);
+    for (const { targetResults } of status.inventory!) {
+      expect(targetResults).toMatchObject([{ content: 'unknown' }, { content: 'absent' }]);
+    }
+  });
+
+  // Test Value Gate: a canceled scoped read retains its cwd until every process
+  // already started by that scope has settled, including a slow sibling.
+  it.skipIf(availableParallelism() < 2)('waits for other active platforms before releasing a canceled status scope', async () => {
+    const options = await multiPlatformStatusFixture();
+    const controller = new AbortController();
+    const cancellation = new DOMException('cancelled', 'AbortError');
+    const probes = new Map<string, { cwd: string; release: (result: NativeCliResult) => void }>();
+    const read = readScopedRecoveryStatus({ ...options, signal: controller.signal,
+      nativeCliRunner: ({ command, args, cwd }) => {
+        expect(args).toEqual(['--version']);
+        const probe = Promise.withResolvers<NativeCliResult>();
+        probes.set(path.basename(command, '.exe'), { cwd: cwd!, release: probe.resolve });
+        return probe.promise;
+      } });
+    const rejected = expect(read).rejects.toBe(cancellation);
+    const result = { exitCode: 0, stdout: '', stderr: '' };
+    try {
+      await vi.waitFor(() => expect([...probes.keys()].sort()).toEqual(['claude', 'pi']));
+      controller.abort(cancellation);
+      probes.get('claude')!.release(result);
+      expect(await fs.pathExists(probes.get('pi')!.cwd)).toBe(true);
+    } finally {
+      controller.abort(cancellation);
+      for (const { release } of probes.values()) release(result);
+      await rejected;
+    }
+    expect(await fs.pathExists(probes.get('pi')!.cwd)).toBe(false);
+  });
+
+  // Test Value Gate: one joint status shares client identity across scopes,
+  // while User and Project inventories require separate cwd evidence.
+  it('shares client discovery across scopes without reusing Project and User inventories', async () => {
+    const { cwd, env, demandOverride: user } = await multiPlatformStatusFixture();
+    const projectRoot = await fs.realpath(cwd);
+    await fs.ensureDir(path.join(projectRoot, '.git'));
+    if (user.preferences.state !== 'valid') throw new Error('Expected valid fixture preferences.');
+    const calls: Array<{ args: string[]; cwd: string }> = [];
+    const status = await readRecoveryStatus({ cwd, env, targets: ['pi'], nativeCliRunner: async (invocation) => {
+      calls.push({ args: invocation.args, cwd: invocation.cwd! });
+      return { exitCode: 0, stdout: invocation.args[0] === '--version'
+        ? 'pi-coding-agent 1.5.0' : 'No packages installed.', stderr: '' };
+    } }, {
+      context: { context: 'project', cwd, projectRoot, scopes: ['user', 'project'] },
+      preferences: user.preferences.value, user, project: { ...user, scope: 'project' },
+    });
+    const probes = calls.filter(({ args }) => args[0] === '--version');
+    expect(probes).toHaveLength(1);
+    expect(probes[0]!.cwd).not.toBe(projectRoot);
+    const inventories = calls.filter(({ args }) => args[0] === 'list');
+    expect(inventories.map((query) => query.cwd === projectRoot)).toEqual([false, true]);
+    expect(status.observedTargets?.map(({ scope, deploymentObservations }) =>
+      [scope, deploymentObservations?.[0]?.after?.registration])).toEqual([
+      ['user', 'absent'], ['user', 'absent'], ['project', 'unknown'], ['project', 'unknown'],
+    ]);
+  });
+
   it('treats a valid empty demand as satisfied and an unselected demand as unknown', async () => {
     const empty = await statusFromObservations({ scope: 'user', cwd: '/tmp/aw-status', context,
       demand: demand([], []), nativeObservations: [] });

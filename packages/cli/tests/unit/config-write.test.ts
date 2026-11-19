@@ -440,7 +440,7 @@ describe('existing command package apply', () => {
   });
 
   // Test Value Gate: cancellation and unconfirmed process cleanup must stop later producers; ordinary renderer failure remains partial.
-  it.each(['cancel', 'cleanup', 'ordinary'] as const)('preserves committed config and %s renderer failure semantics', async (mode) => {
+  it.each(['cancel', 'cleanup', 'cancelled cleanup', 'ordinary'] as const)('preserves committed config and %s renderer failure semantics', async (mode) => {
     const f = await packageFixture({ second: true });
     const secret = 'private-renderer-token';
     await writePluginConfigStore({ ...f.store, values: { token: secret } });
@@ -467,7 +467,10 @@ describe('existing command package apply', () => {
       contexts.push(await fs.readJson(invocation.env.AW_PLUGIN_CONTEXT!));
       if (contexts.length > 1) return renderSuccess(invocation);
       if (mode === 'cancel') { controller.abort(failure); throw failure; }
-      if (mode === 'cleanup') return cleanupRunner.run(invocation, options);
+      if (mode === 'cleanup' || mode === 'cancelled cleanup') {
+        try { return await cleanupRunner.run(invocation, options); }
+        finally { if (mode === 'cancelled cleanup') controller.abort(new DOMException('Refresh interrupted', 'AbortError')); }
+      }
       throw new Error('ordinary renderer preparation failure ' + secret);
     });
     const result = await applyPluginConfigWrite({ ...f.options, apply: true, request: { updates: { mode: 'committed' } },
@@ -483,7 +486,7 @@ describe('existing command package apply', () => {
     } else {
       expect(run).toHaveBeenCalledOnce();
       expect(result).toMatchObject({ error: { configWrite: 'succeeded',
-        ...(mode === 'cleanup' ? { operationDiagnostic: { code: 'pluginProcessCleanupFailed' } } : { message: 'package refresh cancelled' }) } });
+        ...(mode === 'cancel' ? { message: 'package refresh cancelled' } : { operationDiagnostic: { code: 'pluginProcessCleanupFailed' } }) } });
       if ('error' in result) {
         expect((result.error as Error).message).not.toContain(f.cwd);
         expect((result.error as Error).message).not.toContain(secret);

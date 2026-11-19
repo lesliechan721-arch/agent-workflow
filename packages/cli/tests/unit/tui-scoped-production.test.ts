@@ -11,6 +11,7 @@ import { SessionHost } from '../../src/tui/session-host.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { addRoot, observeIntent, removeRoot } from '../../src/intent/intent-store.js';
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
+import * as recoveryCoordinator from '../../src/recovery/coordinator.js';
 import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { CatalogPreparationReadScope } from '../../src/utils/catalog-operation-context.js';
@@ -204,15 +205,34 @@ describe('scoped TUI production reads', () => {
     await removeRoot({ ...value, scope: 'project' }, 'local/demo');
     const otherIntent = await observeIntent({ ...value, scope: 'project' });
     const runtime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
-    value.context.nativeCliRunner = runtime.nativeCliRunner;
-    const dependencies = createTuiControllerDependencies(value.context);
+    const feed = createRebuildProgressFeed();
+    const providerReadProgress: Array<ReturnType<typeof feed.get>['installProgress']> = [];
+    value.context.nativeCliRunner = async (invocation) => {
+      const result = await runtime.nativeCliRunner(invocation);
+      const [installed] = runtime.installed.keys();
+      if (invocation.args.includes('list') && runtime.installed.size === 1 && installed?.startsWith('dependency@')) {
+        providerReadProgress.push(feed.get().installProgress);
+      }
+      return result;
+    };
+    const progress = vi.fn();
+    const unsubscribe = feed.subscribe((snapshot) => {
+      if (snapshot.installProgress) progress(snapshot.installProgress);
+    });
+    const dependencies = createTuiControllerDependencies(value.context, feed);
     const initial = await dependencies.prepareScopedTask!({ kind: 'recovery', command: 'sync',
       scope: 'user', selectors: ['local/demo'], targets: ['codex'] }, new AbortController().signal);
     try {
       const receipt = await dependencies.executeScopedTask!(initial);
       expect(receipt, JSON.stringify(receipt)).toMatchObject({ kind: 'recovery', receipt: { ok: true } });
       expect(runtime.installed.size).toBe(2);
-    } finally { if (initial.kind === 'recovery') await initial.plan.context.dispose(); }
+      expect(progress).toHaveBeenCalledWith({ completed: 0, running: 0, waitingForDependencies: 1, waiting: 1 });
+      expect(providerReadProgress[1]).toEqual({ completed: 0, running: 1, waitingForDependencies: 1, waiting: 0 });
+      expect(progress).toHaveBeenCalledWith({ completed: 2, running: 0, waitingForDependencies: 0, waiting: 0 });
+    } finally {
+      unsubscribe();
+      if (initial.kind === 'recovery') await initial.plan.context.dispose();
+    }
     const installedIds = [...runtime.installed.keys()];
     const configPath = path.join(value.env.CODEX_HOME!, 'config.toml');
     const beforeConfig = await readCodexConfigFile(configPath);
@@ -250,6 +270,30 @@ describe('scoped TUI production reads', () => {
       expect(await observeIntent({ ...value, scope: 'user' })).toMatchObject({ state: 'valid', value: { roots: [] } });
       expect(await observeIntent({ ...value, scope: 'project' })).toEqual(otherIntent);
     } finally { if (plan.kind === 'recovery') await plan.plan.context.dispose(); }
+  });
+
+  it('keeps an outside edit between a verified Codex User package and its Project activation', async () => {
+    const value = await fixture(false, true);
+    const native = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
+    const selection = { scope: 'user' as const, cwd: value.cwd, env: value.env, cliVersion: '1.0.0', targets: ['codex'], yes: true };
+    const plan = await prepareRecovery('sync', ['local/demo'], selection, { nativeCliRunner: native.nativeCliRunner });
+    const shared = plan.joint!.children.flatMap((child) => child.receipt.targetResults)
+      .find((target) => target.pluginId === 'local/demo' && target.scope === 'user')!.deploymentPlans![0]!;
+    const file = path.join(shared.evidence.layout.packageRoot, 'skills', 'example', 'SKILL.md');
+    let changed = false;
+    const receipt = await executeRecovery(plan, { runtime: { debugLogger: { log: async (event) => {
+      if (changed || event.data?.name !== 'recovery.child.execute' || event.data.phase !== 'success') return;
+      await fs.appendFile(file, '\nOutside edit.\n');
+      changed = true;
+    } } } });
+    expect(changed).toBe(true);
+    expect(receipt.ok).toBe(false);
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'local/demo', scope: 'user', execution: 'applied' }),
+      expect.objectContaining({ pluginId: 'local/demo', scope: 'project', execution: 'not-run',
+        blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]) }),
+    ]));
+    await expect(fs.readFile(file, 'utf8')).resolves.toContain('Outside edit.');
   });
 
   // Test Value Gate: updating an installed dependency must not add it as an Intent root.
@@ -680,6 +724,49 @@ describe('scoped TUI production reads', () => {
     expect(await fs.pathExists(path.join(value.env.AW_HOME!, 'platforms', 'codex'))).toBe(false);
     expect(await controller.cancelAndWaitForReads()).toBe(true);
     controller.dispose();
+  });
+
+  it('cancels and drains the native preview refreshed for multiple scopes', async () => {
+    const value = await fixture(false, true);
+    const user = { ...value, scope: 'user' as const };
+    await removeRoot(user, 'local/demo');
+    await addRoot(user, 'local/dependency', await readCatalogSnapshotLogicalIdentity(value.source));
+    value.context.nativeCliRunner = (await createCodexNativeTestRuntime(getCurrentSourceTestIsolation())).nativeCliRunner;
+    const controller = new TuiController(createTuiControllerDependencies(value.context));
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let refresh = false;
+    const refreshPreviews = recoveryCoordinator.refreshRecoveryNativePreviews;
+    vi.spyOn(recoveryCoordinator, 'refreshRecoveryNativePreviews').mockImplementation(async (...args) => {
+      refresh = true;
+      return refreshPreviews(...args);
+    });
+    const adapter = getAgentPluginAdapter('codex');
+    const inspect = adapter.inspect.bind(adapter);
+    let observedSignal: AbortSignal | undefined;
+    vi.spyOn(adapter, 'inspect').mockImplementation(async (ctx, binding) => {
+      if (refresh) {
+        observedSignal = ctx.signal;
+        entered.resolve();
+        await release.promise;
+        ctx.signal?.throwIfAborted();
+      }
+      return inspect(ctx, binding);
+    });
+    const before = await observeIntent(user);
+    try {
+      let settled = false;
+      const preparing = controller.prepareScopedTask({ kind: 'recovery', command: 'sync',
+        scope: 'project', selectors: ['local/demo'], targets: ['codex'] }).finally(() => { settled = true; });
+      await Promise.race([entered.promise, preparing.then(() => { throw new Error('Refreshed preview did not reach the adapter'); })]);
+      controller.cancelScopedPreparation();
+      expect(observedSignal?.aborted).toBe(true);
+      expect(settled).toBe(false);
+      release.resolve();
+      await expect(preparing).rejects.toMatchObject({ name: 'AbortError' });
+      expect(await controller.cancelAndWaitForReads()).toBe(true);
+      expect(await observeIntent(user)).toEqual(before);
+    } finally { release.resolve(); controller.dispose(); }
   });
 
   it('releases Native preparation cancellation before confirmed execution', async () => {

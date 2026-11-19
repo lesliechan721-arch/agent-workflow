@@ -98,8 +98,10 @@ async function createNativeReferenceFixture(preApply = false) {
 
 async function createCommandPackageReferenceFixture(options: {
   foreignSource?: boolean;
+  withClaude?: boolean;
   initialSelection?: 'final' | 'next';
 } = {}) {
+  const platforms: Array<'codex' | 'claude'> = options.withClaude ? ['codex', 'claude'] : ['codex'];
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
@@ -127,7 +129,7 @@ async function createCommandPackageReferenceFixture(options: {
   await createDependencyCatalogSnapshotFixture(sourceRoot, ['provider', 'middle', 'consumer'].map((name) => ({
     name, ...(name === 'consumer' ? { dependencies: ['middle'] } : name === 'middle' ? { dependencies: ['provider'] } : {}),
     configureManifest(manifest) {
-      manifest.platforms = ['codex'];
+      manifest.platforms = platforms;
       manifest.config = { schemaVersion: 5, fields: name === 'provider' ? {
         registry: { type: 'array', default: [], validation: { uniqueBy: 'key' }, items: {
           type: 'object', properties: { key: { type: 'string', required: true } }, additionalProperties: false,
@@ -142,7 +144,7 @@ async function createCommandPackageReferenceFixture(options: {
       manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } }, preApply: { path: './pre-apply.mjs' } };
       manifest.artifacts = { configKeys: name === 'provider' ? ['registry'] : ['selected'], scopes: ['user'] };
       if (name === 'consumer') manifest.managedCommands = {
-        packages: ['personal', 'uninstalled'].map((key) => ({ key, sourceDir: './commands', scope: 'user', platforms: ['codex'], render: true, refreshKeys: ['selected'] })),
+        packages: ['personal', 'uninstalled'].map((key) => ({ key, sourceDir: './commands', scope: 'user', platforms, render: true, refreshKeys: ['selected'] })),
         sets: ['personal', 'uninstalled'].map((key) => ({ set: key, mode: 'dynamic', producer: { kind: 'package', packageKey: key }, refreshKeys: ['selected'] })),
       };
     },
@@ -156,13 +158,16 @@ async function createCommandPackageReferenceFixture(options: {
   if (options.foreignSource) {
     await syncCatalogSourceGeneration({ sourceId: 'other', cliVersion: '1.0.0', env });
   }
-  const { nativeCliRunner: runner } = await createCodexNativeTestRuntime(isolation);
+  const codex = await createCodexNativeTestRuntime(isolation);
+  const claude = options.withClaude ? await createClaudeNativeTestRuntime(isolation) : undefined;
+  const runner = (invocation: NativeCliInvocation) => claude && isClaudeInvocation(invocation)
+    ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
   const run = async (args: string[]) => {
     const output = createCapturedCliIo();
     const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner });
     return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
   };
-  expect(await run(['target', 'set', 'codex'])).toMatchObject({ exitCode: 0 });
+  expect(await run(['target', 'set', ...platforms])).toMatchObject({ exitCode: 0 });
   const source = (await resolveCatalogOperationContext({ sourceIds: ['team'], env })).catalog.sources[0]!.resolution!;
   const setSelected = async (selected: string) => {
     await writePluginConfigStore({ sourceId: 'team', sourceIdentity: source.sourceIdentity,
@@ -282,6 +287,25 @@ describe('cross-plugin public config apply', () => {
     expect(packageRecovered, JSON.stringify(packageRecovered)).toMatchObject({ exitCode: 0 });
     expect(await fs.readJson(config)).toEqual({ selected: 'next' });
   }, 30_000);
+
+  it('updates two hosts and publishes each cross-platform command package once after its provider', async () => {
+    const { run, setSelected, config } = await createCommandPackageReferenceFixture({ withClaude: true });
+    const installed = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
+    expect(installed.exitCode, JSON.stringify(installed.payload.diagnostics)).toBe(0);
+    await setSelected('final');
+    const commits = vi.spyOn(managedCommandStore, 'syncManagedCommandPackage');
+    try {
+      const applied = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user',
+        '--value-json', '[{"key":"final"}]', '--apply', '--yes']);
+      expect(applied.exitCode, JSON.stringify(applied.payload.diagnostics)).toBe(0);
+      expect(applied.payload.data.apply.state).toBe('succeeded');
+      expect(commits.mock.calls.map(([entry]) => entry.producer.key).sort()).toEqual(['personal', 'uninstalled']);
+      await expect(fs.readJson(config)).resolves.toEqual({ selected: 'final' });
+      for (const platform of ['codex', 'claude']) expect(applied.payload.data.apply.targetResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ state: 'completed', target: expect.objectContaining({ pluginId: 'team/consumer', platform }) }),
+      ]));
+    } finally { commits.mockRestore(); }
+  }, 60_000);
 
   // Test Value Gate: Review and execution include platform targets and command
   // packages once, with the same authorization and dependency results.

@@ -34,6 +34,7 @@ import { inventoryRecoveryDiagnostic } from '../utils/inventory-recovery-diagnos
 import { measureRecoveryPerformanceStage } from './performance.js';
 import { withNativeObservationBatch } from '../platforms/inspection-query.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import { mapInstallReads } from './install-concurrency.js';
 
 export interface NativeObservation {
   pluginId: string;
@@ -121,23 +122,24 @@ function withStatusNativeQueries<T, Options extends ReadRecoveryStatusOptions>(o
 async function readAdapterObservations(options: ReadRecoveryStatusOptions, context: ScopeContext,
   demand: DemandSnapshot): Promise<{ observations: NativeObservation[];
     existing: NonNullable<RecoveryStatus['existingTargets']>; owned: NonNullable<RecoveryStatus['ownedTargets']> }> {
-  const observations: NativeObservation[] = [];
-  const existing: NonNullable<RecoveryStatus['existingTargets']> = [];
-  const owned: NonNullable<RecoveryStatus['ownedTargets']> = [];
   let selected: PlatformName[];
   try {
     selected = selectAgents({ preferences: demand.preferences, targets: options.targets }).agents
       .filter((agent): agent is PlatformName => agent !== 'generic');
-  } catch { return { observations, existing, owned }; }
-  const ctx: ReadContext = { cwd: context.executionCwd, env: context.env, signal: options.signal, runner: options.nativeCliRunner,
-    discoveryCache: options.discoveryCache, nativeQuerySession: options.nativeQuerySession,
-    codexObservationSession: options.codexObservationSession, observeNative: options.observeNative };
-  for (const platform of selected) {
+  } catch { return { observations: [], existing: [], owned: [] }; }
+  const platforms = await mapInstallReads(selected, async (platform) => {
+    const observations: NativeObservation[] = [];
+    const existing: NonNullable<RecoveryStatus['existingTargets']> = [];
+    const owned: NonNullable<RecoveryStatus['ownedTargets']> = [];
+    const ctx: ReadContext = { cwd: context.executionCwd, env: context.env, signal: options.signal, runner: options.nativeCliRunner,
+      discoveryCache: options.discoveryCache, nativeQuerySession: options.nativeQuerySession,
+      codexObservationSession: platform === 'codex' ? options.codexObservationSession : undefined,
+      observeNative: options.observeNative };
     options.signal?.throwIfAborted();
     const roots = (demand.roots ?? []).filter((root) => root.plugin
       && resolveDelivery(root.plugin.manifest, platform, demand.scope)?.kind === 'native'
       && (!demand.targetRequirements || demand.targetRequirements.some((item) => item.pluginId === root.pluginId && item.target === platform)));
-    if (!roots.length) continue;
+    if (!roots.length) return { observations, existing, owned };
     const adapter = getAgentPluginAdapter(platform);
     let ownedSession: CodexNativeObservationSession | undefined;
     try {
@@ -390,12 +392,12 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
       options.signal?.throwIfAborted();
       for (const root of roots) observations.push({ pluginId: root.pluginId, platform, content: 'unknown', blockers: [diagnostic('nativeObservationFailed')] });
     } finally {
-      if (ownedSession) {
-        try { await ownedSession.dispose(); } finally { ctx.codexObservationSession = undefined; }
-      }
+      await ownedSession?.dispose();
     }
-  }
-  return { observations, existing, owned };
+    return { observations, existing, owned };
+  }, { signal: options.signal });
+  return { observations: platforms.flatMap((result) => result.observations),
+    existing: platforms.flatMap((result) => result.existing), owned: platforms.flatMap((result) => result.owned) };
 }
 function safeNativePlacement(target: StatusScopedTarget): unknown {
   const component = ({ kind, key, state, metadata }: StatusScopedTarget['components'][number]) => ({
@@ -817,7 +819,7 @@ async function readRecoveryStatusWithQueries(options: ReadRecoveryStatusOptions 
 }, preparedDemand?: JointDemandSnapshot): Promise<RecoveryStatus> {
   options = { ...options, discoveryCache: options.discoveryCache ?? new Map(), catalogSources: new Map() };
   const snapshot = preparedDemand ?? await measureRecoveryPerformanceStage(options, 'status.demand', () => readJointDemand(options));
-  if (options.codexObservationSession || options.nativeObservations) {
+  if (options.codexObservationSession || options.nativeObservations || options.targets && !options.targets.includes('codex')) {
     return readRecoveryStatusInSession(options, snapshot);
   }
   const context = await createScopeContext({ scope: snapshot.context.context,
@@ -911,6 +913,8 @@ async function readRecoveryStatusInSession(options: ReadRecoveryStatusOptions & 
     (!options.targets || options.targets.includes(item.target)) && (!observationPlugins || observationPlugins.has(item.pluginId));
   const scopes = [snapshot.user, ...(snapshot.project ? [snapshot.project] : [])];
   const observed: RecoveryStatus[] = [];
+  // Scope order gives User discovery the neutral cwd before equivalent Project
+  // probes reuse it. Codex also shares a mutable manager and neutral inventory.
   for (const demand of scopes) {
     const nodes = plan.placements.filter((item) => selectedPlacement(item) && (item.scope === demand.scope
       || demand.scope === 'project' && ['codex', 'claude', 'gemini', 'copilot'].includes(item.target)

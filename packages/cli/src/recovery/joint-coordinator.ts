@@ -1,5 +1,5 @@
 import { getCommandPackageId } from '@lesliechan721/aw-plugin-core/manifest';
-import type { Scope } from '../types.js';
+import type { PluginMeta, Scope } from '../types.js';
 import type { RebuildCommandRuntime } from '../commands/rebuild-command.js';
 import { finalizePreparedPlatformRebuildSession } from '../commands/rebuild-integration.js';
 import { addRequirements } from '../commands/intent-command.js';
@@ -12,7 +12,7 @@ import { createScopeContext } from '../intent/scope-context.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
-import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import { CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
@@ -21,9 +21,12 @@ import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, type DemandSnapshot } from './demand.js';
 import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
-import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
+import { checkFootprints, prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
 import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
+import { limitInstallNativeRunner, mapInstallReads } from './install-concurrency.js';
+import { executeJointInstall } from './joint-install-execution.js';
+import { RecoveryInterruptedError, recoveryInterruptionCode } from './interruption.js';
 import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 
@@ -33,6 +36,9 @@ export interface JointRecoveryState {
   removalDependencies: Map<string, string[] | null>;
   children: RecoveryPlan[];
   originalOptions: RecoveryOptions;
+  originalNativeRunner?: NativeCliRunner;
+  targetOrder?: Map<string, number>;
+  bindExecutionSignal?: (signal?: AbortSignal) => void;
   selectors: string[];
   declaration?: { scope: Scope; value: PluginIntent };
   evidence: string;
@@ -44,6 +50,10 @@ function intentReceipt(observation: IntentObservation): RecoveryReceipt['intent'
       : observation.state === 'absent' ? [] : null,
     ...('digest' in observation ? { digest: observation.digest } : {}),
   };
+}
+
+function isInstallBatch(command: RecoveryCommand): boolean {
+  return command === 'install' || command === 'sync';
 }
 
 const observationEvidence = (value: IntentObservation | Awaited<ReturnType<typeof observePreferences>>): string =>
@@ -58,9 +68,16 @@ function asObservation(value: PluginIntent): IntentObservation {
   const rawBytes = Buffer.from(JSON.stringify(value));
   return { state: 'valid', value, digest: calculateIntentDigest(value), rawDigest: calculateIntentDigest(value), rawBytes };
 }
+function targetKey(target: Pick<RecoveryReceipt['requestedTargets'][number], 'pluginId' | 'agent' | 'scope'>): string {
+  return [target.pluginId, target.agent, target.scope].join('\0');
+}
 function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): RecoveryReceipt {
   const receipt = structuredClone(plan.receipt);
   receipt.targetResults = receipts.flatMap((item) => item.targetResults);
+  const reviewedOrder = plan.joint?.targetOrder;
+  const byPosition = (a: RecoveryReceipt['requestedTargets'][number], b: RecoveryReceipt['requestedTargets'][number]) =>
+    (reviewedOrder?.get(targetKey(a)) ?? Number.MAX_SAFE_INTEGER) - (reviewedOrder?.get(targetKey(b)) ?? Number.MAX_SAFE_INTEGER);
+  if (reviewedOrder) receipt.targetResults.sort(byPosition);
   for (const root of plan.joint?.demand.roots ?? []) {
     if (!receipt.requestedRoots.includes(root.pluginId) || !receipt.selection.agents.includes(root.target)
       || !['unsupported', 'excluded'].includes(root.state)) continue;
@@ -90,6 +107,7 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
     }
   }
   receipt.remainingTargets = receipts.flatMap((item) => item.remainingTargets);
+  if (reviewedOrder) receipt.remainingTargets.sort(byPosition);
   receipt.errors = [...receipt.blockers, ...receipts.flatMap((item) => [...item.blockers, ...item.errors])];
   receipt.outputsMayHaveChanged = receipts.some((item) => item.outputsMayHaveChanged);
   receipt.commandResults = receipts.flatMap((item) => item.commandResults ?? []);
@@ -117,13 +135,14 @@ function finalStatusReadFailure(status: RecoveryStatus, receipt: RecoveryReceipt
   return undefined;
 }
 
-async function readJointPreparation(command: RecoveryCommand, options: RecoveryOptions, locked = false): Promise<{
+async function readJointPreparation(command: RecoveryCommand, options: RecoveryOptions, locked = false, suppliedReads?: CatalogPreparationReadScope): Promise<{
   options: RecoveryOptions;
   snapshot: JointDemandSnapshot;
   catalogReadScope?: CatalogPreparationReadScope;
+  manifestReads?: Map<string, Promise<PluginMeta>>;
 }> {
-  const catalogReadScope = command === 'install' && (locked || !options.catalogOperationContext)
-    ? new CatalogPreparationReadScope(options) : undefined;
+  const catalogReadScope = isInstallBatch(command)
+    ? (locked ? undefined : suppliedReads) ?? new CatalogPreparationReadScope(options) : undefined;
   if (locked && catalogReadScope && options.catalogOperationContext) {
     // A caller may have reviewed a subset of sources. Rebind just those IDs under
     // the lock so a changed or removed source makes the existing Review stale.
@@ -132,20 +151,26 @@ async function readJointPreparation(command: RecoveryCommand, options: RecoveryO
     const sourceIds = configSnapshot.config.sources.map((source) => source.id).filter((id) => reviewed.has(id));
     options = { ...options, catalogOperationContext: await catalogReadScope.resolve({ configSnapshot, sourceIds }) };
   }
-  const snapshot = await readJointDemand({ ...options, catalogReadScope });
-  return { options, snapshot, catalogReadScope };
+  const manifestReads = isInstallBatch(command) ? new Map<string, Promise<PluginMeta>>() : undefined;
+  const snapshot = await readJointDemand({ ...options, catalogReadScope, manifestReads });
+  return { options, snapshot, catalogReadScope, manifestReads };
 }
 
 /** Complete requirements determine placement before execution selectors are applied. */
 export async function prepareJointRecovery(command: RecoveryCommand, selectors: readonly string[],
   options: RecoveryOptions, runtime: RebuildCommandRuntime,
   preparation?: Awaited<ReturnType<typeof readJointPreparation>>): Promise<RecoveryPlan> {
-  runtime = { ...runtime, preparedArtifactRenderResults: runtime.preparedArtifactRenderResults ?? new Map() };
-  const { snapshot, catalogReadScope } = preparation ?? await readJointPreparation(command, options);
-  const prepare = (current: RebuildCommandRuntime) => {
+  const originalRunner = runtime.nativeCliRunner ?? getDefaultNativeCliRunner();
+  runtime = { ...runtime, ...(isInstallBatch(command) ? { nativeCliRunner: limitInstallNativeRunner(originalRunner) } : {}),
+    preparedArtifactRenderResults: runtime.preparedArtifactRenderResults ?? new Map() };
+  const { snapshot, catalogReadScope, manifestReads } = preparation ?? await readJointPreparation(command, options, false, runtime.catalogReadScope);
+  const prepare = async (current: RebuildCommandRuntime) => {
     const read = (nativeObservationBatch?: NativeObservationBatch) => prepareJointRecoveryInSession(
-      command, selectors, options, current, snapshot, { catalogReadScope, nativeObservationBatch });
-    return command === 'install' ? withNativeObservationBatch({ runner: current.nativeCliRunner, signal: options.signal }, read) : read();
+      command, selectors, options, current, snapshot, { catalogReadScope, nativeObservationBatch }, manifestReads);
+    const plan = isInstallBatch(command)
+      ? await withNativeObservationBatch({ runner: current.nativeCliRunner, signal: options.signal }, read) : await read();
+    plan.joint!.originalNativeRunner = originalRunner;
+    return plan;
   };
   if (runtime.codexObservationSession) return prepare(runtime);
   const observationContext = await createScopeContext({ ...options, scope: snapshot.context.context });
@@ -155,6 +180,7 @@ export async function prepareJointRecovery(command: RecoveryCommand, selectors: 
     env: observationContext.env, runner: (invocation) => sessionRunner(invocation), manager: runtime.codexManager });
   try {
     const plan = await prepare({ ...runtime, codexObservationSession: session });
+    plan.joint!.bindExecutionSignal = (signal) => { sessionRunner = bindNativeCliRunnerSignal(executionRunner, signal); };
     const dispose = plan.context.dispose;
     plan.context.dispose = async () => {
       try { await dispose(); } finally { try { await session.dispose(); } finally { await observationContext.dispose(); } }
@@ -165,13 +191,13 @@ export async function prepareJointRecovery(command: RecoveryCommand, selectors: 
     throw error;
   } finally {
     // The same observation session also serves confirmed writes, which cannot use preparation cancellation.
-    sessionRunner = executionRunner;
+    sessionRunner = bindNativeCliRunnerSignal(executionRunner, runtime.signal);
   }
 }
 
 async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors: readonly string[],
   { checkInstallCatalog, ...options }: RecoveryOptions, runtime: RebuildCommandRuntime, snapshot: JointDemandSnapshot,
-  { catalogReadScope, nativeObservationBatch }: RecoveryPreparationReads): Promise<RecoveryPlan> {
+  { catalogReadScope, nativeObservationBatch }: RecoveryPreparationReads, manifestReads?: Map<string, Promise<PluginMeta>>): Promise<RecoveryPlan> {
   // Status observes saved requirements, before projecting proposed declarations.
   // Reuse them only within this preparation; execution reads them again under the lock.
   const savedDemand = snapshot;
@@ -202,7 +228,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
           value.sources[sourceId] = { logicalIdentity: identity };
           value.roots.push({ pluginId: item.pluginId });
         }
-        snapshot = { ...snapshot, [currentScope]: await readDemand({ ...options, catalogReadScope, preferences: undefined, scope: currentScope, intent: asObservation(value) }) };
+        snapshot = { ...snapshot, [currentScope]: await readDemand({ ...options, catalogReadScope, manifestReads, preferences: undefined, scope: currentScope, intent: asObservation(value) }) };
       }
       if (snapshot.preferences) snapshot.preferences = { ...snapshot.preferences,
         targets: normalizeAgents([...snapshot.preferences.targets, ...installed.map((item) => item.agent!)]) };
@@ -235,7 +261,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       if (proposed.state && !proposed.errors.length) {
         requested = proposed.roots;
         if (proposed.changed) declaration = { scope, value: proposed.state };
-        const demand = await readDemand({ ...options, catalogReadScope, preferences: undefined, scope, intent: asObservation(proposed.state) });
+        const demand = await readDemand({ ...options, catalogReadScope, manifestReads, preferences: undefined, scope, intent: asObservation(proposed.state) });
         checkInstallCatalog?.(demand.catalogOperationContext, requested);
         snapshot = { ...snapshot, [scope]: demand };
       } else if (checkInstallCatalog && catalogReadScope
@@ -471,15 +497,17 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     }
     plan.dependencyCleanupTargets = automaticRetirements.map((item) => ({ pluginId: item.pluginId, agent: item.target, scope: item.scope }));
     const nativeTargets = targets.filter((target) => target !== 'generic');
-    const targetGroups: Array<typeof targets> = [...(nativeTargets.length ? [nativeTargets] : []),
-      ...targets.filter((target) => target === 'generic').map((target) => [target])];
+    const batch = isInstallBatch(command);
+    const portableGenerations = new Map<string, Promise<void>>();
+    const targetGroups: Array<typeof targets> = batch ? [...nativeTargets, ...targets.filter((target) => target === 'generic')].map((target) => [target])
+      : [...(nativeTargets.length ? [nativeTargets] : []), ...targets.filter((target) => target === 'generic').map((target) => [target])];
     for (const currentScope of snapshot.context.scopes) {
-      for (const groupTargets of targetGroups) {
+      const prepareGroup = async (groupTargets: typeof targets) => {
         const placements = selected.filter((item) => item.scope === currentScope && groupTargets.includes(item.target)
           && !(command === 'install' && scope === 'project' && currentScope === 'user'
             && currentStatus.observedTargets?.some((observed) => observed.pluginId === item.pluginId
               && observed.agent === item.target && observed.scope === 'user' && observed.content === 'satisfied')));
-        if (!placements.length) continue;
+        if (!placements.length) return;
         const sourceDemand = currentScope === 'project' ? snapshot.project! : snapshot.user;
         const childPlacements = [
           ...demand.placements.filter((item) => item.scope === currentScope && groupTargets.includes(item.target)),
@@ -510,7 +538,11 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
               ? userProviders.filter((provider) => provider.target !== 'generic'
                 && !placements.some((item) => item.pluginId === provider.pluginId && item.target === provider.target))
                 .map((item) => ({ pluginId: item.pluginId, platform: item.target as import('../types.js').PlatformName, scope: 'user' as const })) : [],
-          }, runtime, { catalogReadScope, nativeObservationBatch: children.length === 0 ? nativeObservationBatch : undefined });
+          }, batch && groupTargets[0] !== 'generic'
+            ? { ...runtime, batchInstallPlatform: groupTargets[0] as import('../types.js').PlatformName } : runtime,
+          { catalogReadScope, portableGenerations, nativeObservationBatch: batch || children.length === 0 ? nativeObservationBatch : undefined });
+        // Track contexts as soon as acquired, including a sibling that finishes after cancellation.
+        children.push(child);
         // Synthetic roots are only an execution projection, never persisted Intent.
         child.originalIntent = observationEvidence(sourceDemand.intent);
         if (options.existingOnly) {
@@ -522,8 +554,23 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
             }
           }
         }
-        children.push(child);
-      }
+        return child;
+      };
+      if (batch) {
+        const start = children.length;
+        const ordered = await mapInstallReads(targetGroups, prepareGroup, { signal: options.signal });
+        children.splice(start, children.length - start, ...ordered.filter((child): child is RecoveryPlan => child !== undefined));
+      } else for (const groupTargets of targetGroups) await prepareGroup(groupTargets);
+    }
+    if (batch) for (const currentScope of snapshot.context.scopes) {
+      const scoped = children.filter((child) => child.options.scope === currentScope);
+      if (scoped.length < 2) continue;
+      const first = scoped[0]!;
+      await checkFootprints({ ...first, changes: [],
+        nativeGroups: scoped.flatMap((child) => child.nativeGroups),
+        portableGroups: scoped.flatMap((child) => child.portableGroups),
+        receipt: { ...first.receipt, targetResults: scoped.flatMap((child) => child.receipt.targetResults) },
+      });
     }
     const portableCandidates = children.flatMap((child) => child.portableGroups.flatMap((prepared) => prepared.targets
       .filter((target) => target.disposition !== 'remove')
@@ -635,6 +682,17 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       }
       children.unshift(...cleanups);
     }
+    if (batch && !children.some((child) => child.command === 'cleanup')) {
+      // The public receipt historically lists each scope's Native roots across its selected
+      // clients, followed by Portable roots. Platform workers may finish in any order.
+      const order = new Map<string, number>();
+      const deliveries: AgentId[][] = [nativeTargets, targets.filter((agent) => agent === 'generic')];
+      for (const scope of snapshot.context.scopes) for (const agents of deliveries) {
+        const roots = new Set(selected.filter((item) => item.scope === scope && agents.includes(item.target)).map((item) => item.pluginId));
+        for (const pluginId of roots) for (const agent of agents) order.set(targetKey({ pluginId, agent, scope }), order.size);
+      }
+      joint.targetOrder = order;
+    }
     // The first preview already seals every target in its native group. A lone
     // Gemini/Copilot ensure group has no later sibling contribution to refresh here.
     const onlyChild = children.length === 1 ? children[0] : undefined;
@@ -651,7 +709,23 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       && onlyChild.portableResidues.length === 0;
     // Other scopes and groups can change shared descriptors, preApply actions
     // or retained packages. Refresh those previews before exposing Review.
-    if (!singleNativePreviewComplete) for (const child of children) await refreshRecoveryNativePreviews(child, catalogReadScope);
+    if (!singleNativePreviewComplete) {
+      if (batch) {
+        const nativeChildren = children.filter((child) => child.nativeGroups.length);
+        const platforms = [...new Set(nativeChildren.map((child) => child.runtime.batchInstallPlatform))];
+        await mapInstallReads(platforms, async (platform) => {
+          const scoped = nativeChildren.filter((item) => item.runtime.batchInstallPlatform === platform);
+          // One complete ensure plan owns this platform session. Its initial preview already sealed
+          // every candidate; only another source or scope can contribute a later shared descriptor.
+          const only = scoped.length === 1 ? scoped[0] : undefined;
+          const preview = only?.nativeGroups.length === 1 ? only.nativeGroups[0]!.preview : undefined;
+          if (platform && only && !only.blockExecution && only.receipt.targetResults.every((target) => target.blockers.length === 0)
+            && preview?.operationPlan?.deploymentPlans?.length
+            && preview.operationPlan.deploymentPlans.every((deployment) => deployment.operation === 'ensure')) return;
+          for (const child of scoped) await refreshRecoveryNativePreviews(child, catalogReadScope, options.signal);
+        }, { signal: options.signal });
+      } else for (const child of children) await refreshRecoveryNativePreviews(child, catalogReadScope, options.signal);
+    }
     const preparedNativeTargets = children.flatMap((child) => child.receipt.targetResults)
       .filter((target) => target.delivery?.kind === 'native');
     const failedProviders = preparedNativeTargets.filter((target) => target.blockers.length > 0);
@@ -694,6 +768,18 @@ export async function executeJointRecovery(plan: RecoveryPlan,
   execution: { yes?: boolean; runtime?: RebuildCommandRuntime }): Promise<RecoveryReceipt> {
   const joint = plan.joint!;
   const performanceRuntime = { ...plan.runtime, ...execution.runtime };
+  if (isInstallBatch(plan.command)) {
+    const override = execution.runtime?.nativeCliRunner;
+    if (!override || override === joint.originalNativeRunner || override === plan.runtime.nativeCliRunner) {
+      performanceRuntime.nativeCliRunner = plan.runtime.nativeCliRunner;
+      joint.bindExecutionSignal?.(performanceRuntime.signal);
+    } else {
+      performanceRuntime.nativeCliRunner = limitInstallNativeRunner(override);
+      performanceRuntime.codexObservationSession = execution.runtime?.codexObservationSession;
+    }
+  }
+  let lockedPlan: RecoveryPlan | undefined;
+  let completedReceipt: RecoveryReceipt | undefined;
   let lockWaitStartedAt: number | undefined;
   try {
     if (plan.sourceRefreshes.length) {
@@ -702,13 +788,13 @@ export async function executeJointRecovery(plan: RecoveryPlan,
     }
     lockWaitStartedAt = performance.now();
     await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'start', lockWaitStartedAt);
-    return await withAwHomeMutationLock({ env: plan.options.env, token: execution.runtime?.awHomeMutationToken ?? plan.runtime.awHomeMutationToken,
+    return await withAwHomeMutationLock({ env: plan.options.env, signal: performanceRuntime.signal, token: execution.runtime?.awHomeMutationToken ?? plan.runtime.awHomeMutationToken,
       action: async (token) => {
         const acquiredAt = lockWaitStartedAt!;
         lockWaitStartedAt = undefined;
         await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'success', acquiredAt);
         const preparation = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.demand', () =>
-          readJointPreparation(plan.command, joint.originalOptions, true));
+          readJointPreparation(plan.command, { ...joint.originalOptions, signal: performanceRuntime.signal }, true));
         const actual = preparation.snapshot;
         const currentIntent = (plan.options.scope === 'project' ? actual.project! : actual.user).intent;
         plan.receipt.intent = intentReceipt(currentIntent);
@@ -724,11 +810,14 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         (execution.runtime?.codexObservationSession ?? plan.runtime.codexObservationSession)?.invalidate();
         const checked = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.recheck', () =>
           prepareJointRecovery(plan.command, joint.selectors, preparation.options,
-            { ...plan.runtime, ...execution.runtime, awHomeMutationToken: token },
+            { ...performanceRuntime, awHomeMutationToken: token },
             preparation.catalogReadScope ? preparation : undefined));
         const stable = !checked.blockExecution && JSON.stringify(describeRecoveryPlan(plan)) === JSON.stringify(describeRecoveryPlan(checked));
-        await checked.context.dispose();
+        lockedPlan = checked;
+        const parallel = isInstallBatch(plan.command) && !joint.children.some((child) => child.command === 'cleanup');
+        const children = parallel ? checked.joint!.children : joint.children;
         if (!stable) { plan.receipt.blockers.push(diagnostic('operationReviewStale')); return mergeReceipts(plan, []); }
+        performanceRuntime.signal?.throwIfAborted();
         if (joint.originalOptions.preferences) {
           const saved = await writePreferences({ ...plan.options, scope: 'user', token }, joint.originalOptions.preferences);
           plan.receipt.preferencesChanged = saved.changed;
@@ -737,7 +826,11 @@ export async function executeJointRecovery(plan: RecoveryPlan,
             plan.receipt.blockers.push(diagnostic('deploymentPreferencesUnavailable'));
             return mergeReceipts(plan, []);
           }
-          for (const child of joint.children) {
+          if (JSON.stringify(committed.value) !== JSON.stringify(saved.value)) {
+            plan.receipt.blockers.push(diagnostic('operationReviewStale'));
+            return mergeReceipts(plan, []);
+          }
+          for (const child of children) {
             child.demand.preferences = committed;
             if (child.options.demandOverride) child.options.demandOverride.preferences = committed;
             child.preferencesEvidence = observationEvidence(committed);
@@ -755,6 +848,10 @@ export async function executeJointRecovery(plan: RecoveryPlan,
                 state: committed.state, filePath: await resolveIntentPath({ ...plan.options, scope: joint.declaration.scope }) }));
             return mergeReceipts(plan, []);
           }
+          if (calculateIntentDigest(committed.value) !== calculateIntentDigest(saved.value)) {
+            plan.receipt.blockers.push(diagnostic('operationReviewStale'));
+            return mergeReceipts(plan, []);
+          }
         }
         const results: RecoveryReceipt[] = joint.children.filter((child) => child.blockExecution
           && child.receipt.requestedTargets.length === 0).map((child) => child.receipt);
@@ -762,9 +859,19 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         const failedPackages = new Set<string>();
         const failedNodes = new Set<string>();
         const packageResults: NonNullable<RecoveryReceipt['commandResults']> = [];
-        const runtime: RebuildCommandRuntime = { ...plan.runtime, ...execution.runtime, awHomeMutationToken: token };
+        const runtime: RebuildCommandRuntime = { ...performanceRuntime, awHomeMutationToken: token };
         runtime.preApplyExecutionCache ??= new Map();
         runtime.managedCommandProducerCache ??= new Map();
+        let interrupted: unknown;
+        if (parallel) {
+          const installed = await executeJointInstall({ children, demand: checked.joint!.demand, runtime, token,
+            yes: execution.yes ?? plan.options.yes, existingOnly: joint.originalOptions.existingOnly });
+          interrupted = installed.interruption;
+          results.push(...installed.receipts);
+          packageResults.push(...installed.commands);
+          plan.receipt.blockers.push(...installed.blockers);
+          for (const result of installed.commands) if (result.state !== 'completed') failedPackages.add(getCommandPackageId(result.producer));
+        } else {
         const packages = runtime.configApplyPackages;
         const failedCleanups: Array<{ pluginId: string; agent: import('../intent/deployment-preferences.js').AgentId; scope: Scope }> = [];
         const executeChild = async (child: RecoveryPlan, pluginIds: string | string[], agent: import('../intent/deployment-preferences.js').AgentId): Promise<RecoveryReceipt> => {
@@ -977,6 +1084,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
             }
           }
         }
+        }
         const receipt = mergeReceipts(plan, results);
         receipt.commandResults = [...new Map([...packageResults, ...(receipt.commandResults ?? [])]
           .map((result) => [getCommandPackageId(result.producer), result])).values()];
@@ -986,6 +1094,9 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         receipt.outputsMayHaveChanged ||= packageResults.some((result) => result.state === 'completed');
         receipt.errors.push(...results.flatMap((result) => result.targetResults.flatMap((target) => target.blockers)));
 
+        completedReceipt = receipt;
+        if (interrupted) throw interrupted;
+        runtime.signal?.throwIfAborted();
         const { cwd, scope, env, cliVersion } = joint.originalOptions;
         const context = joint.snapshot.context.context;
         let statusFailure: RecoveryDiagnostic | undefined;
@@ -994,12 +1105,13 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           // final read to the current sources, once per binding across both scopes.
           const status = await measureRecoveryPerformanceStage(runtime, 'recovery.status', () =>
             readRecoveryStatus({ cwd, scope, context, env, cliVersion, expectedProjectRoot: joint.snapshot.context.projectRoot,
-              catalogReadScope: new CatalogPreparationReadScope({ env }),
-              nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession }));
+              catalogReadScope: new CatalogPreparationReadScope({ env, signal: runtime.signal }), signal: runtime.signal,
+              nativeCliRunner: runtime.nativeCliRunner, ...(isInstallBatch(plan.command) ? {} : { codexObservationSession: runtime.codexObservationSession }) }));
           receipt.allSatisfied = status.allSatisfied;
           receipt.inSync = status.inSync;
           statusFailure = finalStatusReadFailure(status, receipt);
         } catch (error) {
+          if (recoveryInterruptionCode(error, runtime.signal)) throw error;
           receipt.allSatisfied = null;
           receipt.inSync = null;
           statusFailure = diagnostic(readSafeOperationError(error)?.code ?? errorCode(error, 'statusUnavailable'));
@@ -1016,6 +1128,17 @@ export async function executeJointRecovery(plan: RecoveryPlan,
     if (lockWaitStartedAt !== undefined) {
       await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'failure', lockWaitStartedAt);
     }
+    const code = recoveryInterruptionCode(error, performanceRuntime.signal);
+    if (code) {
+      const receipt = completedReceipt ?? structuredClone(plan.receipt);
+      receipt.ok = false;
+      receipt.allSatisfied = null;
+      receipt.inSync = null;
+      if (!receipt.errors.some((entry) => entry.code === code)) receipt.errors.push(diagnostic(code));
+      receipt.remainingTargets = receipt.targetResults.filter((target) => target.blockers.length || !['applied', 'no-op'].includes(target.execution))
+        .map(({ pluginId, agent, scope, delivery }) => ({ pluginId, agent, scope, delivery }));
+      throw new RecoveryInterruptedError(receipt, error);
+    }
     throw error;
-  } finally { await plan.context.dispose(); }
+  } finally { try { await lockedPlan?.context.dispose(); } finally { await plan.context.dispose(); } }
 }

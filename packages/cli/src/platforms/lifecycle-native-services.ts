@@ -21,7 +21,8 @@ async function readObject(file: string): Promise<Record<string, unknown>> {
 function fail(code: string): never { throw Object.assign(new Error(code), { code, mutation: 'none' }); }
 
 /** Fixed host operations for the existing lock-owning execution pipeline. */
-export function createNativeLifecycleServices(ctx: ReadContext & Pick<MutationContext, 'geminiActivationSnapshot'>, evidence: PreparationEvidence):
+export function createNativeLifecycleServices(ctx: ReadContext & Pick<MutationContext, 'geminiActivationSnapshot'>, evidence: PreparationEvidence,
+  beforeCodexMarketplaceAdd?: () => Promise<void>):
   Pick<MutationContext['services'], 'registerMarketplace' | 'setActivation'> {
   const run = async (binding: DeploymentBinding, args: string[]): Promise<void> => {
     const product = selectNativeProduct(binding.consumers);
@@ -37,11 +38,17 @@ export function createNativeLifecycleServices(ctx: ReadContext & Pick<MutationCo
       if (binding.route === 'codex-marketplace') {
         const product = binding.consumers.find((item) => item.entry?.kind === 'cli');
         if (!product || product.entry?.kind !== 'cli') fail('clientInstallEntryUnavailable');
-        const { snapshot } = await readCodexConfigFile(path.join(product.entry.configRoot, 'config.toml'));
-        const old = snapshot.marketplaces[layout.marketplaceName];
-        if (old) {
-          if (!isCanonicalCodexMarketplaceRegistration(old, layout.marketplaceRoot)) fail('marketplaceRegistrationForeign');
-          return { changed: false, mutation: 'none' };
+        const configFile = path.join(product.entry.configRoot, 'config.toml');
+        const registered = async (): Promise<boolean> => {
+          const old = (await readCodexConfigFile(configFile)).snapshot.marketplaces[layout.marketplaceName!];
+          if (!old) return false;
+          if (!isCanonicalCodexMarketplaceRegistration(old, layout.marketplaceRoot!)) fail('marketplaceRegistrationForeign');
+          return true;
+        };
+        if (await registered()) return { changed: false, mutation: 'none' };
+        if (beforeCodexMarketplaceAdd) {
+          await beforeCodexMarketplaceAdd();
+          if (await registered()) return { changed: false, mutation: 'none' };
         }
         await run(binding, ['plugin', 'marketplace', 'add', layout.marketplaceRoot]);
       } else if (binding.route === 'claude-marketplace' || binding.route === 'copilot-marketplace') {

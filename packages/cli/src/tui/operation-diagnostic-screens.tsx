@@ -5,7 +5,7 @@ import type {
   OperationHistorySummary,
 } from './operation-history.js';
 import type { TuiStatus } from './theme.js';
-import type { PlatformName, Scope } from '../types.js';
+import type { PlatformTarget, Scope } from '../types.js';
 import { agentLabel } from './glossary.js';
 
 interface DetailLine {
@@ -49,7 +49,7 @@ function effectLines(effects: OperationEffectFacts): DetailLine[] {
   );
 }
 
-function targetLabel(target: { pluginId?: string; platform: PlatformName; scope: Scope }): string {
+function targetLabel(target: { pluginId?: string; platform: PlatformTarget; scope: Scope }): string {
   const scope = target.scope === 'project' ? '当前项目' : '所有项目';
   const platform = agentLabel(target.platform);
   return [target.pluginId, platform, scope].filter((value): value is string => Boolean(value)).join(' · ');

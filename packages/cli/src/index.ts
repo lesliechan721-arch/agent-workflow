@@ -2955,10 +2955,19 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
         argv: ['aw', 'dev', 'catalog', 'create', ...(typeof workspaceRoot === 'string' ? ['--workspace-root', workspaceRoot] : [])],
         reason: 'Create a Catalog Workspace explicitly before running authoring commands.', requiresConfirmation: false });
     }
+    interruption.cleanupFailed ||= result.diagnostics.some((entry) => entry.code === 'processCleanupUnconfirmed');
+    if (interruption.exitCode || interruption.cleanupFailed) {
+      const code = interruption.cleanupFailed ? 'processCleanupUnconfirmed' : 'operationInterrupted';
+      if (!result.diagnostics.some((entry) => entry.code === code && !entry.subject)) {
+        result.diagnostics.push({ code, severity: 'error', message: interruption.cleanupFailed
+          ? 'Process cleanup could not be confirmed.'
+          : 'The command was interrupted. Completed changes are retained in the result.' });
+      }
+    }
     io.stdout(json ? `${JSON.stringify(result)}\n` : renderPublicResult(result, awArgs.includes('--verbose') || awArgs.includes('-v')));
     for (const diagnostic of result.diagnostics) io.stderr(`${diagnostic.code}: ${diagnostic.message}\n`);
     if (options.diagnostics?.verbose || awArgs.includes('--verbose')) for (const line of stderr) io.stderr(`${safePublicMessage(line.trim())}\n`);
-    return interruption.exitCode ? interruption.cleanupFailed ? 1 : interruption.exitCode : publicExitCode(result, invalid);
+    return interruption.cleanupFailed ? 1 : interruption.exitCode ?? publicExitCode(result, invalid);
   };
   if (presentation.version) return emit(commandResult('version', { version: resolveCliVersion(), resultSchemaVersion: CLI_OUTPUT_SCHEMA_VERSION }));
   if (selected && presentation.help || argv.length === 0 && !context.interactive || selected === program && json) {
@@ -2976,12 +2985,20 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
     }
     if (json) return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'invalidOptionCombination', severity: 'error', message: 'tui cannot use --json.' }] }), true);
     if (!context.interactive) return emit(commandResult('tui', {}, { status: 'blocked', diagnostics: [{ code: 'interactiveTerminalRequired', severity: 'error', message: 'The TUI requires an interactive terminal.' }] }));
-    const tuiContext = createCliExecutionContext({ ...options, io, diagnostics: toCliDiagnosticsOptions('console', bareOptions ?? {}, options.diagnostics) });
+    const tuiContext = createCliExecutionContext({ ...options, io, interruption,
+      signal: options.signal ? AbortSignal.any([options.signal, interruption.signal]) : interruption.signal, diagnostics: toCliDiagnosticsOptions('console', bareOptions ?? {}, options.diagnostics) });
+    const stopListening = interruption.listen();
     try { return await runActionWithContext(tuiContext, async () => {
       const { runConsoleController } = await import('./commands/console.js');
-      return runConsoleController(tuiContext);
+      const code = await runConsoleController(tuiContext);
+      if (interruption.cleanupFailed) {
+        io.stderr('processCleanupUnconfirmed: Process cleanup could not be confirmed.\n');
+        return 1;
+      }
+      return interruption.exitCode ?? code;
     }); }
     catch (error) { return emit(commandResult('tui', {}, { status: 'failed', diagnostics: [{ code: 'tuiFailed', severity: 'error', message: safePublicMessage(error instanceof Error ? error.message : String(error)) }] })); }
+    finally { stopListening(); }
   }
   // Only these adapters carry cancellation through every long-running child.
   // Other routes retain Node's normal signal termination until their domain
@@ -3027,7 +3044,6 @@ export async function runCli(argv: string[], options: CliRuntimeOptions = {}): P
       if (typeof logs.stderr === 'string') io.stderr(redactString(logs.stderr));
     }
     const result = projectReceipt(id!, receipt, { yes: awArgs.includes('--yes') || awArgs.includes('-y'), exitCode, confirmation });
-    if (interruption.exitCode) result.diagnostics.push({ code: interruption.cleanupFailed ? 'processCleanupUnconfirmed' : 'operationInterrupted', severity: 'error', message: interruption.cleanupFailed ? 'Process cleanup could not be confirmed after interruption.' : 'The command was interrupted. Completed changes are retained in the result.' });
     if (result.status === 'success' && ['dev.plugin.create', 'dev.skill.create'].includes(id!)) {
       const data = result.data as Record<string, unknown>;
       const name = typeof data.pluginName === 'string' ? data.pluginName : selected?.args[0];

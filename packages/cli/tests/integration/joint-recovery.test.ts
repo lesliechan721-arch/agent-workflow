@@ -1,8 +1,10 @@
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import type { CatalogGenerationStateFileV1 } from '../../src/types.js';
@@ -23,7 +25,7 @@ import { readRecoveryStatus } from '../../src/recovery/status.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 import { snapshotRegularTree } from '../helpers/write-command-fixture.js';
 
-async function fixture(collide = false, platforms: Array<'generic' | 'opencode' | 'cursor'> = ['generic'], switchHook = false, graph: Record<string, string[]> = { a: ['d'], b: ['d'], d: [] }) {
+async function fixture(collide = false, platforms: Array<'generic' | 'opencode' | 'cursor' | 'claude'> = ['generic'], switchHook = false, graph: Record<string, string[]> = { a: ['d'], b: ['d'], d: [] }) {
   const names = Object.keys(graph).sort();
   const skill = (name: string) => collide && name === 'b' ? 'a' : name;
   const isolation = getCurrentSourceTestIsolation();
@@ -131,6 +133,77 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(await observeIntent(other)).toEqual(otherBefore);
   }, 30000);
 
+  it('publishes two independent generic Skills concurrently and returns their reviewed order', async () => {
+    const value = await fixture(false, ['generic'], false, { a: [], b: [] });
+    const plan = await prepareRecovery('install', ['team/a', 'team/b'], { ...value.options, scope: 'user', context: 'user' });
+    const order = plan.receipt.requestedTargets.map((item) => item.pluginId);
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+    const copy = fs.copy.bind(fs);
+    const entered = new Set<string>();
+    let deadlineExpired = false;
+    let release!: () => void;
+    const bothEntered = new Promise<void>((resolve) => { release = resolve; });
+    let overlapped = false;
+    const copied = vi.spyOn(fs, 'copy').mockImplementation(async (source: string, destination: string, options?: fs.CopyOptions) => {
+      if (path.basename(path.dirname(destination)).startsWith('.aw-portable-stage-')) {
+        entered.add(path.basename(destination));
+        if (entered.size === 2) { overlapped = !deadlineExpired; release(); }
+        await bothEntered;
+      }
+      await copy(source, destination, options);
+    });
+    const deadline = setTimeout(() => { deadlineExpired = true; release(); }, 5_000);
+    try {
+      const receipt = await executeRecovery(plan);
+      expect(receipt.ok, JSON.stringify(receipt.errors)).toBe(true);
+      expect(overlapped).toBe(true);
+      expect(receipt.targetResults.map((item) => item.pluginId)).toEqual(order);
+      for (const name of ['a', 'b']) {
+        await expect(fs.readFile(path.join(value.userRoot, name, 'SKILL.md'), 'utf8')).resolves.toContain(`Use ${name}.`);
+        await expect(fs.pathExists(path.join(value.userRoot, name, SKILL_OWNER_MARKER))).resolves.toBe(true);
+      }
+    } finally { clearTimeout(deadline); release(); copied.mockRestore(); parallelism.mockRestore(); }
+  }, 30000);
+
+  it('distinguishes a waiting consumer from ready generic targets queued behind a writer', async () => {
+    const value = await fixture(false, ['generic'], false, { a: ['d'], b: [], c: [], d: [], e: [] });
+    const plan = await prepareRecovery('install', ['team/a', 'team/c', 'team/e'], { ...value.options, scope: 'user', context: 'user' });
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(1);
+    const copy = fs.copy.bind(fs);
+    const firstWriter = Promise.withResolvers<void>();
+    const releaseFirst = Promise.withResolvers<void>();
+    const started: string[] = [];
+    const copied = vi.spyOn(fs, 'copy').mockImplementation(async (source: string, destination: string, options?: fs.CopyOptions) => {
+      if (path.basename(path.dirname(destination)).startsWith('.aw-portable-stage-')) {
+        started.push(path.basename(destination));
+        if (started.length === 1) {
+          firstWriter.resolve();
+          await releaseFirst.promise;
+        }
+      }
+      return copy(source, destination, options);
+    });
+    const progress = vi.fn<NonNullable<RebuildCommandRuntime['onInstallProgress']>>();
+    const execution = executeRecovery(plan, { runtime: { onInstallProgress: progress } });
+    try {
+      await Promise.race([firstWriter.promise, execution]);
+      expect(started).toHaveLength(1);
+      expect(started[0]).not.toBe('a');
+      expect(progress.mock.lastCall?.[0]).toEqual({ completed: 0, running: 1, waitingForDependencies: 1, waiting: 2 });
+      releaseFirst.resolve();
+      const receipt = await execution;
+      expect(receipt.ok, JSON.stringify(receipt.errors)).toBe(true);
+      expect(started).toHaveLength(4);
+      expect(started.indexOf('d')).toBeLessThan(started.indexOf('a'));
+      expect(progress.mock.lastCall?.[0]).toEqual({ completed: 4, running: 0, waitingForDependencies: 0, waiting: 0 });
+    } finally {
+      releaseFirst.resolve();
+      await execution.catch(() => {});
+      copied.mockRestore();
+      parallelism.mockRestore();
+    }
+  }, 30000);
+
   // Test Value Gate: the public execution must create one shared dependency and preserve both declarations.
   it('repairs user providers before project consumers without a project dependency copy', async () => {
     const value = await fixture();
@@ -178,6 +251,33 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     await expect(fs.pathExists(value.projectRoot)).resolves.toBe(false);
   });
 
+  it('shares the public CLI source preparation across the initial Review and independently checks Active under the lock', async () => {
+    const value = await fixture(false, ['generic', 'opencode'], false, { a: [], b: [], z: [] });
+    const user = { ...value.options, context: 'user' as const, scope: 'user' as const };
+    await setTargets(user, ['generic', 'opencode']);
+    const active = await resolveActiveCatalogGeneration({ ...user, sourceId: 'team' });
+    const marker = path.join(active.snapshotPath, '.claude-plugin', 'marketplace.json');
+    // Cold materialization verifies each staging source separately. Warm those files so the
+    // marker counts only full Active checks, independently of per-plugin content validation.
+    const warm = await prepareRecovery('install', ['team/a', 'team/b'], user);
+    await warm.context.dispose();
+    const readFile = fs.readFile.bind(fs);
+    const scans = { review: 0, recheck: 0 };
+    let phase: keyof typeof scans | undefined = 'review';
+    const reads = vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+      if (phase && String(args[0]) === marker) scans[phase]++;
+      return readFile(...args);
+    });
+    try {
+      const result = await runPublicLifecycle('install', ['team/a', 'team/b'], user, { debugLogger: { log(event) {
+        if (event.data?.name === 'recovery.lock.wait' && event.data.phase === 'start') phase = 'recheck';
+        if (event.data?.name === 'recovery.locked.recheck' && event.data.phase === 'success') phase = undefined;
+      } } });
+      expect(result.status, JSON.stringify(result.diagnostics)).toBe('success');
+      expect(scans).toEqual({ review: 1, recheck: 1 });
+    } finally { reads.mockRestore(); }
+  }, 30_000);
+
   // An unrelated file is read only by whole-Catalog scans. The same-source
   // protection groups share one scan, while different source IDs retain their own.
   it.each(['single group', 'same source', 'source alias'] as const)('bounds full scans during a Portable child with %s', async (scenario) => {
@@ -219,13 +319,13 @@ describe('joint recovery through real Catalog and owned outputs', () => {
       } } } });
       expect(receipt).toMatchObject({ ok: true, declarationChanged: true, outputsMayHaveChanged: true,
         remainingTargets: [] });
-      expect(scans).toBe(scenario === 'source alias' ? 7 : 4);
+      expect(scans).toBe(scenario === 'source alias' ? 2 : 1);
       await expect(fs.readFile(path.join(value.userRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
     } finally { reads.mockRestore(); }
   });
 
-  it.each(['same-path damage', 'new Active', 'changed ref with unchanged Store'] as const)('preserves a joint install receipt after %s following its locked child plan', async (change) => {
-    const value = await fixture(false, ['generic'], true, { a: [], b: ['d'], d: [], z: [] });
+  it.each(['same-path damage', 'new Active', 'changed ref with unchanged Store'] as const)('preserves a joint install receipt after %s between a verified provider and its waiting consumer', async (change) => {
+    const value = await fixture(false, ['generic'], true, { a: [], b: ['d'], d: ['a'], z: [] });
     const user = { ...value.options, scope: 'user' as const };
     const project = { ...value.options, scope: 'project' as const };
     const projectIntent = await fs.readFile(await resolveIntentPath(project));
@@ -252,58 +352,45 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(plan.receipt.requestedTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
       .toEqual(['team/a:user', 'team/b:project', 'team/b:user', 'team/d:user']);
 
-    const lastManifest = path.join(active.snapshotPath, 'plugins', 'z', '.agents-plugin', 'plugin.json');
     const damagedFile = path.join(active.snapshotPath, 'plugins', 'z', 'generic', 'skills', 'z', 'README.md');
-    const readJson = fs.readJson.bind(fs);
-    let childExecutions = 0;
-    let manifestReads = 0;
     let changed = false;
-    const reads = vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
-      const result = await readJson(...args);
-      // The provider's child plan has returned. Let the initial scoped demand
-      // read validate Active, then fault during its separate bundle manifest read.
-      if (childExecutions === 2 && String(args[0]) === lastManifest && ++manifestReads === 2) {
-        if (nextState) await fs.writeFile(statePath, nextState);
-        else {
-          const times = await fs.stat(damagedFile);
-          await fs.writeFile(damagedFile, 'Use x.\n');
-          await fs.utimes(damagedFile, times.atime, times.mtime);
-        }
-        changed = true;
+    const receipt = await executeRecovery(plan, { runtime: { debugLogger: { log: async (event) => {
+      // d waits for a. Change the source after the completed output and before d checks its scripts and files.
+      if (changed || event.data?.name !== 'recovery.child.execute' || event.data.phase !== 'success') return;
+      if (nextState) await fs.writeFile(statePath, nextState);
+      else {
+        const times = await fs.stat(damagedFile);
+        await fs.writeFile(damagedFile, 'Use x.\n');
+        await fs.utimes(damagedFile, times.atime, times.mtime);
       }
-      return result;
-    });
-    try {
-      const receipt = await executeRecovery(plan, { runtime: { debugLogger: { log: (event) => {
-        if (event.data?.name === 'recovery.child.execute' && event.data.phase === 'start') childExecutions += 1;
-      } } } });
-      expect(changed).toBe(true);
-      expect(receipt).toMatchObject({ ok: false, declarationChanged: true, outputsMayHaveChanged: true,
-        errors: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale',
-          ...(change === 'same-path damage' ? { subject: { sourceId: 'team' }, detail: { reasonCode: 'catalogGenerationMetadataInvalid' } } : {}) })]),
-        targetResults: expect.arrayContaining([
-          expect.objectContaining({ pluginId: 'team/a', scope: 'user', execution: 'applied', observation: 'verified' }),
-          expect.objectContaining({ pluginId: 'team/d', scope: 'user', execution: 'not-run' }),
-          expect.objectContaining({ pluginId: 'team/b', scope: 'user', execution: 'not-run',
-            blockers: expect.arrayContaining([expect.objectContaining({ code: 'dependencyApplyFailed' })]) }),
-          expect.objectContaining({ pluginId: 'team/b', scope: 'project', execution: 'not-run',
-            blockers: expect.arrayContaining([expect.objectContaining({ code: 'userProviderNotSatisfied' })]) }),
-        ]) });
-      expect(receipt.remainingTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
-        .toEqual(['team/b:project', 'team/b:user', 'team/d:user']);
-      expect(receipt.recoveryActions).toEqual(expect.arrayContaining([
-        'aw plugin status --context user --json', 'aw plugin sync team/d --context user --target generic',
-      ]));
-      await expectSavedIntent(receipt, user);
-      expect(receipt.intent.roots).toEqual(['team/a', 'team/b']);
-      await expect(fs.readFile(await resolveIntentPath(project))).resolves.toEqual(projectIntent);
-      await expect(snapshotRegularTree(value.projectRoot)).resolves.toEqual(protectedFiles);
-      await expect(fs.readFile(path.join(value.userRoot, 'a', 'SKILL.md'), 'utf8')).resolves.toContain('Use a.');
-      await expect(fs.pathExists(path.join(value.userRoot, 'b'))).resolves.toBe(false);
-      await expect(fs.pathExists(path.join(value.userRoot, 'd'))).resolves.toBe(false);
-      const hooks = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-      expect(hooks).toEqual([{ plugin: 'a', platform: 'generic', scope: 'user' }]);
-    } finally { reads.mockRestore(); }
+      changed = true;
+    } } } });
+    expect(changed).toBe(true);
+    expect(receipt).toMatchObject({ ok: false, declarationChanged: true, outputsMayHaveChanged: true,
+      errors: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale',
+        ...(change === 'same-path damage' ? { subject: { sourceId: 'team' }, detail: { reasonCode: 'catalogGenerationMetadataInvalid' } } : {}) })]),
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'team/a', scope: 'user', execution: 'applied', observation: 'verified' }),
+        expect.objectContaining({ pluginId: 'team/d', scope: 'user', execution: 'not-run' }),
+        expect.objectContaining({ pluginId: 'team/b', scope: 'user', execution: 'not-run',
+          blockers: expect.arrayContaining([expect.objectContaining({ code: 'dependencyApplyFailed' })]) }),
+        expect.objectContaining({ pluginId: 'team/b', scope: 'project', execution: 'not-run',
+          blockers: expect.arrayContaining([expect.objectContaining({ code: 'userProviderNotSatisfied' })]) }),
+      ]) });
+    expect(receipt.remainingTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
+      .toEqual(['team/b:project', 'team/b:user', 'team/d:user']);
+    expect(receipt.recoveryActions).toEqual(expect.arrayContaining([
+      'aw plugin status --context user --json', 'aw plugin sync team/d --context user --target generic',
+    ]));
+    await expectSavedIntent(receipt, user);
+    expect(receipt.intent.roots).toEqual(['team/a', 'team/b']);
+    await expect(fs.readFile(await resolveIntentPath(project))).resolves.toEqual(projectIntent);
+    await expect(snapshotRegularTree(value.projectRoot)).resolves.toEqual(protectedFiles);
+    await expect(fs.readFile(path.join(value.userRoot, 'a', 'SKILL.md'), 'utf8')).resolves.toContain('Use a.');
+    await expect(fs.pathExists(path.join(value.userRoot, 'b'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(value.userRoot, 'd'))).resolves.toBe(false);
+    const hooks = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(hooks).toEqual([{ plugin: 'a', platform: 'generic', scope: 'user' }]);
   });
 
   it('reports current Active after writing even when the complete reviewed Store is still readable', async () => {
@@ -1149,4 +1236,111 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     });
   }, 30000);
 
+});
+
+describe('independent native package publication', () => {
+  // Test Value Gate: both owners must publish under the same OpenCode root without losing a sibling package.
+  it('copies two reviewed OpenCode packages concurrently and reads back both owners and skills', async () => {
+    installNativeTestQualification({ discovery: true });
+    const value = await fixture(false, ['opencode'], false, { a: [], b: [], d: [] });
+    const options = { ...value.options, scope: 'user' as const };
+    await setTargets(options, ['opencode']);
+    const plan = await prepareRecovery('install', ['team/a', 'team/d'], { ...options, targets: ['opencode'] });
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+    const packageRoot = path.dirname(path.dirname(value.nativeSkill('opencode', 'user', 'a')));
+    const root = path.dirname(packageRoot);
+    const copy = fs.copy.bind(fs);
+    const arrived = new Set<string>();
+    const gate = Promise.withResolvers<void>();
+    let timer: NodeJS.Timeout | undefined;
+    const spy = vi.spyOn(fs, 'copy').mockImplementation(async (source: string, dest: string, opts?: fs.CopyOptions) => {
+      if (path.dirname(path.dirname(dest)) === root && path.basename(path.dirname(dest)).startsWith('.aw-package-')) {
+        arrived.add(dest);
+        if (arrived.size === 2) gate.resolve();
+        timer ??= setTimeout(() => gate.reject(new Error('Independent package publication did not start.')), 3000);
+        await gate.promise;
+      }
+      return copy(source, dest, opts);
+    });
+    try {
+      const result = await executeRecovery(plan, { yes: true });
+      expect(result.ok, JSON.stringify(result.targetResults)).toBe(true);
+      expect(arrived.size).toBe(2);
+      for (const name of ['a', 'd']) {
+        const skill = value.nativeSkill('opencode', 'user', name);
+        expect(await fs.readFile(path.join(skill, 'SKILL.md'), 'utf8')).toContain(`Use ${name}.`);
+        const marker = await fs.readJson(path.join(path.dirname(path.dirname(skill)), SKILL_OWNER_MARKER));
+        expect(marker).toMatchObject({ pluginId: `team/${name}`, platform: 'opencode' });
+      }
+    } finally {
+      clearTimeout(timer);
+      spy.mockRestore();
+      parallelism.mockRestore();
+      await plan.context.dispose();
+    }
+  });
+});
+
+describe('native install with shared registration', () => {
+  beforeEach(() => { installNativeTestQualification({ discovery: true }); });
+
+  it('stages the second Claude package while installing the first and preserves both registrations', async () => {
+    const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
+    const value = await fixture(false, ['claude'], false, { a: [], b: [], d: [] });
+    const options = { ...value.options, scope: 'user' as const, targets: ['claude'] };
+    await setTargets(options, ['claude']);
+    const beginInstall = Promise.withResolvers<void>();
+    const finishCopy = Promise.withResolvers<void>();
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+    const nativeCliRunner: typeof claude.runtime.nativeCliRunner = vi.fn(async (invocation) => {
+      if (invocation.args.includes('install') && invocation.args.some((arg) => arg.startsWith('a@'))) {
+        beginInstall.resolve();
+        await finishCopy.promise;
+      }
+      return claude.nativeCliRunner(invocation);
+    });
+    const plan = await prepareRecovery('install', ['team/a', 'team/d'], options, { env: value.options.env, nativeCliRunner });
+    let overlap = false;
+    let timedOut = false;
+    const copy = fs.copy.bind(fs);
+    const spy = vi.spyOn(fs, 'copy').mockImplementation(async (from: string, to: string, opts?: fs.CopyOptions) => {
+      if (path.basename(to) === 'd' && path.basename(path.dirname(to)).startsWith('private-package-')) {
+        await beginInstall.promise;
+        await copy(from, to, opts);
+        overlap = !timedOut;
+        finishCopy.resolve();
+      } else await copy(from, to, opts);
+    });
+    const deadline = setTimeout(() => { timedOut = true; beginInstall.resolve(); finishCopy.resolve(); }, 5000);
+    try {
+      const receipt = await executeRecovery(plan, { yes: true });
+      expect(receipt.ok, JSON.stringify(receipt.targetResults)).toBe(true);
+      expect(overlap).toBe(true);
+      expect(Object.keys((await fs.readJson(claude.installedPath)).plugins).map((id) => id.split('@')[0]).sort()).toEqual(['a', 'd']);
+    } finally {
+      clearTimeout(deadline); beginInstall.resolve(); finishCopy.resolve();
+      parallelism.mockRestore(); spy.mockRestore(); await plan.context.dispose();
+    }
+  });
+
+  it('skips a dependent preApply when its native provider fails to install', async () => {
+    const claude = await createClaudeNativeTestRuntime(getCurrentSourceTestIsolation());
+    const value = await fixture(false, ['claude'], true, { a: ['d'], b: [], d: [] });
+    const options = { ...value.options, scope: 'user' as const, targets: ['claude'] };
+    await setTargets(options, ['claude']);
+    const plan = await prepareRecovery('install', ['team/a', 'team/b'], options, {
+      env: value.options.env, nativeCliRunner: async (invocation) => invocation.args.includes('install')
+        && invocation.args.some((arg) => arg.startsWith('d@'))
+        ? { exitCode: 1, stdout: '', stderr: 'Provider install failed' } : claude.nativeCliRunner(invocation),
+    });
+    try {
+      const receipt = await executeRecovery(plan, { yes: true });
+      const scripts = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n')
+        .map((line) => JSON.parse(line).plugin);
+      expect(scripts).toContain('d');
+      expect(scripts).not.toContain('a');
+      expect(receipt.targetResults.find((target) => target.pluginId === 'team/a')?.execution).not.toBe('applied');
+      expect(receipt.targetResults.find((target) => target.pluginId === 'team/b')?.execution).toBe('applied');
+    } finally { await plan.context.dispose(); }
+  });
 });

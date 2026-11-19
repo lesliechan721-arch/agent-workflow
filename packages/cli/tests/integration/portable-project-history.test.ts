@@ -1,8 +1,11 @@
+import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator.js';
+import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createScopeContext } from '../../src/intent/scope-context.js';
 import { runCli } from '../../src/index.js';
 import { executePortableRecovery, inspectPortableRecovery, preparePortableCleanup, preparePortableRecovery } from '../../src/portable/recovery.js';
@@ -19,14 +22,14 @@ import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-async function fixture(scope: 'user' | 'project' = 'project', twoSkills = false) {
+async function fixture(scope: 'user' | 'project' = 'project', twoSkills = false, mixed = false) {
   const isolated = getCurrentSourceTestIsolation();
   const cwd = isolated.layout.fixtureCwd;
   await fs.ensureDir(path.join(cwd, '.git'));
   const sourceRoot = path.join(cwd, 'catalog');
   const pluginRoot = path.join(sourceRoot, 'plugins', 'portable');
   await createCatalogSnapshotFixture(sourceRoot, 'portable', [], 'Portable writer fixture', (manifest) => {
-    manifest.platforms = ['generic'];
+    manifest.platforms = mixed ? ['generic', 'opencode'] : ['generic'];
     manifest.config = { fields: { tone: { type: 'string', default: 'first' } } };
     manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
     manifest.artifacts = { configKeys: ['tone'] };
@@ -38,7 +41,7 @@ async function fixture(scope: 'user' | 'project' = 'project', twoSkills = false)
     `fs.appendFileSync(${JSON.stringify(renderLog)}, context.platform + '\\n');`,
     `const names = ${JSON.stringify(twoSkills ? ['alpha', 'beta'] : ['alpha'])};`,
     "const components = names.map(name => ({id:name,kind:'skill',name,content:{files:{'SKILL.md':{text:'---\\nname: '+name+'\\ndescription: Test skill\\n---\\nTone: '+context.config.values.tone+' Platform: '+context.platform+' Scope: '+context.scope},'README.md':{text:'Skill readme'},'references/guide.md':{text:'Complete local guide.'},'.hidden':{text:'retain hidden bytes'}}}}));",
-    "console.log(JSON.stringify({version:3,components,omitted:[],unmet:[]}));",
+    "console.log(JSON.stringify({version:3,components:components.filter(item => context.allowedOutputKinds.includes(item.kind)),omitted:[],unmet:[]}));",
   ].join('\n'));
   const refreshCatalog = async () => {
     const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
@@ -73,6 +76,46 @@ async function apply(options: Awaited<ReturnType<typeof fixture>>['options'], au
 }
 
 describe('Portable writer through real Catalog and renderer', () => {
+  // Test Value Gate: two mixed-install children encountering the same cold generation must publish one renderer result.
+  it('materializes the shared cold generic generation once for a mixed install', async () => {
+    installNativeTestQualification({ platforms: ['opencode'], discovery: true });
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+    const value = await fixture('user', false, true);
+    const { context, env } = value.options;
+    const input = { scope: 'user' as const, context: 'user' as const, cwd: context.callerCwd, env, cliVersion: '1.0.0', yes: true };
+    await writeIntentFixture(input, { roots: [], targets: ['opencode', 'generic'] });
+    await fs.ensureDir(path.dirname(context.generationRoot));
+    const lstat = fs.lstat.bind(fs);
+    let coldReaders = 0;
+    let release!: () => void;
+    const rendezvous = new Promise<void>((resolve) => { release = resolve; });
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; release(); }, 8000);
+    const observe = vi.spyOn(fs, 'lstat').mockImplementation(async (candidate) => {
+      try { return await lstat(candidate); }
+      catch (error) {
+        if (String(candidate) === context.generationRoot && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+          coldReaders++;
+          if (coldReaders === 2) { clearTimeout(timeout); release(); }
+          await rendezvous;
+        }
+        throw error;
+      }
+    });
+    try {
+      const review = await prepareRecovery('install', ['local/portable'], input);
+      expect(coldReaders).toBeGreaterThanOrEqual(2);
+      expect(timedOut).toBe(false);
+      const receipt = await executeRecovery(review);
+      expect(receipt.ok, JSON.stringify(receipt.targetResults.map(({ agent, blockers, backend }) => ({ agent, blockers, backend })))).toBe(true);
+      expect(receipt.targetResults).toHaveLength(2);
+      for (const target of receipt.targetResults) expect(target).toMatchObject({ execution: 'applied', observation: 'verified' });
+      expect((await fs.readFile(value.renderLog, 'utf8')).split('\n').filter((line) => line === 'generic')).toHaveLength(1);
+      expect(await fs.readFile(path.join(context.targetHomes.home, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'))
+        .toContain('Platform: generic Scope: user');
+    } finally { clearTimeout(timeout); release(); observe.mockRestore(); parallelism.mockRestore(); await context.dispose(); }
+  }, 30000);
+
   // Test Value Gate: generic overrides common config, while User and Project keep separate render contexts and output.
   it('uses the generic override in separate User and Project render contexts', async () => {
     const value = await fixture();

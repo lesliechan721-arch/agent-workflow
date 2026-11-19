@@ -33,7 +33,7 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
 
 ~~~text
 解析合法请求、共同配置与依赖
-  → 逐平台 discover/resolve/inspect，收集独立阻断
+  → 并行读取独立平台的 discover/resolve/inspect，按原目标顺序收集结果
   → 按真实 RenderUnit 取得完整静态/动态集合与命令闭包
   → project 到私有 staging，冻结字节、位置、缺口和删除影响
   → Review 或直接 CLI 现有确认
@@ -44,9 +44,13 @@ cleanup 从本次精确部署的 owner/native observation 与恢复候选取得�
   → 汇总保存事实、平台、产品面与组件结果
 ~~~
 
-这些命令在 `AW_HOME` mutation lock 内只采集一次当前 target 和当前 project 的现场 inventory。Active snapshot、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为计划再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 snapshot evidence。普通 inventory 不扫描历史项目、不建立全局 refcount；移除只检查本次请求释放的依赖，不回收无关历史残留。
+同一只读阶段按实际来源、平台、scope 和项目共享等价的 inventory 读取。Active snapshot、marketplace 选择和依赖计划可以使用这次结果。Review、锁内重查、写入现场和最终状态分别取证。writer 在写入前检查目标的 live ownership、native registration、有效配置和冻结的输出。普通 inventory 只覆盖当前上下文，移除只检查本次请求释放的依赖。
 
-`OperationPlan` 只用于 Review、stale fingerprint 比较和 Receipt。真实执行继续由 rebuild executor 使用已准备的 target 和 live evidence 完成；不存在通用 `OperationAction` executor。
+`OperationPlan` 用于 Review、stale fingerprint 比较和回执。联合安装与同步在同一把 `AW_HOME` 写锁内调度准备好的原生目标、Portable 输出和托管命令包。每项工作沿用对应的 rebuild、adapter 或 writer。最终回执按计划顺序归并，各目标保留实际执行和读回结果。
+
+独立宿主的登记、独占的包目录和位于不同目的地的 Portable Skill 可以同时写入。每个写入步骤一起领取实际涉及的目录、文件和宿主登记库。路径别名、父目录替换及同一设置文件的读改写共用相应资源。一个位置被占用时，可以先执行已经就绪的其它位置。无法限定副作用的 `preApply` 在本次操作内独占执行，后续目标重新核对受影响的现场。调度状态随命令结束而释放。
+
+收到中断时停止派发，收拢已经开始的操作，再释放本次持有的资源。回执保留已保存的声明、已验证的目标和待恢复的精确位置。已经发出但无法确认结果的写入保留未知影响，未开始的目标记为 `not-run`。进程退出取决于子进程清理结果，见 [CLI 退出码](../../reference/cli.md#3-状态与进程退出码)。
 
 Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和输出证据。联合准备阶段复用本轮已读取的需求；仅刷新现有输出时，安装现场观察也在本轮复用。这些内存数据不跨执行检查边界复用。直接 CLI `--yes` 与 TUI 使用同一个 `requiresConfirmation` 和 `sharedImpact` descriptor；共享替换或重建必须说明可能影响其它项目。Execute 在同一 `AW_HOME` mutation lock 内重读 Active metadata 与 Review digest；source config 或 Active digest 改变时，在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或要求新 Review。这项检查不访问远端 branch。
 
@@ -56,7 +60,7 @@ Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和
 
 ## 依赖与部分成功
 
-插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
+插件依赖来自 manifest `dependencies`，在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图。安装按目标及其实际 provider scope 建立依赖。提供者完成写入并通过所需的现场校验后，对应消费者才可以执行。独立部署可以先完成，命令按稳定的依赖优先顺序报告结果。
 
 dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。对允许跨 scope 复用的布局，User 需要的共同依赖由 User 提供；scope 独立的 Native 布局在各自 scope 物化。项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
 

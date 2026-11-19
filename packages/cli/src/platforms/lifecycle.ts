@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { NativeCliError } from '../utils/native-cli.js';
+import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import type { OwnedComponent } from '../utils/ownership.js';
 import type {
   DeploymentBinding, DeploymentObservation, DeploymentReceipt, Diagnostic,
@@ -265,16 +267,30 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   const receipt: DeploymentReceipt = { bindingId: binding.id, effects: [], after: state.before,
     unmet: plan.expected.unmet.map((gap) => ({ ...gap, productIds: binding.consumers.map((item) => item.id) })),
     reload: 'none', diagnostics: [] };
+  let cleanupFailure: Diagnostic | undefined;
+  const recordCleanupFailure = (error: unknown) => {
+    if (!(error instanceof NativeCliError && error.cleanupError) && readSafeOperationError(error)?.code !== 'processCleanupUnconfirmed') return;
+    cleanupFailure = lifecycleDiagnostic(binding, 'processCleanupUnconfirmed', 'Process cleanup could not be confirmed. Check the client before retrying.');
+    receipt.diagnostics.push(cleanupFailure);
+    return cleanupFailure;
+  };
+  const unknownObservation = (diagnostic: Diagnostic): DeploymentObservation => ({ ...state.before,
+    package: 'unknown', ownership: 'unknown', registration: 'unknown',
+    consumers: state.before.consumers.map((consumer) => ({ ...consumer, activation: 'unknown', load: 'unknown' })),
+    diagnostics: [diagnostic] });
   const observe = async (): Promise<DeploymentObservation> => {
+    if (cleanupFailure) return unknownObservation(cleanupFailure);
     try { return await (ctx.inspect ? ctx.inspect(binding) : inspectDeployment(ctx, binding)); }
-    catch { return { ...state.before, package: 'unknown', registration: 'unknown', consumers: state.before.consumers.map((item) => ({ ...item, activation: 'unknown', load: 'unknown' })),
-      diagnostics: [lifecycleDiagnostic(binding, 'deploymentPostcheckFailed', 'The final deployment state could not be observed. Check status before retrying.')] }; }
+    catch (error) {
+      return unknownObservation(recordCleanupFailure(error) ?? lifecycleDiagnostic(binding, 'deploymentPostcheckFailed',
+        'The final deployment state could not be observed. Check status before retrying.'));
+    }
   };
   let evidenceValid = false;
-  try { evidenceValid = await ctx.services.verifyEvidence(plan); } catch { /* Unreadable evidence is stale. */ }
+  try { evidenceValid = await ctx.services.verifyEvidence(plan); } catch (error) { recordCleanupFailure(error); }
   if (!evidenceValid) {
-    const diagnostic = lifecycleDiagnostic(binding, 'operationPlanStale', 'The deployment evidence changed. Prepare and confirm a new operation.');
-    receipt.diagnostics.push(diagnostic);
+    const diagnostic = cleanupFailure ?? lifecycleDiagnostic(binding, 'operationPlanStale', 'The deployment evidence changed. Prepare and confirm a new operation.');
+    if (!cleanupFailure) receipt.diagnostics.push(diagnostic);
     receipt.effects = plan.effects.map((effect) => ({ id: effect.id, status: 'blocked', mutation: 'none', diagnostics: [diagnostic] }));
     receipt.after = await observe();
     return receipt;
@@ -341,6 +357,18 @@ export async function executePlatformLifecycle(ctx: MutationContext,
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
       const mutation = error && typeof error === 'object' && 'mutation' in error ? error.mutation : undefined;
+      const fatal = cleanupFailure ?? recordCleanupFailure(error);
+      if (fatal) {
+        result.status = 'unknown';
+        result.mutation = 'possible';
+        result.diagnostics.push(fatal);
+        for (const remaining of plan.effects.slice(receipt.effects.length)) {
+          receipt.effects.push({ id: remaining.id, status: 'skipped', mutation: 'none', diagnostics: [fatal] });
+        }
+        receipt.after = unknownObservation(fatal);
+        receipt.reload = 'unknown';
+        return receipt;
+      }
       const consentCode = binding.route === 'gemini-extension' && Object.hasOwn(geminiConsentMessages, code)
         ? code as keyof typeof geminiConsentMessages : undefined;
       const replacementCode = binding.route === 'gemini-extension' && Object.hasOwn(geminiReplacementMessages, code)

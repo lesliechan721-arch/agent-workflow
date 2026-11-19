@@ -74,7 +74,7 @@ TUI 批量写入支持添加、同步、重建、移除和普通清理；force c
 
 平台 Review 消费冻结的 deploymentPlans，按平台及实际产品面展示组件、原生动作、补足位置、共享影响、preApply 与重载要求。unmet 保留具体 requiredFeatures 的 feature/values 和 componentId，例如缺少 block 或 plugin-agents 覆盖。准备失败的平台也进入 Review，不因无动作而消失。
 
-进度在独立平台失败后继续。结果先显示各平台完成情况，再展开产品面、组件和位置；包发布、登记、有效启用、组件与运行加载分别呈现。已确认交付可显示就绪，加载仍可保留未知。未知写入保留 possible/unknown，不作为安全缺失。重试只选择本次未完成且可精确定位的目标，重新取证与 Review，不重复成功平台。
+进度在独立平台失败后继续。确认多目标安装或同步后，执行队列提供已完成、正在执行、等待依赖和待执行的目标数。等待依赖指仍需本批的插件提供者或托管命令包。待执行的目标可等待可用资源或并发名额。目标获准开始工作后计为正在执行，拿到执行及写后核验结论后计为已完成，成败在结果中显示。单目标使用原有阶段进度。范围恢复批次在结束时把整批回执记为一条会话历史。结果先显示各平台完成情况，再展开产品面、组件和位置；包发布、登记、有效启用、组件与运行加载分别呈现。已确认交付可显示就绪，加载仍可保留未知。未知写入保留 possible/unknown，不作为安全缺失。重试只选择本次未完成且可精确定位的目标，重新取证与 Review，不重复成功平台。
 
 TUI 的部署与来源变更入口在进入 Review 前先进入 `ReviewPreparing`。普通 `ReviewPreparing` 只执行当前 intent 的验证和证据采集，不执行写入。用户显式选择“刷新并同步”是唯一例外：它在建立插件 Review 前刷新相关来源，并可切换可重建的 Active 弱状态；Esc 只取消后续 Review 和插件写入，不回滚已完成的 Active 刷新。一次成功的 TUI load 固定可用来源的 Active snapshot 子集，并保留其它来源的失败证据；子集 digest 只包含成功来源。同一 session 的浏览、设置、status、依赖 preview 和 Review 都读取该固定子集。load 只读取 source config、catalog state 和 Active store；它不 fetch 或同步，并在本地读取完成后立即进入 ready。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
 
@@ -152,7 +152,7 @@ TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配�
 
 状态刷新后，Controller 必须按实体 ID 校验当前路由和逐层恢复的祖先。插件、来源或问题消失时回对应安全列表；来源筛选失效时回同模式的未筛选列表。所有包含插件或来源实体的 route 都遵守该规则。依赖移除阻断页只说明依赖者和返回路径，不提供绕过依赖保护的强制清理入口。
 
-控制台进程由一个 Session Host 持有当前 Controller、进度 feed 和 session epoch。`h` 只清除当前导航 flow、Review ticket、临时进度和草稿，并回到唯一根帧；它保留本次加载的状态 snapshot、来源检查时间和 session cache。`H` 先保护所有草稿，再取消并等待本 session 的只读请求；确认没有写操作后，才销毁旧订阅并用新的 runtime dependencies、进度 feed 和 Controller 读取本地状态。迟到响应必须同时受 session epoch 和 Controller 内的 flow、frame 或 request identity 保护。执行中 `h`/`H` 只覆盖一个待处理导航；Esc 只撤销该导航。只有 succeeded Result 才自动执行待处理导航，且先把结果交给共享 history owner；partial、stale、blocked 或无法确认清理结果都停留在 Result。Session Host 不用取消 signal 中断写操作，也不新增持久状态。正常退出和异常退出都必须在 session reporter 仍绑定时封闭新入口，等待现有写操作，再取消并等待只读请求，最后释放 Controller。
+控制台进程由一个 Session Host 持有当前 Controller、进度 feed 和 session epoch。`h` 只清除当前导航 flow、Review ticket、临时进度和草稿，并回到唯一根帧；它保留本次加载的状态 snapshot、来源检查时间和 session cache。`H` 先保护所有草稿，再取消并等待本 session 的只读请求；确认没有写操作后，才销毁旧订阅并用新的 runtime dependencies、进度 feed 和 Controller 读取本地状态。迟到响应必须同时受 session epoch 和 Controller 内的 flow、frame 或 request identity 保护。执行中 `h`/`H` 只覆盖一个待处理导航；Esc 只撤销该导航。只有 succeeded Result 才自动执行待处理导航，且先把结果交给共享 history owner；partial、stale、blocked 或无法确认清理结果都停留在 Result。键盘导航沿用等待写入完成的语义。控制台进程收到外部 `SIGINT` 或 `SIGTERM` 时，安装和同步停止派发，等待已启动的工作收尾，保留部分回执。退出码见[公开 CLI 合同](../../reference/cli.md#3-状态与进程退出码)。正常退出和异常退出都必须在 session reporter 仍绑定时封闭新入口，等待现有写操作，再取消并等待只读请求，最后释放 Controller。
 
 范围清单重查使用同一会话的 Catalog 快照。若当前 Active generation 或来源配置已变化，保留旧结果及查询、焦点、滚动和选择状态，明确提示按 `H` 重新加载；清单、详情、内容和设置定义不得混用新旧快照。普通单项和批量安装在准备 Review 时核对每个所选来源的现行绑定。若与详情所用的会话快照不同，须按 `H` 重新加载后再准备安装。其他来源的换代不阻断所选来源。恢复和退役的准备阶段把取消信号传至来源探测、Native 读取、Portable 准备及 renderer；取消向上传播 `AbortError` 并释放操作 context，不继续准备后续组。准备信号不保留给已确认的写入。
 

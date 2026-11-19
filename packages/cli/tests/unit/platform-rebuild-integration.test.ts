@@ -2,7 +2,8 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 import { getPlatformFeatureRegistry } from '@lesliechan721/aw-plugin-core/manifest';
-import { PlatformRebuildSession } from '../../src/commands/rebuild-platform-integration.js';
+import { runInstallTasks } from '../../src/recovery/install-concurrency.js';
+import { PlatformRebuildSession, nativeInstallResources } from '../../src/commands/rebuild-platform-integration.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { createRebuildIntegration, type RebuildExecutionContext } from '../../src/commands/rebuild-integration.js';
@@ -1190,7 +1191,7 @@ describe('shared marketplace generation', () => {
   });
 
   // Test Value Gate: independently prepared sibling packages must publish one immutable complete descriptor.
-  it('freezes both plugins before publication and preserves the sibling during sequential execution', async () => {
+  it('freezes both plugins and serializes their shared marketplace and client writes', async () => {
     const item = await marketplaceFixture();
     try {
       const plans = item.targets.map((target) => target.platformDeployment!.plans[0]!);
@@ -1200,10 +1201,17 @@ describe('shared marketplace generation', () => {
       const frozen = Buffer.from(descriptor.contentBase64, 'base64').toString('utf8');
       expect(JSON.parse(frozen).plugins.map((plugin: {name:string}) => plugin.name).sort()).toEqual(['first', 'second']);
       expect(await fs.pathExists(plans[0]!.evidence.layout.marketplaceRoot!)).toBe(false);
-      for (const target of item.targets) {
-        const result = await executeRebuildOperation({ command: 'install', target, driver: item.integration.driver });
-        expect(result.status, JSON.stringify(result)).toBe('succeeded');
-      }
+      let publishing = false;
+      const results = await runInstallTasks(item.targets.map((target) => ({
+        id: target.identity.pluginId!, resources: nativeInstallResources(target.platformDeployment!.plans),
+        run: async () => {
+          expect(publishing).toBe(false);
+          publishing = true;
+          try { return await executeRebuildOperation({ command: 'install', target, driver: item.integration.driver }); }
+          finally { publishing = false; }
+        },
+      })), { limit: 2 });
+      for (const result of results) expect(result.status, JSON.stringify(result)).toBe('succeeded');
       expect(await fs.readFile(path.join(plans[0]!.evidence.layout.marketplaceRoot!, descriptor.relativePath), 'utf8')).toBe(frozen);
       for (const plan of plans) expect(await fs.pathExists(path.join(plan.evidence.layout.packageRoot, 'skills/check/SKILL.md'))).toBe(true);
     } finally { await item.context.platformRebuildSession?.dispose(); }

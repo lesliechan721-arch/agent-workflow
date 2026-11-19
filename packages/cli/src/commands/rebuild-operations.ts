@@ -12,6 +12,7 @@ import type {
   RebuildCommand,
   Scope,
 } from '../types.js';
+import { recoveryInterruptionCode } from '../recovery/interruption.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
 import type { OperationAction } from './operation-plan.js';
 import type { PreparedPlatformTarget } from './rebuild-platform-integration.js';
@@ -205,6 +206,13 @@ function createAccumulator(): ResultAccumulator {
     quarantined: [],
     failures: [],
   };
+}
+
+function rebuildFailureDiagnostic(error: unknown): SafeOperationErrorMetadata | undefined {
+  if (recoveryInterruptionCode(error) === 'processCleanupUnconfirmed') {
+    return { code: 'processCleanupUnconfirmed', safeMessage: 'Process cleanup could not be confirmed.' };
+  }
+  return readSafeOperationError(error);
 }
 
 function errorMessage(error: unknown): string {
@@ -916,12 +924,12 @@ export async function executeRebuildOperation(options: {
         const deployment = options.target.platformDeployment;
         if (options.driver.deferPostcheck?.(options.target, () => deployment.postcheck(receipts, { refresh: true })) !== true) {
           try { await deployment.postcheck(receipts); }
-          catch (error) { result = failed(options.command, options.target, accumulator, 'postcheck.inspect', errorMessage(error)); }
+          catch (error) { result = failed(options.command, options.target, accumulator, 'postcheck.inspect', errorMessage(error), rebuildFailureDiagnostic(error)); }
         }
       }
       result.deploymentReceipts = receipts;
       return result;
-    } catch (error) { return failed(options.command, options.target, accumulator, 'preflight', errorMessage(error)); }
+    } catch (error) { return failed(options.command, options.target, accumulator, 'preflight', errorMessage(error), rebuildFailureDiagnostic(error)); }
   }
   if (options.preparation) {
     if (options.preparation.command !== options.command
@@ -1132,6 +1140,7 @@ export async function prepareRebuildOperation(options: {
         accumulator,
         'preflight',
         errorMessage(error),
+        rebuildFailureDiagnostic(error),
       ),
     };
   }

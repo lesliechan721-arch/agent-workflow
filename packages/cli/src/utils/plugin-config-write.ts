@@ -1,5 +1,6 @@
 import { resolveWorkContext } from '../intent/work-context.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
+import { RecoveryInterruptedError } from '../recovery/interruption.js';
 import { readDemand, demandNativeProjection } from '../recovery/demand.js';
 import { createScopeContext } from '../intent/scope-context.js';
 import type {
@@ -1385,6 +1386,11 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
       return { configWrite: 'notStarted', overallState: ok ? 'succeeded' : 'partial', apply,
         otherProjectsMayRequireSync: true };
     } catch (error) {
+      // Config writers report the caller's cancellation alongside their committed save.
+      if (error instanceof RecoveryInterruptedError) {
+        if (error.code === 'operationInterrupted') options.rebuildRuntime?.signal?.throwIfAborted();
+        if (readSafeOperationError(error.cause)) throw error.cause;
+      }
       if (options.rebuildRuntime?.signal?.aborted || error instanceof Error && error.name === 'AbortError'
         || readSafeOperationError(error)) throw error;
       const apply = unavailableApply('targetDiscoveryFailed', 'targetDiscovery');

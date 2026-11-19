@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { runCli } from '../../src/index.js';
+import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import fs from 'fs-extra';
@@ -17,7 +19,7 @@ import { runPublicPluginList, runPublicPluginShow, runPublicPluginStatus } from 
 import { createNativeDependencyCatalog, createCodexNativeTestRuntime } from '../helpers/write-command-fixture.js';
 import { syncManagedCommandPackage, resolveManagedCommand } from '../../src/utils/managed-command-store.js';
 import { normalizeCommandDefinition } from '@lesliechan721/aw-plugin-core/manifest';
-import type { NativeCliRunner } from '../../src/utils/native-cli.js';
+import { NativeCliError, type NativeCliRunner } from '../../src/utils/native-cli.js';
 
 // The real adapter publishes and inspects the package. The Pi command boundary
 // reports registration only; it does not report activation, trust or loading.
@@ -206,6 +208,58 @@ describe('public plugin lifecycle', () => {
         expect.objectContaining({ target: 'generic', execution: 'applied', observation: 'verified' })],
       remainingTargets: [{ pluginId: 'team/demo', target: 'pi', scope: 'project' }] });
     expect(await fs.pathExists(output)).toBe(true);
+  });
+
+  it.each([false, true])('preserves a verified generic target when the Pi install is interrupted (cleanup failed: %s)', async (cleanupFailed) => {
+    const { location, output } = await fixture({ targets: ['generic', 'pi'] });
+    const signal = 'SIGINT';
+    const previous = new Set(process.listeners(signal));
+    const capture = createCapturedCliIo();
+    let handler: NodeJS.SignalsListener;
+    let genericFinished = false;
+    let piStarted = false;
+    const interrupt = () => {
+      if (genericFinished && piStarted) handler(signal);
+    };
+    const running = runCli(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes', '--json'], {
+      cwd: location.cwd, env: location.env, interactive: false, io: capture.io,
+      nativeCliRunner: async (invocation) => {
+        if (invocation.args[0] !== 'install') return piRunner(invocation);
+        // Pi has persisted its registration but has not returned a result to AW.
+        await piRunner(invocation);
+        piStarted = true;
+        interrupt();
+        if (!invocation.signal!.aborted) await new Promise<void>((resolve) => invocation.signal!.addEventListener('abort', () => resolve(), { once: true }));
+        if (cleanupFailed) throw new NativeCliError({ invocation, stdout: '', stderr: '', exitCode: 1,
+          cleanupError: new Error('The controlled Pi process did not confirm cleanup.') });
+        throw invocation.signal!.reason;
+      },
+      debugLogger: { log(event) {
+        if (event.data?.name === 'recovery.child.execute' && event.data.phase === 'success') {
+          genericFinished = true;
+          interrupt();
+        }
+      } },
+    });
+    // In this Vitest process deliver SIGINT only to the current CLI handler.
+    const listeners = process.listeners(signal).filter((entry) => !previous.has(entry));
+    expect(listeners).toHaveLength(1);
+    handler = listeners[0]!;
+    expect(await running).toBe(cleanupFailed ? 1 : 130);
+    const result: Awaited<ReturnType<typeof runPublicLifecycle>> = JSON.parse(capture.readStdout());
+    expect(result).toMatchObject({ status: 'partial', data: {
+      changes: { requirements: 'changed', outputs: 'changed' },
+      targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi', execution: 'partial', observation: 'unknown' }),
+        expect.objectContaining({ target: 'generic', execution: 'applied', observation: 'verified' })]),
+      remainingTargets: [{ pluginId: 'team/demo', target: 'pi', scope: 'project' }],
+    } });
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: cleanupFailed ? 'processCleanupUnconfirmed' : 'operationInterrupted' }));
+    expect(result.nextActions.filter((action) => action.kind === 'command').map((action) => action.argv)).toEqual([
+      ['aw', 'plugin', 'sync', 'team/demo', '--context', 'project', '--target', 'pi'],
+    ]);
+    expect(await fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).toContain('Use demo.');
+    const retried = await runPublicLifecycle('sync', ['team/demo'], { ...location, targets: ['pi'], yes: true });
+    expect(retried, JSON.stringify(retried)).toMatchObject({ status: 'success', data: { remainingTargets: [] } });
   });
 
   it('shows removal effects and observed targets before changing a requirement', async () => {

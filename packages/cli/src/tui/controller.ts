@@ -89,7 +89,7 @@ import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import { hasStatusInstallationEvidence } from './scoped-inventory.js';
 import { buildScopedInventory,
   type ScopedInventoryViewModel, type ScopedInventoryLoadResult, type InventoryRoot } from './scoped-inventory.js';
-import type { ScopedTuiPlan } from './scoped-flow.js';
+import { projectScopedRecoveryHistory, type ScopedTuiPlan } from './scoped-flow.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import type { RecoveryCommand } from '../recovery/coordinator.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
@@ -1721,7 +1721,7 @@ export class TuiController {
     });
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
-        if (this.#router.snapshot.current.route.name === 'result') return;
+        if (this.#router.snapshot.current.route.name === 'result' && !this.#scopedTaskInflight) return;
         this.#progress = {
           ...structuredClone(progress),
           messages: progress.messages.slice(-8),
@@ -2698,8 +2698,23 @@ export class TuiController {
     this.#progressFeed?.clearCurrent();
     this.#progress = { messages: [], startedAtMs: this.dependencies.now?.() ?? Date.now() };
     this.#publish();
-    const promise = this.dependencies.executeScopedTask(plan).finally(() => {
+    const isBatch = plan.kind === 'recovery' && (plan.plan.command === 'install' || plan.plan.command === 'sync')
+      && plan.plan.receipt.requestedTargets.length > 1;
+    const promise = this.dependencies.executeScopedTask(plan).then((outcome) => {
+      if (outcome.kind === 'recovery' && (isBatch || this.#progress.installProgress)) {
+        const operationId = `scoped-${crypto.randomUUID()}`;
+        this.#operationHistory.record(projectScopedRecoveryHistory(outcome.receipt, {
+          operationId, recordId: `${this.#sessionEpoch}:${operationId}`, epoch: this.#sessionEpoch,
+          createdAtMs: this.dependencies.now?.() ?? Date.now(),
+        }));
+      }
+      return outcome;
+    }, (error: unknown) => {
+      if (isBatch || this.#progress.installProgress) this.#recordStandaloneFailure(issueCode(error), 'execute', error);
+      throw error;
+    }).finally(() => {
       if (this.#scopedTaskInflight?.promise === promise) this.#scopedTaskInflight = undefined;
+      this.#publish();
     });
     this.#scopedTaskInflight = { plan, promise };
     return promise;

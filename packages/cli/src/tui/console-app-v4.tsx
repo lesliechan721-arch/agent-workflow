@@ -1744,7 +1744,7 @@ export function resolveConsoleV4ScreenId(
 
 export interface ConsoleExitRequest {
   code: number;
-  reason: 'user' | 'initialError' | 'completed' | 'partial' | 'blocked' | 'stale';
+  reason: 'user' | 'initialError' | 'completed' | 'partial' | 'blocked' | 'stale' | 'interrupted';
 }
 
 export function ConsoleAppV4(props: {
@@ -4801,6 +4801,7 @@ export function ConsoleAppV4(props: {
       title = flow.stage === 'preparing' ? '正在准备操作汇总' : '正在执行恢复';
       description = flow.stage === 'preparing' ? '正在检查当前证据。Esc 可取消准备。'
         : '操作已开始。完成后显示每个目标结果。';
+      const installProgress = flow.stage === 'progress' ? snapshot.progress.installProgress : undefined;
       readingText = flow.stage === 'progress' ? [
         ...(snapshot.progress.current
           ? [`${snapshot.progress.current.target} · ${snapshot.progress.current.phase}`] : []),
@@ -4810,8 +4811,12 @@ export function ConsoleAppV4(props: {
       ].join('\n') : undefined;
       content = <Box flexDirection="column">
         <ProgressRow title={title} state="active" />
+        {installProgress ? <>
+          <StaticRow title={`已完成 ${installProgress.completed} · 正在执行 ${installProgress.running}`} compact />
+          <StaticRow title={`等待依赖 ${installProgress.waitingForDependencies} · 待执行 ${installProgress.waiting}`} compact />
+        </> : null}
         {readingText ? readingPage(readingText, size.columns - 6,
-          Math.max(1, pageActionBudget(4))) : null}
+          Math.max(1, pageActionBudget(installProgress ? 6 : 4))) : null}
       </Box>;
     } else if (flow.stage === 'timeout') {
       title = '设置脚本超时';
@@ -8989,7 +8994,9 @@ export function ConsoleAppV4(props: {
           : [])).values()].map((target): ActionItem => ({
             label: `处理 ${props.controller.getPluginOverview(target.pluginId!)!.displayName}`,
             description: '查看这个依赖的问题和可用的恢复操作',
-            run: () => go({ name: 'platform', pluginId: target.pluginId!, platform: target.platform }),
+            run: () => go(target.platform === 'generic'
+              ? { name: 'pluginDetail', pluginId: target.pluginId! }
+              : { name: 'platform', pluginId: target.pluginId!, platform: target.platform }),
           })),
       { label: '重试', description: '重新读取和验证当前状态', run: () => {
         props.controller.retryReviewPreparation();

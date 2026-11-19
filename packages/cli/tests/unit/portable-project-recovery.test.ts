@@ -4,13 +4,14 @@ import type { PortablePlatformTarget } from '@lesliechan721/aw-plugin-core';
 import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createInstallAdmission } from '../../src/recovery/install-concurrency.js';
 import { createScopeContext } from '../../src/intent/scope-context.js';
 import { writeAwSourceBinding } from '../../src/review/source-binding.js';
 import { getAuthoringPlatformCapabilities } from '../../src/review/platform-profile.js';
 import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { artifactValueDigest } from '../../src/utils/artifact-plan.js';
 import { portableJsonDigest, portableSkillTreeDigest } from '../../src/portable/historical-materialization.js';
-import { executePortableRecovery, inspectPortableExtraInstalled, inspectPortableRecovery, inspectPortableResidue,
+import { PortableInterruptedError, executePortableRecovery, inspectPortableExtraInstalled, inspectPortableRecovery, inspectPortableResidue,
   preparePortableCleanup, preparePortableRecovery } from '../../src/portable/recovery.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
@@ -141,6 +142,79 @@ describe('AW Portable recovery', () => {
     expect((await apply(options, { authorizeUpdate: true })).execution).toBe('applied');
     expect(await fs.pathExists(path.join(root, 'old-root'))).toBe(false);
     expect(await fs.pathExists(path.join(root, 'independent'))).toBe(true);
+  });
+
+  // Test Value Gate: a late external claim blocks only its Skill and preserves the claimant's bytes.
+  it('keeps an external Skill and verifies an independent publication in the same batch', async () => {
+    state.skills.push({ name: 'beta', providerPluginId: 'team/root' });
+    const options = await fixture();
+    const prepared = await preparePortableRecovery(options);
+    const root = path.dirname(prepared.targets[0]!.physicalPath);
+    const copy = fs.copy.bind(fs);
+    const claim = vi.spyOn(fs, 'copy').mockImplementation(async (source: string, destination: string, flags?: fs.CopyOptions) => {
+      if (path.basename(destination) === 'alpha' && path.basename(path.dirname(destination)).startsWith('.aw-portable-stage-')) {
+        await fs.outputFile(path.join(root, 'alpha', 'README.md'), 'external owner');
+      }
+      await copy(source, destination, flags);
+    });
+    try {
+      const result = await withAwHomeMutationLock({ env: options.env, action: (token) =>
+        executePortableRecovery({ prepared, token, admission: createInstallAdmission({ limit: 2 }) }) });
+      expect(result.execution).toBe('partial');
+      expect(result.targets).toMatchObject([
+        { skill: 'alpha', execution: 'failed', observation: 'conflict', blockers: ['operationReviewStale'] },
+        { skill: 'beta', execution: 'applied', observation: 'satisfied' },
+      ]);
+      expect(await fs.readFile(path.join(root, 'alpha', 'README.md'), 'utf8')).toBe('external owner');
+      expect(await fs.pathExists(path.join(root, 'alpha', SKILL_OWNER_MARKER))).toBe(false);
+      expect(await fs.readJson(path.join(root, 'beta', SKILL_OWNER_MARKER))).toMatchObject({ pluginId: 'team/root' });
+    } finally { claim.mockRestore(); await options.context.dispose(); }
+  });
+
+  // Test Value Gate: consumers of a single verified provider share a write but cannot adopt a later replacement.
+  it('reuses only the verified physical copy within the batch', async () => {
+    const options = await fixture();
+    const prepared = await preparePortableRecovery(options);
+    try {
+      await withAwHomeMutationLock({ env: options.env, action: async (token) => {
+        const admission = createInstallAdmission({ limit: 2 });
+        const progress = { completed: [], failed: [] };
+        const execute = () => executePortableRecovery({ prepared, token, admission, progress, action: 'reinstall' });
+        const results = await Promise.all([execute(), execute()]);
+        expect(results.map((result) => result.execution).sort()).toEqual(['applied', 'no-op']);
+        const skill = prepared.targets[0]!.physicalPath;
+        await fs.move(skill, skill + '-original');
+        await fs.copy(skill + '-original', skill);
+        const afterReplacement = await execute();
+        expect(afterReplacement.globalBlockers).toContain('operationReviewStale');
+        expect(afterReplacement.outputsMayHaveChanged).toBe(false);
+      } });
+    } finally { await options.context.dispose(); }
+  });
+
+  // Test Value Gate: interruption during publication must retain its verified copy and stop queued writes.
+  it('drains a started publication and distinguishes the unstarted sibling', async () => {
+    state.skills.push({ name: 'beta', providerPluginId: 'team/root' });
+    const options = await fixture();
+    const prepared = await preparePortableRecovery(options);
+    const first = prepared.targets[0]!.physicalPath;
+    const stopped = new AbortController();
+    const rename = fs.rename.bind(fs);
+    const interrupt = vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
+      await rename(source, destination);
+      if (String(destination) === first) stopped.abort();
+    });
+    try {
+      const error = await withAwHomeMutationLock({ env: options.env, action: (token) =>
+        executePortableRecovery({ prepared, token, admission: createInstallAdmission({ limit: 1 }),
+          signal: stopped.signal }) }).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(PortableInterruptedError);
+      expect((error as PortableInterruptedError).result).toMatchObject({ execution: 'partial', outputsMayHaveChanged: true,
+        targets: [{ skill: 'alpha', execution: 'applied', observation: 'satisfied' },
+          { skill: 'beta', execution: 'not-run', blockers: ['operationInterrupted'] }] });
+      expect(await fs.pathExists(path.join(first, SKILL_OWNER_MARKER))).toBe(true);
+      expect(await fs.pathExists(prepared.targets[1]!.physicalPath)).toBe(false);
+    } finally { interrupt.mockRestore(); await options.context.dispose(); }
   });
 
   // Test Value Gate: removing the final Skill still needs an empty candidate and bounded old-output cleanup.

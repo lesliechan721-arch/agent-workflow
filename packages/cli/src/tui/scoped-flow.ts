@@ -11,6 +11,9 @@ import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
+import { safeDiagnosticCode } from './diagnostics.js';
+import { recoveryReason } from './glossary.js';
+import type { OperationHistoryRecord, OperationHistoryTarget, SafeOperationDiagnostic } from './operation-history.js';
 
 export interface TargetsPlan {
   kind: 'targets';
@@ -33,6 +36,57 @@ export interface IntentPlan {
 
 export type ScopedTuiPlan = { kind: 'recovery'; scope: Scope; plan: RecoveryPlan }
   | { kind: 'retire'; scope: Scope; plan: RetirePlan } | TargetsPlan | IntentPlan;
+
+export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
+  identity: Pick<OperationHistoryRecord['summary'], 'recordId' | 'epoch' | 'operationId' | 'createdAtMs'>,
+): OperationHistoryRecord {
+  const diagnostics: SafeOperationDiagnostic[] = [];
+  const addDiagnostic = (rawCode: string, target?: SafeOperationDiagnostic['target']) => {
+    const code = safeDiagnosticCode(rawCode, 'recoveryFailed');
+    const id = `${identity.recordId}:diagnostic:${diagnostics.length}`;
+    diagnostics.push({ id, code, stage: 'execute', safeMessage: recoveryReason(code),
+      target, causes: [], detailLines: [] });
+    return id;
+  };
+  for (const code of new Set([...receipt.blockers, ...receipt.errors].map((entry) => entry.code))) {
+    addDiagnostic(code);
+  }
+  for (const result of receipt.commandResults ?? []) {
+    for (const error of result.errors) addDiagnostic(error.code);
+  }
+  const targets = receipt.targetResults.map((entry): OperationHistoryTarget => {
+    const target = { pluginId: entry.pluginId, platform: entry.agent, scope: entry.scope };
+    const state = entry.satisfaction === 'unsupported' || entry.satisfaction === 'excluded' ? 'skipped'
+      : entry.execution === 'not-run' ? 'skipped'
+        : entry.blockers.length > 0 || entry.observation !== 'verified' ? 'failed'
+          : entry.execution === 'applied' ? 'completed' : entry.execution === 'no-op' ? 'kept' : 'failed';
+    const diagnosticIds = [...new Set(entry.blockers.map((blocker) => blocker.code))]
+      .map((code) => addDiagnostic(code, target));
+    return { ...target, state, diagnosticIds,
+      ...(entry.blockers[0] ? { errorCode: safeDiagnosticCode(entry.blockers[0].code, 'recoveryFailed') } : {}) };
+  });
+  const verified = targets.some(({ state }) => state === 'completed' || state === 'kept');
+  const changed = receipt.configChanged || receipt.declarationChanged || receipt.preferencesChanged || receipt.outputsMayHaveChanged;
+  const state = receipt.ok ? 'succeeded' : verified || changed ? 'partial' : 'blocked';
+  const stale = diagnostics.some(({ code }) => code === 'operationReviewStale');
+  return {
+    summary: {
+      ...identity,
+      state, operationKind: 'pluginWriteBatch',
+      code: receipt.ok ? 'operationSucceeded' : diagnostics[0]?.code ?? 'recoveryFailed',
+      message: receipt.ok ? '批量恢复已完成。' : stale ? recoveryReason('operationReviewStale') : '批量恢复仍有目标未完成。',
+      diagnosticCount: diagnostics.length,
+      effects: {
+        configCommit: receipt.configChanged ? 'completed' : 'notApplicable',
+        awWrite: receipt.outputsMayHaveChanged ? 'possible' : stale ? 'notStarted' : 'notApplicable',
+        preApplyExternalEffect: stale ? 'notStarted' : 'unknown',
+        finalVerification: receipt.ok ? 'completed' : stale ? 'notStarted' : verified ? 'partial' : 'unknown',
+      },
+    },
+    diagnostics,
+    targets,
+  };
+}
 
 const intentPath = async (location: IntentLocation): Promise<string> =>
   canonicalizePathThroughExistingAncestor(await resolveIntentPath(location));

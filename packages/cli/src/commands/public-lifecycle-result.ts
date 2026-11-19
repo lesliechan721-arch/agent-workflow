@@ -81,6 +81,8 @@ const messages: Record<string, string> = {
   sourceActiveUnavailable: 'The selected source has no usable Active Catalog.',
   catalogSnapshotInvalid: 'The complete Active snapshot could not be verified. Requirements and outputs were retained.',
   pluginIntentStateInvalid: 'The requirements document is invalid or cannot be read.',
+  operationInterrupted: 'The command was interrupted. Completed changes are retained in the result.',
+  processCleanupUnconfirmed: 'Process cleanup could not be confirmed. Check status before retrying.',
   operationReviewStale: 'The operation evidence changed. Review the current state and repeat the request.',
   pluginSelectorAmbiguous: 'The plugin name is ambiguous. Use a source-qualified plugin ID.',
   pluginUnavailable: 'The plugin is not available in the selected Active Catalog.',

@@ -73,9 +73,9 @@ export async function withAwHomeMutationLock<T>(options: {
   signal?: AbortSignal;
   action: (token: AwHomeMutationToken) => Promise<T>;
 }): Promise<T> {
+  options.signal?.throwIfAborted();
   const coordinationRoot = resolveAwHomeMutationCoordinationRoot(options.env);
   if (options.token !== undefined) {
-    options.signal?.throwIfAborted();
     const tokenRoot = tokenRoots.get(options.token);
     if (tokenRoot === undefined) {
       throw new Error('Invalid AW_HOME mutation token.');
@@ -99,6 +99,7 @@ export async function withAwHomeMutationLock<T>(options: {
   let actionError: unknown;
   let succeeded = false;
   try {
+    options.signal?.throwIfAborted();
     result = await options.action(token);
     succeeded = true;
   } catch (error) {

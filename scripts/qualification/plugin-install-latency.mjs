@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { computeTreeDigest } from '../build/build-cache.mjs';
 import { prepareEnvironment } from './native-platform-runtime.mjs';
+import { commandLabel, observePortableWrites, observeProcesses, readNativePackages, readSkillOutputs } from './plugin-install-latency-observation.mjs';
 
 const run = promisify(execFile);
 const sourceId = 'official';
@@ -29,23 +30,25 @@ const userRootPool = [
 ];
 const projectRoots = ['official/aw-development-toolkit', 'official/aw-skill-eval-runner'];
 const targets = ['antigravity', 'claude', 'codex', 'copilot', 'cursor', 'gemini', 'generic', 'grok', 'opencode', 'pi'];
-const plugins = ['human-content', 'agent-subagent'];
+const namePattern = /^[a-z0-9][a-z0-9-]*$/u;
 const usage = `Usage: node scripts/qualification/plugin-install-latency.mjs --build-root <built checkout>
-  --catalog <local snapshot directory> --target <target> --plugin <plugin> [--output <JSON file>]
+  --catalog <local snapshot directory> --target <target>... --plugin <plugin>... [--output <JSON file>]
+  [--entry tui|cli] [--declarations populated|empty] [--source <id=local snapshot directory>...]
   [--build-revision <commit>] [--expected-active-digest <sha256:digest>]
   [--expected-build-digest <sha256:digest>]
 
-Use the same snapshot for every sample. Each invocation activates it in a new
-isolated home and prepares and executes one User install through the TUI.
+Repeat --plugin and --target for a batch. Bare plugin names select the official
+source from --catalog. Use source/name for another local snapshot from --source.
+Each invocation activates the snapshots in an isolated home and prepares and
+executes one User install. TUI and populated declarations are the defaults.
 The report records buildArtifactDigest from the CLI, Plugin Core and Agent
 Skill Eval dist trees and package manifests. An expected build digest is
-checked before loading the build.
-The target client is discovered on PATH. The report is written to stdout
+checked before loading the build. The expected Active digest binds --catalog.
+Target clients are discovered on PATH. The report is written to stdout
 when --output is omitted. A measured blocked or partial receipt is reported
 in JSON. Exit 1 indicates a qualification runner error.
 
 Targets: ${targets.join(', ')}
-Plugins: ${plugins.join(', ')}
 `;
 
 function readOptions(args) {
@@ -56,16 +59,42 @@ function readOptions(args) {
       'build-root': { type: 'string' },
       'build-revision': { type: 'string' },
       catalog: { type: 'string' },
-      target: { type: 'string' },
-      plugin: { type: 'string' },
+      target: { type: 'string', multiple: true },
+      plugin: { type: 'string', multiple: true },
+      source: { type: 'string', multiple: true, default: [] },
+      entry: { type: 'string', default: 'tui' },
+      declarations: { type: 'string', default: 'populated' },
       output: { type: 'string' },
       'expected-active-digest': { type: 'string' },
       'expected-build-digest': { type: 'string' },
     },
   });
   if (values.help) return null;
-  if (!values['build-root'] || !values.catalog || !targets.includes(values.target) || !plugins.includes(values.plugin)) {
-    throw new Error('Supply a built checkout, local Catalog, supported target and fixture plugin. See --help.');
+  if (!values['build-root'] || !values.catalog || !values.target?.length || !values.plugin?.length
+    || values.target.some((target) => !targets.includes(target))) {
+    throw new Error('Supply a built checkout, local Catalog, targets and plugins. See --help.');
+  }
+  if (!['tui', 'cli'].includes(values.entry) || !['populated', 'empty'].includes(values.declarations)) {
+    throw new Error('Choose a supported entry and declarations fixture. See --help.');
+  }
+  const catalogs = { [sourceId]: path.resolve(values.catalog) };
+  for (const source of values.source) {
+    const delimiter = source.indexOf('=');
+    const id = source.slice(0, delimiter);
+    if (delimiter < 1 || delimiter === source.length - 1 || !namePattern.test(id) || Object.hasOwn(catalogs, id)) {
+      throw new Error('Each --source must supply a unique source ID and local path in id=path form.');
+    }
+    catalogs[id] = path.resolve(source.slice(delimiter + 1));
+  }
+  const selectors = values.plugin.map((plugin) => plugin.includes('/') ? plugin : `${sourceId}/${plugin}`);
+  for (const selector of selectors) {
+    const [id, plugin, extra] = selector.split('/');
+    if (!namePattern.test(plugin) || !Object.hasOwn(catalogs, id) || extra !== undefined) {
+      throw new Error('Each --plugin must name a plugin in a configured local source.');
+    }
+  }
+  if (new Set(values.target).size !== values.target.length || new Set(selectors).size !== selectors.length) {
+    throw new Error('Supply each target and plugin only once.');
   }
   const expectedActiveDigest = values['expected-active-digest'];
   if (expectedActiveDigest !== undefined && !sha256DigestPattern.test(expectedActiveDigest)) {
@@ -82,9 +111,11 @@ function readOptions(args) {
   return {
     buildRoot: path.resolve(values['build-root']),
     buildRevision,
-    catalog: path.resolve(values.catalog),
-    target: values.target,
-    plugin: values.plugin,
+    catalogs,
+    measuredTargets: values.target,
+    selectors,
+    entry: values.entry,
+    declarations: values.declarations,
     expectedActiveDigest,
     expectedBuildDigest,
     output: values.output ? path.resolve(values.output) : null,
@@ -92,7 +123,8 @@ function readOptions(args) {
 }
 
 async function writeJson(file, value) {
-  await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
+  await fs.writeFile(file, `${JSON.stringify(value, (_key, entry) =>
+    entry instanceof Set ? { $set: [...entry] } : entry instanceof Map ? { $map: [...entry] } : entry, 2)}\n`);
 }
 
 function intent(roots, logicalIdentity) {
@@ -105,7 +137,7 @@ function intent(roots, logicalIdentity) {
 }
 
 function stageEvidence() {
-  return { ms: null, transportScans: 0, nativeRunnerCalls: 0, nativeCalls: 0, commands: {},
+  return { ms: null, transportScans: 0, nativeRunnerCalls: 0, nativeCalls: 0, commands: {}, processes: [],
     providerCalls: { path: 0, git: 0, gitRefProbe: 0 } };
 }
 
@@ -138,34 +170,28 @@ function receiptEvidence(receipt) {
   };
 }
 
-const commandWords = new Set([
-  '--version', '-v', 'version', '--help', '-h', 'help', 'plugin', 'plugins', 'marketplace', 'marketplaces',
-  'extensions', 'extension', 'list', 'ls', 'add', 'install', 'update', 'inspect', 'enable', 'disable',
-  'config', 'get', 'api', 'GET', 'skills', 'serve',
-]);
-
-function commandLabel({ command, args }) {
-  const words = args.filter((arg) => commandWords.has(arg)).slice(0, 4);
-  return [path.basename(command), ...words].join(' ');
-}
-
 async function sample(input, env, project) {
-  const { buildRoot, catalog, target, plugin, expectedActiveDigest, expectedBuildDigest } = input;
-  const pluginId = `${sourceId}/${plugin}`;
-  const stages = { sync: { ms: null, providerCalls: { path: 0, git: 0, gitRefProbe: 0 } },
-    load: stageEvidence(), review: stageEvidence(),
+  const { buildRoot, measuredTargets, selectors, expectedActiveDigest, expectedBuildDigest } = input;
+  const populated = input.declarations === 'populated';
+  const stages = { sync: stageEvidence(), load: stageEvidence(), review: stageEvidence(),
     execute: stageEvidence(), discovery: stageEvidence() };
   const report = {
     schemaVersion: 1,
-    host: { platform: process.platform, arch: process.arch, nodeVersion: process.version },
+    host: { platform: process.platform, arch: process.arch, nodeVersion: process.version,
+      availableParallelism: os.availableParallelism(), loadAverage: os.loadavg(), freeMemoryBytes: os.freemem() },
     referenceFixtureRevision,
-    target,
-    plugin,
+    target: measuredTargets[0],
+    plugin: selectors[0].split('/')[1],
+    measuredTargets,
+    batchRoots: selectors,
+    entry: input.entry,
+    declarationsFixture: input.declarations,
     scope: 'user',
-    userRoots: userRootPool.filter((id) => id !== pluginId),
-    projectRoots,
+    userRoots: populated ? userRootPool.filter((id) => !selectors.includes(id)).slice(0, 7) : [],
+    projectRoots: populated ? projectRoots : [],
     stages,
     recoveryStages: [],
+    portableWrites: [],
     clients: [],
     preview: null,
     result: null,
@@ -173,15 +199,27 @@ async function sample(input, env, project) {
   };
   let phase = 'setup';
   let controller;
+  let measuredReceipt;
   const restore = [];
+  const isolatedRoot = path.dirname(project);
   const fromBuild = (relative) => import(pathToFileURL(path.join(buildRoot, 'packages/cli/dist/src', relative)));
-  const timed = async (name, operation) => {
+  const startTiming = (name) => {
     phase = name;
-    const start = performance.now();
+    stages[name].startedMs = performance.now();
+    return process.cpuUsage();
+  };
+  const finishTiming = (name, startCpu) => {
+    Object.assign(stages[name], {
+      ms: Math.round(performance.now() - stages[name].startedMs),
+      cpuMicroseconds: process.cpuUsage(startCpu),
+    });
+  };
+  const timed = async (name, operation) => {
+    const startCpu = startTiming(name);
     try {
       return await operation();
     } finally {
-      stages[name].ms = Math.round(performance.now() - start);
+      finishTiming(name, startCpu);
     }
   };
 
@@ -218,10 +256,21 @@ async function sample(input, env, project) {
       fromBuild('utils/git-catalog-provider.js'),
     ]);
     report.buildVersion = (await readCliPackageInfo()).version;
-    const catalogPath = await fs.realpath(catalog);
-    const manifest = JSON.parse(await fs.readFile(path.join(catalogPath, 'catalog-manifest.json'), 'utf8'));
-    report.catalogVersion = manifest.catalogVersion;
-    report.catalogPlugins = manifest.entries.length;
+    const catalogs = {};
+    report.sources = {};
+    for (const [id, directory] of Object.entries(input.catalogs)) {
+      const catalogPath = await fs.realpath(directory);
+      const manifest = JSON.parse(await fs.readFile(path.join(catalogPath, 'catalog-manifest.json'), 'utf8'));
+      catalogs[id] = { path: catalogPath, entries: manifest.entries };
+      report.sources[id] = { catalogVersion: manifest.catalogVersion, plugins: manifest.entries.length };
+    }
+    report.catalogVersion = report.sources[sourceId].catalogVersion;
+    report.catalogPlugins = report.sources[sourceId].plugins;
+
+    restore.push(observeProcesses(() => stages[phase]));
+    if (measuredTargets.includes('generic')) {
+      restore.push(observePortableWrites(buildRoot, isolatedRoot, () => phase, report.portableWrites));
+    }
 
     // These are the same provider boundaries observed by the existing perf suite.
     for (const [provider, method, counter] of [
@@ -239,66 +288,93 @@ async function sample(input, env, project) {
 
     await writeJson(path.join(env.AW_HOME, 'catalog-sources.json'), {
       schemaVersion: 2,
-      sources: [{ id: sourceId, type: 'path', path: catalogPath, primary: true, autoCheck: false }],
+      sources: Object.entries(catalogs).map(([id, catalog]) => ({
+        id, type: 'path', path: catalog.path, primary: id === sourceId, autoCheck: false,
+      })),
     });
-    await timed('sync', () => syncCatalogSourceGeneration({
-      sourceId, cwd: project, env, cliVersion: report.buildVersion, impactConfirmed: true,
-    }));
+    await timed('sync', async () => {
+      for (const id of Object.keys(catalogs)) {
+        await syncCatalogSourceGeneration({ sourceId: id, cwd: project, env, cliVersion: report.buildVersion, impactConfirmed: true });
+      }
+    });
     phase = 'setup';
     if (stages.sync.providerCalls.path === 0) throw new Error('Local Catalog provider was not observed during fixture sync.');
-    const active = (await readCatalogGenerationState(env)).sources[sourceId]?.active;
-    if (!active) throw new Error('Local Catalog sync produced no Active snapshot.');
-    report.activeDigest = active.snapshotDigest;
-    report.catalogLogicalIdentity = active.logicalIdentity;
-    if (expectedActiveDigest && expectedActiveDigest !== active.snapshotDigest) {
-      throw new Error(`Expected Active digest ${expectedActiveDigest}, got ${active.snapshotDigest}.`);
+    const state = await readCatalogGenerationState(env);
+    for (const id of Object.keys(catalogs)) {
+      const active = state.sources[id]?.active;
+      if (!active) throw new Error(`Local Catalog sync produced no Active snapshot for ${id}.`);
+      report.sources[id].activeDigest = active.snapshotDigest;
+      report.sources[id].logicalIdentity = active.logicalIdentity;
+    }
+    report.activeDigest = report.sources[sourceId].activeDigest;
+    report.catalogLogicalIdentity = report.sources[sourceId].logicalIdentity;
+    if (expectedActiveDigest && expectedActiveDigest !== report.activeDigest) {
+      throw new Error(`Expected Active digest ${expectedActiveDigest}, got ${report.activeDigest}.`);
     }
 
     // Bind public roots to the actual local snapshot identity.
     await fs.mkdir(path.join(project, '.agent-workflows'));
     await Promise.all([
-      writeJson(path.join(env.AW_HOME, 'plugin-intents.json'), intent(report.userRoots, active.logicalIdentity)),
-      writeJson(path.join(project, '.agent-workflows', 'plugin-intents.json'), intent(projectRoots, active.logicalIdentity)),
+      writeJson(path.join(env.AW_HOME, 'plugin-intents.json'), intent(report.userRoots, report.catalogLogicalIdentity)),
+      writeJson(path.join(project, '.agent-workflows', 'plugin-intents.json'), intent(report.projectRoots, report.catalogLogicalIdentity)),
       writeJson(path.join(env.AW_HOME, 'deployment-preferences.json'), {
-        schemaVersion: 2, kind: 'aw-deployment-preferences', targets: [target], exclusions: [],
+        schemaVersion: 2, kind: 'aw-deployment-preferences', targets: measuredTargets, exclusions: [],
       }),
     ]);
 
     // A completed Core transport digest is the hash of the whole snapshot.
     // Match the actual Active digest at the hashing boundary for all builds.
     const originalDigest = Hash.prototype.digest;
-    const expectedHex = active.snapshotDigest.slice('sha256:'.length);
+    const expectedHex = new Set(Object.values(report.sources).map((source) => source.activeDigest.slice('sha256:'.length)));
     Hash.prototype.digest = function (...args) {
       const result = Reflect.apply(originalDigest, this, args);
-      if (result === expectedHex && stages[phase]) stages[phase].transportScans++;
+      if (expectedHex.has(result) && stages[phase]) stages[phase].transportScans++;
       return result;
     };
     restore.push(() => { Hash.prototype.digest = originalDigest; });
 
     const nativeRunner = getDefaultNativeCliRunner();
-    const countedRunner = retainNativeCliRunnerBackend((invocation) => {
+    const countedRunner = retainNativeCliRunnerBackend(async (invocation) => {
       const evidence = stages[phase];
       if (!evidence) return nativeRunner(invocation);
       evidence.nativeRunnerCalls++;
-      return nativeRunner({
-        ...invocation,
-        onSpawn(child) {
-          const label = commandLabel(invocation);
-          evidence.nativeCalls++;
-          evidence.commands[label] = (evidence.commands[label] ?? 0) + 1;
-          invocation.onSpawn?.(child);
-        },
-      });
+      let spawnedProcess;
+      try {
+        return await nativeRunner({
+          ...invocation,
+          onSpawn(child) {
+            const label = commandLabel(invocation);
+            spawnedProcess = evidence.processes.findLast((call) => call.pid === child.pid);
+            if (spawnedProcess) spawnedProcess.nativeLabel = label;
+            evidence.nativeCalls++;
+            evidence.commands[label] = (evidence.commands[label] ?? 0) + 1;
+            invocation.onSpawn?.(child);
+          },
+        });
+      } catch (error) {
+        if (spawnedProcess) {
+          spawnedProcess.nativeError = error.reason ?? error.code ?? error.name;
+          if (error.cleanupError) spawnedProcess.cleanupUnconfirmed = true;
+        }
+        throw error;
+      }
     }, nativeRunner);
-    controller = createConsoleTuiV4Controller(createCliExecutionContext({
+
+    let cliTiming;
+    const runtime = {
       cwd: project, env, nativeCliRunner: countedRunner,
       reporter: { event: async () => {}, notice: async () => {} },
       debugLogger: { async log({ type, data }) {
-        if (type !== 'performance:stage' || !data?.name?.startsWith('recovery.')
-          || (phase !== 'review' && phase !== 'execute')) return;
+        if (type !== 'performance:stage' || (phase !== 'review' && phase !== 'execute')) return;
+        if (input.entry === 'cli' && phase === 'review' && data?.name === 'recovery.lock.wait' && data.phase === 'start') {
+          finishTiming('review', cliTiming);
+          cliTiming = startTiming('execute');
+        }
+        if (!/^(recovery|status)\./u.test(data?.name ?? '')) return;
         const { transportScans, nativeCalls } = stages[phase];
         report.recoveryStages.push({
           operation: phase,
+          observedAtMs: performance.now(),
           name: data.name,
           event: data.phase,
           durationMs: data.durationMs,
@@ -306,34 +382,71 @@ async function sample(input, env, project) {
           nativeCalls,
         });
       } },
-    }));
-    await timed('load', () => controller.load());
-    if (controller.snapshot.phase !== 'ready') {
-      throw new Error(`TUI failed to load: ${controller.snapshot.loadError?.code ?? controller.snapshot.phase}.`);
+    };
+    if (input.entry === 'cli') {
+      const { runCli } = await fromBuild('index.js');
+      let stdout = '';
+      let stderr = '';
+      const argv = ['plugin', 'install', ...selectors, '--scope', 'user', '--yes', '--json',
+        ...measuredTargets.flatMap((target) => ['--target', target])];
+      cliTiming = startTiming('review');
+      try {
+        report.cli = { exitCode: await runCli(argv, { ...runtime, interactive: false,
+          io: { stdout: (text) => { stdout += text; }, stderr: (text) => { stderr += text; } } }), argv, stderr };
+      } finally {
+        finishTiming(phase, cliTiming);
+      }
+      measuredReceipt = JSON.parse(stdout);
+      report.result = {
+        ok: measuredReceipt.status === 'success',
+        diagnostics: measuredReceipt.diagnostics,
+        targets: (measuredReceipt.data?.targetResults ?? []).map((target) => ({ ...target, agent: target.target })),
+      };
+    } else {
+      controller = createConsoleTuiV4Controller(createCliExecutionContext(runtime));
+      await timed('load', () => controller.load());
+      if (controller.snapshot.phase !== 'ready') {
+        throw new Error(`TUI failed to load: ${controller.snapshot.loadError?.code ?? controller.snapshot.phase}.`);
+      }
+      const plan = await timed('review', () => controller.prepareScopedTask({
+        kind: 'recovery', command: 'install', scope: 'user', selectors,
+      }));
+      report.preview = receiptEvidence(plan.plan.receipt);
+      report.completePreviewReceipt = structuredClone(plan.plan.receipt);
+      const outcome = await timed('execute', () => controller.executeScopedTask(plan));
+      if (outcome.kind !== 'recovery') {
+        if (outcome.kind === 'recoveryReview') await controller.discardScopedPlan(outcome.plan);
+        throw new Error(`Warm install returned ${outcome.kind} and did not finish in one Review.`);
+      }
+      measuredReceipt = outcome.receipt;
+      report.result = receiptEvidence(measuredReceipt);
+      const { inventoryRecoveryActions } = await fromBuild('commands/public-lifecycle-result.js');
+      const diagnostics = measuredReceipt.targetResults.flatMap((item) => [...item.blockers, ...(item.reasons ?? [])]);
+      report.result.manualRecoveryActions = inventoryRecoveryActions(diagnostics);
     }
-    const plan = await timed('review', () => controller.prepareScopedTask({
-      kind: 'recovery', command: 'install', scope: 'user', selectors: [pluginId],
-    }));
-    report.preview = receiptEvidence(plan.plan.receipt);
-    const outcome = await timed('execute', () => controller.executeScopedTask(plan));
-    if (outcome.kind !== 'recovery') {
-      if (outcome.kind === 'recoveryReview') await controller.discardScopedPlan(outcome.plan);
-      throw new Error(`Warm install returned ${outcome.kind} and did not finish in one Review.`);
-    }
-    report.result = receiptEvidence(outcome.receipt);
-    const { inventoryRecoveryActions } = await fromBuild('commands/public-lifecycle-result.js');
-    const diagnostics = outcome.receipt.targetResults.flatMap((item) => [...item.blockers, ...(item.reasons ?? [])]);
-    report.result.manualRecoveryActions = inventoryRecoveryActions(diagnostics);
-    const discovery = await timed('discovery', () => discoverPlatform(target, { cwd: project, env, runner: countedRunner }));
+    report.completeReceipt = measuredReceipt;
+    const discoveries = await timed('discovery', () => Promise.all(measuredTargets.map(async (target) => {
+      const discovery = await discoverPlatform(target, { cwd: project, env, runner: countedRunner });
+      return [target, discovery];
+    })));
+    const [, discovery] = discoveries[0];
     report.clientAvailability = discovery.availability;
     report.clientDiagnostics = discovery.diagnostics.map(diagnostic);
-    report.clients = discovery.installations.map((entry) => ({
-      product: entry.product,
-      version: entry.version,
-      availability: entry.availability,
+    report.measuredClients = Object.fromEntries(discoveries.map(([target, value]) => [target, value.installations.map((entry) => ({
+      product: entry.product, version: entry.version, availability: entry.availability,
       executable: entry.entry?.kind === 'cli' ? entry.entry.executable : null,
-    }));
+    }))]));
+    report.clients = report.measuredClients[measuredTargets[0]];
+    report.measuredClientVersions = Object.fromEntries(Object.entries(report.measuredClients).map(([target, clients]) =>
+      [target, clients.map((entry) => entry.version)]));
     phase = 'verification';
+    report.declarations = {
+      user: JSON.parse(await fs.readFile(path.join(env.AW_HOME, 'plugin-intents.json'), 'utf8')),
+      project: JSON.parse(await fs.readFile(path.join(project, '.agent-workflows', 'plugin-intents.json'), 'utf8')),
+    };
+    report.skillOutputs = await readSkillOutputs(catalogs,
+      [...new Set([...selectors, ...report.result.targets.map((target) => target.pluginId)])], isolatedRoot);
+    report.nativePackages = await readNativePackages(measuredReceipt.targetResults ?? measuredReceipt.data?.targetResults ?? [], isolatedRoot);
     if (!stages.review.transportScans) throw new Error('No complete Active transport digest was observed during Review.');
     if ([stages.review, stages.execute].some((stage) => Object.values(stage.providerCalls).some(Boolean))) {
       throw new Error('The warm install called a Catalog provider.');
@@ -351,6 +464,7 @@ async function sample(input, env, project) {
     }
   }
   const { review, execute } = stages;
+  report.host.workerPeakRssKiB = process.resourceUsage().maxRSS;
   report.reviewMs = review.ms;
   report.executeMs = execute.ms;
   report.wallMs = review.ms === null || execute.ms === null ? null : review.ms + execute.ms;
@@ -372,7 +486,7 @@ async function main() {
     }
     const input = JSON.parse(process.argv[3]);
     const report = await sample(input, process.env, project);
-    process.stdout.write(`${JSON.stringify(report)}\n`);
+    await writeJson(path.join(root, 'sample.json'), report);
     return;
   }
 
@@ -392,12 +506,11 @@ async function main() {
     const project = path.join(root, 'project');
     await fs.mkdir(project);
     await run('git', ['init', '--quiet'], { cwd: project, env });
-    const { stdout } = await run(process.execPath, [fileURLToPath(import.meta.url), '--worker', JSON.stringify(input)], {
-      cwd: project, env, maxBuffer: 2 * 1024 * 1024,
-    });
-    const report = JSON.parse(stdout);
-    if (input.output) await writeJson(input.output, report);
-    else process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    await run(process.execPath, [fileURLToPath(import.meta.url), '--worker', JSON.stringify(input)], { cwd: project, env });
+    const rawReport = await fs.readFile(path.join(root, 'sample.json'), 'utf8');
+    const report = JSON.parse(rawReport);
+    if (input.output) await fs.writeFile(input.output, rawReport);
+    else process.stdout.write(rawReport);
     if (report.error) {
       console.error(`Qualification failed during ${report.error.phase}: ${report.error.message}`);
       process.exitCode = 1;

@@ -821,6 +821,90 @@ describe('scoped inventory in Ink', () => {
     instance.unmount();
   });
 
+  it.each([
+    { total: 3, partial: false }, { total: 3, partial: true }, { total: 1, partial: false },
+  ])('shows live progress for $total confirmed recovery targets (partial: $partial)', async ({ total, partial }) => {
+    const targets = (['codex', 'claude', 'generic'] as const).slice(0, total).map((agent) => ({
+      pluginId: 'official/demo', agent, scope: 'user' as const, delivery: null,
+    }));
+    const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
+      command: 'sync', ok: !partial, intent: { state: 'valid', roots: ['official/demo'] },
+      requestedRoots: ['official/demo'], requestedTargets: targets,
+      selection: { agents: targets.map(({ agent }) => agent), origin: 'preference', preferences: 'valid' },
+      blockers: [], errors: [], remainingTargets: partial ? [targets[2]!] : [], recoveryActions: [],
+      targetResults: targets.map((target) => partial && target.agent === 'generic'
+        ? { ...target, execution: 'partial', observation: 'unknown', content: 'unknown', requiredBy: [],
+          blockers: [{ code: 'permissionDenied', message: '/private/backend-details' }] }
+        : { ...target, execution: 'applied', observation: 'verified',
+          content: 'satisfied', blockers: [], requiredBy: [] }),
+      declarationChanged: false, preferencesChanged: false, configChanged: false, outputsMayHaveChanged: true };
+    const plan = { kind: 'recovery', scope: 'user', plan: { receipt, command: 'sync',
+      plannedImpact: { declaration: false, preferences: false, config: false, outputs: true },
+      changes: [], warnings: [], context: { dispose: async () => {} },
+      nativeGroups: [], portableGroups: [] } } as unknown as ScopedTuiPlan;
+    const execution = Promise.withResolvers<{ kind: 'recovery'; receipt: RecoveryReceipt }>();
+    const executeScopedTask = vi.fn(() => execution.promise);
+    const feed = createRebuildProgressFeed();
+    const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
+      loadScopedStatus: vi.fn().mockResolvedValue(recovery('user')),
+      prepareScopedTask: vi.fn().mockResolvedValue(plan), executeScopedTask }, feed);
+    await controller.load();
+    controller.push({ name: 'intentInventory', scope: 'user' });
+    const size = sizes[1]!;
+    const instance = render(<ConsoleAppV4 controller={controller} size={size} />);
+    await tick();
+    await press(instance, 'c');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+    expect(executeScopedTask).not.toHaveBeenCalled();
+    expect(checkedFrame(instance, size)).not.toContain('正在执行 0');
+    expect(controller.listOperationHistory()).toHaveLength(0);
+    await press(instance, '\r');
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('正在执行恢复'));
+    feed.setInstallProgress({ completed: 0, running: 1, waitingForDependencies: total === 3 ? 1 : 0,
+      waiting: total === 3 ? 1 : 0 });
+    if (total === 3) {
+      await vi.waitFor(() => {
+        const frame = checkedFrame(instance, size);
+        expect(frame).toContain('已完成 0 · 正在执行 1');
+        expect(frame).toContain('等待依赖 1 · 待执行 1');
+      });
+      feed.setInstallProgress({ completed: 1, running: 2, waitingForDependencies: 0, waiting: 0 });
+      feed.setCurrent({ target: 'Demo', phase: '写入平台插件' });
+      await vi.waitFor(() => {
+        const frame = checkedFrame(instance, size);
+        expect(frame).toContain('已完成 1 · 正在执行 2');
+        expect(frame).toContain('等待依赖 0 · 待执行 0');
+      });
+    } else {
+      await tick();
+      expect(checkedFrame(instance, size)).not.toContain('已完成 0');
+      expect(checkedFrame(instance, size)).not.toContain('等待依赖');
+    }
+    await press(instance, escape);
+    expect(checkedFrame(instance, size)).toContain('正在执行恢复');
+    expect(controller.listOperationHistory()).toHaveLength(0);
+    execution.resolve({ kind: 'recovery', receipt });
+    await vi.waitFor(() => expect(checkedFrame(instance, size)).toContain('恢复结果'));
+    expect(checkedFrame(instance, size)).not.toContain('待执行 0');
+    expect(executeScopedTask).toHaveBeenCalledOnce();
+    const history = controller.listOperationHistory();
+    expect(history).toHaveLength(total > 1 ? 1 : 0);
+    if (history[0]) {
+      expect(history[0].state).toBe(partial ? 'partial' : 'succeeded');
+      const detail = controller.getOperationDiagnostic(history[0].recordId);
+      expect(detail?.targets).toEqual(targets.map(({ agent, pluginId, scope }) => expect.objectContaining({
+        platform: agent, pluginId, scope, state: partial && agent === 'generic' ? 'failed' : 'completed',
+      })));
+      if (partial) {
+        expect(detail?.diagnostics).toContainEqual(expect.objectContaining({
+          code: 'permissionDenied', target: expect.objectContaining({ platform: 'generic' }),
+        }));
+        expect(JSON.stringify(detail)).not.toContain('/private/backend-details');
+      }
+    }
+    instance.unmount();
+  });
+
   it('confirms source impact first, then shows a new recovery Review based on the activated source', async () => {
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'project',
       command: 'sync', ok: true, intent: { state: 'valid', roots: ['official/demo'] },

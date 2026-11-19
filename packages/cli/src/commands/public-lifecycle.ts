@@ -13,13 +13,14 @@ import type { RebuildCommandRuntime } from './rebuild-command.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
-import { resolvePartialCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, resolvePartialCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { calculateCatalogGenerationSetDigest } from '../utils/catalog-generation-resolver.js';
 import { activateCatalogSourceGeneration, withCatalogSourceCandidate } from '../utils/catalog-generation-service.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import { deletePluginConfigStore } from '../utils/plugin-config.js';
 import { parseScriptTimeoutMs } from './options.js';
+import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import { readJointDemand, deriveJointDemand } from '../recovery/joint-demand.js';
 import { deploymentConfirmationEffects } from './deployment-confirmation.js';
@@ -38,6 +39,8 @@ export function lifecycleArgumentError(command: string, code: string, message: s
 }
 
 function codeOf(error: unknown): string {
+  const interrupted = recoveryInterruptionCode(error);
+  if (interrupted) return interrupted;
   const code = (error as { code?: unknown })?.code;
   if (typeof code === 'string' && /^[A-Za-z][A-Za-z0-9-]*$/u.test(code)) return code;
   const first = error instanceof Error ? error.message.split(':')[0] : '';
@@ -86,10 +89,11 @@ interface SourceFailure { sourceId: string; code: string }
 
 /** Temporary candidates are read and disposed without publishing store entries or Active. */
 async function withPreparedSources<T>(options: RecoveryOptions, plugins: string[], refresh: boolean, fetchMissing: boolean, runtime: RebuildCommandRuntime,
-  action: (catalog: CatalogOperationContext, candidates: Candidate[], failures: SourceFailure[]) => Promise<T>): Promise<T> {
+  action: (catalog: CatalogOperationContext, candidates: Candidate[], failures: SourceFailure[], catalogReadScope: CatalogPreparationReadScope) => Promise<T>): Promise<T> {
   const config = await readCatalogSourcesConfigSnapshot(options.env);
   const state = await readCatalogGenerationState(options.env);
-  const catalog = await resolvePartialCatalogOperationContext({ env: options.env, configSnapshot: config, signal: options.signal });
+  const catalogReadScope = new CatalogPreparationReadScope(options);
+  const catalog = await catalogReadScope.resolve({ configSnapshot: config });
   const selected = new Set<string>();
   for (const plugin of plugins) {
     const parsed = parsePluginId(plugin);
@@ -108,7 +112,7 @@ async function withPreparedSources<T>(options: RecoveryOptions, plugins: string[
     && (refresh || fetchMissing && !state.sources[id]?.active));
   const visit = async (index: number, current: CatalogOperationContext, candidates: Candidate[]): Promise<T> => {
     const sourceId = missing[index];
-    if (!sourceId) return action(current, candidates, failures);
+    if (!sourceId) return action(current, candidates, failures, catalogReadScope);
     let entered = false;
     try { return await withCatalogSourceCandidate({ sourceId, cliVersion: options.cliVersion, env: options.env, signal: options.signal, runtime: runtime.catalogGenerationRuntime }, async ({ resolution, candidate }) => {
       entered = true;
@@ -121,7 +125,7 @@ async function withPreparedSources<T>(options: RecoveryOptions, plugins: string[
       return visit(index + 1, next, [...candidates, { sourceId, candidate, previousActive }]);
     }); } catch (error) {
       // Failures after entry belong to the callback, not to this provider fetch.
-      if (entered || !refresh) throw error;
+      if (entered || !refresh || recoveryInterruptionCode(error, options.signal)) throw error;
       failures.push({ sourceId, code: codeOf(error) });
       return visit(index + 1, current, candidates);
     }
@@ -169,7 +173,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
   try { work = await resolveWorkContext({ cwd: options.cwd, scope: options.scope as Scope | undefined, context: options.context as Scope | undefined }); }
   catch (error) { return commandResult<LifecycleData>(id, {}, { status: 'blocked', diagnostics: [publicDiagnostic(codeOf(error))] }); }
   const scope = options.scope as Scope | undefined;
-  const location = { cwd: work.projectRoot ?? options.cwd, scope: scope ?? work.context, env };
+  const location = { cwd: work.projectRoot ?? options.cwd, scope: scope ?? work.context, env, signal: context.signal };
   const preferences = await observePreferences(location);
   if (!options.only && preferences.state !== 'valid' && preferences.state !== 'absent') return commandResult<LifecycleData>(id, {}, { status: 'blocked', diagnostics: [publicDiagnostic('deploymentPreferencesInvalid')] });
   const targets = options.only === 'requirements' ? [] : options.only === 'outputs' ? selected! : (preferences.state === 'valid' ? preferences.value.targets.filter((target) => !selected || selected.includes(target)) : []);
@@ -203,6 +207,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
         const receipt = await executeRecovery(plan, { yes: options.yes, runtime });
         return receiptResult(id, data, receipt);
       } catch (error) {
+        if (error instanceof RecoveryInterruptedError) return receiptResult(id, data, error.receipt);
         const current = await observeIntent(location);
         if (current.state === 'valid') {
           if (current.digest !== data.requirements.digest) data.changes.requirements = 'changed';
@@ -264,7 +269,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
           if (!invalidPlan) result.diagnostics.push(publicDiagnostic('confirmationRequired'));
           return result;
         }
-        return await withAwHomeMutationLock({ env, action: async (token) => {
+        return await withAwHomeMutationLock({ env, signal: context.signal, action: async (token) => {
           const receipts: RecoveryReceipt[] = [];
           for (let index = 0; index < plans.length; index++) {
             const plan = plans[index]!;
@@ -308,7 +313,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
       const intents = await Promise.all(work.scopes.map((scope) => observeIntent({ ...location, scope })));
       selectedPlugins = [...new Set(intents.flatMap((intent) => intent.state === 'valid' ? intent.value.roots.map((root) => root.pluginId) : []))];
     }
-    return await withPreparedSources(recovery, selectedPlugins, command === 'sync' && options.refresh === true, command === 'install', runtime, async (catalog, candidates, failures) => {
+    return await withPreparedSources(recovery, selectedPlugins, command === 'sync' && options.refresh === true, command === 'install', runtime, async (catalog, candidates, failures, catalogReadScope) => {
       const belongsToFailedSource = (selector: string) => {
         const parsed = parsePluginId(selector);
         if (parsed.sourceId) return failures.some((failure) => failure.sourceId === parsed.sourceId);
@@ -316,14 +321,15 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
         return sources.length === 1 && failures.some((failure) => failure.sourceId === sources[0]!.sourceId);
       };
       const healthySelectors = () => selectedPlugins.filter((selector) => !belongsToFailedSource(selector));
+      let reviewedRoots: ReturnType<typeof deriveJointDemand>['roots'] | undefined;
       const withSourceFailures = async (result: CommandResult<LifecycleData>): Promise<CommandResult<LifecycleData>> => {
         if (!failures.length) return result;
         const validResults = result.status !== 'blocked' && data.targetResults.some((target) => !failures.some((failure) => failure.sourceId === parsePluginId(target.pluginId).sourceId)
           && ['applied', 'no-op'].includes(target.execution));
-        const demand = deriveJointDemand(await readJointDemand(recovery));
+        const roots = reviewedRoots ?? deriveJointDemand(await readJointDemand(recovery)).roots;
         for (const failure of failures) {
           result.diagnostics.push(publicDiagnostic(failure.code, { sourceId: failure.sourceId }));
-          for (const root of demand.roots.filter((root) => parsePluginId(root.pluginId).sourceId === failure.sourceId
+          for (const root of roots.filter((root) => parsePluginId(root.pluginId).sourceId === failure.sourceId
             && targets.includes(root.target) && selectedPlugins.some((selector) => selector === root.pluginId
               || !selector.includes('/') && parsePluginId(root.pluginId).pluginName === selector))) {
             const subject = { pluginId: root.pluginId, sourceId: failure.sourceId, target: root.target, scope: root.scope };
@@ -349,11 +355,12 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
         return withSourceFailures(commandResult(id, data));
       }
       if (options.only === 'requirements') {
-        const proposed = await addRequirements({ ...location, selectors: plugins, installSelectors: true, dryRun: true, catalogOperationContext: catalog });
+        const proposed = await addRequirements({ ...location, selectors: plugins, installSelectors: true, dryRun: true, catalogOperationContext: catalog, catalogReadScope });
         if (proposed.errors.length) return receiptResult(id, data, await intentReceipt('install', location, { ...proposed, changed: false }));
         if (!confirm(sourceEffects)) return blocked('confirmationRequired');
       } else {
-        preview = await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), preparedOptions, runtime);
+        preview = await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), preparedOptions, { ...runtime, catalogReadScope });
+        reviewedRoots = preview.joint?.demand.roots;
         if (preview.blockExecution) { const result = receiptResult(id, data, preview.receipt); await preview.context.dispose(); return withSourceFailures(result); }
         if (!confirm([...effectsForPlan(preview), ...sourceEffects])) { const result = receiptResult(id, data, preview.receipt); result.status = 'blocked'; result.diagnostics.push(publicDiagnostic('confirmationRequired')); await preview.context.dispose(); return withSourceFailures(result); }
         receiptResult(id, data, preview.receipt);
@@ -364,7 +371,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
             const activated = await activateCatalogSourceGeneration({ ...candidate, expectedCandidate: candidate.candidate, expectedActive: candidate.previousActive, cliVersion: options.cliVersion, cwd: location.cwd, env, signal: context.signal, impactConfirmed: options.yes === true, runtime: runtime.catalogGenerationRuntime });
             if (activated.activeChanged) data.changes.sources = 'changed';
           } catch (error) {
-            if (command !== 'sync' || !options.refresh) throw error;
+            if (command !== 'sync' || !options.refresh || recoveryInterruptionCode(error, context.signal)) throw error;
             failures.push({ sourceId: candidate.sourceId, code: codeOf(error) });
             const state = await readCatalogGenerationState(env).catch(() => null);
             if (!state) data.changes.sources = 'unknown';

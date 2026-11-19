@@ -7,9 +7,10 @@ import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
+import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import { defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
 
-const [root, awHome, continued, cleanupFailureReadyPath] = process.argv.slice(2);
+const [root, awHome, continued, readyPath, mode] = process.argv.slice(2);
 if (!root || !awHome || !continued) throw new Error('Missing public CLI interrupt fixture arguments.');
 const source = path.join(root, 'source');
 const pluginRoot = path.join(source, 'plugins/demo');
@@ -35,13 +36,14 @@ await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 
 await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
 await setTargets({ cwd, scope: 'project', env }, ['generic']);
 const productionRunner = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
-if (cleanupFailureReadyPath) defaultPluginProcessRunner.run = async (invocation, options) => {
+const waitingForLock = mode === 'wait-lock' || mode === 'wait-confirmed-lock';
+if (readyPath && !waitingForLock) defaultPluginProcessRunner.run = async (invocation, options) => {
   if (!invocation.args.some((argument) => argument.endsWith('pre-apply.mjs'))) return productionRunner(invocation, options);
   return new Promise((_resolve, reject) => {
-  const finish = (): void => { clearTimeout(deadline); reject(new Error('synthetic cleanup failure')); };
-  const deadline = setTimeout(finish, 10_000);
-  options.signal?.addEventListener('abort', finish, { once: true });
-  void fs.outputFile(cleanupFailureReadyPath, 'ready\n');
+    const finish = (): void => { clearTimeout(deadline); reject(new Error('synthetic cleanup failure')); };
+    const deadline = setTimeout(finish, 10_000);
+    options.signal?.addEventListener('abort', finish, { once: true });
+    void fs.outputFile(readyPath, 'ready\n');
   });
 };
 // vite-node's development-server handler exits before the application can clean
@@ -49,5 +51,36 @@ if (cleanupFailureReadyPath) defaultPluginProcessRunner.run = async (invocation,
 for (const listener of process.listeners('SIGTERM')) {
   if (String(listener).includes('sigtermCallbacks')) process.removeListener('SIGTERM', listener);
 }
-process.exitCode = await runCli(['plugin', 'install', 'local/demo', '--scope', 'project', '--yes', '--json'], { cwd, env, interactive: false });
+const args = ['plugin', 'install', 'local/demo', '--scope', 'project', '--yes', '--json'];
+if (waitingForLock && readyPath) {
+  const acquired = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let holder: Promise<void> | undefined;
+  const mkdir = fs.mkdir;
+  const holdLock = async () => {
+    holder = withAwHomeMutationLock({ env, action: async () => {
+      fs.mkdir = new Proxy(mkdir, { apply(target, receiver, args) {
+        if (typeof args[0] === 'string' && path.basename(args[0]) === 'aw-home-mutation.lock') {
+          void fs.outputFile(readyPath, 'waiting');
+        }
+        return Reflect.apply(target, receiver, args);
+      } });
+      acquired.resolve();
+      await release.promise;
+    } });
+    await Promise.race([acquired.promise, holder]);
+  };
+  try {
+    if (mode === 'wait-lock') await holdLock();
+    process.exitCode = await runCli(args, { cwd, env, interactive: false, debugLogger: {
+      async log(event) {
+        if (!holder && event.data?.name === 'recovery.lock.wait' && event.data.phase === 'start') await holdLock();
+      },
+    } });
+  } finally {
+    fs.mkdir = mkdir;
+    release.resolve();
+    await holder;
+  }
+} else process.exitCode = await runCli(args, { cwd, env, interactive: false });
 await fs.outputFile(continued, 'boundary-returned\n');
