@@ -23,7 +23,7 @@ import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan, type JointPlacement } from './joint-demand.js';
 import { checkFootprints, prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
 import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
-import { canRetryRecoveryRootWithCli, recoveryRetryTargets, type RecoveryReceipt, type RecoveryDiagnostic } from './receipt.js';
+import { recoveryRetryDispositions, recoveryStatusContext, type RecoveryReceipt, type RecoveryDiagnostic } from './receipt.js';
 import { limitInstallNativeRunner, mapInstallReads } from './install-concurrency.js';
 import { executeJointInstall } from './joint-install-execution.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from './interruption.js';
@@ -77,28 +77,34 @@ function providesExactTarget(placement: JointPlacement, exact: NonNullable<Recov
     item.scope === exact.scope && item.path.includes(exact.pluginId));
 }
 function useDeclaredRetryRoots(receipt: RecoveryReceipt): void {
-  const sync = (item: Pick<RecoveryReceipt['targetResults'][number], 'pluginId' | 'scope' | 'agent'>) =>
-    `aw plugin sync ${item.pluginId} --context ${item.scope} --target ${item.agent}`;
+  const status = `aw plugin status --context ${recoveryStatusContext(receipt)} --json`;
+  const results = new Map(receipt.targetResults.map((target) => [targetKey(target), target]));
+  const pending = new Set(receipt.remainingTargets.map(targetKey));
+  const revise = (action: string): string[] => {
+    if (/^aw plugin status --context (?:user|project) --json$/u.test(action)) return [status];
+    // Only rewrite the known command at the end of a backend action. Paths and instructions preceding it stay display text.
+    const match = /aw plugin sync (\S+) (?:--context (user|project) --target ([\w-]+)|--target ([\w-]+) --context (user|project))((?: --(?:rebuild|yes|native-consent))*)([.。]?)$/u.exec(action);
+    if (!match) return [action];
+    const prefix = action.slice(0, match.index);
+    if (prefix && !/(?:^|\s)run $|然后重试 $/iu.test(prefix)) return [action];
+    const context = prefix.replace(/(?:then run |run |然后重试 )$/iu, '').trimEnd();
+    const target = results.get([match[1], match[3] ?? match[4], match[2] ?? match[5]].join('\0'));
+    if (!target || !pending.has(targetKey(target))) return context ? [context] : [];
+    const dispositions = recoveryRetryDispositions(receipt, [target]);
+    if (!dispositions.length) return [context ? `${context} ${status}` : status];
+    return dispositions.map((root) => {
+      if (root.kind === 'exact-project') {
+        const exact = `请在 TUI 当前项目中选择 ${root.pluginId} 的 ${root.agent} 位置重新检查。`;
+        return context ? `${context} ${exact}` : exact;
+      }
+      const command = `aw plugin sync ${root.pluginId} --context ${root.scope} --target ${root.agent}${match[6]}`;
+      return prefix && prefix !== 'run ' ? `${prefix}${command}${match[7]}` : command;
+    });
+  };
   for (const target of receipt.targetResults) {
-    if (!receipt.remainingTargets.some((entry) => targetKey(entry) === targetKey(target))
-      || target.relation !== 'dependency' && canRetryRecoveryRootWithCli(receipt, target)) continue;
-    const command = sync(target);
-    const roots = recoveryRetryTargets(receipt, [target]);
-    const revise = (action: string): string[] => {
-      if (!action.includes(command)) return [action];
-      if (!roots.length) return [`aw plugin status --context ${receipt.scope} --json`];
-      return roots.map((root) => {
-        if (canRetryRecoveryRootWithCli(receipt, root)) return action.replace(command, sync(root));
-        const precise = `请在 TUI 当前项目中选择 ${root.pluginId} 的 ${root.agent} 位置重新检查。`;
-        return action.startsWith(command) ? precise : action.replace(command, precise);
-      });
-    };
     if (target.recoveryActions) target.recoveryActions = [...new Set(target.recoveryActions.flatMap(revise))];
-    receipt.recoveryActions = [...new Set(receipt.recoveryActions.flatMap(revise))];
   }
-  const actions = new Set(receipt.recoveryActions);
-  receipt.recoveryActions = [...actions].filter((action) => !action.startsWith('aw plugin sync ')
-    || !action.includes(' --context user --target ') || !actions.has(action.replace(' --context user --target ', ' --context project --target ')));
+  receipt.recoveryActions = [...new Set(receipt.recoveryActions.flatMap(revise))];
 }
 function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): RecoveryReceipt {
   const joint = plan.joint!;
@@ -120,11 +126,14 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
     if (placement) {
       const contributions = placement.scope === target.scope ? placement.contributions
         : placement.contributions.filter((item) => item.scope === target.scope);
+      const selectedContributions = isInstallBatch(plan.command) && plan.options.exactTargets
+        ? contributions.filter((item) => plan.options.exactTargets!.some((exact) =>
+          exact.scope === item.scope && exact.agent === target.agent && item.path.includes(exact.pluginId))) : contributions;
       target.requiredBy = [...new Set(contributions.map((item) => item.root))];
       target.providerScope = placement.scope;
-      if (plan.command !== 'uninstall' || placement.scope !== target.scope) target.relation = contributions.some((item) =>
+      if (plan.command !== 'uninstall' || placement.scope !== target.scope) target.relation = selectedContributions.some((item) =>
         item.root === target.pluginId && item.scope === target.scope) ? 'root' : 'dependency';
-      if (target.relation === 'dependency') target.contributions = contributions;
+      if (target.relation === 'dependency') target.contributions = selectedContributions;
       if (placement.scope !== target.scope) target.requirementScope = target.scope;
     }
   }
@@ -198,7 +207,7 @@ function blockedBeforeDeployment(plan: RecoveryPlan, blocker = diagnostic('opera
   receipt.nativeToolChanges = [];
   receipt.remainingTargets = [];
   receipt.recoveryActions = savedState
-    ? [`aw plugin status --context ${plan.joint!.snapshot.context.context} --json`,
+    ? [`aw plugin status --context ${recoveryStatusContext(receipt)} --json`,
       `请核对当前${savedState === 'intent' ? '插件声明' : '本机 Agent 偏好'}。确认需要的范围后重新准备本次操作。`]
     : ['确认依据已改变，请重新准备本次操作。'];
   if (savedState) receipt.unconfirmedSavedState = savedState;
@@ -492,6 +501,9 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     selection: { agents: targets, origin: options.targets ? 'argument' : targets.length ? 'preference' : 'none', preferences: snapshot.user.preferences.state },
     blockers: errors, errors, recoveryActions: [], declarationChanged: false, preferencesChanged: false,
     configChanged: false, outputsMayHaveChanged: false,
+    ...(isInstallBatch(command) && snapshot.context.scopes.includes('project') ? {
+      reviewedUserRoots: intentReceipt(snapshot.user.intent).roots?.filter((id) => requested.includes(id)) ?? null,
+    } : {}),
     coverage: { scopes: snapshot.context.scopes, ...(snapshot.context.projectRoot ? { projectRoot: snapshot.context.projectRoot } : {}) },
   };
   const children: RecoveryPlan[] = [];
@@ -856,6 +868,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     plan.warnings.push(...children.flatMap((child) => child.warnings));
     plan.plannedImpact.outputs = children.some((child) => child.plannedImpact.outputs);
     plan.receipt = mergeReceipts(plan, children.map((child) => child.receipt));
+    if (batch && plan.receipt.remainingTargets.length) useDeclaredRetryRoots(plan.receipt);
     const observedManager = children.flatMap((child) => child.nativeGroups)
       .map((group) => group.preview.codexManagerPreview)
       .find((entry) => entry?.state === 'system');
@@ -886,7 +899,9 @@ export async function executeJointRecovery(plan: RecoveryPlan,
   try {
     if (plan.sourceRefreshes.length) {
       plan.receipt.blockers.push(diagnostic('sourceRefreshConfirmationRequired'));
-      return mergeReceipts(plan, joint.children.map((child) => child.receipt));
+      const receipt = mergeReceipts(plan, joint.children.map((child) => child.receipt));
+      if (isInstallBatch(plan.command)) useDeclaredRetryRoots(receipt);
+      return receipt;
     }
     lockWaitStartedAt = performance.now();
     await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'start', lockWaitStartedAt);
@@ -1008,9 +1023,10 @@ export async function executeJointRecovery(plan: RecoveryPlan,
             }
             const failedDependency = dependencies.find((placement) => failedProviders.has(`${placement.pluginId}\0${placement.target}\0${placement.scope}`));
             if (failedDependency) {
-              target.blockers.push(diagnostic(target.scope === 'project' && failedDependency.scope === 'user'
+              target.blockers.push({ code: target.scope === 'project' && failedDependency.scope === 'user'
                 ? 'userProviderNotSatisfied' : 'dependencyApplyFailed',
-              `依赖提供者未完成。恢复后重试 aw plugin sync ${target.pluginId} --context ${target.scope} --target ${target.agent} --yes`));
+                pluginId: failedDependency.pluginId,
+                message: `依赖提供者 ${failedDependency.pluginId}（${failedDependency.target}/${failedDependency.scope}）未完成。` });
             }
           }
           const result = await measureRecoveryPerformanceStage(runtime, 'recovery.child.execute', () =>
@@ -1018,7 +1034,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           if (joint.originalOptions.existingOnly) for (const target of result.targetResults) {
             if (!target.blockers.some((error) => error.code === 'dependencyInstallFailed')) continue;
             target.blockers = target.blockers.map((error) => error.code === 'dependencyInstallFailed'
-              ? diagnostic('dependencyApplyFailed', `依赖提供者未完成。恢复后重试 aw plugin sync ${target.pluginId} --context ${target.scope} --target ${target.agent} --yes`)
+              ? { ...error, code: 'dependencyApplyFailed', message: '依赖提供者未完成。请检查其执行结果。' }
               : error);
             if (target.execution === 'failed') target.execution = 'not-run';
           }
@@ -1226,7 +1242,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           receipt.ok = false;
           receipt.errors.push({ code: 'statusUnavailable', message: statusFailureMessage,
             subject: statusFailure.subject, detail: { reasonCode: statusFailure.code } });
-          receipt.recoveryActions.push(`aw plugin status --context ${context} --json`);
+          receipt.recoveryActions.push(`aw plugin status --context ${recoveryStatusContext(receipt)} --json`);
         }
         return receipt;
       } });

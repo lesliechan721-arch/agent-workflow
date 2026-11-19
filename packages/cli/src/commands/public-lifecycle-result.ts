@@ -1,5 +1,6 @@
 import type { Scope, CommandProducerResult } from '../types.js';
-import { canRetryRecoveryRootWithCli, isRecoveryReviewStaleBeforeExecution, recoveryRetryTargets, recoverySummaryErrors, type RecoveryReceipt, type RecoveryTarget, type RecoveryDiagnostic } from '../recovery/receipt.js';
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext, recoverySummaryErrors,
+  type RecoveryDiagnostic, type RecoveryReceipt, type RecoveryRetryDisposition, type RecoveryTarget } from '../recovery/receipt.js';
 import type { NativeToolChange } from '../utils/native-tool-review.js';
 import path from 'node:path';
 import type { CommandResult, Confirmation, Diagnostic, NextAction } from '../output/public-result.js';
@@ -356,13 +357,14 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   const result = commandResult(command, data, { status, diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));
   if (!receipt.ok) {
+    const statusContext = recoveryStatusContext(receipt);
     result.nextActions.push(...excludedProviders.values());
     if (receipt.errors.some((error) => error.code === 'statusUnavailable')) {
-      result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', data.request.context, '--json'],
+      result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', statusContext, '--json'],
         reason: 'Recheck the current status after the completed writes.', requiresConfirmation: false });
     }
     if (receipt.unconfirmedSavedState) {
-      result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', data.request.context, '--json'],
+      result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', statusContext, '--json'],
         reason: 'Inspect the current requirements and local target policy.', requiresConfirmation: false },
       { kind: 'manual', message: `Check the current ${receipt.unconfirmedSavedState === 'intent' ? 'requirements' : 'target policy'} before preparing the original request again.` });
     } else if ((receipt.command === 'sync' || receipt.command === 'install') && isRecoveryReviewStaleBeforeExecution(receipt)) {
@@ -370,7 +372,8 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
         message: `Review the original plugin ${receipt.command} request again with the same plugins, context, scope, targets and options.` });
     } else if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
     else {
-      const retries = new Map<string, { scope: Scope; action: NextAction }>();
+      const retries = new Map<string, { root: RecoveryRetryDisposition; consent: boolean }>();
+      let checkRoot = false;
       for (const target of receipt.targetResults) {
         if (!receipt.remainingTargets.some((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent && entry.scope === target.scope)) continue;
         if (result.diagnostics.some((entry) => entry.subject?.pluginId === target.pluginId
@@ -379,26 +382,24 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
         const consent = target.agent === 'gemini' && result.diagnostics.some((entry) =>
           (entry.code.startsWith('nativeConsent') || entry.code === 'nativeRefreshDataUnconfirmed'
             || entry.code === 'nativeInstallContentPostcheckFailed') && entry.subject?.pluginId === target.pluginId);
-        const roots = recoveryRetryTargets(receipt, [target]);
-        if (!roots.length) {
-          retries.set('status', { scope: data.request.context, action: { kind: 'command',
-            argv: ['aw', 'plugin', 'status', '--context', data.request.context, '--json'],
-            reason: 'Identify the current declared root for this dependency before retrying.', requiresConfirmation: false } });
-        }
+        const roots = recoveryRetryDispositions(receipt, [target]);
+        if (!roots.length) checkRoot = true;
         for (const root of roots) {
-          const key = JSON.stringify([root.pluginId, root.agent, consent]);
-          // Project context includes User. One invocation covers both pending scopes of the same root.
-          if (retries.get(key)?.scope === 'project') continue;
-          const action: NextAction = !canRetryRecoveryRootWithCli(receipt, root)
-            ? { kind: 'manual', message: `In the TUI, review only the Project location for ${root.pluginId} on ${root.agent}.` }
-            : { kind: 'command', argv: ['aw', 'plugin', 'sync', root.pluginId, '--context', root.scope, '--target', root.agent,
-              ...(consent ? ['--native-consent'] : [])],
-              reason: consent ? 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.'
-                : 'Retry the selected incomplete target after resolving its diagnostics.', requiresConfirmation: true };
-          retries.set(key, { scope: root.scope, action });
+          const key = JSON.stringify([root.pluginId, root.agent, root.scope]);
+          retries.set(key, { root, consent: consent || retries.get(key)?.consent === true });
         }
       }
-      result.nextActions.push(...[...retries.values()].map((entry) => entry.action));
+      if (checkRoot) result.nextActions.push({ kind: 'command',
+        argv: ['aw', 'plugin', 'status', '--context', statusContext, '--json'],
+        reason: 'Identify the current declared root for this dependency before retrying.', requiresConfirmation: false });
+      for (const { root, consent } of retries.values()) {
+        result.nextActions.push(root.kind === 'exact-project'
+          ? { kind: 'manual', message: `In the TUI, review only the Project location for ${root.pluginId} on ${root.agent}.` }
+          : { kind: 'command', argv: ['aw', 'plugin', 'sync', root.pluginId, '--context', root.scope, '--target', root.agent,
+            ...(consent ? ['--native-consent'] : [])],
+            reason: consent ? 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.'
+              : 'Retry the selected incomplete target after resolving its diagnostics.', requiresConfirmation: true });
+      }
     }
   }
   result.nextActions.push(...cleanupRecoveryActions(receipt));

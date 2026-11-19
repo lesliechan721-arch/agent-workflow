@@ -10,7 +10,7 @@ import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
-import { canRetryRecoveryRootWithCli, isRecoveryReviewStaleBeforeExecution, recoveryRetryTargets,
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext,
   recoverySummaryErrors, type RecoveryReceipt } from '../recovery/receipt.js';
 import { safeDiagnosticCode } from './diagnostics.js';
 import { recoveryReason } from './glossary.js';
@@ -51,7 +51,7 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   };
   const staleBeforeExecution = isRecoveryReviewStaleBeforeExecution(receipt);
   const targetWorkNotStarted = staleBeforeExecution || Boolean(receipt.unconfirmedSavedState);
-  const checkStatus = `aw plugin status --context ${receipt.scope} --json`;
+  const checkStatus = `aw plugin status --context ${recoveryStatusContext(receipt)} --json`;
   const globalIds = new Map<string, string>();
   for (const code of new Set([...receipt.blockers, ...recoverySummaryErrors(receipt)].map((entry) => entry.code))) {
     const details = receipt.unconfirmedSavedState ? [checkStatus] : [];
@@ -74,10 +74,10 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
         if (code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync')) {
           details.push(checkStatus);
           // Store reviewable commands from structured positions only. Backend prose may contain private data.
-          for (const position of recoveryRetryTargets(receipt, [entry])) {
+          for (const position of recoveryRetryDispositions(receipt, [entry])) {
             try {
               const root = canonicalPluginId(position.pluginId);
-              details.push(canRetryRecoveryRootWithCli(receipt, position)
+              details.push(position.kind === 'cli'
                 ? `aw plugin sync ${root} --context ${position.scope} --target ${position.agent}`
                 : `在 TUI 中重新检查 ${root} 的 ${position.agent} 项目位置。`);
             } catch { /* An invalid identity cannot be offered as a command. */ }

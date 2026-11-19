@@ -204,7 +204,7 @@ export async function executeJointInstall(options: {
           const provider = group.providerPositions.get(target)?.find((item) => failed.has(positionKey(item)));
           if (provider) target.blockers.push({ code: provider.scope === 'user' && target.scope === 'project'
             ? 'userProviderNotSatisfied' : 'dependencyApplyFailed',
-            message: `依赖提供者未完成。恢复后重试 aw plugin sync ${target.pluginId} --context ${target.scope} --target ${target.agent} --yes` });
+            pluginId: provider.pluginId, message: `依赖提供者 ${provider.pluginId}（${provider.agent}/${provider.scope}）未完成。` });
           if (entries.some((entry) => consumesPackage(target, entry) && packageFailed(entry))) {
             target.blockers.push({ code: 'commandPackageProviderNotSatisfied', message: '所需托管命令包未完成。' });
           }

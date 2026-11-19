@@ -69,11 +69,12 @@ it('distinguishes stale before execution from a stale target after a sibling was
   expect(projectScopedRecoveryHistory(receipt, identity).summary.effects).toMatchObject({
     preApplyExternalEffect: 'notStarted', finalVerification: 'notStarted',
   });
-  const afterSave = projectScopedRecoveryHistory({ ...receipt, declarationChanged: true, unconfirmedSavedState: 'intent' }, identity);
+  const afterSave = projectScopedRecoveryHistory({ ...receipt, declarationChanged: true, unconfirmedSavedState: 'intent',
+    coverage: { scopes: ['user', 'project'] } }, identity);
   expect(afterSave.summary).toMatchObject({ state: 'partial', effects: {
     awWrite: 'notStarted', preApplyExternalEffect: 'notStarted', finalVerification: 'notStarted',
   } });
-  expect(afterSave.diagnostics[0]?.detailLines).toEqual(['aw plugin status --context user --json']);
+  expect(afterSave.diagnostics[0]?.detailLines).toEqual(['aw plugin status --context project --json']);
 
   receipt.blockers = [];
   receipt.errors = [stale];
@@ -95,4 +96,36 @@ it('distinguishes stale before execution from a stale target after a sibling was
   expect(record.targets[0]).toMatchObject({ state: 'completed', diagnosticIds: [] });
   expect(history.preview(identity.recordId)?.content).toContain(retry);
   expect(history.preview(identity.recordId)?.content).not.toContain('untrusted-backend-detail');
+});
+
+// A single dependency can supply the same declared root at both User and Project.
+it('exports one recovery command for both unfinished scopes and keeps the successful root', () => {
+  const position = (name: string, scope: 'user' | 'project') =>
+    ({ pluginId: `team/${name}`, scope, agent: 'generic' as const, delivery: null });
+  const kept = position('a', 'user');
+  const provider = position('d', 'user');
+  const roots = [position('b', 'user'), position('b', 'project')];
+  const stale = { code: 'operationReviewStale', message: 'Provider changed.' };
+  const receipt: RecoveryReceipt = {
+    schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command: 'install', ok: false,
+    intent: { state: 'valid', roots: ['team/a', 'team/b'] }, requestedRoots: ['team/a', 'team/b'],
+    selection: { agents: ['generic'], origin: 'argument', preferences: 'valid' }, coverage: { scopes: ['user', 'project'] },
+    declarationChanged: false, configChanged: false, preferencesChanged: false, outputsMayHaveChanged: false,
+    requestedTargets: [kept, ...roots], remainingTargets: [provider, ...roots], recoveryActions: [], errors: [stale], blockers: [],
+    targetResults: [
+      { ...kept, relation: 'root', execution: 'no-op', observation: 'verified', requiredBy: ['team/a'], blockers: [] },
+      { ...provider, relation: 'dependency', requiredBy: ['team/b'], execution: 'not-run', observation: 'unknown', blockers: [stale],
+        contributions: roots.map(({ pluginId, scope }) => ({ root: pluginId, scope, path: [pluginId, provider.pluginId] })) },
+      ...roots.map((root) => ({ ...root, relation: 'root' as const, execution: 'not-run' as const, observation: 'unknown' as const,
+        requiredBy: [root.pluginId], blockers: [{ code: 'dependencyApplyFailed', message: 'Provider is incomplete.' }] })),
+    ],
+  };
+  const store = new OperationHistoryStore();
+  store.record(projectScopedRecoveryHistory(receipt, { recordId: 'joint-scopes', epoch: 0, operationId: 'install', createdAtMs: 0 }));
+  const record = store.get('joint-scopes')!;
+  expect(record.diagnostics.find((diagnostic) => diagnostic.target?.pluginId === provider.pluginId)?.detailLines)
+    .toEqual(['aw plugin status --context project --json', 'aw plugin sync team/b --context project --target generic']);
+  expect(record.targets.find((target) => target.pluginId === kept.pluginId)).toMatchObject({ state: 'kept', diagnosticIds: [] });
+  const exported = store.preview('joint-scopes')?.content;
+  expect(exported?.match(/aw plugin sync [^\n]+/g)).toEqual(['aw plugin sync team/b --context project --target generic']);
 });

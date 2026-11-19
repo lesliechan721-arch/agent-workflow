@@ -468,7 +468,7 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
       ...result.errors.map((error) => `命令错误：${error.code} · ${error.message}`),
       ...result.recoveryActions.map((action) => `命令恢复：${action}`),
     ]),
-    ...receipt.remainingTargets.map((target) => `未完成：${target.pluginId} · ${target.agent}`),
+    ...receipt.remainingTargets.map((target) => `未完成：${target.pluginId} · ${target.agent} · ${scopeLabel(target.scope)}`),
     ...receipt.recoveryActions.map((action) => `恢复：${action}`),
   ].join('\n');
 }
@@ -4904,7 +4904,10 @@ export function ConsoleAppV4(props: {
           kind: 'recovery', scope: flow.scope, selectors: [],
         }) }] : []),
         ...(unknownTargets.length ? [{ label: `检查未确认项（${unknownTargets.length}）`, run: () => {
-          closeScopedFlow(); void props.controller.refreshScopedInventory(flow.scope);
+          closeScopedFlow();
+          for (const scope of new Set(unknownTargets.map((target) => target.scope))) {
+            void props.controller.refreshScopedInventory(scope);
+          }
         } }] : []),
         ...(retryTargets.length ? [{ label: `重试明确失败项（${retryTargets.length}）`, run: () => beginScopedTask({
           kind: 'recovery', scope: flow.scope, command: originalCommand === 'install' ? 'sync' : originalCommand ?? 'sync',

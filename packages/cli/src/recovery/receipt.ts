@@ -66,16 +66,15 @@ export interface RecoveryReceipt {
   outputsMayHaveChanged: boolean;
   /** A strong-state write returned, but the saved value could not be confirmed before deployment. */
   unconfirmedSavedState?: 'intent' | 'preferences';
+  /** Requested roots also declared at User scope in this Review. null means unreadable. */
+  reviewedUserRoots?: string[] | null;
 }
 
 type RecoveryPosition = Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope'>;
 
-export function canRetryRecoveryRootWithCli(receipt: RecoveryReceipt, position: RecoveryPosition): boolean {
-  // A Project sync also visits the User declaration for that same plugin and Agent.
-  return position.scope !== 'project' || !receipt.targetResults.some((item) => item.scope === 'user'
-    && item.pluginId === position.pluginId && item.agent === position.agent && item.observation === 'verified'
-    && !item.blockers.length && (item.execution === 'applied' || item.execution === 'no-op')
-    && item.satisfaction !== 'excluded' && item.satisfaction !== 'unsupported');
+export function recoveryStatusContext(receipt: RecoveryReceipt): Scope {
+  if (!receipt.coverage) return receipt.scope;
+  return receipt.coverage.scopes.includes('project') ? 'project' : 'user';
 }
 
 export function recoveryRetryTargets(receipt: RecoveryReceipt, targets: readonly RecoveryTarget[]): RecoveryPosition[] {
@@ -92,6 +91,30 @@ export function recoveryRetryTargets(receipt: RecoveryReceipt, targets: readonly
     for (const { pluginId, agent, scope } of roots) positions.set([pluginId, agent, scope].join('\0'), { pluginId, agent, scope });
   }
   return [...positions.values()];
+}
+
+export type RecoveryRetryDisposition = RecoveryPosition & { kind: 'cli' | 'exact-project' };
+
+/** A Project CLI sync also visits the same root and Agent in User scope. */
+export function recoveryRetryDispositions(receipt: RecoveryReceipt, targets: readonly RecoveryTarget[]): RecoveryRetryDisposition[] {
+  const actions = new Map<string, RecoveryRetryDisposition>();
+  for (const root of recoveryRetryTargets(receipt, targets)) {
+    const pending = (scope: Scope) => receipt.remainingTargets.some((item) =>
+      item.pluginId === root.pluginId && item.agent === root.agent && item.scope === scope);
+    if (!pending(root.scope)) continue;
+    const otherScope = root.scope === 'user' ? 'project' : 'user';
+    const both = pending(otherScope) && receipt.targetResults.some((item) =>
+      item.pluginId === root.pluginId && item.agent === root.agent && item.scope === otherScope && item.relation === 'root');
+    const scope = both ? 'project' : root.scope;
+    const userMayBeVisited = receipt.command === 'install' || receipt.command === 'sync'
+      ? receipt.reviewedUserRoots?.includes(root.pluginId) !== false
+      : receipt.targetResults.some((item) => item.pluginId === root.pluginId && item.agent === root.agent && item.scope === 'user'
+        && item.observation === 'verified' && !item.blockers.length && (item.execution === 'applied' || item.execution === 'no-op')
+        && item.satisfaction !== 'excluded' && item.satisfaction !== 'unsupported');
+    const exact = scope === 'project' && !both && userMayBeVisited;
+    actions.set([root.pluginId, root.agent, scope].join('\0'), { ...root, scope, kind: exact ? 'exact-project' : 'cli' });
+  }
+  return [...actions.values()];
 }
 
 export function isRecoveryReviewStaleBeforeExecution(receipt: RecoveryReceipt): boolean {

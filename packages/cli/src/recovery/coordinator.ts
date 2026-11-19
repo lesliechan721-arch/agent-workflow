@@ -12,6 +12,7 @@ import type {
   InstallCommandOptions,
   PlatformName,
   PlatformSelection,
+  ReceiptTargetResult,
   Scope,
 } from '../types.js';
 import type { CliPrompt } from '../commands/runtime.js';
@@ -368,15 +369,15 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
       ...(plan.receipt.commandResults ?? []), ...result.commandResults,
     ].map((entry) => [getCommandPackageId(entry.producer), entry])).values()];
   }
+  const backend = buildRebuildReceiptJson(group.command === 'install' ? 'sync' : group.command, result);
   for (const { pluginId, platform } of nativeGroupTargets(group)) {
     const agent = agentForPlatform(platform);
     const target = pair(plan, pluginId, agent)!;
     if (!target) continue;
-    const backend = buildRebuildReceiptJson(group.command === 'install' ? 'sync' : group.command, result);
     target.backend = backend;
-    target.recoveryActions = backend.recoveryActions;
-    const backendTargets = result.targetResults.filter((entry) => entry.target.pluginId === pluginId
-      && entry.target.platform === platform && entry.target.scope === plan.options.scope);
+    const matchesTarget = (entry: ReceiptTargetResult) => entry.target.pluginId === pluginId
+      && entry.target.platform === platform && entry.target.scope === plan.options.scope;
+    const backendTargets = result.targetResults.filter(matchesTarget);
     const deploymentPlans = new Map([
       ...(group.preview.operationPlan?.deploymentPlans ?? []),
       ...(result.operationPlan?.deploymentPlans ?? []),
@@ -416,6 +417,12 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
             dependency.pluginId === producerPluginId && dependency.platform === platform)?.resolvedScope
             ?? plan.options.scope));
     });
+    target.recoveryActions = backend.targetResults.length || backend.commandResults?.length
+      ? [...new Set([
+        ...backend.targetResults.filter(matchesTarget).flatMap((entry) => entry.recoveryActions),
+        ...producers.flatMap((producer) => producer.recoveryActions),
+      ])]
+      : backend.recoveryActions;
     for (const failure of backendTargets.filter((entry) => entry.state === 'failed')) {
       block(target, failure.errorCode ?? 'nativeRecoveryFailed');
     }

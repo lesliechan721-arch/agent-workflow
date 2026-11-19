@@ -153,7 +153,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     if (blocked) {
       expect(executed.receipt.targetResults[0]).toMatchObject({ execution: 'not-run', observation: 'unknown', content: 'unknown',
         blockers: [expect.objectContaining({ code: 'dependencyExcluded', pluginId: 'team/d' })],
-        recoveryActions: ['aw target include team/d --target opencode', 'aw plugin sync team/a --context project --target opencode'] });
+        recoveryActions: ['aw target include team/d --target opencode', '请在 TUI 当前项目中选择 team/a 的 opencode 位置重新检查。'] });
       const cli = await runPublicLifecycle('sync', ['team/a'], { ...value.options, context: 'user', targets: ['opencode'] });
       expect(cli).toMatchObject({ status: 'blocked', data: { changes: { preferences: 'none', outputs: 'none' },
         remainingTargets: [{ pluginId: 'team/a', target: 'opencode', scope: 'user' }] }, nextActions: [
@@ -500,7 +500,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(receipt.remainingTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
       .toEqual(['team/b:project', 'team/b:user', 'team/d:user']);
     expect(receipt.recoveryActions).toEqual(expect.arrayContaining([
-      'aw plugin status --context user --json', 'aw plugin sync team/b --context project --target generic',
+      'aw plugin status --context project --json', 'aw plugin sync team/b --context project --target generic',
     ]));
     expect(receipt.recoveryActions.join('\n')).not.toContain('aw plugin sync team/d');
     await expectSavedIntent(receipt, user);
@@ -559,6 +559,8 @@ describe('joint recovery through real Catalog and owned outputs', () => {
   it.each(['intent', 'preferences'] as const)('preserves pending roots and providers after an unconfirmed %s save', async (document) => {
     const value = await fixture();
     const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
+    // A User declaration may be written from a joint Review that also observed this project.
+    if (document === 'intent') await fs.remove(await resolveIntentPath({ ...value.options, scope: 'project' }));
     const file = document === 'intent' ? await resolveIntentPath(user) : await resolvePreferencesPath(user);
     const original = await fs.readFile(file);
     for (const state of ['different', 'invalid', 'absent'] as const) {
@@ -572,14 +574,14 @@ describe('joint recovery through real Catalog and owned outputs', () => {
       });
       try {
         if (document === 'intent') {
-          const result = await runPublicLifecycle('install', ['team/b'], user);
+          const result = await runPublicLifecycle('install', ['team/b'], { ...user, context: 'project' });
           const positions = ['team/d', 'team/b'].map((id) => ({ pluginId: id, target: 'generic', scope: 'user' }));
           expect(publicExitCode(result)).toBe(4);
           expect(result).toMatchObject({ data: { requirements: { state: state === 'different' ? 'valid' : state,
             roots: state === 'different' ? ['team/a'] : state === 'invalid' ? null : [] }, changes: { requirements: 'changed', outputs: 'none' },
             targetResults: positions.map((item) => ({ ...item, execution: 'not-run', observation: 'unknown', content: 'unknown' })),
             remainingTargets: positions }, nextActions: [
-            { kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'user', '--json'] }, { kind: 'manual' },
+            { kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'] }, { kind: 'manual' },
           ] });
         } else {
           const receipt = await runRecovery('sync', ['team/a'], { ...user, preferences: { schemaVersion: 2,
@@ -597,19 +599,44 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     }
   });
 
-  it('keeps a completed User scope outside the recovery for its failed Project sibling', async () => {
-    const value = await fixture(false, ['generic'], true, { a: [], b: [] });
-    const user = { ...value.options, context: 'user' as const, scope: 'user' as const };
-    expect((await runPublicLifecycle('install', ['team/b'], user)).status).toBe('success');
-    await fs.writeFile(value.hookFailure, 'b/generic/project');
-    const result = await runPublicLifecycle('sync', ['team/b'], { ...value.options, context: 'project' });
-    expect(result).toMatchObject({ status: 'partial', data: {
-      targetResults: [{ pluginId: 'team/b', scope: 'user', execution: 'no-op', observation: 'verified' },
-        { pluginId: 'team/b', scope: 'project' }],
-      remainingTargets: [{ pluginId: 'team/b', target: 'generic', scope: 'project' }] },
-      nextActions: [{ kind: 'manual', message: expect.stringContaining('Project location for team/b on generic') }] });
-    await expect(fs.pathExists(path.join(value.projectRoot, 'b'))).resolves.toBe(false);
-  });
+  it.each(['User verified', 'User not selected', 'User not declared'] as const)(
+    'retries only the failed Project location with %s', async (userState) => {
+      const value = await fixture(false, ['generic'], true, { a: [], b: [] });
+      const user = { ...value.options, context: 'user' as const, scope: 'user' as const };
+      const project = { ...value.options, context: 'project' as const, scope: 'project' as const };
+      if (userState !== 'User not declared') expect((await runPublicLifecycle('install', ['team/b'], user)).status).toBe('success');
+      if (userState !== 'User verified') await fs.remove(await resolveIntentPath(project));
+      await fs.writeFile(value.hookFailure, 'b/generic/project');
+      const result = userState === 'User verified'
+        ? await runPublicLifecycle('sync', ['team/b'], { ...value.options, context: 'project' })
+        : await runPublicLifecycle('install', ['team/b'], project);
+      const failed = { pluginId: 'team/b', scope: 'project', execution: 'failed' };
+      expect(result).toMatchObject({ status: 'partial', data: {
+        targetResults: userState === 'User verified'
+          ? [{ pluginId: 'team/b', scope: 'user', execution: 'no-op', observation: 'verified' }, failed] : [failed],
+        remainingTargets: [{ pluginId: 'team/b', target: 'generic', scope: 'project' }] } });
+      await expect(fs.pathExists(path.join(value.projectRoot, 'b'))).resolves.toBe(false);
+      await fs.remove(value.hookFailure);
+      await fs.writeFile(value.hookTrace, '');
+      if (userState === 'User not declared') {
+        expect(result.nextActions).toEqual([expect.objectContaining({ kind: 'command',
+          argv: ['aw', 'plugin', 'sync', 'team/b', '--context', 'project', '--target', 'generic'] })]);
+        const action = result.nextActions[0]!;
+        if (action.kind !== 'command') throw new Error('Expected a Project sync');
+        const capture = createCapturedCliIo();
+        expect(await runCli([...action.argv.slice(1), '--yes', '--json'], { ...value.options, interactive: false, io: capture.io })).toBe(0);
+      } else {
+        expect(result.nextActions).toEqual([{ kind: 'manual', message: expect.stringContaining('Project location for team/b on generic') }]);
+        const tui = new TuiController(createTuiControllerDependencies(createCliExecutionContext({ ...value.options, interactive: false })));
+        onTestFinished(() => tui.dispose());
+        const retry = await tui.prepareScopedTask({ kind: 'recovery', command: 'sync', selectors: ['team/b'], scope: 'project',
+          targets: ['generic'], exactTargets: [{ pluginId: 'team/b', agent: 'generic', scope: 'project' }] });
+        expect(await tui.executeScopedTask(retry)).toMatchObject({ receipt: { ok: true, remainingTargets: [] } });
+      }
+      expect((await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)))
+        .toEqual([{ plugin: 'b', scope: 'project', platform: 'generic' }]);
+      await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+    });
 
   it('reports current Active after writing even when the complete reviewed Store is still readable', async () => {
     const value = await fixture();
@@ -1566,8 +1593,51 @@ describe('native install with shared registration', () => {
         .map((line) => JSON.parse(line).plugin);
       expect(scripts).toContain('d');
       expect(scripts).not.toContain('a');
-      expect(receipt.targetResults.find((target) => target.pluginId === 'team/a')?.execution).not.toBe('applied');
-      expect(receipt.targetResults.find((target) => target.pluginId === 'team/b')?.execution).toBe('applied');
+      const userTarget = (pluginId: string) => receipt.targetResults.find((target) =>
+        target.pluginId === pluginId && target.agent === 'claude' && target.scope === 'user')!;
+      expect(userTarget('team/b')).toMatchObject({ execution: 'applied', observation: 'verified', recoveryActions: [] });
+      expect(Object.keys((await fs.readJson(claude.installedPath)).plugins).some((id) => id.startsWith('b@'))).toBe(true);
+      expect(userTarget('team/a').execution).toBe('not-run');
+      expect(userTarget('team/d').execution).toBe('partial');
+      const backend = userTarget('team/d').backend as { targetResults: Array<{ target: { pluginId: string }; recoveryActions: string[] }> };
+      const backendRetry = 'run aw plugin sync team/d --target claude --context user';
+      expect(backend.targetResults.find((item) => item.target.pluginId === 'team/d')?.recoveryActions)
+        .toEqual(expect.arrayContaining([backendRetry, `${backendRetry} --rebuild`]));
+      const retry = 'aw plugin sync team/a --context user --target claude';
+      const cleanup = (id: string) => `run aw plugin remove --only outputs team/${id} --target claude --scope user`;
+      for (const id of ['d', 'a']) {
+        expect(userTarget(`team/${id}`).recoveryActions).toEqual([retry, `${retry} --rebuild`, cleanup(id)]);
+      }
+      expect(receipt.recoveryActions).toEqual(expect.arrayContaining([retry, `${retry} --rebuild`, cleanup('d'), cleanup('a')]));
+      expect(receipt.recoveryActions.join('\n')).not.toContain('aw plugin sync team/d ');
     } finally { await plan.context.dispose(); }
   });
 });
+
+it('reports each failed provider in a three-level chain and retries the only declared root', async () => {
+  installNativeTestQualification({ discovery: true });
+  const value = await fixture(false, ['generic'], true, { b: ['d'], d: ['a'], a: [] });
+  await fs.remove(await resolveIntentPath({ ...value.options, scope: 'user' }));
+  const project = { ...value.options, scope: 'project' as const, context: 'project' as const };
+  await fs.writeFile(value.hookFailure, 'a/generic/project');
+  const receipt = await runRecovery('sync', ['team/b'], project);
+  expect(receipt).toMatchObject({ ok: false, intent: { roots: ['team/b'] }, declarationChanged: false });
+  for (const [consumer, provider] of [['d', 'a'], ['b', 'd']] as const) {
+    const target = receipt.targetResults.find((item) => item.pluginId === `team/${consumer}` && item.scope === 'project');
+    const reason = target?.blockers.find((item) => item.code === 'dependencyApplyFailed');
+    expect(target?.execution).toBe('not-run');
+    expect(reason).toMatchObject({ pluginId: `team/${provider}`, message: expect.stringContaining(`team/${provider}`) });
+    expect(reason?.message).not.toContain('aw plugin');
+  }
+  const retry = 'aw plugin sync team/b --context project --target generic --yes';
+  expect(receipt.recoveryActions).toContain(retry);
+  expect(receipt.recoveryActions.join('\n')).not.toMatch(/aw plugin sync team\/[ad] /u);
+  expect((await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)))
+    .toEqual([{ plugin: 'a', platform: 'generic', scope: 'project' }]);
+  await fs.remove(value.hookFailure);
+  const capture = createCapturedCliIo();
+  expect(await runCli([...retry.split(' ').slice(1), '--json'], { ...project, interactive: false, io: capture.io })).toBe(0);
+  for (const name of ['a', 'd', 'b']) {
+    await expect(fs.readFile(path.join(value.projectRoot, name, 'SKILL.md'), 'utf8')).resolves.toContain(`Use ${name}.`);
+  }
+}, 30_000);

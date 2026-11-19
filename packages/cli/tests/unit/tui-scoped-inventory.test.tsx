@@ -742,6 +742,7 @@ describe('scoped inventory in Ink', () => {
   it('offers read-only recheck for diagnosed unknowns and retries only a known missing partial pair', async () => {
     const receipt: RecoveryReceipt = { schemaVersion: 1, kind: 'aw-recovery', scope: 'user',
       command: 'sync', ok: false, intent: { state: 'valid', roots: ['official/demo'] },
+      coverage: { scopes: ['user', 'project'] },
       requestedRoots: ['official/demo'], requestedTargets: [], selection: {
         agents: ['codex', 'claude', 'generic'], origin: 'preference', preferences: 'valid',
       }, blockers: [], errors: [], targetResults: [
@@ -749,7 +750,7 @@ describe('scoped inventory in Ink', () => {
           delivery: { kind: 'native', platform: 'codex' }, execution: 'failed',
           observation: 'unknown', content: 'unknown',
           blockers: [{ code: 'nativeRecoveryFailed', message: 'diagnosed' }], requiredBy: ['official/demo'] },
-        { pluginId: 'official/demo', agent: 'claude', scope: 'user',
+        { pluginId: 'official/demo', agent: 'claude', scope: 'project',
           delivery: { kind: 'native', platform: 'claude' },
           execution: 'failed', observation: 'unknown', content: 'conflict',
           blockers: [{ code: 'deploymentOwnershipUnconfirmed', message: 'external content' }], requiredBy: ['official/demo'] },
@@ -765,7 +766,7 @@ describe('scoped inventory in Ink', () => {
       nativeGroups: [], portableGroups: [] } } as unknown as ScopedTuiPlan;
     const prepareScopedTask = vi.fn(async () => ({ ...plan,
       plan: { ...plan.plan, context: { dispose: async () => {} } } } as ScopedTuiPlan));
-    const loadScopedStatus = vi.fn().mockResolvedValue(recovery('user'));
+    const loadScopedStatus = vi.fn(async (scope: 'user' | 'project') => recovery(scope));
     const controller = new TuiController({ readAgentSettings: async () => agentSettings(), loadStatus: vi.fn().mockResolvedValue(status),
       loadScopedStatus, prepareScopedTask,
       executeScopedTask: vi.fn().mockResolvedValue({ kind: 'recovery', receipt }) });
@@ -792,7 +793,8 @@ describe('scoped inventory in Ink', () => {
     const reads = loadScopedStatus.mock.calls.length;
     await focusAction(instance, '检查未确认项（2）');
     await press(instance, '\r');
-    await vi.waitFor(() => expect(loadScopedStatus.mock.calls.length).toBeGreaterThan(reads));
+    await vi.waitFor(() => expect(new Set(loadScopedStatus.mock.calls.slice(reads).map(([scope]) => scope)))
+      .toEqual(new Set(['user', 'project'])));
     instance.unmount();
   });
 
