@@ -2586,6 +2586,7 @@ export class TuiController {
     this.#pluginContentInflight.clear();
     this.#phase = 'loading';
     this.#publish();
+    if (!this.#operationIsCurrent(generation)) return;
     let status: TuiStatusLoadResult;
     try {
       status = await this.#trackRead(this.dependencies.loadStatus(this.#abort.signal));
@@ -2593,6 +2594,7 @@ export class TuiController {
       if (this.#disposed || generation !== this.#generation) return;
       const code = issueCode(error);
       await this.#logErrorSafe(error, code);
+      if (!this.#operationIsCurrent(generation)) return;
       this.#phase = 'error';
       this.#loadError = { code, message: '无法安全读取插件状态。请检查诊断后重试或退出。' };
       this.#recordStandaloneFailure(code, 'statusReload', error);
@@ -4250,6 +4252,7 @@ export class TuiController {
     const generation = ++this.#generation;
     this.#phase = 'loading';
     this.#publish();
+    if (!this.#operationIsCurrent(generation)) return false;
     try {
       const status = await this.#trackRead(this.dependencies.loadStatus(this.#abort.signal));
       if (this.#disposed || generation !== this.#generation) return false;
@@ -4263,6 +4266,7 @@ export class TuiController {
       if (this.#disposed || generation !== this.#generation) return false;
       const code = issueCode(error);
       await this.#logErrorSafe(error, code);
+      if (!this.#operationIsCurrent(generation)) return false;
       this.#phase = 'error';
       this.#loadError = { code, message: '无法安全重新加载 Catalog。请检查诊断后重试。' };
       this.#publish();

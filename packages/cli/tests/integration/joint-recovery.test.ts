@@ -5,6 +5,7 @@ import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-
 import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
+import type { CatalogGenerationStateFileV1 } from '../../src/types.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
@@ -176,6 +177,135 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     await expect(fs.pathExists(value.userRoot)).resolves.toBe(false);
     await expect(fs.pathExists(value.projectRoot)).resolves.toBe(false);
   });
+
+  // An unrelated file is read only by whole-Catalog scans. The same-source
+  // protection groups share one scan, while different source IDs retain their own.
+  it.each(['single group', 'same source', 'source alias'] as const)('bounds full scans during a Portable child with %s', async (scenario) => {
+    const value = await fixture(false, ['generic'], false, { a: [], b: [], d: [], z: [] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    const active = await resolveActiveCatalogGeneration({ ...user, sourceId: 'team' });
+    await fs.remove(await resolveIntentPath(project));
+    if (scenario === 'single group') await fs.remove(await resolveIntentPath(user));
+    else {
+      const saved = await observeIntent(user);
+      if (saved.state !== 'valid') throw new Error('Expected fixture User Intent.');
+      const sourceId = scenario === 'source alias' ? 'mirror' : 'team';
+      if (sourceId === 'mirror') {
+        const config = await readCatalogSourcesConfigSnapshot(user.env);
+        await replaceCatalogSourcesConfig({ config: { ...config.config,
+          sources: [...config.config.sources, { id: sourceId, type: 'path', primary: false, path: value.source }] },
+        expectedDigest: config.digest, env: user.env });
+        await syncCatalogSourceGeneration({ ...user, sourceId });
+        const mirror = await resolveActiveCatalogGeneration({ ...user, sourceId });
+        expect(mirror.snapshotPath).toBe(active.snapshotPath);
+        saved.value.sources[sourceId] = { logicalIdentity: mirror.logicalIdentity };
+      }
+      saved.value.roots.push({ pluginId: `${sourceId}/d` });
+      await writeIntent(user, saved.value);
+    }
+    const marker = path.join(active.snapshotPath, 'plugins', 'z', 'generic', 'skills', 'z', 'README.md');
+    const plan = await prepareRecovery('install', ['team/b'], user);
+    const readFile = fs.readFile.bind(fs);
+    let executing = false;
+    let scans = 0;
+    const reads = vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+      if (executing && String(args[0]) === marker) scans += 1;
+      return readFile(...args);
+    });
+    try {
+      const receipt = await executeRecovery(plan, { runtime: { debugLogger: { log: (event) => {
+        if (event.data?.name === 'recovery.child.execute') executing = event.data.phase === 'start';
+      } } } });
+      expect(receipt).toMatchObject({ ok: true, declarationChanged: true, outputsMayHaveChanged: true,
+        remainingTargets: [] });
+      expect(scans).toBe(scenario === 'source alias' ? 7 : 4);
+      await expect(fs.readFile(path.join(value.userRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+    } finally { reads.mockRestore(); }
+  });
+
+  it.each(['same-path damage', 'new Active', 'changed ref with unchanged Store'] as const)('preserves a joint install receipt after %s following its locked child plan', async (change) => {
+    const value = await fixture(false, ['generic'], true, { a: [], b: ['d'], d: [], z: [] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    const projectIntent = await fs.readFile(await resolveIntentPath(project));
+    const foreign = path.join(value.projectRoot, 'foreign', 'SKILL.md');
+    await fs.outputFile(foreign, 'foreign skill\n');
+    const protectedFiles = await snapshotRegularTree(value.projectRoot);
+    const active = await resolveActiveCatalogGeneration({ ...user, sourceId: 'team' });
+    const statePath = resolveCatalogGenerationStatePath(user.env);
+    let nextState: Buffer | undefined;
+    if (change === 'new Active') {
+      const originalState = await fs.readFile(statePath);
+      await fs.appendFile(path.join(value.source, 'catalog-manifest.json'), '\n');
+      const next = await syncCatalogSourceGeneration({ ...user, sourceId: 'team' });
+      expect(next.active?.snapshotDigest).not.toBe(active.snapshotDigest);
+      nextState = await fs.readFile(statePath);
+      await fs.writeFile(statePath, originalState);
+    } else if (change === 'changed ref with unchanged Store') {
+      const state = await fs.readJson(statePath) as CatalogGenerationStateFileV1;
+      state.sources.team!.active!.requestedRef = 'refs/heads/changed';
+      nextState = Buffer.from(JSON.stringify(state));
+    }
+    const plan = await prepareRecovery('install', ['team/a', 'team/b'], user);
+    expect(plan.receipt.blockers).toEqual([]);
+    expect(plan.receipt.requestedTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
+      .toEqual(['team/a:user', 'team/b:project', 'team/b:user', 'team/d:user']);
+
+    const lastManifest = path.join(active.snapshotPath, 'plugins', 'z', '.agents-plugin', 'plugin.json');
+    const damagedFile = path.join(active.snapshotPath, 'plugins', 'z', 'generic', 'skills', 'z', 'README.md');
+    const readJson = fs.readJson.bind(fs);
+    let childExecutions = 0;
+    let manifestReads = 0;
+    let changed = false;
+    const reads = vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+      const result = await readJson(...args);
+      // The provider's child plan has returned. Let the initial scoped demand
+      // read validate Active, then fault during its separate bundle manifest read.
+      if (childExecutions === 2 && String(args[0]) === lastManifest && ++manifestReads === 2) {
+        if (nextState) await fs.writeFile(statePath, nextState);
+        else {
+          const times = await fs.stat(damagedFile);
+          await fs.writeFile(damagedFile, 'Use x.\n');
+          await fs.utimes(damagedFile, times.atime, times.mtime);
+        }
+        changed = true;
+      }
+      return result;
+    });
+    try {
+      const receipt = await executeRecovery(plan, { runtime: { debugLogger: { log: (event) => {
+        if (event.data?.name === 'recovery.child.execute' && event.data.phase === 'start') childExecutions += 1;
+      } } } });
+      expect(changed).toBe(true);
+      expect(receipt).toMatchObject({ ok: false, declarationChanged: true, outputsMayHaveChanged: true,
+        errors: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale',
+          ...(change === 'same-path damage' ? { subject: { sourceId: 'team' }, detail: { reasonCode: 'catalogGenerationMetadataInvalid' } } : {}) })]),
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({ pluginId: 'team/a', scope: 'user', execution: 'applied', observation: 'verified' }),
+          expect.objectContaining({ pluginId: 'team/d', scope: 'user', execution: 'not-run' }),
+          expect.objectContaining({ pluginId: 'team/b', scope: 'user', execution: 'not-run',
+            blockers: expect.arrayContaining([expect.objectContaining({ code: 'dependencyApplyFailed' })]) }),
+          expect.objectContaining({ pluginId: 'team/b', scope: 'project', execution: 'not-run',
+            blockers: expect.arrayContaining([expect.objectContaining({ code: 'userProviderNotSatisfied' })]) }),
+        ]) });
+      expect(receipt.remainingTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
+        .toEqual(['team/b:project', 'team/b:user', 'team/d:user']);
+      expect(receipt.recoveryActions).toEqual(expect.arrayContaining([
+        'aw plugin status --context user --json', 'aw plugin sync team/d --context user --target generic',
+      ]));
+      await expectSavedIntent(receipt, user);
+      expect(receipt.intent.roots).toEqual(['team/a', 'team/b']);
+      await expect(fs.readFile(await resolveIntentPath(project))).resolves.toEqual(projectIntent);
+      await expect(snapshotRegularTree(value.projectRoot)).resolves.toEqual(protectedFiles);
+      await expect(fs.readFile(path.join(value.userRoot, 'a', 'SKILL.md'), 'utf8')).resolves.toContain('Use a.');
+      await expect(fs.pathExists(path.join(value.userRoot, 'b'))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(value.userRoot, 'd'))).resolves.toBe(false);
+      const hooks = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      expect(hooks).toEqual([{ plugin: 'a', platform: 'generic', scope: 'user' }]);
+    } finally { reads.mockRestore(); }
+  });
+
   it('reports current Active after writing even when the complete reviewed Store is still readable', async () => {
     const value = await fixture();
     const project = { ...value.options, scope: 'project' as const };

@@ -108,6 +108,7 @@ import {
   resolveActiveCatalogGeneration,
 } from '../utils/catalog-generation-resolver.js';
 import {
+  CatalogPreparationReadScope,
   resolveCatalogOperationContext,
   resolvePartialCatalogOperationContext,
   selectCatalogOperationContext,
@@ -862,16 +863,13 @@ export function createTuiControllerDependencies(
 ): TuiControllerDependencies {
   const readInventory = options.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
-  const validatedStoreEntries = new Map<string, CatalogStoreEntry>();
-  const validatingStoreEntries = new Map<
-    string,
-    Promise<CatalogStoreEntry>
-  >();
-  const loadCatalogGenerations = async () => {
+  let validatedStoreEntries = new Map<string, CatalogStoreEntry>();
+  let validatingStoreEntries = new Map<string, Promise<CatalogStoreEntry>>();
+  const loadCatalogGenerations = async (entries: Map<string, CatalogStoreEntry>) => {
     const generations = await loadCatalogGenerationViewModels({
       env: context.env,
-      validatedStoreEntries,
-      validatingStoreEntries,
+      validatedStoreEntries: entries,
+      validatingStoreEntries: new Map(),
       onStage: (event) => context.debugLogger.log({
         type: 'performance:stage',
         level: 'debug',
@@ -883,8 +881,8 @@ export function createTuiControllerDependencies(
     const retained = new Set(generations.flatMap((source) => [
       source.active?.storeKey,
     ].filter((value): value is string => value !== undefined)));
-    for (const storeKey of validatedStoreEntries.keys()) {
-      if (!retained.has(storeKey)) validatedStoreEntries.delete(storeKey);
+    for (const storeKey of entries.keys()) {
+      if (!retained.has(storeKey)) entries.delete(storeKey);
     }
     return generations;
   };
@@ -899,6 +897,8 @@ export function createTuiControllerDependencies(
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
   let sessionStatusResult: CatalogViewSnapshot | undefined;
   let sessionRecoveryStatus: RecoveryStatus | undefined;
+  let latestStatusRead = 0;
+  let bindNewCatalog = true;
   const sessionContextForPlugin = (pluginId: string): CatalogOperationContext | undefined => {
     const sourceId = parsePluginId(pluginId).sourceId;
     if (!sourceId || !sessionCatalogOperationContext) return undefined;
@@ -949,14 +949,16 @@ export function createTuiControllerDependencies(
   };
   const loadStatus: TuiControllerDependencies['loadStatus'] = async (signal) => {
     signal.throwIfAborted();
+    const read = ++latestStatusRead;
+    const pinnedContext = bindNewCatalog ? undefined : sessionCatalogOperationContext;
+    const sessionStoreEntries = validatedStoreEntries;
     const packageInfo = await readCliPackageInfo();
-    const catalogOperationContext = sessionCatalogOperationContext
-      ?? await resolvePartialCatalogOperationContext({
-        env: context.env,
-        signal,
-        validatedStoreEntries,
-        validatingStoreEntries,
-      }).catch(async (error): Promise<CatalogOperationContext | undefined> => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const catalogReadScope = pinnedContext ? undefined : new CatalogPreparationReadScope({ env: context.env, signal });
+      const catalogOperationContext = pinnedContext ?? await catalogReadScope?.resolve({}).catch(async (
+        error: unknown,
+      ): Promise<CatalogOperationContext | undefined> => {
+        signal.throwIfAborted();
         if (!(error instanceof CatalogGenerationError)
           || error.code !== 'catalogGenerationStateInvalid') return undefined;
         const snapshot = await readCatalogSourcesConfigSnapshot(context.env);
@@ -985,19 +987,16 @@ export function createTuiControllerDependencies(
           },
         };
       });
-    if (catalogOperationContext) sessionCatalogOperationContext = catalogOperationContext;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await loadCatalogView({ context, cliVersion: packageInfo.version, signal,
         ...(catalogOperationContext ? { catalogOperationContext } : {}) });
-      const snapshot = await readJointDemand({ cwd: context.cwd, env: context.env, signal, catalogOperationContext });
+      const snapshot = await readJointDemand({ cwd: context.cwd, env: context.env, signal, catalogOperationContext, catalogReadScope,
+        ...(catalogOperationContext ? { resolveCatalog: async () => ({
+          context: catalogOperationContext,
+          configured: new Set(catalogOperationContext.catalog.sources.map((source) => source.sourceId)),
+        }) } : {}),
+      });
       const current = await readRecoveryStatus({ cwd: context.cwd, env: context.env, signal,
-        cliVersion: packageInfo.version, nativeCliRunner: context.nativeCliRunner, catalogOperationContext }, snapshot);
-      signal.throwIfAborted();
-      const configured = await listCatalogSources({ env: context.env });
-      signal.throwIfAborted();
-      if (result.payload.catalog.configDigest !== configured.configDigest) continue;
-      sessionStatusResult = result;
-      sessionRecoveryStatus = current;
+        cliVersion: packageInfo.version, nativeCliRunner: context.nativeCliRunner, catalogOperationContext, catalogReadScope }, snapshot);
       const dependencyOverviews = await loadDependencyOverviews({
         context,
         cliVersion: packageInfo.version,
@@ -1013,7 +1012,8 @@ export function createTuiControllerDependencies(
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
       });
       signal.throwIfAborted();
-      const catalogGenerations = await loadCatalogGenerations();
+      const storeEntries = new Map(sessionStoreEntries);
+      const catalogGenerations = await loadCatalogGenerations(storeEntries);
       signal.throwIfAborted();
       const configStoreInventory = (await Promise.all((['user'] as const).map(async (scope) => {
         try {
@@ -1035,9 +1035,14 @@ export function createTuiControllerDependencies(
           return [];
         }
       }))).flat();
+      const configured = await listCatalogSources({ env: context.env });
       signal.throwIfAborted();
+      if (result.payload.catalog.configDigest !== configured.configDigest) {
+        if (pinnedContext) break;
+        continue;
+      }
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
-      return {
+      const status: TuiStatusLoadResult = {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
         ...(current.coverage.projectRoot ? { projectRoot: current.coverage.projectRoot } : {}),
         scopedRecovery: { user: { ...scopedCurrentStatus(current, snapshot, 'user'), dependencyOverviews },
@@ -1080,6 +1085,16 @@ export function createTuiControllerDependencies(
           };
         }),
       };
+      // Details and Review consume the same accepted read as the home view.
+      if (read === latestStatusRead) {
+        bindNewCatalog = false;
+        sessionCatalogOperationContext = catalogOperationContext;
+        sessionStatusResult = result;
+        sessionRecoveryStatus = current;
+        validatedStoreEntries = storeEntries;
+        validatingStoreEntries = new Map();
+      }
+      return status;
     }
     throw new TuiOperationBlockedError(
       'operationReviewStale',
@@ -2099,35 +2114,38 @@ export function createTuiControllerDependencies(
     previewAgentSettings: (preferences, pluginId) => previewAgentSettings(context, preferences, pluginId),
     saveAgentSettings: (request) => saveAgentSettings(context, request),
     beginCatalogSession(sessionOptions) {
-      sessionCatalogOperationContext = undefined;
-      if (sessionOptions?.reuseValidatedGenerations !== true) {
-        validatedStoreEntries.clear();
-        validatingStoreEntries.clear();
-      }
+      latestStatusRead += 1;
+      bindNewCatalog = true;
+      validatedStoreEntries = sessionOptions?.reuseValidatedGenerations === true
+        ? new Map(validatedStoreEntries) : new Map();
+      validatingStoreEntries = new Map();
     },
     loadStatus,
     async loadScopedStatus(scope, signal) {
       signal.throwIfAborted();
+      const read = latestStatusRead;
+      const pinnedContext = sessionCatalogOperationContext;
+      const catalogView = sessionStatusResult;
+      const storeEntries = { validatedStoreEntries, validatingStoreEntries };
       const packageInfo = await readCliPackageInfo();
       const currentCatalog = await resolvePartialCatalogOperationContext({
-        env: context.env, signal, validatedStoreEntries, validatingStoreEntries,
+        env: context.env, signal, ...storeEntries,
       });
       signal.throwIfAborted();
-      if (sessionCatalogOperationContext
-        && currentCatalog.generationSetDigest !== sessionCatalogOperationContext.generationSetDigest) {
+      if (pinnedContext && currentCatalog.generationSetDigest !== pinnedContext.generationSetDigest) {
         throw new TuiOperationBlockedError('catalogSessionReloadRequired',
           'Catalog 已变化。请按 H 重新加载，再检查清单。');
       }
-      const catalogOperationContext = sessionCatalogOperationContext ?? currentCatalog;
+      const catalogOperationContext = pinnedContext ?? currentCatalog;
       const snapshot = await readJointDemand({ scope, cwd: context.cwd, env: context.env, signal, catalogOperationContext });
       const status = await readRecoveryStatus({ scope, cwd: context.cwd, env: context.env, cliVersion: packageInfo.version,
         nativeCliRunner: context.nativeCliRunner, catalogOperationContext, signal }, snapshot);
       signal.throwIfAborted();
-      sessionRecoveryStatus = status;
-      const source = sessionStatusResult ?? await loadCatalogView({ context, cliVersion: packageInfo.version, signal, catalogOperationContext });
+      const source = catalogView ?? await loadCatalogView({ context, cliVersion: packageInfo.version, signal, catalogOperationContext });
       const dependencyOverviews = await loadDependencyOverviews({ context, cliVersion: packageInfo.version, status,
         pluginSummaries: source.pluginSummaries, signal, catalogOperationContext });
       signal.throwIfAborted();
+      if (read === latestStatusRead) sessionRecoveryStatus = status;
       return { ...scopedCurrentStatus(status, snapshot, scope), dependencyOverviews };
     },
     async prepareScopedTask(request, signal) {
@@ -2202,6 +2220,7 @@ export function createTuiControllerDependencies(
     loadPluginContent,
     async probeCatalogFreshness(sourceId, freshnessOptions, signal) {
       signal.throwIfAborted();
+      const storeEntries = { validatedStoreEntries, validatingStoreEntries };
       const packageInfo = await readCliPackageInfo();
       return probeCatalogSourceFreshness({
         sourceId,
@@ -2211,8 +2230,7 @@ export function createTuiControllerDependencies(
         fullValidation: freshnessOptions.fullValidation,
         runtime: {
           ...options.catalogGenerationRuntime,
-          validatedStoreEntries,
-          validatingStoreEntries,
+          ...storeEntries,
         },
       });
     },
