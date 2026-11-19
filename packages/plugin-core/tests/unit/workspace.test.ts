@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import fsPromises from 'node:fs/promises'
+import { setImmediate } from 'node:timers/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -578,6 +581,132 @@ describe('AW Catalog Workspace v1', () => {
     }
     await fs.appendFile(payload, 'changed')
     await expect(validateCatalogSnapshotTransport(built.outputRoot)).rejects.toThrow(/artifactDigest/u)
+  })
+
+  it('keeps the existing traversal digest while hashing large Catalog files', async () => {
+    // Test Value Gate: large files must keep the same snapshot identity and
+    // participate in byte validation even when their length does not change.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const payload = Buffer.alloc(2 * 1024 * 1024, 0x7a)
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          await fs.outputFile(path.join(outputRoot, 'payload/a/deep.bin'), payload)
+          await fs.writeFile(path.join(outputRoot, 'payload/a-other.bin'), 'sibling')
+        },
+      },
+    })
+    // DFS visits directory "a" before the sibling "a-other.bin", even
+    // though sorting entire relative paths would put the sibling first.
+    const files = [
+      '.agents/plugins/marketplace.json',
+      '.claude-plugin/marketplace.json',
+      'catalog-manifest.json',
+      'plugins/atomic-plugin/.agents-plugin/plugin.json',
+      'plugins/atomic-plugin/.claude-plugin/plugin.json',
+      'plugins/atomic-plugin/.codex-plugin/plugin.json',
+      'plugins/atomic-plugin/claude/.mcp.json',
+      'plugins/atomic-plugin/codex/.mcp.json',
+      'plugins/atomic-plugin/payload/a/deep.bin',
+      'plugins/atomic-plugin/payload/a-other.bin',
+    ]
+    const hash = (input: string | Buffer) => createHash('sha256').update(input).digest('hex')
+    const expectedEntries = await Promise.all(files.map(async (relative) =>
+      `${relative}\0${hash(await fs.readFile(path.join(built.outputRoot, relative)))}`))
+    await expect(validateCatalogSnapshotTransport(built.outputRoot)).resolves.toMatchObject({
+      snapshotDigest: `sha256:${hash(expectedEntries.join('\n'))}`,
+    })
+
+    const file = path.join(built.outputRoot, files.at(-2)!)
+    const stat = await fs.stat(file)
+    payload[0] = 0x63
+    await fs.writeFile(file, payload)
+    await fs.utimes(file, stat.atime, stat.mtime)
+    await expect(validateCatalogSnapshotTransport(built.outputRoot)).rejects.toThrow(/artifactDigest/u)
+  })
+
+  it('rejects the first symbolically linked Catalog entry in depth-first order', async () => {
+    // Test Value Gate: even if another sibling has already failed, report the
+    // first invalid entry a serial depth-first validation would encounter.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+    const payload = path.join(built.outputRoot, 'plugins', 'atomic-plugin', 'payload')
+    await fs.ensureDir(path.join(payload, 'a'))
+    const target = await createWorkspace()
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+    await fs.symlink(target, path.join(payload, 'a', 'inner'), linkType)
+    await fs.symlink(target, path.join(payload, 'a-sibling'), linkType)
+    await expect(validateCatalogSnapshotTransport(built.outputRoot)).rejects.toThrow(
+      'Generated output contains a symbolic link: plugins/atomic-plugin/payload/a/inner',
+    )
+  })
+
+  it('closes every started large Catalog read before returning a failure', async () => {
+    // Test Value Gate: handle errors must keep the original read failure and
+    // release those files before the caller can retry or clean up.
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const payload = Buffer.alloc(2 * 1024 * 1024, 0x7a)
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          await fs.writeFile(path.join(outputRoot, 'a-large.bin'), payload)
+          await fs.writeFile(path.join(outputRoot, 'b-large.bin'), payload)
+        },
+      },
+    })
+    const plugin = path.join(await fs.realpath(built.outputRoot), 'plugins', 'atomic-plugin')
+    const first = path.join(plugin, 'a-large.bin')
+    const second = path.join(plugin, 'b-large.bin')
+    const failure = new Error('injected stream read failure')
+    const closed = new Set<string>()
+    const firstClosed = Promise.withResolvers<void>()
+    const allowSecond = Promise.withResolvers<void>()
+    const open = fsPromises.open
+    const opened = vi.spyOn(fsPromises, 'open').mockImplementation(async (file, ...args) => {
+      const handle = await open(file, ...args)
+      if (file !== first && file !== second) return handle
+      handle.once('close', () => {
+        closed.add(file)
+        if (file === first) firstClosed.resolve()
+      })
+      if (file === first) {
+        const createStream = handle.createReadStream.bind(handle)
+        vi.spyOn(handle, 'createReadStream').mockImplementation((options) => {
+          const stream = createStream(options)
+          stream.once('data', () => stream.destroy(failure))
+          return stream
+        })
+      } else await allowSecond.promise
+      return handle
+    })
+    let settled = false
+    const pending = validateCatalogSnapshotTransport(built.outputRoot)
+      .catch((error: unknown) => error)
+      .finally(() => { settled = true })
+    try {
+      await firstClosed.promise
+      await setImmediate()
+      expect(settled).toBe(false)
+    } finally {
+      allowSecond.resolve()
+      await pending
+      opened.mockRestore()
+    }
+    expect(await pending).toBe(failure)
+    expect(closed).toEqual(new Set([first, second]))
   })
 
   it('rejects a payload changed after its snapshot hash was read', async () => {
