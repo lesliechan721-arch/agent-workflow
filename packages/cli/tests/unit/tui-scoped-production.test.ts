@@ -173,7 +173,12 @@ describe('scoped TUI production reads', () => {
     const initial = await dependencies.prepareScopedTask!({ kind: 'recovery', command: 'sync',
       scope: 'user', selectors: ['local/demo'], targets: ['codex'] }, new AbortController().signal);
     const installed = await dependencies.executeScopedTask!(initial);
-    expect(installed, JSON.stringify(installed)).toMatchObject({ kind: 'recovery', receipt: { ok: true } });
+    expect(installed, JSON.stringify(installed)).toMatchObject({ kind: 'recovery', receipt: { targetResults: expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'local/dependency', scope: 'user', execution: 'applied' }),
+      expect.objectContaining({ pluginId: 'local/demo', scope: 'project', deploymentReceipts: [expect.objectContaining({
+        after: expect.objectContaining({ registration: 'present', scopeActivation: 'unknown' }),
+      })] }),
+    ]) } });
     if (initial.kind === 'recovery') await initial.plan.context.dispose();
     await value.generation('2.0.0');
     const beforeUser = await observeIntent({ ...value, scope: 'user' });
@@ -330,7 +335,7 @@ describe('scoped TUI production reads', () => {
     const runtime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     const preparation = new AbortController();
     const plan = await prepareRecovery('sync', ['local/demo'], {
-      scope: 'user', cwd: value.cwd, env: value.env, cliVersion: '1.0.0',
+      context: 'user', scope: 'user', cwd: value.cwd, env: value.env, cliVersion: '1.0.0',
       targets: ['codex'], signal: preparation.signal,
     }, runtime);
     try {

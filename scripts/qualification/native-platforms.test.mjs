@@ -6,10 +6,10 @@ import test from 'node:test';
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
-import { parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, readQualificationCodexSources,
+import { parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, readPublicAwEnvelope, readQualificationCodexSources,
   observeQualification } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
-import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand } from './native-platform-runtime.mjs';
+import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
 import { prepareGeminiFixtureTrust, observeNativeWorkingDirectory, readSkills as readPublicSkills } from './native-platform-public-aw.mjs';
 import './native-platform-process-names.test.mjs';
@@ -24,6 +24,26 @@ import './native-platform-managed-trace.test.mjs';
 import './native-platform-public-state.test.mjs';
 import './native-platform-opencode.test.mjs';
 import './native-platform-opencode-public.test.mjs';
+import './native-platform-codex-behavior.test.mjs';
+
+// Test Value Gate: a runner using different runtime schema bytes cannot produce
+// evidence for the built candidate even when its compiled JavaScript matches.
+test('binds actual runtime schema bytes to the candidate', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-candidate-fixture-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const relative of ['packages/cli/dist', 'packages/cli/plugins-dist', 'packages/plugin-core/dist',
+    'packages/plugin-core/schemas', 'packages/agent-skill-eval/dist', 'scripts/qualification']) {
+    await fs.mkdir(path.join(root, relative), { recursive: true });
+  }
+  const schema = path.join(root, 'packages/plugin-core/schemas/platform-capabilities-v2.json');
+  const manifest = path.join(root, 'candidate.json');
+  const sourceSha = process.env.GITHUB_SHA ?? 'a'.repeat(40);
+  await fs.writeFile(schema, '{"type":"object"}\n');
+  await writeCandidate(manifest, sourceSha, root);
+  assert.equal((await verifyCandidate(manifest, root)).sourceSha, sourceSha);
+  await fs.writeFile(schema, '{"type":"string"}\n');
+  await assert.rejects(verifyCandidate(manifest, root), /candidate-content-mismatch/u);
+});
 
 // Test Value Gate: local discovery can be observed or unavailable without
 // changing the result of required management and scope checks.
@@ -122,7 +142,7 @@ test('retains bounded public failure facts beyond the stdout preview', () => {
     prerequisites: { privateConfiguration: 'must-not-appear' } },
     effects: [{ id: 'register', status: 'unknown', mutation: 'possible', diagnostics: [{ code: 'nativeFailure',
       severity: 'error', message: `Expected ${root}/owned-source` }] }] };
-  const stdout = JSON.stringify({ schemaVersion: 1, command: 'plugin.install', status: 'partial',
+  const stdout = JSON.stringify({ schemaVersion: 2, command: 'plugin.install', status: 'partial',
     data: { longPlan: 'x'.repeat(5000), targetResults: [{ target: 'codex', scope: 'user',
       blockerCodes: ['deploymentPostcheckFailed'], deploymentReceipts: [receipt] }] }, diagnostics: [] });
   const report = redact({ stdout, failureSummary: publicAwFailureSummary(stdout) }, root);
@@ -141,6 +161,15 @@ test('retains bounded public failure facts beyond the stdout preview', () => {
   assert.equal(many.targets.length, 4); assert.equal(many.targets[0].receipts.length, 4);
   assert.equal(many.targets[0].receipts[0].effects.length, 8);
   assert.equal(many.targets[0].receipts[0].effects[0].diagnostics.length, 8);
+});
+
+// Test Value Gate: the public harness must reject the old CLI contract and an unexpected
+// v2 status even when the process exited with the anticipated exit code.
+test('reads only v2 public AW envelopes with the expected status', () => {
+  const value = { schemaVersion: 2, command: 'plugin.status', status: 'blocked' };
+  assert.deepEqual(readPublicAwEnvelope(JSON.stringify(value), 'blocked'), value);
+  assert.throws(() => readPublicAwEnvelope(JSON.stringify({ ...value, schemaVersion: 1 }), 'blocked'), /unexpected-envelope/u);
+  assert.throws(() => readPublicAwEnvelope(JSON.stringify({ ...value, status: 'success' }), 'blocked'), /unexpected-envelope/u);
 });
 
 // Test Value Gate: qualification must not turn missing prerequisites into a

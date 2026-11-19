@@ -42,10 +42,12 @@ async function bootstrapFixture(t) {
   });
   const subject = { pluginId, target: 'grok', scope: 'user' };
   const trustDiagnostic = { code: 'nativeTrustRequired', severity: 'error', message: 'Complete host trust and retry.', subject };
+  const recovery = { code: 'grokNativeInstallRecovery', severity: 'warning', message: 'The AW source is kept for explicit host recovery.',
+    subject: { ...subject, field: 'nativeSource' }, detail: { reasonCode: 'grokNativeInstallSource', path: source } };
   const blocked = { id: effects[1].id, status: 'blocked', mutation: 'none', diagnostics: [trustDiagnostic,
-    { code: 'grokNativeInstallRecovery', severity: 'error', message: 'The AW source is kept for explicit host recovery.', subject }] };
+    recovery] };
   const receipt = { bindingId, products, after: { physicalKey, package: 'present', registration: 'absent', ownership: 'aw',
-    consumers: [{ productId, activationKey, activation: 'unknown', trust: 'required', load: 'not-observed' }],
+    consumers: [{ productId, activationKey, activation: 'unknown', load: 'not-observed' }],
     components: [{ id: componentId, presence: 'unknown', reasonCodes: ['nativeTrustRequired'] }],
     nativeIdentity: { route: 'grok-cli', packageId: pluginName, sourceLocation: source } },
   effects: [{ id: effects[0].id, status: 'applied', mutation: 'confirmed', diagnostics: [] }, blocked,
@@ -57,14 +59,15 @@ async function bootstrapFixture(t) {
     blockerCodes: ['nativeTrustRequired'], providerScope: 'user', deploymentPlans: [{ bindingId, physicalKey, products,
       expected: { components: [{ id: componentId, kind: 'skill', name: skillName }], omitted: [], unmet: [] },
       effects, sharedReferences: 'none' }], deploymentReceipts: [receipt] };
-  const result = { schemaVersion: 1, command: 'plugin.install', status: 'partial', data: {
+  const result = { schemaVersion: 2, command: 'plugin.install', status: 'partial', data: {
     request: { plugins: [pluginId], scope: 'user', context: 'project', targets: ['grok'], targetOrigin: 'argument', mode: 'apply' },
     confirmation: { required: false, provided: true, effects: [] },
     changes: { requirements: 'changed', preferences: 'none', config: 'none', sources: 'changed', outputs: 'unknown' },
     requirements: { state: 'valid', roots: [pluginId], digest: `sha256:${'e'.repeat(64)}` },
     targetResults: [target], remainingTargets: [{ pluginId, target: 'grok', scope: 'user' }],
     coverage: { scopes: ['user', 'project'], currentProject: true, otherProjects: 'unobserved' },
-  }, diagnostics: [trustDiagnostic], nextActions: [] };
+  }, diagnostics: [trustDiagnostic, recovery], nextActions: [{ kind: 'manual',
+    message: `Run Grok with arguments ${JSON.stringify(['plugin', 'install', source, '--trust'])}. Then run aw plugin sync ${pluginId} --context user --target grok.` }] };
   return { root, ctx, result, pluginId, source, sourceSkillFile, skillText, receipt, blocked, target };
 }
 

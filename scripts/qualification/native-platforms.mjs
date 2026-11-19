@@ -102,9 +102,18 @@ export function publicAwFailureSummary(stdout) {
     .map((key) => [key, item[key]]));
   const diagnostics = (items) => list(items, 8).map((item) => fields(item, ['code', 'severity', 'message']));
   return { state: 'parsed', ...fields(value, ['command', 'status']), diagnostics: diagnostics(value.diagnostics),
-    targets: list(value.data?.targetResults, 4).map((target) => ({
+    ...(value.command === 'plugin.status' ? { counts: Object.fromEntries(['blocked', 'pending', 'unconfirmed', 'ready']
+      .filter(key => Number.isSafeInteger(value.data?.counts?.[key])).map(key => [key, value.data.counts[key]])),
+      allSatisfied: value.data?.allSatisfied === true || value.data?.allSatisfied === false ? value.data.allSatisfied : null,
+      inSync: value.data?.inSync === true || value.data?.inSync === false ? value.data.inSync : null } : {}),
+    targets: list(value.data?.targetResults ?? list(value.data?.inventory, 4)
+      .flatMap((entry) => list(entry?.targetResults, 4)), 4).map((target) => ({
       ...fields(target, ['pluginId', 'target', 'scope', 'execution', 'observation', 'content']),
       blockerCodes: list(target?.blockerCodes, 8).filter((item) => typeof item === 'string'),
+      ...(value.command === 'plugin.status' ? { deployments: list(target?.deploymentObservations, 4).map((item) => ({
+        ...fields(item?.after, ['package', 'registration', 'ownership']),
+        consumers: list(item?.after?.consumers, 4).map((consumer) => fields(consumer, ['activation', 'load'])),
+      })) } : {}),
       receipts: list(target?.deploymentReceipts, 4).map((receipt) => ({
         after: { ...fields(receipt?.after, ['package', 'registration', 'ownership']),
           nativeIdentity: fields(receipt?.after?.nativeIdentity, ['route', 'packageId', 'registrationId', 'sourceLocation']) },
@@ -114,6 +123,12 @@ export function publicAwFailureSummary(stdout) {
       })),
     })),
   };
+}
+
+export function readPublicAwEnvelope(stdout, expectedStatus) {
+  const value = JSON.parse(stdout);
+  if (value?.schemaVersion !== 2 || value.status !== expectedStatus) throw new Error('public-aw-unexpected-envelope');
+  return value;
 }
 
 async function readManagedTrace(file) {
@@ -157,7 +172,7 @@ export async function readQualificationCodexSources(home) {
 
 export async function runScope(platform, scope, launcher, options = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-qualification-')));
-  const report = { scope, input: options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate', status: 'failed', checks: [], observations: [], commands: [], cleanup: 'pending' };
+  const report = { scope, product: 'cli', input: options.publicAw ? 'public-aw-cli' : 'aw-projection-candidate', status: 'failed', checks: [], observations: [], commands: [], cleanup: 'pending' };
   try {
     const env = await prepareEnvironment(root);
     const project = path.join(root, 'project');
@@ -175,7 +190,8 @@ export async function runScope(platform, scope, launcher, options = {}) {
       async command(args, cwd = project, commandOptions = {}) {
         let result;
         try {
-          result = await execute(launcher, args, { cwd, env, stdin: commandOptions.input,
+          result = await execute(commandOptions.entry ? { executable: commandOptions.entry, prefix: [] } : launcher, args,
+            { cwd, env, stdin: commandOptions.input,
             nativeClient: platform, captureProcessNames: platform === 'copilot' });
         } catch (error) {
           report.commands.push(redact({ args, cwd, processFailure: error?.message,
@@ -190,7 +206,8 @@ export async function runScope(platform, scope, launcher, options = {}) {
               cancelled: error.result.cancelled, stdout: error.result.stdout, stderr: error.result.stderr } : {}) }, root, options.clientBin));
           throw error;
         }
-        report.commands.push(redact({ args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
+        report.commands.push(redact({ args, cwd, ...(commandOptions.entry ? { entry: commandOptions.entry } : {}),
+          exitCode: result.exitCode, timedOut: result.timedOut,
           ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
           ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
           cancelled: result.cancelled, terminationReason: result.terminationReason,
@@ -227,26 +244,38 @@ export async function runScope(platform, scope, launcher, options = {}) {
       async aw(args, cwd = project, commandOptions = {}) {
         const expectedExitCode = commandOptions.expectedExitCode ?? 0;
         const expectedStatus = commandOptions.expectedStatus ?? 'success';
+        const timeoutMs = commandOptions.timeoutMs ?? 60_000;
+        if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180_000) throw new Error('public-aw-invalid-timeout');
         const bootstrapArgs = ['plugin', 'install', `qualification/${ctx.pluginName}`, '--scope', 'user', '--target', 'grok', '--yes'];
         const trustBootstrap = options.publicAw && platform === 'grok' && scope === 'user'
           && expectedExitCode === 4 && expectedStatus === 'partial'
           && args.length === bootstrapArgs.length && args.every((arg, index) => arg === bootstrapArgs[index]);
-        if ((expectedExitCode !== 0 || expectedStatus !== 'success') && !trustBootstrap) {
+        const expectedIncompleteStatus = options.publicAw && args[0] === 'plugin' && args[1] === 'status'
+          && (expectedExitCode === 3 && expectedStatus === 'blocked' || expectedExitCode === 4 && expectedStatus === 'partial');
+        const grokSyncArgs = ['plugin', 'sync', `qualification/${ctx.pluginName}`, '--context', 'user', '--target', 'grok', '--yes'];
+        const expectedGrokSafetyBlock = options.publicAw && platform === 'grok' && scope === 'user'
+          && expectedExitCode === 3 && expectedStatus === 'blocked'
+          && args.length === grokSyncArgs.length && args.every((arg, index) => arg === grokSyncArgs[index]);
+        const expectedNonzero = trustBootstrap || expectedIncompleteStatus || expectedGrokSafetyBlock;
+        if ((expectedExitCode !== 0 || expectedStatus !== 'success') && !expectedNonzero) {
           throw new Error('public-aw-unexpected-command-expectation');
         }
-        const trace = ['linux', 'darwin', 'win32'].includes(process.platform) && ['codex', 'pi', 'claude', 'gemini', 'copilot'].includes(platform)
+        const auditOpenCodeStatus = platform === 'opencode' && args[0] === 'plugin' && args[1] === 'status';
+        const trace = auditOpenCodeStatus || ['linux', 'darwin', 'win32'].includes(process.platform)
+          && ['codex', 'pi', 'claude', 'gemini', 'copilot'].includes(platform)
           && process.env.GITHUB_ACTIONS === 'true' && process.env.AW_NATIVE_QUALIFICATION_MANAGED_TRACE === '1';
         const traceFile = trace ? path.join(root, `managed-native-${report.commands.length}.jsonl`) : undefined;
         const sourceDiagnostic = trace && platform === 'codex' && process.platform === 'win32';
         const commandEnv = trace ? { ...env, GITHUB_ACTIONS: 'true', AW_NATIVE_QUALIFICATION_MANAGED_TRACE: '1',
           AW_NATIVE_QUALIFICATION_MANAGED_TRACE_CLIENT: platform,
           AW_NATIVE_QUALIFICATION_MANAGED_TRACE_FILE: traceFile,
-          AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([launcher.prefix[0] ?? launcher.executable, ctx.publicClientEntry].filter(Boolean)) } : env;
+          AW_NATIVE_QUALIFICATION_MANAGED_TRACE_ENTRIES: JSON.stringify([launcher.prefix[0] ?? launcher.executable,
+            ctx.publicClientEntry, ctx.publicAlternateClientEntry].filter(Boolean)) } : env;
         let result;
         try {
           result = await executePublicAw({ executable: process.execPath, prefix: [
             ...(trace ? ['--import', pathToFileURL(path.join(repoRoot, 'scripts/qualification/native-platform-managed-trace.mjs')).href] : []),
-            path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json'], { cwd, env: commandEnv, timeoutMs: 60_000 });
+            path.join(repoRoot, 'packages/cli/dist/index.js')] }, [...args, '--json'], { cwd, env: commandEnv, timeoutMs });
         } catch (error) {
           report.commands.push(redact({ aw: args, cwd, processFailure: error?.message,
             ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
@@ -261,26 +290,37 @@ export async function runScope(platform, scope, launcher, options = {}) {
               failureSummary: publicAwFailureSummary(error.result.stdout) } : {}) }, root, options.clientBin));
           throw error;
         }
+        const nativeManagedTrace = trace ? await readManagedTrace(traceFile) : undefined;
         report.commands.push(redact({ aw: args, cwd, exitCode: result.exitCode, timedOut: result.timedOut,
           ...(result.processQueryTimings ? { processQueryTimings: result.processQueryTimings } : {}),
           ...(result.markerIdentityConfirmations ? { markerIdentityConfirmations: result.markerIdentityConfirmations } : {}),
-          ...(trace ? { nativeManagedTrace: await readManagedTrace(traceFile) } : {}),
+          ...(trace ? { nativeManagedTrace } : {}),
           cancelled: result.cancelled, terminationReason: result.terminationReason,
           maxBufferExceeded: result.maxBufferExceeded, stdout: result.stdout, stderr: result.stderr,
+          ...(args[0] === 'plugin' && args[1] === 'status' ? { statusSummary: publicAwFailureSummary(result.stdout) } : {}),
           ...(result.exitCode !== 0 || result.timedOut || result.maxBufferExceeded
             ? { failureSummary: publicAwFailureSummary(result.stdout),
               ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}) } : {}),
           processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
             descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
-        if (trustBootstrap) {
+        if (expectedNonzero) {
           if (result.timedOut) throw new Error('command-timeout');
           if (result.maxBufferExceeded) throw new Error('command-output-limit');
           if (result.exitCode !== expectedExitCode) throw new Error('public-aw-unexpected-exit-code');
         } else assertCommand(result);
         if (result.cancelled || result.terminationReason !== 'complete') throw new Error('public-aw-command-incomplete');
-        const value = JSON.parse(result.stdout);
-        if (value.schemaVersion !== 1 || value.status !== expectedStatus) throw new Error('public-aw-command-not-successful');
-        return value;
+        if (auditOpenCodeStatus) {
+          const records = nativeManagedTrace?.records ?? [];
+          const serviceQueries = records.filter(({ phase, args }) => phase === 'start'
+            && (args?.[0] === 'serve' || args?.[0] === 'api'));
+          const explicit = args.includes('--observe-native');
+          if (nativeManagedTrace?.state !== 'captured' || !records.some(({ phase, state }) => phase === 'installation' && state === 'installed')
+            || !records.some(({ phase, args }) => phase === 'finish' && args?.[0] === '--version')
+            || (explicit ? serviceQueries.length !== 1 || serviceQueries[0].args[0] !== 'api' : serviceQueries.length !== 0)) {
+            throw new Error('public-opencode-service-startup-evidence-mismatch');
+          }
+        }
+        return readPublicAwEnvelope(result.stdout, expectedStatus);
       },
       async check(id, action) {
         const check = { id, status: 'failed' }; report.checks.push(check);
@@ -290,7 +330,11 @@ export async function runScope(platform, scope, launcher, options = {}) {
           check.status = 'passed';
           return evidence;
         }
-        catch (error) { check.reason = redact(error?.message ?? 'check-failed', root, options.clientBin); throw error; }
+        catch (error) {
+          if (error instanceof Unverified) check.status = 'unverified';
+          check.reason = redact(error?.message ?? 'check-failed', root, options.clientBin);
+          throw error;
+        }
       },
       async observe(id, action) { return observeQualification(report, id, action, root, options.clientBin); },
       async defer(reason) { throw new Unverified(reason); },
@@ -327,16 +371,20 @@ export async function runScope(platform, scope, launcher, options = {}) {
 }
 
 export async function run(options) {
+  const codexBehaviorRequested = options['public-aw'] && ['all', 'codex'].includes(options.client);
+  const grokPublicRequested = options['public-aw'] && ['all', 'grok'].includes(options.client);
   const report = { schemaVersion: 2, kind: 'aw-native-hosted-qualification', status: 'failed',
-    acceptancePolicy: { id: 'management-content-scope-v1',
-      required: ['management', 'dynamic-consumer-content', 'scope-isolation', 'process-safety', 'cleanup'],
+    acceptancePolicy: { id: options['public-aw'] ? 'public-status-and-native-scope-v2' : 'management-content-scope-v1',
+      required: ['management', 'dynamic-consumer-content', 'scope-isolation', 'process-safety', 'cleanup',
+        ...(options['public-aw'] ? ['public-status', 'public-negative-scope-and-permission-cases'] : []),
+        ...(codexBehaviorRequested ? ['codex-manual-skill-and-native-role-resolution'] : [])],
       nonBlocking: ['skill-loading', 'model-adoption'],
       excluded: 'official-client-distribution-unavailable' },
     createdAt: new Date().toISOString(), environment: hostInfo(),
     run: { id: process.env.GITHUB_RUN_ID ?? null, attempt: process.env.GITHUB_RUN_ATTEMPT ?? null },
     boundary: { fixtureTrust: options['local-macos-fallback'] ? 'authorized-local-macos-fallback' : 'hosted-only',
       host: process.platform, hosted: process.env.GITHUB_ACTIONS === 'true',
-      credentials: 'not-provided', modelRequests: 'none', clients: 'real',
+      credentials: 'not-provided', modelRequests: codexBehaviorRequested ? 'Codex local fixture only' : 'none', clients: 'real',
       input: 'current-aw-projection-candidate', productionQualificationChanged: false,
       publicAwRequested: Boolean(options['public-aw']),
       processNameDiagnostics: ['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true'
@@ -354,11 +402,16 @@ export async function run(options) {
       processManagement: process.platform === 'win32'
         ? 'client-windows-job-download-bounded-child'
         : 'client-verified-observed-download-bounded-child-not-os-containment' },
-    uncovered: ['public-aw-install-end-to-end', 'model-invocation', 'skill-invocation-controls', 'mcp-execution',
-      'hook-execution', 'agents-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
+    uncovered: [...(options['public-aw'] ? [] : ['public-aw-install-end-to-end']),
+      ...(codexBehaviorRequested ? ['skill-invocation-controls-outside-codex-user', 'agents-execution-outside-three-codex-user-roles']
+        : ['skill-invocation-controls', 'agents-execution']),
+      ...(grokPublicRequested ? ['grok-user-same-source-refresh-with-host-authorization-denied'] : []),
+      'external-model-invocation', 'mcp-execution', 'hook-execution', 'instructions-consumption', 'desktop', 'minimum-version-matrix',
       'antigravity', 'cursor'], clients: [],
     uncoveredReasons: { cursor: 'tested-workspace-hook-requires-authentication',
-      antigravity: 'fixed-distribution-and-unauthenticated-interface-not-verified' },
+      antigravity: 'public-user-scope-runs-through-dedicated-qualification',
+      ...(grokPublicRequested ? { 'grok-user-same-source-refresh-with-host-authorization-denied':
+        'Grok 1.0.77 on macOS arm64 kept projectTrusted=true in credential-free User neutral directories with exact denied-folder entries. A separate Project plugin produced denial only in its own directory.' } : {}) },
   };
   try {
     report.candidate = await verifyCandidate(options.candidate);

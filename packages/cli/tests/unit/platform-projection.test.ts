@@ -11,6 +11,7 @@ import { projectPlatform } from '../../src/platforms/projection.js';
 import { projectPlatformMarketplace } from '../../src/platforms/projection-marketplace.js';
 import { prepareProjectionRoot, ProjectionFiles } from '../../src/platforms/projection-files.js';
 import { getDeploymentLayout } from '../../src/platforms/layout.js';
+import { getQualifiedPlatformProfile } from '../../src/platforms/capabilities.js';
 import { commandResourceReferences } from '../../src/utils/component-resources.js';
 
 const temporaryRoots: string[] = [];
@@ -34,7 +35,7 @@ async function fixture(platform: PlatformId, components: PluginComponent[], outp
     },
     renderUnit: { id: 'unit', physicalKey: 'physical', renderScope: { kind: 'user' }, output, kinds, consumers: [] },
     capabilities: {
-      schemaVersion: 1, platform, scope: 'user', basis: 'profile', profileId: 'test', consumers: [],
+      schemaVersion: 2, platform, scope: 'user', basis: 'profile',
       kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as unknown as ProjectionInput['capabilities']['kinds'],
       features: {},
     },
@@ -154,16 +155,19 @@ describe('platform projection', () => {
     expect((await projectPlatform(ctx, input)).bundle).toBeNull();
   });
 
-  it.each(['true', '"yes"', '1'])('maps Codex automatic invocation control %s to its native Skill policy', async (value) => {
-    const controlled: PluginComponent = { ...skill, content: { files: {
-      'SKILL.md': { text: `---\nname: check\ndescription: Check input.\ndisable-model-invocation: ${value}\n---\nRun explicitly.\n` },
-    } } };
-    const { input, ctx } = await fixture('codex', [controlled]);
-    input.capabilities.features['skill.invocation.model'] = { status: 'supported', reasonCodes: [], values: ['false'] };
-    const result = await projectPlatform(ctx, input);
-    const policy = await fs.readFile(path.join(result.bundle!.stagingRoot, 'skills/check/agents/openai.yaml'), 'utf8');
-    expect(policy).toContain('allow_implicit_invocation: false');
-  });
+  it.each([['true', false], ['"yes"', false], ['1', false], ['false', true]] as const)(
+    'maps Codex automatic invocation control %s to its native Skill policy', async (value, implicit) => {
+      const controlled: PluginComponent = { ...skill, content: { files: {
+        'SKILL.md': { text: `---\nname: check\ndescription: Check input.\nuser-invocable: true\ndisable-model-invocation: ${value}\n---\nRun explicitly.\n` },
+      } } };
+      const { input, ctx } = await fixture('codex', [controlled]);
+      const profile = getQualifiedPlatformProfile('codex', { platform: 'linux', arch: 'x64' });
+      input.capabilities = { ...input.capabilities, kinds: profile.kinds, features: profile.features };
+      const result = await projectPlatform(ctx, input);
+      const policy = await fs.readFile(path.join(result.bundle!.stagingRoot, 'skills/check/agents/openai.yaml'), 'utf8');
+      expect(policy).toContain(`allow_implicit_invocation: ${implicit}`);
+    },
+  );
 
   it('uses frozen resource bytes and preserves executable mode without reopening the source', async () => {
     const sourced: PluginComponent = { ...skill, content: { files: { ...skill.content.files,

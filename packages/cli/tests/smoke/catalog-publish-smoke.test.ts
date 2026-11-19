@@ -87,7 +87,7 @@ it('publishes complete v3 dynamic source through the built public CLI and Git pr
   ]);
   const planResult = JSON.parse(plan.stdout);
   expect(planResult).toMatchObject({
-    schemaVersion: 1, command: 'dev.catalog.publish.plan', status: 'success',
+    schemaVersion: 2, command: 'dev.catalog.publish.plan', status: 'success',
     data: { prepared: true, state: 'prepared', planDigest: expect.stringMatching(/^sha256:/u) },
     diagnostics: expect.any(Array), nextActions: expect.any(Array),
   });
@@ -103,7 +103,7 @@ it('publishes complete v3 dynamic source through the built public CLI and Git pr
     ]).then(() => null, (error: unknown) => error as { code: number; stdout: string });
     expect(failure?.code).toBe(4);
     expect(JSON.parse(failure!.stdout)).toMatchObject({
-      schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'partial',
+      schemaVersion: 2, command: 'dev.catalog.publish.apply', status: 'partial',
       data: {
         state: 'uncertain', journalState: 'uncertain', planDigest,
         expectedCommit: planResult.data.expectedCommit,
@@ -127,7 +127,7 @@ it('publishes complete v3 dynamic source through the built public CLI and Git pr
   ]);
   const appliedResult = JSON.parse(result.stdout);
   expect(appliedResult).toMatchObject({
-    schemaVersion: 1, command: 'dev.catalog.publish.apply', status: 'success',
+    schemaVersion: 2, command: 'dev.catalog.publish.apply', status: 'success',
     data: { state: 'published', planDigest, commit: planResult.data.expectedCommit },
     diagnostics: expect.any(Array), nextActions: expect.any(Array),
   });

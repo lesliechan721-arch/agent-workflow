@@ -289,7 +289,7 @@ describe('preApply script', () => {
       expect(await fs.pathExists(continuedPath), stderr).toBe(publicCli);
       if (publicCli) {
         const result = JSON.parse(stdout);
-        expect(result).toMatchObject({ schemaVersion: 1, command: 'plugin.install', status: 'partial', data: { changes: { outputs: 'unknown' } } });
+        expect(result).toMatchObject({ schemaVersion: 2, command: 'plugin.install', status: 'partial', data: { changes: { outputs: 'unknown' } } });
         expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'operationInterrupted' }));
       }
       expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);

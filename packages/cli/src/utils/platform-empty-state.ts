@@ -1,14 +1,18 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import type { PlatformCapabilitiesV1 } from '@lesliechan721/aw-plugin-core/manifest';
+import {
+  getComponentFeatureRequirements, getPlatformCapabilityFact, normalizeStaticPluginComponents, resolveInvocationPolicy,
+  type ExpectedComponentSet, type FeatureRequirement, type PlatformCapabilitiesV2,
+} from '@lesliechan721/aw-plugin-core/manifest';
 
 import type { PluginMeta } from '../types.js';
-import type { DeploymentBinding, DeploymentObservation, RenderUnit } from '../platforms/contracts.js';
+import type { DeploymentBinding, RenderUnit } from '../platforms/contracts.js';
+import { toPlatformCapabilitiesView } from '../platforms/capabilities.js';
 import { artifactValueDigest } from './artifact-plan.js';
-import { selectPlatformRenderConfig } from './artifact-request.js';
+import { resolvePlatformComponentBatches, selectPlatformRenderConfig } from './artifact-request.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
 import { calculatePluginBundleFingerprint } from './bundle-integrity.js';
-import { resolvePlatformComponentResources } from './component-resources.js';
+import { readStaticComponentResourceInputs, resolvePlatformComponentResources, resolveStaticPlatformResourceRoot } from './component-resources.js';
 import { assertSafeFileMutationPath, atomicReplaceSafeFile } from './safe-fs.js';
 import { resolveAbsoluteAwHome } from './state-paths.js';
 import { assertTestReadablePath, assertTestWritablePath } from './test-path-fence.js';
@@ -32,44 +36,78 @@ export interface PlatformInputEvidenceOptions {
   binding: DeploymentBinding;
   units: Array<{
     renderUnit: RenderUnit;
-    capabilities: PlatformCapabilitiesV1;
+    capabilities: PlatformCapabilitiesV2;
     config: ResolvedArtifactRenderConfig;
-    prerequisites: DeploymentObservation['prerequisites'];
   }>;
+}
+
+function staticCapabilityInputs(expected: ExpectedComponentSet, capabilities: PlatformCapabilitiesV2): unknown {
+  const usedFeatures = (requirements: readonly FeatureRequirement[]) => requirements.map(({ feature, values }) => {
+    const fact = getPlatformCapabilityFact(feature, capabilities);
+    return { feature, status: fact.status, reasonCodes: fact.reasonCodes,
+      ...(values ? { values: (fact.values ?? []).filter((value) => values.includes(value)) } : {}),
+      ...(feature === 'instruction.coverage' && ['codex', 'claude'].includes(capabilities.platform) ? { maxBytes: fact.maxBytes } : {}) };
+  });
+  return [
+    ...expected.components.map((component) => ({ id: component.id, kind: capabilities.kinds[component.kind],
+      features: usedFeatures(getComponentFeatureRequirements(component)) })),
+    ...expected.unmet.map((gap) => ({ id: gap.id, kind: capabilities.kinds[gap.kind],
+      features: usedFeatures(gap.requiredFeatures) })),
+  ];
 }
 
 /** Currentness evidence only. This state never grants ownership or removal rights. */
 export async function createPlatformInputEvidence(input: PlatformInputEvidenceOptions): Promise<PlatformInputEvidence> {
   const { plugin, binding } = input;
-  if (binding.platform === 'generic' || plugin.pluginId !== binding.plugin.pluginId
+  const { platform } = binding;
+  const { manifest } = plugin;
+  if (platform === 'generic' || plugin.pluginId !== binding.plugin.pluginId
     || plugin.sourceIdentity !== binding.plugin.sourceIdentity || plugin.manifest.version !== binding.plugin.version
     || new Set(input.units.map(({ renderUnit }) => renderUnit.id)).size !== input.units.length
     || input.units.length !== binding.renderUnitIds.length
     || binding.renderUnitIds.some((id) => !input.units.some(({ renderUnit }) => renderUnit.id === id))) {
     throw new Error('platformEmptyStateIdentityInvalid');
   }
-  const [sourceDigest, resources] = await Promise.all([
-    calculatePluginBundleFingerprint(plugin.rootDir), resolvePlatformComponentResources(plugin),
-  ]);
-  const units = input.units.map(({ renderUnit, capabilities, config, prerequisites }) => {
-    if (capabilities.platform !== binding.platform || capabilities.scope !== renderUnit.renderScope.kind
+  const staticResourceRoot = await resolveStaticPlatformResourceRoot(plugin.rootDir, platform);
+  const prepared = await Promise.all(input.units.map(async ({ renderUnit, capabilities, config }) => {
+    if (capabilities.platform !== platform || capabilities.scope !== renderUnit.renderScope.kind
       || config.targetScope !== renderUnit.renderScope.kind) throw new Error('platformEmptyStateUnitInvalid');
-    const { id, physicalKey, renderScope, output, kinds } = renderUnit;
-    const selectedConfig = selectPlatformRenderConfig({ resolved: config, keys: plugin.manifest.artifacts?.configKeys ?? [], nonSensitive: false });
-    const commandKeys = kinds.includes('skill') ? [...new Set((plugin.manifest.managedCommands?.sets ?? []).flatMap((set) =>
-      set.mode === 'dynamic' && set.producer.kind !== 'package' && set.producer.platform === binding.platform
-        && (set.producer.kind !== 'artifact' || !plugin.manifest.artifacts?.scopes
-          || plugin.manifest.artifacts.scopes.includes(renderScope.kind)) ? set.refreshKeys : []))].sort() : [];
+    const { renderScope, kinds } = renderUnit;
+    const capabilityView = toPlatformCapabilitiesView(capabilities);
+    const batches = resolvePlatformComponentBatches({ manifest, platform, renderScope: renderScope.kind, kinds, config });
+    const expected = await normalizeStaticPluginComponents({ pluginRoot: plugin.rootDir, staticResourceRoot, manifest, platform,
+      capabilities: capabilityView, allowedOutputKinds: kinds });
+    const skillRender = batches.some((batch) => batch.allowedOutputKinds.includes('skill'));
+    const commandSets = kinds.includes('skill') ? (manifest.managedCommands?.sets ?? []).filter(({ producer }) =>
+      producer.kind !== 'package' && producer.platform === platform && (producer.kind === 'static-skill' || skillRender)) : [];
+    const commandKeys = [...new Set(commandSets.flatMap((set) => set.mode === 'dynamic' ? set.refreshKeys : []))].sort();
     const commandConfig = commandKeys.length ? selectPlatformRenderConfig({ resolved: config, keys: commandKeys, nonSensitive: true }) : undefined;
-    if (selectedConfig.issues.length || commandConfig?.issues.length) throw new Error('platformEmptyStateConfigInvalid');
-    // Grok source inventories are observation outputs, not renderer or capability
-    // inputs. The complete observation remains part of the lock-held stale check.
-    const { nativeSources: _nativeSources, ...grokRenderPrerequisites } = prerequisites;
-    const renderPrerequisites = binding.platform === 'grok' ? grokRenderPrerequisites : prerequisites;
+    if (batches.some((batch) => batch.config.issues.length) || commandConfig?.issues.length) throw new Error('platformEmptyStateConfigInvalid');
+    return { renderUnit, capabilityView, expected, batches, commandSets, commandConfig };
+  }));
+  // A running renderer can read its bundle via AW_PLUGIN_ROOT, in addition to the declared resource roots.
+  const sourceDigest = prepared.some(({ batches, commandSets }) => batches.length || commandSets.some((set) => set.mode === 'dynamic'))
+    ? await calculatePluginBundleFingerprint(plugin.rootDir) : undefined;
+  const resources = prepared.some(({ batches }) => batches.length)
+    ? (await resolvePlatformComponentResources(plugin)).map(({ kind, name, digest }) => ({ kind, name, digest })) : undefined;
+  const units = await Promise.all(prepared.map(async ({ renderUnit, capabilityView, expected, batches, commandSets, commandConfig }) => {
+    const { id, physicalKey, renderScope, output, kinds } = renderUnit;
+    const dynamic = batches.length ? { sourceDigest, manifest, batches, capabilities: capabilityView, resources } : undefined;
+    const staticResources = await readStaticComponentResourceInputs({ plugin, expected, staticResourceRoot, capabilities: capabilityView });
+    const instructions = platform === 'grok' && output === 'package' && expected.components.some((component) => component.kind === 'agent')
+      ? prepared.filter(({ renderUnit: unit }) => unit.output === 'supplement' && unit.renderScope.kind === renderScope.kind)
+        .flatMap((unit) => unit.expected.components.filter((component) => component.kind === 'instruction'
+          && component.content.coverage.includes('plugin-agents'))) : undefined;
+    const policy = output === 'package' ? resolveInvocationPolicy(manifest, platform).permissions : undefined;
+    const hasSkills = expected.components.some((component) => component.kind === 'skill');
     return { id, physicalKey, renderScope, output, kinds: [...kinds],
-      inputDigest: artifactValueDigest({ sourceDigest, manifest: plugin.manifest, config: selectedConfig,
-        ...(commandConfig ? { commandConfig } : {}), capabilities, resources, prerequisites: renderPrerequisites }) };
-  }).sort((left, right) => left.id.localeCompare(right.id));
+      inputDigest: artifactValueDigest({ plugin: binding.plugin, platform, renderScope, dynamic, expected,
+        capabilities: staticCapabilityInputs(expected, capabilityView), staticResources, instructions, policy,
+        ...(hasSkills ? { requires: manifest.requires?.aw, nativeTools: manifest.nativeTools } : {}),
+        ...(commandSets.length ? { commandSets, commandConfig,
+          commandRendererSource: commandSets.some((set) => set.mode === 'dynamic') ? sourceDigest : undefined } : {}) }) };
+  }));
+  units.sort((left, right) => left.id.localeCompare(right.id));
   return { schemaVersion: 1, kind: 'aw-platform-input', plugin: { ...binding.plugin }, platform: binding.platform,
     binding: { id: binding.id, physicalKey: binding.physicalKey, scope: binding.scope }, units };
 }

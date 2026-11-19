@@ -5,6 +5,22 @@ import { inventoryRecoveryActions, publicDiagnostic } from '../../src/commands/p
 import type { CatalogPublicationFailureOutcome } from '../../src/commands/catalog-publish.js';
 
 describe('public domain result projection', () => {
+  it('shows each nested status target and marks only the scope with a confirmed disablement', () => {
+    const pluginId = 'team/demo';
+    const result = commandResult('plugin.status', { inventory: [{ pluginId, targetResults: [
+      { pluginId, target: 'codex', scope: 'user', content: 'satisfied' },
+      { pluginId, target: 'codex', scope: 'project', content: 'drifted' },
+      { pluginId, target: 'claude', scope: 'project', content: 'drifted' },
+    ] }] }, { diagnostics: [{ code: 'nativeActivationDisabled', severity: 'warning', message: 'The plugin is disabled.',
+      subject: { pluginId, target: 'codex', scope: 'project' } }] });
+    const lines = renderPublicResult(result).split('\n');
+    expect(lines).toEqual(expect.arrayContaining([
+      expect.stringMatching(/team\/demo\s+codex\s+user\s+Ready/u),
+      expect.stringMatching(/team\/demo\s+codex\s+project\s+Disabled/u),
+      expect.stringMatching(/team\/demo\s+claude\s+project\s+Needs sync/u),
+    ]));
+  });
+
   it('shows a checked recovery location and conditional manual steps without exposing raw failure text', () => {
     const diagnostic = publicDiagnostic({ code: 'stateInventoryFailed',
       message: 'Could not read /private/internal-state; token=private-value',

@@ -142,7 +142,7 @@ async function expectFailureWithoutMutation(options: {
   );
   expect(result.exitCode).toBe(options.code === 'confirmationRequired' ? 3 : 1);
   expect(result.receipt).toMatchObject({
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: options.code === 'confirmationRequired' ? 'blocked' : 'failed',
     command: 'dev.plugin.remove',
     diagnostics: [{ code: options.code }],
@@ -174,7 +174,7 @@ describe('aw dev plugin remove', () => {
     expect(result.stderr).toBe('');
     expect(result.stdout.trim().split(/\r?\n/u)).toHaveLength(1);
     expect(result.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'dev.plugin.remove',
       diagnostics: [],
@@ -211,7 +211,7 @@ describe('aw dev plugin remove', () => {
 
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       diagnostics: [],
       data: {
@@ -231,7 +231,7 @@ describe('aw dev plugin remove', () => {
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       diagnostics: [],
       data: {
@@ -395,7 +395,7 @@ describe('aw dev plugin remove', () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       diagnostics: [{ code: 'reverseDependencies', message: expect.stringContaining('dependent') }],
       data: { removed: false }

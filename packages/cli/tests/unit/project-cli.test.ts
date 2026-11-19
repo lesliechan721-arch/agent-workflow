@@ -51,7 +51,7 @@ describe('scoped CLI declaration and preference boundaries', () => {
     });
     const output = await jsonCommand(['remove', '--only', 'requirements', 'team/demo', '--scope', 'project'], location);
     expect(output).toMatchObject({ exit: 0, stderr: '', stdout: {
-      schemaVersion: 1, command: 'plugin.remove', status: 'success', data: {
+      schemaVersion: 2, command: 'plugin.remove', status: 'success', data: {
         request: { scope: 'project', mode: 'requirements-only' },
         changes: { requirements: 'changed', preferences: 'none', outputs: 'none' },
         requirements: { roots: ['team/other'] }, targetResults: [],
@@ -113,7 +113,7 @@ describe('scoped CLI declaration and preference boundaries', () => {
     await writePreferences(location, { ...createEmptyPreferences(), targets: ['codex'] });
     const result = await jsonCommand(['install', 'demo', '--scope', 'project', '--yes'], location);
     expect(result.stdout).toMatchObject({
-      schemaVersion: 1, command: 'plugin.install', data: {
+      schemaVersion: 2, command: 'plugin.install', data: {
         request: { scope: 'project', plugins: ['team/demo'] },
         changes: { requirements: 'changed' }, requirements: { roots: ['team/demo'] },
       },
@@ -148,7 +148,7 @@ describe('scoped CLI declaration and preference boundaries', () => {
     });
     const status = await jsonCommand(['status', '--context', 'project'], location);
     expect(status).toMatchObject({ exit: 3, stdout: {
-      schemaVersion: 1, command: 'plugin.status', status: 'blocked', data: { context: 'project',
+      schemaVersion: 2, command: 'plugin.status', status: 'blocked', data: { context: 'project',
         requirements: { state: 'valid' }, allSatisfied: false,
         inventory: [{ pluginId: 'team/demo' }],
         selection: { targets: [], targetOrigin: 'none' },

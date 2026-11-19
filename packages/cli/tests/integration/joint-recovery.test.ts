@@ -80,7 +80,7 @@ async function expectSavedIntent(receipt: RecoveryReceipt, location: Parameters<
 }
 
 describe('joint recovery through real Catalog and owned outputs', () => {
-  beforeEach(() => { installNativeTestQualification({ discovery: true, trust: true }); });
+  beforeEach(() => { installNativeTestQualification({ discovery: true }); });
   // Public receipts must identify the saved scope and digest, independently of output execution.
   it.each(['user', 'project'] as const)('reports the saved %s Intent after initial install, add, no-op and remove', async (scope) => {
     const value = await fixture();

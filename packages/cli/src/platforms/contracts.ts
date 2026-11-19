@@ -1,4 +1,4 @@
-import type { ComponentKind, PluginComponent, PlatformId, PlatformCapabilitiesV1, ResolvedInvocationPolicy, ExpectedComponentSet, ComponentGap } from '@lesliechan721/aw-plugin-core/manifest';
+import type { ComponentKind, PluginComponent, PlatformId, PlatformCapabilitiesV2, ResolvedInvocationPolicy, ExpectedComponentSet, ComponentGap } from '@lesliechan721/aw-plugin-core/manifest';
 import type { Diagnostic, ProductInstallation, DiscoveryResult, ReadContext } from './discovery.js';
 import type { VerifiedResourceClosure } from '../utils/component-resources.js';
 export type { PlatformId, ComponentKind, ExpectedComponentSet, ComponentGap, ResolvedInvocationPolicy } from '@lesliechan721/aw-plugin-core/manifest';
@@ -55,7 +55,7 @@ export interface AgentPluginAdapter<P> {
   discover(ctx: ReadContext): Promise<DiscoveryResult>;
   resolve(ctx: ReadContext, request: ResolveRequest): Promise<Resolution>;
   inspect(ctx: ReadContext, binding: DeploymentBinding): Promise<DeploymentObservation>;
-  capabilities(input: CapabilityInput): PlatformCapabilitiesV1;
+  capabilities(input: CapabilityInput): PlatformCapabilitiesV2;
   project(ctx: StageContext, input: ProjectionInput): Promise<ProjectionResult>;
   lifecycle: {
     prepare(input: LifecyclePrepareInput): PrepareResult<P>;
@@ -98,7 +98,7 @@ export interface CapabilityInput {
 export interface ProjectionInput {
   binding: DeploymentBinding;
   renderUnit: RenderUnit;
-  capabilities: PlatformCapabilitiesV1;
+  capabilities: PlatformCapabilitiesV2;
   components: PluginComponent[]; // 同一 binding、同一 renderScope 的完整已校验组件集合
   policy: ResolvedInvocationPolicy;
   resources: VerifiedResourceClosure;
@@ -159,7 +159,6 @@ export type Activation = 'enabled' | 'disabled' | 'blocked' | 'unknown' | 'not-a
 export interface DeploymentConfigurationObservation {
   scope: ScopeRef['kind'];
   activation: 'enabled' | 'disabled' | 'absent' | 'unknown';
-  trust?: 'trusted' | 'required' | 'blocked' | 'unknown';
   marketplace?: 'absent' | 'canonical' | 'foreign' | 'unknown';
   reasonCodes: string[];
 }
@@ -170,16 +169,23 @@ export interface DeploymentObservation {
   nativePackageContentDigest?: string;
   physicalKey: string;
   package: Presence;
+  /** The client-managed copy, for routes that verify a distinct consumption location. */
+  nativePackage?: Presence;
   registration: Presence;
   /** Independent registration in the requested scope, only when the native API reports it. */
   scopeRegistration?: Presence;
+  /** Independent Project activation when an explicit Codex activation is expected. */
+  scopeActivation?: Activation;
   ownership: 'aw' | 'foreign' | 'shared' | 'unknown' | 'absent';
   configuration?: DeploymentConfigurationObservation;
+  /** Required Cursor loader entry in the requested scope's hooks.json. */
+  workspaceOpen?: Presence;
+  /** Grok inspect.projectTrusted for this binding's selected product and scope. */
+  grokScopeAuthorization?: 'granted' | 'denied' | 'unknown';
   consumers: Array<{
     productId: string;
     activationKey: string;
     activation: Activation;
-    trust: 'trusted' | 'required' | 'blocked' | 'unknown' | 'not-applicable';
     load: 'observed' | 'not-observed' | 'unknown' | 'not-applicable';
   }>;
   components: Array<{ id: string; presence: Presence; reasonCodes: string[] }>;
@@ -251,8 +257,8 @@ export interface QualifiedPlatformProfile {
   id: string;
   platform: PlatformId;
   /** Qualification is explicit per capability; a version match alone grants none. */
-  kinds: PlatformCapabilitiesV1['kinds'];
-  features: PlatformCapabilitiesV1['features'];
+  kinds: PlatformCapabilitiesV2['kinds'];
+  features: PlatformCapabilitiesV2['features'];
   /** Exact historical evidence; runtime management uses the product's interface minimum. */
   qualifiedConsumers?: Partial<Record<ComponentKind, Array<{ product: ProductInstallation['product']; version: string }>>>;
   /** Recorded scope limits apply to both runtime and authoring kind views. */
@@ -263,7 +269,7 @@ export interface QualifiedPlatformProfile {
     minimumVersion: string;
     promptModes: Array<'host-default' | 'append' | 'replace'>;
     qualified: boolean;
-    features: PlatformCapabilitiesV1['features'];
+    features: PlatformCapabilitiesV2['features'];
   }>;
 }
 

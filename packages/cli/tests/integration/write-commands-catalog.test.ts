@@ -52,7 +52,7 @@ async function readPublicStatus(options: {
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true });
+    installNativeTestQualification({ platforms: ['codex'], discovery: true });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 
@@ -345,12 +345,14 @@ describe('five namespaced write commands', () => {
     ]);
 
     const status = await readPublicStatus({ cwd: isolation.layout.fixtureCwd, env: isolation.env, nativeCliRunner });
-    // The transport keeps source identity, but this generation deliberately changes Skill bytes.
-    expect(status, JSON.stringify(status)).toMatchObject({ exitCode: 3, payload: {
-      command: 'plugin.status', status: 'blocked', data: { allSatisfied: false,
+    // Both generations project the same instruction even though their README and transport differ.
+    expect(status, JSON.stringify(status)).toMatchObject({ exitCode: 0, payload: {
+      command: 'plugin.status', status: 'success', diagnostics: [], data: { allSatisfied: true, inSync: true,
         inventory: expect.arrayContaining([expect.objectContaining({ pluginId: 'official/demo',
           targetResults: expect.arrayContaining([expect.objectContaining({ target: 'codex', scope: 'project',
-            content: 'drifted', blockerCodes: expect.arrayContaining(['platformInputDrift']) })]),
+            content: 'satisfied', blockerCodes: [], deploymentObservations: [expect.objectContaining({
+              after: expect.objectContaining({ package: 'present', registration: 'present', ownership: 'aw', scopeActivation: 'enabled' }),
+            })] })]),
         })]),
       },
     } });
@@ -365,7 +367,7 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     })).resolves.toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.config.set', status: 'success',
+      schemaVersion: 2, command: 'plugin.config.set', status: 'success',
       data: { configWrite: 'succeeded', apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
       diagnostics: expect.any(Array), nextActions: expect.any(Array),
     });
@@ -487,7 +489,7 @@ describe('five namespaced write commands', () => {
     ]);
     expect(rejected.exitCode, rejected.stdout).toBe(3);
     expect(JSON.parse(rejected.stdout)).toMatchObject({
-      schemaVersion: 1, command: 'plugin.config.get', status: 'blocked',
+      schemaVersion: 2, command: 'plugin.config.get', status: 'blocked',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'identityMismatch' })]),
       nextActions: expect.any(Array),
     });

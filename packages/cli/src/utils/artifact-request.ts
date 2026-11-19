@@ -3,7 +3,7 @@ import {
   getPluginConfigDependencyKeys,
   type ComponentKind,
   type ManagedCommandArtifactTargetDefinition,
-  type PlatformRenderContextV1,
+  type PlatformRenderContextV2,
   type PlatformTarget,
   type PluginConfigSchemaField,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -65,13 +65,18 @@ export function resolveArtifactRequest(options: {
 
 export function resolvePlatformComponentBatches(options: {
   manifest: NormalizedPluginManifest; platform: PlatformTarget; renderScope: Scope; kinds: readonly ComponentKind[];
-}): ComponentKind[][] {
-  if (!options.manifest.artifacts || (options.manifest.platforms?.length && !options.manifest.platforms.includes(options.platform))
-    || (options.manifest.artifacts.scopes && !options.manifest.artifacts.scopes.includes(options.renderScope))) return [];
+  config: ResolvedArtifactRenderConfig;
+}): Array<Pick<PlatformRenderContextV2, 'allowedOutputKinds' | 'config'>> {
+  const { artifacts, platforms } = options.manifest;
+  if (!artifacts || (platforms?.length && !platforms.includes(options.platform))
+    || (artifacts.scopes && !artifacts.scopes.includes(options.renderScope))) return [];
   const kinds = new Set(options.kinds);
-  return [(['skill'] as ComponentKind[]).filter((kind) => kinds.has(kind)),
-    (['mcp', 'agent', 'hook', 'instruction'] as ComponentKind[]).filter((kind) => kinds.has(kind))]
-    .filter((batch) => batch.length > 0);
+  const groups: ComponentKind[][] = [['skill'], ['mcp', 'agent', 'hook', 'instruction']];
+  return groups.map((group) => group.filter((kind) => kinds.has(kind)))
+    .filter((batch) => batch.length > 0)
+    .map((allowedOutputKinds) => ({ allowedOutputKinds,
+      config: selectPlatformRenderConfig({ resolved: options.config, keys: artifacts.configKeys,
+        nonSensitive: allowedOutputKinds.includes('skill') }) }));
 }
 
 export function selectPlatformRenderConfigKeys(options: {
@@ -90,7 +95,7 @@ export function selectPlatformRenderConfigKeys(options: {
 
 export function selectPlatformRenderConfig(options: {
   resolved: ResolvedArtifactRenderConfig; keys: readonly string[]; nonSensitive: boolean;
-}): PlatformRenderContextV1['config'] {
+}): PlatformRenderContextV2['config'] {
   const keys = new Set(selectPlatformRenderConfigKeys(options));
   const select = <T>(values: Record<string, T>): Record<string, T> => Object.fromEntries(
     Object.entries(values).filter(([key]) => keys.has(key)));

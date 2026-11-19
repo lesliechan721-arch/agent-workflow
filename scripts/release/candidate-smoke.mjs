@@ -175,10 +175,11 @@ export async function checkInstalledEntrypoints(root, env) {
       : await capture(shim, args, { cwd: root, env });
     if (bin === 'aw') {
       const version = JSON.parse(result.stdout);
-      assert.equal(version.schemaVersion, 1);
+      assert.equal(version.schemaVersion, 2);
       assert.equal(version.command, 'version');
       assert.equal(version.status, 'success');
       assert.equal(version.data.version, cli.version);
+      assert.equal(version.data.resultSchemaVersion, 2);
     } else assert.match(result.stdout, /Usage: aw-skill-eval/u);
   }
   const resolved = await capture(process.execPath, ['--input-type=module', '--eval', "const resolved = []; for (const name of process.argv.slice(1)) { await import(name); resolved.push(import.meta.resolve(name)); } console.log(JSON.stringify(resolved));", ...PACKAGE_NAMES.slice(1, 3)], { cwd: cliRoot, env });

@@ -75,8 +75,8 @@ describe('Catalog Workspace development source', () => {
     const exitCode = await runCli(['dev', 'source', command, '--help', '--json'], { io: output.io });
     expect(exitCode).toBe(0);
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1, command: 'help', status: 'success',
-      data: { command: `dev.source.${command}` },
+      schemaVersion: 2, command: 'help', status: 'success',
+      data: { command: `dev.source.${command}`, resultSchema: { schemaVersion: 2 } },
     });
     expect(output.stderr()).toBe('');
   });
@@ -86,7 +86,7 @@ describe('Catalog Workspace development source', () => {
     const activated = await jsonCommand(['dev', 'source', 'activate', '--json'], workspaceRoot, env);
     expect(activated.exitCode, activated.stderr).toBe(0);
     expect(activated.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'dev.source.activate',
       nextActions: [],
@@ -103,7 +103,7 @@ describe('Catalog Workspace development source', () => {
     const status = await jsonCommand(['dev', 'source', 'status', '--json'], workspaceRoot, env);
     expect(status.exitCode, status.stderr).toBe(0);
     expect(status.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: {
         ready: true,
@@ -125,7 +125,7 @@ describe('Catalog Workspace development source', () => {
     const deactivated = await jsonCommand(['dev', 'source', 'deactivate', '--json'], workspaceRoot, env);
     expect(deactivated.exitCode, deactivated.stderr).toBe(0);
     expect(deactivated.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: {
         source: { id: activated.receipt.data.source.id, action: 'removed' },
@@ -151,7 +151,7 @@ describe('Catalog Workspace development source', () => {
     const status = await jsonCommand(['dev', 'source', 'status', '--json'], workspaceRoot, env);
     expect(status.exitCode, status.stderr).toBe(0);
     expect(status.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       diagnostics: [expect.objectContaining({ code: 'awCapabilityUnsupported', severity: 'error' })],
       data: {
@@ -175,7 +175,7 @@ describe('Catalog Workspace development source', () => {
     const absent = await jsonCommand(['dev', 'source', 'deactivate', '--json'], workspaceRoot, env);
     expect(absent.exitCode, absent.stderr).toBe(0);
     expect(absent.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: {
         source: { action: 'absent' },
@@ -188,7 +188,7 @@ describe('Catalog Workspace development source', () => {
     const invalid = await jsonCommand(['dev', 'source', 'deactivate', '--json'], workspaceRoot, env);
     expect(invalid.exitCode).toBe(1);
     expect(invalid.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       diagnostics: [{ code: 'sourceConfigInvalid' }],
       data: { impact: null, confirmation: null }
@@ -325,7 +325,7 @@ describe('Catalog Workspace development source', () => {
     const blocked = await jsonCommand(['dev', 'source', 'activate', '--json'], workspaceRoot, env);
     expect(blocked.exitCode).toBe(4);
     expect(blocked.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'partial',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
       data: { snapshot: { action: 'built' }, source: { action: 'reused' }, active: { ready: false },
@@ -342,7 +342,7 @@ describe('Catalog Workspace development source', () => {
     ], workspaceRoot, env);
     expect(confirmed.exitCode, confirmed.stderr).toBe(0);
     expect(confirmed.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: { active: { ready: true }, confirmation: { required: true, provided: true, effects: blocked.receipt.data.confirmation.effects } }
     });
@@ -399,7 +399,7 @@ describe('Catalog Workspace development source', () => {
     const blocked = await jsonCommand(['dev', 'source', 'deactivate', '--json'], workspaceRoot, env);
     expect(blocked.exitCode).toBe(3);
     expect(blocked.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'blocked',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
       data: {
@@ -425,7 +425,7 @@ describe('Catalog Workspace development source', () => {
     ], workspaceRoot, env);
     expect(confirmed.exitCode, confirmed.stderr).toBe(0);
     expect(confirmed.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: { impact: blocked.receipt.data.impact,
         confirmation: { required: true, provided: true, effects: blocked.receipt.data.confirmation.effects },
@@ -449,7 +449,7 @@ describe('Catalog Workspace development source', () => {
     expect(blocked.exitCode).toBe(3);
     expect((await readCatalogSourcesConfigSnapshot(env))).toEqual(before);
     expect(blocked.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         source: { id: sourceId, action: 'retained', previousPrimary: true },
         replacementPrimarySourceId: 'official',
@@ -469,7 +469,7 @@ describe('Catalog Workspace development source', () => {
     ], workspaceRoot, env);
     expect(confirmed.exitCode, confirmed.stderr).toBe(0);
     expect(confirmed.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       data: {
         source: { id: sourceId, action: 'removed', previousPrimary: true },
@@ -594,7 +594,7 @@ describe('Catalog Workspace development source', () => {
 
     expect(blocked.exitCode).toBe(3);
     expect(blocked.receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: [{ code: 'confirmationRequired' }],
       data: {
         source: { id: sourceId, action: 'retained' },

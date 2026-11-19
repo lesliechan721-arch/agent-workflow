@@ -54,7 +54,7 @@ describe('plugin work context CLI', () => {
     const before = await fileTree(options.env.AW_HOME!);
     const result = await jsonCommand(args, options);
     expect(result.exitCode).toBe(2);
-    expect(result.value).toMatchObject({ schemaVersion: 1, status: 'failed', data: {}, diagnostics: [expect.objectContaining({ severity: 'error' })] });
+    expect(result.value).toMatchObject({ schemaVersion: 2, status: 'failed', data: {}, diagnostics: [expect.objectContaining({ severity: 'error' })] });
     expect(await fileTree(options.env.AW_HOME!)).toEqual(before);
     expect(await fs.readdir(options.cwd)).toEqual([]);
   });

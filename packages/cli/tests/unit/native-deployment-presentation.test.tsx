@@ -45,8 +45,8 @@ function target(plan: FrozenDeploymentPlan): RecoveryTarget {
   const completed: DeploymentReceipt = { bindingId: plan.binding.id, effects: [{ id: 'publish', status: 'applied', mutation: 'confirmed', diagnostics: [] },
     { id: 'activate-app', status: 'unknown', mutation: 'possible', diagnostics: [] }],
     after: { diagnostics: [], physicalKey: 'physical', package: 'present', registration: 'present', ownership: 'aw', components: [{ id: 'lookup', presence: 'present', reasonCodes: [] }],
-      consumers: [{ productId: 'cli', activationKey: 'cli-activation', activation: 'enabled', trust: 'trusted', load: 'observed' },
-        { productId: 'app', activationKey: 'app-activation', activation: 'unknown', trust: 'unknown', load: 'not-observed' }], nativeIdentity: null,
+      consumers: [{ productId: 'cli', activationKey: 'cli-activation', activation: 'enabled', load: 'observed' },
+        { productId: 'app', activationKey: 'app-activation', activation: 'unknown', load: 'not-observed' }], nativeIdentity: null,
       prerequisites: { agentConsumers: { observation: 'unknown', candidates: [], reasonCodes: ['private-internal-evidence'] },
         nativeSources: { observation: 'complete', configurationEvidence: 'config-digest', overlaps: ['same-name'],
           sources: [{ name: 'same-name', version: '1.0.0', path: '/private/aw-confidential/native-source', scope: 'user',
@@ -77,7 +77,7 @@ describe('native deployment public and TUI consumers', () => {
     const observed = { bindingId: completed.bindingId, products: completed.products, after: completed.after };
     const lines = deploymentObservationLines([observed]).join('\n');
     expect(lines).toContain('启用 已启用');
-    expect(lines).toContain('原生独立 scope 登记：缺失');
+    expect(lines).toContain('当前范围独立登记：缺失');
     expect(lines).toContain('显式停用（不代表原生有效状态）');
   });
   // Test Value Gate: cleanup must expose actual recovery locations without borrowing another target's paths or claiming restoration.

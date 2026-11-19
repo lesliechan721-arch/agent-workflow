@@ -23,7 +23,7 @@ it('runs one public write command from argv in an isolated process', async (test
       throw new Error(`Network access is disabled in the CLI child: ${String(input)}`);
     };
     // This isolated child is a test process. Parent spies do not cross this boundary.
-    installNativeTestQualification({ platforms: ['codex'], trust: true });
+    installNativeTestQualification({ platforms: ['codex'] });
     setCodexDiscoveryOverridesForTests({ macApplicationsDirectories: [] });
     const appQuery = isolateCodexAppDiscoveryQueries();
     // Test Value Gate: the public adapter must keep OS App inventory isolated

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { Scope, CatalogManifestV7Entry } from '../types.js';
-import { commandResult, type CommandResult, type Diagnostic } from '../output/public-result.js';
-import { inventoryRecoveryActions, publicDiagnostic, projectTarget } from './public-lifecycle-result.js';
+import { commandResult, type CommandResult, type NextAction } from '../output/public-result.js';
+import { inventoryRecoveryActions, publicDiagnostic, projectDeploymentObservation, projectTarget } from './public-lifecycle-result.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
 import { observeIntent } from '../intent/intent-store.js';
 import { observePreferences, normalizeAgents } from '../intent/deployment-preferences.js';
@@ -93,8 +93,6 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
   let filters: string[] | undefined;
   try { if (options.targets ?? options.target) filters = normalizeAgents((options.targets ?? options.target)!); for (const plugin of plugins) parsePluginId(plugin); }
   catch { return invalid(command, 'target', 'Invalid plugin selector or target.'); }
-  const observationDiagnostics: Diagnostic[] = options.observeNative ? [{ code: 'nativeObservationSideEffects', severity: 'warning',
-    message: 'Native observation can start Codex app-server or a private local OpenCode server. It can load installed plugin code, create logs, state, and cache, read existing authentication, and access configured services.' }] : [];
   const context = createCommandExecutionContext({ ...input, env: options.env ?? input.env, interactive: false });
   try {
     const work = await resolveWorkContext({ cwd: options.cwd, context: options.context as Scope | undefined });
@@ -108,20 +106,37 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
     ]);
     const selectedPlugin = (pluginId: string) => !plugins.length || plugins.some((selector) => selector === pluginId || !selector.includes('/') && parsePluginId(pluginId).pluginName === selector);
     const selectedTarget = (target: string | null) => !filters || target !== null && filters.includes(target);
+    const extraObserved = status.extraObserved.filter((target) => selectedPlugin(target.pluginId) && selectedTarget(target.agent));
     const inventory = status.inventory?.filter((entry) => selectedPlugin(entry.pluginId)).map((entry) => ({ pluginId: entry.pluginId, sourceId: entry.source, sourceState: entry.sourceState,
       blockerCodes: entry.blockers.map((blocker) => blocker.code), targetResults: entry.targetResults.filter((target) => selectedTarget(target.agent)).map(projectTarget) })) ?? null;
-    const diagnostics = [...observationDiagnostics, ...status.errors.map((error) => publicDiagnostic(error))];
+    const diagnostics = status.errors.map((error) => publicDiagnostic(error));
+    const syncActions = new Map<string, NextAction>();
     for (const entry of status.inventory ?? []) if (selectedPlugin(entry.pluginId)) {
       diagnostics.push(...entry.blockers.map((error) => publicDiagnostic(error, { pluginId: entry.pluginId })));
       for (const target of entry.targetResults.filter((target) => selectedTarget(target.agent))) {
         const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
-        diagnostics.push(...target.blockers.map((error) => publicDiagnostic(error, subject,
+        diagnostics.push(...target.blockers.map((error) => publicDiagnostic(error, error.subject ?? subject,
           error.code === 'needs-preparation' && ['absent', 'drifted'].includes(target.content ?? '') ? 'warning' : 'error')));
-        diagnostics.push(...(target.reasons ?? []).map((reason) => publicDiagnostic(reason, subject, 'warning')));
-        if (target.agent === 'codex' && target.content === 'unknown' && target.deploymentObservations?.some((deployment) =>
-          deployment.after.consumers.some((consumer) => consumer.trust === 'unknown'))) {
-          diagnostics.push(publicDiagnostic('nativeTrustUnconfirmed', subject, 'warning'));
+        for (const reason of target.reasons ?? []) {
+          const diagnostic = publicDiagnostic(reason, reason.subject ?? subject, 'warning');
+          diagnostics.push(diagnostic);
+          const { pluginId, scope, target: platform } = diagnostic.subject ?? {};
+          if (pluginId && scope && platform && ['platformInputDrift', 'platformContentDrift', 'nativePackageContentDrift',
+            'cursorWorkspaceOpenMissing', 'nativeActivationDisabled', 'platformPackageMissing', 'nativeRegistrationMissing',
+            'nativePackageMissing', 'componentOutputMissing'].includes(reason.code)) {
+            const key = JSON.stringify([pluginId, scope, platform]);
+            if (!syncActions.has(key)) syncActions.set(key, { kind: 'command',
+              argv: ['aw', 'plugin', 'sync', pluginId, '--context', scope, '--target', platform],
+              reason: diagnostic.message, requiresConfirmation: true });
+          }
         }
+      }
+    }
+    for (const target of extraObserved.filter((entry) => entry.agent === 'opencode')) {
+      for (const observation of target.deploymentObservations ?? []) {
+        diagnostics.push(...observation.after.diagnostics.filter((entry) =>
+          entry.code.startsWith('opencode') || entry.code === 'nativeObservationSideEffects')
+          .map((entry) => publicDiagnostic(entry, entry.subject, entry.severity)));
       }
     }
     const targets = inventory?.flatMap((entry) => entry.targetResults) ?? [];
@@ -135,23 +150,24 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
       || targets.some((target) => target.content === 'conflict' || hasSafetyBlocker(target));
     const validPartialResults = targets.some((target) => !hasSafetyBlocker(target)
       && target.content !== 'unknown' && target.content !== 'conflict')
-      || status.extraObserved.some((target) => selectedPlugin(target.pluginId) && selectedTarget(target.agent)
-        && target.observation !== 'unknown' && target.content !== 'conflict');
+      || extraObserved.some((target) => target.observation !== 'unknown' && target.content !== 'conflict');
     return commandResult(command, { context: work.context, requirements: { state: status.intent.state, declarations },
       targetPolicy: { state: preferences.state, targets: preferences.state === 'valid' ? preferences.value.targets : preferences.state === 'absent' ? [] : null,
         exclusions: preferences.state === 'valid' ? preferences.value.exclusions.map(({ plugin, target }) => ({ pluginId: plugin, target })) : preferences.state === 'absent' ? [] : null },
       selection: { plugins, targets: filters ?? status.selection.agents, targetOrigin: filters ? 'argument' : status.selection.origin }, inventory,
-      extraObserved: status.extraObserved.filter((entry) => selectedPlugin(entry.pluginId) && selectedTarget(entry.agent)).map(({ pluginId, agent, scope, delivery, observation, content }) => ({ pluginId, target: agent, scope, delivery, observation, content: content ?? 'unknown' })),
+      extraObserved: extraObserved.map(({ pluginId, agent, scope, delivery, observation, content, deploymentObservations }) => ({
+        pluginId, target: agent, scope, delivery, observation, content: content ?? 'unknown',
+        ...(deploymentObservations?.length ? { deploymentObservations: deploymentObservations.map(projectDeploymentObservation) } : {}),
+      })),
       coverage: { scopes: work.scopes, currentProject: work.context === 'project', otherProjects: 'unobserved', native: status.coverage.native, portable: status.coverage.portable,
         ...(status.coverage.requestComplete !== undefined ? { requestComplete: status.coverage.requestComplete } : {}) },
       counts: { blocked: targets.filter((target) => target.blockerCodes.length).length, pending: targets.filter((target) => target.satisfaction === 'pending').length,
         unconfirmed: targets.filter((target) => target.content === 'unknown').length, ready: targets.filter((target) => target.content === 'satisfied').length },
       allSatisfied: status.allSatisfied, inSync: status.inSync },
     { status: configurationBlocked ? 'blocked' : incomplete || hasBlockers ? validPartialResults ? 'partial' : 'blocked' : 'success',
-      diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()], nextActions: inventoryRecoveryActions(diagnostics) });
+      diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()],
+      nextActions: [...inventoryRecoveryActions(diagnostics), ...syncActions.values()] });
   } catch (error) {
-    const result = queryFailure(command, failureCode(error, 'statusUnavailable'));
-    result.diagnostics.unshift(...observationDiagnostics);
-    return result;
+    return queryFailure(command, failureCode(error, 'statusUnavailable'));
   }
 }

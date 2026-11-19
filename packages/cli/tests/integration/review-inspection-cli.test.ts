@@ -85,7 +85,7 @@ describe('review inspect CLI entry', () => {
 
     expect(code).toBe(0)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'dev.review.inspect',
       diagnostics: expect.arrayContaining([
@@ -161,7 +161,7 @@ describe('review inspect CLI entry', () => {
         'dev', 'review', 'inspect', root, ...viewArgs, '--json',
       ], { cwd: root, io: output.io })).toBe(2)
       expect(JSON.parse(output.stdout())).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'failed',
         command: 'dev.review.inspect',
         diagnostics: [{ code: 'invalidOptionValue', subject: { field: 'view' } }],
@@ -187,7 +187,7 @@ describe('review inspect CLI entry', () => {
 
     expect(code).toBe(2)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'dev.review.inspect',
       diagnostics: [{ code: 'invalidArguments' }],
@@ -243,7 +243,7 @@ describe('review inspect CLI entry', () => {
 
     expect(code).toBe(1)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'dev.review.inspect',
       diagnostics: [{ code: 'sourceBindingInvalid' }],
@@ -342,7 +342,7 @@ console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));\n`,
     expect(await runCli(args, { cwd: root, io: ambientOutput.io })).toBe(0)
     const ambientReceipt = JSON.parse(ambientOutput.stdout())
     expect(ambientReceipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'materializationNotSelected' }),
       ]),
@@ -370,7 +370,7 @@ console.log(JSON.stringify({version:3,components:[],omitted:[],unmet:[]}));\n`,
       ...args.slice(0, -1), '--config', configFile, '--json',
     ], { cwd: root, io: explicitConfigOutput.io })).toBe(0)
     expect(JSON.parse(explicitConfigOutput.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         view: 'review',
         skills: [{ state: 'ready', evidencePath: written.bindingPath }]

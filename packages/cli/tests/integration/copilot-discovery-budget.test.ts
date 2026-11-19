@@ -55,9 +55,12 @@ describe('public Copilot discovery budget', () => {
       if (args.join(' ') === '--version') stdout = 'GitHub Copilot CLI 1.0.95';
       else if (args.join(' ') === 'plugin marketplace list --json') stdout = JSON.stringify(marketplaceRoot
         ? [{ name: marketplaceName, source: marketplaceRoot }] : []);
-      else if (args.join(' ') === 'plugin list --json') stdout = JSON.stringify(installed
-        ? [{ name: 'demo', marketplace: marketplaceName, source: marketplaceRoot }] : []);
-      else if (args.slice(0, 3).join(' ') === 'plugin marketplace add') {
+      else if (args.join(' ') === 'plugin list --json') {
+        const settingsPath = path.join(invocation.cwd, '.github/copilot/settings.local.json');
+        const settings = await fs.pathExists(settingsPath) ? await fs.readJson(settingsPath) : {};
+        stdout = JSON.stringify(installed ? [{ name: 'demo', marketplace: marketplaceName, source: marketplaceRoot,
+          enabled: settings.enabledPlugins?.[`demo@${marketplaceName}`] === true }] : []);
+      } else if (args.slice(0, 3).join(' ') === 'plugin marketplace add') {
         marketplaceRoot = args[3]!;
         marketplaceName = (await fs.readJson(path.join(marketplaceRoot, '.github/plugin/marketplace.json'))).name;
       } else if (args.slice(0, 2).join(' ') === 'plugin install') {

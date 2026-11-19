@@ -94,7 +94,7 @@ describe('current recovery dependency contributions', () => {
 
   // Test Value Gate: the real installed Native observer must feed actual dependency placement and must withdraw a verified edge after local output disappears.
   it('refreshes genuine installed dependency positions and removes stale verified relations', async () => {
-    installNativeTestQualification({ discovery: true, trust: true });
+    installNativeTestQualification({ discovery: true });
     const isolation = getCurrentSourceTestIsolation();
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     const source = path.join(isolation.layout.fixtureCwd, 'native-dependency-source');

@@ -10,10 +10,10 @@ const defaults = Object.fromEntries(Object.entries(manifest.config.fields)
 // A deterministic author profile for script tests, not client qualification.
 export function context(values = {}, platform = 'codex', kinds = ['skill', 'agent']) {
   const scope = 'user';
-  return { schemaVersion: 1, surface: 'agent-plugin', platform, scope,
+  return { schemaVersion: 2, surface: 'agent-plugin', platform, scope,
     allowedOutputKinds: kinds, changedConfigKeys: [], previousComponents: [],
     config: { values: { ...structuredClone(defaults), ...values } },
-    platformCapabilities: { schemaVersion: 1, platform, scope, basis: 'profile', profileId: 'script-test', consumers: [],
+    platformCapabilities: { schemaVersion: 2, platform, scope, basis: 'profile',
       kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
         { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])),
       features: { 'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },

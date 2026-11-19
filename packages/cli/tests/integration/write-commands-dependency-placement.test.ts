@@ -142,7 +142,7 @@ async function createIntentRoundTripFixture(nativeProviders = false) {
 describe('five namespaced write commands', () => {
   let defaultNativeRuntime: Awaited<ReturnType<typeof createCodexNativeTestRuntime>>;
   beforeEach(async () => {
-    installNativeTestQualification({ discovery: true, trust: true });
+    installNativeTestQualification({ discovery: true });
     defaultNativeRuntime = await createCodexNativeTestRuntime(getCurrentSourceTestIsolation());
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
@@ -697,6 +697,9 @@ describe('five namespaced write commands', () => {
     expect(installedReceipt.targetResults, JSON.stringify(installedReceipt)).toContainEqual(expect.objectContaining({
       pluginId: 'official/agent-content-toolkit', scope: 'project', providerScope: 'user',
       content: 'satisfied', blockers: [],
+      deploymentReceipts: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
+        scopeActivation: 'unknown', consumers: expect.arrayContaining([expect.objectContaining({ activation: 'enabled' })]),
+      }) })]),
     }));
     await expect(readFixtureRequirements({
       scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
@@ -1200,7 +1203,7 @@ describe('five namespaced write commands', () => {
     expect(syncResults).toHaveLength(1);
     const syncReceipt = syncResults[0];
     expect(syncReceipt).toMatchObject({
-      schemaVersion: 1, command: 'plugin.sync', status: 'success',
+      schemaVersion: 2, command: 'plugin.sync', status: 'success',
       data: {
         targetResults: expect.arrayContaining([
           expect.objectContaining({ pluginId: 'team/b', target: 'codex', scope: 'user', execution: 'applied', content: 'satisfied', blockerCodes: [] }),
@@ -1593,19 +1596,21 @@ describe('five namespaced write commands', () => {
     expect(unreadable.allSatisfied, JSON.stringify(unreadable)).not.toBe(true);
     expect(unreadableLeaf).toMatchObject({ pluginId: 'team/leaf', agent: 'codex', scope: 'project',
       observation: 'unknown', content: 'unknown',
-      blockers: expect.arrayContaining([expect.objectContaining({ code: 'componentOutputUnconfirmed' })]),
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'stateInventoryFailed',
+        detail: expect.objectContaining({ reasonCode: 'ownerHeaderRead' }) })]),
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'componentOutputUnconfirmed' })]),
     });
     await fs.remove(leafAgent);
     const missing = await status();
     const missingLeaf = missing.observedTargets?.find((target) => target.pluginId === 'team/leaf');
-    expect(missingLeaf).toMatchObject({ content: 'drifted', observation: 'unknown',
-      blockers: expect.arrayContaining([expect.objectContaining({ code: 'platformContentDrift' })]),
+    expect(missingLeaf).toMatchObject({ content: 'absent', observation: 'missing', blockers: [],
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'componentOutputMissing' })]),
     });
     expect(missingLeaf?.deploymentObservations?.flatMap((entry) => entry.after.components))
       .toContainEqual(expect.objectContaining({ id: 'agent:leaf-role', presence: 'absent', reasonCodes: ['componentOutputMissing'] }));
     const missingConsumer = missing.inventory?.find((entry) => entry.pluginId === 'team/root')?.targetResults[0];
-    expect(missingConsumer).toMatchObject({ pluginId: 'team/root', scope: 'project', content: 'drifted', observation: 'unknown' });
-    expect(missingConsumer?.backend).toContainEqual(expect.objectContaining({ pluginId: 'team/leaf', scope: 'project', content: 'drifted' }));
+    expect(missingConsumer).toMatchObject({ pluginId: 'team/root', scope: 'project', content: 'absent', observation: 'missing' });
+    expect(missingConsumer?.backend).toContainEqual(expect.objectContaining({ pluginId: 'team/leaf', scope: 'project', content: 'absent' }));
     const createController = () => new TuiController(createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1788,9 +1793,10 @@ describe('five namespaced write commands', () => {
     const after = await status();
     expect(after.observedTargets?.find((target) => target.pluginId === 'team/leaf')).toBeUndefined();
     const currentRoot = after.inventory?.find((entry) => entry.pluginId === 'team/root')?.targetResults[0];
-    expect(currentRoot).toMatchObject({ pluginId: 'team/root', content: 'drifted', observation: 'unknown',
-      blockers: [expect.objectContaining({ code: 'platformInputDrift' })] });
-    expect(after.allSatisfied).toBe(false);
+    expect(currentRoot).toMatchObject({ pluginId: 'team/root', content: 'satisfied', observation: 'verified', blockers: [] });
+    expect(after.allSatisfied).toBe(true);
+    expect(after.extraObserved).toContainEqual(expect.objectContaining({ pluginId: 'team/leaf', scope: 'project' }));
+    expect(after.inSync).toBe(false);
     expect(currentRoot?.backend).not.toContainEqual(expect.objectContaining({ pluginId: 'team/leaf' }));
     expect(currentRoot?.blockers).not.toContainEqual(expect.objectContaining({ code: 'dependencyMissing' }));
     await expect(snapshotRegularTree(nativeRoot)).resolves.toEqual(nativeBefore);

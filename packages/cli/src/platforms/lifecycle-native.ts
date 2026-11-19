@@ -74,7 +74,6 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
   prepared: PreparedDeployment<PlatformDriverState>, effect: PlannedEffect): Promise<MutationOutcome> {
   const { binding, evidence } = prepared.plan;
   const { identity, product, before } = prepared.driverState;
-  const beforeConsumer = selectedNativeConsumer(binding, before);
   if (!identity) blocked('nativeIdentityUnconfirmed');
   if (!product && !(effect.kind === 'deactivate' && binding.route === 'codex-marketplace')) blocked('clientInstallEntryUnavailable');
   const scope = binding.scope.kind === 'user' ? 'user' : 'local';
@@ -105,7 +104,7 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       return ctx.services.setActivation(binding, identity, enabled);
     }
     if (binding.route === 'pi-package') return { mutation: 'none', changed: false };
-    if (enabled && (beforeConsumer?.trust === 'required' || beforeConsumer?.trust === 'blocked')) {
+    if (enabled && binding.route === 'grok-cli' && before.grokScopeAuthorization === 'denied') {
       blocked('nativeTrustRequired');
     }
     if (binding.route === 'gemini-extension') {
@@ -244,10 +243,11 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
       // Only an existing exact, exclusive native registration can be refreshed
       // with --trust. First install and recovery require explicit host consent.
       if (effect.kind === 'register') blocked('nativeTrustRequired');
-      if (effect.kind !== 'unregister' && beforeConsumer?.trust !== 'trusted') blocked('nativeTrustRequired');
+      if (effect.kind !== 'unregister' && before.grokScopeAuthorization !== 'granted') blocked('nativeTrustRequired');
       if (effect.kind === 'unregister' || effect.kind === 'refresh') {
         const current = await (ctx.inspect ? ctx.inspect(binding) : inspectDeployment(ctx, binding));
         if (!grokRegistrationOwned(binding, evidence, current, identity)) blocked('nativeIdentityUnconfirmed');
+        if (effect.kind === 'refresh' && current.grokScopeAuthorization !== 'granted') blocked('nativeTrustRequired');
         await run(['plugin', 'uninstall', identity.packageId, '--confirm', ...(effect.kind === 'refresh' ? ['--keep-data'] : [])]);
       }
       // Local update can leave an old copy while claiming it is a live symlink.

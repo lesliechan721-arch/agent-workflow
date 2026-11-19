@@ -2,11 +2,11 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'fs-extra';
 import { afterEach, expect, it } from 'vitest';
-import { isAuthorOnlySkillCollection, normalizeStaticPluginComponents, validateSourcePluginManifest, COMPONENT_KINDS, type PlatformCapabilitiesV1 } from '../../src/manifest.js';
+import { isAuthorOnlySkillCollection, normalizeStaticPluginComponents, validateSourcePluginManifest, COMPONENT_KINDS, type PlatformCapabilitiesV2 } from '../../src/manifest.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.remove(root))); });
 const raw = { schemaVersion: 4, name: 'example', version: '1.0.0', description: 'Example', marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } } };
-const profile: PlatformCapabilitiesV1 = { schemaVersion: 1, platform: 'codex', scope: 'user', basis: 'profile', profileId: 'test', consumers: [], kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV1['kinds'], features: {} };
+const profile: PlatformCapabilitiesV2 = { schemaVersion: 2, platform: 'codex', scope: 'user', basis: 'profile', kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'], features: {} };
 async function root(): Promise<string> { const value = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-author-only-')); roots.push(value); return value; }
 it('accepts Eval-only Skill source trees without declaring or publishing static components', async () => {
   const directory = await root();

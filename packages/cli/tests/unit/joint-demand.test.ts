@@ -34,7 +34,7 @@ describe('joint requirements', () => {
     const result = await readRecoveryStatus({ cwd: layout.fixtureCwd, env, plugins: ['local/d'], targets: ['cursor'],
       nativeObservations: ['a', 'd', 'e'].map((name) => ({ pluginId: `local/${name}`, platform: 'cursor',
         content: name === 'e' && state === 'unknown' ? 'unknown' : 'satisfied',
-        blockers: name === 'e' && state === 'blocked' ? [{ code: 'nativeTrustUnconfirmed', message: 'Trust unknown.' }] : [] })) }, input);
+        blockers: name === 'e' && state === 'blocked' ? [{ code: 'nativeActivationUnconfirmed', message: 'Activation unknown.' }] : [] })) }, input);
     expect(result.inventory?.map((entry) => entry.pluginId)).toEqual(['local/d']);
     expect(result.inventory![0]!.targetResults[0]!.content).toBe('satisfied');
     expect(result.coverage.requestComplete).toBe(false);
@@ -203,7 +203,7 @@ describe('operation-local shared reference coverage', () => {
     const after: DeploymentObservation = { physicalKey: 'shared-codex-package', package: 'present', registration: 'present',
       configuration: { scope: 'project', activation: 'enabled', reasonCodes: [] },
       ownership: 'aw', consumers: [{ productId: 'codex-cli', activationKey: 'project-activation', activation: 'enabled',
-        trust: 'trusted', load: 'not-observed' }], components: [], nativeIdentity: null,
+        load: 'not-observed' }], components: [], nativeIdentity: null,
       prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
     const current: RecoveryStatus = { schemaVersion: 1, kind: 'aw-recovery-status', scope: 'project', ok: true,
       intent: { state: 'valid' }, selection: { agents: ['codex'], origin: 'preference', preferences: 'valid' },

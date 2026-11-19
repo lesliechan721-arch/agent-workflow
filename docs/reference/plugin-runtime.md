@@ -136,13 +136,13 @@ allowedOutputKinds 是单元可交付类别与批次类别的交集。交集为�
 
 sourceDirs 是 bundle 内已验证相对目录；runtimeImports 使用既有具名 runtime export 与依赖来源合同。引用须经 realpath 和内容闭包校验；绝对路径、..、逃逸 symlink、未知 import 或闭包外文件均拒绝。资源入口不是输出位置。脚本使用隔离 HOME/USERPROFILE/AW_HOME/XDG 与受控进程收尾；这是输入隔离，不是 OS 沙箱。
 
-### 3.2 PlatformRenderContext v1
+### 3.2 PlatformRenderContext v2
 
 AW_PLUGIN_CONTEXT 指向本次隔离 JSON 文件的绝对路径：
 
 ~~~ts
-interface PlatformRenderContextV1 {
-  schemaVersion: 1;
+interface PlatformRenderContextV2 {
+  schemaVersion: 2;
   surface: 'agent-plugin';
   platform: PlatformId;
   scope: 'user' | 'project';
@@ -155,7 +155,7 @@ interface PlatformRenderContextV1 {
   };
   changedConfigKeys: string[];
   allowedOutputKinds: ComponentKind[];
-  platformCapabilities: PlatformCapabilitiesV1;
+  platformCapabilities: PlatformCapabilitiesV2;
   resources: Array<{ kind: 'bundle' | 'runtime-import'; name: string;
     root: string; digest: string }>;
   previousComponents: Array<{ id: string; kind: ComponentKind; name: string }>;
@@ -164,27 +164,18 @@ interface PlatformRenderContextV1 {
 
 缺值保留 missing，不填 null。previousComponents 仅含同类别批次的已验证身份，不含正文、配置或宿主路径，也不授予删除权。renderer 不能改变 platform、scope、支持结论或输出宿主位置。
 
+AW 从 artifacts 声明派生 `aw.platform-render-context.v2` 能力要求。Core 包公开 `schemas/platform-render-context-v2.json` 和 `schemas/platform-capabilities-v2.json`。
+
 ### 3.3 平台能力与具体要求
 
 ~~~ts
 type Support = 'supported' | 'unsupported' | 'unverified';
 interface CapabilityFact { status: Support; reasonCodes: string[] }
-interface PlatformCapabilitiesV1 {
-  schemaVersion: 1;
+interface PlatformCapabilitiesV2 {
+  schemaVersion: 2;
   platform: PlatformId;
   scope: 'user' | 'project';
   basis: 'local' | 'profile';
-  profileId: string;
-  consumers: Array<{ id: string; product: 'cli' | 'app' | 'generic';
-    version: string | null;
-    agentConsumers?: Array<{ id: string; version: string | null;
-      enabled: 'yes' | 'no' | 'unknown';
-      packageAccess: 'allowed' | 'denied' | 'unknown';
-      scope?: 'user' | 'project';
-      trust?: 'trusted' | 'required' | 'blocked' | 'unknown';
-      settings?: { promptMode: 'host-default' | 'append' | 'replace' | 'unknown';
-        loadExtensions: 'yes' | 'no' | 'host-default' | 'unknown' };
-      configurationEvidence?: string }> }>;
   kinds: Record<ComponentKind, CapabilityFact & {
     delivery: Array<'native-package' | 'native-extension' |
       'managed-host-resource' | 'generic-files'> }>;
@@ -192,7 +183,7 @@ interface PlatformCapabilitiesV1 {
 }
 ~~~
 
-profile 固定版本、OS、安装接口与能力映射；basis=profile 的作者准备不证明本机安装。共享包使用全部实际消费者共同支持的值，单个消费者的限制仍分别显示。Pi inspect 的消费者身份、版本、scope、启用、trust、允许条件与相关配置进入能力及 stale 依据；无消费者只影响 Agents，不推定 Pi 未安装。
+AW 将交付方式、原因码和 feature 取值去重并排序。profile 用于作者准备，local 根据实际产品和 scope 判定能力。共享包按实际交付能力准备。客户端入口、精确版本、profile 标识以及 Pi 消费者的配置和授权证据留在现场检查。renderer 通过 kinds 和 features 得到 Pi Agents 消费者的启用、信任、访问限制和提示词模式所产生的能力结论。
 
 feature registry 定义 ID、合法取值与默认 unsupported。至少覆盖：
 
@@ -276,6 +267,8 @@ Grok 包投影从同一 binding、同一 render scope 的完整集合组合 Agen
 | 渲染失败 | 没有有效集合，不执行集合差异写入或清理，其他独立平台继续 |
 
 Review 冻结实际组件、资源字节、输出位置、删除候选、能力及输入证据。Execute 在唯一写锁内重查来源、配置、能力、入口和现场归属，变化返回 stale，重新准备和确认，不在确认后生成另一集合。status/list/inspect 不运行 renderer；有匹配的可重建物化证据时才显示当前配置不产生组件，否则显示动态期望待确认。物化证据和 previousComponents 均不授予删除权。
+
+安装记录按实际生成范围保存输入摘要。动态生成使用同一份 v2 能力视图、该批声明的配置、生成器和资源。静态投影跟踪实际组件、使用的能力和资源。客户端入口、发现顺序和探测详情仍可在现场检查中变化。它们造成的实际能力变化才进入持久摘要。
 
 ---
 

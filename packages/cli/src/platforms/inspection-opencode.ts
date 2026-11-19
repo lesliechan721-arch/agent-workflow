@@ -49,12 +49,11 @@ export async function inspectOpenCodeDeployment(ctx: ReadContext, binding: Deplo
   result.registration = 'not-applicable';
   for (const consumer of result.consumers) {
     consumer.activation = 'unknown';
-    consumer.trust = 'unknown';
     consumer.load = 'unknown';
   }
   if (!ctx.observeNative) {
     if (result.package === 'present') diagnostic(result, binding, 'opencodeNativeObservationRequired',
-      'OpenCode activation and loading require explicit native observation. This can start a private local service.');
+      'OpenCode runtime loading can be checked with --observe-native.');
     return;
   }
   const products = binding.consumers.filter((product) => product.product === 'cli' && product.entry?.kind === 'cli'
@@ -69,6 +68,8 @@ export async function inspectOpenCodeDeployment(ctx: ReadContext, binding: Deplo
   for (const product of products) {
     try {
       let cwd = '';
+      diagnostic(result, binding, 'nativeObservationSideEffects',
+        'This OpenCode observation starts a private local service. The client can load installed plugin code, read existing authentication, access configured services, and write logs, state, or cache.');
       const stdout = await queryNativeDeployment({ ...ctx, env }, { ...binding, consumers: [product] }, (queryCwd) => {
         cwd = queryCwd;
         const query = new URLSearchParams({ 'location[directory]': queryCwd });

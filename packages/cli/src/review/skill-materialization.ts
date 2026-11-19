@@ -7,12 +7,13 @@ import {
   normalizeStaticPluginComponents,
   resolveInvocationPolicy,
   type ComponentKind,
-  type PlatformCapabilitiesV1,
+  type PlatformCapabilitiesV2,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../generators/local-plugin.js';
 import type { PlatformTarget, PluginMeta, Scope } from '../types.js';
 import { resolveDeployments } from '../platforms/layout.js';
+import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { projectPlatform } from '../platforms/projection.js';
 import { artifactValueDigest } from '../utils/artifact-plan.js';
 import { preparePlatformComponents, resolveArtifactRenderConfig, type ResolvedArtifactRenderConfig } from '../utils/artifact-renderer.js';
@@ -137,7 +138,7 @@ export async function materializeProfilePluginComponents(options: {
   for (const unit of resolution.renderUnits) {
     const kinds = unit.kinds.filter((kind) => (options.kinds ?? COMPONENT_KINDS).includes(kind));
     if (!kinds.length) continue;
-    const capabilities: PlatformCapabilitiesV1 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind);
+    const capabilities: PlatformCapabilitiesV2 = getAuthoringPlatformCapabilities(options.platform, unit.renderScope.kind);
     const config = options.config ? { ...options.config, targetScope: unit.renderScope.kind } : await resolveArtifactRenderConfig({
       pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest,
       referencePlugins: options.plugins, sourceId: options.plugin.sourceId,
@@ -188,7 +189,7 @@ export async function materializeProfilePluginComponents(options: {
           dynamic: current.expected.sources[component.id] === 'dynamic' });
       }
       preparation.push({
-        plugin: options.plugin.manifest.name, platform: options.platform, renderScope: unit.renderScope.kind, profileId: capabilities.profileId,
+        plugin: options.plugin.manifest.name, platform: options.platform, renderScope: unit.renderScope.kind, profileId: getQualifiedPlatformProfile(options.platform).id,
         capabilitiesDigest: current.evidence.capabilitiesDigest,
         expectedDigest: artifactValueDigest(current.expected),
         resourceDigest: current.evidence.resourceDigest,

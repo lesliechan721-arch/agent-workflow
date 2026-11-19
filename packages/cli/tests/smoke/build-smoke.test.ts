@@ -213,7 +213,7 @@ describe('build smoke', () => {
         tempRepo,
       ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(development.stdout)).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'dev.plugin.status',
       status: 'success',
       data: {
@@ -241,7 +241,7 @@ describe('build smoke', () => {
       tempRepo,
     ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(bumped.stdout)).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'dev.plugin.status',
       status: 'success',
       data: {
@@ -647,7 +647,7 @@ describe('build smoke', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const skillPath = path.join(pluginRoot, 'skills', 'commit', 'SKILL.md');
-    manifest.requires = { aw: { capabilities: ['aw.cli-output.v1'] } };
+    manifest.requires = { aw: { capabilities: ['aw.cli-output.v2'] } };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await fs.appendFile(skillPath, '\n```bash\naw plugin config get official/git-commit\n```\n', 'utf8');
 
@@ -677,7 +677,7 @@ describe('build smoke', () => {
       /plugin="git-commit" path="skills\/commit\/SKILL\.md" command="aw dev catalog publish" capability="aw\.catalog-publication\.v2"/u,
     );
 
-    manifest.requires = { aw: { capabilities: ['aw.catalog-publication.v2', 'aw.cli-output.v1'] } };
+    manifest.requires = { aw: { capabilities: ['aw.catalog-publication.v2', 'aw.cli-output.v2'] } };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await fs.appendFile(
       skillPath,

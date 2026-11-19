@@ -205,12 +205,18 @@ describe('Native and generic preApply execution', () => {
     if (platform === 'generic') {
       expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
     } else {
-      // The operation-local Skill qualification does not invent global client
-      // qualification, host trust or session loading for the read-only status command.
-      expect([3, 4], JSON.stringify(status.value)).toContain(status.exitCode);
-      expect(status.value).toMatchObject({ command: 'plugin.status', data: { context: 'project', counts: { ready: 0 } } });
-      expect([false, null]).toContain(status.value.data.allSatisfied);
-      expect([false, null]).toContain(status.value.data.inSync);
+      const ready = platform === 'pi' || platform === 'opencode';
+      if (ready) {
+        expect(status.exitCode, JSON.stringify(status.value)).toBe(0);
+        expect(status.value).toMatchObject({ command: 'plugin.status', status: 'success', data: {
+          context: 'project', counts: { ready: 1, blocked: 0, unconfirmed: 0, pending: 0 },
+          allSatisfied: true, inSync: true,
+        } });
+      } else {
+        // Test-only write qualification does not change the read-only profile.
+        expect([3, 4], JSON.stringify(status.value)).toContain(status.exitCode);
+        expect(status.value).toMatchObject({ command: 'plugin.status', data: { context: 'project', counts: { ready: 0 } } });
+      }
       expect(status.value.data.inventory).toContainEqual(expect.objectContaining({ pluginId: 'team/demo',
         targetResults: expect.arrayContaining([expect.objectContaining({ target: platform, scope: 'project',
           execution: 'not-run', deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
@@ -221,13 +227,13 @@ describe('Native and generic preApply execution', () => {
         expect(status.value.data.inventory).toContainEqual(expect.objectContaining({
           targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi',
             deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
-              registration: 'present', configuration: expect.objectContaining({ activation: 'enabled', trust: 'trusted' }),
-              consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', trust: 'unknown', load: 'not-observed' })]),
+              registration: 'present', configuration: expect.objectContaining({ activation: 'enabled' }),
+              consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', load: 'not-observed' })]),
             }) })]),
           })]),
         }));
       } else if (platform === 'opencode') {
-        expect(status.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodeNativeObservationRequired' }));
+        expect(status.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'opencodeNativeObservationRequired', severity: 'warning' }));
       } else if (status.value.diagnostics.length) {
         expect(status.value.diagnostics).toContainEqual(expect.objectContaining({ code: 'capability-unverified' }));
       }
@@ -245,8 +251,8 @@ describe('Native and generic preApply execution', () => {
       deploymentReceipts: expect.arrayContaining([expect.objectContaining({
         effects: expect.arrayContaining([expect.objectContaining({ status: 'applied', mutation: 'confirmed' })]),
         after: expect.objectContaining({ package: 'present', registration: 'unknown',
-          configuration: expect.objectContaining({ activation: 'absent', trust: 'required' }),
-          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', trust: 'unknown', load: 'not-observed' })]) }),
+          configuration: expect.objectContaining({ activation: 'absent' }),
+          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', load: 'not-observed' })]) }),
         unmet: expect.arrayContaining([expect.objectContaining({ componentId: 'skill:demo' })]),
       })]),
     }));
@@ -261,8 +267,8 @@ describe('Native and generic preApply execution', () => {
     expect(status.value.data.inventory).toContainEqual(expect.objectContaining({
       targetResults: expect.arrayContaining([expect.objectContaining({ target: 'pi',
         deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
-          registration: 'unknown', configuration: expect.objectContaining({ trust: 'required' }),
-          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown', trust: 'unknown' })]),
+          registration: 'unknown', configuration: expect.objectContaining({ activation: 'absent' }),
+          consumers: expect.arrayContaining([expect.objectContaining({ activation: 'unknown' })]),
         }) })]),
       })]),
     }));
@@ -277,7 +283,7 @@ describe('Native and generic preApply execution', () => {
     await fs.outputFile(f.fail, 'fail cursor');
     const result = await f.run(['install', 'team/consumer', 'team/independent', '--scope', 'project', '--yes']);
     expect(result.exitCode).toBe(4);
-    expect(result.value.data.allSatisfied).toBe(false);
+    expect(result.value.data.allSatisfied).not.toBe(true);
     // The Native result wraps the script exit and blocks the dependent install.
     expect(result.value.data.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({ pluginId: 'team/provider', target: 'cursor', execution: 'failed',

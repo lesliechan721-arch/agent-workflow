@@ -11,10 +11,11 @@ const defaultValues = Object.fromEntries(Object.entries(sourceManifest.config.fi
   .filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default]));
 // This profile controls script tests only and does not qualify a real client.
 function context(values = {}, platform = 'codex', scope = 'user', allowedOutputKinds = ['skill', 'agent']) {
-  return { schemaVersion: 1, surface: 'agent-plugin', platform, scope, allowedOutputKinds,
+  return { schemaVersion: 2, surface: 'agent-plugin', platform, scope, allowedOutputKinds,
+    plugin: { pluginId: 'fixture/agent-subagent' },
     changedConfigKeys: [], previousComponents: [],
     resources: [{ kind: 'bundle', name: './skills/spawn-subagent', root: path.join(root, 'skills/spawn-subagent'), digest: 'test-resource' }],
-    platformCapabilities: { schemaVersion: 1, platform, scope, basis: 'profile', profileId: 'script-test', consumers: [],
+    platformCapabilities: { schemaVersion: 2, platform, scope, basis: 'profile',
       kinds: Object.fromEntries(['skill', 'mcp', 'agent', 'hook', 'instruction'].map((kind) => [kind,
         { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])),
       features: { 'agent.execution': { status: 'supported', reasonCodes: [], values: ['isolated-context'] },
@@ -147,19 +148,24 @@ test('renders default inheritance, custom ordering, escaping and fixed adapter m
   assert.deepEqual(rows(refreshed['references/external-delegation.md'], '| key |'), []);
 });
 
-// Test Value Gate: both platforms retain one method and full runtime resources; only managed producer identities differ.
+// Test Value Gate: both platforms retain the method and runtime while targeting the installed role and command identities.
 test('projects the common method and runtime to both platforms and scopes', async () => {
   for (const scope of ['user', 'project']) {
-    const codex = await renderArtifactPlan(context({}, 'codex', scope));
+    const input = context({}, 'codex', scope);
+    input.platformCapabilities.basis = 'local';
+    const codex = await renderArtifactPlan(input);
     const generic = codex.components.find((artifact) => artifact.id === 'subagent-role');
     assert.equal(generic.name, 'subagent');
     assert.equal(generic.content.prompt, (await files(codex))['assets/task-instructions.md']);
     assert.equal(Object.hasOwn(generic.content, 'model'), false);
     const claude = await renderArtifactPlan(context({}, 'claude', scope));
     assert.deepEqual(claude.components.map((artifact) => artifact.id), ['spawn-subagent-claude-skill', 'subagent-role']);
+    const codexFiles = await files(codex);
+    assert.ok(codexFiles['SKILL.md'].includes('`aw-fixture-agent-subagent-subagent`'));
     const restored = Object.fromEntries(Object.entries(await files(claude)).map(([name, body]) => [name,
       body.replaceAll('aw.command:guide-claude/', 'aw.command:guide/').replaceAll('aw.command:guide-communication-claude/', 'aw.command:guide-communication/')]));
-    assert.deepEqual(restored, await files(codex));
+    assert.deepEqual(restored, { ...codexFiles,
+      'SKILL.md': codexFiles['SKILL.md'].replace('`aw-fixture-agent-subagent-subagent`', '`subagent`') });
   }
 });
 

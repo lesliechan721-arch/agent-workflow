@@ -24,6 +24,19 @@ export interface CursorWorkspaceHookOptions {
   signal?: AbortSignal;
 }
 
+/** Cursor has one fixed hook slot; this does not interpret arbitrary JSON patches. */
+export function cursorHooks(value: Record<string, unknown>): { hooks: Record<string, unknown>; entries: unknown[] } {
+  const hooks = value.hooks ?? {};
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) throw new Error('cursorHooksInvalid');
+  const entries = (hooks as Record<string, unknown>).workspaceOpen ?? [];
+  if (!Array.isArray(entries)) throw new Error('cursorHooksInvalid');
+  return { hooks: hooks as Record<string, unknown>, entries };
+}
+
+export function cursorHookEntryCommand(value: unknown): string | undefined {
+  return value && typeof value === 'object' && 'command' in value && typeof value.command === 'string' ? value.command : undefined;
+}
+
 function requiredPlugins(demand: DemandSnapshot): PluginMeta[] {
   if (demand.preferences.state !== 'valid' || !demand.preferences.value.targets.includes('cursor')) return [];
   const excluded = new Set(demand.preferences.value.exclusions.filter((item) => item.target === 'cursor').map((item) => item.plugin));

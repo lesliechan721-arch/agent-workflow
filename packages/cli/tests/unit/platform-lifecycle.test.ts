@@ -24,8 +24,8 @@ function fixture(route: DeploymentBinding['route'] = 'antigravity-cli'): Lifecyc
   const binding: DeploymentBinding = { id: 'binding', plugin: { sourceId: 'test', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginId: 'test/demo', version: '1.0.0' },
     platform, scope: { kind: 'user' }, route, physicalKey: 'physical', activationKey: 'activation', renderUnitIds: ['package'],
     consumers: [{ id: 'client', product: 'cli', version: '1.3.4', availability: 'available', reasonCodes: [], entry: { kind: 'cli', executable: '/fake/client', configRoot: root } }] };
-  const observation: DeploymentObservation = { physicalKey: 'physical', package: 'absent', registration: 'absent', ownership: 'absent', consumers: [{
-    productId: 'client', activationKey: 'activation', activation: 'disabled', trust: 'trusted', load: 'not-observed' }], components: [], nativeIdentity: null,
+  const observation: DeploymentObservation = { physicalKey: 'physical', package: 'absent', registration: 'absent', ownership: 'absent', ...(route.startsWith('grok-') ? { grokScopeAuthorization: 'granted' as const } : {}), consumers: [{
+    productId: 'client', activationKey: 'activation', activation: 'disabled', load: 'not-observed' }], components: [], nativeIdentity: null,
     prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } }, diagnostics: [] };
   return { operation: 'ensure', binding, observation,
     projections: [{ renderUnitId: 'package', bundle: { stagingRoot: path.join(root, 'staging'), contentDigest: 'bundle' }, supplements: [], components: [{ id: 'skill', nativeName: 'demo', relativeOutputs: ['skills/demo/SKILL.md'] }], diagnostics: [] }],
@@ -84,13 +84,13 @@ function context(after: DeploymentObservation): MutationContext {
 describe('native platform lifecycle', () => {
   // Test Value Gate: other product observations remain visible but cannot turn
   // an already complete selected path into an unnecessary native activation.
-  it.each(['unknown', 'blocked'] as const)('keeps a complete Grok path unchanged with another CLI trust=%s', async (trust) => {
+  it.each(['unknown', 'observed'] as const)('keeps a complete Grok path unchanged with another CLI load=%s', async (load) => {
     const input = grokRefreshFixture();
     input.evidence.contentMatches = true;
     input.observation.nativePackageContentDigest = 'bundle';
     input.observation.consumers[0]!.activation = 'enabled';
     input.binding.consumers.push({ ...input.binding.consumers[0]!, id: 'other-cli' });
-    input.observation.consumers.push({ ...input.observation.consumers[0]!, productId: 'other-cli', activation: 'unknown', trust });
+    input.observation.consumers.push({ ...input.observation.consumers[0]!, productId: 'other-cli', activation: 'unknown', load });
     const plan = prepared(input);
     expect(plan.plan.effects).toEqual([]);
     const ctx = context(input.observation);
@@ -98,16 +98,16 @@ describe('native platform lifecycle', () => {
     expect(ctx.runner).not.toHaveBeenCalled();
     expect(receipt.unmet).toEqual([]);
     expect(receipt.diagnostics.some((diagnostic) => diagnostic.code === 'nativeTrustRequired')).toBe(false);
-    expect(receipt.after.consumers[1]).toMatchObject({ productId: 'other-cli', activation: 'unknown', trust });
+    expect(receipt.after.consumers[1]).toMatchObject({ productId: 'other-cli', activation: 'unknown', load });
   });
 
   // Test Value Gate: refresh authority belongs to the exact frozen CLI path;
   // another CLI's unknown state is neither permission nor a shared conflict.
   it.each([true, false])('uses the frozen Grok refresh trust evidence (selected trusted=%s)', async (trusted) => {
     const input = grokRefreshFixture();
-    input.observation.consumers[0]!.trust = trusted ? 'trusted' : 'required';
+    input.observation.grokScopeAuthorization = trusted ? 'granted' : 'denied';
     input.binding.consumers.push({ ...input.binding.consumers[0]!, id: 'other-cli' });
-    input.observation.consumers.push({ ...input.observation.consumers[0]!, productId: 'other-cli', activation: 'unknown', trust: 'unknown' });
+    input.observation.consumers.push({ ...input.observation.consumers[0]!, productId: 'other-cli', activation: 'unknown' });
     const after = currentNativeObservation(input);
     after.consumers[1]!.activation = 'unknown';
     const ctx = context(after);
@@ -319,7 +319,7 @@ describe('native platform lifecycle', () => {
     expect(ctx.runner).not.toHaveBeenCalled();
     expect(receipt.effects.find((effect) => effect.id.includes(':register:'))).toMatchObject({ status: 'blocked', mutation: 'none',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'nativeTrustRequired' }), expect.objectContaining({ code: 'grokNativeInstallRecovery' })]) });
-    expect(receipt.after.consumers[0]!.trust).toBe('trusted');
+    expect(receipt.after.grokScopeAuthorization).toBe('granted');
   });
 
   it('retries a stale Grok copy when the AW source already has the current bytes', async () => {
@@ -359,7 +359,7 @@ describe('native platform lifecycle', () => {
     const input = grokRefreshFixture();
     const absent: DeploymentObservation = { ...input.observation, registration: 'absent',
       nativeIdentity: { ...input.evidence.nativeIdentity!, registrationId: undefined },
-      consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'disabled', trust: 'unknown' })) };
+      consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'disabled' })) };
     const ctx = context(absent);
     vi.mocked(ctx.inspect!).mockResolvedValueOnce(input.observation);
     vi.mocked(ctx.runner!).mockImplementation(async (call) => ({ exitCode: call.args[1] === 'install' ? 1 : 0, stdout: '', stderr: '' }));
@@ -368,7 +368,7 @@ describe('native platform lifecycle', () => {
     expect(receipt.after.registration).toBe('absent');
     expect(receipt.unmet).toContainEqual(expect.objectContaining({ componentId: 'skill', reasonCode: 'platformMutationUnknown' }));
     expect(receipt.effects[1]!.diagnostics).toContainEqual(expect.objectContaining({ code: 'grokNativeInstallRecovery',
-      message: expect.stringContaining(JSON.stringify(['plugin', 'install', path.join(root, 'demo'), '--trust'])) }));
+      detail: { reasonCode: 'grokNativeInstallSource', path: path.join(root, 'demo') } }));
     expect(ctx.services.removeOwned).not.toHaveBeenCalled();
     input.evidence.contentMatches = true;
     input.observation = absent;
@@ -394,15 +394,14 @@ describe('native platform lifecycle', () => {
     expect(ctx.services.removeOwned).not.toHaveBeenCalled();
   });
 
-  it('retains registration facts but reports unmet host trust for a Pi Skill package', async () => {
+  it('accepts an exact Pi Skill registration while activation remains unobserved', async () => {
     const input = fixture('pi-package');
     const ctx = context({ ...input.observation, package: 'present', registration: 'present', ownership: 'aw',
-      consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'blocked', trust: 'required' })) });
+      consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'unknown' })) });
     const receipt = await executePlatformLifecycle(ctx, prepared(input));
     expect(receipt.effects.every((effect) => effect.status === 'applied')).toBe(true);
-    expect(receipt.after).toMatchObject({ package: 'present', registration: 'present' });
-    expect(receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeTrustRequired', severity: 'error' }));
-    expect(receipt.unmet).toEqual([expect.objectContaining({ componentId: 'skill', productIds: ['client'], reasonCode: 'nativeTrustRequired' })]);
+    expect(receipt.after).toMatchObject({ package: 'present', registration: 'present', consumers: [{ activation: 'unknown' }] });
+    expect(receipt.unmet).toEqual([]);
   });
 
   it('leaves shared packages registered when removing only the requested activation', () => {
@@ -459,7 +458,7 @@ describe('native platform lifecycle', () => {
       input.evidence.ownership[0]!.state = 'present';
       input.evidence.ownership[0]!.component.identity.scope = 'project';
       input.observation = { ...input.observation, package: 'present', ownership: 'aw', registration: 'present',
-        nativeIdentity: input.evidence.nativeIdentity!, consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'unknown', trust: 'unknown' })) };
+        nativeIdentity: input.evidence.nativeIdentity!, consumers: input.observation.consumers.map((consumer) => ({ ...consumer, activation: 'unknown' })) };
       const after: DeploymentObservation = { ...input.observation, registration: boundary === 'present' ? 'present' : 'unknown',
         diagnostics: [{ code: boundary === 'query-failed' ? 'piNativeObservationUnconfirmed' : 'piProjectRegistrationNotVisible', severity: 'warning', message: 'Project scope not visible.' }] };
       const ctx = context(after);
@@ -779,7 +778,7 @@ describe('platform inspection and native activation', () => {
     await fs.outputFile(path.join(layout.packageRoot, 'skills/demo/SKILL.md'), 'body');
     const observation = await inspectDeployment(ctx, binding);
     expect(observation).toMatchObject({ package: 'present', ownership: 'aw', registration: 'not-applicable' });
-    expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', trust: 'unknown', load: 'unknown' });
+    expect(observation.consumers[0]).toMatchObject({ activation: 'unknown', load: 'unknown' });
     expect(observation.components).toEqual([{ id: 'skill', presence: 'present', reasonCodes: [] }]);
     await fs.remove(path.join(layout.packageRoot, 'skills/demo/SKILL.md'));
     expect((await inspectDeployment(ctx, binding)).components[0]?.presence).toBe('absent');

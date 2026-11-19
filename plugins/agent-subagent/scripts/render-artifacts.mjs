@@ -139,8 +139,8 @@ async function runtimeResourceFiles(context, key, relative) {
 const PLATFORMS = ['codex', 'claude', 'antigravity', 'cursor', 'opencode', 'pi', 'gemini', 'copilot', 'grok', 'generic'];
 
 function validateContext(context) {
-  if (context?.schemaVersion !== 1 || context.surface !== 'agent-plugin') {
-    throw new Error('A PlatformRenderContext v1 with surface=agent-plugin is required.');
+  if (context?.schemaVersion !== 2 || context.surface !== 'agent-plugin') {
+    throw new Error('A PlatformRenderContext v2 with surface=agent-plugin is required.');
   }
   if (!PLATFORMS.includes(context.platform)) throw new Error(`Unsupported platform: ${context.platform}`);
   if (!Array.isArray(context.allowedOutputKinds) || new Set(context.allowedOutputKinds).size !== context.allowedOutputKinds.length
@@ -148,8 +148,8 @@ function validateContext(context) {
     throw new Error('allowedOutputKinds must contain distinct component kinds.');
   }
   const capabilities = context.platformCapabilities;
-  if (capabilities?.schemaVersion !== 1 || capabilities.platform !== context.platform || capabilities.scope !== context.scope) {
-    throw new Error('Matching platformCapabilities v1 are required.');
+  if (capabilities?.schemaVersion !== 2 || capabilities.platform !== context.platform || capabilities.scope !== context.scope) {
+    throw new Error('Matching platformCapabilities v2 are required.');
   }
 }
 
@@ -209,6 +209,11 @@ export async function renderArtifactPlan(context) {
         const reference = 'references/external-delegation.md';
         files[reference] = { text: slot(await readFile(path.join(sourceRoot, reference), 'utf8'),
           'subagent-commands', commandTable(config.subagentCommands)) };
+        if (context.platform === 'codex' && context.platformCapabilities.basis === 'local') {
+          const skill = await readFile(path.join(sourceRoot, 'SKILL.md'), 'utf8');
+          const roleName = `aw-${context.plugin.pluginId.replace('/', '-')}-subagent`;
+          files['SKILL.md'] = { text: skill.replace('`subagent`', `\`${roleName}\``) };
+        }
         if (context.platform === 'claude') {
           for (const name of Object.keys(files)) {
             if (!name.endsWith('.md')) continue;

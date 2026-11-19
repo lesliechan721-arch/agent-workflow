@@ -75,7 +75,7 @@ describe('Catalog source sync CLI', () => {
 
     expect(repaired.exitCode, repaired.stderr).toBe(0);
     expect(repaired.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'source.sync',
       data: {
@@ -99,7 +99,7 @@ describe('Catalog source sync CLI', () => {
     });
     expect(checked.exitCode, checked.stderr).toBe(0);
     expect(checked.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1, command: 'source.status', status: 'success',
+      schemaVersion: 2, command: 'source.status', status: 'success',
       data: {
         sources: [{ sourceId: 'local', activeReady: false }],
         remote: [{ sourceId: 'local', checked: true, outcome: 'checked' }],
@@ -113,7 +113,7 @@ describe('Catalog source sync CLI', () => {
     });
     expect(beforeStatus.exitCode).toBe(0);
     expect(beforeStatus.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: { sources: [{ sourceId: 'local', activeReady: false }] }
     });
 
@@ -123,7 +123,7 @@ describe('Catalog source sync CLI', () => {
     expect(synced.exitCode, synced.stderr).toBe(0);
     const syncReceipt = synced.parseJsonStdout();
     expect(syncReceipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'source.sync',
       data: {
@@ -140,7 +140,7 @@ describe('Catalog source sync CLI', () => {
     });
     expect(status.exitCode, status.stderr).toBe(0);
     expect(status.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         sources: [{
           sourceId: 'local', activeReady: true,
@@ -171,7 +171,7 @@ describe('Catalog source sync CLI', () => {
     expect(jsonStatus.exitCode, jsonStatus.stderr).toBe(0);
     const receipt = jsonStatus.parseJsonStdout();
     expect(receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         sources: [{
           sourceId: 'local',
@@ -215,7 +215,7 @@ describe('Catalog source sync CLI', () => {
     });
     expect(repaired.exitCode, repaired.stderr).toBe(0);
     expect(repaired.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         outcome: 'unchanged',
         activeChanged: false,
@@ -241,7 +241,7 @@ describe('Catalog source sync CLI', () => {
     ], { cwd: isolation.layout.fixtureCwd, env, interactive: false });
     expect(replacementRequired.exitCode).toBe(3);
     expect(replacementRequired.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: [{ code: 'catalogReplaceDamagedRequired' }],
       data: {}
     });
@@ -251,7 +251,7 @@ describe('Catalog source sync CLI', () => {
     ], { cwd: isolation.layout.fixtureCwd, env, interactive: false });
     expect(confirmationRequired.exitCode).toBe(3);
     expect(confirmationRequired.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
       data: {}
     });
@@ -261,7 +261,7 @@ describe('Catalog source sync CLI', () => {
     ], { cwd: isolation.layout.fixtureCwd, env, interactive: false });
     expect(replaced.exitCode, replaced.stderr).toBe(0);
     expect(replaced.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         outcome: 'activated',
         activeChanged: true,
@@ -293,7 +293,7 @@ describe('Catalog source sync CLI', () => {
       cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
     expect(status.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: { sources: [{ activeReady: true, active: { snapshotDigest: activeDigest } }] }
     });
 

@@ -71,7 +71,7 @@ describe('Catalog cache CLI', () => {
     expect(status.exitCode, status.stderr).toBe(0);
     const statusPayload = status.parseJsonStdout();
     expect(statusPayload).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'cache.status',
       data: {
@@ -97,7 +97,7 @@ describe('Catalog cache CLI', () => {
     expect(dryRun.exitCode, dryRun.stderr).toBe(0);
     const dryRunPayload = dryRun.parseJsonStdout();
     expect(dryRunPayload).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'success',
       command: 'cache.prune',
       data: {
@@ -115,7 +115,7 @@ describe('Catalog cache CLI', () => {
     });
     expect(invalid.exitCode).toBe(2);
     expect(invalid.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'cache.prune',
       diagnostics: [{ code: 'invalidArguments' }],
@@ -128,7 +128,7 @@ describe('Catalog cache CLI', () => {
     });
     expect(deleted.exitCode, deleted.stderr).toBe(0);
     expect(deleted.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       data: {
         dryRun: false,
         deleted: [{ storeKey: fixture.storeKey }]
@@ -148,7 +148,7 @@ describe('Catalog cache CLI', () => {
     });
     expect(status.exitCode).toBe(1);
     expect(status.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'cache.status',
       diagnostics: [{ code }],
@@ -161,7 +161,7 @@ describe('Catalog cache CLI', () => {
     });
     expect(failed.exitCode).toBe(1);
     expect(failed.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'cache.prune',
       diagnostics: [{ code }],
@@ -196,13 +196,13 @@ describe('Catalog cache CLI', () => {
       expect(status.exitCode).toBe(1);
       expect(prune.exitCode).toBe(1);
       expect(status.parseJsonStdout()).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'cache.status',
         diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
         data: {}
       });
       expect(prune.parseJsonStdout()).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'cache.prune',
         diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
         data: {
@@ -227,7 +227,7 @@ describe('Catalog cache CLI', () => {
     });
     expect(status.exitCode).toBe(4);
     expect(status.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'partial',
       command: 'cache.status',
       diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
@@ -252,7 +252,7 @@ describe('Catalog cache CLI', () => {
     });
     expect(dryRun.exitCode).toBe(4);
     expect(dryRun.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'partial',
       diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
       data: {
@@ -268,7 +268,7 @@ describe('Catalog cache CLI', () => {
     });
     expect(pruned.exitCode).toBe(4);
     expect(pruned.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'partial',
       diagnostics: [{ code: 'catalogStoreInspectionFailed' }],
       data: {

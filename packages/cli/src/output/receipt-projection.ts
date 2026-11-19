@@ -14,7 +14,7 @@ import type { PluginCapabilitiesResult } from '../commands/plugin-capabilities.j
 import type { PortableMaterializeReceipt } from '../portable/commands.js';
 import type { RecoveryReceipt } from '../recovery/receipt.js';
 import { projectTarget } from '../commands/public-lifecycle-result.js';
-import { commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
+import { CLI_OUTPUT_SCHEMA_VERSION, commandResult, safePublicMessage, type CommandResult, type Confirmation, type Diagnostic, type NextAction } from './public-result.js';
 import { geminiNativeConsentDiagnostic } from './native-consent.js';
 
 type RecordValue = Record<string, unknown>;
@@ -438,7 +438,7 @@ function publicationApplyAction(receipt: RecordValue, reason: string): NextActio
 export function projectReceipt(command: string, input: unknown, options: { yes?: boolean; exitCode?: number; confirmation?: Confirmation | null } = {}): CommandResult {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('The command returned an invalid result.');
   const r = record(input);
-  if (r.schemaVersion === 1 && ['success', 'partial', 'blocked', 'failed'].includes(String(r.status)) && r.data && Array.isArray(r.diagnostics) && Array.isArray(r.nextActions)) return input as CommandResult;
+  if (r.schemaVersion === CLI_OUTPUT_SCHEMA_VERSION && ['success', 'partial', 'blocked', 'failed'].includes(String(r.status)) && r.data && Array.isArray(r.diagnostics) && Array.isArray(r.nextActions)) return input as CommandResult;
   const authorRoots = command.startsWith('dev.') && typeof r.workspaceRoot === 'string' ? [r.workspaceRoot] : [];
   const subject: Diagnostic['subject'] = {
     ...(typeof r.sourceId === 'string' ? { sourceId: r.sourceId } : {}),

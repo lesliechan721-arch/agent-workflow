@@ -33,7 +33,7 @@ describe('review command options', () => {
 
     expect(exitCode).toBe(2)
     expect(JSON.parse(output.stdout())).toEqual(expect.objectContaining({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'dev.review.inspect',
       diagnostics: [expect.objectContaining({ code: _label.startsWith('invalid platform') || _label === 'repeated single-value option' ? 'invalidOptionValue' : 'invalidArguments' })],
@@ -68,7 +68,7 @@ describe('review command options', () => {
 
     expect(exitCode).toBe(2)
     expect(JSON.parse(output.stdout())).toEqual(expect.objectContaining({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'failed',
       command: 'dev.review.prepare',
       diagnostics: [expect.objectContaining({ code: _label.startsWith('invalid platform') || _label === 'repeated single-value option' ? 'invalidOptionValue' : 'invalidArguments' })],

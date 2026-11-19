@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import { getStaticTOMLValue, parseTOML } from 'toml-eslint-parser';
 import type { DeploymentBinding, DeploymentObservation, ReadContext } from './contracts.js';
 import type { DeploymentLayout } from './layout.js';
+import { queryNativeDeployment } from './inspection-query.js';
 import { resolvePlatformConfigRoot, selectNativeProduct } from './discovery.js';
 import { readPlatformPackageContentDigest } from '../utils/platform-empty-state.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
@@ -25,13 +26,8 @@ function within(root: string, file: unknown): boolean {
 
 /** 1.0.77's list is an install inventory; inspect.enabled is not load evidence. */
 export async function inspectGrokDeployment(ctx: ReadContext, binding: DeploymentBinding, layout: DeploymentLayout,
-  result: DeploymentObservation, listValue: unknown, inspectValue: unknown): Promise<void> {
-  const list = rows(listValue);
-  const inspect = object(inspectValue);
-  const product = selectNativeProduct(binding.consumers);
-  if (typeof inspect.grokVersion !== 'string' || !tryParseStrictSemVer(inspect.grokVersion)
-    || !product || product.version !== null && product.version !== inspect.grokVersion) throw new Error('grokObservationVersionUnverified');
-  const plugins = rows(inspect.plugins);
+  result: DeploymentObservation): Promise<void> {
+  const list = rows(JSON.parse(await queryNativeDeployment(ctx, binding, ['plugin', 'list', '--json'])));
   const name = layout.nativeIdentity.packageId;
   const matches = list.filter((row) => row.name === name);
   if (matches.length > 1) throw new Error('nativeIdentityDuplicate');
@@ -41,22 +37,6 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
     || typeof installed.version !== 'string' || typeof installed.path !== 'string' || !path.isAbsolute(installed.path)
     || typeof installed.source !== 'string' || !path.isAbsolute(installed.source))) throw new Error('grokRegistrationInvalid');
   result.registration = binding.route === 'grok-directory' ? 'not-applicable' : installed ? 'present' : 'absent';
-  const nativeRoot = binding.route === 'grok-directory' ? layout.packageRoot : installed?.path as string | undefined;
-  for (const plugin of plugins) {
-    if (typeof plugin.name !== 'string' || typeof plugin.path !== 'string' || !path.isAbsolute(plugin.path)
-      || typeof plugin.scope !== 'string') throw new Error('grokPluginIdentityInvalid');
-  }
-  const effective = ['skills', 'agents', 'mcpServers'].flatMap((kind) => rows(inspect[kind]).map((row) => ({ kind, row, source: object(row.source) })));
-  const own = plugins.filter((plugin) => plugin.name === name && plugin.path === nativeRoot && plugin.scope === binding.scope.kind);
-  const hasLoadedResources = own.length === 1 && effective.some(({ source }) => source.plugin_name === name && within(nativeRoot!, source.path));
-  for (const consumer of result.consumers) {
-    if (consumer.productId !== product.id) continue;
-    consumer.activation = own.length === 1 && typeof own[0]!.enabled === 'boolean' ? own[0]!.enabled ? 'enabled' : 'disabled' : 'unknown';
-    // Runtime/folder trust is distinct from consent to install a new source.
-    consumer.trust = typeof inspect.projectTrusted === 'boolean'
-      ? inspect.projectTrusted ? 'trusted' : 'required' : 'unknown';
-    consumer.load = hasLoadedResources ? 'observed' : 'not-observed';
-  }
   const entry = binding.consumers.find((consumer) => consumer.entry?.kind === 'cli')?.entry;
   const hostRoot = entry?.kind === 'cli' ? entry.configRoot : await resolvePlatformConfigRoot('grok', ctx);
   if (binding.route === 'grok-cli' && installed) {
@@ -70,6 +50,7 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
           throw error;
         });
         if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error('grokRegistrationPathUnconfirmed');
+        if (directory === installed.path) result.nativePackage = stat ? 'present' : 'absent';
       }
       if (path.normalize(installed.source as string) !== layout.packageRoot) result.ownership = 'foreign';
       else if (list.some((row) => row !== installed && (row.repo_key === installed.repo_key || row.path === installed.path || row.source === installed.source))) result.ownership = 'shared';
@@ -93,6 +74,27 @@ export async function inspectGrokDeployment(ctx: ReadContext, binding: Deploymen
       result.diagnostics.push({ code: 'grokInstallationUnconfirmed', severity: 'warning',
         message: 'The Grok installation path or package bytes could not be confirmed for maintenance.', subject: { target: 'grok', scope: binding.scope.kind } });
     }
+  }
+  const inspect = object(JSON.parse(await queryNativeDeployment(ctx, binding, ['inspect', '--json'])));
+  const product = selectNativeProduct(binding.consumers);
+  if (typeof inspect.grokVersion !== 'string' || !tryParseStrictSemVer(inspect.grokVersion)
+    || !product || product.version !== null && product.version !== inspect.grokVersion) throw new Error('grokObservationVersionUnverified');
+  const plugins = rows(inspect.plugins);
+  const nativeRoot = binding.route === 'grok-directory' ? layout.packageRoot : installed?.path as string | undefined;
+  for (const plugin of plugins) {
+    if (typeof plugin.name !== 'string' || typeof plugin.path !== 'string' || !path.isAbsolute(plugin.path)
+      || typeof plugin.scope !== 'string') throw new Error('grokPluginIdentityInvalid');
+  }
+  const effective = ['skills', 'agents', 'mcpServers'].flatMap((kind) => rows(inspect[kind]).map((row) => ({ kind, row, source: object(row.source) })));
+  const own = nativeRoot === undefined ? [] : plugins.filter((plugin) => plugin.name === name
+    && path.normalize(plugin.path as string) === path.normalize(nativeRoot) && plugin.scope === binding.scope.kind);
+  const hasLoadedResources = own.length === 1 && effective.some(({ source }) => source.plugin_name === name && within(nativeRoot!, source.path));
+  // Scoped host authorization remains separate from consent to install a new source.
+  result.grokScopeAuthorization = inspect.projectTrusted === true ? 'granted' : inspect.projectTrusted === false ? 'denied' : 'unknown';
+  for (const consumer of result.consumers) {
+    if (consumer.productId !== product.id) continue;
+    consumer.activation = own.length === 1 && typeof own[0]!.enabled === 'boolean' ? own[0]!.enabled ? 'enabled' : 'disabled' : 'unknown';
+    consumer.load = hasLoadedResources ? 'observed' : 'not-observed';
   }
   const projectRoot = binding.scope.kind === 'project' ? binding.scope.projectRoot : undefined;
   const configPaths = [path.join(hostRoot, 'config.toml'), ...(projectRoot ? [path.join(projectRoot, '.grok', 'config.toml')] : [])];

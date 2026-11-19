@@ -23,7 +23,7 @@ import { listManagedCommandPackages, listManagedCommands, readInstalledCommandPr
 import { nativeToolFixture } from '../helpers/native-tools.js';
 
 describe('public config command', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true, trust: true }); });
+  beforeEach(() => { installNativeTestQualification({ platforms: ['codex', 'claude'], discovery: true }); });
   // Test Value Gate: the shared native payload uses user config even when its only native installation is project scoped.
   it('applies user config to shared Claude static commands without changing native installation scope', async (test) => {
     const timing = createCommandTestTiming(test);
@@ -78,7 +78,7 @@ describe('public config command', () => {
       const installed = await run('plugin install', ['plugin', 'install', 'team/demo', '--scope', 'project', '--yes']);
       expect(installed, JSON.stringify(installed)).toMatchObject({
         exitCode: 0, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           status: 'success'
         }
       });
@@ -88,7 +88,7 @@ describe('public config command', () => {
       const producerBefore = await timing.measure('inspect', 'read initial producer', () => readInstalledCommandProducer(command.resourceRoot!));
       expect(await set('shadowed common apply', 'common', 'shadowed-next', true)).toMatchObject({
         exitCode: 0, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: {
             configWrite: 'succeeded',
             apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] }
@@ -99,7 +99,7 @@ describe('public config command', () => {
       expect((await timing.measure('inspect', 'resolve shadowed command', () => resolveManagedCommand(command.id, env))).launch.args).toEqual(['platform']);
       expect(await set('Claude save only', 'claude', 'saved')).toMatchObject({
         exitCode: 0, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: { apply: { reason: 'notRequested' } }
         }
       });
@@ -107,7 +107,7 @@ describe('public config command', () => {
       const applied = await set('Claude effective apply', 'claude', 'applied', true);
       expect(applied, JSON.stringify(applied)).toMatchObject({
         exitCode: 0, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: { apply: { state: 'succeeded', targetResults: [{ target: { platform: 'claude', scope: 'project' }, state: 'completed' }] } }
         }
       });
@@ -172,7 +172,7 @@ describe('public config command', () => {
     const installed = await run(['plugin', 'install', 'team/demo', '--scope', 'user', '--yes']);
     expect(installed, JSON.stringify(installed)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'plugin.install',
         status: 'success',
         data: { targetResults: [{ pluginId: 'team/demo', target: 'codex', scope: 'user', execution: 'applied' }] }
@@ -189,25 +189,33 @@ describe('public config command', () => {
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"saved"']))
       .toMatchObject({
         exitCode: 0, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: { apply: { state: 'skipped', reason: 'notRequested' } }
         }
       });
     expect((await resolveManagedCommand(command.id, env)).launch.args).toEqual(['old']);
     expect(await fs.readFile(renders)).toEqual(rendersBefore);
-    expect((await run(['plugin', 'status', '--context', 'user'])).payload).toMatchObject({
-      schemaVersion: 1,
-      command: 'plugin.status',
-      status: 'blocked',
-      data: { allSatisfied: false, coverage: { scopes: ['user'], otherProjects: 'unobserved' } },
-      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'platformInputDrift' })]),
+    expect(await run(['plugin', 'status', '--context', 'user'])).toMatchObject({
+      exitCode: 0,
+      payload: {
+        schemaVersion: 2,
+        command: 'plugin.status',
+        status: 'success',
+        data: {
+          allSatisfied: false,
+          counts: { pending: 1, blocked: 0 },
+          coverage: { scopes: ['user'], otherProjects: 'unobserved' },
+          inventory: [{ pluginId: 'team/demo', targetResults: [{ target: 'codex', scope: 'user', content: 'drifted', blockerCodes: [] }] }],
+        },
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'platformInputDrift', severity: 'warning' })]),
+      },
     });
     expect(await fs.readFile(renders)).toEqual(rendersBefore);
     const applied = await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"applied"', '--apply', '--yes']);
     expect(applied, JSON.stringify(applied))
       .toMatchObject({
         exitCode: 0, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: {
             configWrite: 'succeeded',
             apply: { state: 'succeeded', targetResults: [{ state: 'completed' }] }
@@ -277,7 +285,7 @@ describe('public config command', () => {
     const installed = await run([...packageSync, '--yes']);
     expect(installed, JSON.stringify(installed)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success'
       }
     });
@@ -293,7 +301,7 @@ describe('public config command', () => {
     const blocked = await set('fast');
     expect(blocked, JSON.stringify(blocked)).toMatchObject({
       exitCode: 4, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'partial',
         data: {
           configWrite: 'succeeded',
@@ -339,7 +347,7 @@ describe('public config command', () => {
     const synced = await run([...packageSync, '--yes'], true);
     expect(synced, JSON.stringify(synced)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success',
         data: { confirmation: { required: true, provided: true, effects: expect.arrayContaining([
           expect.objectContaining({ code: 'replaceSharedOutput' }),
@@ -353,7 +361,7 @@ describe('public config command', () => {
     expect((await readInstalledCommandProducer(resourceRoot)).nativeTools).toEqual(preferred.closure);
     expect(await set('next')).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: {
           configWrite: 'succeeded',
           apply: { state: 'succeeded' }
@@ -398,14 +406,14 @@ describe('public config command', () => {
     expect(await run(['command', 'package', 'sync', 'team/demo', 'tools', '--scope', 'user', '--yes']))
       .toMatchObject({
         exitCode: 0, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           status: 'success'
         }
       });
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"fast"', '--apply', '--yes']))
       .toMatchObject({
         exitCode: 0, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           status: 'success',
           data: {
             configWrite: 'succeeded',
@@ -419,7 +427,7 @@ describe('public config command', () => {
     expect(await run(['plugin', 'config', 'set', 'team/demo', 'mode', '--context', 'user', '--value-json', '"next"', '--apply', '--yes']))
       .toMatchObject({
         exitCode: 4, payload: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           status: 'partial',
           data: {
             configWrite: 'succeeded',
@@ -474,14 +482,14 @@ describe('public config command', () => {
     const describe = await run(['self', 'describe']);
     expect(describe).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: { capabilities: expect.arrayContaining(['aw.plugin-config.v4']) }
       }
     });
     expect(await run(['self', 'check', '--from', pluginRoot])).toMatchObject({
       exitCode: 0,
       payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success',
         data: {
           requiredCapabilities: expect.arrayContaining(['aw.plugin-config.v4']),
@@ -493,13 +501,13 @@ describe('public config command', () => {
     const set = (field: string, value: unknown) => run(['plugin', 'config', 'set', 'team/demo', field, '--context', 'user', '--value-json', JSON.stringify(value)]);
     expect(await set('subagentCommands', oldCommands)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: { configWrite: 'succeeded' }
       }
     });
     expect(await set('advisorProfile', { executor: 'remote' })).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: { configWrite: 'succeeded' }
       }
     });
@@ -507,7 +515,7 @@ describe('public config command', () => {
     const installed = await run(['plugin', 'install', 'team/demo', '--scope', 'user', '--yes']);
     expect(installed, JSON.stringify(installed)).toMatchObject({
       exitCode: 0, payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success'
       }
     });
@@ -521,7 +529,7 @@ describe('public config command', () => {
     expect(await set('subagentCommands', commands)).toMatchObject({
       exitCode: 0,
       payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: {
           configWrite: 'succeeded',
           apply: { state: 'skipped', reason: 'notRequested' }
@@ -540,7 +548,7 @@ describe('public config command', () => {
     expect(invalid).toMatchObject({
       exitCode: 2,
       payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'plugin.config.set',
         status: 'failed',
         diagnostics: [expect.objectContaining({ code: 'invalidArguments' })],
@@ -554,7 +562,7 @@ describe('public config command', () => {
     expect(synced, JSON.stringify(synced)).toMatchObject({
       exitCode: 0,
       payload: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success'
       }
     });

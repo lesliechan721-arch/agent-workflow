@@ -37,7 +37,7 @@ function nativePackage(runtime: { packageRoots: Map<string, string> }, name: str
 
 describe('five namespaced write commands', () => {
   beforeEach(async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true });
+    installNativeTestQualification({ platforms: ['codex'], discovery: true });
     await fs.ensureDir(path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, '.git'));
   });
 
@@ -94,7 +94,7 @@ describe('five namespaced write commands', () => {
       const review = buildOperationReviewProjection({ intent: { kind: 'pluginWrite', action: 'install', pluginId: 'team/agent-subagent', platform: 'codex', scope: 'project' }, evidence: { catalog: { configDigest: 'fixture', compositeDigest: 'fixture' }, operationPlan: preview.operationPlan } });
       expect(review.changes).toContainEqual(expect.objectContaining({ title: 'guide/subagent/default', description: expect.stringContaining('node · scripts/subagent.mjs') }));
       const installed = await runPublic(['plugin', 'install', 'team/agent-subagent', '--scope', 'project', '--yes']);
-      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+      expect(installed, JSON.stringify(installed)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
       const guideCommand = (await listManagedCommands(isolation.env)).commands.find((command) => command.name === 'guide/subagent/default')!;
       expect(guideCommand.owner).toMatchObject({ kind: 'plugin', producer: {
         pluginName: 'agent-subagent', kind: 'artifact', key: 'spawn-subagent-skill',
@@ -161,7 +161,7 @@ describe('five namespaced write commands', () => {
       'fixture', 'codex-enhance', () => prepareCodexEnhancePublicCommandFixture(timing),
     );
     expect(await runPublic([
-      'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes'])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+      'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes'])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     // Each plugin has two shared package batches and one project Agent batch.
     // Lock rechecks and manager resolution must reuse these successful inputs.
     expect(timing.rendererCalls).toBe(6);
@@ -175,7 +175,7 @@ describe('five namespaced write commands', () => {
 
     expect(await runPublic([
       'plugin', 'remove', '--only', 'outputs', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     expect(timing.rendererCalls).toBe(6);
     for (const role of ['codex-explore', 'codex-advisor']) {
       await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'agents',
@@ -230,7 +230,7 @@ describe('five namespaced write commands', () => {
     const projectInstall = await runPublic([
       'plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes']);
     expect(projectInstall, JSON.stringify(projectInstall, null, 2))
-      .toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+      .toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     const cacheRoot = nativePackage(runtime, 'codex-enhance').root;
     const enhanceRegistrationId = nativePackage(runtime, 'codex-enhance').registrationId;
     const subagentCacheRoot = nativePackage(runtime, 'agent-subagent').root;
@@ -279,6 +279,7 @@ describe('five namespaced write commands', () => {
     const instructionFiles = ['explore-instructions.md', 'advisor-instructions.md'];
     for (const [index, content] of initialRoleBytes.entries()) {
       const role = parseCodexRoleFile(content);
+      expect(initialSkillBytes[index]!.toString('utf8')).toContain(`\`${role.name}\` 角色`);
       expect(role.model).toBeUndefined();
       expect(role.modelReasoningEffort).toBeUndefined();
       const sharedInstructions = await fs.readFile(path.join(
@@ -289,6 +290,8 @@ describe('five namespaced write commands', () => {
     const subagentRolePath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-team-agent-subagent-subagent.toml');
     const initialSubagentRoleBytes = await fs.readFile(subagentRolePath, 'utf8');
     const installedSubagentRole = parseCodexRoleFile(initialSubagentRoleBytes);
+    expect(await fs.readFile(path.join(subagentCacheRoot, 'skills/spawn-subagent/SKILL.md'), 'utf8'))
+      .toContain(`\`${installedSubagentRole.name}\``);
     expect(installedSubagentRole.model).toBeUndefined();
     expect(installedSubagentRole.modelReasoningEffort).toBeUndefined();
     assertRoleInstructions('subagent', installedSubagentRole.developerInstructions,
@@ -335,12 +338,12 @@ describe('five namespaced write commands', () => {
     await fs.remove(path.join(isolation.env.AW_HOME!, 'commands', 'bindings', `${guideCommand.id}.json`));
     expect(await runPublic([
       'plugin', 'remove', '--only', 'outputs', 'team/codex-enhance', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     for (const file of rolePaths) await expect(fs.pathExists(file)).resolves.toBe(false);
     await expect(fs.pathExists(subagentRolePath)).resolves.toBe(true);
     expect(await runPublic([
       'plugin', 'remove', '--only', 'outputs', 'team/agent-subagent', '--target', 'codex', '--scope', 'project', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+    ])).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     await expect(fs.pathExists(subagentRolePath)).resolves.toBe(false);
     expect((await readCodexConfigFile(path.join(
       isolation.layout.fixtureCwd, '.codex', 'config.toml',
@@ -362,7 +365,7 @@ describe('five namespaced write commands', () => {
     const projectRoles = roleNames.map((role) => path.join(cwd, '.codex', 'agents', `aw-team-codex-enhance-${role}.toml`));
     const userRoles = roleNames.map((role) => path.join(env.CODEX_HOME!, 'agents', `aw-team-codex-enhance-${role}.toml`));
     const projectInstall = await runPublic(['plugin', 'install', 'team/codex-enhance', '--scope', 'project', '--yes']);
-    expect(projectInstall, JSON.stringify(projectInstall)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+    expect(projectInstall, JSON.stringify(projectInstall)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     const cacheRoot = nativePackage(runtime, 'codex-enhance').root;
     const enhanceRegistrationId = nativePackage(runtime, 'codex-enhance').registrationId;
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(true);
@@ -375,7 +378,11 @@ describe('five namespaced write commands', () => {
     const foreignRole = path.join(cwd, '.codex', 'agents', 'foreign.toml');
     await fs.outputFile(foreignRole, 'developer_instructions = "foreign bytes"\n');
     const userInstall = await runPublic(['plugin', 'install', 'team/codex-enhance', '--scope', 'user', '--yes']);
-    expect(userInstall, JSON.stringify(userInstall)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+    expect(userInstall, JSON.stringify(userInstall)).toMatchObject({ exitCode: 4, payload: { schemaVersion: 2, status: 'partial',
+      data: { targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/codex-enhance', scope: 'user', execution: 'applied' }),
+        expect.objectContaining({ pluginId: 'team/codex-enhance', scope: 'project', deploymentReceipts: expect.arrayContaining([
+          expect.objectContaining({ after: expect.objectContaining({ scopeActivation: 'unknown', registration: 'present' }) }),
+        ]) })]) } } });
     for (const file of userRoles) await expect(fs.pathExists(file)).resolves.toBe(true);
     for (const [index, file] of projectRoles.entries()) {
       await expect(fs.readFile(file)).resolves.toEqual(projectRoleBytes[index]);
@@ -384,20 +391,36 @@ describe('five namespaced write commands', () => {
     const scopedStatus = await readRecoveryStatus({ cwd, env, cliVersion: '1.0.0', targets: ['codex'], nativeCliRunner: runtime.nativeCliRunner });
     expect(scopedStatus.inventory?.filter((entry) => entry.pluginId === 'team/codex-enhance')
       .flatMap((entry) => entry.targetResults), JSON.stringify(scopedStatus)).toContainEqual(expect.objectContaining({
-        scope: 'project', providerScope: 'project', content: 'unknown', satisfaction: 'unknown',
-        blockers: expect.arrayContaining([expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' })]),
+        scope: 'project', providerScope: 'project', content: 'unknown', satisfaction: 'unknown', blockers: [],
+        deploymentObservations: expect.arrayContaining([expect.objectContaining({ after: expect.objectContaining({
+          scopeActivation: 'unknown', registration: 'present', consumers: [expect.objectContaining({ activation: 'enabled' })],
+        }) })]),
       }));
-    // Read-only status cannot recreate the dynamic supplement collection. The
-    // concrete files above are verified separately without claiming host loading.
-    expect(scopedStatus.observedTargets?.flatMap((target) => target.blockers).map((blocker) => blocker.code))
+    expect(scopedStatus.observedTargets?.flatMap((target) => [...target.blockers, ...target.reasons ?? []]).map((diagnostic) => diagnostic.code))
+      .not.toContain('dynamicExpectationUnconfirmed');
+    expect(scopedStatus.observedTargets?.flatMap((target) => [...target.blockers, ...target.reasons ?? []]).map((diagnostic) => diagnostic.code))
       .not.toContain('platformInputDrift');
     expect(scopedStatus.observedTargets?.flatMap((target) => target.deploymentObservations ?? [])
       .flatMap((observation) => observation.after?.components ?? []).flatMap((component) => component.reasonCodes))
       .not.toContain('componentOutputMissing');
-    const userBeforeSync = await observeIntent(userLocation);
     const userRoleBytes = await Promise.all(userRoles.map((file) => fs.readFile(file)));
-    const synced = await runPublic(['plugin', 'sync', 'team/codex-enhance', '--context', 'project', '--yes']);
-    expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+    await fs.remove(userRoles[0]!);
+    const drifted = await runPublic(['plugin', 'status', 'team/codex-enhance', '--context', 'user']);
+    expect(drifted).toMatchObject({ exitCode: 0, payload: { status: 'success',
+      data: { counts: { blocked: 0, pending: 1 }, inventory: [expect.objectContaining({
+        targetResults: [expect.objectContaining({ content: 'absent', satisfaction: 'pending', blockerCodes: [] })],
+      })] },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'componentOutputMissing', severity: 'warning',
+        subject: { pluginId: 'team/codex-enhance', target: 'codex', scope: 'user' } })]),
+      nextActions: expect.arrayContaining([expect.objectContaining({
+        argv: ['aw', 'plugin', 'sync', 'team/codex-enhance', '--context', 'user', '--target', 'codex'],
+      })]) } });
+    expect(drifted.payload).not.toMatchObject({ diagnostics: expect.arrayContaining([
+      expect.objectContaining({ code: 'dynamicExpectationUnconfirmed' }),
+    ]) });
+    const userBeforeSync = await observeIntent(userLocation);
+    const synced = await runPublic(['plugin', 'sync', 'team/codex-enhance', '--context', 'user', '--yes']);
+    expect(synced, JSON.stringify(synced)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     await expect(observeIntent(userLocation)).resolves.toEqual(userBeforeSync);
     await expect(observeIntent(projectLocation)).resolves.toEqual(projectIntentBefore);
     for (const [index, file] of userRoles.entries()) await expect(fs.readFile(file)).resolves.toEqual(userRoleBytes[index]);
@@ -419,7 +442,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(preferencesPath)).resolves.toEqual(preferencesBefore);
     for (const pluginId of ['team/codex-enhance', 'team/agent-subagent']) {
       const cleaned = await runPublic(['plugin', 'remove', '--only', 'outputs', pluginId, '--target', 'codex', '--scope', 'project', '--yes']);
-      expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 1, status: 'success' } });
+      expect(cleaned, JSON.stringify(cleaned)).toMatchObject({ exitCode: 0, payload: { schemaVersion: 2, status: 'success' } });
     }
     for (const file of projectRoles) await expect(fs.pathExists(file)).resolves.toBe(false);
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('developer_instructions = "foreign bytes"\n');

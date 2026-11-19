@@ -4,7 +4,7 @@ import {
   assertPluginComponent, assertPlatformComponentPlan, partitionStaticPluginComponents,
   createHookHandlerResponse, getHookHandlerContract, getPluginAuthoringCapabilitySurface, getPlatformHookHandlerRegistry,
   renderPublicHookEvent, normalizeRenderedHookGroupIdentity, validatePlatformManifestProjection, validatePluginManifest, COMPONENT_KINDS,
-  type PlatformCapabilitiesV1, type PluginComponent,
+  type PlatformCapabilitiesV2, type PluginComponent,
 } from '../../src/manifest.js';
 const raw = { schemaVersion: 4, name: 'example', version: '1.0.0', description: 'Example', platforms: ['codex'], marketplace: { category: 'test', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } }, extensions: { nativeHooks: { codex: [{ id: 'child', event: 'SubagentStart', feedback: 'context', command: 'node child.mjs' }] } } };
 describe('public Hook handler registry', () => {
@@ -52,8 +52,8 @@ describe('public Hook handler registry', () => {
     { platform: 'codex' as const, dialect: 'common' as const, event: 'before_tool' as const, matcher: '[' },
   ])('checks $platform $dialect $event matcher through all component and Manifest entry points', ({ platform, dialect, event, matcher }) => {
     const component: PluginComponent = { id: 'guard', kind: 'hook', name: 'guard', content: { dialect, event, feedback: 'notify', matcher, command: 'echo guard' } };
-    const capabilities: PlatformCapabilitiesV1 = { schemaVersion: 1, platform, scope: 'user', basis: 'profile', profileId: 'test', consumers: [],
-      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV1['kinds'],
+    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform, scope: 'user', basis: 'profile',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
       features: { [`hook.${dialect}.${event}`]: { status: 'supported', reasonCodes: [], values: ['notify'] } },
     };
     expect(() => assertPluginComponent(component, { platform })).toThrow();
@@ -79,8 +79,8 @@ describe('public Hook handler registry', () => {
     const { platforms: _, ...allPlatforms } = raw;
     const { dialect: __, ...sourceHook } = hook.content;
     expect(() => validatePluginManifest('/tmp', { ...allPlatforms, extensions: { hooks: [{ id: 'guard', ...sourceHook }] } })).not.toThrow();
-    const capabilities: PlatformCapabilitiesV1 = { schemaVersion: 1, platform, scope: 'user', basis: 'profile', profileId: 'test', consumers: [],
-      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV1['kinds'],
+    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform, scope: 'user', basis: 'profile',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
       features: { 'hook.common.before_tool': { status: 'supported', reasonCodes: [], values: ['notify'] } },
     };
     const skill: PluginComponent = { id: 'independent', name: 'independent', kind: 'skill', content: { files: { 'SKILL.md': { text: '---\nname: independent\ndescription: Check.\n---\nCheck.\n' } } } };
@@ -93,8 +93,8 @@ describe('public Hook handler registry', () => {
 
   it('delivers a matched Hook only with the corresponding qualified matcher value', () => {
     const component: PluginComponent = { id: 'guard', name: 'guard', kind: 'hook', content: { dialect: 'common', event: 'before_tool', feedback: 'notify', matcher: 'Bash', command: 'echo guard' } };
-    const capabilities: PlatformCapabilitiesV1 = { schemaVersion: 1, platform: 'codex', scope: 'user', basis: 'profile', profileId: 'test', consumers: [],
-      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV1['kinds'],
+    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform: 'codex', scope: 'user', basis: 'profile',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
       features: { 'hook.common.before_tool': { status: 'supported', reasonCodes: [], values: ['notify'] }, 'hook.matcher': { status: 'supported', reasonCodes: [], values: ['common.before_tool'] } },
     };
     expect(partitionStaticPluginComponents([component], capabilities).components).toEqual([component]);
@@ -113,8 +113,8 @@ describe('public Hook handler registry', () => {
   it('rejects equivalent host handlers in dynamic, static and mixed component collections', () => {
     const common: PluginComponent = { id: 'public', name: 'public', kind: 'hook', content: { dialect: 'common', event: 'before_tool', feedback: 'notify', command: 'echo guard' } };
     const native: PluginComponent = { id: 'native', name: 'native', kind: 'hook', content: { dialect: 'native', event: 'PreToolUse', feedback: 'notify', matcher: '*', command: 'echo guard' } };
-    const capabilities: PlatformCapabilitiesV1 = { schemaVersion: 1, platform: 'codex', scope: 'user', basis: 'profile', profileId: 'test', consumers: [],
-      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV1['kinds'],
+    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform: 'codex', scope: 'user', basis: 'profile',
+      kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'supported', reasonCodes: [], delivery: ['native-package'] }])) as PlatformCapabilitiesV2['kinds'],
       features: { 'hook.common.before_tool': { status: 'supported', reasonCodes: [], values: ['notify'] }, 'hook.native.PreToolUse': { status: 'supported', reasonCodes: [], values: ['notify'] }, 'hook.matcher': { status: 'supported', reasonCodes: [], values: ['native.PreToolUse'] } },
     };
     const plan = (components: PluginComponent[]) => ({ version: 3, components, omitted: [], unmet: [] });
@@ -129,7 +129,7 @@ describe('public Hook handler registry', () => {
   it('keeps missing wire definitions unverified and does not infer client qualification from a protocol', () => {
     expect(getHookHandlerContract('cursor', 'common', 'session_start')).toMatchObject({ qualification: 'required', protocol: null });
     expect(getHookHandlerContract('pi', 'native', 'tool_call')).toMatchObject({ api: 'pi.on', protocol: { id: 'aw.serialized-event-notify.v1', responses: { notify: { stdout: null } } } });
-    const capabilities: PlatformCapabilitiesV1 = { schemaVersion: 1, platform: 'cursor', scope: 'user', basis: 'profile', profileId: 'test', consumers: [], kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'unverified', reasonCodes: ['capability-unverified'], delivery: [] }])) as PlatformCapabilitiesV1['kinds'], features: { 'hook.common.session_start': { status: 'supported', reasonCodes: [], values: ['context'] } } };
+    const capabilities: PlatformCapabilitiesV2 = { schemaVersion: 2, platform: 'cursor', scope: 'user', basis: 'profile', kinds: Object.fromEntries(COMPONENT_KINDS.map((kind) => [kind, { status: 'unverified', reasonCodes: ['capability-unverified'], delivery: [] }])) as PlatformCapabilitiesV2['kinds'], features: { 'hook.common.session_start': { status: 'supported', reasonCodes: [], values: ['context'] } } };
     expect(() => assertPlatformCapabilities(capabilities)).toThrow(/protocol is unverified/u);
     expect(Object.values(getPlatformHookHandlerRegistry()).every((platform) => Object.values(platform.native).every((handler) => handler.qualification === 'required'))).toBe(true);
   });

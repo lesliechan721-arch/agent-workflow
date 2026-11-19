@@ -26,7 +26,7 @@ import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 describe('prepared managed command Review', () => {
   it.each(['static-codex', 'static-claude', 'dynamic-codex', 'dynamic-claude'] as const)('shows %s commands and exact permission changes', async (kind) => {
     const platform = kind.endsWith('claude') ? 'claude' : 'codex';
-    installNativeTestQualification({ platforms: [platform], discovery: true, trust: true });
+    installNativeTestQualification({ platforms: [platform], discovery: true });
     const isolated = await createIsolatedTestEnv();
     let context: RebuildExecutionContext | undefined;
     try {
@@ -127,7 +127,7 @@ describe('prepared managed command Review', () => {
 
   // The first update after saving uses the same saved-config preparation as retries.
   it('reviews the first saved-config apply through the real controller', async () => {
-    installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true });
+    installNativeTestQualification({ platforms: ['codex'], discovery: true });
     const isolated = await createIsolatedTestEnv();
     let controller: TuiController | undefined;
     try {

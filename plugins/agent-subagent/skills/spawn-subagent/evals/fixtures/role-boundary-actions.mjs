@@ -53,8 +53,10 @@ async function jsonCommand(command, args, options) {
   const result = await processResult(command, args, options);
   let value;
   try { value = JSON.parse(result.stdout); } catch { throw new Error(`fixtureCommandFailed: ${command} ${args.slice(0, 2).join(' ')}: exit=${result.code}, diagnostic=${result.stderr.slice(0, 2048)}`); }
-  if (result.code !== 0 || value.status !== 'success') throw new Error(`fixtureCommandFailed: ${command} ${args.slice(0, 2).join(' ')}: exit=${result.code}, code=${value.code ?? value.status ?? 'failed'}, diagnostic=${JSON.stringify(value.error ?? (value.errors?.length ? value.errors : value.message ?? value)).slice(0, 2048)}`);
-  return value;
+  if (result.code !== 0 || value?.schemaVersion !== 2 || value.status !== 'success' || !value.data || typeof value.data !== 'object' || Array.isArray(value.data)) {
+    throw new Error(`fixtureCommandFailed: ${command} ${args.slice(0, 2).join(' ')}: exit=${result.code}, status=${value?.status ?? 'failed'}, diagnostic=${JSON.stringify(value?.diagnostics ?? []).slice(0, 2048)}`);
+  }
+  return value.data;
 }
 async function successfulCommand(command, args, options) {
   const result = await processResult(command, args, options);
@@ -68,7 +70,7 @@ function labEnvironment(workspace) {
 }
 async function awAvailable(env, cwd) {
   const describe = await jsonCommand('aw', ['self', 'describe', '--json'], { env, cwd });
-  const required = ['aw.cli-output.v1', 'aw.self-check.v2', 'aw.plugin-authoring.v2', 'aw.catalog-authoring.v2', 'aw.catalog-source.v3', 'aw.plugin-recovery.v2', 'aw.installed-runtime-config.v2', 'aw.dynamic-artifacts.v2', 'aw.plugin-config.v4', 'aw.plugin-config-unique-by.v1', 'aw.plugin-config-value-ref.v1'];
+  const required = ['aw.cli-output.v2', 'aw.self-check.v2', 'aw.plugin-authoring.v2', 'aw.catalog-authoring.v2', 'aw.catalog-source.v3', 'aw.plugin-recovery.v2', 'aw.installed-runtime-config.v2', 'aw.dynamic-artifacts.v2', 'aw.plugin-config.v4', 'aw.plugin-config-unique-by.v1', 'aw.plugin-config-value-ref.v1'];
   const missing = required.filter((item) => !describe.capabilities?.includes(item));
   if (missing.length) throw new Error(`fixtureEnvironmentUnsupported: PATH aw lacks ${missing.join(', ')}`);
   return describe;

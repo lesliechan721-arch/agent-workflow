@@ -20,7 +20,7 @@ import {
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function fixture(scope: Scope) {
-  installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true });
+  installNativeTestQualification({ platforms: ['codex'], discovery: true });
   const isolation = getCurrentSourceTestIsolation();
   const { env, layout } = isolation;
   const cwd = layout.fixtureCwd;

@@ -136,7 +136,7 @@ async function nativeRuntime(setup: Fixture) {
 }
 
 describe('scoped recovery integration', () => {
-  beforeEach(() => { installNativeTestQualification({ discovery: true, trust: true }); });
+  beforeEach(() => { installNativeTestQualification({ discovery: true }); });
   // Test Value Gate: preparation must retain a useful failure stage and known errno without exposing arbitrary error data.
   it.each(['ENAMETOOLONG', 'private-config-value'])('reports safe Portable preparation diagnostics (%s)', async (code) => {
     const setup = await fixture([{ name: 'alpha' }]);

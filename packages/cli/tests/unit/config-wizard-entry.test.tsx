@@ -35,7 +35,7 @@ describe('config mutation runtime entry', () => {
 
     expect(exitCode).toBe(3);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: `plugin.config.${command}`, status: 'blocked',
+      schemaVersion: 2, command: `plugin.config.${command}`, status: 'blocked',
       data: { plugin: 'team/demo', configWrite: 'notStarted' },
     });
     expect(launch).not.toHaveBeenCalled();
@@ -59,7 +59,7 @@ describe('config mutation runtime entry', () => {
 
     expect(exitCode).toBe(3);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.config.reset', status: 'blocked',
+      schemaVersion: 2, command: 'plugin.config.reset', status: 'blocked',
       data: { confirmation: { required: true, provided: false,
         effects: [expect.objectContaining({ code: 'deletePluginConfig' })] } },
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),

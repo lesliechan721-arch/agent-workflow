@@ -34,7 +34,14 @@ it.each([
   const input = { binding, renderUnit, observation, profile: getQualifiedPlatformProfile(platform, { platform: 'linux', arch: 'x64' }) };
   for (const version of [minimum, '99.0.0', '99.0.0-alpha.1']) {
     binding.consumers[0]!.version = version;
-    expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
+    const capabilities = getPlatformCapabilities(input);
+    expect(capabilities.kinds.skill.status).toBe('supported');
+    if (platform === 'codex') {
+      expect(capabilities.kinds.agent.status).toBe('supported');
+      expect(capabilities.features['skill.runtime-config']).toMatchObject({
+        status: 'supported', values: ['aw.installed-runtime-config.v2'],
+      });
+    }
   }
   for (const version of [below, `${minimum}-alpha.1`, 'invalid', null]) {
     binding.consumers[0]!.version = version;
@@ -46,8 +53,14 @@ it.each([
     { ...binding.consumers[0]!, id: 'failed-cli', availability: 'unknown' });
   expect(getPlatformCapabilities(input).kinds.skill.status).toBe('supported');
   binding.consumers.shift();
-  expect(getPlatformCapabilities(input).kinds.skill.status).not.toBe('supported');
+  const withoutCli = getPlatformCapabilities(input);
+  expect(withoutCli.kinds.skill.status).not.toBe('supported');
+  if (platform === 'codex') {
+    expect(withoutCli.kinds.agent.status).not.toBe('supported');
+    expect(withoutCli.features['skill.runtime-config']?.status).not.toBe('supported');
+  }
 });
+
 it('shares Codex products and user rendering while keeping project roles and activation separate', async () => {
   const { root, ctx, request } = await fixture('codex');
   const user = await resolveDeployments(ctx, request);
@@ -156,12 +169,21 @@ it.each(['codex', 'pi'] as const)('keeps the %s Skill profile host and product l
     const capabilities = getPlatformCapabilities({ ...input, profile });
     expect(capabilities.kinds.skill.status).toBe('supported');
     for (const kind of ['hook', 'mcp', 'instruction'] as const) expect(capabilities.kinds[kind].status).toBe('unverified');
-    expect(capabilities.kinds.agent.status).not.toBe('supported');
-    expect(capabilities.features['skill.invocation.manual']!.status).toBe('unverified');
+    if (platform === 'codex') {
+      expect(capabilities.kinds.agent.status).toBe('supported');
+      expect(capabilities.features['skill.invocation.manual']).toMatchObject({ status: 'supported', values: ['true'] });
+      expect(capabilities.features['skill.visibility']).toMatchObject({ status: 'supported', values: ['visible'] });
+      expect(capabilities.features['skill.invocation.model']).toMatchObject({ status: 'supported', values: ['false', 'true'] });
+    } else {
+      expect(capabilities.kinds.agent.status).not.toBe('supported');
+      expect(capabilities.features['skill.invocation.manual']!.status).toBe('unverified');
+    }
     expect(profile.qualificationEvidence?.[0]).toMatchObject({ platform: host.platform, arch: host.arch,
       product: 'cli', version, kinds: ['skill'], features: [], scopes: ['user', 'project'] });
     binding.consumers[0]!.product = 'app';
-    expect(getPlatformCapabilities({ ...input, profile }).kinds.skill.status).toBe('unverified');
+    const appOnly = getPlatformCapabilities({ ...input, profile });
+    expect(appOnly.kinds.skill.status).toBe('unverified');
+    expect(appOnly.features['skill.invocation.manual']!.status).toBe('unverified');
     binding.consumers[0]!.product = 'cli'; binding.consumers[0]!.version = platform === 'codex' ? '0.168.0' : '1.5.1';
     expect(getPlatformCapabilities({ ...input, profile }).kinds.skill.status).toBe('supported');
     binding.consumers[0]!.version = version;

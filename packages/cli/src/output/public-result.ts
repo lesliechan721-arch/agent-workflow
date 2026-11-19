@@ -3,6 +3,16 @@ import { renderPluginCapabilities, type PluginCapabilitiesResult } from '../comm
 import { redactString } from './redact.js';
 import type { PublicTargetResult } from '../commands/public-lifecycle-result.js';
 
+export const CLI_OUTPUT_SCHEMA_VERSION = 2;
+
+const targetContentLabels: Record<PublicTargetResult['content'], string> = {
+  absent: 'Missing',
+  satisfied: 'Ready',
+  drifted: 'Needs sync',
+  conflict: 'Conflict',
+  unknown: 'Unconfirmed',
+};
+
 export interface Diagnostic {
   code: string;
   severity: 'info' | 'warning' | 'error';
@@ -19,7 +29,7 @@ export interface Confirmation {
   effects: Array<{ code: string; message: string; subject?: Diagnostic['subject']; impact: 'selected-scope' | 'user-wide' | 'shared' | 'unknown' }>;
 }
 export interface CommandResult<T extends object = Record<string, unknown>> {
-  schemaVersion: 1;
+  schemaVersion: typeof CLI_OUTPUT_SCHEMA_VERSION;
   command: string | null;
   status: 'success' | 'partial' | 'blocked' | 'failed';
   data: T | Record<string, never>;
@@ -27,7 +37,7 @@ export interface CommandResult<T extends object = Record<string, unknown>> {
   nextActions: NextAction[];
 }
 export function commandResult<T extends object>(command: string | null, data: T | Record<string, never>, options: Partial<Pick<CommandResult<T>, 'status' | 'diagnostics' | 'nextActions'>> = {}): CommandResult<T> {
-  return { schemaVersion: 1, command, status: options.status ?? 'success', data, diagnostics: options.diagnostics ?? [], nextActions: options.nextActions ?? [] };
+  return { schemaVersion: CLI_OUTPUT_SCHEMA_VERSION, command, status: options.status ?? 'success', data, diagnostics: options.diagnostics ?? [], nextActions: options.nextActions ?? [] };
 }
 export function publicExitCode(result: CommandResult<object>, argumentError = false): number {
   return result.status === 'success' ? 0 : result.status === 'partial' ? 4 : result.status === 'blocked' ? 3 : argumentError ? 2 : 1;
@@ -98,15 +108,27 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
     const entries = data[key];
     if (!Array.isArray(entries)) continue;
     if (entries.length === 0) lines.push(`${key}: none`);
-    for (const item of entries) {
+    const rows = key === 'inventory'
+      ? entries.flatMap((entry) => entry.targetResults?.length ? entry.targetResults : [entry])
+      : entries;
+    for (const item of rows) {
       if (typeof item === 'string') { lines.push(item); continue; }
       const entry = item as Record<string, unknown>;
-      lines.push([entry.pluginId ?? entry.id ?? entry.sourceId ?? entry.storeKey ?? entry.name ?? entry.skill ?? '', entry.target ?? '', entry.version ?? '', entry.execution ?? entry.availability ?? entry.status ?? entry.state ?? '', entry.summary ?? entry.description ?? ''].filter(Boolean).join('  '));
+      const targetEntry = entry as unknown as PublicTargetResult;
+      const disabled = key === 'inventory' && targetEntry.content === 'drifted' && result.diagnostics.some(({ code, subject }) =>
+        code === 'nativeActivationDisabled' && subject?.pluginId === targetEntry.pluginId
+        && subject.target === targetEntry.target && subject.scope === targetEntry.scope);
+      const content = key === 'inventory' || key === 'targetResults' ? targetContentLabels[targetEntry.content] : undefined;
+      const operation = key === 'inventory' ? undefined : entry.execution ?? entry.availability ?? entry.status ?? entry.state;
+      lines.push([
+        entry.pluginId ?? entry.id ?? entry.sourceId ?? entry.storeKey ?? entry.name ?? entry.skill,
+        entry.target, content && entry.scope, entry.version, operation, disabled ? 'Disabled' : content,
+        entry.summary ?? entry.description,
+      ].filter(Boolean).join('  '));
       if (entry.profile && typeof entry.profile === 'object') { const profile = entry.profile as { platform?: string; scope?: string }; lines.push(`  Profile: ${profile.platform ?? 'unknown'}/${profile.scope ?? 'unknown'}${entry.finalPath ? `; final: ${String(entry.finalPath)}` : ''}`); }
       const compatibility = entry.compatibility as { state?: string; requiredCapabilities?: string[]; missingCapabilities?: string[] } | undefined;
       if (compatibility?.state === 'unsupported') lines.push(`  Incompatible; required: ${compatibility.requiredCapabilities?.join(', ') ?? 'unknown'}; missing: ${compatibility.missingCapabilities?.join(', ') ?? 'unknown'}`);
       if ('activeReady' in entry) lines.push(`  Active: ${entry.active ? 'present' : 'absent'}; ready: ${entry.activeReady ? 'yes' : 'no'}`);
-      const targetEntry = entry as unknown as PublicTargetResult;
       for (const excluded of targetEntry.deploymentExclusions ?? []) {
         lines.push(`  ${excluded.product?.product ?? 'product'}: version ${excluded.product?.version ?? 'unknown'}; not-run; ${excluded.reasonCode}`);
         lines.push(...excluded.recoveryActions.map((action) => `    Recovery: ${action}`));
@@ -115,7 +137,7 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       if (!targetEntry.deploymentReceipts?.length) for (const deployment of targetEntry.deploymentObservations ?? []) {
         for (const product of deployment.products) {
           const observation = deployment.after.consumers.find((consumer) => consumer.productId === product.id);
-          lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; activation=${observation?.activation ?? 'unknown'}; trust=${observation?.trust ?? 'unknown'}; load=${observation?.load ?? 'unknown'}`);
+          lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; activation=${observation?.activation ?? 'unknown'}; load=${observation?.load ?? 'unknown'}`);
           for (const component of deployment.after.components) lines.push(`    Component ${component.id}: physical content ${component.presence}`);
         }
         lines.push(`  Package: ${deployment.after.package}; registration=${deployment.after.registration}`);
@@ -136,7 +158,7 @@ export function renderPublicResult(result: CommandResult<object>, verbose = fals
       for (const deployment of targetEntry.deploymentReceipts ?? []) {
         for (const product of deployment.products) {
           const observation = deployment.after.consumers.find((consumer) => consumer.productId === product.id);
-          lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; activation=${observation?.activation ?? 'unknown'}; trust=${observation?.trust ?? 'unknown'}; load=${observation?.load ?? 'unknown'}`);
+          lines.push(`  ${product.product}: version ${product.version ?? 'unknown'}; activation=${observation?.activation ?? 'unknown'}; load=${observation?.load ?? 'unknown'}`);
           for (const component of deployment.after.components) lines.push(`    Component ${component.id}: physical content ${component.presence}`);
           for (const gap of deployment.unmet.filter((item) => !item.productIds.length || item.productIds.includes(product.id))) lines.push(`    Unmet ${gap.componentId ?? gap.id}: ${gap.reasonCode}; ${gap.requiredFeatures.map((requirement) => `${requirement.feature}${requirement.values ? `=${requirement.values.join(',')}` : ''}`).join('; ')}`);
         }

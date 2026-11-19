@@ -98,7 +98,7 @@ export function deriveAwCapabilitiesFromManifest(
     capabilities.push('aw.managed-commands.v1', 'aw.claude.sandbox-exclusions.v1')
   }
   if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
-  if (manifest.artifacts) capabilities.push('aw.platform-components.v3')
+  if (manifest.artifacts) capabilities.push('aw.platform-components.v3', 'aw.platform-render-context.v2')
   if ([...resolveSupportedPlatforms(manifest)].some(isPortablePlatformTarget)) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')
   return normalizeAwCapabilities(capabilities)
@@ -151,7 +151,7 @@ function commandCapabilities(group: string, command: string | undefined, tail: s
   } else {
     capability = COMMAND_CAPABILITIES[`${group} ${command}`]
   }
-  return capability ? [capability, 'aw.cli-output.v1'] : []
+  return capability ? [capability, 'aw.cli-output.v2'] : []
 }
 
 interface AwCommandLiteral {

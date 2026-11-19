@@ -1,4 +1,4 @@
-import type { DeploymentBinding, ReadContext } from '../../src/platforms/contracts.js';
+import type { ReadContext } from '../../src/platforms/contracts.js';
 import type { NativeExecutionInput } from '../../src/commands/rebuild-command.js';
 import { observePreferences } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
@@ -54,7 +54,7 @@ const realAdapters = new Map(registry.getAgentPluginAdapters().map((adapter) => 
 export function installNativeTestQualification(options: {
   platforms?: readonly PlatformName[];
   discovery?: boolean;
-  trust?: boolean;
+  executable?: string;
 } = {}): { restore(): void } {
   const platforms = new Set(options.platforms ?? NATIVE_PLATFORM_TARGETS);
   const profile = vi.spyOn(capabilities, 'getQualifiedPlatformProfile').mockImplementation((platform, host) => {
@@ -76,24 +76,19 @@ export function installNativeTestQualification(options: {
     }
     return result;
   });
-  const adapters = options.discovery || options.trust ? vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => {
+  const adapters = options.discovery ? vi.spyOn(registry, 'getAgentPluginAdapter').mockImplementation((platform) => {
     const adapter = realAdapters.get(platform)!;
     if (!platforms.has(platform as PlatformName)) return adapter;
     return { ...adapter,
-      ...(options.discovery ? { async discover(ctx: ReadContext) {
+      async discover(ctx: ReadContext) {
         const versions: Record<PlatformName, string> = { codex: '0.167.0', claude: '2.1.292', cursor: '2026.11.05-86047df',
           antigravity: '1.3.4', opencode: '2.2.6', pi: '1.5.0', gemini: '0.63.0', copilot: '1.0.95', grok: '1.0.77' };
         return { platform, availability: 'available' as const, diagnostics: [], installations: [{
           id: `controlled:${platform}`, product: 'cli' as const, version: versions[platform as PlatformName],
           availability: 'available' as const, reasonCodes: [], entry: { kind: 'cli' as const,
-            executable: platform, configRoot: resolvePlatformConfigRoot(platform, ctx) },
+            executable: options.executable ?? platform, configRoot: resolvePlatformConfigRoot(platform, ctx) },
         }] };
-      } } : {}),
-      ...(options.trust ? { async inspect(ctx: ReadContext, binding: DeploymentBinding) {
-        const observation = await adapter.inspect(ctx, binding);
-        for (const consumer of observation.consumers) { consumer.trust = 'trusted'; consumer.load = 'not-observed'; }
-        return observation;
-      } } : {}),
+      },
     };
   }) : undefined;
   const restore = () => { adapters?.mockRestore(); profile.mockRestore(); };

@@ -25,7 +25,7 @@
 
 首次 install 只获取所选来源确实缺少的 Active，以及同来源必要依赖；已有 Active 不隐式升级，损坏 Active 不当作首次安装。`sync --refresh` 显式刷新来源。查询不取源、不运行 renderer/preApply、不创建工作区或配置。`source status --remote` 只允许临时获取并清理材料，不写 store、Active、lastSync。作者缺少工作区时使用 `dev catalog create` 显式建立。
 
-`aw plugin status [plugins...] --observe-native` 显式允许启动满足接口最低条件的 Codex CLI app-server 观察当前项目信任，或 满足 V2 最低条件的 OpenCode CLI 单次私有本地服务观察插件加载。Codex 临时使用 features.plugins=false，返回 feature 值不作为用户原有效配置；仅观察 User 不启动 Codex app-server。OpenCode 使用 --standalone，不复用远程或版本不明的服务，缺项不推断禁用。原生启动可加载插件代码，创建日志、状态和 cache，读取既有认证并按现有配置访问外部服务；人类输出和 JSON diagnostics 均保留 nativeObservationSideEffects。普通 status 和 TUI 不启动这些观察服务。观察不修改信任、AW ledger 或生产资格；精确证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
+`aw plugin status [plugins...] --observe-native` 显式允许对所选的 OpenCode 目标启动一次满足 V2 接口最低条件的私有本地服务，观察插件加载。OpenCode 使用 `--standalone`，缺少加载证据时保留未知。启动可加载插件代码，创建日志、状态和缓存，读取既有认证并按现有配置访问外部服务。进入 OpenCode 原生观察路径时，文本与 JSON 诊断均包含 `nativeObservationSideEffects`。普通 status 和 TUI 保持只读，使用已有证据判断安装状态。精确证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 普通需求、平台策略和配置保存由命令表达写入意图。删除输出、配置重置、共享替换、重要来源变化、作者源码删除、远端发布及安装附带 preApply 要求 `--yes`。显式 run/build/test 与准备/导出所必需的构建渲染不重复要求执行确认。缺少确认不先提交需求或配置；必要来源候选可临时准备，确认前不启用。TUI 保留其 Review 确认。
 
@@ -53,11 +53,11 @@ Gemini `0.67.0` 同版本动态刷新会在精确 AW 所有权、来源和旧副
 
 ## 2. 统一结果结构
 
-所有 AW 自管、非 TUI、非子程序透传命令使用同一个结果外壳。JSON 是稳定机器合同；文本是同一结果的英文呈现。成功、部分完成、业务阻断和受控错误均走同一序列化出口。
+所有 AW 自管、非 TUI、非子程序透传命令使用同一个结果外壳。脚本以 `schemaVersion: 2` 读取 JSON，可通过 `aw self describe --json` 核对 `aw.cli-output.v2` 能力。文本是同一结果的英文呈现。成功、部分完成、业务阻断和受控错误均走同一序列化出口。
 
 ```typescript
 type CommandResult<T extends object> = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   command: string | null;
   status: 'success' | 'partial' | 'blocked' | 'failed';
   data: T | Record<string, never>;
@@ -108,7 +108,7 @@ type Confirmation = {
 
 effects 只描述本次请求拟执行的重要影响，不表示已经发生。每项有稳定 code、英文 message、适用的 source/plugin/target/scope/field 身份和影响范围。`selected-scope` 表示所选范围内的影响，`user-wide` 表示整台机器的用户设置，`shared` 表示可能影响其它项目的共享内容，`unknown` 明确保留无法完整确定的影响；不能把 unknown 写成“没有影响”。适用的对象和 scope 必须给出，不能只依靠英文 message 定位。
 
-协议 v1的重要影响使用稳定 code，例如 `removeOwnedOutput`、`deletePluginConfig`、`runPreApply`、`replaceSharedOutput`、`changeSource`、`deletePluginSource`、`publishRemote`。新增 code 与诊断 code 一样可兼容扩展，既有 code 和 impact 的含义不得静默改变。该视图从现有 `requiresConfirmation`、`sharedImpact` 及领域影响描述投影，不增加持久计划、令牌或可执行动作。无法取得必要证据时仍遵守相应领域阻断规则，`--yes` 不补造证据。
+重要影响使用稳定 code，例如 `removeOwnedOutput`、`deletePluginConfig`、`runPreApply`、`replaceSharedOutput`、`changeSource`、`deletePluginSource`、`publishRemote`。新增 code 与诊断 code 一样可兼容扩展，既有 code 和 impact 的含义不得静默改变。该视图从现有 `requiresConfirmation`、`sharedImpact` 及领域影响描述投影，不增加持久计划、令牌或可执行动作。无法取得必要证据时仍遵守相应领域阻断规则，`--yes` 不补造证据。
 
 缺少确认时返回 `status: blocked`、`confirmationRequired`，并给出非空 effects；生命周期 `changes` 各项均为 none。传入 `--yes` 后重新按当前证据计算和校验，不能把上次 JSON 当作执行许可。成功或 partial 的 `changes` 继续报告实际结果，不能从 effects 推断已完成的变化。
 
@@ -116,7 +116,7 @@ effects 只描述本次请求拟执行的重要影响，不表示已经发生。
 
 | status / 情况 | 退出码 | 精确含义 |
 | --- | --- | --- |
-| success | 0 | 请求已完成；包括无须改变的 no-op，以及完整取得但显示 needsSync 的状态查询 |
+| success | 0 | 请求已完成，包括无须改变的 no-op，以及完整确认目标已禁用、缺失或待同步的状态查询 |
 | failed，参数或选项错误 | 2 | 请求无法合法解释；没有执行副作用 |
 | blocked | 3 | 请求合法，但确认、环境、来源、所有权或 stale 条件阻止开始；没有提交所请求的业务变更 |
 | failed，执行错误 | 1 | 执行失败，且没有已知或可能已提交的业务变更/有效部分结果需要作为 partial 保留 |
@@ -142,7 +142,7 @@ effects 只描述本次请求拟执行的重要影响，不表示已经发生。
 | command 管理 | 命令与 package 身份、可用性、实际变化、诊断；不把 run 子程序输出包入 data |
 | self/help | 当前 executable 能力、实际参数与结果 schema 信息；使用当前注册事实，不维护另一份手写命令真值 |
 
-plugin.status 和生命周期中的 deploymentObservations/deploymentReceipts 保留原生 registration、consumers.activation/trust/load，与 AW package/ownership/组件内容分开。可选 after.scopeRegistration 仅在原生接口提供安装 scope 时，报告当前 scope 的独立登记（present/absent/unknown）。可选 after.configuration 是本地补充：scope、显式 activation（enabled/disabled/absent/unknown）、可选 trust/marketplace、reasonCodes；缺项或读取失败不覆盖原生状态。共享包在项目中有效启用不等于项目独立安装，target scope 表示需求/观察上下文。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
+`plugin.status` 和生命周期的 `deploymentObservations`、`deploymentReceipts` 分别保留原生 `registration`、`consumers.activation`、`consumers.load` 以及 AW 包、归属和组件内容。原生接口给出安装 scope 时，`after.scopeRegistration` 报告当前 scope 的独立登记（present/absent/unknown）。Codex 的 `after.scopeActivation` 报告独立 Project 启用，`consumers.activation` 保留原生有效启用。`after.nativePackage` 报告 Gemini、Grok 或 Antigravity 的客户端消费副本，`after.workspaceOpen` 报告 Cursor 当前 scope 的受管 Hook 入口。可选的 `after.configuration` 补充当前 scope 的显式 activation（enabled/disabled/absent/unknown）、可选 marketplace 和 reasonCodes。项目可复用 User 已登记的包。原生生效状态由原生证据决定。完整定义见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
 plugin.show 的 components 只报告五类静态声明事实；权限在 invocationPolicy.declarations 计数。dynamicComponents 保留 declared、state（unprepared/not-declared）、configKeys 与 scopes：未准备时 kinds/names/count 为 null；没有动态 renderer 时为 []/[]/0。普通查询不运行脚本，不把 null 当空集合。
 
@@ -188,9 +188,11 @@ type LifecycleData = {
 
 生命周期数据中，`target` 表示目标平台，`requirements` 表示需求；state、roots、合法性和空值含义由对应领域定义。`blockerCodes` 关联顶层含同 subject 的完整诊断；适用的 delivery、依赖关系及需求/提供者 scope 不因简短样例而省略。
 
-平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、trust、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
+平台准备回执 deploymentPlans 保留 bindingId、physicalKey、products、expected 的组件身份/omitted/unmet、审核 effects 和 sharedReferences。unmet.requiredFeatures 保留具体 values，不能只剩 feature 名。deploymentExclusions 单列已识别但不能执行的产品面、原因及恢复指引；其他可用产品面的执行不会使这些限制消失。执行回执 deploymentReceipts 保留对应 effect ID 的 status/mutation、各产品面及 after 中的 package、registration、ownership、activation、load、组件 presence、nativeIdentity，以及 unmet 和 reload。已取得的 nativeSources 只公开来源分类、版本、scope、生效组件、重叠和配置摘要，省略其内部路径。其余内部 prerequisite 证据及 renderer 正文不公开。物理组件存在不证明宿主已加载。
 
-status 的 `trust: "not-applicable"` 表示当前完整组件集合不需要额外信任门槛，不表示项目已受信任或宿主已加载。Codex 的有限用户级普通 Skill 判定及显式项目信任观察边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。`nativeTrustUnconfirmed` warning 说明信任观测不足，保留 unknown 及原退出码；显式观察取得拒信证据时报告 `trust: "blocked"` 和 `nativeTrustRequired`，不会因登记或 activation 已启用而改成 trusted。
+`plugin.status` 按每条部署路由所需的包、原生登记、启用和当前组件产物判定安装状态。已明确禁用或需要同步时，目标为 `content: drifted` 并计入 `counts.pending`，正常返回 `success`。已确认缺少必需的包或登记时，目标为 `content: absent`，同样计入 `pending`。已知漂移提供针对具体插件、目标和 scope 的同步指引。仅缺少任选的加载证据时，已确认满足全部安装条件的目标仍为 `content: satisfied` 并计入 `counts.ready`。真实归属冲突及必需门禁拒绝继续报告具体 blocker。
+
+无法确认安装所需证据时，目标为 `content: unknown` 并计入 `counts.unconfirmed`。显式目标没有可以独立完成的已知结果时返回 `blocked`（3），同时有可独立完成的已知结果时返回 `partial`（4）。各宿主的必需启用、权限和可选加载观察由实际部署路由决定。
 
 plugin.status 的 selection 保留 plugins/targets 数组及 targetOrigin。指定依赖插件时，inventory 返回其真实目标、requiredBy 和提供者关系，不把它加入直接需求。counts 仅统计可见目标；allSatisfied/inSync 仍描述整个授权读取上下文，明确不满足为 false，未完整观察为 null。可选 coverage.requestComplete 描述本次选择及必要依赖、共享与碰撞检查是否完整；本次请求可完成而全局汇总仍未知，未选目标未观察不独自使请求失败。
 
@@ -205,6 +207,8 @@ remainingTargets 只列本次请求选择中未完成的目标，不能把过滤
 清理失败的 manual 说明保留该插件、平台和 scope 的实际隔离文件及残留位置，供用户定位恢复；不得借用其他目标的位置，也不能把隔离或保留写成已恢复、已删除。无法安全认领的旧产物须指出具体原因、备份对象、需核对的精确配置引用、移到宿主扫描目录之外的方法及同范围 status 重查。配置引用不确定时要求人工核对，不断言可以删除；不删除整个宿主目录或共享 store，也不把已失败的同一 force 命令作为唯一下一步。
 
 自动化应忽略未知可选字段。新增命令、新的非必填字段和新的诊断 code 可作为兼容扩展；删除/改义字段、收窄有效值或改变 status 含义须提升输出 schemaVersion。输出协议版本与 CLI 包版本、持久文件格式分别管理。
+
+CLI 升级后，使用 v1 的已安装插件脚本须重新部署。先运行 `aw source sync <来源 ID>` 激活包含 v2 插件的 Catalog，再运行 `aw plugin sync <来源 ID>/<插件名>`。旧 Active 仍可提供已独立确认的安装事实，生成或同步需要与当前 CLI 兼容的插件声明和脚本。
 
 命令帮助和 JSON 帮助都来自实际命令注册。`aw plugin install --help --json` 返回同一外壳，command 为 help，data 指明所查询命令、参数、选项、互斥规则、重要副作用及示例；`aw --version --json` 返回结构化版本结果。help/version 明确请求优先于 TUI 默认入口。
 

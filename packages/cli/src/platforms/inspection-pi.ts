@@ -76,7 +76,7 @@ export async function inspectPiDeployment(ctx: ReadContext, binding: DeploymentB
   try { await inspectPiConfiguration(ctx, binding, layout, result, agentRoot); }
   catch (error) {
     rethrowFatalError(error); ctx.signal?.throwIfAborted();
-    result.configuration = { scope: binding.scope.kind, activation: 'unknown', trust: 'unknown', reasonCodes: ['piConfigurationUnconfirmed'] };
+    result.configuration = { scope: binding.scope.kind, activation: 'unknown', reasonCodes: ['piConfigurationUnconfirmed'] };
     result.prerequisites.agentConsumers = { observation: 'unknown', candidates: [], reasonCodes: ['agentConsumerDiscoveryUnverified'] };
     result.diagnostics.push({ code: 'piConfigurationUnconfirmed', severity: 'warning',
       message: 'Pi supplemental configuration or Agent consumer settings could not be read.', subject: { target: 'pi', scope: binding.scope.kind } });
@@ -132,8 +132,7 @@ async function inspectPiConfiguration(ctx: ReadContext, binding: DeploymentBindi
     const source = typeof entry === 'string' ? entry : object(entry).source;
     return typeof source === 'string' && resolveSource(source, path.dirname(layout.activationPath)) === layout.packageRoot;
   });
-  result.configuration = { scope: binding.scope.kind, activation: configured ? 'enabled' : 'absent',
-    trust: binding.scope.kind === 'user' ? 'trusted' : projectTrust, reasonCodes: [] };
+  result.configuration = { scope: binding.scope.kind, activation: configured ? 'enabled' : 'absent', reasonCodes: [] };
   // Pi 1.5's public package/filter and trust formats are observed separately
   // from qualification of any consumer's invocation protocol.
   const candidates: AgentConsumerObservation[] = [];

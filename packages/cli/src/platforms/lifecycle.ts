@@ -6,7 +6,7 @@ import type {
   NativeIdentity, PlannedEffect, PreparedDeployment, PrepareResult, ProductInstallation,
   ProjectionResult,
 } from './contracts.js';
-import { inspectDeployment, selectedNativeConsumer } from './inspection.js';
+import { inspectDeployment, requiredDeploymentActivation, selectedNativeConsumer } from './inspection.js';
 import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, piProjectRegistrationHidden, routeReload } from './lifecycle-native.js';
 import { geminiConsentMessages } from './gemini-consent.js';
 import { geminiReplacementMessages } from './gemini-activation.js';
@@ -370,8 +370,10 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       if (geminiCode) receipt.diagnostics.push(failureDiagnostic);
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
         && (!definite || code === 'nativeTrustRequired')) {
-        result.diagnostics.push(lifecycleDiagnostic(binding, 'grokNativeInstallRecovery',
-          `The Grok installation may be missing or stale. The AW source package is kept. With the same Grok client and configuration root, use arguments ${JSON.stringify(['plugin', 'install', plan.evidence.layout.packageRoot, '--trust'])}; --trust grants Grok plugin trust. Then run aw plugin sync ${binding.plugin.pluginId} --context user --target grok.`));
+        result.diagnostics.push({ ...lifecycleDiagnostic(binding, 'grokNativeInstallRecovery',
+          'The owned AW source package is retained for interactive Grok installation.'), severity: 'warning',
+          subject: { target: 'grok', pluginId: binding.plugin.pluginId, scope: binding.scope.kind, field: 'nativeSource' },
+          detail: { reasonCode: 'grokNativeInstallSource', path: plan.evidence.layout.packageRoot } });
       }
       if (effect.kind === 'publish-package') packageReady = false;
       if (effect.kind === 'register' || effect.kind === 'refresh') nativeReady = false;
@@ -380,7 +382,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       for (const componentId of effect.componentIds) {
         const component = plan.expected.components.find((item) => item.id === componentId);
         if (component) receipt.unmet.push({ id: `execution:${effect.id}:${componentId}`, componentId, kind: component.kind,
-          reasonCode: geminiCode ?? (result.status === 'unknown' ? 'platformMutationUnknown' : 'platformMutationFailed'), requiredFeatures: [], productIds: binding.consumers.map((item) => item.id) });
+          reasonCode: geminiCode ?? (definite ? code : result.status === 'unknown' ? 'platformMutationUnknown' : 'platformMutationFailed'), requiredFeatures: [], productIds: binding.consumers.map((item) => item.id) });
       }
     }
   }
@@ -390,6 +392,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
   receipt.after = await observe();
   const afterConsumer = selectedNativeConsumer(binding, receipt.after);
   const beforeConsumer = selectedNativeConsumer(binding, state.before);
+  const requiredActivation = requiredDeploymentActivation(binding, receipt.after);
   const grokContentReady = binding.route !== 'grok-cli' || receipt.after.ownership === 'aw'
     && !!state.bundle && receipt.after.nativePackageContentDigest === state.bundle.contentDigest
     && plan.projections.filter((projection) => projection.bundle).flatMap((projection) => projection.components).every((component) =>
@@ -445,16 +448,22 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       if (sharedKey) ctx.nativeEffects?.set(sharedKey, Promise.resolve({ mutation: 'confirmed', changed: true }));
     }
   }
-  if ((plan.operation === 'ensure' || plan.operation === 'reinstall') && plan.expected.components.length) {
-    const untrusted = afterConsumer && (afterConsumer.trust === 'required' || afterConsumer.trust === 'blocked') ? [afterConsumer] : [];
-    if (untrusted.length) {
-      receipt.diagnostics.push(lifecycleDiagnostic(binding, 'nativeTrustRequired',
-        'The package was prepared, but the host has not trusted this deployment. Complete trust in the host and retry.'));
-      const productIds = untrusted.map((consumer) => consumer.productId);
-      for (const component of plan.expected.components) receipt.unmet.push({
-        id: `trust:${binding.id}:${component.id}`, componentId: component.id, kind: component.kind,
-        requiredFeatures: [], reasonCode: 'nativeTrustRequired', productIds,
-      });
+  if ((plan.operation === 'ensure' || plan.operation === 'reinstall') && state.bundle && !plan.evidence.retainPackage) {
+    const cursorHook = binding.route === 'cursor-workspace-hook' ? receipt.after.workspaceOpen : 'present';
+    const code = cursorHook !== 'present' ? (cursorHook === 'absent' ? 'cursorWorkspaceOpenMissing' : 'cursorWorkspaceOpenUnconfirmed')
+      : binding.route === 'grok-directory' && requiredActivation === 'blocked' ? 'grokProjectAuthorizationDenied'
+        : binding.route === 'grok-directory' && requiredActivation !== 'enabled'
+          ? requiredActivation === 'disabled' ? 'nativeActivationDisabled' : 'nativeActivationUnconfirmed' : undefined;
+    if (code) {
+      receipt.diagnostics.push(lifecycleDiagnostic(binding, code,
+        code === 'grokProjectAuthorizationDenied' ? 'Grok denied authorization for the selected project. Review the project in Grok before syncing.'
+          : 'The final scoped observation does not confirm the required host connection. Check status before retrying.'));
+      const componentIds = new Set(plan.projections.filter((projection) => projection.bundle)
+        .flatMap((projection) => projection.components.map((component) => component.id)));
+      for (const component of plan.expected.components.filter((entry) => componentIds.has(entry.id))) {
+        receipt.unmet.push({ id: `scope:${binding.id}:${component.id}`, componentId: component.id, kind: component.kind,
+          requiredFeatures: [], reasonCode: code, productIds: binding.consumers.map((item) => item.id) });
+      }
     }
   }
   if (receipt.effects.some((effect) => effect.mutation !== 'none')) receipt.reload = routeReload(binding.route);

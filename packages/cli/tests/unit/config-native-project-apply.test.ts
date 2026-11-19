@@ -261,12 +261,19 @@ describe('Native project activation and user configuration', () => {
     await fs.remove(f.fail);
     await fs.writeFile(f.trace, '');
     const retried = await runRecovery('sync', ['team/demo'], { ...options, targets: [platform] }, f.native.runtime());
-    expect(retried.ok, JSON.stringify(retried)).toBe(true);
+    expect(retried.ok, JSON.stringify(retried)).toBe(platform === 'claude');
     const events = (await fs.readFile(f.trace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     expect(events).toEqual([expect.objectContaining({ target: { platform, scope: 'user' } })]);
     if (platform === 'codex') {
       const user = await readCodexConfigFile(f.native.installedPath);
       expect(Object.values(user.snapshot.plugins).some((plugin) => plugin.enabled)).toBe(true);
+      expect(retried.targetResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ scope: 'user', execution: 'applied' }),
+        expect.objectContaining({ scope: 'project', deploymentReceipts: [expect.objectContaining({
+          after: expect.objectContaining({ registration: 'present', scopeActivation: 'unknown' }),
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'codexProjectActivationUnconfirmed' })]),
+        })] }),
+      ]));
     } else {
       const records = Object.values((await fs.readJson(f.native.installedPath)).plugins).flat() as Array<{ scope: string }>;
       expect(records.map((record) => record.scope)).toContain('user');

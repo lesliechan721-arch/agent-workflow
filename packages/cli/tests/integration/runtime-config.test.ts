@@ -91,7 +91,7 @@ console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('
 }
 
 describe('installed runtime config', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['codex'], discovery: true, trust: true }); });
+  beforeEach(() => { installNativeTestQualification({ platforms: ['codex'], discovery: true }); });
   it('isolates same-name source snapshots, keeps saved values inactive, and applies through the real writer', async () => {
     const alpha = await fixture('alpha');
     const beta = await fixture('beta');

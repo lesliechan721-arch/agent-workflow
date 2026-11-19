@@ -122,7 +122,7 @@ describe('portable Skill export CLI', () => {
         { cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false, io: captured.io });
       expect(code).toBe(2);
       expect(JSON.parse(captured.readStdout())).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'failed',
         diagnostics: [{ code: platform === undefined ? 'invalidArguments' : 'invalidOptionValue' }],
         data: {}
@@ -189,7 +189,7 @@ describe('portable Skill export CLI', () => {
       { cwd: fixture.cwd, env: fixture.env, io: unknownIo.io },
     )).toBe(1);
     expect(JSON.parse(unknownIo.readStdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: [{ code: 'portableNoSkillsSelected' }],
       data: {}
     });
@@ -213,7 +213,7 @@ describe('portable Skill export CLI', () => {
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
     )).toBe(3);
     expect(JSON.parse(io.readStdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: [{
         code: 'awCapabilityUnsupported',
         subject: { pluginId: 'local/portable' },
@@ -232,7 +232,7 @@ describe('portable Skill export CLI', () => {
       { cwd: fixture.cwd, env: fixture.env, io: io.io },
     )).toBe(3);
     expect(JSON.parse(io.readStdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: [{
         code: 'awCapabilityUnsupported',
         subject: { pluginId: 'local/future' },
@@ -262,7 +262,7 @@ describe('portable Skill export CLI', () => {
         { cwd: fixture.cwd, env: fixture.env, io: io.io },
       )).toBe(3);
       expect(JSON.parse(io.readStdout())).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         diagnostics: [{ code: 'portableOutputConflict' }],
         data: {}
       });
@@ -291,7 +291,7 @@ describe('portable Skill export CLI', () => {
         { cwd: fixture.cwd, env, io: io.io },
       )).toBe(3);
       expect(JSON.parse(io.readStdout())).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         diagnostics: [{ code: 'portableOutputConflict' }],
         data: {}
       });
@@ -321,7 +321,7 @@ describe('portable Skill export CLI', () => {
       { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
     )).toBe(3);
     expect(JSON.parse(secondIo.readStdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: [{ code: 'portableOutputConflict' }],
       data: {}
     });
@@ -354,7 +354,7 @@ describe('portable Skill export CLI', () => {
       { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
     )).toBe(3);
     expect(JSON.parse(secondIo.readStdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       diagnostics: [{ code: 'portableOutputConflict' }],
       data: {}
     });

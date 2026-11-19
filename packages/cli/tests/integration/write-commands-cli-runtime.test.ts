@@ -88,7 +88,7 @@ describe('five namespaced write commands', () => {
     controlledAppRoot = undefined;
     setCodexDiscoveryOverridesForTests({ macApplicationsDirectories: [],
       queryRunner: async () => ({ exitCode: 0, stdout: '[]', stderr: '' }) });
-    qualification = installNativeTestQualification({ discovery: true, trust: true });
+    qualification = installNativeTestQualification({ discovery: true });
     const isolation = getCurrentSourceTestIsolation();
     await fs.ensureDir(path.join(isolation.layout.fixtureCwd, '.git'));
     codexLayout = await getNativeTestLayout({ platform: 'codex', pluginId: 'team/demo',
@@ -542,7 +542,7 @@ describe('five namespaced write commands', () => {
     }))).toBe(4);
     const applyReceipt = JSON.parse(captured.readStdout());
     expect(applyReceipt, JSON.stringify(applyReceipt)).toMatchObject({
-      schemaVersion: 1, command: 'plugin.config.set', status: 'partial',
+      schemaVersion: 2, command: 'plugin.config.set', status: 'partial',
       data: {
         configWrite: 'succeeded',
         apply: {
@@ -583,7 +583,7 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     }))).toBe(4);
     expect(JSON.parse(lifecycleCaptured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.sync', status: 'partial',
+      schemaVersion: 2, command: 'plugin.sync', status: 'partial',
       data: {
         targetResults: expect.arrayContaining([
           expect.objectContaining({ target: 'codex', execution: 'no-op', observation: 'verified', content: 'satisfied',
@@ -683,7 +683,7 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     }), captured.readStdout()).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.config.set', status: 'success',
+      schemaVersion: 2, command: 'plugin.config.set', status: 'success',
       data: {
         configWrite: 'succeeded',
         apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] }
@@ -938,7 +938,7 @@ describe('five namespaced write commands', () => {
     const runtime = await createCodexNativeTestRuntime(isolation, managerKind === 'app' ? '0.151.0' : '0.200.0');
     isolation.env.PATH = isolation.env.PATH!.split(path.delimiter)[0]!;
     qualification.restore();
-    installNativeTestQualification({ trust: true });
+    installNativeTestQualification();
     const selectedCommand = managerKind === 'app' ? await createDiscoveredCodexApp(isolation) : process.execPath;
     const selectedLauncher = managerKind === 'app' ? selectedCommand : process.platform === 'win32'
       ? path.join(isolation.env.PATH!.split(path.delimiter)[0]!, 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
@@ -1046,7 +1046,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     qualification.restore();
-    installNativeTestQualification({ trust: true });
+    installNativeTestQualification();
     const oldRuntimeRoot = path.join(isolation.env.AW_HOME!, 'runtimes', 'codex',
       '0.151.0', `${process.platform}-${process.arch}`);
     if (oldRuntimePresent) {
@@ -1076,7 +1076,7 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     })).toBe(4);
     expect(JSON.parse(output.readStdout())).toMatchObject({
-      schemaVersion: 1, command: 'plugin.install', status: 'partial',
+      schemaVersion: 2, command: 'plugin.install', status: 'partial',
       data: {
         request: { plugins: ['team/demo'], scope: 'user' },
         changes: { requirements: 'changed' },
@@ -1113,7 +1113,7 @@ describe('five namespaced write commands', () => {
   it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
     'selects a healthy newer App before an older PATH CLI can block native planning', async () => {
       qualification.restore();
-      installNativeTestQualification({ trust: true });
+      installNativeTestQualification();
       // Test Value Gate: the first native observation must use the highest usable local CLI selected by production discovery.
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, 'app-selected-before-observation-source');
@@ -1181,7 +1181,7 @@ describe('five namespaced write commands', () => {
   it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
     'requires a new Review when a discovered App changes the execution products and preserves offline cleanup', async () => {
     qualification.restore();
-    installNativeTestQualification({ trust: true });
+    installNativeTestQualification();
     // The reviewed product set is frozen. A newly discovered App requires another Review.
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'app-codex-source');
@@ -1274,7 +1274,7 @@ describe('five namespaced write commands', () => {
 
   it.runIf(process.platform === 'darwin' || process.platform === 'win32')('replans with App CLI registration before shared replacement writes', async () => {
     qualification.restore();
-    installNativeTestQualification({ trust: true });
+    installNativeTestQualification();
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'app-replan-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);

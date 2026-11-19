@@ -6,7 +6,7 @@
 
 target 为 codex、claude、antigravity、cursor、opencode、pi、gemini、copilot、grok、generic。具体 Agent 使用原生包或原生扩展，必要宿主资源由 AW 明确托管；generic 仅管理通用 Skills。Native 失败不改走散文件安装。
 
-CLI/TUI 共用只读发现与 adapter 注册表。可用性分为 available、missing、unsupported、unknown、notApplicable（仅 generic）。它与用户选择、插件能力、实际安装、登录和模型可用性分开。同名可执行文件或配置目录不能证明身份；probe 有时限、输出限制和安全诊断，不下载、不登录、不调用模型。显式 status `--observe-native` 的 app-server 启动、副作用与精确 Codex 项目信任证据边界见[状态与配置](config-and-status.md#22-平台产品面与组件事实)；默认发现与观察不启用它。
+CLI/TUI 共用只读发现与 adapter 注册表。可用性分为 available、missing、unsupported、unknown、notApplicable（仅 generic）。它与用户选择、插件能力、实际安装、登录和模型可用性分开。同名可执行文件或配置目录不能证明身份；probe 有时限、输出限制和安全诊断，不下载、不登录、不调用模型。显式 status `--observe-native` 的 OpenCode 私有本地服务启动与副作用见[状态与配置](config-and-status.md#31-只读观察)。
 
 一个 target 包含本机已识别且受支持的 CLI/App；Claude 与 Copilot 只识别 CLI。未安装的另一产品面不自动成为要求。某产品面可用即可选择 target，其他已发现面仍保留限制；没有基础可用路径时依事实报告 missing/unsupported/unknown。App 已存在但缺少可用入口不能报 missing。发现覆盖不足也不能报 missing。
 
@@ -38,6 +38,10 @@ Darwin 上的同一固定 Gemini 只读版本/清单 probe 可使用 Node 标准
 Antigravity CLI `1.3.4` 在 Linux、macOS、Windows 的 x64/arm64 六环境开放 User 普通 Skill，依据[六环境 User 叶证据](../../../scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json)。记录包含安装、版本更新、同版本正文刷新、目标 Git 项目与外部 neutral 的有效启用状态、实际副本字节、owner 保留及移除后双侧缺席。Linux 双架构与 macOS x64 来自原运行，macOS ARM64 与 Windows 双架构来自剩余环境补测，原运行的失败与容量取消保持。Project、App、其他 host、Agent 等其他组件仍 unverified；其他版本按相同接口最低条件判断，实测证据仍限于记录版本；Skill 加载、模型采用和会话 trust 未知独立记录。Linux x64 公开 AW 链已另行验证；该 Native 记录不证明其他宿主的公开 AW 完整编排，须由新的对应报告判断。
 
 Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
+
+符合现有兼容条件的 Codex CLI 支持用户可见、可手动调用的 Skill。安装时通过 `agents/openai.yaml` 的 `policy.allow_implicit_invocation` 保留作者声明的自动调用限制。禁用自动调用的 Skill 仍出现在用户的 Skill 列表中。
+
+Codex 子代理安装使用普通 Skill 的 CLI 接口门槛及 Linux、macOS、Windows 的 x64/arm64 范围。User 和 Project 支持独立上下文、宿主默认提示词组合、角色 TOML 和 AW 安装态配置读取。角色文件和角色名采用 `aw-<source>-<plugin>-<role>`，随包生成的调度 Skill 引用这个实际名称。子代理开关和会话实际使用由 Codex 决定。
 
 ### 1.2 身份与物理实例
 
@@ -90,7 +94,7 @@ activationKey 另含启用位置与需求 scope。身份字符串、路径存在
 | Pi / pi-package | pi package Skills；MCP 与 Hook/Instructions extension；Agents 仅 Markdown 加 pi.subagents.agents 声明 | pi install 本地来源，项目 --local；对应 scope remove 后清理包，不安装/移除 Agents 消费者 |
 | Gemini / gemini-extension | extension Skills/MCP/preview Agents/Hooks/contextFileName；AW Agent 组合自身 Instructions | 本地 install/update 与 user/workspace activation；先停用需求，无引用再 uninstall |
 | Copilot / copilot-marketplace | 标准1.0包及 com.github.copilot Agents/Hooks/Rules；AW Agent 组合正文 | 本地 Marketplace/install；user 与 repo enabledPlugins 分开；目录更新由新会话/restart读取 |
-| Grok / grok-cli、grok-directory | .grok-plugin 的四类包及同 scope AW rules，AW Agent 组合正文 | user 完整新包发布后按审核计划卸载重装；project .grok/plugins 独占目录；启用/trust/实际来源单独观测 |
+| Grok / grok-cli、grok-directory | .grok-plugin 的四类包及同 scope AW rules，AW Agent 组合正文 | user 完整新包发布后按审核计划卸载重装；project .grok/plugins 独占目录；启用、范围授权与实际来源分别观测 |
 | generic / generic-skills | 通用 Skills writer | 精确 owner/digest 写入与清理，无原生注册/激活/加载承诺 |
 
 所有路径按已核验 profile 开放，表格描述固定适配方式，不是各版本/OS 的全能力资格表。未知能力须在组件缺口中列明，不能复制资源后报告完整成功。
@@ -117,17 +121,17 @@ Codex 本地 marketplace 登记在 Windows 上接受完整 drive/UNC 路径与�
 
 Codex Instructions 不写顶层 developer_instructions 或共享 AGENTS；角色本身的 prompt 仍属于 Agent。直接注入覆盖受支持的 Startup/Fork，接受子代理压缩后不再注入的限制。Hook 禁用、trust 或管理策略受限时保持未满足，不回退其他载体。Claude 主会话和子代理分别核验，不能用一条事件推定另一条。
 
-Cursor Hook 必须在宿主，不在等待加载的包中。读取 workspace_roots 与现有 AW 需求、偏好和精确 owned 包证据，返回当前工作区有效绝对 pluginPaths，不建立另一启用表。用户/项目分别限定 scope；无工作区窗口、Cloud 不在路径承诺内，Remote/WSL 单独取证。不会切换到 local 插件目录或单次 --plugin-dir 作为普通安装。
+Cursor 的受管 `workspaceOpen` Hook 必须位于对应范围的 `hooks.json`。包与精确 Hook 都到位才满足目录交付。入口缺失或位于其他范围显示待同步。读取失败保留未知。读取 workspace_roots 与现有 AW 需求、偏好和精确 owned 包证据，返回当前工作区有效绝对 pluginPaths，不建立另一启用表。用户/项目分别限定 scope；无工作区窗口、Cloud 不在路径承诺内，Remote/WSL 单独取证。不会切换到 local 插件目录或单次 --plugin-dir 作为普通安装。
 
 Pi 核心存在不证明 Agents 消费者存在。inspect 只读返回候选身份、版本、有效 scope、enabled、trust、packageAccess、promptMode/loadExtensions 和配置 evidence。complete+空列表是缺失，unknown 是覆盖不足；停用不是缺失。多个消费者的实际共存规则未验证时保持 unverified，不代用户选执行器。声明文件使用带插件身份的角色名并拒绝覆盖冲突；AW 不注册子代理工具或生成进程管理代码。
 
-Pi 的原生登记来自经结构校验的 list 的可见包、scope 和实际路径；清单不报告 activation/trust，相关原生字段保持 unknown。公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者 subagents.json 仅提供配置补充和 Agent 消费者能力证据。User binding 只读取用户 settings/subagents；执行所用 neutral cwd 的项目配置不参与观察或摘要。Project binding 读取用户和项目配置，项目 subagents 覆盖同名用户配置，也适用于安装在 User scope 的消费者。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。配置摘要进入 capability 和锁内 stale 检查。
+Pi 的原生登记来自经结构校验的 list 的可见包、scope 和实际路径；普通包以精确登记和内容作为安装依据。清单未报告的 activation 保持 unknown。公开 settings、已安装包 manifest、资源过滤、trust.json 及消费者 subagents.json 仅提供配置补充和 Agent 消费者能力证据。User binding 只读取用户 settings/subagents；执行所用 neutral cwd 的项目配置不参与观察或摘要。Project binding 读取用户和项目配置，项目 subagents 覆盖同名用户配置，也适用于安装在 User scope 的消费者。没有完成发现范围或无法证明配置含义时保留 unknown；包名和版本元数据本身不授予消费者协议资格。派生的 kind 和 feature 结论进入渲染能力视图。原始配置摘要保留在锁内 stale 检查。
 
 Pi 会将 AW 包来源保存为相对 settings 所在目录的 `aw-packages/...`，不保证带 `./` 前缀。登记观察和消费者输入检查采用同一 AW 本地路径解释；npm、Git 与无法解析的来源保持独立，不能仅凭名称认领 AW 包。
 
 Gemini/Copilot/Grok 的 Agent 正文组合只涉及同插件本次生成角色，不能修改用户或其他插件的 Agent。Grok project 接收同 binding、同 render scope 的完整组件集合；Instructions 单独改变也使相关 Agent 包重新投影、Review 和冻结。组合输入失败不得发布缺正文的包。Grok 的 Claude 兼容来源仅观测并报告，Grok 清理不删除 Claude 内容。
 
-Grok 的 list 只证明可解析的登记；inspect 版本须有效且与本次入口一致，不要求等于历史实测版本。匹配精确来源的 inspect.enabled 是原生报告的启用状态，不能提升为加载。配置 enabled/disabled 集合仅补充展示，不覆盖原生结果；信任、有效组件来源及兼容来源重叠分别报告；这些事实不扩大 ownership。inspect.projectTrusted 是目录/运行时信任，不能授权首次安装新来源；首次 User 安装保留 AW 源包并提示用户用精确原生命令显式授予 `--trust`，随后再 sync，AW `--yes` 不授信。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，仅对精确同源、独占的登记执行已审核的 `uninstall --confirm --keep-data` 和 `install --trust`。刷新保留插件持久数据；最终移除仍使用默认卸载。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
+Grok 的 list 只证明可解析的登记；inspect 版本须有效且与本次入口一致，不要求等于历史实测版本。匹配精确来源的 inspect.enabled 是原生报告的启用状态，不能提升为加载。配置 enabled/disabled 集合仅补充展示，不覆盖原生结果；有效组件来源及兼容来源重叠可独立查看。Project 目录就绪需要精确作用域的有效启用。宿主拒绝授权时显示该范围的安全诊断。inspect.projectTrusted 是目录/运行时信任，不能授权首次安装新来源；首次 User 安装保留 AW 源包并提示用户用精确原生命令显式授予 `--trust`，随后再 sync，AW `--yes` 不授信。本地刷新不使用不能可靠更新副本的 `plugin update`：先发布完整冻结 AW 源包，在当前范围的 `projectTrusted` 已确认且登记精确同源、独占时，执行已审核的 `uninstall --confirm --keep-data` 和 `install --trust`。刷新保留插件持久数据；最终移除仍使用默认卸载。安装后实际副本摘要必须等于本次冻结包，退出码、源包 owner 或版本一致均不能替代此核验。中途失败保留新 AW 源包，但原生安装可能缺失；回执给出精确宿主安装参数与 `--trust` 含义，显式恢复后再 sync，跨次重试仍受现有信任门禁约束。
 
 ## 3. 适配器职责与执行证据
 
@@ -139,7 +143,7 @@ Codex 的平台安装从 adapter 的冻结 product binding 构造管理入口，
 
 后置观察确认登记成功，不能消除后续必需激活被跳过的事实；因失败跳过的必需 effect 仍使目标未完成。同一命令按真实物理范围复用共享 register/refresh 的结果，各 scope 分别激活；Claude 按 scope 独立的安装不合并。
 
-包、注册、owner、各产品面的 activation/trust/load 和组件 presence 分开。load=observed 只表示取得宿主加载证据，不证明模型行为。status 不为补证调用模型。没有客户端时仍允许证据充分的 AW 独占补足清理，原生卸载受阻则保留来源与精确恢复入口，不猜注册已消失。
+包、注册、owner、各产品面的 activation 和 load 和组件 presence 分开。load=observed 只表示取得宿主加载证据，不证明模型行为。status 不为补证调用模型。没有客户端时仍允许证据充分的 AW 独占补足清理，原生卸载受阻则保留来源与精确恢复入口，不猜注册已消失。
 
 所有原生来源先准备完整新包、校验并冻结，再按路由执行。单平台或物理分组失败不回滚其他成功；共享配置只修改自身 entry，foreign/shared/unknown 继续保护。preApply 每逻辑 target 每命令最多一次，授权后与 preflight 通过后运行，失败不清旧输出。
 

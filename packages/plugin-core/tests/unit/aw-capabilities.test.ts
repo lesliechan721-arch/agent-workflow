@@ -112,6 +112,7 @@ describe('AW capability contracts', () => {
       artifacts: { configKeys: [] },
     }))).toEqual([
       'aw.platform-components.v3',
+      'aw.platform-render-context.v2',
       'aw.plugin-build-config.v1',
       'aw.plugin-config.v2',
       'aw.plugin-manifest.v4',
@@ -199,7 +200,7 @@ describe('AW capability contracts', () => {
     expect(result.detected).toEqual([
       'aw.catalog-publication.v2',
       'aw.catalog-source.v3',
-      'aw.cli-output.v1',
+      'aw.cli-output.v2',
       'aw.review-inspection.v3',
       'aw.review-preparation.v2',
       'aw.self-check.v2',
@@ -321,7 +322,7 @@ describe('AW capability contracts', () => {
     ].join('\n'))
     const result = await scanPluginAwCliRequirements({ pluginRoot, manifest: manifest({ skills: './skills' }) })
     expect(result.detected).toEqual([
-      'aw.catalog-dev-source.v2', 'aw.catalog-source.v3', 'aw.cli-output.v1',
+      'aw.catalog-dev-source.v2', 'aw.catalog-source.v3', 'aw.cli-output.v2',
       'aw.managed-commands.v1', 'aw.plugin-authoring.v2', 'aw.plugin-config.v2',
       'aw.plugin-recovery.v2', 'aw.skill-eval.v3',
     ])
@@ -343,7 +344,7 @@ describe('AW capability contracts', () => {
     tempDirs.push(pluginRoot)
     await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), `\`\`\`sh\n${command}\n\`\`\`\n`)
     const result = await scanPluginAwCliRequirements({ pluginRoot, manifest: manifest({ skills: './skills' }) })
-    expect(result.detected).toEqual(supported ? ['aw.cli-output.v1', 'aw.managed-commands.v1'] : [])
+    expect(result.detected).toEqual(supported ? ['aw.cli-output.v2', 'aw.managed-commands.v1'] : [])
     expect(result.observations.map((entry) => entry.code)).toEqual(supported
       ? ['aw-command-detected', 'aw-command-detected'] : ['aw-command-unmapped'])
   })
@@ -365,7 +366,7 @@ describe('AW capability contracts', () => {
       implementedCapabilities: ['aw.plugin-manifest.v4', 'aw.plugin-skills.v1'],
     })
 
-    expect(result.detected).toEqual(['aw.catalog-publication.v2', 'aw.cli-output.v1'])
+    expect(result.detected).toEqual(['aw.catalog-publication.v2', 'aw.cli-output.v2'])
     expect(result.effective).toEqual([
       'aw.future-feature.v3',
       'aw.plugin-manifest.v4',

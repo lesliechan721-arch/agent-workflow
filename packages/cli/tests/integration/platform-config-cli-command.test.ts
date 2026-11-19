@@ -83,13 +83,13 @@ async function fixture(withSkill = false) {
 
 // Test Value Gate: exercise argv, platform schema selection, the real atomic document, and save/apply receipts.
 describe('platform configuration CLI', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['cursor'], discovery: true, trust: true }); });
+  beforeEach(() => { installNativeTestQualification({ platforms: ['cursor'], discovery: true }); });
   it('uses common by default, compiles platform presets, and keeps project context in the user store', async () => {
     const f = await fixture();
     const initial = await f.run(['plugin', 'config', 'get', 'team/demo', 'mode']);
     expect(initial).toMatchObject({
       exitCode: 0, value: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: {
           platform: 'common',
           context: { context: 'user' },
@@ -100,7 +100,7 @@ describe('platform configuration CLI', () => {
     expect(await f.run(['plugin', 'config', 'set', 'team/demo', 'mode', '--preset', 'fast']))
       .toMatchObject({
         exitCode: 0, value: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: {
             configWrite: 'succeeded',
             apply: { reason: 'notRequested' }
@@ -110,7 +110,7 @@ describe('platform configuration CLI', () => {
     expect(await f.run(['plugin', 'config', 'set', 'team/demo', 'mode', '--platform', 'cursor', '--context', 'project', '--preset', 'fast']))
       .toMatchObject({
         exitCode: 0, value: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: {
             context: { context: 'project', projectRoot: f.cwd },
             platform: 'cursor'
@@ -122,21 +122,21 @@ describe('platform configuration CLI', () => {
     expect(await f.run(['plugin', 'config', 'get', 'team/demo', 'mode', '--platform', 'cursor']))
       .toMatchObject({
         exitCode: 0, value: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: { fields: [{ effectiveValue: 'cursor-fast', sourceLayer: 'platform' }] }
         }
       });
     expect(await f.run(['plugin', 'config', 'unset', 'team/demo', 'mode', '--platform', 'cursor']))
       .toMatchObject({
         exitCode: 0, value: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: { configWrite: 'succeeded' }
         }
       });
     expect(await f.run(['plugin', 'config', 'get', 'team/demo', 'mode', '--platform', 'cursor']))
       .toMatchObject({
         exitCode: 0, value: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: { fields: [{ effectiveValue: 'common-fast', sourceLayer: 'common' }] }
         }
       });
@@ -145,7 +145,7 @@ describe('platform configuration CLI', () => {
     expect(await f.run(['plugin', 'config', 'schema', 'team/demo', '--platform', 'cursor']))
       .toMatchObject({
         exitCode: 0, value: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: {
             configSchemaVersion: 5,
             schema: { platform: 'cursor' },
@@ -172,7 +172,7 @@ describe('platform configuration CLI', () => {
     expect(await f.run(['plugin', 'config', 'reset', 'team/demo', '--platform', 'cursor', '--yes']))
       .toMatchObject({
         exitCode: 0, value: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: { configWrite: 'succeeded', confirmation: { required: true, provided: true } }
         }
       });
@@ -195,7 +195,7 @@ describe('platform configuration CLI', () => {
     const result = await f.run(args);
     expect(result).toMatchObject({
       exitCode: 2, value: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: `plugin.config.${args[2]}`,
         status: 'failed',
         diagnostics: [{ code }],
@@ -214,7 +214,7 @@ describe('platform configuration CLI', () => {
     const rejected = await f.run(['plugin', 'config', 'set', 'team/demo', 'token', '--context', 'project', '--value-json', JSON.stringify(secret)]);
     expect(rejected).toMatchObject({
       exitCode: 2, value: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         command: 'plugin.config.set',
         status: 'failed',
         diagnostics: [{ code: 'sensitiveConfigInputUnsupported' }],
@@ -228,7 +228,7 @@ describe('platform configuration CLI', () => {
     const saved = await f.run(['plugin', 'config', 'set', 'team/demo', 'token', '--context', 'project', '--value-stdin'], chunks);
     expect(saved).toMatchObject({
       exitCode: 0, value: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         data: { configWrite: 'succeeded' }
       }
     });
@@ -246,7 +246,7 @@ describe('platform configuration CLI', () => {
     expect(await f.run(['plugin', 'install', 'team/demo', '--scope', 'project', '--yes']))
       .toMatchObject({
         exitCode: 0, value: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           data: { targetResults: [expect.objectContaining({ pluginId: 'team/demo', target: 'cursor', scope: 'project', execution: 'applied' })] }
         }
       });
@@ -257,7 +257,7 @@ describe('platform configuration CLI', () => {
     const result = await f.run(['plugin', 'config', 'set', 'team/demo', 'enabled', '--context', 'project', '--value-json', 'false', '--apply', '--yes']);
     expect(result, JSON.stringify(result)).toMatchObject({
       exitCode: 4, value: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'partial',
         data: {
           configWrite: 'succeeded',
@@ -271,7 +271,7 @@ describe('platform configuration CLI', () => {
     expect(await fs.pathExists(path.join(packageRoot, SKILL_OWNER_MARKER))).toBe(false);
     const applied = await f.run(['plugin', 'config', 'apply', 'team/demo', '--context', 'project', '--target', 'cursor', '--yes']);
     expect(applied.value).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'plugin.config.apply',
       data: { configWrite: 'notStarted' }
     });

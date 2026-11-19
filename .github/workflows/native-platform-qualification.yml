@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           node scripts/qualification/native-platforms.mjs --write-candidate "$RUNNER_TEMP/candidate.json" --source-sha "$GITHUB_SHA"
-          tar -czf "$RUNNER_TEMP/native-candidate.tgz" packages/cli/dist packages/cli/plugins-dist packages/plugin-core/dist packages/agent-skill-eval/dist
+          tar -czf "$RUNNER_TEMP/native-candidate.tgz" packages/cli/dist packages/cli/plugins-dist packages/plugin-core/dist packages/plugin-core/schemas packages/agent-skill-eval/dist
       - uses: actions/upload-artifact@v4
         with:
           name: native-qualification-candidate
@@ -122,7 +122,7 @@ jobs:
       - name: Verify Windows process setup and timeout handling
         if: runner.os == 'Windows'
         run: pnpm test:qualification:native-platforms:harness
-      - name: Verify real clients in credential-free temporary environments
+      - name: Verify real clients and public AW status in credential-free temporary environments
         if: env.QUALIFICATION_CLIENT != 'antigravity-user'
         shell: bash
         run: |
@@ -130,7 +130,7 @@ jobs:
       - name: Verify the Antigravity User harness on this host
         if: env.QUALIFICATION_CLIENT == 'antigravity-user'
         run: node --test --test-concurrency=1 scripts/qualification/native-platform-antigravity-management.test.mjs scripts/qualification/native-platform-antigravity-distributions.test.mjs scripts/qualification/native-platform-antigravity-user.test.mjs
-      - name: Verify fixed Antigravity User management and explicitly requested public AW
+      - name: Verify fixed Antigravity User management and explicitly requested public AW status
         if: env.QUALIFICATION_CLIENT == 'antigravity-user'
         shell: bash
         run: |

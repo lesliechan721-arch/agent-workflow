@@ -1,10 +1,93 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { clients, sha256 } from './native-platform-runtime.mjs';
+import { clients, fixedClientVersion, sha256 } from './native-platform-runtime.mjs';
 import { readPublicOpenCodeState, capturePublicOpenCodeRemoval, readPublicOpenCodeDynamicContent } from './native-platform-opencode-public.mjs';
 
 export const publicFixtureVersion = revision => `0.1.${Math.min(revision, 2) - 1}`;
+
+const directoryRegistration = ctx => ctx.platform === 'opencode' || ctx.platform === 'grok' && ctx.scope === 'project';
+
+export function expectedOpenCodeObservation(result, ctx, pluginId) {
+  const optionalOutcomes = {
+    opencodeNativeObservationFailed: 'unknown',
+    opencodeNativeActivationPending: 'unknown',
+    opencodePluginLoadFailed: 'not-observed',
+  };
+  const outcomes = result.diagnostics.filter(item => Object.hasOwn(optionalOutcomes, item.code));
+  if (!outcomes.length) return { activation: 'enabled', load: 'observed' };
+  const outcome = single(outcomes, 'opencode-optional-observation-ambiguous');
+  assert.equal(outcome.severity, 'warning');
+  assert.deepEqual({ pluginId: outcome.subject?.pluginId, target: outcome.subject?.target, scope: outcome.subject?.scope },
+    { pluginId, target: 'opencode', scope: ctx.scope });
+  return { activation: 'unknown', load: optionalOutcomes[outcome.code] };
+}
+
+export function assertPublicTarget(result, ctx, pluginId, expected) {
+  const inventory = result.data?.inventory?.filter(item => item.pluginId === pluginId
+    && item.targetResults.some(target => target.scope === ctx.scope && target.target === ctx.platform));
+  const item = single(inventory ?? [], 'public-status-fixture-missing');
+  assert.equal(item.sourceState, 'ready');
+  assert.deepEqual(item.blockerCodes, []);
+  const target = single(item.targetResults.filter(item => item.scope === ctx.scope && item.target === ctx.platform),
+    'public-status-target-missing');
+  assert.equal(target.pluginId, pluginId);
+  assert.equal(target.delivery?.kind, 'native');
+  assert.equal(target.delivery.platform, ctx.platform);
+  assert.equal(target.content, expected.content);
+  assert.deepEqual(target.blockerCodes, expected.blockerCodes ?? []);
+  const deployment = single(target.deploymentObservations.filter(item => item.after?.nativeIdentity?.packageId === ctx.pluginName),
+    'public-status-deployment-missing');
+  const products = deployment.products.filter(item => item.product === 'cli');
+  assert(products.length && products.every(item => item.version === fixedClientVersion(ctx.platform)),
+    'Public status must identify the fixed CLI product.');
+  assert.equal(deployment.after.registration, expected.registration ?? (directoryRegistration(ctx) ? 'not-applicable' : 'present'));
+  if (expected.scopeActivation !== undefined) assert.equal(deployment.after.scopeActivation, expected.scopeActivation);
+  assert.equal(deployment.after.package, expected.package ?? 'present');
+  if (deployment.after.package === 'present') {
+    assert.equal(deployment.after.ownership, expected.ownership ?? 'aw');
+    if (expected.registration !== 'absent') assert.deepEqual(deployment.after.components.find(item => item.id === `skill:${ctx.skillName}`),
+      { id: `skill:${ctx.skillName}`, presence: 'present', reasonCodes: [] });
+  }
+  if (ctx.platform === 'claude' && expected.registration !== 'absent') {
+    assert.equal(deployment.after.scopeRegistration, expected.scopeRegistration ?? 'present');
+  }
+  assert(!Object.hasOwn(deployment.after.configuration ?? {}, 'trust'), 'Public configuration must use the v2 deployment contract.');
+  assert(deployment.after.consumers.every(consumer => !Object.hasOwn(consumer, 'trust')),
+    'Public deployment must use the v2 consumer contract.');
+  const consumer = deployment.after.consumers.find(item => item.productId === products[0].id);
+  assert(consumer, 'Public status must retain observations for the selected CLI product.');
+  if (expected.activation !== undefined) assert.equal(consumer.activation, expected.activation);
+  if (expected.load !== undefined) assert.equal(consumer.load, expected.load);
+  return { target, deployment, consumer };
+}
+
+export function assertPublicStatus(result, ctx, pluginId, expected) {
+  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.command, 'plugin.status');
+  assert.equal(result.data.context, ctx.scope);
+  assert.deepEqual(result.data.coverage.scopes, ctx.scope === 'user' ? ['user'] : ['user', 'project']);
+  const ready = expected.content === 'satisfied';
+  const unknown = expected.content === 'unknown';
+  const blocked = Boolean(expected.blockerCodes?.length);
+  assert.equal(result.status, unknown || blocked ? 'blocked' : 'success');
+  assert.deepEqual(result.data.counts, { blocked: blocked ? 1 : 0, pending: !ready && !unknown ? 1 : 0,
+    unconfirmed: unknown ? 1 : 0, ready: ready ? 1 : 0 });
+  assert.equal(result.data.allSatisfied, unknown ? null : ready);
+  assert.equal(result.data.inSync, unknown ? null : ready);
+  if (unknown) assert.equal(result.data.coverage.requestComplete, false);
+  if (!ready && !unknown && !blocked) {
+    const sync = ['aw', 'plugin', 'sync', pluginId, '--context', ctx.scope, '--target', ctx.platform];
+    assert(result.nextActions.some(item => item.kind === 'command' && item.argv.length === sync.length
+      && item.argv.every((arg, index) => arg === sync[index])), 'Public status must offer a sync for the affected target and scope.');
+  }
+  const { target, deployment, consumer } = assertPublicTarget(result, ctx, pluginId, expected);
+  if (ready) assert.equal(target.observation, 'verified');
+  assert.equal(target.satisfaction, ready ? expected.satisfaction ?? 'installed' : unknown ? 'unknown' : 'pending');
+  return { command: result.command, status: result.status, counts: result.data.counts, allSatisfied: result.data.allSatisfied,
+    inSync: result.data.inSync, coverage: result.data.coverage, diagnostics: result.diagnostics, target,
+    deployment: { package: deployment.after.package, registration: deployment.after.registration, activation: consumer.activation, load: consumer.load } };
+}
 
 async function jsonCommand(ctx, args, cwd) {
   return JSON.parse((await ctx.command(args, cwd)).stdout);
@@ -86,9 +169,12 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
     matches = await geminiExtensions(ctx, cwd);
   } else if (ctx.platform === 'pi') {
     const skills = await rpcSkills(ctx, cwd);
+    const inventory = await readPiPublicInventory(ctx, cwd);
     if (absent || !active) {
       assert.equal(skills.length, 0, 'native-management-state-unverified');
-      return { level: 'native-management-state', active: false, present: false };
+      assert(!ctx.piPublicPackage || !inventory.entries.some(row => path.relative(row.path, ctx.piPublicPackage) === ''),
+        'The selected Pi package must be absent from native list in this scope.');
+      return { level: 'native-management-state', active: false, present: false, scopes: inventory.scopes };
     }
     const skill = single(skills);
     assert.equal(skill.source, 'skill');
@@ -98,12 +184,21 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
     const manifest = await isolatedFile(ctx, path.join(skill.sourceInfo.baseDir, 'package.json'));
     const metadata = JSON.parse(manifest.content.toString('utf8'));
     assert.equal(metadata.version, publicFixtureVersion(revision), 'native-management-version-mismatch');
-    return { level: 'native-management-state', active: true, present: true, scope: skill.sourceInfo.scope,
-      version: metadata.version, packagePath: manifest.path };
+    const packageRoot = path.dirname(manifest.path);
+    const row = single(inventory.entries.filter(row => path.relative(row.path, packageRoot) === ''), 'pi-native-registration-unverified');
+    assert.equal(row.scope, ctx.scope);
+    const scopeRoot = ctx.scope === 'project' ? path.join(ctx.project, '.pi') : ctx.env.PI_CODING_AGENT_DIR;
+    const sourcePath = row.source.startsWith('~/') ? path.join(ctx.env.HOME, row.source.slice(2)) : path.resolve(scopeRoot, row.source);
+    assert.equal(path.relative(sourcePath, packageRoot), '', 'Pi native list must report the exact source.');
+    ctx.piPublicPackage = packageRoot;
+    return { level: 'native-management-state', active: true, present: true, scope: row.scope,
+      version: metadata.version, packagePath: packageRoot, listActivation: 'unreported' };
   } else if (ctx.platform === 'grok') {
     const result = await jsonCommand(ctx, ['inspect', '--json'], cwd);
     assert.equal(path.resolve(result.cwd), path.resolve(cwd), 'native-management-state-unverified');
     matches = array(result.plugins).filter(item => item.name === ctx.pluginName);
+    const registered = array(await jsonCommand(ctx, ['plugin', 'list', '--json'], cwd)).filter(item => item.name === ctx.pluginName);
+    assert.equal(registered.length, !absent && active && ctx.scope === 'user' ? 1 : 0, 'Grok User list must match the expected registration.');
     if (!absent && matches.length) {
       const plugin = single(matches);
       assert.equal(plugin.scope, ctx.scope);
@@ -111,6 +206,17 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
       const manifest = await isolatedFile(ctx, path.join(plugin.path, '.grok-plugin', 'plugin.json'));
       const metadata = JSON.parse(manifest.content.toString('utf8'));
       assert.equal(metadata.name, ctx.pluginName);
+      if (ctx.scope === 'user') {
+        assert.equal(registered[0].status, 'installed');
+        assert.equal(registered[0].version, metadata.version);
+        assert.equal(path.relative(registered[0].source, ctx.grokPublicSource), '');
+        assert.equal(path.relative(registered[0].path, plugin.path), '');
+        ctx.grokInstalledPackage = path.dirname(path.dirname(manifest.path));
+      } else {
+        assert.equal(result.projectTrusted, true);
+        const installed = path.dirname(path.dirname(manifest.path));
+        assert.equal(path.relative(path.join(ctx.project, '.grok', 'plugins'), path.dirname(installed)), '');
+      }
       matches = [{ ...plugin, version: metadata.version }];
     }
   } else {
@@ -121,6 +227,11 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
       matches = rows.filter(item => item.installed);
     } else if (ctx.platform === 'claude') {
       matches = array(result).filter(item => typeof item.id === 'string' && item.id.startsWith(`${ctx.pluginName}@`));
+      if (active) {
+        const entry = single(matches);
+        assert.equal(entry.scope, ctx.scope === 'user' ? 'user' : 'local');
+        if (ctx.scope === 'project') assert.equal(path.relative(entry.projectPath, ctx.project), '');
+      }
     } else if (['copilot', 'antigravity'].includes(ctx.platform)) {
       matches = array(result).filter(item => item.name === ctx.pluginName);
     } else throw new Error('native-management-state-unverified');
@@ -135,6 +246,30 @@ export async function readPublicNativeState(ctx, cwd, revision, { active, absent
   assert.equal(item.version, publicFixtureVersion(revision), 'native-management-version-mismatch');
   return { level: 'native-management-state', active, present: true, version: item.version,
     ...(item.scope ? { scope: item.scope } : {}) };
+}
+
+export async function readPiPublicInventory(ctx, cwd) {
+  const lines = (await ctx.command(['list'], cwd)).stdout.replace(/\u001b\[[0-9;]*m/gu, '').trimEnd().split(/\r?\n/u);
+  if (lines.length === 1 && lines[0] === 'No packages installed.') return { scopes: [], entries: [] };
+  const scopes = [];
+  const entries = [];
+  let scope;
+  for (const line of lines.filter(Boolean)) {
+    if (line === 'User packages:' || line === 'Project packages:') {
+      scope = line.startsWith('User') ? 'user' : 'project';
+      assert(!scopes.includes(scope));
+      scopes.push(scope);
+    } else if (line.startsWith('    ')) {
+      const entry = entries.at(-1);
+      assert(entry?.scope === scope && !entry.path && path.isAbsolute(line.slice(4)), 'pi-native-registration-unverified');
+      entry.path = path.normalize(line.slice(4));
+    } else {
+      assert(scope && /^  \S/u.test(line), 'pi-native-registration-unverified');
+      entries.push({ scope, source: line.slice(2).replace(/ \(filtered\)$/u, '') });
+    }
+  }
+  assert(scopes.length && entries.length && entries.every(entry => entry.path), 'pi-native-registration-unverified');
+  return { scopes, entries };
 }
 
 function retainedSharedRegistration(ctx, result, pluginId) {
@@ -248,7 +383,7 @@ export async function readDynamicConsumerContent(ctx, cwd, revision) {
     }
   }
   const actual = await isolatedFile(ctx, filename);
-  assert.deepEqual(actual.content, await fs.readFile(ctx.publicSkillFile), 'dynamic-consumer-content-mismatch');
+  assert.deepEqual(actual.content, ctx.publicConsumedSkill ?? await fs.readFile(ctx.publicSkillFile), 'dynamic-consumer-content-mismatch');
   return { level: 'dynamic-consumer-content', revision, path: actual.path,
     sha256: sha256(actual.content), bytes: actual.content.length };
 }

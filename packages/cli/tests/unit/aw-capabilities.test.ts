@@ -32,7 +32,7 @@ describe('current AW executable capabilities', () => {
       coreVersion: expect.any(String),
     })
     expect(result.capabilities).toEqual([...IMPLEMENTED_AW_CAPABILITIES].sort())
-    expect(result.capabilities).toContain('aw.cli-output.v1')
+    expect(result.capabilities).toContain('aw.cli-output.v2')
     expect(result.capabilities).not.toContain('aw.self-check.v1')
     expect(result.capabilities).not.toContain('aw.plugin-authoring.v1')
     expect(result.capabilities).toContain('aw.plugin-manifest.v4')

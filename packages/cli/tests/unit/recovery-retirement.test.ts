@@ -292,7 +292,7 @@ describe('retire strong state and residue', () => {
     backend.inspect.mockImplementation(async () => ({ ...removedEvidence(), nativeState: 'installed' }));
     const after = { physicalKey: 'directory-package', package: 'absent', registration: 'not-applicable', ownership: 'absent',
       components: [], nativeIdentity: null, diagnostics: [], prerequisites: { agentConsumers: { observation: 'complete', candidates: [], reasonCodes: [] } },
-      consumers: [{ productId: 'cli', activationKey: 'directory', activation: 'unknown', trust: 'unknown', load: 'unknown' }] };
+      consumers: [{ productId: 'cli', activationKey: 'directory', activation: 'unknown', load: 'unknown' }] };
     backend.execute.mockResolvedValue({ overallState: 'succeeded',
       rebuildResults: [{ status: 'succeeded', command: 'cleanup',
         target: { pluginId: 'local/demo', pluginName: 'demo', platform, scope: 'user' }, actions: [], cleanupAttempted: true,

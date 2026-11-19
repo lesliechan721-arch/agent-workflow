@@ -41,7 +41,7 @@ const uninstallWriteCommand: typeof nativeUninstallWriteCommand = (names, option
   nativeWrite(nativeUninstallWriteCommand, names, options, runtime);
 
 describe('native declaration confirmation at ordinary write entries', () => {
-  beforeEach(() => { installNativeTestQualification({ platforms: ['claude'], discovery: true, trust: true }); });
+  beforeEach(() => { installNativeTestQualification({ platforms: ['claude'], discovery: true }); });
   // Test Value Gate: projection-only tests cannot prove confirmation precedes
   // requirement, producer, script and platform writes. Use real CLI/catalog/installed state,
   // and the same accepted-plan contract used by the existing Review bridge.
@@ -117,7 +117,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
         || call.args[1] === 'marketplace' && ['add', 'remove', 'update'].includes(call.args[2] ?? '')));
     const writesBefore = writes().length;
     const refusedIntroduction = await publicWrite('install');
-    expect(refusedIntroduction).toMatchObject({ exitCode: 3, receipt: { schemaVersion: 1, status: 'blocked', data: { changes: { requirements: 'none', preferences: 'none', config: 'none', outputs: 'none' }, confirmation: { required: true, provided: false } } } });
+    expect(refusedIntroduction).toMatchObject({ exitCode: 3, receipt: { schemaVersion: 2, status: 'blocked', data: { changes: { requirements: 'none', preferences: 'none', config: 'none', outputs: 'none' }, confirmation: { required: true, provided: false } } } });
     expect(JSON.stringify(refusedIntroduction.receipt)).toContain('confirmationRequired');
     expect((await listManagedCommandPackages(env)).packages).toEqual([]);
     expect(await fs.pathExists(settingsPath)).toBe(false);
@@ -153,7 +153,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
       const refused = await publicWrite(command);
       expect(refused).toMatchObject({
         exitCode: 3, receipt: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           status: 'blocked',
           data: {}
         }
@@ -189,7 +189,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     const refusedDeletion = await publicWrite('sync');
     expect(refusedDeletion).toMatchObject({
       exitCode: 3, receipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'blocked',
         data: {}
       }
@@ -248,7 +248,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     const installed = await run(['plugin', 'install', ...selection, '--yes']);
     expect(installed, JSON.stringify(installed)).toMatchObject({
       exitCode: 0, receipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success',
         data: {}
       }
@@ -267,7 +267,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     const removed = await run(['plugin', 'remove', ...selection, '--yes']);
     expect(removed, JSON.stringify(removed)).toMatchObject({
       exitCode: 0, receipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success',
         data: {}
       }
@@ -342,7 +342,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     const refused = await run(request);
     expect(refused, JSON.stringify(refused)).toMatchObject({
       exitCode: 3, receipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'blocked',
         diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'confirmationRequired' })]),
         data: {}
@@ -356,7 +356,7 @@ describe('native declaration confirmation at ordinary write entries', () => {
     const removed = await run([...request, '--yes']);
     expect(removed, JSON.stringify(removed)).toMatchObject({
       exitCode: 0, receipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'success',
         data: {}
       }
