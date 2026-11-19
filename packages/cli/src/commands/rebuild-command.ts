@@ -34,14 +34,12 @@ import {
 import { resolveActiveCatalogGeneration, resolveActiveCatalogPluginShallow } from '../utils/catalog-generation-resolver.js';
 import type { CatalogGenerationServiceRuntime } from '../utils/catalog-generation-service.js';
 import {
+  CatalogPreparationReadScope,
   resolveCatalogOperationContext,
   type CatalogOperationContext,
 } from '../utils/catalog-operation-context.js';
 import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error.js';
-import {
-  validateCatalogSnapshotComplete,
-  validateCatalogSnapshotPluginEntriesComplete,
-} from '../utils/catalog-snapshot.js';
+import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
 import {
   assertCatalogSourceInventoryComplete,
   canonicalMarketplaceRegistrationNames,
@@ -196,6 +194,7 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   expectedCatalogConfigDigest?: string;
   expectedGenerationSetDigest?: string;
   catalogOperationContext?: CatalogOperationContext;
+  catalogReadScope?: CatalogPreparationReadScope;
   catalogBootstrapError?: unknown;
   catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
@@ -3143,7 +3142,7 @@ async function runRebuildCommandInSession(
               .filter((candidate) => candidate.source.sourceId === source.sourceId)
               .map((candidate) => candidate.entry.name);
             if (names.length > 0) {
-              await validateCatalogSnapshotPluginEntriesComplete(source.rootDir, names);
+              await CatalogPreparationReadScope.validateEntries(options.runtime?.catalogReadScope, source, names);
             }
           }
         });
@@ -3266,6 +3265,14 @@ async function runRebuildCommandInSession(
       }
       let executionSelections = normalizedExecutionSelections;
       type ExecutionSelection = (typeof executionSelections)[number];
+      const targetIdentity = ({ entry, platform }: ExecutionSelection, scope: Scope): RebuildTargetIdentity => ({
+        sourceId: entry.source.sourceId,
+        sourceIdentity: entry.source.sourceIdentity,
+        pluginId: entry.pluginId,
+        pluginName: entry.plugin.manifest.name,
+        pluginVersion: entry.plugin.manifest.version,
+        platform, scope, cwd: options.commandOptions.cwd,
+      });
       const planTargetFor = (
         plan: ReconcileOperationPlan,
         selection: ExecutionSelection,
@@ -3524,6 +3531,7 @@ async function runRebuildCommandInSession(
         debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
         expectedCatalogConfigDigest: catalog.configDigest,
         codexObservationSession: options.runtime?.codexObservationSession,
+        nativeObservationBatch: options.runtime?.previewOperationPlan ? options.runtime.nativeObservationBatch : undefined,
         codexObservationScopeByMarketplace,
         preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
         managedCommandProducerCache: options.runtime?.managedCommandProducerCache,
@@ -4379,6 +4387,14 @@ async function runRebuildCommandInSession(
           result.deploymentReceipts = [...receipts];
           return [{ result, code: diagnostics[0]?.code ?? 'nativePreparationBlocked' }];
         });
+        // A check can discover drift before a target has any deployment receipts.
+        for (const selection of executionSelections) {
+          const error = previewPreparation.preparedTargetErrors.get(executionKey(selection, initialPlan));
+          if (!(error instanceof Error) || error.message.split(':', 1)[0] !== 'operationPlanStale') continue;
+          const scope = planTargetFor(initialPlan, selection)!.resolvedScope;
+          blockedTargets.push({ result: failedResult(options.command, targetIdentity(selection, scope), error.message),
+            code: 'operationPlanStale' });
+        }
         if (blockedTargets.length) {
           preview.rebuildResults = blockedTargets.map(({ result }) => result);
           preview.targetResults = blockedTargets.map(({ result, code }) => ({ ...toTargetResult(result), errorCode: code }));
@@ -5148,16 +5164,7 @@ async function runRebuildCommandInSession(
             const state = dependencyStates.get(consumerKey);
             return state === 'failed' || state === 'skipped';
           });
-        const identity: RebuildTargetIdentity = {
-          sourceId: entry.source.sourceId,
-          sourceIdentity: entry.source.sourceIdentity,
-          pluginId: entry.pluginId,
-          pluginName: entry.plugin.manifest.name,
-          pluginVersion: entry.plugin.manifest.version,
-          platform,
-          scope: planned.resolvedScope,
-          cwd: options.commandOptions.cwd,
-        };
+        const identity = targetIdentity(selection, planned.resolvedScope);
         const codexReconcilePlan = platform === 'codex'
           ? lockedCodexPlans.find((plan) =>
               plan.desiredTargets.some((target) => target.pluginId === entry.pluginId))

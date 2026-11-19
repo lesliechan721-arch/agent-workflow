@@ -198,6 +198,8 @@ plugin.status 的 selection 保留 plugins/targets 数组及 targetOrigin。指�
 
 remainingTargets 只列本次请求选择中未完成的目标，不能把过滤掉的平台或未检查的其它项目加入自动重试。所有长期需求是否满足由已有 allSatisfied 与 coverage 事实表达，不能从本次 status=success 推断整个机器已同步。
 
+联合安装已完成写入，但最终读取本次目标状态失败时，回执返回 `partial` 和 `statusUnavailable`，保留已确认的变更。若全部目标已写完，`remainingTargets` 为空。`nextActions` 提供 `aw plugin status --context <user|project> --json` 供调用方只读复查。
+
 `changes.outputs` 无法证明具体结果时为 unknown，不能从“执行器返回了”推断已改变或未改变。来源准备已经启用、需求已保存但部署受阻时，必须分别列出这些变化。没有物理操作的 requirements-only 返回空 targetResults，不伪造各平台安装成功。
 
 ## 5. 机器可用的下一步与可扩展性

@@ -29,6 +29,8 @@ Codex 使用 CODEX_HOME，缺省用户 .codex；Claude 使用 CLAUDE_CONFIG_DIR�
 
 数字门槛是必要接口条件，不是完整运行资格。已开放的普通 Skill 使用同一接口最低条件，不要求版本等于历史实测值；OS、架构、产品、scope 与组件限制仍分别检查。一个完整受支持入口即可提供当前能力，其他入口的资格缺口不能单独降级该入口。无需 CLI 且没有必要版本门槛的目录路由，身份和接口已确认时可 available，另显示版本未知；代码扩展仍检查实际 runtime API。Copilot 官方版本句末的单个句点只在完整品牌行内规范化，随后仍走严格版本解析；其他客户端和非法版本不放宽。未核验的 OS、产品面、消费者或子能力保持 unverified，不由相邻版本或文档推定运行成功。 Gemini 和 Pi 的 npm JS 入口每次仍运行原生版本 probe。Gemini 版本输出只有数字时，可用邻近包元数据中的精确名称 `@google/gemini-cli`、同版本与指向本次真实入口的包内 bin 映射补充品牌身份；Pi 仅在原生输出为 `1.5.0`、元数据为 `@earendil-works/pi-coding-agent@1.5.0` 且 `bin.pi` 精确指向本次 `dist/bundle/cli.js` 时省去重复 help。元数据读取有界，不是发布者签名；缺失、损坏、不匹配或越界时回到原帮助身份 probe，不缓存版本或降低最低版本条件。
 
+Pi 的一次只读发现最多并行检查两个独立入口。每个入口先读自身版本，再按上述条件决定是否执行 help。候选与普通失败诊断保持 PATH 顺序。取消或失败时等待本批全部探测结束，优先报告未确认的进程清理错误。
+
 仅对元数据声明 `@google/gemini-cli@0.67.0`、bin 为 `bundle/gemini.js` 且 realpath 与本次 Node JS 入口一致的版本 probe 和精确 `extensions list --output-format json` 查询，在环境副本中设置 `GEMINI_CLI_NO_RELAUNCH=true`，避免固定入口重复启动 Node。版本 probe 仍为 10 秒，清单查询仍为原 5 秒；实际版本与清单分别通过原身份和结构检查。元数据不匹配时清单继续使用原启动方式，不否决原生结果。Windows 使用原安全 npm shim 解析出的 Node 与 JS 入口；安装、更新和普通会话继续使用原环境。其他版本、入口和客户端保持原 5 秒 probe；命令整体时限、取消和进程清理不变。
 
 Darwin 上的同一固定 Gemini 只读版本/清单 probe 可使用 Node 标准代码编译缓存：目录由当前平台重建会话的既有私有临时根惰性提供，随该会话清理；它只复用编译代码，每次版本与清单仍实际执行。保留调用方已有 `NODE_COMPILE_CACHE` 或 `NODE_DISABLE_COMPILE_CACHE` 设置；目录不可用时退回原启动，不由缓存失败否决原生结果，也不阻断后续必要 staging 重试。Node 自行校验代码与版本变动。其它平台、客户端版本、入口和 mutation 不新增此环境提示；缓存文件不进入包指纹或状态依据。
@@ -37,7 +39,7 @@ Darwin 上的同一固定 Gemini 只读版本/清单 probe 可使用 Node 标准
 
 Antigravity CLI `1.3.4` 在 Linux、macOS、Windows 的 x64/arm64 六环境开放 User 普通 Skill，依据[六环境 User 叶证据](../../../scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json)。记录包含安装、版本更新、同版本正文刷新、目标 Git 项目与外部 neutral 的有效启用状态、实际副本字节、owner 保留及移除后双侧缺席。Linux 双架构与 macOS x64 来自原运行，macOS ARM64 与 Windows 双架构来自剩余环境补测，原运行的失败与容量取消保持。Project、App、其他 host、Agent 等其他组件仍 unverified；其他版本按相同接口最低条件判断，实测证据仍限于记录版本；Skill 加载、模型采用和会话 trust 未知独立记录。Linux x64 公开 AW 链已另行验证；该 Native 记录不证明其他宿主的公开 AW 完整编排，须由新的对应报告判断。
 
-Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
+Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 每次发现先在当前用户注册的 Main 包中查找 `OpenAI.Codex`，存在候选时核对开始菜单的精确 `<PackageFamilyName>!App`、架构和路径链，再做有界搜索。包查询失败时仍查开始菜单，有对应家族则报告发现不完整。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
 符合现有兼容条件的 Codex CLI 支持用户可见、可手动调用的 Skill。安装时通过 `agents/openai.yaml` 的 `policy.allow_implicit_invocation` 保留作者声明的自动调用限制。禁用自动调用的 Skill 仍出现在用户的 Skill 列表中。
 
@@ -115,7 +117,7 @@ Gemini inspection 每次读取实际原生目录的完整摘要，并核对副�
 
 每个配对原生动作后，AW 只在配置完全等于固定版本预期变换时窄恢复此前的全局、全部项目与其他插件字段，并更新本次快照；失败时也只接受未改变或已知变换，遇到 stale 不覆盖外部修改。重装后再核对实际原生副本与本次冻结投影的完整摘要，原生退出 0、版本或登记存在均不能替代字节检查。失败保留 AW 源包和已核验的激活规则，以 partial/unknown 及 `nativeInstallContentPostcheckFailed` 等诊断给出恢复；不回滚包、不删除未知数据、不新建恢复 ledger，也不为其他项目新增信任。用户须先保留或处理本地数据、修复弱 owner 或安装现场，再在同一工作区显式运行许可恢复命令。
 
-Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`；项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，但后续路径仍须为与本次 AW marketplace 精确一致的绝对路径，才能确认来源。
+Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`；项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，但后续路径仍须为与本次 AW marketplace 精确一致的绝对路径，才能确认来源。包已确认发布、插件已登记，且写后观察仅因市场查询超时而无法确认归属时，回执采用同一 binding 在写后重核中重新取得的完整观察。再次超时或发现其他来源时，同步保留已发布的包并报告部分完成。
 
 Codex 本地 marketplace 登记在 Windows 上接受完整 drive/UNC 路径与对应 `\\?\` / `\\?\UNC\` 写法等价。仅统一 drive letter，目录组件及 UNC server/share 仍逐字比较；相对路径、其他设备路径、点组件、内部空组件、尾点/空格、ADS 和保留设备名均不匹配。不通过 realpath、symlink、8.3 或全串大小写折叠扩大来源归属。此比较不证明目录存在或 AW 所有，物理路径、owner、共享引用及锁内检查继续按[生命周期](lifecycle.md#ownership-与删除权限)执行。
 
@@ -146,6 +148,8 @@ Codex 的平台安装从 adapter 的冻结 product binding 构造管理入口，
 包、注册、owner、各产品面的 activation 和 load 和组件 presence 分开。load=observed 只表示取得宿主加载证据，不证明模型行为。status 不为补证调用模型。没有客户端时仍允许证据充分的 AW 独占补足清理，原生卸载受阻则保留来源与精确恢复入口，不猜注册已消失。
 
 所有原生来源先准备完整新包、校验并冻结，再按路由执行。单平台或物理分组失败不回滚其他成功；共享配置只修改自身 entry，foreign/shared/unknown 继续保护。preApply 每逻辑 target 每命令最多一次，授权后与 preflight 通过后运行，失败不清旧输出。
+
+macOS 和 Linux 的原生命令以进程组收尾。主进程正常退出且返回 0、对原组的首次 TERM 得到 `ESRCH`、成功回调交齐 stdout 和 stderr 时，可以提前结束原有的 100 毫秒宽限。随后仍发送 KILL，以信号 0 复核进程组，并完成适用的后代检查。组仍存在、输出未到齐或命令被取消时沿用相应的清理时限。
 
 真实资格分别固定版本、OS、产品面、scope 和格式，验证安装、列出、激活、更新、移除、新会话加载、冲突与所声称组件。确定性 fake 只验证编排和失败边界。现有资格脚本及证据范围见[测试指南](../testing.md)，不能把相邻版本、help、静态源码或文件写入当完整资格。
 

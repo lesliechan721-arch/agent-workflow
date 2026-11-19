@@ -11,7 +11,7 @@ import { readPlatformPackageContentDigest } from '../../src/utils/platform-empty
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../../src/constants.js';
-import { createNativeQuerySession, queryNativeDeploymentResult } from '../../src/platforms/inspection-query.js';
+import { createNativeQuerySession, queryNativeDeploymentResult, withNativeObservationBatch } from '../../src/platforms/inspection-query.js';
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
 import type { ReadContext, ScopeRef } from '../../src/platforms/contracts.js';
 
@@ -166,25 +166,38 @@ describe('native deployment state authority', () => {
   // Test Value Gate: one failed snapshot preserves its native reason without
   // retry storms, but a new operation retries and cancellation cannot return cache.
   it('retains native failure evidence only inside its operation', async () => {
-    const item = await fixture('claude');
-    let calls = 0;
+    const item = await fixture('claude', false);
+    const cwds: string[] = [];
     const failure = new NativeCliError({ invocation: { command: 'claude', args: [] }, exitCode: 124,
       stdout: '', stderr: '', reason: 'timeout' });
     const controller = new AbortController();
-    const session = createNativeQuerySession();
-    const ctx: ReadContext = { ...item.ctx, signal: controller.signal, nativeQuerySession: session,
-      runner: async () => { calls += 1; throw failure; } };
-    const read = () => queryNativeDeploymentResult(ctx, item.binding, ['plugin', 'list', '--json']);
-    try {
-      for (let index = 0; index < 2; index += 1) await expect(read()).rejects.toBe(failure);
-      expect(calls).toBe(1);
-      const cancellation = new Error('cancelled'); controller.abort(cancellation);
-      await expect(read()).rejects.toBe(cancellation);
-      expect(calls).toBe(1);
-    } finally { await session.dispose(); }
-    await expect(queryNativeDeploymentResult({ ...ctx, nativeQuerySession: undefined, signal: undefined },
-      item.binding, ['plugin', 'list', '--json'])).rejects.toBe(failure);
-    expect(calls).toBe(2);
+    const cancellation = new Error('cancelled');
+    let recovered = false;
+    const runner = async (invocation: NativeCliInvocation) => {
+      cwds.push(invocation.cwd!);
+      if (!recovered) throw failure;
+      return { exitCode: 0, stdout: '[]', stderr: '' };
+    };
+    const read = (ctx: ReadContext) => queryNativeDeploymentResult(ctx, item.binding, ['plugin', 'list', '--json']);
+    await expect(withNativeObservationBatch({ runner, signal: controller.signal }, async (batch) => {
+      const ctx = { ...item.ctx, ...batch };
+      await expect(read(ctx)).rejects.toBe(failure);
+      await expect(read(ctx)).rejects.toBe(failure);
+      expect(cwds).toHaveLength(1);
+      controller.abort(cancellation);
+      await expect(read(ctx)).rejects.toBe(cancellation);
+      expect(cwds).toHaveLength(1);
+      throw cancellation;
+    })).rejects.toBe(cancellation);
+    expect(await fs.pathExists(cwds[0]!)).toBe(false);
+
+    recovered = true;
+    await withNativeObservationBatch({ runner }, async (batch) => {
+      await expect(read({ ...item.ctx, ...batch })).resolves.toMatchObject({ stdout: '[]' });
+    });
+    expect(cwds).toHaveLength(2);
+    expect(cwds[1]).not.toBe(cwds[0]);
+    expect(await fs.pathExists(cwds[1]!)).toBe(false);
   });
 
   // Test Value Gate: shared code compilation must still read every native state

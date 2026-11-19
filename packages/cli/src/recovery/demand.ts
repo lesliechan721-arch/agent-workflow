@@ -8,6 +8,7 @@ import { observeIntent, resolveIntentPath, type IntentObservation } from '../int
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
 import {
   resolvePartialCatalogOperationContext,
+  type CatalogPreparationReadScope,
   type CatalogOperationContext,
 } from '../utils/catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
@@ -23,6 +24,7 @@ export interface DemandRoot {
   sourceState: DemandSourceState;
   blockers: string[];
   plugin?: PluginMeta;
+  unreadableDependency?: string;
 }
 export interface DemandSnapshot {
   scope: Scope;
@@ -43,6 +45,7 @@ export interface ReadDemandOptions {
   preferences?: PreferencesObservation;
   catalogOperationContext?: CatalogOperationContext;
   signal?: AbortSignal;
+  catalogReadScope?: CatalogPreparationReadScope;
   /** Shared only by reads within one operation, never carried into execution. */
   resolveCatalog?: () => Promise<{ context: CatalogOperationContext; configured: Set<string> }>;
   manifestReads?: Map<string, Promise<PluginMeta>>;
@@ -65,8 +68,8 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
   ]);
   const errors: Diagnostic[] = [];
   if (intent.state !== 'absent' && intent.state !== 'valid') {
-    errors.push(describeStrongStateProblem({ kind: 'intent', scope: options.scope,
-      state: intent.state, filePath: await resolveIntentPath(options) }));
+    errors.push({ ...describeStrongStateProblem({ kind: 'intent', scope: options.scope,
+      state: intent.state, filePath: await resolveIntentPath(options) }), subject: { scope: options.scope } });
   }
   if (preferences.state === 'invalid' || preferences.state === 'unreadable') {
     errors.push(describeStrongStateProblem({ kind: 'preferences', scope: 'user',
@@ -95,7 +98,7 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
       context ??= await resolvePartialCatalogOperationContext({
         env: options.env, configSnapshot: snapshot, signal: options.signal,
         sourceIds: [...new Set(roots.map((root) => root.sourceId))].filter((id) => configured.has(id)),
-      });
+      }, options.catalogReadScope);
     }
   } catch (error) {
     options.signal?.throwIfAborted();
@@ -106,6 +109,7 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
   }
   result.catalogOperationContext = context;
   const pluginCache = new Map<string, PluginMeta>();
+  const unreadable = new Map<string, string>();
   for (const root of roots) {
     options.signal?.throwIfAborted();
     if (!configured.has(root.sourceId)) {
@@ -132,7 +136,7 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
     }
     for (const entry of source.manifest.entries) {
       const pluginId = `${root.sourceId}/${entry.name}`;
-      if (pluginCache.has(pluginId)) continue;
+      if (pluginCache.has(pluginId) || unreadable.has(pluginId)) continue;
       try {
         const key = JSON.stringify([source.sourceIdentity, source.logicalIdentity, source.snapshotDigest, source.rootDir, pluginId]);
         let reading = options.manifestReads?.get(key);
@@ -147,10 +151,33 @@ export async function readDemand(options: ReadDemandOptions): Promise<DemandSnap
         });
         pluginCache.set(pluginId, plugin);
       } catch {
-        if (pluginId === root.pluginId) root.blockers.push('pluginManifestUnavailable');
+        unreadable.set(pluginId, pluginId);
       }
     }
     root.plugin = pluginCache.get(root.pluginId);
+  }
+  if (unreadable.size) {
+    // Keep the complete readable closures usable when another manifest read fails.
+    const dependents = new Map<string, string[]>();
+    for (const [id, plugin] of pluginCache) for (const name of plugin.manifest.dependencies ?? []) {
+      const dependency = `${plugin.sourceId}/${name}`;
+      const consumers = dependents.get(dependency);
+      if (consumers) consumers.push(id);
+      else dependents.set(dependency, [id]);
+    }
+    // Map iteration visits each newly affected consumer, including transitive roots.
+    for (const [id, failedManifest] of unreadable) {
+      for (const consumer of dependents.get(id) ?? []) {
+        if (!unreadable.has(consumer)) unreadable.set(consumer, failedManifest);
+      }
+      pluginCache.delete(id);
+    }
+    for (const root of roots) {
+      const failed = unreadable.get(root.pluginId);
+      if (!failed || root.sourceState !== 'ready') continue;
+      if (root.plugin) root.unreadableDependency = failed;
+      else root.blockers.push('pluginManifestUnavailable');
+    }
   }
   result.plugins = [...pluginCache.values()];
   return result;

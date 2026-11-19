@@ -23,6 +23,7 @@ import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, prepareNativeCliE
 import { portableRecoveryLayout, type PortableAgent } from '../portable/recovery-layout.js';
 import { canonicalizePathThroughExistingAncestor, resolveClaudeProjectKey, resolveCodexProjectKey } from '../utils/state-paths.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
+import type { CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import {
   activateCatalogSourceGeneration,
   probeCatalogSourceGeneration,
@@ -63,6 +64,12 @@ import { disposePreparedPlatformRebuildSession } from '../commands/rebuild-integ
 import { operationPlanNativeToolChanges } from '../commands/operation-plan.js';
 
 export type RecoveryCommand = 'sync' | 'install' | 'reinstall' | 'uninstall' | 'cleanup';
+/** Borrowed during preparation. Returned plans must perform later checks independently. */
+export interface RecoveryPreparationReads {
+  catalogReadScope?: CatalogPreparationReadScope;
+  nativeObservationBatch?: RebuildCommandRuntime['nativeObservationBatch'];
+}
+
 export interface RecoveryOptions {
   /** Candidate target policy, committed only after the joint locked recheck. */
   preferences?: DeploymentPreferences;
@@ -75,6 +82,8 @@ export interface RecoveryOptions {
   /** Internal precise updates may select members of the complete desired closure. */
   allowDependencySelectors?: boolean;
   keepDependencies?: boolean;
+  /** Same-scope declarations selected for separate retired-plugin plans in this remove. */
+  retiringCatalogRoots?: readonly string[];
   retireUnselectedTargets?: boolean;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -177,8 +186,8 @@ function diagnostic(code: string): RecoveryDiagnostic {
   };
   return { code, message: messages[code] ?? `操作受阻：${code}。` };
 }
-function errorCode(error: unknown, fallback: string): string {
-  const code = (error as { code?: unknown })?.code;
+export function errorCode(error: unknown, fallback: string): string {
+  const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === 'string' && /^[A-Za-z][A-Za-z0-9-]*$/u.test(code)) return code;
   const prefix = error instanceof Error ? error.message.split(':')[0] : '';
   return /^[A-Za-z][A-Za-z0-9-]*$/u.test(prefix ?? '') ? prefix! : fallback;
@@ -272,7 +281,8 @@ function nativeTargetSelection(targets: readonly NativeTarget[]): {
 
 async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform: PlatformSelection,
   preview: boolean, runtime: RebuildCommandRuntime = plan.runtime,
-  command: RecoveryCommand = plan.command, selectedTargets?: readonly NativeTarget[]): Promise<RebuildCommandResult> {
+  command: RecoveryCommand = plan.command, selectedTargets?: readonly NativeTarget[],
+  catalogReadScope?: CatalogPreparationReadScope): Promise<RebuildCommandResult> {
   if (!runtime.awHomeMutationToken) {
     await prepareNativeCliExecution({ env: plan.context.env, runner: runtime.nativeCliRunner });
   }
@@ -300,6 +310,7 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
         runtime.nativeCliRunner ?? getDefaultNativeCliRunner(), runtime.signal) } : {}),
       env: plan.options.env,
       catalogOperationContext: plan.demand.catalogOperationContext,
+      catalogReadScope,
       previewOperationPlan: preview,
       executionInput: {
         context: plan.context,
@@ -447,10 +458,10 @@ function nativeResults(plan: RecoveryPlan, group: NativeGroup,
 }
 
 /** All scopes share one final marketplace generation before Review is returned. */
-export async function refreshRecoveryNativePreviews(plan: RecoveryPlan): Promise<void> {
+export async function refreshRecoveryNativePreviews(plan: RecoveryPlan, catalogReadScope?: CatalogPreparationReadScope): Promise<void> {
   for (const group of plan.nativeGroups) {
     group.preview = await nativeOperation(plan, group.pluginIds, group.platform, true,
-      plan.runtime, group.command, nativeGroupTargets(group));
+      plan.runtime, group.command, nativeGroupTargets(group), catalogReadScope);
     nativeResults(plan, group, group.preview, false);
   }
   completeReceipt(plan.receipt);
@@ -711,7 +722,8 @@ async function checkFootprints(plan: RecoveryPlan): Promise<void> {
 }
 
 export async function prepareScopedRecovery(command: RecoveryCommand, selectors: readonly string[],
-  options: RecoveryOptions & { scope: Scope }, runtime: RebuildCommandRuntime = {}): Promise<RecoveryPlan> {
+  options: RecoveryOptions & { scope: Scope }, runtime: RebuildCommandRuntime = {},
+  { catalogReadScope, nativeObservationBatch }: RecoveryPreparationReads = {}): Promise<RecoveryPlan> {
   runtime = { ...runtime, preparedArtifactRenderResults: runtime.preparedArtifactRenderResults ?? new Map() };
   options.signal?.throwIfAborted();
   const context = await createScopeContext({ scope: options.scope, cwd: options.cwd, env: options.env });
@@ -760,7 +772,6 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
     }
   }
   options.signal?.throwIfAborted();
-  const preparationRuntime = { ...runtime, signal: options.signal };
   const originalIntent = intentEvidence(demand.intent);
   const proposed = command === 'install'
     ? await addRequirements({ ...options, selectors, dryRun: true, installSelectors: true }) : undefined;
@@ -860,12 +871,14 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
     group.targets.push({ pluginId: target.pluginId, platform: target.delivery.platform });
     groups.set(key, group);
   }
+  const preparationRuntime = { ...runtime, signal: options.signal,
+    nativeObservationBatch: groups.size === 1 ? nativeObservationBatch : undefined };
   for (const pending of groups.values()) {
     const group = { ...nativeTargetSelection(pending.targets), command: pending.command };
     if (group.targets.length === 0) continue;
     try {
       const preview = await nativeOperation(plan, group.pluginIds, group.platform, true,
-        preparationRuntime, group.command, group.targets);
+        preparationRuntime, group.command, group.targets, catalogReadScope);
       options.signal?.throwIfAborted();
       const nativeGroup = { ...group, preview };
       plan.nativeGroups.push(nativeGroup);
@@ -906,7 +919,7 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
         ? await preparePortableCleanup({ scope: options.scope, context, selector: pluginId, agents, force: options.force, signal: options.signal })
         : await preparePortableRecovery({ scope: options.scope, context, selector: pluginId, agents,
         env: options.env, cliVersion: options.cliVersion, signal: options.signal,
-        catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds });
+        catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds }, catalogReadScope);
       plan.portableGroups.push(prepared);
     } catch (error) {
       options.signal?.throwIfAborted();
@@ -930,7 +943,7 @@ export async function prepareScopedRecovery(command: RecoveryCommand, selectors:
           && portableAgents.every((agent) => group.options.agents.some((item) => item === agent)))
           ?? await preparePortableRecovery({ scope: options.scope, context, selector: root.pluginId,
             env: options.env, agents: portableAgents, cliVersion: options.cliVersion, signal: options.signal,
-            catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds });
+            catalogOperationContext: demand.catalogOperationContext, excludedPluginIds: options.excludedPluginIds }, catalogReadScope);
         if (!prepared.globalBlockers.length) {
           retainedPortableTargets.push(...prepared.targets.filter((target) =>
             !target.blocker && ['satisfied', 'drifted'].includes(target.observation)));
@@ -1326,6 +1339,7 @@ export function describeRecoveryPlan(plan: RecoveryPlan): unknown {
     environment: { homes: child.context.targetHomes, projectRoot: child.context.projectRoot, awHome: child.context.awHome },
   });
   return { inputs: plan.joint?.evidence ?? [plan.originalIntent, plan.preferencesEvidence],
+    catalog: plan.command === 'install' ? plan.demand.catalogOperationContext?.generationSetDigest : undefined,
     command: plan.command, dependencyCleanupTargets: plan.dependencyCleanupTargets,
     declaration: plan.joint?.declaration, packages: plan.runtime.configApplyPackages ? { targets: plan.runtime.configApplyPackages.targets, evidence: plan.runtime.configApplyPackages.evidence } : undefined, blockers: plan.receipt.blockers,
     children: (plan.joint?.children ?? [plan]).map(describe) };

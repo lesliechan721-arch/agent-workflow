@@ -7,7 +7,7 @@ import { isPortablePlatformTarget, type PlatformTarget } from '@lesliechan721/aw
 
 import type { CliPromptResult } from '../commands/runtime.js';
 import type { PortableSkillCandidate, Scope } from '../types.js';
-import { resolveCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, resolveCatalogOperationContext, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { resolveAwProjectRoot } from '../utils/plugin-config.js';
@@ -384,7 +384,7 @@ export async function materializePortableSkillsToDirectory(options: {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   catalogOperationContext?: CatalogOperationContext;
-}): Promise<PortableMaterializeReceipt> {
+}, catalogReadScope?: CatalogPreparationReadScope): Promise<PortableMaterializeReceipt> {
   assertPortablePlatform(options.platform);
   assertScope(options.scope);
   const scope = options.scope;
@@ -406,6 +406,7 @@ export async function materializePortableSkillsToDirectory(options: {
     scope,
     configSnapshot,
     catalogOperationContext,
+    catalogReadScope,
   });
   try {
     const unmet = materialized.preparation.flatMap((unit) => unit.unmet);
@@ -504,11 +505,13 @@ export async function materializePortableSkillsToDirectory(options: {
       });
       await portableCommandTestHooks?.beforeMaterializeOutputCommit?.(target);
       const currentConfigSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+      // Staging can run a renderer. Check Active again before committing the materialization.
+      const commitReadScope = catalogReadScope ? new CatalogPreparationReadScope(options) : undefined;
       const currentCatalogOperationContext = await resolveCatalogOperationContext({
         ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
         configSnapshot: currentConfigSnapshot,
         env: options.env,
-      });
+      }, commitReadScope);
       const currentBinding = await resolvePortableCatalogBindingInput({
         selector: options.selector,
         platform: options.platform,
@@ -518,6 +521,7 @@ export async function materializePortableSkillsToDirectory(options: {
         env: options.env,
         configSnapshot: currentConfigSnapshot,
         catalogOperationContext: currentCatalogOperationContext,
+        catalogReadScope: commitReadScope,
       });
       if (
         JSON.stringify(currentBinding.source) !== JSON.stringify(materialized.sourceBindingSource)

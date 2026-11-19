@@ -5,12 +5,16 @@ import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-
 import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
+import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
+import { resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
+import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { writeIntent, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
-import { setTargets } from '../../src/intent/deployment-preferences.js';
+import { resolvePreferencesPath, setTargets } from '../../src/intent/deployment-preferences.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
@@ -79,6 +83,21 @@ async function expectSavedIntent(receipt: RecoveryReceipt, location: Parameters<
     roots: saved.value.roots.map((root) => root.pluginId) });
 }
 
+function failManifestAfterActiveCheck(file: string, stages: string[]) {
+  const readJson = fs.readJson.bind(fs);
+  let reads: number | undefined;
+  const spy = vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+    if (String(args[0]) === file && reads !== undefined && ++reads === 2) {
+      throw Object.assign(new Error('read failed'), { code: 'EIO' });
+    }
+    return readJson(...args);
+  });
+  const runtime: RebuildCommandRuntime = { debugLogger: { log: (event) => {
+    if (event.data?.phase === 'start' && stages.includes(String(event.data.name))) reads = 0;
+  } } };
+  return { runtime, restore: () => spy.mockRestore() };
+}
+
 describe('joint recovery through real Catalog and owned outputs', () => {
   beforeEach(() => { installNativeTestQualification({ discovery: true }); });
   // Public receipts must identify the saved scope and digest, independently of output execution.
@@ -128,6 +147,315 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(status.coverage.scopes).toEqual(['user', 'project']);
     expect(status.allSatisfied).toBe(true);
   }, 30000);
+  it.each(['same-path damage', 'new Active', 'new Active with caller context'] as const)('rejects install after %s between Review and confirmation', async (change) => {
+    const value = await fixture();
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    // A first install has no saved root from which to derive its Catalog identity.
+    await Promise.all([fs.remove(await resolveIntentPath(user)), fs.remove(await resolveIntentPath(project))]);
+    const before = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
+    const plan = await prepareRecovery('install', ['team/a'], change === 'new Active with caller context'
+      ? { ...user, catalogOperationContext: await resolveCatalogOperationContext({ env: user.env }) } : user);
+    expect(plan.receipt.blockers).toEqual([]);
+    if (change === 'same-path damage') {
+      const file = path.join(before.snapshotPath, 'plugins', 'b', 'generic', 'skills', 'b', 'README.md');
+      const times = await fs.stat(file);
+      await fs.writeFile(file, 'Use x.\n');
+      await fs.utimes(file, times.atime, times.mtime);
+    } else {
+      await fs.appendFile(path.join(value.source, 'catalog-manifest.json'), '\n');
+      const changed = await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: user.cliVersion, env: user.env });
+      expect(changed.active?.snapshotDigest).not.toBe(before.snapshotDigest);
+    }
+
+    const receipt = await executeRecovery(plan);
+    expect(receipt).toMatchObject({ ok: false, declarationChanged: false, outputsMayHaveChanged: false,
+      blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]) });
+    await expect(observeIntent(user)).resolves.toEqual({ state: 'absent' });
+    await expect(observeIntent(project)).resolves.toEqual({ state: 'absent' });
+    await expect(fs.pathExists(value.userRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(value.projectRoot)).resolves.toBe(false);
+  });
+  it('reports current Active after writing even when the complete reviewed Store is still readable', async () => {
+    const value = await fixture();
+    const project = { ...value.options, scope: 'project' as const };
+    await fs.remove(await resolveIntentPath(project));
+    expect((await runRecovery('sync', [], value.options)).ok).toBe(true);
+
+    const old = await resolveCatalogOperationContext({ env: project.env });
+    const statePath = resolveCatalogGenerationStatePath(project.env);
+    const originalState = await fs.readFile(statePath);
+    const pluginRoot = path.join(value.source, 'plugins', 'a');
+    for (const base of [pluginRoot, path.join(pluginRoot, 'generic')]) {
+      await fs.appendFile(path.join(base, 'skills', 'a', 'SKILL.md'), 'New content.\n');
+    }
+    const entry = await createCatalogManifestV7Entry(await readPluginManifest(pluginRoot, { mode: 'bundle' }), pluginRoot);
+    const manifestPath = path.join(value.source, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    await fs.writeJson(manifestPath, { ...manifest, entries: manifest.entries.map((item: typeof entry) =>
+      item.name === entry.name ? entry : item) });
+    const next = await syncCatalogSourceGeneration({ sourceId: 'team', ...project, impactConfirmed: true });
+    expect(next.active?.snapshotDigest).not.toBe(old.generationSet.sources[0]!.snapshotDigest);
+    // Prepare the new generation's expected bytes so a read-only status can compare both roots.
+    const prepared = await prepareRecovery('install', ['team/b'], project);
+    await prepared.context.dispose();
+    const nextState = await fs.readFile(statePath);
+    await fs.writeFile(statePath, originalState);
+
+    // Switch the real Active pointer only after every confirmed child has finished.
+    const receipt = await runRecovery('install', ['team/b'], { ...project, catalogOperationContext: old }, {
+      debugLogger: { log: async (event) => {
+        if (event.data?.name === 'recovery.status' && event.data.phase === 'start') await fs.writeFile(statePath, nextState);
+      } },
+    });
+    const fresh = await readRecoveryStatus(project);
+    const previous = await readRecoveryStatus({ ...project, catalogOperationContext: old });
+    expect(previous).toMatchObject({ allSatisfied: true, inSync: true });
+    expect(fresh).toMatchObject({ allSatisfied: false, inSync: false, coverage: { scopes: ['user', 'project'] },
+      inventory: [expect.objectContaining({ pluginId: 'team/a', targetResults: [expect.objectContaining({ content: 'drifted' })] }),
+        expect.objectContaining({ pluginId: 'team/b', targetResults: [expect.objectContaining({ content: 'satisfied' })] })] });
+    expect(receipt).toMatchObject({ ok: true, allSatisfied: fresh.allSatisfied, inSync: fresh.inSync,
+      coverage: { scopes: fresh.coverage.scopes }, requestedRoots: ['team/b'], remainingTargets: [],
+      targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/b', scope: 'project', execution: 'applied', observation: 'verified' })]) });
+  });
+
+  it.each(['project unavailable', 'parent project visible', 'damaged Store'] as const)('preserves completed installation and a read-only recheck after final status finds %s', async (fault) => {
+    const value = await fixture();
+    const project = { ...value.options, scope: 'project' as const };
+    if (fault === 'parent project visible') await git(path.dirname(value.cwd), ['init', '--quiet']);
+    await fs.remove(await resolveIntentPath(project));
+    const active = await resolveActiveCatalogGeneration({ env: project.env, sourceId: 'team' });
+    const marker = fault === 'damaged Store' ? path.join(active.snapshotPath, '.agents', 'plugins', 'marketplace.json')
+      : path.join(value.cwd, '.git');
+    const saved = path.join(value.cwd, 'saved-marker');
+    const result = await runPublicLifecycle('install', ['team/b'], project, {
+      debugLogger: { log: async (event) => {
+        if (event.data?.name === 'recovery.status' && event.data.phase === 'start') await fs.rename(marker, saved);
+      } },
+    });
+    const current = fault === 'damaged Store' ? await readRecoveryStatus(project) : undefined;
+    await fs.rename(saved, marker);
+    if (current) expect(current.inventory?.map((entry) => entry.sourceState)).toEqual(['unavailable', 'unavailable']);
+    expect(result).toMatchObject({ status: 'partial', data: {
+      changes: { requirements: 'changed', outputs: 'changed' }, allSatisfied: current?.allSatisfied ?? null,
+      inSync: current?.inSync ?? null, remainingTargets: [],
+      targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/b', target: 'generic', scope: 'project',
+        execution: 'applied', observation: 'verified' })]) },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
+        detail: { reasonCode: fault === 'damaged Store' ? 'sourceActiveUnavailable' : 'projectRootUnavailable' } })]),
+      nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
+        requiresConfirmation: false, reason: expect.any(String) }] });
+    await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+    await expect(observeIntent(project)).resolves.toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
+  });
+
+  it.each([
+    ['requested output', 'portableObservationFailed'],
+    ['requested Intent', 'pluginIntentStateInvalid'],
+    ['deployment preferences', 'deploymentPreferencesInvalid'],
+    ['other scope Intent', null],
+    ['other scope output', null],
+    ['requested content drift', null],
+  ] as const)('reports the completed install against a fresh status read with %s affected', async (fault, failure) => {
+    const value = await fixture(false, ['generic'], false, { a: [], b: [] });
+    const project = { ...value.options, scope: 'project' as const };
+    const user = { ...value.options, scope: 'user' as const };
+    const projectIntent = await resolveIntentPath(project);
+    await fs.remove(projectIntent);
+    if (fault === 'other scope output') expect((await runRecovery('sync', ['team/a'], user)).ok).toBe(true);
+    const output = path.join(value.projectRoot, 'b', 'SKILL.md');
+    const affected = fault === 'requested Intent' ? projectIntent
+      : fault === 'other scope Intent' ? await resolveIntentPath(user)
+      : fault === 'deployment preferences' ? await resolvePreferencesPath(project)
+      : fault === 'other scope output' ? path.join(value.userRoot, 'a', 'SKILL.md') : output;
+    const readFile = fs.readFile.bind(fs);
+    const reads = vi.spyOn(fs, 'readFile');
+    try {
+      const result = await runPublicLifecycle('install', ['team/b'], project, {
+        debugLogger: { log: async (event) => {
+          if (event.data?.name !== 'recovery.status' || event.data.phase !== 'start') return;
+          if (fault === 'requested content drift') await fs.appendFile(output, 'Local edit.\n');
+          else reads.mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+            if (String(args[0]) === affected) throw Object.assign(new Error('read failed'), { code: 'EIO' });
+            return readFile(...args);
+          });
+        } },
+      });
+      const current = await readRecoveryStatus(project);
+      expect(result.data).toMatchObject({ changes: { requirements: 'changed', outputs: 'changed' },
+        allSatisfied: current.allSatisfied, inSync: current.inSync, remainingTargets: [],
+        targetResults: [expect.objectContaining({ pluginId: 'team/b', scope: 'project', target: 'generic',
+          execution: 'applied', observation: 'verified' })] });
+      if (failure) {
+        expect(result).toMatchObject({ status: 'partial',
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable', detail: { reasonCode: failure } })]),
+          nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
+            requiresConfirmation: false, reason: expect.any(String) }] });
+      } else {
+        expect(result.status, JSON.stringify(result.diagnostics)).toBe('success');
+        expect(result.nextActions).toEqual([]);
+        expect(current.allSatisfied).not.toBe(true);
+      }
+    } finally { reads.mockRestore(); }
+    await expect(fs.readFile(output, 'utf8')).resolves.toContain('Use b.');
+    await expect(observeIntent(project)).resolves.toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
+  });
+
+  it.each(['requested', 'independent'] as const)('attributes a final manifest read failure to its %s dependency closure', async (affected) => {
+    const value = await fixture(false, ['generic'], false, { a: ['x'], b: ['c'], c: ['d'], d: [], x: [] });
+    const project = { ...value.options, scope: 'project' as const };
+    const user = { ...value.options, scope: 'user' as const };
+    const userIntent = await observeIntent(user);
+    if (userIntent.state !== 'valid') throw new Error('Expected a saved fixture Intent.');
+    await writeIntent(project, userIntent.value);
+    await fs.remove(await resolveIntentPath(user));
+    expect((await runRecovery('sync', ['team/a'], project)).ok).toBe(true);
+    await setTargets(user, ['generic', 'cursor']);
+    const active = await resolveActiveCatalogGeneration({ env: project.env, sourceId: 'team' });
+    const file = path.join(active.snapshotPath, 'plugins', affected === 'requested' ? 'd' : 'x', '.agents-plugin', 'plugin.json');
+    const readJson = fs.readJson.bind(fs);
+    const reads = vi.spyOn(fs, 'readJson');
+    let manifestReads = 0;
+    try {
+      const result = await runPublicLifecycle('install', ['team/b'], { ...project, targets: ['generic'] }, {
+        debugLogger: { log: (event) => {
+          if (event.data?.name !== 'recovery.status' || event.data.phase !== 'start') return;
+          reads.mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+            // Let Active validate the file. Fail its subsequent demand-manifest read once.
+            if (String(args[0]) === file && ++manifestReads === 2) throw Object.assign(new Error('read failed'), { code: 'EIO' });
+            return readJson(...args);
+          });
+        } },
+      });
+      expect(result.data).toMatchObject({ changes: { requirements: 'changed', outputs: 'changed' }, remainingTargets: [],
+        targetResults: ['d', 'c', 'b'].map((name) => expect.objectContaining({ pluginId: `team/${name}`, scope: 'project',
+          target: 'generic', execution: 'applied', observation: 'verified' })) });
+      if (affected === 'requested') {
+        expect(result).toMatchObject({ status: 'partial',
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
+            subject: { pluginId: 'team/b', scope: 'project', target: 'generic' }, detail: { reasonCode: 'pluginManifestUnavailable' } })]),
+          nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
+            requiresConfirmation: false, reason: expect.any(String) }] });
+      } else expect(result).toMatchObject({ status: 'success', nextActions: [] });
+      manifestReads = 0;
+      const current = await readRecoveryStatus(project);
+      const independent = affected === 'requested' ? 'team/a' : 'team/b';
+      expect(current.inventory?.find((root) => root.pluginId === independent)?.targetResults.find((target) => target.agent === 'generic'))
+        .toMatchObject({ content: 'satisfied', blockers: [] });
+      const unavailable = current.inventory?.find((root) => root.pluginId !== independent);
+      expect(unavailable?.targetResults.find((target) => target.agent === 'generic')).toMatchObject({
+        content: 'unknown', blockers: [expect.objectContaining({ code: 'pluginManifestUnavailable' })] });
+      expect(unavailable?.targetResults.find((target) => target.agent === 'cursor')).toMatchObject({
+        satisfaction: 'unsupported', observation: 'verified', blockers: [] });
+      expect(result.data).toMatchObject({ allSatisfied: current.allSatisfied, inSync: current.inSync });
+    } finally { reads.mockRestore(); }
+    await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+  });
+
+  it.each([
+    ['generic', 'shared'], ['generic', 'disjoint'], ['opencode', 'shared'], ['generic', 'project root'],
+  ] as const)('attributes a final User manifest read failure on %s with a %s dependency', async (target, relation) => {
+    const sharesDependency = relation !== 'disjoint';
+    const ambiguous = target === 'generic' && relation === 'shared';
+    const value = await fixture(false, [target], true, { a: ['x'], x: [sharesDependency ? 'd' : 'e'], b: ['d'], d: [], e: [] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    await fs.remove(await resolveIntentPath(project));
+    await setTargets(user, [target]);
+    expect((await runPublicLifecycle('install', ['team/a'], user)).status).toBe('success');
+    if (relation === 'project root') expect((await runPublicLifecycle('install', ['team/d'], project)).status).toBe('success');
+    await fs.writeFile(value.hookTrace, '');
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
+    const fault = failManifestAfterActiveCheck(path.join(active.snapshotPath, 'plugins/x/.agents-plugin/plugin.json'), ['recovery.status']);
+    try {
+      const result = await runPublicLifecycle('install', ['team/b'], project, fault.runtime);
+      expect(result).toMatchObject({ status: ambiguous ? 'partial' : 'success', data: { changes: { requirements: 'changed', outputs: 'changed' },
+        allSatisfied: null, remainingTargets: [], targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/b', target,
+          scope: 'project', execution: 'applied', observation: 'verified' })]) } });
+      if (ambiguous) expect(result).toMatchObject({
+        diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
+          subject: { pluginId: 'team/b', scope: 'project', target: 'generic' }, detail: { reasonCode: 'jointDemandUnknown' } })]),
+        nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
+          requiresConfirmation: false, reason: expect.any(String) }] });
+      else expect(result.nextActions).toEqual([]);
+    } finally { fault.restore(); }
+    const hooks: Array<{ plugin: string; scope: string }> = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(hooks.filter((event) => event.plugin === 'b')).toEqual([{ plugin: 'b', platform: target, scope: 'project' }]);
+    const skill = (scope: 'user' | 'project', name: string) => path.join(target === 'opencode'
+      ? value.nativeSkill(target, scope, name) : path.join(scope === 'user' ? value.userRoot : value.projectRoot, name), 'SKILL.md');
+    await expect(fs.readFile(skill('project', 'b'), 'utf8')).resolves.toContain('Use b.');
+    await expect(fs.pathExists(skill('user', 'd'))).resolves.toBe(sharesDependency);
+    await expect(fs.pathExists(skill('project', 'd'))).resolves.toBe(!ambiguous);
+    await expect(readRecoveryStatus(project)).resolves.toMatchObject({ allSatisfied: true });
+  });
+
+  it.each(['required', 'required at recheck', 'independent'] as const)('protects an explicitly removed User provider according to its %s Project dependency', async (relation) => {
+    const required = relation !== 'independent';
+    const value = await fixture(false, ['generic'], false, { a: [], b: ['x'], x: [required ? 'a' : 'd'], d: [] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    expect((await runPublicLifecycle('install', ['team/a'], user)).status).toBe('success');
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
+    const fault = failManifestAfterActiveCheck(path.join(active.snapshotPath, 'plugins/x/.agents-plugin/plugin.json'),
+      [...(relation === 'required at recheck' ? [] : ['recovery.plan']), 'recovery.locked.demand', 'recovery.locked.recheck']);
+    const before = await observeIntent(user);
+    try {
+      const result = await runPublicLifecycle('remove', ['team/a'], user, fault.runtime);
+      if (required) {
+        expect(result).toMatchObject({ status: 'blocked', data: { changes: { requirements: 'none', outputs: 'none' } },
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: relation === 'required at recheck'
+            ? 'operationReviewStale' : 'dependencyStillRequired' })]) });
+        expect(await observeIntent(user)).toEqual(before);
+      } else expect(result.data).toMatchObject({ changes: { requirements: 'changed', outputs: 'changed' } });
+    } finally { fault.restore(); }
+    await expect(fs.pathExists(path.join(value.userRoot, 'a/SKILL.md'))).resolves.toBe(required);
+    await expect(fs.pathExists(path.join(value.projectRoot, 'a'))).resolves.toBe(false);
+    await expect(observeIntent(project)).resolves.toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
+  });
+
+  it.each(['verified', 'absent', 'drifted', 'unowned', 'copy lost under lock', 'manifest lost under lock'] as const)('checks the Project copy (%s) before removing a User provider with an unreadable consumer', async (copy) => {
+    const value = await fixture(false, ['generic'], false, { a: [], b: ['x'], x: ['a'] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    expect((await runPublicLifecycle('install', ['team/a'], user)).status).toBe('success');
+    expect((await runPublicLifecycle('install', ['team/b', 'team/a'], project)).status).toBe('success');
+    const projectCopy = path.join(value.projectRoot, 'a/SKILL.md');
+    const userCopy = path.join(value.userRoot, 'a/SKILL.md');
+    const projectFiles = await snapshotRegularTree(path.dirname(projectCopy));
+    const before = await fs.readFile(projectCopy, 'utf8');
+    expect(await fs.readFile(userCopy, 'utf8')).toBe(before);
+    expect(await fs.readFile(path.join(value.projectRoot, 'x/SKILL.md'), 'utf8')).toContain('Use x.');
+    if (copy === 'absent') await fs.remove(path.dirname(projectCopy));
+    if (copy === 'drifted') await fs.appendFile(projectCopy, 'Local edit.\n');
+    if (copy === 'unowned') await fs.remove(path.join(path.dirname(projectCopy), SKILL_OWNER_MARKER));
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
+    const fault = failManifestAfterActiveCheck(path.join(active.snapshotPath, 'plugins/x/.agents-plugin/plugin.json'),
+      [...(copy === 'manifest lost under lock' ? [] : ['recovery.plan']), 'recovery.locked.demand', 'recovery.locked.recheck']);
+    const projectIntent = await observeIntent(project);
+    const userIntent = await observeIntent(user);
+    try {
+      const result = await runPublicLifecycle('remove', ['team/a'], user, { debugLogger: { log: async (event) => {
+        await fault.runtime.debugLogger!.log(event);
+        if (copy === 'copy lost under lock' && event.data?.name === 'recovery.locked.demand' && event.data.phase === 'start') {
+          await fs.remove(path.dirname(projectCopy));
+        }
+      } } });
+      if (copy === 'verified') {
+        expect(result.data).toMatchObject({ changes: { requirements: 'changed', outputs: 'changed' } });
+        expect(await fs.pathExists(userCopy)).toBe(false);
+        expect(await snapshotRegularTree(path.dirname(projectCopy))).toEqual(projectFiles);
+        await expect(observeIntent(user)).resolves.toMatchObject({ value: { roots: [] } });
+      } else {
+        expect(result).toMatchObject({ status: 'blocked', data: { changes: { requirements: 'none', outputs: 'none' } },
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: copy.endsWith('under lock')
+            ? 'operationReviewStale' : 'dependencyStillRequired' })]) });
+        expect(await fs.readFile(userCopy, 'utf8')).toBe(before);
+        expect(await observeIntent(user)).toEqual(userIntent);
+      }
+      expect(await observeIntent(project)).toEqual(projectIntent);
+    } finally { fault.restore(); }
+  });
+
   it.each(['changed', 'invalid'] as const)('detects a %s second Intent before any output write', async (state) => {
     const value = await fixture();
     const plan = await prepareRecovery('sync', ['team/a'], value.options);
@@ -430,6 +758,42 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(await fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).toBe(true);
     expect(await fs.pathExists(path.join(value.projectRoot, 'b', 'SKILL.md'))).toBe(true);
   }, 30000);
+
+  it('keeps an installed dependency out of removal when the other scope cannot read its provider manifest', async () => {
+    const value = await fixture(false, ['generic'], false, { a: ['d'], b: ['x'], x: ['d'], d: [] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    // Only the user root is installed. The saved project requirement still protects its provider.
+    expect((await runRecovery('install', ['team/a'], user)).ok).toBe(true);
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: project.env });
+    const file = path.join(active.snapshotPath, 'plugins', 'x', '.agents-plugin', 'plugin.json');
+    const readJson = fs.readJson.bind(fs);
+    let manifestReads = 0;
+    const reads = vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+      if (String(args[0]) === file && ++manifestReads === 2) throw Object.assign(new Error('read failed'), { code: 'EIO' });
+      return readJson(...args);
+    });
+    try {
+      const plan = await prepareRecovery('uninstall', ['team/a'], user);
+      try {
+        expect(plan.joint?.demand.roots).toContainEqual(expect.objectContaining({ pluginId: 'team/b', scope: 'project',
+          state: 'unknown', blockers: [expect.objectContaining({ code: 'pluginManifestUnavailable' })] }));
+        expect(plan.joint?.demand.complete).toBe(false);
+        expect(plan.dependencyCleanupTargets).toEqual([]);
+        expect(plan.receipt.requestedTargets.map((target) => target.pluginId)).toEqual(['team/a']);
+        const removed = await executeRecovery(plan, { yes: true, runtime: { debugLogger: { log: (event) => {
+          if (event.data?.phase === 'start' && ['recovery.locked.demand', 'recovery.locked.recheck'].includes(String(event.data.name))) {
+            manifestReads = 0;
+          }
+        } } } });
+        expect(removed).toMatchObject({ declarationChanged: true,
+          targetResults: [expect.objectContaining({ pluginId: 'team/a', execution: 'applied' })] });
+      } finally { await plan.context.dispose(); }
+    } finally { reads.mockRestore(); }
+    await expect(fs.pathExists(path.join(value.userRoot, 'a'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(value.userRoot, 'd', 'SKILL.md'))).resolves.toBe(true);
+    await expect(observeIntent(project)).resolves.toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
+  });
 
   it('retains the transitive dependencies when deleting their consumer fails', async () => {
     const value = await fixture(false, ['generic'], false, { a: ['b'], b: ['d'], d: [] });

@@ -18,7 +18,7 @@ on:
         description: Host matrix to verify
         type: choice
         default: all
-        options: [all, windows-x64-and-macos-x64]
+        options: [all, windows-x64-and-macos-x64, windows-x64-and-arm64]
 
 permissions:
   contents: read
@@ -76,7 +76,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        runner: ${{ fromJSON(inputs.hosts == 'windows-x64-and-macos-x64' && '["windows-2025","macos-15-intel"]' || github.event.label.name == 'native-qualification-antigravity-user-remaining' && '["macos-15","windows-2025","windows-11-arm"]' || github.event.label.name == 'native-qualification-antigravity-user-windows' && '["windows-2025","windows-11-arm"]' || '["ubuntu-24.04","ubuntu-24.04-arm","macos-15-intel","macos-15","windows-2025","windows-11-arm"]') }}
+        runner: ${{ fromJSON(inputs.hosts == 'windows-x64-and-macos-x64' && '["windows-2025","macos-15-intel"]' || github.event.label.name == 'native-qualification-antigravity-user-remaining' && '["macos-15","windows-2025","windows-11-arm"]' || (inputs.hosts == 'windows-x64-and-arm64' || github.event.label.name == 'native-qualification-antigravity-user-windows') && '["windows-2025","windows-11-arm"]' || '["ubuntu-24.04","ubuntu-24.04-arm","macos-15-intel","macos-15","windows-2025","windows-11-arm"]') }}
     runs-on: ${{ matrix.runner }}
     env:
       QUALIFICATION_CLIENT: ${{ inputs.client || (github.event.label.name == 'native-qualification-gemini' && 'gemini') || (github.event.label.name == 'native-qualification-copilot' && 'copilot') || ((github.event.label.name == 'native-qualification-antigravity-user' || github.event.label.name == 'native-qualification-antigravity-user-public' || github.event.label.name == 'native-qualification-antigravity-user-windows' || github.event.label.name == 'native-qualification-antigravity-user-remaining') && 'antigravity-user') || 'all' }}

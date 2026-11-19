@@ -1,6 +1,6 @@
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { createSafeNeutralCwd } from '../intent/scope-context.js';
-import { runNativeCliChecked, type NativeCliResult } from '../utils/native-cli.js';
+import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, runNativeCliChecked, type NativeCliResult, type NativeCliRunner } from '../utils/native-cli.js';
 import { geminiReadOnlyProbeEnv, installationInvocation, npmCliEntryIdentity, selectNativeProduct } from './discovery.js';
 import type { DeploymentBinding, ReadContext } from './contracts.js';
 
@@ -8,6 +8,28 @@ export interface NativeQuerySession {
   userCwd(env: NodeJS.ProcessEnv): Promise<string>;
   read(key: string, ctx: ReadContext, action: () => Promise<NativeCliResult>): Promise<NativeCliResult>;
   dispose(): Promise<void>;
+}
+
+export interface NativeObservationBatch {
+  discoveryCache: NonNullable<ReadContext['discoveryCache']>;
+  nativeQuerySession: NativeQuerySession;
+  runner: NativeCliRunner;
+  signal?: AbortSignal;
+}
+
+/** The phase owner lends the same discovery and inventory caches to ordinary observations. */
+export async function withNativeObservationBatch<T>(options: { runner?: NativeCliRunner; signal?: AbortSignal },
+  action: (batch: NativeObservationBatch) => Promise<T>): Promise<T> {
+  const discoveryCache: NativeObservationBatch['discoveryCache'] = new Map();
+  const nativeQuerySession = createNativeQuerySession();
+  const runner = bindNativeCliRunnerSignal(options.runner ?? getDefaultNativeCliRunner(), options.signal);
+  try {
+    return await action({ discoveryCache, nativeQuerySession, runner, signal: options.signal });
+  } finally {
+    await Promise.allSettled([...discoveryCache.values()].flatMap((entries) => entries.map((entry) => entry.result)));
+    discoveryCache.clear();
+    await nativeQuerySession.dispose();
+  }
 }
 
 /** One read-only snapshot owns its neutral contexts and completed or failed inventories. */
@@ -37,10 +59,13 @@ export function createNativeQuerySession(): NativeQuerySession {
     },
     dispose() {
       disposal ??= (async () => {
-        await Promise.allSettled([...reads.values()].flatMap((entries) => entries.map((entry) => entry.result)));
-        const contexts = await Promise.allSettled(neutral.values());
-        await Promise.all(contexts.map((context) => context.status === 'fulfilled' ? context.value.dispose() : undefined));
-        reads.clear(); neutral.clear();
+        try {
+          await Promise.allSettled([...reads.values()].flatMap((entries) => entries.map((entry) => entry.result)));
+          const contexts = await Promise.allSettled(neutral.values());
+          await Promise.all(contexts.map((context) => context.status === 'fulfilled' ? context.value.dispose() : undefined));
+        } finally {
+          reads.clear(); neutral.clear();
+        }
       })();
       return disposal;
     },

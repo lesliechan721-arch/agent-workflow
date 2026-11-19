@@ -343,6 +343,10 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   const result = commandResult(command, data, { status, diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));
   if (!receipt.ok) {
+    if (receipt.errors.some((error) => error.code === 'statusUnavailable')) {
+      result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', data.request.context, '--json'],
+        reason: 'Recheck the current status after the completed writes.', requiresConfirmation: false });
+    }
     if (command === 'plugin.remove') result.nextActions.push({ kind: 'manual', message: 'Review the remaining output ownership. Use --only requirements to cancel requirements or --only outputs with explicit targets to clean proven owned outputs.' });
     else for (const target of data.remainingTargets) {
       if (result.diagnostics.some((entry) => entry.subject?.pluginId === target.pluginId

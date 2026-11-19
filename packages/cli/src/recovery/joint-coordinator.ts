@@ -7,7 +7,7 @@ import { createEmptyIntent, calculateIntentDigest, removeIntentRoot, type Plugin
 import { observeIntent, writeIntent, resolveIntentPath, type IntentObservation } from '../intent/intent-store.js';
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
 import { observePreferences, normalizeAgents, writePreferences, type AgentId } from '../intent/deployment-preferences.js';
-import { hasSharedUserPackage } from '../platforms/layout.js';
+import { withNativeObservationBatch, type NativeObservationBatch } from '../platforms/inspection-query.js';
 import { createScopeContext } from '../intent/scope-context.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -15,12 +15,14 @@ import { createCodexNativeObservationSession } from '../utils/codex-native-obser
 import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import { validateCatalogSnapshotComplete } from '../utils/catalog-snapshot.js';
+import { CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, type DemandSnapshot } from './demand.js';
-import { readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
-import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan } from './coordinator.js';
-import { readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
+import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
+import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
+import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
 import { measureRecoveryPerformanceStage, recordRecoveryPerformanceStage } from './performance.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
@@ -36,7 +38,6 @@ export interface JointRecoveryState {
   evidence: string;
 }
 const diagnostic = (code: string, message = code): RecoveryDiagnostic => ({ code, message });
-const canReuseProviderAcrossScopes = (target: AgentId): boolean => target === 'generic' || hasSharedUserPackage(target);
 function intentReceipt(observation: IntentObservation): RecoveryReceipt['intent'] {
   return { state: observation.state,
     roots: observation.state === 'valid' ? observation.value.roots.map((root) => root.pluginId)
@@ -98,19 +99,62 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
   return receipt;
 }
 
+function finalStatusReadFailure(status: RecoveryStatus, receipt: RecoveryReceipt): RecoveryDiagnostic | undefined {
+  const completed = receipt.targetResults.filter((target) => target.delivery && target.observation === 'verified');
+  const strongStateError = status.errors.find((error) => error.code === 'deploymentPreferencesInvalid'
+    || error.code === 'pluginIntentStateInvalid' && (error.subject?.scope === receipt.scope
+      || completed.some((target) => target.scope === error.subject?.scope)));
+  if (strongStateError) return strongStateError;
+  for (const { pluginId, scope, agent } of completed) {
+    const matches = (target: RecoveryReceipt['targetResults'][number]) => target.pluginId === pluginId
+      && target.scope === scope && target.agent === agent;
+    const root = status.inventory?.find((item) => item.pluginId === pluginId && item.targetResults.some(matches));
+    const failure = root?.blockers.find((entry) => root.sourceState !== 'ready' || entry.code === 'pluginManifestUnavailable')
+      ?? root?.targetResults.find(matches)?.blockers.find((entry) => entry.code === 'pluginManifestUnavailable' || entry.code === 'jointDemandUnknown')
+      ?? status.observedTargets?.find(matches)?.blockers.find(isTargetObservationReadError);
+    if (failure) return { ...failure, subject: { pluginId, scope, target: agent } };
+  }
+  return undefined;
+}
+
+async function readJointPreparation(command: RecoveryCommand, options: RecoveryOptions, locked = false): Promise<{
+  options: RecoveryOptions;
+  snapshot: JointDemandSnapshot;
+  catalogReadScope?: CatalogPreparationReadScope;
+}> {
+  const catalogReadScope = command === 'install' && (locked || !options.catalogOperationContext)
+    ? new CatalogPreparationReadScope(options) : undefined;
+  if (locked && catalogReadScope && options.catalogOperationContext) {
+    // A caller may have reviewed a subset of sources. Rebind just those IDs under
+    // the lock so a changed or removed source makes the existing Review stale.
+    const reviewed = new Set(options.catalogOperationContext.catalog.sources.map((source) => source.sourceId));
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+    const sourceIds = configSnapshot.config.sources.map((source) => source.id).filter((id) => reviewed.has(id));
+    options = { ...options, catalogOperationContext: await catalogReadScope.resolve({ configSnapshot, sourceIds }) };
+  }
+  const snapshot = await readJointDemand({ ...options, catalogReadScope });
+  return { options, snapshot, catalogReadScope };
+}
+
 /** Complete requirements determine placement before execution selectors are applied. */
 export async function prepareJointRecovery(command: RecoveryCommand, selectors: readonly string[],
-  options: RecoveryOptions, runtime: RebuildCommandRuntime): Promise<RecoveryPlan> {
+  options: RecoveryOptions, runtime: RebuildCommandRuntime,
+  preparation?: Awaited<ReturnType<typeof readJointPreparation>>): Promise<RecoveryPlan> {
   runtime = { ...runtime, preparedArtifactRenderResults: runtime.preparedArtifactRenderResults ?? new Map() };
-  const snapshot = await readJointDemand(options);
-  if (runtime.codexObservationSession) return prepareJointRecoveryInSession(command, selectors, options, runtime, snapshot);
+  const { snapshot, catalogReadScope } = preparation ?? await readJointPreparation(command, options);
+  const prepare = (current: RebuildCommandRuntime) => {
+    const read = (nativeObservationBatch?: NativeObservationBatch) => prepareJointRecoveryInSession(
+      command, selectors, options, current, snapshot, { catalogReadScope, nativeObservationBatch });
+    return command === 'install' ? withNativeObservationBatch({ runner: current.nativeCliRunner, signal: options.signal }, read) : read();
+  };
+  if (runtime.codexObservationSession) return prepare(runtime);
   const observationContext = await createScopeContext({ ...options, scope: snapshot.context.context });
   const executionRunner = runtime.nativeCliRunner ?? getDefaultNativeCliRunner();
   let sessionRunner = bindNativeCliRunnerSignal(executionRunner, options.signal);
   const session = await createCodexNativeObservationSession({ exactCwd: observationContext.executionCwd,
     env: observationContext.env, runner: (invocation) => sessionRunner(invocation), manager: runtime.codexManager });
   try {
-    const plan = await prepareJointRecoveryInSession(command, selectors, options, { ...runtime, codexObservationSession: session }, snapshot);
+    const plan = await prepare({ ...runtime, codexObservationSession: session });
     const dispose = plan.context.dispose;
     plan.context.dispose = async () => {
       try { await dispose(); } finally { try { await session.dispose(); } finally { await observationContext.dispose(); } }
@@ -126,18 +170,21 @@ export async function prepareJointRecovery(command: RecoveryCommand, selectors: 
 }
 
 async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors: readonly string[],
-  options: RecoveryOptions, runtime: RebuildCommandRuntime, snapshot: JointDemandSnapshot): Promise<RecoveryPlan> {
+  options: RecoveryOptions, runtime: RebuildCommandRuntime, snapshot: JointDemandSnapshot,
+  { catalogReadScope, nativeObservationBatch }: RecoveryPreparationReads): Promise<RecoveryPlan> {
   // Status observes saved requirements, before projecting proposed declarations.
   // Reuse them only within this preparation; execution reads them again under the lock.
   const savedDemand = snapshot;
+  const initialNativeReads = { nativeCliRunner: nativeObservationBatch?.runner ?? runtime.nativeCliRunner,
+    discoveryCache: nativeObservationBatch?.discoveryCache, nativeQuerySession: nativeObservationBatch?.nativeQuerySession,
+    codexObservationSession: runtime.codexObservationSession };
   let observedStatus: RecoveryStatus | undefined;
   const evidence = snapshotEvidence(snapshot);
   const scope = options.scope ?? snapshot.context.context;
   const observedIntent = (scope === 'project' ? snapshot.project! : snapshot.user).intent;
   if (options.existingOnly) {
     // Existing owned deployments can be refreshed without converting them into declarations.
-    observedStatus = await readRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner,
-      codexObservationSession: runtime.codexObservationSession }, savedDemand);
+    observedStatus = await readRecoveryStatus({ ...options, catalogReadScope, ...initialNativeReads }, savedDemand);
     const installed = (observedStatus.existingTargets ?? []).filter((item) => selectors.some((selector) => selector === item.pluginId
         || !selector.includes('/') && parsePluginId(item.pluginId).pluginName === selector)
       && (!options.targets || options.targets.includes(item.agent)));
@@ -155,7 +202,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
           value.sources[sourceId] = { logicalIdentity: identity };
           value.roots.push({ pluginId: item.pluginId });
         }
-        snapshot = { ...snapshot, [currentScope]: await readDemand({ ...options, preferences: undefined, scope: currentScope, intent: asObservation(value) }) };
+        snapshot = { ...snapshot, [currentScope]: await readDemand({ ...options, catalogReadScope, preferences: undefined, scope: currentScope, intent: asObservation(value) }) };
       }
       if (snapshot.preferences) snapshot.preferences = { ...snapshot.preferences,
         targets: normalizeAgents([...snapshot.preferences.targets, ...installed.map((item) => item.agent!)]) };
@@ -182,12 +229,13 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   if (command === 'install') {
     if (!snapshot.preferences?.targets.length) errors.push(diagnostic('targetsNotConfigured', '请先配置本机 Agent，再安装插件。'));
     else {
-      const proposed = await addRequirements({ ...options, scope, selectors, token: runtime.awHomeMutationToken, dryRun: true, installSelectors: true });
+      const proposed = await addRequirements({ ...options, catalogReadScope, scope, selectors, token: runtime.awHomeMutationToken, dryRun: true, installSelectors: true });
+      options.signal?.throwIfAborted();
       errors.push(...proposed.errors);
       if (proposed.state && !proposed.errors.length) {
         requested = proposed.roots;
         if (proposed.changed) declaration = { scope, value: proposed.state };
-        const demand = await readDemand({ ...options, preferences: undefined, scope, intent: asObservation(proposed.state) });
+        const demand = await readDemand({ ...options, catalogReadScope, preferences: undefined, scope, intent: asObservation(proposed.state) });
         snapshot = { ...snapshot, [scope]: demand };
       }
     }
@@ -283,7 +331,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         pluginId: item.pluginId, sourceId: item.plugin.sourceId!, sourceState: 'ready' as const, blockers: [], plugin: item.plugin,
       }])).values()], userProviders: Object.fromEntries(targets.map((target) => [target,
         demand.placements.filter((item) => item.scope === 'user' && item.target === target).map((item) => item.pluginId)])) };
-      const observation = await readScopedRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession, scope: 'project', demandOverride: expanded,
+      const observation = await readScopedRecoveryStatus({ ...options, catalogReadScope, ...initialNativeReads, scope: 'project', demandOverride: expanded,
         cwd: snapshot.context.projectRoot!, targets: undefined });
       for (const item of sharedNative) {
         const actual = observation.inventory?.find((entry) => entry.pluginId === item.pluginId)?.targetResults
@@ -338,8 +386,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   context.dispose = async () => { await Promise.all(children.map((child) => child.context.dispose())); await dispose(); };
   if (plan.blockExecution) return plan;
   try {
-    const currentStatus = observedStatus ?? await readRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner,
-      codexObservationSession: runtime.codexObservationSession, targets: undefined }, savedDemand);
+    const currentStatus = observedStatus ?? await readRecoveryStatus({ ...options, catalogReadScope, ...initialNativeReads, targets: undefined }, savedDemand);
     const sharedReferenceView = deriveSharedReferenceView(snapshot, demand, currentStatus);
     const ownsOutput = (item: { pluginId: string; agent: string | null; scope: Scope }): boolean =>
       currentStatus.ownedTargets?.some((owned) => owned.pluginId === item.pluginId
@@ -376,6 +423,25 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       }
     }
     if (command === 'uninstall' && !options.force) {
+      for (const root of demand.roots) {
+        if (root.state !== 'unknown' || !targets.includes(root.target)
+          || root.scope === scope && options.retiringCatalogRoots?.includes(root.pluginId)) continue;
+        for (const pluginId of requested) {
+          const provider = { pluginId, scope, agent: root.target };
+          if (root.pluginId === pluginId || !explicitlyRemoves(provider)
+            || !sameProvider({ scope: root.scope, agent: root.target }, provider)) continue;
+          if (root.dependencies.length ? !root.dependencies.includes(pluginId)
+            : parsePluginId(root.pluginId).sourceId !== parsePluginId(pluginId).sourceId) continue;
+          // Generic Project roots have their own directory. Verify the saved
+          // declaration's complete closure and ownership again under the write lock.
+          if (scope === 'user' && root.scope === 'project' && root.target === 'generic'
+            && ownsOutput({ pluginId, agent: root.target, scope: 'project' })
+            && currentStatus.inventory?.some((item) => item.pluginId === pluginId && item.targetResults.some((target) =>
+              target.agent === root.target && target.scope === 'project' && target.providerScope === 'project'
+              && target.observation === 'verified' && target.content === 'satisfied' && !target.blockers.length))) continue;
+          errors.push(diagnostic('dependencyStillRequired', `${pluginId} 仍被 ${root.pluginId} 依赖。使用 --force 可强制移除所选输出。`));
+        }
+      }
       for (const pluginId of requested) for (const agent of new Set(liveConsumers.map((consumer) => consumer.agent))) {
         const provider = { pluginId, agent, scope };
         const consumer = explicitlyRemoves(provider) ? retainedConsumerFor(provider) : undefined;
@@ -435,11 +501,11 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
               ? userProviders.filter((provider) => provider.target !== 'generic'
                 && !placements.some((item) => item.pluginId === provider.pluginId && item.target === provider.target))
                 .map((item) => ({ pluginId: item.pluginId, platform: item.target as import('../types.js').PlatformName, scope: 'user' as const })) : [],
-          }, runtime);
+          }, runtime, { catalogReadScope, nativeObservationBatch: children.length === 0 ? nativeObservationBatch : undefined });
         // Synthetic roots are only an execution projection, never persisted Intent.
         child.originalIntent = observationEvidence(sourceDemand.intent);
         if (options.existingOnly) {
-          const observed = await readScopedRecoveryStatus({ ...options, nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession, scope: currentScope,
+          const observed = await readScopedRecoveryStatus({ ...options, catalogReadScope, nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession, scope: currentScope,
             cwd: snapshot.context.projectRoot ?? options.cwd, demandOverride: childDemand, targets: groupTargets });
           for (const item of child.receipt.targetResults) {
             if (!observed.existingTargets?.some((existing) => existing.pluginId === item.pluginId && existing.agent === item.agent && existing.scope === currentScope)) {
@@ -576,7 +642,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       && onlyChild.portableResidues.length === 0;
     // Other scopes and groups can change shared descriptors, preApply actions
     // or retained packages. Refresh those previews before exposing Review.
-    if (!singleNativePreviewComplete) for (const child of children) await refreshRecoveryNativePreviews(child);
+    if (!singleNativePreviewComplete) for (const child of children) await refreshRecoveryNativePreviews(child, catalogReadScope);
     const preparedNativeTargets = children.flatMap((child) => child.receipt.targetResults)
       .filter((target) => target.delivery?.kind === 'native');
     const failedProviders = preparedNativeTargets.filter((target) => target.blockers.length > 0);
@@ -632,8 +698,9 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         const acquiredAt = lockWaitStartedAt!;
         lockWaitStartedAt = undefined;
         await recordRecoveryPerformanceStage(performanceRuntime, 'recovery.lock.wait', 'success', acquiredAt);
-        const actual = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.demand', () =>
-          readJointDemand(joint.originalOptions));
+        const preparation = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.demand', () =>
+          readJointPreparation(plan.command, joint.originalOptions, true));
+        const actual = preparation.snapshot;
         const currentIntent = (plan.options.scope === 'project' ? actual.project! : actual.user).intent;
         plan.receipt.intent = intentReceipt(currentIntent);
         if (currentIntent.state !== 'valid' && currentIntent.state !== 'absent') {
@@ -647,8 +714,9 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         // Recheck all backend candidates before any strong-state or output write.
         (execution.runtime?.codexObservationSession ?? plan.runtime.codexObservationSession)?.invalidate();
         const checked = await measureRecoveryPerformanceStage(performanceRuntime, 'recovery.locked.recheck', () =>
-          prepareJointRecovery(plan.command, joint.selectors, joint.originalOptions,
-            { ...plan.runtime, ...execution.runtime, awHomeMutationToken: token }));
+          prepareJointRecovery(plan.command, joint.selectors, preparation.options,
+            { ...plan.runtime, ...execution.runtime, awHomeMutationToken: token },
+            preparation.catalogReadScope ? preparation : undefined));
         const stable = !checked.blockExecution && JSON.stringify(describeRecoveryPlan(plan)) === JSON.stringify(describeRecoveryPlan(checked));
         await checked.context.dispose();
         if (!stable) { plan.receipt.blockers.push(diagnostic('operationReviewStale')); return mergeReceipts(plan, []); }
@@ -909,10 +977,30 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         receipt.outputsMayHaveChanged ||= packageResults.some((result) => result.state === 'completed');
         receipt.errors.push(...results.flatMap((result) => result.targetResults.flatMap((target) => target.blockers)));
 
-        const status = await measureRecoveryPerformanceStage(runtime, 'recovery.status', () =>
-          readRecoveryStatus({ ...joint.originalOptions, nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession, targets: undefined }));
-        receipt.allSatisfied = status.allSatisfied;
-        receipt.inSync = status.inSync;
+        const { cwd, scope, env, cliVersion } = joint.originalOptions;
+        const context = joint.snapshot.context.context;
+        let statusFailure: RecoveryDiagnostic | undefined;
+        try {
+          // The reviewed Catalog may still be readable after Active has moved. Bind the
+          // final read to the current sources, once per binding across both scopes.
+          const status = await measureRecoveryPerformanceStage(runtime, 'recovery.status', () =>
+            readRecoveryStatus({ cwd, scope, context, env, cliVersion, expectedProjectRoot: joint.snapshot.context.projectRoot,
+              catalogReadScope: new CatalogPreparationReadScope({ env }),
+              nativeCliRunner: runtime.nativeCliRunner, codexObservationSession: runtime.codexObservationSession }));
+          receipt.allSatisfied = status.allSatisfied;
+          receipt.inSync = status.inSync;
+          statusFailure = finalStatusReadFailure(status, receipt);
+        } catch (error) {
+          receipt.allSatisfied = null;
+          receipt.inSync = null;
+          statusFailure = diagnostic(readSafeOperationError(error)?.code ?? errorCode(error, 'statusUnavailable'));
+        }
+        if (statusFailure) {
+          receipt.ok = false;
+          receipt.errors.push({ code: 'statusUnavailable', message: 'Could not read the final plugin status.',
+            subject: statusFailure.subject, detail: { reasonCode: statusFailure.code } });
+          receipt.recoveryActions.push(`aw plugin status --context ${context} --json`);
+        }
         return receipt;
       } });
   } catch (error) {

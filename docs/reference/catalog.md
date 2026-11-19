@@ -71,7 +71,7 @@ aw dev catalog validate "$workspace/.aw/catalog" --json
 
 系统定义了三级确定性校验：
 
-1. **Transport Validation**：核验快照整体结构、路径合法性、快照摘要（snapshot digest）、插件项摘要（artifact/content digest）、Marketplace 投影与 release metadata。
+1. **Transport Validation**：核验快照整体结构、路径合法性、快照摘要（snapshot digest）、插件项摘要（artifact/content digest）、Marketplace 投影与 release metadata。整树校验会读取文件字节。同一目录的条目按有界批次读取，按原深度优先顺序生成摘要并报告首个错误。返回读取失败前等待已开始的读取结束。
 2. **Complete Validation**：用于发布前候选核验、发布后验收以及破坏性卸载（destructive uninstall）。在提交 Intent 或删除现场内容前，必须完整核验所选 Active snapshot；若快照校验失败，严禁修改 Intent，严禁删除现场文件。
 3. **Published Transport Validation**：读取历史发布分支状态与上一版快照时使用，仅核验已发布状态与快照完整性，不按最新插件规范重新校验历史旧插件。历史快照损坏时发布准备停止；自动 beta 的内容比较回退不能跳过此检查。
 

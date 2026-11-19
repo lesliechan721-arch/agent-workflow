@@ -917,6 +917,82 @@ describe('native-cli', () => {
     },
   );
 
+  // A root exit can precede the execFile callback. Return the complete output
+  // within the grace window while still signaling and verifying the group.
+  it.each([
+    {
+      description: 'returns complete POSIX output before the grace period ends when the group is gone',
+      missingGroup: true,
+      abortAfterOutput: false,
+      keepGrace: false,
+    },
+    {
+      description: 'retains the POSIX grace period when TERM reaches the group',
+      missingGroup: false,
+      abortAfterOutput: false,
+      keepGrace: true,
+    },
+    {
+      description: 'retains the POSIX grace period when cancelled as complete output arrives',
+      missingGroup: true,
+      abortAfterOutput: true,
+      keepGrace: true,
+    },
+  ])('$description', async ({ missingGroup, abortAfterOutput, keepGrace }) => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const child = Object.assign(new EventEmitter(), {
+        pid: 321,
+        exitCode: 0,
+        signalCode: null,
+        kill: vi.fn(() => true),
+      });
+      let callback: ((error: unknown, stdout: string, stderr: string) => void) | undefined;
+      const killProcess = vi.fn((_pid: number, signal?: number | NodeJS.Signals) => {
+        if (signal === 'SIGTERM' && !missingGroup) return true;
+        throw Object.assign(new Error('missing process group'), { code: 'ESRCH' });
+      });
+      const runner = createExecFileNativeCliRunner({
+        platform: 'linux',
+        execFile: (_command, _args, _options, nextCallback) => {
+          callback = nextCallback;
+          return child;
+        },
+        killProcess,
+        terminateProcessTree: async () => {},
+      });
+      const onSettled = vi.fn();
+      const completion = runner({ command: 'codex', args: [], signal: controller.signal })
+        .then(onSettled, onSettled);
+
+      child.emit('exit');
+      await vi.advanceTimersByTimeAsync(35);
+      expect(onSettled).not.toHaveBeenCalled();
+      expect(killProcess.mock.calls).toEqual([[-321, 'SIGTERM']]);
+
+      const stdout = 'complete stdout';
+      const stderr = 'complete stderr';
+      callback!(null, stdout, stderr);
+      if (abortAfterOutput) controller.abort();
+      await vi.advanceTimersByTimeAsync(keepGrace ? 64 : 0);
+      if (keepGrace) {
+        expect(onSettled).not.toHaveBeenCalled();
+        expect(killProcess.mock.calls).toEqual([[-321, 'SIGTERM']]);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+
+      expect(onSettled).toHaveBeenCalledExactlyOnceWith(abortAfterOutput
+        ? expect.objectContaining({ reason: 'aborted', stdout, stderr })
+        : result(stdout, stderr));
+      await completion;
+      expect(killProcess.mock.calls).toEqual([[-321, 'SIGTERM'], [-321, 'SIGKILL'], [-321, 0]]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')(
     'keeps a successful real POSIX command successful when marker lookup is denied',
     async () => {
@@ -1242,17 +1318,20 @@ describe('native-cli', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
-    'cleans a detached marked descendant after a generic POSIX command exits normally',
-    async () => {
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable).each([
+    { output: 'inherited', args: [] },
+    { output: 'closed', args: ['--ignore-output'] },
+  ])(
+    'cleans a detached marked descendant with $output output after a generic POSIX command exits normally',
+    async ({ args }) => {
       let descendantPid: number | undefined;
       try {
         const result = await execFileNativeCliRunner({
           command: process.execPath,
-          args: [fileURLToPath(new URL(
-            '../fixtures/native-cli-detached-descendant.mjs',
-            import.meta.url,
-          ))],
+          args: [
+            fileURLToPath(new URL('../fixtures/native-cli-detached-descendant.mjs', import.meta.url)),
+            ...args,
+          ],
           timeoutMs: 200,
         });
         expect(result.exitCode).toBe(0);

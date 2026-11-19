@@ -12,7 +12,7 @@ import type {
 import { withAwHomeMutationLock } from './aw-home-mutation-lock.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
 import { readCatalogGenerationState } from './catalog-generation-state.js';
-import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
+import { readCatalogSnapshotTransport, validateCatalogSnapshotTransport, type CatalogSnapshotValidation } from './catalog-snapshot.js';
 import { normalizeAwCapabilities, parseStrictSemVer } from './manifest.js';
 import {
   canonicalizePathThroughExistingAncestorSync,
@@ -38,6 +38,7 @@ export interface CatalogStoreEntry {
   metadata: CatalogGenerationMetadataV1;
   manifest: CatalogManifestV7;
   reused: boolean;
+  validateEntries?: Awaited<ReturnType<typeof readCatalogSnapshotTransport>>['validateEntries'];
 }
 
 export interface PreparedCatalogStoreRepair {
@@ -207,13 +208,16 @@ export async function readCatalogSnapshotLogicalIdentity(snapshotRoot: string): 
 
 async function validateEntry(options: {
   location: CatalogStoreLocation;
+  reuseTransport?: boolean;
 }): Promise<CatalogStoreEntry> {
   try {
     const metadata = await readMetadataAtLocation(options.location);
-    const validation = await validateCatalogSnapshotTransport(options.location.snapshotRoot)
+    const readTransport = options.reuseTransport ? readCatalogSnapshotTransport : validateCatalogSnapshotTransport;
+    const validation: CatalogSnapshotValidation & Pick<CatalogStoreEntry, 'validateEntries'> = await readTransport(options.location.snapshotRoot)
       .catch((error: unknown) => { throw metadataError('Catalog store snapshot is damaged.', error); });
     if (
-      validation.manifestDigest !== metadata.manifestDigest
+      validation.rootDir !== options.location.snapshotRoot
+      || validation.manifestDigest !== metadata.manifestDigest
       || validation.snapshotDigest !== metadata.snapshotDigest
       || validation.manifest.catalogVersion !== metadata.catalogVersion
       || validation.manifest.channel !== metadata.channel
@@ -227,6 +231,7 @@ async function validateEntry(options: {
       metadata,
       manifest: validation.manifest,
       reused: true,
+      ...('validateEntries' in validation ? { validateEntries: validation.validateEntries } : {}),
     };
   } catch (error) {
     if (error instanceof CatalogGenerationError) throw error;
@@ -378,8 +383,9 @@ export async function readCatalogStoreEntry(options: {
   logicalIdentity: string;
   snapshotDigest: string;
   env?: NodeJS.ProcessEnv;
+  reuseTransport?: boolean;
 }): Promise<CatalogStoreEntry> {
-  return validateEntry({ location: resolveCatalogStoreLocation(options) });
+  return validateEntry({ location: resolveCatalogStoreLocation(options), reuseTransport: options.reuseTransport });
 }
 
 export async function prepareCatalogStoreEntryRepair(options: {

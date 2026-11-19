@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { assertPublicTarget, readPiPublicInventory, readPublicNativeState } from './native-platform-public-state.mjs';
+import { assertPublicTarget, readPiPublicInventory, readPublicNativeState, readPublicRemovedNativeScope } from './native-platform-public-state.mjs';
 import { fixedClientVersion, sha256 } from './native-platform-runtime.mjs';
 
 async function codexList(ctx, cwd, { entry, name = ctx.pluginName } = {}) {
@@ -81,6 +81,7 @@ async function qualifyCodexScopes(ctx, { status, ready, pluginId }) {
     assert.equal(neutral.enabled, userEnabled);
     return { exact, neutral };
   }
+  let checked = false;
   try {
     if (ctx.scope === 'project') {
       await ctx.check('codex-project-independent-activation', async () => ({ ...await readPair(false, true),
@@ -123,11 +124,50 @@ async function qualifyCodexScopes(ctx, { status, ready, pluginId }) {
         if (installedProjectConfig !== undefined) await fs.writeFile(projectConfig, installedProjectConfig);
       });
     }
+    checked = true;
   } finally {
-    await fs.writeFile(userConfig, user);
-    if (project === null) await fs.rm(projectConfig, { force: true });
-    else await fs.writeFile(projectConfig, project);
+    try {
+      await fs.writeFile(userConfig, user);
+      if (project === null) await fs.rm(projectConfig, { force: true });
+      else await fs.writeFile(projectConfig, project);
+    } catch (error) { if (checked) throw error; }
   }
+}
+
+export async function verifyCodexSharedProviderRemoval(ctx, { pluginId, dependentId, userProvider, dependentDeployment, removal }) {
+  assert.equal(removal.command, 'plugin.remove');
+  assert.equal(removal.data.request.scope, 'project');
+  assert.deepEqual(removal.data.request.plugins, [dependentId]);
+  assert.deepEqual(removal.data.request.targets, ['codex']);
+  assert.equal(removal.data.changes.requirements, 'changed');
+  assert(Array.isArray(removal.data.requirements.roots) && !removal.data.requirements.roots.includes(dependentId),
+    'The remove receipt must confirm cancellation of the Project dependent requirement.');
+
+  const { packageId, registrationId } = dependentDeployment.after.nativeIdentity;
+  assert.equal(typeof registrationId, 'string');
+  const { parseCodexConfig } = await import('../../packages/cli/dist/src/utils/codex-config.js');
+  const projectConfig = await fs.readFile(path.join(ctx.project, '.codex', 'config.toml'), 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+  assert.equal(parseCodexConfig(projectConfig).plugins[registrationId]?.enabled, undefined,
+    'The removed dependent must have no explicit Project activation.');
+  const native = await readPublicRemovedNativeScope({ ...ctx, scope: 'project', pluginName: packageId }, 1, removal, dependentId);
+
+  const result = await ctx.aw(['plugin', 'status', '--context', 'project']);
+  const { declarations } = result.data.requirements;
+  const project = declarations.find((entry) => entry.scope === 'project');
+  const user = declarations.find((entry) => entry.scope === 'user');
+  assert(Array.isArray(project?.roots) && !project.roots.includes(dependentId),
+    'Fresh status must confirm the Project dependent requirement is gone.');
+  assert(user?.roots?.includes(pluginId), 'Fresh status must retain the User provider requirement.');
+  const { target, deployment, consumer } = assertPublicTarget(result, ctx, pluginId, { content: 'satisfied', activation: 'enabled' });
+  assert.equal(target.observation, 'verified');
+  assert.equal(target.satisfaction, 'installed');
+  assert.equal(deployment.after.physicalKey, userProvider.after.physicalKey);
+  assert.equal(consumer.activationKey, userProvider.after.consumers[0].activationKey);
+  return { command: removal.command, requirements: declarations, projectActivation: 'absent', native,
+    userProvider: { target, physicalKey: deployment.after.physicalKey, activationKey: consumer.activationKey } };
 }
 
 async function qualifySharedProvider(ctx, pluginId, disableProjectProvider, restoreProjectProvider) {
@@ -140,7 +180,7 @@ async function qualifySharedProvider(ctx, pluginId, disableProjectProvider, rest
     await ctx.aw(['plugin', 'install', dependentId, '--scope', 'project', '--target', ctx.platform, '--yes']);
     const readStatus = () => ctx.aw(['plugin', 'status', pluginId, dependentId, '--context', 'project']);
     const dependentTarget = (result, content = 'satisfied') => assertPublicTarget(result,
-      { ...asProject, pluginName: dependentName }, dependentId, { content, activation: 'enabled' }).target;
+      { ...asProject, pluginName: dependentName }, dependentId, { content, activation: 'enabled' });
     const provider = (target, scopeRegistration) => {
       const deployments = target.deploymentObservations.filter(item => item.after.nativeIdentity?.packageId === ctx.pluginName);
       assert.equal(deployments.length, 1, 'The Project dependent must observe its actual User package provider.');
@@ -151,8 +191,11 @@ async function qualifySharedProvider(ctx, pluginId, disableProjectProvider, rest
       assert.notEqual(deployments[0].after.consumers[0].activationKey, userProvider.after.consumers[0].activationKey);
       return deployments[0];
     };
+    const evidence = {};
+    let dependentDeployment;
+    let removal;
+    let checked = false;
     try {
-      const evidence = {};
       let settled = await readStatus();
       if (ctx.platform === 'claude') {
         // Claude creates a local registration for an installed Project dependency
@@ -165,7 +208,7 @@ async function qualifySharedProvider(ctx, pluginId, disableProjectProvider, rest
         assert.equal(local.length, 1);
         assert.equal(path.relative(local[0].projectPath, ctx.project), '');
         assert.equal(local[0].enabled, true);
-        const before = provider(dependentTarget(settled), 'present');
+        const before = provider(dependentTarget(settled).target, 'present');
         assert.equal(before.after.consumers[0].activation, 'enabled');
         const remove = await ctx.command(['plugin', 'uninstall', registration, '--scope', 'local', '--json'], ctx.project);
         const result = JSON.parse(remove.stdout);
@@ -174,7 +217,8 @@ async function qualifySharedProvider(ctx, pluginId, disableProjectProvider, rest
         evidence.independentProjectRegistration = { native: local[0], public: before };
         settled = await readStatus();
       }
-      const dependent = dependentTarget(settled);
+      const { target: dependent, deployment } = dependentTarget(settled);
+      dependentDeployment = deployment;
       const inheritedProvider = provider(dependent, ctx.platform === 'claude' ? 'absent' : undefined);
       assert.equal(inheritedProvider.after.consumers[0].activation, 'enabled');
       const native = await readPublicNativeState(ctx, ctx.project, 1, { active: true });
@@ -182,17 +226,23 @@ async function qualifySharedProvider(ctx, pluginId, disableProjectProvider, rest
       if (disableProjectProvider) {
         const disabledNative = await disableProjectProvider();
         const result = await readStatus();
-        const affected = dependentTarget(result, 'drifted');
+        const { target: affected } = dependentTarget(result, 'drifted');
         const after = provider(affected);
         assert.equal(after.after.consumers[0].activation, 'disabled');
         const unaffected = assertPublicTarget(result, ctx, pluginId, { content: 'satisfied', activation: 'enabled' });
         Object.assign(evidence, { disabledNative, disabledProvider: after, affected, unaffectedUser: unaffected.target });
       }
-      return evidence;
+      checked = true;
     } finally {
-      await restoreProjectProvider?.();
-      await ctx.aw(['plugin', 'remove', dependentId, '--scope', 'project', '--yes']);
+      try {
+        await restoreProjectProvider?.();
+        removal = await ctx.aw(['plugin', 'remove', dependentId, '--scope', 'project', '--yes']);
+      } catch (error) { if (checked) throw error; }
     }
+    if (ctx.platform === 'codex') {
+      evidence.removal = await verifyCodexSharedProviderRemoval(ctx, { pluginId, dependentId, userProvider, dependentDeployment, removal });
+    }
+    return evidence;
   });
 }
 

@@ -1,8 +1,8 @@
 import type { PluginMeta, Scope } from '../types.js';
 import { resolveWorkContext, type WorkContext } from '../intent/work-context.js';
 import { createEmptyPreferences, type AgentId, type DeploymentPreferences } from '../intent/deployment-preferences.js';
-import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
-import { readDemand, resolveDelivery, type DemandSnapshot, type ReadDemandOptions } from './demand.js';
+import { resolvePluginDependencyClosure, resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { readDemand, resolveDelivery, type DemandRoot, type DemandSnapshot, type ReadDemandOptions } from './demand.js';
 import type { RecoveryDiagnostic } from './receipt.js';
 import type { NativeSharedReference, NativeSharedReferenceView } from '../utils/native-demand.js';
 import type { RecoveryStatus } from './status.js';
@@ -45,10 +45,15 @@ export interface JointDemandPlan {
   complete: boolean;
 }
 
+export const canReuseProviderAcrossScopes = (target: AgentId): boolean => target === 'generic' || hasSharedUserPackage(target);
+
 export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' | 'preferences'> & {
-  scope?: Scope; context?: Scope; preferences?: DeploymentPreferences;
+  scope?: Scope; context?: Scope; preferences?: DeploymentPreferences; expectedProjectRoot?: string;
 }): Promise<JointDemandSnapshot> {
   const context = await resolveWorkContext(options);
+  if (options.expectedProjectRoot && context.projectRoot !== options.expectedProjectRoot) {
+    throw new Error('projectRootUnavailable: the reviewed project root is no longer available.');
+  }
   const { preferences: draftPreferences, ...readOptions } = options;
   const [userIntent, projectIntent] = await Promise.all([
     options.intent ?? observeIntent({ ...options, scope: 'user' }),
@@ -62,7 +67,7 @@ export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' |
       ? intent.value.roots.map((root) => root.pluginId.split('/')[0]!) : []))].filter((id) => configured.has(id));
     const resolved = options.catalogOperationContext ?? await resolvePartialCatalogOperationContext({
       env: options.env, configSnapshot: snapshot, signal: options.signal, sourceIds,
-    });
+    }, options.catalogReadScope);
     return { context: resolved, configured };
   })());
   const shared = { resolveCatalog, manifestReads: options.manifestReads ?? new Map<string, Promise<PluginMeta>>() };
@@ -72,6 +77,17 @@ export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' |
   const preferences = draftPreferences ?? (user.preferences.state === 'valid' ? user.preferences.value
     : user.preferences.state === 'absent' ? createEmptyPreferences() : null);
   return { context, user, project, preferences };
+}
+
+/** An Active index can bound the references to protect when the bundle manifest cannot be read. */
+function protectedCatalogDependencies(demand: DemandSnapshot, root: DemandRoot): string[] {
+  if (root.sourceState !== 'ready' || !(root.unreadableDependency || root.blockers.includes('pluginManifestUnavailable'))) return [];
+  const source = demand.catalogOperationContext?.catalog.sources.find((entry) => entry.sourceId === root.sourceId)?.resolution;
+  if (!source) return [];
+  try {
+    return resolvePluginDependencyClosure(source.manifest.entries, [root.pluginId.split('/')[1]!])
+      .map((entry) => `${root.sourceId}/${entry.name}`);
+  } catch { return []; }
 }
 
 export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPlan {
@@ -88,6 +104,7 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
   const placements = new Map<string, JointPlacement>();
   for (const demand of demands) {
     for (const root of demand.roots ?? []) {
+      const protectedDependencies = protectedCatalogDependencies(demand, root);
       for (const target of preferences.targets) {
         const entry: JointRootTarget = { pluginId: root.pluginId, scope: demand.scope, target,
           state: 'required', dependencies: [], blockers: [] };
@@ -95,11 +112,21 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
         if (excluded.has(`${root.pluginId}\0${target}`)) { entry.state = 'excluded'; continue; }
         if (!root.plugin || root.blockers.length) {
           entry.state = 'unknown'; result.complete = false;
+          entry.dependencies = protectedDependencies;
           entry.blockers = root.blockers.map((code) => ({ code, pluginId: root.pluginId, message: `${root.pluginId}: ${code}` }));
           continue;
         }
+        if (root.unreadableDependency && resolveDelivery(root.plugin.manifest, target, demand.scope)) {
+          entry.state = 'unknown';
+          result.complete = false;
+          entry.dependencies = protectedDependencies;
+          entry.blockers.push({ code: 'pluginManifestUnavailable', pluginId: root.pluginId,
+            message: `无法读取 ${root.pluginId} 所需的 ${root.unreadableDependency} 清单。` });
+          continue;
+        }
         let closure: PluginMeta[];
-        try { closure = resolvePluginMetaDependencyClosure(demand.plugins.filter((plugin) => plugin.sourceId === root.sourceId), [root.plugin.manifest.name]); }
+        try { closure = root.unreadableDependency ? [root.plugin]
+          : resolvePluginMetaDependencyClosure(demand.plugins.filter((plugin) => plugin.sourceId === root.sourceId), [root.plugin.manifest.name]); }
         catch (error) {
           entry.state = 'blocked'; entry.blockers.push({ code: 'dependencyContractInvalid', pluginId: root.pluginId,
             message: error instanceof Error ? error.message : '依赖合同无效。' }); continue;
@@ -137,8 +164,7 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
       }
     }
   }
-  // Unknown providers protect their complete source closure. Dependency contracts
-  // are validated above and currently permit only names from the same source.
+  // When the indexed closure is also unavailable, protect the whole matching source.
   if (!result.complete) {
     const sourceIdentity = (demand: DemandSnapshot, pluginId: string): string => {
       const sourceId = pluginId.split('/')[0]!;
@@ -146,9 +172,17 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
         ? demand.intent.value.sources[sourceId]?.logicalIdentity ?? sourceId : sourceId;
     };
     const uncertainUser = result.roots.filter((entry) => entry.scope === 'user' && entry.state === 'unknown');
-    for (const entry of result.roots.filter((entry) => entry.scope === 'project' && entry.state === 'required')) {
-      if (snapshot.user.roots !== null && !uncertainUser.some((user) => user.target === entry.target
-        && sourceIdentity(snapshot.user, user.pluginId) === sourceIdentity(snapshot.project!, entry.pluginId))) continue;
+    const projectRoots = result.roots.filter((entry) => entry.scope === 'project' && entry.state === 'required');
+    for (const entry of projectRoots) {
+      if (!canReuseProviderAcrossScopes(entry.target)) continue;
+      // An explicit Project root always gets a scoped placement. Only the remaining
+      // dependencies can change provider when the missing User evidence is restored.
+      const reusable = entry.dependencies.filter((id) => !projectRoots.some((root) =>
+        root.pluginId === id && root.target === entry.target));
+      if (!reusable.length || snapshot.user.roots !== null && !uncertainUser.some((user) => user.target === entry.target
+        && sourceIdentity(snapshot.user, user.pluginId) === sourceIdentity(snapshot.project!, entry.pluginId)
+        && (!user.dependencies.length || user.pluginId.split('/')[0] !== entry.pluginId.split('/')[0]
+          || user.dependencies.some((id) => reusable.includes(id))))) continue;
       entry.state = 'unknown'; entry.blockers.push({ code: 'jointDemandUnknown', message: '完整需求未知，不能确定项目提供位置。' });
     }
   }
@@ -158,7 +192,7 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
       && entry.target === placement.target && entry.state === 'required'));
     // Separate native directories need their dependency closure in each scope.
     // Explicit roots also keep each scope's package, activation or generic output.
-    if (placement.target !== 'generic' && !hasSharedUserPackage(placement.target)
+    if (!canReuseProviderAcrossScopes(placement.target)
       || contributions.some((item) => item.scope === 'project' && item.path.length === 1)) {
       return (['user', 'project'] as const).flatMap((scope) => {
         const scoped = contributions.filter((item) => item.scope === scope);

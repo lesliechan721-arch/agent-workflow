@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import {
+  readCatalogSnapshotTransport as readCoreCatalogSnapshotTransport,
   validateCatalogSnapshotComplete as validateCoreCatalogSnapshotComplete,
   validateCatalogSnapshotPluginEntriesComplete as validateCoreCatalogSnapshotPluginEntriesComplete,
   validateCatalogSnapshotTransport as validateCoreCatalogSnapshotTransport,
@@ -17,15 +18,21 @@ export interface CatalogSnapshotValidation {
   snapshotDigest: string;
 }
 
-async function withManifestDigest(
-  validation: Omit<CatalogSnapshotValidation, 'manifestDigest'>,
-): Promise<CatalogSnapshotValidation> {
+async function withManifestDigest<T extends Omit<CatalogSnapshotValidation, 'manifestDigest'>>(
+  validation: T,
+): Promise<T & { manifestDigest: string }> {
   return {
     ...validation,
     manifestDigest: await calculateFileDigest(
       path.join(validation.rootDir, CURRENT_CATALOG_MANIFEST_FILE),
     ),
   };
+}
+
+export async function readCatalogSnapshotTransport(rootDir: string): Promise<CatalogSnapshotValidation & {
+  validateEntries(pluginNames?: readonly string[]): Promise<void>;
+}> {
+  return withManifestDigest(await readCoreCatalogSnapshotTransport(rootDir));
 }
 
 export async function validateCatalogSnapshotTransport(rootDir: string): Promise<CatalogSnapshotValidation> {

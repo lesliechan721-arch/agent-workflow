@@ -251,7 +251,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
         result.diagnostics.unshift(...previousDiagnostics);
       };
       try {
-        if (active.length) plans.push(await prepareRecovery('uninstall', active, recovery, runtime));
+        if (active.length) plans.push(await prepareRecovery('uninstall', active, { ...recovery, retiringCatalogRoots: retired }, runtime));
         for (const selector of retired) plans.push(await prepareRetire({ ...location, selector, signal: context.signal, cliVersion: options.cliVersion, yes: options.yes, deleteConfig: options.deleteConfig, preservePreferences: true }, runtime));
         const effects = plans.flatMap((plan) => 'command' in plan ? effectsForPlan(plan) : plan.receipt.targetResults.map((target) => ({ code: 'removeOwnedOutput', message: 'Remove proven owned output of a retired plugin.', impact: 'selected-scope' as const, subject: { pluginId: target.pluginId, target: target.agent, scope: target.scope } })));
         if (options.deleteConfig) effects.push(...exact.map((pluginId) => ({ code: 'deletePluginConfig', message: 'Delete all local common and platform configuration for this plugin.', impact: 'user-wide' as const, subject: { pluginId, scope: 'user' as const } })));

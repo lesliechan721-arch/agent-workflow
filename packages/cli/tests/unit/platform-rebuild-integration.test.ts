@@ -14,8 +14,10 @@ import { readSkillOwnerMarker, SKILL_OWNER_MARKER, writeSkillOwnerMarker } from 
 import { createNoopReporter } from '../../src/output/reporter.js';
 import { createNoopDebugLogger } from '../../src/output/debug-log.js';
 import { readCodexConfigFile } from '../../src/utils/codex-config.js';
+import { NativeCliError } from '../../src/utils/native-cli.js';
 import type { ProductInstallation } from '../../src/platforms/contracts.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
+import { withNativeObservationBatch } from '../../src/platforms/inspection-query.js';
 import { geminiExtensionPaths, geminiScopePattern } from '../../src/platforms/gemini-activation.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
@@ -229,6 +231,45 @@ async function nativeEvidenceFixture(platform: 'gemini' | 'copilot' | 'antigravi
 }
 
 describe('native evidence checks', () => {
+  // Test Value Gate: a shared ordinary read must not hide native registration
+  // changing between the post-render baseline and the final verification.
+  it('shares ordinary Pi inventories and rereads registration before returning a target', async () => {
+    const item = await nativeEvidenceFixture('pi');
+    await item.context.platformRebuildSession!.dispose();
+    const adapter: typeof item.adapter = { ...item.adapter, lifecycle: { ...item.adapter.lifecycle,
+      prepare(input) {
+        const result = item.adapter.lifecycle.prepare(input);
+        item.changeRegistration();
+        return result;
+      },
+    } };
+    item.runner.mockClear();
+    const inventoryCwds = () => item.runner.mock.calls.flatMap(([request]) =>
+      request.args.join(' ') === 'list' ? [request.cwd] : []);
+    await withNativeObservationBatch({ runner: item.runner }, async (nativeObservationBatch) => {
+      const context = { ...item.context, preparedArtifactRenderResults: new Map(), nativeObservationBatch };
+      const session = new PlatformRebuildSession(context, () => adapter);
+      try {
+        const integration = createRebuildIntegration({ context: { ...context, platformRebuildSession: session } });
+        const inspected = await integration.buildTarget({ ...item.input, readOnlyInspectionPlan: true });
+        expect(inspected.platformObservations?.[0]?.observation.registration).toBe('absent');
+        expect(inventoryCwds()).toHaveLength(1);
+
+        await expect(integration.buildTarget(item.input)).rejects.toThrow('operationPlanStale');
+        expect(inventoryCwds()).toHaveLength(3);
+        expect(new Set(inventoryCwds()).size).toBe(3);
+
+        await expect(integration.buildTarget(item.input)).rejects.toThrow('operationPlanStale');
+        expect(inventoryCwds()).toHaveLength(4);
+        const refreshed = await integration.buildTarget({ ...item.input, readOnlyInspectionPlan: true });
+        expect(refreshed.platformObservations?.[0]?.observation.registration).toBe('present');
+        expect(inventoryCwds()).toHaveLength(5);
+      } finally { await session.dispose(); }
+    });
+    expect(await Promise.all(inventoryCwds().map((cwd) => fs.pathExists(cwd)))).toEqual([false, false, false, false, false]);
+    expect(await fs.pathExists(item.layout.packageRoot)).toBe(false);
+  });
+
   // Test Value Gate: code-cache writes must not stale package evidence or survive
   // the session that owns the existing private staging root.
   it('shares a private Gemini code-cache directory and removes it with staging', async () => {
@@ -708,6 +749,53 @@ describe('native evidence checks', () => {
         deploymentReceipts: [expect.objectContaining({ diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'operationPlanStale' })]) })] });
       expect(discovery).toBe(3);
       expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
+    } finally { await item.context.platformRebuildSession!.dispose(); }
+  });
+
+  // Test Value Gate: a marketplace timeout after same-version publication leaves
+  // the installed bytes in place. Only a fresh, exact source can confirm them.
+  it.each([
+    ['canonical', 'aw'], ['timeout', 'unknown'], ['foreign', 'foreign'],
+    ['schema', 'unknown'], ['exit 124', 'unknown'], ['aborted', 'unknown'],
+  ] as const)('checks Copilot same-version publication with %s marketplace evidence', async (scenario, ownership) => {
+    const item = await nativeEvidenceFixture('copilot', { scope: 'project' });
+    try {
+      expect((await executeRebuildOperation({ command: 'install', target: item.target, driver: item.integration.driver })).status).toBe('succeeded');
+      const revision = '---\nname: check\ndescription: Check evidence.\n---\nRevision 3.\n';
+      const skill = path.join('skills', 'check', 'SKILL.md');
+      await fs.outputFile(path.join(item.root, skill), revision);
+      await item.context.platformRebuildSession!.dispose();
+      item.context.preparedArtifactRenderResults = new Map();
+      const integration = createRebuildIntegration({ context: item.context });
+      const target = await integration.buildTarget({ ...item.input, command: 'sync' });
+      await integration.sealMarketplaceGenerations([target]);
+      expect(target.platformDeployment!.plans[0]!.evidence.contentMatches).toBe(false);
+      const native = item.runner.getMockImplementation()!;
+      let postwriteReads = 0;
+      item.runner.mockClear().mockImplementation(async (invocation) => {
+        if (invocation.args.join(' ') === 'plugin marketplace list --json'
+          && await fs.readFile(path.join(item.layout.packageRoot, skill), 'utf8') === revision) {
+          postwriteReads++;
+          if (postwriteReads === 1 && scenario === 'schema') return { exitCode: 0, stdout: '{}', stderr: '' };
+          if (postwriteReads === 1 && scenario === 'exit 124') return { exitCode: 124, stdout: '', stderr: '' };
+          if (postwriteReads === 1 || scenario === 'timeout') {
+            throw new NativeCliError({ invocation, exitCode: scenario === 'aborted' ? 1 : 124,
+              stdout: '', stderr: '', reason: scenario === 'aborted' ? 'aborted' : 'timeout' });
+          }
+          if (scenario === 'foreign') return { exitCode: 0, stderr: '',
+            stdout: JSON.stringify([{ name: item.layout.marketplaceName, source: path.join(item.input.cwd, 'other-marketplace') }]) };
+        }
+        return native(invocation);
+      });
+      const result = await executeRebuildOperation({ command: 'sync', target, driver: integration.driver });
+      expect(result.status).toBe(scenario === 'canonical' ? 'succeeded' : 'failed');
+      const receipt = result.deploymentReceipts![0]!;
+      expect(receipt.effects.map(({ status, mutation }) => [status, mutation])).toEqual([['applied', 'confirmed'], ['unchanged', 'none']]);
+      if (scenario !== 'aborted') expect(receipt.after).toMatchObject({ ownership, registration: 'present' });
+      if (scenario !== 'canonical') expect(receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'deploymentPostcheckFailed' }));
+      expect(postwriteReads).toBe(2); // The receipt inspection and the existing post-write rebase.
+      expect(item.runner.mock.calls.every(([request]) => item.inventories.includes(request.args.join(' ')))).toBe(true);
+      expect(await fs.readFile(path.join(item.layout.packageRoot, skill), 'utf8')).toBe(revision);
     } finally { await item.context.platformRebuildSession!.dispose(); }
   });
 

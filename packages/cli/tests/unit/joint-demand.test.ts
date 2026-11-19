@@ -132,18 +132,20 @@ describe('joint requirements', () => {
       ['local/d', 'project'], ['local/b', 'project'],
     ]);
   });
-  it('does not approve project fallback when user demand is unknown', () => {
-    const input = snapshot([], ['b']); input.user.roots = null;
+  it.each(['intent', 'manifest'] as const)('marks only reusable Project providers uncertain when User %s is unreadable', (failure) => {
+    const input = snapshot(['a'], ['b'], ['cursor', 'codex']);
+    input.user.plugins.forEach((item) => { item.manifest.platforms = ['cursor', 'codex']; });
+    if (failure === 'intent') input.user.roots = null;
+    else {
+      input.user.roots![0]!.plugin = undefined;
+      input.user.roots![0]!.blockers = ['pluginManifestUnavailable'];
+    }
     const plan = deriveJointDemand(input);
-    expect(plan.complete).toBe(false); expect(plan.roots[0]!.state).toBe('unknown');
-  });
-  it('blocks a known project closure when its user source provider cannot be read', () => {
-    const input = snapshot(['a'], ['b']);
-    input.user.roots![0]!.plugin = undefined;
-    input.user.roots![0]!.blockers = ['pluginManifestUnavailable'];
-    const plan = deriveJointDemand(input);
-    expect(plan.roots.map((entry) => entry.state)).toEqual(['unknown', 'unknown']);
-    expect(plan.placements).toEqual([]);
+    expect(plan.complete).toBe(false);
+    expect(plan.roots.filter((entry) => entry.scope === 'project').map((entry) => [entry.target, entry.state]))
+      .toEqual([['cursor', 'required'], ['codex', 'unknown']]);
+    expect(plan.placements.map((item) => [item.pluginId, item.target, item.scope]))
+      .toEqual([['local/d', 'cursor', 'project'], ['local/b', 'cursor', 'project']]);
   });
   // Test Value Gate: renderer scopes select dynamic render units and must not remove native demand before preparation.
   it('retains both native requirements when dynamic output is restricted to project rendering', () => {

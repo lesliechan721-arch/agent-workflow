@@ -7,7 +7,7 @@ import { execFile, spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { parseArgs, run, runScope, versionFrom, redact, publicAwFailureSummary, readPublicAwEnvelope, readQualificationCodexSources,
-  observeQualification } from './native-platforms.mjs';
+  observeQualification, readSharedProviderStages } from './native-platforms.mjs';
 import { executePublicAw } from './native-platform-public-process.mjs';
 import { isolatedEnvironment, prepareEnvironment, renderPackage, execute, assertCommand, writeCandidate, verifyCandidate } from './native-platform-runtime.mjs';
 import { waitForRpcGroupExit } from './native-platform-rpc.mjs';
@@ -25,6 +25,19 @@ import './native-platform-public-state.test.mjs';
 import './native-platform-opencode.test.mjs';
 import './native-platform-opencode-public.test.mjs';
 import './native-platform-codex-behavior.test.mjs';
+
+test('retains only fixed shared-provider stages before an interrupted debug record', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-stage-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'stages');
+  const time = '2026-11-19T00:00:00.000Z';
+  const row = (name) => JSON.stringify({ time, event: { type: 'performance:stage', message: 'private',
+    data: { name, phase: 'success', durationMs: 12, detail: 'private' } } });
+  await fs.writeFile(file, [row('recovery.child.plan'), row('private'), '{"partial"'].join('\n'));
+  assert.deepEqual(await readSharedProviderStages(file), { state: 'partial', records: [
+    { time, name: 'recovery.child.plan', phase: 'success', durationMs: 12 },
+  ] });
+});
 
 // Test Value Gate: a runner using different runtime schema bytes cannot produce
 // evidence for the built candidate even when its compiled JavaScript matches.

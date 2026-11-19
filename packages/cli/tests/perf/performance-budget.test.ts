@@ -10,6 +10,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { PluginMeta } from '../../src/types.js';
 import { writePreferences } from '../../src/intent/deployment-preferences.js';
+import { createEmptyIntent } from '../../src/intent/intent-codec.js';
+import { writeIntent } from '../../src/intent/intent-store.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { loadConsoleItemsResult, statusCommandV8 } from '../../src/commands/status-v6.js';
 import { installWriteCommand } from '../../src/commands/write-commands.js';
@@ -18,6 +20,7 @@ import { runRecovery } from '../../src/recovery/coordinator.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
+import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import {
   withResolvedCatalogPlugin,
@@ -484,6 +487,127 @@ describe('multi-source performance budgets', () => {
     );
     printPerfSummary(localSummary);
     expect(localSummary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
+  });
+
+  it('bounds Active Catalog tree reads in warm generic TUI install preparation', async () => {
+    // Selecting more same-source roots must not multiply full Catalog reads, and
+    // confirming the Review must still read the current Active tree under the lock.
+    const catalog = path.join(root, 'tui-generic-catalog');
+    const sourceId = 'local';
+    const shared = 'shared-skill';
+    const savedRoot = 'saved-root';
+    const roots = ['first-root', 'second-root', 'third-root'];
+    const plugins = [shared, savedRoot, ...roots];
+    const skillText = (name: string) => `---\nname: ${name}\ndescription: Use ${name}.\n---\nFixture for ${name}.\n`;
+    await Promise.all(plugins.flatMap((name) => {
+      const skill = path.join(catalog, 'plugins', name, 'skills', name);
+      return [fs.outputFile(path.join(skill, 'SKILL.md'), skillText(name)),
+        fs.outputFile(path.join(skill, 'README.md'), `Use ${name}.\n`)];
+    }));
+    await createDependencyCatalogSnapshotFixture(catalog, plugins.map((name) => ({
+      name,
+      dependencies: name === shared ? [] : [shared],
+      configureManifest: (manifest) => {
+        manifest.platforms = ['generic'];
+        manifest.skills = './skills';
+        delete manifest.extensions;
+      },
+    })));
+
+    const cases = [];
+    for (const selected of [roots.slice(0, 1), roots]) {
+      const { env, layout } = await createIsolatedTestEnv({
+        rootDir: path.join(root, `tui-generic-${selected.length}`),
+      });
+      const cwd = layout.fixtureCwd;
+      await fs.ensureDir(path.join(cwd, '.git'));
+      await fs.outputJson(path.join(layout.awHomeDir, 'catalog-sources.json'), {
+        schemaVersion: 2,
+        sources: [{ id: sourceId, type: 'path', primary: true, autoCheck: false, path: catalog }],
+      });
+      const { active } = await syncCatalogSourceGeneration({
+        sourceId, cliVersion: '1.0.0', cwd, env, impactConfirmed: true,
+      });
+      if (!active) throw new Error('Expected an Active Catalog snapshot');
+      await writePreferences({ scope: 'user', cwd, env }, {
+        schemaVersion: 2, kind: 'aw-deployment-preferences', targets: ['generic'], exclusions: [],
+      });
+      await writeIntent({ scope: 'user', cwd, env }, {
+        ...createEmptyIntent(),
+        sources: { [sourceId]: { logicalIdentity: active.logicalIdentity } },
+        roots: [{ pluginId: `${sourceId}/${savedRoot}` }],
+      });
+
+      const { snapshotRoot } = resolveCatalogStoreLocation({
+        logicalIdentity: active.logicalIdentity, snapshotDigest: active.snapshotDigest, env,
+      });
+      // The tree digest reads this snapshot-wide file's bytes. Marketplace JSON
+      // parsing uses readJson, and individual plugin reads never touch this path.
+      const treeDigestProbe = path.join(snapshotRoot, '.agents', 'plugins', 'marketplace.json');
+      const readFile = vi.spyOn(fs, 'readFile');
+      const treeReads = () => readFile.mock.calls.filter(([file]) => file === treeDigestProbe).length;
+      let lockedStart: number | undefined;
+      let lockedPreparation: number | undefined;
+      let statusStart: number | undefined;
+      let finalStatus: number | undefined;
+      const nativeCliRunner = vi.fn<NativeCliRunner>(async () => { throw new Error('Unexpected native CLI call'); });
+      const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+        cwd, env, interactive: false, nativeCliRunner,
+        debugLogger: { log: (event) => {
+          if (event.type !== 'performance:stage') return;
+          const { name, phase } = event.data ?? {};
+          if (name === 'recovery.locked.demand' && phase === 'start') lockedStart = treeReads();
+          if (name === 'recovery.locked.recheck' && phase === 'success' && lockedStart !== undefined) {
+            lockedPreparation = treeReads() - lockedStart;
+          }
+          if (name === 'recovery.status' && phase === 'start') statusStart = treeReads();
+          if (name === 'recovery.status' && phase === 'success' && statusStart !== undefined) {
+            finalStatus = treeReads() - statusStart;
+          }
+        } },
+      })));
+      try {
+        fanoutProviderInvocations = 0;
+        const selectors = selected.map((name) => `${sourceId}/${name}`);
+        const request = { kind: 'recovery', command: 'install', scope: 'project', selectors } as const;
+        // Prime only temporary materializations. Staging each new generation
+        // has its own validation before commit, so report this Review separately.
+        await controller.discardScopedPlan(await controller.prepareScopedTask(request));
+        const materializingReview = treeReads();
+        await expect(fs.pathExists(path.join(cwd, '.agents', 'skills'))).resolves.toBe(false);
+        await expect(fs.pathExists(path.join(layout.homeDir, '.agents', 'skills'))).resolves.toBe(false);
+        const review = await controller.prepareScopedTask(request);
+        const afterReview = treeReads();
+        const result = await controller.executeScopedTask(review);
+        cases.push({
+          roots: selected.length,
+          materializingReview,
+          review: afterReview - materializingReview,
+          lockedPreparation,
+          finalStatus,
+          execution: treeReads() - afterReview,
+        });
+        expect(result, JSON.stringify(result)).toMatchObject({
+          kind: 'recovery', receipt: { ok: true, declarationChanged: true, intent: { roots: selectors },
+            allSatisfied: false, inSync: false, coverage: { scopes: ['user', 'project'] }, remainingTargets: [] },
+        });
+        expect(fanoutProviderInvocations).toBe(0);
+        expect(nativeCliRunner).not.toHaveBeenCalled();
+        const outputs = [[layout.homeDir, shared] as const, ...selected.map((name) => [cwd, name] as const)];
+        for (const [directory, name] of outputs) {
+          await expect(fs.readFile(path.join(directory, '.agents', 'skills', name, 'SKILL.md'), 'utf8'))
+            .resolves.toContain(`Fixture for ${name}.`);
+        }
+      } finally {
+        readFile.mockRestore();
+        controller.dispose();
+      }
+    }
+
+    const budget = { review: 1, lockedPreparation: 1, finalStatus: 1 };
+    const summary = { name: 'tui-install-active-tree-reads-warm', budget, cases };
+    printPerfSummary(summary);
+    for (const result of cases) expect(result).toMatchObject(budget);
   });
 
   it('fans out remote work only through explicit sync', async () => {

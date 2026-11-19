@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import fs from 'fs-extra';
@@ -63,6 +64,19 @@ async function piNpmFixture(windows = false, bin = 'dist/bundle/cli.js') {
       renderNpmCmdShim(`node_modules\\@earendil-works\\pi-coding-agent\\${bin.replaceAll('/', '\\')}`));
   } else await fs.symlink(entry, path.join(ctx.env!.PATH!, 'pi'));
   return { ctx, packageRoot, entry: await fs.realpath(entry), metadata };
+}
+
+async function piLaunchersFixture(windows: boolean) {
+  const ctx = await fixture();
+  const entries = await Promise.all(['first', 'second', 'third'].map(async (name) => {
+    const file = path.join(ctx.cwd, name, windows ? 'pi.exe' : 'pi');
+    await fs.outputFile(file, 'controlled launcher', { mode: 0o755 });
+    return fs.realpath(file);
+  }));
+  ctx.platform = windows ? 'win32' : 'linux';
+  ctx.env = { ...ctx.env, PATH: entries.map((file) => path.dirname(file)).join(windows ? ';' : ':'),
+    ...(windows ? { USERPROFILE: 'C:\\Users\\qualification', PI_CODING_AGENT_DIR: 'C:\\qualification\\pi' } : {}) };
+  return { ctx, entries };
 }
 
 describe('read-only target discovery and production selection', () => {
@@ -572,6 +586,80 @@ describe('read-only target discovery and production selection', () => {
     }) });
     expect(found.availability).toBe('unknown');
     expect(found.installations[0]?.reasonCodes).toContain('clientIdentityUnconfirmed');
+  });
+
+  // Test Value Gate: each launcher must prove its own identity and keep its
+  // selection priority even if another launcher's probe finishes first.
+  it.each(process.platform === 'win32' ? [true] : [false, true])('checks at most two Pi entries while preserving fallback (Windows=%s)', async (windows) => {
+    const { ctx, entries: [first, second, third] } = await piLaunchersFixture(windows);
+    const firstStarted = Promise.withResolvers<void>();
+    const completeFirst = Promise.withResolvers<void>();
+    const calls: Array<[string, string]> = [];
+    const pending = discoverPlatform('pi', { ...ctx, runner: async ({ command, args }) => {
+      calls.push([command, args.at(-1)!]);
+      if (command === first) {
+        firstStarted.resolve();
+        await completeFirst.promise;
+        return { exitCode: 1, stdout: '', stderr: '' };
+      }
+      return { exitCode: 0, stdout: args.at(-1) === '--version' ? '1.5.0' :
+        command === second ? 'Pi coding agent' : 'Unrelated utility', stderr: '' };
+    } });
+    await firstStarted.promise;
+    try {
+      await setImmediate();
+      expect(calls).toEqual([[first, '--version'], [second, '--version'], [second, '--help']]);
+    } finally {
+      completeFirst.resolve();
+      await pending;
+    }
+    const found = await pending;
+    expect(calls.slice(3)).toEqual([[third, '--version'], [third, '--help']]);
+    expect(found.installations).toMatchObject([
+      { entry: { executable: first }, availability: 'unknown', reasonCodes: ['clientProbeFailed'] },
+      { entry: { executable: second }, availability: 'available', reasonCodes: [] },
+      { entry: { executable: third }, availability: 'unknown', reasonCodes: ['clientIdentityUnconfirmed'] },
+    ]);
+    expect(found.diagnostics.map(({ code }) => code)).toEqual(['clientProbeFailed', 'clientIdentityUnconfirmed']);
+  });
+
+  // Test Value Gate: a cancelled Review must wait for any launched sibling
+  // and carry its unconfirmed process cleanup back to the controller.
+  it.each(process.platform === 'win32' ? [true] : [false, true])('reports a later Pi cleanup failure after both probes settle (Windows=%s)', async (windows) => {
+    const { ctx, entries: [first, second] } = await piLaunchersFixture(windows);
+    const abort = new AbortController();
+    const firstStarted = Promise.withResolvers<void>();
+    const completeFirst = Promise.withResolvers<void>();
+    const completeSecond = Promise.withResolvers<void>();
+    const cleanupError = new Error('cleanup unconfirmed');
+    const calls: string[] = [];
+    let settled = false;
+    const pending = discoverPlatform('pi', { ...ctx, signal: abort.signal, runner: async (invocation) => {
+      calls.push(invocation.command);
+      if (invocation.command === first) {
+        firstStarted.resolve();
+        await completeFirst.promise;
+        throw abort.signal.reason;
+      }
+      await completeSecond.promise;
+      throw new NativeCliError({ invocation, reason: 'aborted', exitCode: 1, stdout: '', stderr: '', cleanupError });
+    } }).catch((error: unknown) => error).finally(() => { settled = true; });
+    await firstStarted.promise;
+    try {
+      await setImmediate();
+      expect(calls).toEqual([first, second]);
+      abort.abort();
+      completeFirst.resolve();
+      await setImmediate();
+      expect(settled).toBe(false);
+    } finally {
+      abort.abort();
+      completeFirst.resolve();
+      completeSecond.resolve();
+      await pending;
+    }
+    expect(await pending).toMatchObject({ name: 'NativeCliError', cleanupError });
+    expect(calls).toEqual([first, second]);
   });
 
   // Test Value Gate: Windows Grok must resolve its official npm shim while a

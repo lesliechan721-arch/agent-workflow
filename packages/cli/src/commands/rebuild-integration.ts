@@ -267,6 +267,8 @@ export interface RebuildExecutionContext {
   expectedCatalogConfigDigest?: string;
   codexUserActivationDesired?: ReadonlySet<string>;
   codexObservationSession?: CodexNativeObservationSession;
+  /** Borrowed by ordinary native reads in the initial install preview. */
+  nativeObservationBatch?: import('../platforms/inspection-query.js').NativeObservationBatch;
   codexObservationScopeByMarketplace?: ReadonlyMap<string, 'user' | 'both'>;
   preApplyExecutionCache?: Map<string, Promise<void>>;
   managedCommandProducerCache?: Map<string, Promise<CommandProducerResult>>;
