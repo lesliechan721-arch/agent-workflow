@@ -183,6 +183,7 @@ interface ResolveActiveCatalogGenerationOptions {
   env?: NodeJS.ProcessEnv;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
+  reuseTransport?: boolean;
 }
 
 async function resolveActiveCatalogGenerationWithPolicy(
@@ -205,6 +206,7 @@ async function resolveActiveCatalogGenerationWithPolicy(
     requireCompatibility,
     validatedStoreEntries: options.validatedStoreEntries,
     validatingStoreEntries: options.validatingStoreEntries,
+    reuseTransport: options.reuseTransport,
   });
 }
 

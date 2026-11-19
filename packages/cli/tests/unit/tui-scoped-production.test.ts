@@ -1,3 +1,4 @@
+import { Hash } from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -6,17 +7,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
+import { SessionHost } from '../../src/tui/session-host.js';
+import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { addRoot, observeIntent, removeRoot } from '../../src/intent/intent-store.js';
 import { observePreferences, writePreferences } from '../../src/intent/deployment-preferences.js';
 import { executeRecovery, prepareRecovery } from '../../src/recovery/coordinator.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
+import { CatalogPreparationReadScope } from '../../src/utils/catalog-operation-context.js';
 import { syncCatalogSourceGeneration, type CatalogGenerationServiceRuntime } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
-import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
+import { readCatalogSnapshotLogicalIdentity, resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
+import { readCatalogGenerationState, resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
 import { applyCodexConfigTransactionFile, readCodexConfigFile, removeCodexMarketplace } from '../../src/utils/codex-config.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
-import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { createCatalogSnapshotFixture, git, rewriteActiveCatalogCapabilities } from '../helpers/catalog-source-fixture.js';
 import { getAgentPluginAdapter } from '../../src/platforms/registry.js';
 import { getPlatformCapabilities } from '../../src/platforms/capabilities.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -101,6 +106,25 @@ async function fixture(portable = false, dependency = false) {
   return { cwd, env, source, generation, context };
 }
 
+function pauseFirstCatalogStateRead(env: NodeJS.ProcessEnv) {
+  const entered = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const statePath = resolveCatalogGenerationStatePath(env);
+  const readJson = fs.readJson.bind(fs);
+  let armed = true;
+  const spy = vi.spyOn(fs, 'readJson').mockImplementation(async (file, options) => {
+    const pause = armed && file === statePath;
+    if (pause) armed = false;
+    const payload = await readJson(file, options);
+    if (pause) {
+      entered.resolve();
+      await resume.promise;
+    }
+    return payload;
+  });
+  return { entered: entered.promise, resume: resume.resolve, restore: () => spy.mockRestore() };
+}
+
 describe('scoped TUI production reads', () => {
   afterEach(() => vi.restoreAllMocks());
   beforeEach(() => {
@@ -109,6 +133,70 @@ describe('scoped TUI production reads', () => {
       capabilities.kinds.skill = { ...capabilities.kinds.skill, status: 'supported', reasonCodes: [] };
       return capabilities;
     });
+  });
+
+  it('scans the Active snapshot once when opening home without declarations', async () => {
+    const value = await fixture(true);
+    for (const scope of ['user', 'project'] as const) await removeRoot({ ...value, scope }, 'local/demo');
+    const active = (await readCatalogGenerationState(value.env)).sources.local!.active!;
+    const digests = vi.spyOn(Hash.prototype, 'digest');
+    const home = await createTuiControllerDependencies(value.context).loadStatus(new AbortController().signal);
+    expect(home.catalogGenerations).toMatchObject([{ sourceId: 'local', state: 'ready' }]);
+    expect(digests.mock.results.filter((result) => result.value === active.snapshotDigest.slice('sha256:'.length))).toHaveLength(1);
+  });
+
+  it('drains in-flight source reads on cancellation without scanning the Active snapshot for damage', async () => {
+    const value = await fixture(true);
+    const config = await readCatalogSourcesConfigSnapshot(value.env);
+    await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: config.digest,
+      config: { ...config.config, sources: [...config.config.sources,
+        { id: 'alias', type: 'path', primary: false, path: value.source },
+      ] } });
+    await syncCatalogSourceGeneration({ sourceId: 'alias', env: value.env, cliVersion: '1.0.0' });
+    const active = (await readCatalogGenerationState(value.env)).sources.local!.active!;
+    const controller = new AbortController();
+    const digests = vi.spyOn(Hash.prototype, 'digest');
+    const siblingStarted = Promise.withResolvers<void>();
+    const releaseSibling = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    const resolveActive = CatalogPreparationReadScope.prototype.resolveActiveGeneration;
+    vi.spyOn(CatalogPreparationReadScope.prototype, 'resolveActiveGeneration').mockImplementation(async function (this: CatalogPreparationReadScope, sourceId, previous) {
+      if (sourceId === 'alias') {
+        siblingStarted.resolve();
+        await releaseSibling.promise;
+      } else {
+        await siblingStarted.promise;
+        digests.mockClear();
+        controller.abort();
+        cancelled.resolve();
+      }
+      return resolveActive.call(this, sourceId, previous);
+    });
+    const runtime = createTuiControllerDependencies(value.context);
+    let settled = false;
+    const loading = runtime.loadStatus(controller.signal).finally(() => { settled = true; });
+    const rejected = expect(loading).rejects.toMatchObject({ name: 'AbortError' });
+    try {
+      await Promise.race([cancelled.promise, loading]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+    } finally { releaseSibling.resolve(); }
+    await rejected;
+    expect(digests.mock.results.filter((result) => result.value === active.snapshotDigest.slice('sha256:'.length))).toHaveLength(0);
+  });
+
+  it('shows an incompatible Active when the configured path also changed', async () => {
+    const value = await fixture(true);
+    await rewriteActiveCatalogCapabilities({ sourceId: 'local', env: value.env,
+      requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'] });
+    const config = await readCatalogSourcesConfigSnapshot(value.env);
+    const newPath = path.join(path.dirname(value.source), 'new-catalog');
+    await fs.copy(value.source, newPath);
+    await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: config.digest,
+      config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', path: newPath, primary: true }] } });
+    const home = await createTuiControllerDependencies(value.context).loadStatus(new AbortController().signal);
+    expect(home.payload.catalog.sources).toMatchObject([{ id: 'local', errorCode: 'catalogGenerationIdentityMismatch' }]);
+    expect(home.catalogGenerations).toMatchObject([{ sourceId: 'local', state: 'incompatible', errorCode: 'awCapabilityUnsupported' }]);
   });
   // Test Value Gate: an exact root removal must retain the reviewed dependency cleanup after the last declaration is removed.
   it('removes an exact last Native root and deactivates its orphan dependency while preserving shared packages', async () => {
@@ -240,6 +328,271 @@ describe('scoped TUI production reads', () => {
         expect.objectContaining({ description: 'Content 2.0.0' }),
       ]));
       expect(await controller.getConfigPage('local/demo', { context: scope })).not.toEqual(config);
+    } finally { controller.dispose(); }
+  });
+
+  it('keeps Details, inventory and Review on the accepted Active after an older home read finishes', async () => {
+    const value = await fixture(true);
+    const configured = await readCatalogSourcesConfigSnapshot(value.env);
+    await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: configured.digest,
+      config: { ...configured.config, sources: [...configured.config.sources,
+        { id: 'alias', type: 'path', primary: false, path: value.source },
+      ] } });
+    await syncCatalogSourceGeneration({ sourceId: 'alias', env: value.env, cliVersion: '1.0.0' });
+    const host = new SessionHost({ createSession: () => ({
+      controller: new TuiController(createTuiControllerDependencies(value.context)), progressFeed: createRebuildProgressFeed(),
+    }) });
+    const controller = host.snapshot.controller;
+    const paused = pauseFirstCatalogStateRead(value.env);
+    const olderLoad = controller.load();
+    try {
+      await Promise.race([paused.entered, olderLoad.then(() => { throw new Error('Active read was not paused.'); })]);
+      await value.generation('2.0.0');
+      expect(await controller.reloadCatalog({ sourceId: 'local' })).toBe(true);
+      expect(controller.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('2.0.0');
+
+      paused.resume();
+      await olderLoad;
+      controller.push({ name: 'pluginDetail', pluginId: 'local/demo' });
+      await controller.loadPluginContent('local/demo');
+      expect(controller.getPluginContentOverview('local/demo')).toMatchObject({
+        pluginVersion: '2.0.0', items: [expect.objectContaining({ description: 'Content 2.0.0' })],
+      });
+      const configReview = await controller.buildOperationReview({
+        kind: 'configSave', pluginId: 'local/demo', scope: 'user', updates: { greeting: 'Updated greeting' },
+      });
+      expect(configReview.subject.version).toBe('2.0.0');
+      for (const scope of ['user', 'project'] as const) {
+        expect(await controller.refreshScopedInventory(scope)).toBe(true);
+        expect(controller.listScopedInventoryRoots(scope)).toMatchObject([{ pluginId: 'local/demo', state: 'pending' }]);
+      }
+
+      const review = await controller.prepareScopedTask({
+        kind: 'recovery', command: 'install', scope: 'user', selectors: ['local/demo'], targets: ['generic'],
+      });
+      try {
+        expect(review).toMatchObject({ kind: 'recovery', plan: {
+          blockExecution: false,
+          demand: { plugins: [expect.objectContaining({ manifest: expect.objectContaining({ version: '2.0.0' }) })] },
+          receipt: { requestedTargets: [
+            expect.objectContaining({ pluginId: 'local/demo', agent: 'generic', scope: 'user' }),
+            expect.objectContaining({ pluginId: 'local/demo', agent: 'generic', scope: 'project' }),
+          ] },
+        } });
+      } finally { await controller.discardScopedPlan(review); }
+
+      await value.generation('3.0.0');
+      expect(controller.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('2.0.0');
+      for (const selectors of [['local/demo'], ['alias/demo', 'local/demo']]) {
+        await expect(controller.prepareScopedTask({
+          kind: 'recovery', command: 'install', scope: 'user', selectors,
+        })).rejects.toMatchObject({ code: 'catalogSessionReloadRequired', message: expect.stringContaining('按 H') });
+      }
+      const healthy = await controller.prepareScopedTask({
+        kind: 'recovery', command: 'install', scope: 'project', selectors: ['alias/demo'],
+      });
+      try {
+        expect(healthy).toMatchObject({ kind: 'recovery', plan: { receipt: { requestedRoots: ['alias/demo'] },
+          demand: { plugins: expect.arrayContaining([expect.objectContaining({
+            pluginId: 'alias/demo', manifest: expect.objectContaining({ version: '1.0.0' }),
+          })]) } } });
+      } finally { await controller.discardScopedPlan(healthy); }
+      const missing = await controller.prepareScopedTask({
+        kind: 'recovery', command: 'install', scope: 'project', selectors: ['alias/missing'],
+      });
+      try {
+        expect(missing).toMatchObject({ kind: 'recovery', plan: { receipt: {
+          blockers: expect.arrayContaining([expect.objectContaining({ code: 'pluginUnavailable' })]),
+        } } });
+      } finally { await controller.discardScopedPlan(missing); }
+      expect(await host.requestNavigation('reload')).toBe('completed');
+      const next = host.snapshot.controller;
+      await next.load();
+      expect(next.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('3.0.0');
+      const refreshed = await next.prepareScopedTask({ kind: 'recovery', command: 'install', scope: 'user', selectors: ['local/demo'] });
+      try {
+        expect(refreshed).toMatchObject({ kind: 'recovery', plan: { blockExecution: false,
+          demand: { plugins: [expect.objectContaining({ manifest: expect.objectContaining({ version: '3.0.0' }) })] } } });
+      } finally { await next.discardScopedPlan(refreshed); }
+    } finally {
+      paused.resume();
+      await olderLoad;
+      paused.restore();
+      host.dispose();
+    }
+  });
+
+  // Test Value Gate: an alias can keep the same plugin ID while switching to a different workspace after Home loads.
+  it('requires reloading Home before reviewing an install from a replacement workspace', async () => {
+    const value = await fixture(true);
+    const controller = new TuiController(createTuiControllerDependencies(value.context));
+    const prepare = (selector: string) => controller.prepareScopedTask({
+      kind: 'recovery', command: 'install', scope: 'user', selectors: [selector],
+    });
+    try {
+      await controller.load();
+      expect(controller.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('1.0.0');
+
+      const replacement = path.join(path.dirname(value.source), 'replacement');
+      await fs.copy(path.join(value.source, 'plugins/demo/skills'), path.join(replacement, 'plugins/demo/skills'));
+      await createCatalogSnapshotFixture(replacement, 'demo', [], 'Replacement workspace', (manifest) => {
+        manifest.version = '2.0.0';
+        manifest.platforms = ['generic'];
+        manifest.skills = './skills';
+      });
+      const configured = await readCatalogSourcesConfigSnapshot(value.env);
+      await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: configured.digest,
+        config: { ...configured.config, sources: [{ id: 'local', type: 'path', primary: true, path: replacement }] },
+      });
+      await syncCatalogSourceGeneration({ sourceId: 'local', env: value.env, cliVersion: '1.0.0', impactConfirmed: true });
+
+      for (const selector of ['local/demo', 'demo']) {
+        const preparation = prepare(selector).then(async (review) => {
+          await controller.discardScopedPlan(review);
+          return review.kind === 'recovery' ? review.plan.receipt.blockers.map(({ code }) => code) : review.kind;
+        });
+        await expect(preparation).rejects.toMatchObject({
+          code: 'catalogSessionReloadRequired', message: expect.stringContaining('按 H'),
+        });
+      }
+      await controller.load();
+      expect(controller.getPluginDetailSubject('local/demo')?.plugin?.version).toBe('2.0.0');
+      for (const [selector, code] of [['local/demo', 'sourceIdentityConflict'], ['local/missing', 'pluginUnavailable']] as const) {
+        const review = await prepare(selector);
+        try {
+          expect(review).toMatchObject({ kind: 'recovery', plan: { receipt: {
+            blockers: expect.arrayContaining([expect.objectContaining({ code })]),
+          } } });
+        } finally { await controller.discardScopedPlan(review); }
+      }
+    } finally { controller.dispose(); }
+  });
+
+  it.each(['configuration', 'Active'] as const)('rebinds the catalog when %s changes during the first home read', async (change) => {
+    const value = await fixture(true);
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let armed = true;
+    value.context.debugLogger = { log: async (event) => {
+      if (armed && event.type === 'performance:stage' && event.data?.name === 'catalog.load') {
+        armed = false;
+        entered.resolve();
+        await resume.promise;
+      }
+    } };
+    const controller = new TuiController(createTuiControllerDependencies(value.context));
+    const loading = controller.load();
+    try {
+      await Promise.race([entered.promise, loading.then(() => { throw new Error('Generation view was not paused.'); })]);
+      const sourceId = change === 'configuration' ? 'alias' : 'local';
+      const version = change === 'configuration' ? '1.0.0' : '2.0.0';
+      if (change === 'configuration') {
+        const configured = await readCatalogSourcesConfigSnapshot(value.env);
+        await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: configured.digest,
+          config: { ...configured.config, sources: [...configured.config.sources,
+            { id: 'alias', type: 'path', primary: false, path: value.source },
+          ] } });
+        await syncCatalogSourceGeneration({ sourceId, env: value.env, cliVersion: '1.0.0' });
+      } else await value.generation(version);
+      resume.resolve();
+      await loading;
+      expect(controller.snapshot.phase).toBe('ready');
+      expect(controller.getCatalogGeneration(sourceId)?.state).toBe('ready');
+      expect(controller.getPluginDetailSubject(`${sourceId}/demo`)?.plugin?.version).toBe(version);
+      await controller.loadPluginContent(`${sourceId}/demo`);
+      expect(controller.getPluginContentOverview(`${sourceId}/demo`)).toMatchObject({ evidence: 'catalogBundle', pluginVersion: version });
+      expect(await controller.refreshScopedInventory('user')).toBe(true);
+    } finally {
+      resume.resolve();
+      await loading;
+      controller.dispose();
+    }
+  });
+
+  it('waits for the cancelled home read before loading the new session', async () => {
+    const value = await fixture(true);
+    const paused = pauseFirstCatalogStateRead(value.env);
+    const host = new SessionHost({ createSession: () => ({
+      controller: new TuiController(createTuiControllerDependencies(value.context)),
+      progressFeed: createRebuildProgressFeed(),
+    }) });
+    const first = host.snapshot.controller;
+    const loading = first.load();
+    try {
+      await Promise.race([paused.entered, loading.then(() => { throw new Error('Active read was not paused.'); })]);
+      const draft = { kind: 'sourceDraft' as const, owner: 'local', revision: 1 };
+      first.setExternalDraftState([draft]);
+      expect(await host.requestNavigation('reload')).toBe('draftBlocked');
+      expect(first.externalDrafts).toEqual([draft]);
+      const reload = host.requestNavigation('reload', { discardDrafts: true, draftConfirmation: [draft] });
+      expect(host.snapshot).toMatchObject({ epoch: 1, reloading: true });
+      await value.generation('2.0.0');
+      expect(host.snapshot).toMatchObject({ epoch: 1, reloading: true });
+      paused.resume();
+      expect(await reload).toBe('completed');
+      expect(host.snapshot.epoch).toBe(2);
+      const next = host.snapshot.controller;
+      await next.load();
+      await next.loadPluginContent('local/demo');
+      expect(next.getPluginContentOverview('local/demo')?.pluginVersion).toBe('2.0.0');
+    } finally {
+      paused.resume();
+      await loading;
+      paused.restore();
+      host.dispose();
+    }
+  });
+
+  it('keeps both aliases of one Store usable when another source is damaged', async () => {
+    const value = await fixture(true);
+    const damagedSource = path.join(path.dirname(value.source), 'damaged');
+    await createCatalogSnapshotFixture(damagedSource);
+    const configured = await readCatalogSourcesConfigSnapshot(value.env);
+    await replaceCatalogSourcesConfig({ env: value.env, expectedDigest: configured.digest,
+      config: { ...configured.config, sources: [...configured.config.sources,
+        { id: 'alias', type: 'path', primary: false, path: value.source },
+        { id: 'damaged', type: 'path', primary: false, path: damagedSource },
+      ] } });
+    for (const sourceId of ['alias', 'damaged']) {
+      await syncCatalogSourceGeneration({ sourceId, env: value.env, cliVersion: '1.0.0' });
+    }
+    const { sources } = await readCatalogGenerationState(value.env);
+    expect(sources.alias!.active?.snapshotDigest).toBe(sources.local!.active?.snapshotDigest);
+    expect(sources.alias!.active?.logicalIdentity).toBe(sources.local!.active?.logicalIdentity);
+    await addRoot({ ...value, scope: 'user' }, 'damaged/demo', sources.damaged!.active!.logicalIdentity);
+    await addRoot({ ...value, scope: 'project' }, 'alias/demo', sources.alias!.active!.logicalIdentity);
+    await removeRoot({ ...value, scope: 'project' }, 'local/demo');
+    const dependencies = createTuiControllerDependencies(value.context);
+    const controller = new TuiController(dependencies);
+    try {
+      await controller.load();
+      const local = controller.getCatalogGeneration('local')?.active;
+      expect(local).toBeDefined();
+      expect(controller.getCatalogGeneration('alias')?.active?.storeKey).toBe(local?.storeKey);
+      expect(controller.getCatalogGeneration('damaged')?.state).toBe('ready');
+      const { snapshotRoot } = resolveCatalogStoreLocation({ ...sources.damaged!.active!, env: value.env });
+      await fs.writeFile(path.join(snapshotRoot, 'plugins/demo/README.md'), 'Demo\n');
+      // A source mutation may retain the previous session's healthy entries.
+      dependencies.beginCatalogSession!({ reuseValidatedGenerations: true });
+      const reloaded = await dependencies.loadStatus(new AbortController().signal);
+      expect(reloaded.catalogGenerations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceId: 'damaged', state: 'repairRequired', errorCode: 'catalogGenerationMetadataInvalid' }),
+        expect.objectContaining({ sourceId: 'alias', state: 'ready' }),
+        expect.objectContaining({ sourceId: 'local', state: 'ready' }),
+      ]));
+      expect(await controller.reloadCatalog({ sourceId: 'damaged' })).toBe(true);
+      expect(controller.getCatalogGeneration('damaged')).toMatchObject({
+        state: 'repairRequired', errorCode: 'catalogGenerationMetadataInvalid',
+      });
+      expect(controller.getCatalogGeneration('local')?.state).toBe('ready');
+      expect(controller.getCatalogGeneration('alias')?.state).toBe('ready');
+      expect(controller.listScopedInventoryRoots('user')).toEqual(expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'damaged/demo', state: 'blocked', blockers: [
+          expect.objectContaining({ code: 'sourceActiveUnavailable' }),
+        ] }),
+        expect.objectContaining({ pluginId: 'local/demo', state: 'pending' }),
+      ]));
+      expect(controller.listScopedInventoryRoots('project')).toMatchObject([{ pluginId: 'alias/demo', state: 'pending' }]);
     } finally { controller.dispose(); }
   });
 

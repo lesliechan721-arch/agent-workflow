@@ -23,7 +23,9 @@ import { bindNativeCliRunnerSignal, getDefaultNativeCliRunner, prepareNativeCliE
 import { portableRecoveryLayout, type PortableAgent } from '../portable/recovery-layout.js';
 import { canonicalizePathThroughExistingAncestor, resolveClaudeProjectKey, resolveCodexProjectKey } from '../utils/state-paths.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import type { CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
+import { CatalogPreparationReadScope, type CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
+import { createCatalogPreparationStoreKey } from '../utils/catalog-generation-resolver.js';
 import {
   activateCatalogSourceGeneration,
   probeCatalogSourceGeneration,
@@ -75,6 +77,8 @@ export interface RecoveryOptions {
   preferences?: DeploymentPreferences;
   /** Read-only candidate context used before first-source activation. */
   catalogOperationContext?: import('../utils/catalog-operation-context.js').CatalogOperationContext;
+  /** Compare the selected install sources before preparing deployment previews. */
+  checkInstallCatalog?: (catalog: CatalogOperationContext | undefined, roots: readonly string[]) => void;
   signal?: AbortSignal;
   scope?: Scope;
   context?: Scope;
@@ -1043,6 +1047,51 @@ export async function activateRecoverySourcesAndReprepare(
   }
 }
 
+function portablePrewriteBinding(context: CatalogOperationContext | undefined, sourceId: string): string | undefined {
+  const source = context?.catalog.sources[0]?.resolution;
+  const generation = context?.generationSet.sources[0];
+  if (!context || context.catalog.sources.length !== 1 || context.generationSet.sources.length !== 1
+    || !source || !generation || source.sourceId !== sourceId || generation.sourceId !== sourceId
+    || source.rootDir !== generation.snapshotPath || source.sourceIdentity !== generation.sourceIdentity
+    || source.logicalIdentity !== generation.logicalIdentity || source.resolvedCommit !== generation.resolvedCommit
+    || source.manifestDigest !== generation.manifestDigest || source.snapshotDigest !== generation.snapshotDigest) return;
+  return JSON.stringify([context.generationSetDigest,
+    createCatalogPreparationStoreKey({ ...generation, requestedRef: source.requestedRef })]);
+}
+
+async function recheckPortableRecovery(plan: RecoveryPlan): Promise<RecoveryDiagnostic | undefined> {
+  const inspections = [
+    ...plan.portableGroups.filter(({ options }) => !options.agents.every((agent) => pair(plan, options.selector, agent)!.blockers.length)),
+    ...plan.portableProtectionGroups,
+  ];
+  const sourceId = inspections.length > 1 && plan.command === 'sync' && !plan.nativeGroups.length
+    ? parsePluginId(inspections[0]!.options.selector).sourceId : undefined;
+  const reviewed = sourceId && portablePrewriteBinding(inspections[0]!.options.catalogOperationContext, sourceId);
+  let readScope: CatalogPreparationReadScope | undefined;
+  let current: CatalogOperationContext | undefined;
+  if (sourceId && reviewed && inspections.every(({ options, mode }) => mode === 'deploy' && !options.cleanup
+    && options.agents.length === 1 && options.agents[0] === 'generic'
+    && parsePluginId(options.selector).sourceId === sourceId
+    && portablePrewriteBinding(options.catalogOperationContext, sourceId) === reviewed)) {
+    // The child plan may have borrowed a previously bound Active. Rebind under
+    // the lock for this read-only loop and leave later script and writer checks fresh.
+    readScope = new CatalogPreparationReadScope({ env: plan.context.env });
+    try {
+      current = await readScope.resolve({ sourceIds: [sourceId] }, true);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      return { ...diagnostic('operationReviewStale'), subject: { sourceId },
+        detail: { reasonCode: error instanceof CatalogGenerationError ? error.code : 'catalogReadFailed' } };
+    }
+    if (portablePrewriteBinding(current, sourceId) !== reviewed) return diagnostic('operationReviewStale');
+  }
+  for (const prepared of inspections) {
+    const checked = await inspectPortableRecovery(current
+      ? { ...prepared.options, catalogOperationContext: current } : prepared.options, readScope);
+    if (checked.evidenceDigest !== prepared.evidenceDigest) return diagnostic('operationReviewStale');
+  }
+}
+
 export async function executeScopedRecovery(plan: RecoveryPlan,
   execution: { yes?: boolean; runtime?: RebuildCommandRuntime } = {}): Promise<RecoveryReceipt> {
   if (plan.sourceRefreshes.length > 0) {
@@ -1114,20 +1163,10 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
               nativeRuntime, group.command, executable);
         executableNativeGroups.push({ ...group, ...selection, preview });
       }
-      for (const prepared of plan.portableGroups) {
-        if (prepared.options.agents.every((agent) => pair(plan, prepared.options.selector, agent)!.blockers.length)) continue;
-        const checked = await inspectPortableRecovery(prepared.options);
-        if (checked.evidenceDigest !== prepared.evidenceDigest) {
-          receipt.blockers.push(diagnostic('operationReviewStale'));
-          return completeReceipt(receipt);
-        }
-      }
-      for (const prepared of plan.portableProtectionGroups) {
-        const checked = await inspectPortableRecovery(prepared.options);
-        if (checked.evidenceDigest !== prepared.evidenceDigest) {
-          receipt.blockers.push(diagnostic('operationReviewStale'));
-          return completeReceipt(receipt);
-        }
+      const portableBlocker = await recheckPortableRecovery(plan);
+      if (portableBlocker) {
+        receipt.blockers.push(portableBlocker);
+        return completeReceipt(receipt);
       }
       for (const residue of plan.portableResidues) {
         const checked = await inspectPortableResidue({ scope: plan.options.scope, context: plan.context,

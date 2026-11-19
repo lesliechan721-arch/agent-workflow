@@ -326,6 +326,7 @@ export class PlatformRebuildSession {
     currentFingerprint: string;
     publication?: Promise<void>;
   }>();
+  private closedObservationBatch?: RebuildExecutionContext['nativeObservationBatch'];
   private staging?: Promise<string>;
   constructor(private context: RebuildExecutionContext,
     private readonly adapterFor: typeof getAgentPluginAdapter = getAgentPluginAdapter) {}
@@ -349,10 +350,12 @@ export class PlatformRebuildSession {
     return ctx;
   }
   private ordinaryReadContext(ctx: ReadContext, platform: TargetInput['platform']): ReadContext {
-    // By the time a writable target is recorded, a renderer or a fresh
-    // evidence check may have run. End the earlier observation batch there.
-    const batch = this.targets.size === 0 && platform !== 'codex' ? this.context.nativeObservationBatch : undefined;
-    return batch ? { ...ctx, ...batch } : ctx;
+    const batch = this.context.nativeObservationBatch;
+    // A locked re-Review starts its own observation batch. Cached targets of
+    // the earlier Review do not close the new batch before its first build.
+    const open = platform === 'pi'
+      ? batch !== this.closedObservationBatch : this.targets.size === 0 && platform !== 'codex';
+    return open && batch ? { ...ctx, ...batch } : ctx;
   }
   async dispose(): Promise<void> {
     for (const result of await Promise.allSettled(this.units.values())) if (result.status === 'fulfilled') await result.value.finalized.cleanup();
@@ -541,6 +544,9 @@ export class PlatformRebuildSession {
       target = this.build(input, (check) => { verifyInitial = check; });
       this.targets.set(key, target);
     }
+    // A writable build or cached-target verification ends ordinary sharing,
+    // before any renderer, plan verification or mutation can consume it.
+    if (this.context.nativeObservationBatch) this.closedObservationBatch = this.context.nativeObservationBatch;
     const result = await target;
     if (verifyInitial) await verifyInitial();
     else await result.platformDeployment?.verify();

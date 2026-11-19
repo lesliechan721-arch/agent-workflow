@@ -1,5 +1,6 @@
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { resolveActiveCatalogGeneration } from '../utils/catalog-generation-resolver.js';
+import type { CatalogOperationContext, CatalogPreparationReadScope } from '../utils/catalog-operation-context.js';
 import { readCatalogGenerationStatus } from '../utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import {
@@ -41,11 +42,14 @@ function shortDigest(value: string): string {
 
 export async function loadCatalogGenerationViewModels(options: {
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  preparation?: { scope: CatalogPreparationReadScope; context?: CatalogOperationContext };
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
   onStage?: (event: CatalogGenerationLoadStageEvent) => void | Promise<void>;
   now?: () => number;
 } = {}): Promise<CatalogSourceGenerationViewModel[]> {
+  options.signal?.throwIfAborted();
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now;
   const reportStage = async (event: CatalogGenerationLoadStageEvent): Promise<void> => {
@@ -60,20 +64,25 @@ export async function loadCatalogGenerationViewModels(options: {
     durationMs: Math.max(0, now() - contextStartedAt),
     sourceCount: sources.length,
   });
+  options.signal?.throwIfAborted();
   let fullValidationCount = 0;
   let reusedValidationCount = 0;
   const validationStartedAt = now();
-  const viewModels = await Promise.all(sources.map(async (source): Promise<CatalogSourceGenerationViewModel> => {
+  const sourceReads = sources.map(async (source): Promise<CatalogSourceGenerationViewModel> => {
     const instruction = `aw source sync ${source.id}`;
     const wasValidated = options.validatedStoreEntries?.size ?? 0;
     try {
-      const active = await resolveActiveCatalogGeneration({
+      const prepared = options.preparation && await options.preparation.scope.resolveActiveGeneration(
+        source.id, options.preparation.context?.catalog.sources.find((item) => item.sourceId === source.id)?.resolution,
+      );
+      const active = prepared?.active ?? await resolveActiveCatalogGeneration({
         sourceId: source.id,
         env,
         validatedStoreEntries: options.validatedStoreEntries,
         validatingStoreEntries: options.validatingStoreEntries,
       });
-      if ((options.validatedStoreEntries?.size ?? 0) > wasValidated) fullValidationCount += 1;
+      if (prepared) options.validatedStoreEntries?.set(active.storeKey, prepared.sessionEntry);
+      if (prepared ? !prepared.reused : (options.validatedStoreEntries?.size ?? 0) > wasValidated) fullValidationCount += 1;
       else reusedValidationCount += 1;
       return {
         sourceId: source.id,
@@ -91,6 +100,7 @@ export async function loadCatalogGenerationViewModels(options: {
         technicalCommand: instruction,
       };
     } catch (error) {
+      options.signal?.throwIfAborted();
       let errorCode = error instanceof CatalogGenerationError
         ? error.code
         : 'catalogGenerationUnavailable';
@@ -99,14 +109,16 @@ export async function loadCatalogGenerationViewModels(options: {
       const sourceState = await readCatalogGenerationState(env)
         .then((value) => value.sources[source.id])
         .catch(() => undefined);
+      options.signal?.throwIfAborted();
       const statusEntry = await readCatalogGenerationStatus({
         sourceId: source.id,
         env,
-        validatedStoreEntries: options.validatedStoreEntries,
-        validatingStoreEntries: options.validatingStoreEntries,
+        validatedStoreEntries: options.preparation ? undefined : options.validatedStoreEntries,
+        validatingStoreEntries: options.preparation ? undefined : options.validatingStoreEntries,
       })
         .then((status) => status.sources[0])
         .catch(() => undefined);
+      options.signal?.throwIfAborted();
       const compatibility = statusEntry?.compatibility ?? null;
       if (
         compatibility?.state === 'unsupported'
@@ -129,6 +141,7 @@ export async function loadCatalogGenerationViewModels(options: {
             digestShort: shortDigest(statusEntry.active.snapshotDigest),
           },
           errorCode: 'awCapabilityUnsupported',
+          ...(!statusEntry.configMatchesActive ? { configMismatch: true } : {}),
           state: 'incompatible',
           compatibility,
           technicalCommand: instruction,
@@ -138,6 +151,7 @@ export async function loadCatalogGenerationViewModels(options: {
         && (sourceState!.active!.sourceConfigFingerprint
             !== calculateCatalogSourceConfigFingerprint(source)
           || sourceState!.active!.sourceIdentity !== await calculateCatalogSourceIdentity(source));
+      options.signal?.throwIfAborted();
       const activeEntryDamaged = sourceState?.active
         ? await readCatalogStoreEntry({
             logicalIdentity: sourceState.active.logicalIdentity,
@@ -172,7 +186,13 @@ export async function loadCatalogGenerationViewModels(options: {
         technicalCommand: instruction,
       };
     }
-  }));
+  });
+  const viewModels = await Promise.all(sourceReads).catch(async (error: unknown) => {
+    // Session reload waits for reads that already started on sibling sources.
+    await Promise.allSettled(sourceReads);
+    throw error;
+  });
+  options.signal?.throwIfAborted();
   await reportStage({
     name: 'catalog.validation',
     durationMs: Math.max(0, now() - validationStartedAt),

@@ -90,9 +90,9 @@ generic 的准备 generation 同样保留来源绑定中的完整 unmet。只有
 
 ### 3.1 只读观察
 
-TUI 安装在准备 Review 和取得写锁后各自校验当前 Active Catalog。同一阶段内，来源绑定、store 实际根和快照身份均匹配的消费者可共用整树摘要校验。每个根仍由 Core 校验自己的条目和依赖闭包。首次发布 Portable 准备产物，在提交 staging 前独立校验来源。联合安装写完后，最终状态重新读取当前 Active，User 和 Project 的各根共享同一来源、同一代的整树验证。写入前提供的旧 Store 即使仍然完整，也要与当前来源重新核对。若无法确认本次目标的最终状态，回执保留已完成的写入，并给出当前上下文的只读 status 命令。
+TUI 安装在准备 Review 和取得写锁后各自校验当前 Active Catalog。同一阶段内，来源绑定、store 实际根和快照身份均匹配的消费者可共用整树摘要校验。每个根仍由 Core 校验自己的条目和依赖闭包。锁内执行 generic 子计划时，如果安装组和保护组在同一段只读检查中引用同一来源与同一代，先重新绑定当前 Active，再逐组核对目标文件与归属。若此时发现变化，回执保留联合操作已经保存的声明和已完成的目标。首次发布 Portable 准备产物，在提交 staging 前独立校验来源。联合安装写完后，最终状态重新读取当前 Active，User 和 Project 的各根共享同一来源、同一代的整树验证。写入前提供的旧 Store 即使仍然完整，也要与当前来源重新核对。若无法确认本次目标的最终状态，回执保留已完成的写入，并给出当前上下文的只读 status 命令。
 
-安装准备最初的状态读取与首个原生组的普通观察可以共用等价的入口发现和原生清单。原生组在渲染后建立现场基线、返回计划前复核、再次命中已建目标及联合准备刷新预览时，分别读取现场；具体平台的单目标例外见下文。Codex 继续使用专属 marketplace 查询会话。
+安装准备最初的状态读取与首个原生组的普通观察可以共用等价的入口发现和原生清单。Pi 在锁内重审时重新读取清单，位置核对可共用本轮同作用域的结果。进入首个可写目标或复核已建目标时结束这次复用。原生组在渲染后建立现场基线、返回计划前复核、再次命中已建目标及联合准备刷新预览时，分别读取现场；具体平台的单目标例外见下文。Codex 继续使用专属 marketplace 查询会话。
 
 状态只运行固定有界 probe，不启动模型、preApply 或 renderer，不安装工具、不更新来源、不修改信任。User 查询使用隔离 neutral cwd，Project 查询绑定精确项目。Codex 使用 scoped plugin list；Claude 使用 plugin list 和 marketplace list；Copilot 使用对应原生清单的 enabled；Gemini 使用经结构校验的 extensions list --output-format json 的 stderr JSON 清单和当前 workspace isActive，stdout 必须为空白；无效结构或两流冲突保持 unknown；Grok 使用 list/inspect 的各自字段。Pi list 仅提供可见包与 scope，activation 保持 unknown。缺少 Project 段时，该范围的登记保持未确认。所有清单均不提升为模型采用证据。Codex private cache 不进入删除授权。
 

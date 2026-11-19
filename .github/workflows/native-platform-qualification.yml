@@ -74,7 +74,6 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         runner: ${{ fromJSON(inputs.hosts == 'windows-x64-and-macos-x64' && '["windows-2025","macos-15-intel"]' || github.event.label.name == 'native-qualification-antigravity-user-remaining' && '["macos-15","windows-2025","windows-11-arm"]' || (inputs.hosts == 'windows-x64-and-arm64' || github.event.label.name == 'native-qualification-antigravity-user-windows') && '["windows-2025","windows-11-arm"]' || '["ubuntu-24.04","ubuntu-24.04-arm","macos-15-intel","macos-15","windows-2025","windows-11-arm"]') }}
     runs-on: ${{ matrix.runner }}

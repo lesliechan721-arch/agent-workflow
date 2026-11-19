@@ -7,6 +7,7 @@ import { CatalogGenerationError } from './catalog-generation-error.js';
 import {
   calculateCatalogGenerationSetDigest,
   createCatalogPreparationStoreKey,
+  resolveActiveCatalogGeneration,
   resolveCatalogGenerationSet,
 } from './catalog-generation-resolver.js';
 import {
@@ -42,7 +43,7 @@ export class CatalogPreparationReadScope {
   readonly #validatedStoreEntries = new Map<string, CatalogStoreEntry>();
   readonly #validatingStoreEntries = new Map<string, Promise<CatalogStoreEntry>>();
   readonly #bindings = new WeakMap<CatalogSourceResolution,
-    Pick<CatalogSourceResolution, 'sourceId' | 'sourceIdentity' | 'requestedRef' | 'resolvedCommit'> & { entry: CatalogStoreEntry }>();
+    Pick<CatalogSourceResolution, 'sourceId' | 'sourceIdentity' | 'requestedRef' | 'resolvedCommit'> & { key: string; entry: CatalogStoreEntry }>();
 
   constructor(options: { env?: NodeJS.ProcessEnv; signal?: AbortSignal }) {
     this.#options = { env: options.env, signal: options.signal };
@@ -61,10 +62,26 @@ export class CatalogPreparationReadScope {
       const resolution = context.catalog.sources.find((source) => source.sourceId === generation.sourceId)?.resolution;
       if (!resolution) continue;
       const { sourceId, sourceIdentity, requestedRef, resolvedCommit } = resolution;
-      const entry = this.#validatedStoreEntries.get(createCatalogPreparationStoreKey({ ...generation, requestedRef }));
-      if (entry) this.#bindings.set(resolution, { sourceId, sourceIdentity, requestedRef, resolvedCommit, entry });
+      const key = createCatalogPreparationStoreKey({ ...generation, requestedRef });
+      const entry = this.#validatedStoreEntries.get(key);
+      if (entry) this.#bindings.set(resolution, { sourceId, sourceIdentity, requestedRef, resolvedCommit, key, entry });
     }
     return context;
+  }
+
+  async resolveActiveGeneration(sourceId: string, previousResolution?: CatalogSourceResolution) {
+    this.#options.signal?.throwIfAborted();
+    const previous = previousResolution && this.#bindings.get(previousResolution);
+    const entries = new Map<string, CatalogStoreEntry>(previous && [[previous.key, previous.entry]]);
+    const active = await resolveActiveCatalogGeneration({
+      sourceId, env: this.#options.env, validatedStoreEntries: entries, reuseTransport: true,
+    });
+    this.#options.signal?.throwIfAborted();
+    const key = createCatalogPreparationStoreKey({ ...active, requestedRef: active.active.requestedRef });
+    const entry = entries.get(key)!;
+    // The session's physical Store cache must not retain this attempt's transport validator.
+    const { validateEntries: _validateEntries, ...sessionEntry } = entry;
+    return { active, sessionEntry, reused: entry === previous?.entry };
   }
 
   static async validateEntries(readScope: CatalogPreparationReadScope | undefined, source: CatalogSourceResolution,
