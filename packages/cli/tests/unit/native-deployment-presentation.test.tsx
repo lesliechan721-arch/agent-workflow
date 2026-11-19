@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NATIVE_PLATFORM_TARGETS } from '@lesliechan721/aw-plugin-core/manifest';
 import type { FrozenDeploymentPlan, DeploymentReceipt, DeploymentExclusion } from '../../src/platforms/contracts.js';
 import type { RecoveryTarget } from '../../src/recovery/receipt.js';
-import { receiptResult, type LifecycleData } from '../../src/commands/public-lifecycle-result.js';
+import { projectDeploymentReceipt, receiptResult, type LifecycleData } from '../../src/commands/public-lifecycle-result.js';
+import type { Diagnostic } from '../../src/output/public-result.js';
 import { projectReceipt } from '../../src/output/receipt-projection.js';
 import { renderPublicResult } from '../../src/output/public-result.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
@@ -11,7 +12,7 @@ import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { controller, deferred, loadResult, scopedPlan, scopedReceipt, type ScopedTaskRequest } from '../helpers/tui-console-app-fixture.js';
 import { focusAction, input, nextTurn } from '../helpers/tui-console-app-input.js';
 import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
-import { deploymentObservationLines } from '../../src/tui/deployment-view.js';
+import { deploymentObservationLines, deploymentResultLines } from '../../src/tui/deployment-view.js';
 
 afterEach(cleanup);
 
@@ -57,6 +58,41 @@ function target(plan: FrozenDeploymentPlan): RecoveryTarget {
 }
 
 describe('native deployment public and TUI consumers', () => {
+  // A host grants permission to the physical dependency; the TUI must retry the declared root in the pending scope.
+  it.each(['grok', 'gemini'] as const)('shows the native source and a scope-safe recovery action for %s dependencies', (agent) => {
+    const scope = agent === 'grok' ? 'user' : 'project';
+    const rootId = 'official/agent-lab';
+    const providerId = 'official/provider';
+    const receipt = scopedReceipt({ kind: 'recovery', scope, selectors: [rootId], targets: [agent] });
+    receipt.reviewedUserRoots = [rootId];
+    const root: RecoveryTarget = { pluginId: rootId, agent, scope, delivery: { kind: 'native', platform: agent },
+      relation: 'root', execution: 'not-run', observation: 'missing', blockers: [], requiredBy: [] };
+    const provider: RecoveryTarget = { ...root, pluginId: providerId, relation: 'dependency', execution: 'failed', requiredBy: [rootId],
+      contributions: [{ root: rootId, scope, path: [rootId, providerId] }] };
+    receipt.targetResults = [provider, root];
+    receipt.remainingTargets = [provider, root];
+    const subject: NonNullable<Diagnostic['subject']> = { pluginId: providerId, target: agent, scope };
+    const nativeSource: Diagnostic = { code: agent === 'grok' ? 'grokNativeInstallRecovery' : 'nativeConsentRequired',
+      message: 'Native permission is pending.', severity: 'error', subject: { ...subject, field: 'nativeSource' },
+      detail: { reasonCode: agent === 'grok' ? 'grokNativeInstallSource' : 'geminiNativeConsentSource', path: '/isolated/frozen-provider' } };
+    const workspace: Diagnostic = { code: 'nativeConsentWorkspace', message: 'Inspect workspace trust.', severity: 'warning',
+      subject: { ...subject, field: 'workspace' }, detail: { reasonCode: 'geminiNativeConsentWorkspace', path: '/isolated/current-workspace' } };
+    const deploymentReceipt = target(deployment()).deploymentReceipts![0]!;
+    deploymentReceipt.effects[0]!.diagnostics = [nativeSource];
+    deploymentReceipt.diagnostics = agent === 'gemini' ? [nativeSource, workspace] : [];
+    const details = deploymentResultLines([projectDeploymentReceipt(deploymentReceipt, { receipt, target: provider })], true).join('\n');
+    expect(details.match(/\/isolated\/frozen-provider/gu)).toHaveLength(1);
+    expect(details).not.toContain(`sync ${providerId}`);
+    if (agent === 'grok') {
+      expect(details).toContain('--trust');
+      expect(details).toContain(`aw plugin sync ${rootId} --context user --target grok`);
+    } else {
+      expect(details).toContain('/isolated/current-workspace');
+      expect(details).toContain(`review only the Project location for ${rootId} on gemini`);
+      expect(details).not.toContain(`sync ${rootId}`);
+    }
+  });
+
   // Test Value Gate: local declarations can disagree with effective native state;
   // both facts must survive the public receipt and human presentation.
   it('shows a local declaration separately from the native effective state', () => {

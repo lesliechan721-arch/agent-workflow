@@ -139,7 +139,8 @@ describe('Gemini shared extension activation', () => {
     expect(receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'nativeConsentWorkspace',
       subject: expect.objectContaining({ field: 'workspace' }), detail: { reasonCode: 'geminiNativeConsentWorkspace',
         path: item.binding.scope.kind === 'project' ? item.binding.scope.projectRoot : item.ctx.cwd } }));
-    expect(diagnostic?.message).toContain('test/demo --context project --target gemini');
+    expect(diagnostic?.message).toContain('Review each host permission');
+    expect(diagnostic?.message).not.toContain('aw plugin sync');
     expect(diagnostic?.message).not.toContain('--consent');
     expect(item.runner.mock.calls.filter(([invocation]) => invocation.args[1] !== 'list')).toEqual([]);
     expect(await fs.readFile(path.join(item.installed, 'skills/demo/SKILL.md'), 'utf8')).toBe('Revision 2.\n');

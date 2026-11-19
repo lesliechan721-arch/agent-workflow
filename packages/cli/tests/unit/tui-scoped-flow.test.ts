@@ -8,6 +8,7 @@ import { executeIntentPlan, executeTargetsPlan,
   prepareIntentPlan, prepareTargetsPlan, projectScopedRecoveryHistory } from '../../src/tui/scoped-flow.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { OperationHistoryStore } from '../../src/tui/operation-history.js';
+import { operationDiagnosticText } from '../../src/tui/operation-diagnostic-screens.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('scoped TUI plan physical target', () => {
@@ -117,7 +118,7 @@ it('exports one recovery command for both unfinished scopes and keeps the succes
       { ...provider, relation: 'dependency', requiredBy: ['team/b'], execution: 'not-run', observation: 'unknown', blockers: [stale],
         contributions: roots.map(({ pluginId, scope }) => ({ root: pluginId, scope, path: [pluginId, provider.pluginId] })) },
       ...roots.map((root) => ({ ...root, relation: 'root' as const, execution: 'not-run' as const, observation: 'unknown' as const,
-        requiredBy: [root.pluginId], blockers: [{ code: 'dependencyApplyFailed', message: 'Provider is incomplete.' }] })),
+        requiredBy: [root.pluginId], blockers: [stale] })),
     ],
   };
   const store = new OperationHistoryStore();
@@ -126,6 +127,20 @@ it('exports one recovery command for both unfinished scopes and keeps the succes
   expect(record.diagnostics.find((diagnostic) => diagnostic.target?.pluginId === provider.pluginId)?.detailLines)
     .toEqual(['aw plugin status --context project --json', 'aw plugin sync team/b --context project --target generic']);
   expect(record.targets.find((target) => target.pluginId === kept.pluginId)).toMatchObject({ state: 'kept', diagnosticIds: [] });
-  const exported = store.preview('joint-scopes')?.content;
-  expect(exported?.match(/aw plugin sync [^\n]+/g)).toEqual(['aw plugin sync team/b --context project --target generic']);
+  const status = 'aw plugin status --context project --json';
+  const sync = 'aw plugin sync team/b --context project --target generic';
+  expect(record.diagnostics.filter((entry) => entry.code === stale.code).map((entry) => entry.detailLines))
+    .toEqual([[status, sync], [status, sync], [status, sync]]);
+  for (const text of [store.preview('joint-scopes')!.content, operationDiagnosticText(record)]) {
+    expect(text.match(/aw plugin sync [^\n]+/g)).toEqual([sync]);
+    expect(text.split(status)).toHaveLength(2);
+  }
+
+  const ended: RecoveryReceipt = { ...receipt, errors: [{ code: 'statusUnavailable', message: 'Final inventory read failed.' }],
+    remainingTargets: [], targetResults: [{ ...kept, execution: 'applied', observation: 'verified', requiredBy: [], blockers: [] }],
+    outputsMayHaveChanged: true, recoveryActions: [status] };
+  store.record(projectScopedRecoveryHistory(ended, { recordId: 'final-read', epoch: 0, operationId: 'install', createdAtMs: 1 }));
+  expect(store.get('final-read')?.diagnostics).toMatchObject([{ code: 'statusUnavailable', detailLines: [status] }]);
+  expect(store.preview('final-read')?.content).toContain(status);
+  expect(store.preview('final-read')?.content).not.toContain('aw plugin sync');
 });

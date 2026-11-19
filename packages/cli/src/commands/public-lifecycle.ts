@@ -188,6 +188,25 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
     data.confirmation = { required: effects.length > 0, provided: options.yes === true, effects };
     return !effects.length || options.yes === true;
   };
+  const confirmationRequired = (receipt?: RecoveryReceipt): CommandResult<LifecycleData> => {
+    const result = receipt ? receiptResult(id, data, receipt) : commandResult(id, data);
+    result.status = Object.values(data.changes).some((value) => value !== 'none') ? 'partial' : 'blocked';
+    result.diagnostics.push(publicDiagnostic('confirmationRequired'));
+    if (command === 'remove') return result;
+
+    const argv = ['aw', 'plugin', command, ...plugins];
+    if (command === 'install' && scope) argv.push('--scope', scope);
+    if (options.context) argv.push('--context', options.context);
+    for (const target of argumentsTargets ?? []) argv.push('--target', target);
+    if (options.only) argv.push('--only', options.only);
+    if (options.refresh) argv.push('--refresh');
+    if (options.rebuild) argv.push('--rebuild');
+    if (timeout !== undefined) argv.push('--script-timeout', String(timeout));
+    if (options.nativeConsent) argv.push('--native-consent');
+    result.nextActions = [{ kind: 'command', argv, requiresConfirmation: true,
+      reason: 'Review the listed effects, then repeat this request from the same directory with --yes to confirm.' }];
+    return result;
+  };
   const runtime: RebuildCommandRuntime = { ...context, directCli: true, nativeConsent: options.nativeConsent === true };
   const recovery: RecoveryOptions = { ...location, scope, context: work.context, signal: context.signal, cliVersion: options.cliVersion, targets: selected ? targets : undefined, yes: options.yes, force: options.force, keepDependencies: options.keepDependencies, scriptTimeoutMs: timeout, interactive: false };
   try {
@@ -201,7 +220,11 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
       const result = blocked('noTargetsEnabled'); result.nextActions.push({ kind: 'command', argv: ['aw', 'target', 'set', '<target>'], reason: 'Enable deployment targets.', requiresConfirmation: false }); return result;
     }
     const applyPlan = async (plan: RecoveryPlan, extra: Confirmation['effects'] = []): Promise<CommandResult<LifecycleData>> => {
-      if (!confirm([...effectsForPlan(plan), ...extra])) { const result = receiptResult(id, data, plan.receipt); result.status = Object.values(data.changes).some((value) => value !== 'none') ? 'partial' : 'blocked'; result.diagnostics.push(publicDiagnostic('confirmationRequired')); await plan.context.dispose(); return result; }
+      if (!confirm([...effectsForPlan(plan), ...extra])) {
+        const result = confirmationRequired(plan.receipt);
+        await plan.context.dispose();
+        return result;
+      }
       receiptResult(id, data, plan.receipt);
       try {
         const receipt = await executeRecovery(plan, { yes: options.yes, runtime });
@@ -357,12 +380,16 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
       if (options.only === 'requirements') {
         const proposed = await addRequirements({ ...location, selectors: plugins, installSelectors: true, dryRun: true, catalogOperationContext: catalog, catalogReadScope });
         if (proposed.errors.length) return receiptResult(id, data, await intentReceipt('install', location, { ...proposed, changed: false }));
-        if (!confirm(sourceEffects)) return blocked('confirmationRequired');
+        if (!confirm(sourceEffects)) return withSourceFailures(confirmationRequired());
       } else {
         preview = await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), preparedOptions, { ...runtime, catalogReadScope });
         reviewedRoots = preview.joint?.demand.roots;
         if (preview.blockExecution) { const result = receiptResult(id, data, preview.receipt); await preview.context.dispose(); return withSourceFailures(result); }
-        if (!confirm([...effectsForPlan(preview), ...sourceEffects])) { const result = receiptResult(id, data, preview.receipt); result.status = 'blocked'; result.diagnostics.push(publicDiagnostic('confirmationRequired')); await preview.context.dispose(); return withSourceFailures(result); }
+        if (!confirm([...effectsForPlan(preview), ...sourceEffects])) {
+          const result = confirmationRequired(preview.receipt);
+          await preview.context.dispose();
+          return withSourceFailures(result);
+        }
         receiptResult(id, data, preview.receipt);
       }
       try {

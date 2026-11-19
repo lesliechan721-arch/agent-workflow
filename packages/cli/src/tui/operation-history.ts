@@ -137,8 +137,19 @@ function boundDiagnostics(
   });
 }
 
+/** Keep the full guidance on each target while showing shared actions once in a whole-operation view. */
+export function distinctRecoveryLines(lines: readonly string[], shown: Set<string>): string[] {
+  return lines.filter((line) => {
+    if (!line.startsWith('aw plugin sync ') && !line.startsWith('aw plugin status ') && !line.startsWith('在 TUI 中重新检查 ')) return true;
+    if (shown.has(line)) return false;
+    shown.add(line);
+    return true;
+  });
+}
+
 function reportContent(record: OperationHistoryRecord): string {
   const { summary } = record;
+  const shownActions = new Set<string>();
   const lines = [
     '# AW TUI operation report',
     '',
@@ -166,7 +177,7 @@ function reportContent(record: OperationHistoryRecord): string {
     for (const cause of diagnostic.causes) {
       lines.push(`Cause${cause.code ? ` (${cause.code})` : ''}: ${cause.safeMessage}`);
     }
-    lines.push(...diagnostic.detailLines);
+    lines.push(...distinctRecoveryLines(diagnostic.detailLines, shownActions));
     if (diagnostic.omitted) {
       lines.push(`[omitted: ${diagnostic.omitted.reason}${diagnostic.omitted.count === undefined ? '' : `, ${diagnostic.omitted.count} line(s)`}]`);
     }

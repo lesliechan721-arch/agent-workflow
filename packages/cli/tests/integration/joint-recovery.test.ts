@@ -23,7 +23,7 @@ import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generati
 import { resolveCatalogGenerationStatePath } from '../../src/utils/catalog-generation-state.js';
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { writeIntent, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
-import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
+import { recoveryRetryTargets, type RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { resolvePreferencesPath, writePreferences, setTargets, type DeploymentPreferences } from '../../src/intent/deployment-preferences.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
@@ -637,6 +637,60 @@ describe('joint recovery through real Catalog and owned outputs', () => {
         .toEqual([{ plugin: 'b', scope: 'project', platform: 'generic' }]);
       await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
     });
+
+  it.each(['user', 'project'] as const)('retries just the selected %s root when its provider has its own declaration', async (scope) => {
+    const value = await fixture(false, ['generic'], true);
+    const root = scope === 'user' ? 'team/a' : 'team/b';
+    const location = { ...value.options, context: scope, scope };
+    const otherUser = { ...value.options, context: 'user' as const, scope: 'user' as const };
+    if (scope === 'project') expect((await runPublicLifecycle('install', ['team/d'], otherUser)).status).toBe('success');
+    expect((await runPublicLifecycle('install', ['team/d'], { ...location, only: 'requirements' })).status).toBe('success');
+    const intents = () => Promise.all((['user', 'project'] as const).map(async (scope) =>
+      fs.readFile(await resolveIntentPath({ ...value.options, scope }))));
+    const before = await intents();
+    await fs.writeFile(value.hookFailure, `d/generic/${scope}`);
+    const failed = await runPublicLifecycle('sync', [root], { ...value.options, context: scope, targets: ['generic'] });
+    expect(failed.data.request.plugins).toEqual([root]);
+    const provider = failed.data.targetResults.find((item) => item.pluginId === 'team/d');
+    expect(provider).toMatchObject({ scope, target: 'generic', relation: 'dependency', execution: 'failed' });
+    expect([...(provider?.requiredBy ?? [])].sort()).toEqual([root, 'team/d'].sort());
+    expect(failed.data.remainingTargets).toHaveLength(2);
+    expect(failed.data.remainingTargets).toEqual(expect.arrayContaining([root, 'team/d'].map((pluginId) =>
+      ({ pluginId, target: 'generic', scope }))));
+    expect(failed.nextActions).toEqual([expect.objectContaining({ kind: 'command',
+      argv: ['aw', 'plugin', 'sync', root, '--context', scope, '--target', 'generic'] })]);
+    const action = failed.nextActions[0]!;
+    if (action.kind !== 'command') throw new Error('Expected a retry command for the original root');
+    if (scope === 'user') {
+      const rebuild = createCapturedCliIo();
+      const exit = await runCli([...action.argv.slice(1), '--rebuild', '--yes', '--json'],
+        { ...value.options, interactive: false, io: rebuild.io });
+      expect([3, 4]).toContain(exit);
+      const retried = JSON.parse(rebuild.readStdout()) as typeof failed;
+      expect(retried).toMatchObject({ data: { targetResults: expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'team/d', relation: 'dependency', blockerCodes: expect.arrayContaining(['preApplyFailed']) }),
+      ]) }, nextActions: [{ kind: 'command' }] });
+      const next = retried.nextActions[0]!;
+      if (next.kind !== 'command') throw new Error('Expected a root retry after rebuild failed');
+      expect(next.argv.filter((value) => value !== '--rebuild')).toEqual(['aw', 'plugin', 'sync', root, '--context', scope, '--target', 'generic']);
+      // Explicitly selecting both declarations still makes each failed root independently selectable in the TUI.
+      const both = await runRecovery('sync', [root, 'team/d'], location);
+      expect(both.targetResults.find((item) => item.pluginId === 'team/d')).toMatchObject({ relation: 'root' });
+      expect(recoveryRetryTargets(both, both.targetResults).map((item) => item.pluginId).sort()).toEqual([root, 'team/d'].sort());
+    }
+    await fs.remove(value.hookFailure);
+    await fs.writeFile(value.hookTrace, '');
+    const capture = createCapturedCliIo();
+    expect(await runCli([...action.argv.slice(1), '--yes', '--json'],
+      { ...value.options, interactive: false, io: capture.io }), capture.readStdout()).toBe(0);
+    expect((await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)))
+      .toEqual(['d', root.slice('team/'.length)].map((plugin) => ({ plugin, scope, platform: 'generic' })));
+    const output = scope === 'user' ? value.userRoot : value.projectRoot;
+    for (const name of ['d', root.slice('team/'.length)]) {
+      await expect(fs.readFile(path.join(output, name, 'SKILL.md'), 'utf8')).resolves.toContain(`Use ${name}.`);
+    }
+    await expect(intents()).resolves.toEqual(before);
+  });
 
   it('reports current Active after writing even when the complete reviewed Store is still readable', async () => {
     const value = await fixture();

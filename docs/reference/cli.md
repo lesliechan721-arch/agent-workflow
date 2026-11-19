@@ -27,13 +27,13 @@
 
 `aw plugin status [plugins...] --observe-native` 显式允许对所选的 OpenCode 目标启动一次满足 V2 接口最低条件的私有本地服务，观察插件加载。OpenCode 使用 `--standalone`，缺少加载证据时保留未知。启动可加载插件代码，创建日志、状态和缓存，读取既有认证并按现有配置访问外部服务。进入 OpenCode 原生观察路径时，文本与 JSON 诊断均包含 `nativeObservationSideEffects`。普通 status 和 TUI 保持只读，使用已有证据判断安装状态。精确证据边界见[状态与配置](../maintainers/architecture/config-and-status.md#22-平台产品面与组件事实)。
 
-普通需求、平台策略和配置保存由命令表达写入意图。删除输出、配置重置、共享替换、重要来源变化、作者源码删除、远端发布及安装附带 preApply 要求 `--yes`。显式 run/build/test 与准备/导出所必需的构建渲染不重复要求执行确认。缺少确认不先提交需求或配置；必要来源候选可临时准备，确认前不启用。TUI 保留其 Review 确认。
+普通需求、平台策略和配置保存由命令表达写入意图。删除输出、配置重置、共享替换、重要来源变化、作者源码删除、远端发布及安装附带 preApply 要求 `--yes`。显式 run/build/test 与准备/导出所必需的构建渲染不重复要求执行确认。缺少确认不先提交需求或配置；必要来源候选可临时准备，确认前不启用。待确认的 install 或 sync 保留原插件、位置、目标与行为选项。回执的 `requiresConfirmation: true` 提示用户审阅影响后显式加 `--yes`。TUI 保留其 Review 确认。
 
 `--yes` 不绕过 ownership、依赖、scope、stale、发布 digest 或宿主审批。执行开始后出现新影响不得扩大原授权；按真实变化报告 blocked 或 partial。cache prune preview 和 publication plan 分别保持 preview/prepared，不表示已经删除或发布。
 
 `plugin install`、`plugin sync`、`plugin config apply` 及带 `--apply` 的配置写命令接受独立的 `--native-consent`。该选项仅授权本次冻结插件、来源、版本与所选 scope 计划中的 Gemini 原生安装或更新。Gemini 可能持久保存源目录与当前工作区的信任，并接受扩展许可；AW 不保存全局自动批准设置。普通 `--yes`、环境变量、旧回执与 TUI Review 确认均不提供此许可。授权事实在生命周期的 `data.request.nativeConsent`、配置结果的 `data.nativeConsent` 中表示；显式授权时保留 `nativeConsentGranted` warning，说明持久信任副作用，该字段不表示原生动作已经完成。
 
-没有原生许可时，Gemini 安装或更新在启动该原生命令前返回 `nativeConsentRequired`，不会等待用户 stdin。已提交的需求、配置和 AW 源包保留，结果按实际变化为 blocked 或 partial，并给出 `aw plugin sync <source/plugin> --context <user|project> --target gemini --native-consent` 恢复命令；需先审阅副作用，同次其他 AW 重要影响仍须单独提供 `--yes`。TUI 当前没有原生许可入口，遇到此阻断时通过该 CLI 命令恢复。Gemini CLI `0.67.0` 保留已验证的受限自动许可路径；当前其他版本的跨流提示缺少可验证的完整授权边界，安装及更新在原生命令启动前返回 `nativeConsentProtocolUnconfirmed` 和绑定冻结来源、工作区的人工许可步骤；普通资格及只读观察仍可继续。固定版本路径的未知或重复提示返回 `nativeConsentPromptUnsupported`，不扩展授权。无法在刷新卸载之前确认完整许可和配置合同，则停止并提供人工原生处理及后续 sync 步骤，不先卸载再试探许可。卸载扩展不代表 Gemini 已撤销独立的持久信任条目。
+Gemini CLI `0.67.0` 缺少原生许可时，安装或更新在启动原生命令前返回 `nativeConsentRequired`，不会等待用户 stdin。已提交的需求、配置和 AW 源包保留，结果按实际变化为 blocked 或 partial，并给出 `aw plugin sync <source/plugin> --context <user|project> --target gemini --native-consent` 恢复命令；需先审阅副作用，同次其他 AW 重要影响仍须单独提供 `--yes`。许可对应实际等待安装的 Gemini 扩展，即使它只是所选插件的依赖。TUI 用户通过该 CLI 命令或 Gemini 客户端授权，AW 恢复命令使用当初声明的插件根。若普通命令还会执行未选的个人位置，按提示在同一工作区用 Gemini 客户端检查并安装给出的冻结来源，再回 TUI 精确同步项目位置。Gemini CLI `0.67.0` 保留已验证的受限自动许可路径；当前其他版本的跨流提示缺少可验证的完整授权边界，安装及更新在原生命令启动前返回 `nativeConsentProtocolUnconfirmed` 和绑定冻结来源、工作区的人工许可步骤；普通资格及只读观察仍可继续。固定版本路径的未知或重复提示返回 `nativeConsentPromptUnsupported`，不扩展授权。无法在刷新卸载之前确认完整许可和配置合同，则停止并提供人工原生处理及后续 sync 步骤，不先卸载再试探许可。卸载扩展不代表 Gemini 已撤销独立的持久信任条目。
 
 Gemini `0.67.0` 同版本动态刷新会在精确 AW 所有权、来源和旧副本完整摘要核验后，以原生卸载、重装更新实际副本，并保留原有全局及项目激活。原生目录中的 `.env`、额外或改写文件、弱 owner 会以 `nativeRefreshDataUnconfirmed` 阻断，原目录保留；先保存或处理这些本地数据，不能用 `--yes`、`--native-consent` 或 force 越过该保护。重装后的实际包体必须匹配冻结投影，无法确认时报告 `nativeInstallContentPostcheckFailed` 和部分结果，保留 AW 源包与已核验的激活规则。修复现场后，在同一工作区使用上述带 `--native-consent` 的 sync 恢复；已保存的配置和需求不会回滚。
 

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { Scope, CatalogManifestV7Entry } from '../types.js';
 import { commandResult, type CommandResult, type NextAction } from '../output/public-result.js';
-import { inventoryRecoveryActions, publicDiagnostic, projectDeploymentObservation, projectTarget } from './public-lifecycle-result.js';
+import { inventoryRecoveryActions, publicDiagnostic, projectDeploymentObservation, projectTarget, recoverySyncAction } from './public-lifecycle-result.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
 import { observeIntent } from '../intent/intent-store.js';
 import { observePreferences, normalizeAgents } from '../intent/deployment-preferences.js';
@@ -11,6 +11,8 @@ import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readPluginManifest } from '../utils/manifest.js';
 import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 import { readRecoveryStatus } from '../recovery/status.js';
+
+import { recoveryRootDisposition, type RecoveryTarget } from '../recovery/receipt.js';
 
 export interface PublicPluginQueryOptions {
   cwd: string; env?: NodeJS.ProcessEnv; cliVersion?: string; scope?: string; context?: string;
@@ -108,9 +110,11 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
     const selectedTarget = (target: string | null) => !filters || target !== null && filters.includes(target);
     const extraObserved = status.extraObserved.filter((target) => selectedPlugin(target.pluginId) && selectedTarget(target.agent));
     const inventory = status.inventory?.filter((entry) => selectedPlugin(entry.pluginId)).map((entry) => ({ pluginId: entry.pluginId, sourceId: entry.source, sourceState: entry.sourceState,
-      blockerCodes: entry.blockers.map((blocker) => blocker.code), targetResults: entry.targetResults.filter((target) => selectedTarget(target.agent)).map(projectTarget) })) ?? null;
+      blockerCodes: entry.blockers.map((blocker) => blocker.code), targetResults: entry.targetResults.filter((target) => selectedTarget(target.agent)).map((target) => projectTarget(target)) })) ?? null;
     const diagnostics = status.errors.map((error) => publicDiagnostic(error));
-    const syncActions = new Map<string, NextAction>();
+    const pending = new Map<string, { root: Pick<RecoveryTarget, 'pluginId' | 'scope' | 'agent'>; reason: string }>();
+    const positionKey = (pluginId: string, scope: Scope, agent: string) => JSON.stringify([pluginId, scope, agent]);
+    const declared = (pluginId: string, scope: Scope) => declarations.find((item) => item.scope === scope)?.roots?.includes(pluginId);
     for (const entry of status.inventory ?? []) if (selectedPlugin(entry.pluginId)) {
       diagnostics.push(...entry.blockers.map((error) => publicDiagnostic(error, { pluginId: entry.pluginId })));
       for (const target of entry.targetResults.filter((target) => selectedTarget(target.agent))) {
@@ -120,17 +124,29 @@ export async function runPublicPluginStatus(plugins: string[], options: PublicPl
         for (const reason of target.reasons ?? []) {
           const diagnostic = publicDiagnostic(reason, reason.subject ?? subject, 'warning');
           diagnostics.push(diagnostic);
-          const { pluginId, scope, target: platform } = diagnostic.subject ?? {};
-          if (pluginId && scope && platform && ['platformInputDrift', 'platformContentDrift', 'nativePackageContentDrift',
+          if (!['platformInputDrift', 'platformContentDrift', 'nativePackageContentDrift',
             'cursorWorkspaceOpenMissing', 'nativeActivationDisabled', 'platformPackageMissing', 'nativeRegistrationMissing',
-            'nativePackageMissing', 'componentOutputMissing'].includes(reason.code)) {
-            const key = JSON.stringify([pluginId, scope, platform]);
-            if (!syncActions.has(key)) syncActions.set(key, { kind: 'command',
-              argv: ['aw', 'plugin', 'sync', pluginId, '--context', scope, '--target', platform],
-              reason: diagnostic.message, requiresConfirmation: true });
+            'nativePackageMissing', 'componentOutputMissing'].includes(reason.code)) continue;
+          // Inventory rows aggregate the physical providers' diagnostics under their declared root.
+          // A direct query for a dependency carries its actual contributing declarations instead.
+          const roots = target.relation === 'dependency' ? (target.contributions ?? []).map((item) => ({
+            pluginId: item.root, scope: item.scope, agent: target.agent,
+          })) : [target];
+          const selected = roots.filter((root) => selectedPlugin(root.pluginId));
+          for (const { pluginId, scope, agent } of selected.length ? selected : roots) {
+            if (!declared(pluginId, scope)) continue;
+            const key = positionKey(pluginId, scope, agent);
+            if (!pending.has(key)) pending.set(key, { root: { pluginId, scope, agent }, reason: diagnostic.message });
           }
         }
       }
+    }
+    const syncActions = new Map<string, NextAction>();
+    for (const { root, reason } of pending.values()) {
+      const otherScope = root.scope === 'project' ? 'user' : 'project';
+      const both = pending.has(positionKey(root.pluginId, otherScope, root.agent));
+      const disposition = recoveryRootDisposition(root, both, declared(root.pluginId, 'user') !== false);
+      syncActions.set(positionKey(root.pluginId, disposition.scope, root.agent), recoverySyncAction(disposition, reason));
     }
     for (const target of extraObserved.filter((entry) => entry.agent === 'opencode')) {
       for (const observation of target.deploymentObservations ?? []) {

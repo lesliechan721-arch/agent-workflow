@@ -20,10 +20,12 @@ import { readCatalogGenerationState } from '../utils/catalog-generation-state.js
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
+import { hasSharedUserPackage } from '../platforms/layout.js';
+import type { PortablePreparation } from '../portable/recovery.js';
 import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan, type JointPlacement } from './joint-demand.js';
-import { checkFootprints, prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
+import { checkFootprints, prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, verifiedInheritedPortableProviders, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
 import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
-import { recoveryRetryDispositions, recoveryStatusContext, type RecoveryReceipt, type RecoveryDiagnostic } from './receipt.js';
+import { recoveryRetryDispositions, recoveryStatusContext, retriesFromRequestedRoots, type RecoveryReceipt, type RecoveryDiagnostic } from './receipt.js';
 import { limitInstallNativeRunner, mapInstallReads } from './install-concurrency.js';
 import { executeJointInstall } from './joint-install-execution.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from './interruption.js';
@@ -113,6 +115,8 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
   receipt.remainingTargets = receipts.flatMap((item) => item.remainingTargets);
   const actions = receipts.flatMap((item) => item.recoveryActions);
   const reviewedOrder = joint.targetOrder;
+  const selectedRoots = retriesFromRequestedRoots(receipt) ? new Set(receipt.requestedRoots) : undefined;
+  const exactTargets = plan.options.exactTargets;
   const byPosition = (a: RecoveryReceipt['requestedTargets'][number], b: RecoveryReceipt['requestedTargets'][number]) =>
     (reviewedOrder?.get(targetKey(a)) ?? Number.MAX_SAFE_INTEGER) - (reviewedOrder?.get(targetKey(b)) ?? Number.MAX_SAFE_INTEGER);
   for (const target of receipt.targetResults) {
@@ -126,9 +130,11 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
     if (placement) {
       const contributions = placement.scope === target.scope ? placement.contributions
         : placement.contributions.filter((item) => item.scope === target.scope);
-      const selectedContributions = isInstallBatch(plan.command) && plan.options.exactTargets
-        ? contributions.filter((item) => plan.options.exactTargets!.some((exact) =>
-          exact.scope === item.scope && exact.agent === target.agent && item.path.includes(exact.pluginId))) : contributions;
+      const selectedContributions = selectedRoots ? contributions.filter((item) =>
+        (selectedRoots.has(item.root) || plan.options.allowDependencySelectors && item.path.some((id) => selectedRoots.has(id))
+          || plan.options.existingOnly && selectedRoots.has(target.pluginId))
+        && (!exactTargets || exactTargets.some((exact) =>
+          exact.scope === item.scope && exact.agent === target.agent && item.path.includes(exact.pluginId)))) : contributions;
       target.requiredBy = [...new Set(contributions.map((item) => item.root))];
       target.providerScope = placement.scope;
       if (plan.command !== 'uninstall' || placement.scope !== target.scope) target.relation = selectedContributions.some((item) =>
@@ -494,6 +500,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   const context = await createScopeContext({ ...options, scope });
   if (command !== 'uninstall') errors.push(...unplacedRoots.flatMap((root) => root.blockers));
   const baseDemand = scope === 'project' ? snapshot.project! : snapshot.user;
+  const rebuildsRequestedRoots = command === 'reinstall' && !options.allowDependencySelectors && !options.existingOnly;
   const receipt: RecoveryReceipt = {
     schemaVersion: 1, kind: 'aw-recovery', command, scope, ok: false,
     intent: intentReceipt(observedIntent),
@@ -501,7 +508,8 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     selection: { agents: targets, origin: options.targets ? 'argument' : targets.length ? 'preference' : 'none', preferences: snapshot.user.preferences.state },
     blockers: errors, errors, recoveryActions: [], declarationChanged: false, preferencesChanged: false,
     configChanged: false, outputsMayHaveChanged: false,
-    ...(isInstallBatch(command) && snapshot.context.scopes.includes('project') ? {
+    ...(rebuildsRequestedRoots ? { rebuildsRequestedRoots: true } : {}),
+    ...((isInstallBatch(command) || rebuildsRequestedRoots) && snapshot.context.scopes.includes('project') ? {
       reviewedUserRoots: intentReceipt(snapshot.user.intent).roots?.filter((id) => requested.includes(id)) ?? null,
     } : {}),
     coverage: { scopes: snapshot.context.scopes, ...(snapshot.context.projectRoot ? { projectRoot: snapshot.context.projectRoot } : {}) },
@@ -604,10 +612,22 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       : [...(nativeTargets.length ? [nativeTargets] : []), ...targets.filter((target) => target === 'generic').map((target) => [target])];
     for (const currentScope of snapshot.context.scopes) {
       const prepareGroup = async (groupTargets: typeof targets) => {
+        const inheritedScripts = currentScope === 'user' && command === 'sync' && !options.existingOnly
+          ? selected.filter((item) => item.scope === 'user' && groupTargets.includes(item.target) && item.plugin.manifest.scripts?.preApply
+            && item.contributions.some((entry) => entry.scope === 'project' && entry.root !== item.pluginId
+              && requested.includes(entry.root) && (!options.exactTargets || options.exactTargets.some((exact) =>
+                exact.agent === item.target && exact.scope === entry.scope && entry.path.includes(exact.pluginId))))
+            && !(requested.includes(item.pluginId) && (!options.exactTargets || options.exactTargets.some((exact) =>
+              exact.pluginId === item.pluginId && exact.agent === item.target && exact.scope === item.scope)))) : [];
+        const inheritedPortableProviderIds = inheritedScripts.filter((item) => item.target === 'generic').map((item) => item.pluginId);
         const placements = selected.filter((item) => item.scope === currentScope && groupTargets.includes(item.target)
           && !(command === 'install' && scope === 'project' && currentScope === 'user'
             && currentStatus.observedTargets?.some((observed) => observed.pluginId === item.pluginId
-              && observed.agent === item.target && observed.scope === 'user' && observed.content === 'satisfied')));
+              && observed.agent === item.target && observed.scope === 'user' && observed.content === 'satisfied'))
+          && !(hasSharedUserPackage(item.target) && inheritedScripts.includes(item)
+            && currentStatus.observedTargets?.some((observed) => observed.pluginId === item.pluginId
+              && observed.agent === item.target && observed.scope === 'user' && observed.providerScope === 'user'
+              && observed.observation === 'verified' && observed.content === 'satisfied' && !observed.blockers.length)));
         if (!placements.length) return;
         const sourceDemand = currentScope === 'project' ? snapshot.project! : snapshot.user;
         const childPlacements = [
@@ -622,9 +642,19 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
             .filter((item) => item.target === target).map((item) => item.pluginId)])),
           roots: [...new Map(childPlacements.map((item) => [item.pluginId, { pluginId: item.pluginId, sourceId: item.plugin.sourceId!,
               sourceState: 'ready' as const, blockers: [], plugin: item.plugin }])).values()] };
+        const portableProviderChecks = new Map<string, PortablePreparation[]>();
+        if (currentScope === 'project' && groupTargets.includes('generic')) {
+          for (const provider of children.flatMap(verifiedInheritedPortableProviders)) {
+            const placement = userProviders.find((item) => item.pluginId === provider.options.selector && item.target === 'generic');
+            for (const consumer of placements) {
+              if (!placement?.contributions.some((entry) => entry.scope === 'project' && entry.path.includes(consumer.pluginId))) continue;
+              portableProviderChecks.set(consumer.pluginId, [...(portableProviderChecks.get(consumer.pluginId) ?? []), provider]);
+            }
+          }
+        }
         const child = await prepareScopedRecovery(command === 'reinstall' ? 'reinstall' : 'sync',
           [...new Set(placements.map((item) => item.pluginId))], { ...options, scope: currentScope, targets: groupTargets, all: false,
-            sharedReferenceView,
+            sharedReferenceView, inheritedPortableProviderIds, portableProviderChecks,
             cwd: snapshot.context.projectRoot ?? options.cwd, demandOverride: childDemand,
             exactTargets: placements.map((item) => ({ pluginId: item.pluginId, agent: item.target })),
             nativeActivationOnlyTargets: activationOnlyTargets.filter((item) => item.scope === currentScope
@@ -868,7 +898,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     plan.warnings.push(...children.flatMap((child) => child.warnings));
     plan.plannedImpact.outputs = children.some((child) => child.plannedImpact.outputs);
     plan.receipt = mergeReceipts(plan, children.map((child) => child.receipt));
-    if (batch && plan.receipt.remainingTargets.length) useDeclaredRetryRoots(plan.receipt);
+    if (retriesFromRequestedRoots(plan.receipt) && plan.receipt.remainingTargets.length) useDeclaredRetryRoots(plan.receipt);
     const observedManager = children.flatMap((child) => child.nativeGroups)
       .map((group) => group.preview.codexManagerPreview)
       .find((entry) => entry?.state === 'system');
@@ -900,7 +930,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
     if (plan.sourceRefreshes.length) {
       plan.receipt.blockers.push(diagnostic('sourceRefreshConfirmationRequired'));
       const receipt = mergeReceipts(plan, joint.children.map((child) => child.receipt));
-      if (isInstallBatch(plan.command)) useDeclaredRetryRoots(receipt);
+      if (retriesFromRequestedRoots(receipt)) useDeclaredRetryRoots(receipt);
       return receipt;
     }
     lockWaitStartedAt = performance.now();
@@ -1207,7 +1237,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         receipt.ok &&= failedPackages.size === 0;
         receipt.outputsMayHaveChanged ||= packageResults.some((result) => result.state === 'completed');
         receipt.errors.push(...results.flatMap((result) => result.targetResults.flatMap((target) => target.blockers)));
-        if (!receipt.ok && isInstallBatch(plan.command)) useDeclaredRetryRoots(receipt);
+        if (!receipt.ok && retriesFromRequestedRoots(receipt)) useDeclaredRetryRoots(receipt);
 
         completedReceipt = receipt;
         if (interrupted) throw interrupted;

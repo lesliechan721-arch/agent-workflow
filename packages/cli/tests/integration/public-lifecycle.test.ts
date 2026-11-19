@@ -4,7 +4,7 @@ import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.
 import { defaultPluginProcessRunner } from '../../src/utils/plugin-scripts.js';
 import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
 import { runCli } from '../../src/index.js';
-import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { createCapturedCliIo, runCliEntry } from '../helpers/cli-entry.js';
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import fs from 'fs-extra';
@@ -311,7 +311,20 @@ describe('public plugin lifecycle', () => {
       const catalog = path.join(source, 'catalog-manifest.json');
       await fs.writeJson(catalog, { ...await fs.readJson(catalog), catalogVersion: '1.0.1' });
     }
-    if (failureStage === 'fetch') await fs.remove(second.source);
+    if (failureStage === 'fetch') {
+      await fs.remove(second.source);
+      const args = ['plugin', 'sync', '--context', 'project', '--refresh', '--native-consent'];
+      const review = await runCliEntry([...args, '--json'], { ...location, nativeCliRunner: piRunner });
+      expect(review.exitCode, review.stdout).toBe(3);
+      expect(review.parseJsonStdout()).toMatchObject({
+        status: 'blocked', data: { changes: { sources: 'none', outputs: 'none' },
+          confirmation: { required: true, provided: false, effects: [expect.objectContaining({ code: 'changeSource' })] } },
+        nextActions: [
+          expect.objectContaining({ kind: 'command', argv: ['aw', ...args], requiresConfirmation: true }),
+          expect.objectContaining({ kind: 'command', argv: ['aw', 'source', 'sync', 'beta'] }),
+        ],
+      });
+    }
     let interrupted = false;
     const result = await runPublicLifecycle('sync', plugins, { ...location, refresh: true, yes: true }, {
       debugLogger: { log: async (event) => {
@@ -424,19 +437,34 @@ describe('public plugin lifecycle', () => {
     expect((await readCatalogGenerationState(location.env)).sources.team?.active).toBeUndefined();
   });
 
-  it('does not activate a first source or save requirements before script confirmation', async () => {
-    const { location, output }=await fixture({ active: false, script: true });
-    const result=await runPublicLifecycle('install', ['team/demo'], location);
-    expect(result.status).toBe('blocked');
-    expect((result.data as LifecycleData).confirmation).toMatchObject({ required: true, provided: false, effects: [expect.objectContaining({ code: 'runPreApply' })] });
-    expect(Object.values((result.data as LifecycleData).changes)).toEqual(['none', 'none', 'none', 'none', 'none']);
+  it('returns the original install request without activating a first source or saving requirements before script confirmation', async () => {
+    const { location, output } = await fixture({ active: false, script: true });
+    const args = ['plugin', 'install', 'demo', '--scope', 'project', '--context', 'project',
+      '--target', 'generic', '--script-timeout', '10000'];
+    const runtime = { ...location, nativeCliRunner: piRunner };
+    const review = await runCliEntry([...args, '--json'], runtime);
+    expect(review.exitCode, review.stdout).toBe(3);
+    const result = review.parseJsonStdout<Awaited<ReturnType<typeof runPublicLifecycle>>>();
+    expect(result).toMatchObject({ status: 'blocked', data: {
+      requirements: { state: 'absent', roots: [] }, request: { nativeConsent: false },
+      changes: { sources: 'none', requirements: 'none', config: 'none', preferences: 'none', outputs: 'none' },
+      confirmation: { required: true, provided: false, effects: [expect.objectContaining({
+        code: 'runPreApply', subject: { pluginId: 'team/demo', target: 'generic', scope: 'project' },
+      })] },
+    }, nextActions: [{ kind: 'command', argv: ['aw', ...args], requiresConfirmation: true, reason: expect.stringContaining('--yes') }] });
     expect(await observeIntent(location)).toEqual({ state: 'absent' });
     expect((await readCatalogGenerationState(location.env)).sources.team?.active).toBeUndefined();
     expect(await fs.pathExists(output)).toBe(false);
-    const installed=await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true });
-    expect(installed.status, JSON.stringify(installed)).toBe('success');
-    expect((installed.data as LifecycleData).changes).toMatchObject({ sources: 'changed', requirements: 'changed', outputs: 'changed' });
-    expect(await fs.pathExists(output)).toBe(true);
+
+    const action = result.nextActions[0]!;
+    if (action.kind !== 'command') throw new Error('Expected a confirmation command.');
+    const confirmed = await runCliEntry([...action.argv.slice(1), '--yes', '--json'], runtime);
+    expect(confirmed.exitCode, confirmed.stdout).toBe(0);
+    expect(confirmed.parseJsonStdout()).toMatchObject({ status: 'success', data: { request: { nativeConsent: false },
+      changes: { sources: 'changed', requirements: 'changed', outputs: 'changed' },
+      targetResults: [expect.objectContaining({ target: 'generic', execution: 'applied', observation: 'verified' })] } });
+    expect(await observeIntent(location)).toMatchObject({ state: 'valid', value: { roots: [{ pluginId: 'team/demo' }] } });
+    expect(await fs.readFile(path.join(output, 'SKILL.md'), 'utf8')).toContain('Use demo.');
   });
 
   it('filters one install without changing the saved target policy and retains unknown native status', async () => {

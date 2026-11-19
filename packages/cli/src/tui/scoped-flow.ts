@@ -54,7 +54,7 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   const checkStatus = `aw plugin status --context ${recoveryStatusContext(receipt)} --json`;
   const globalIds = new Map<string, string>();
   for (const code of new Set([...receipt.blockers, ...recoverySummaryErrors(receipt)].map((entry) => entry.code))) {
-    const details = receipt.unconfirmedSavedState ? [checkStatus] : [];
+    const details = receipt.unconfirmedSavedState || code === 'statusUnavailable' ? [checkStatus] : [];
     globalIds.set(code, addDiagnostic(code, undefined, details));
   }
   for (const result of receipt.commandResults ?? []) {

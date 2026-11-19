@@ -11,6 +11,7 @@ import type { DeploymentReceipt, DeploymentObservation, ProductInstallation, Fro
 import { identityDigest } from '../platforms/identity.js';
 import type { ComponentUnmet, ComponentOmission, PluginComponent } from '@lesliechan721/aw-plugin-core/manifest';
 import { geminiConsentMessages } from '../platforms/gemini-consent.js';
+import { geminiReplacementMessages } from '../platforms/gemini-activation.js';
 
 export interface PublicDeploymentPlan {
   bindingId: string;
@@ -77,6 +78,7 @@ export interface LifecycleData {
 const messages: Record<string, string> = {
   dependencyExcluded: 'A required plugin is excluded from this target by the local deployment policy.',
   ...geminiConsentMessages,
+  ...geminiReplacementMessages,
   confirmationRequired: 'Repeat this request with --yes to confirm the listed effects.',
   noTargetsEnabled: 'No effective deployment targets are enabled. Set targets or choose --only requirements.',
   projectRootUnavailable: 'A valid project root is required for this request.',
@@ -128,18 +130,72 @@ export function publicDiagnostic(value: RecoveryDiagnostic | string, subject?: D
   const publicMessage = sourceMessage && !/[\u3400-\u9fff]/u.test(sourceMessage)
     && !/(?:\/(?:Users|home|tmp|private|var)\/|[A-Za-z]:[\\/])/u.test(sourceMessage)
     ? safePublicMessage(sourceMessage, code) : undefined;
-  // Native consent receipts include the checked plugin and scope recovery command.
-  // Preserve that safe detail for CLI and TUI instead of replacing it with the generic code text.
-  const consentMessage = Object.hasOwn(geminiConsentMessages, code) ? publicMessage : undefined;
   const detail = typeof value === 'string' ? undefined : safeRecoveryDetail(value.detail);
   const combinedSubject = { ...(typeof value !== 'string' && value.pluginId ? { pluginId: value.pluginId } : {}),
     ...(typeof value !== 'string' ? value.subject : {}), ...subject };
-  return { code, severity, message: consentMessage ?? messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
+  return { code, severity, message: messages[code] ?? publicMessage ?? `The operation could not complete (${code}).`,
     ...(Object.keys(combinedSubject).length ? { subject: combinedSubject } : {}), ...(detail ? { detail } : {}) };
 }
 
+type DeploymentRecoveryContext = { receipt: RecoveryReceipt; target: RecoveryTarget };
+
+function matchesRecoveryPosition(subject: Diagnostic['subject'], target: Pick<RecoveryTarget, 'pluginId' | 'scope' | 'agent'>): boolean {
+  return subject?.pluginId === target.pluginId && subject.target === target.agent && subject.scope === target.scope;
+}
+
+function geminiPermission(code: string): 'manual' | 'consent' | undefined {
+  if (code === 'nativeConsentPromptUnsupported' || code === 'nativeConsentProtocolUnconfirmed') return 'manual';
+  if (code === 'nativeConsentRequired' || Object.hasOwn(geminiReplacementMessages, code)) return 'consent';
+}
+
+function retryCommand(root: RecoveryRetryDisposition, consent: boolean): string[] {
+  return ['aw', 'plugin', 'sync', root.pluginId, '--context', root.scope, '--target', root.agent, ...(consent ? ['--native-consent'] : [])];
+}
+
+function exactProjectRetry(root: RecoveryRetryDisposition): string {
+  return `In the TUI, review only the Project location for ${root.pluginId} on ${root.agent}.`;
+}
+
+export function recoverySyncAction(root: RecoveryRetryDisposition, reason: string, consent = false): NextAction {
+  return root.kind === 'exact-project' ? { kind: 'manual', message: exactProjectRetry(root) }
+    : { kind: 'command', argv: retryCommand(root, consent), reason, requiresConfirmation: true };
+}
+
+/** Native permissions belong to the physical provider. Only pending declared roots can authorize an AW retry. */
+function nativeSourceRecovery(diagnostic: Diagnostic, diagnostics: readonly Diagnostic[], context?: DeploymentRecoveryContext) {
+  const { subject, detail } = diagnostic;
+  if (subject?.field !== 'nativeSource' || !detail) return;
+  const grok = subject.target === 'grok' && diagnostic.code === 'grokNativeInstallRecovery';
+  const gemini = subject.target === 'gemini' ? geminiPermission(diagnostic.code) : undefined;
+  if (!grok && !gemini) return;
+  if (context && (context.receipt.unconfirmedSavedState || isRecoveryReviewStaleBeforeExecution(context.receipt)
+    || !matchesRecoveryPosition(subject, context.target)
+    || !context.receipt.remainingTargets.some((target) => matchesRecoveryPosition(subject, target)))) return;
+  const roots = context ? recoveryRetryDispositions(context.receipt, [context.target]) : [];
+  const manual = grok || gemini === 'manual' || !roots.length || roots.some((root) => root.kind === 'exact-project');
+  const workspace = diagnostics.find((entry) => entry.subject?.field === 'workspace' && entry.subject.target === subject.target
+    && entry.subject.pluginId === subject.pluginId && entry.subject.scope === subject.scope)?.detail?.path;
+  const source = detail.path;
+  const nativeStep = grok
+    ? `With the same Grok client and configuration root, ${source
+      ? `run Grok with arguments ${JSON.stringify(['plugin', 'install', source, '--trust'])}`
+      : 'locate the retained AW source in the operation review and install it in Grok with --trust'}. This grants Grok trust for the source.`
+    : manual ? `Back up any existing extension and its activation rules. With the same Gemini client and configuration root, review each host permission during interactive extension installation from ${source ? JSON.stringify(source) : 'the frozen AW source'} in ${workspace ? JSON.stringify(workspace) : 'the reviewed workspace'}.`
+      : `With the same Gemini client and configuration root, review trust for ${source ? JSON.stringify(source) : 'the frozen AW source'} and the workspace ${workspace ? JSON.stringify(workspace) : 'identified in the operation review'}.`;
+  const retries = roots.map((root) => root.kind === 'exact-project' ? exactProjectRetry(root)
+    : `Then run ${retryCommand(root, gemini === 'consent').join(' ')}.`);
+  const message = [nativeStep, ...(retries.length ? retries : ['Recheck the original declared root in AW before retrying.'])].join(' ');
+  return { manual, message, roots };
+}
+
 /** Recovery locations are diagnostic facts, never permission to delete their contents. */
-export function inventoryRecoveryActions(values: readonly Pick<RecoveryDiagnostic, 'code' | 'subject' | 'detail'>[]): NextAction[] {
+type InventoryDiagnostic = Pick<RecoveryDiagnostic, 'code' | 'subject' | 'detail'>;
+export function inventoryRecoveryActions(values: readonly InventoryDiagnostic[], receipt?: RecoveryReceipt): NextAction[] {
+  return inventoryRecovery(values, receipt).actions;
+}
+
+function inventoryRecovery(values: readonly InventoryDiagnostic[], receipt?: RecoveryReceipt) {
+  const exactProjects = new Set<string>();
   const diagnostics = values.map((value) => publicDiagnostic({ ...value, message: '' }));
   const actions = new Map<string, NextAction>();
   for (const diagnostic of diagnostics) {
@@ -148,18 +204,12 @@ export function inventoryRecoveryActions(values: readonly Pick<RecoveryDiagnosti
     const subject = diagnostic.subject;
     const identity = [subject?.pluginId, subject?.target, subject?.scope].filter(Boolean).join(' / ') || 'The affected inventory scope';
     let message: string;
-    if (subject?.field === 'nativeSource' && subject.target === 'grok') {
-      const source = detail.path;
-      message = `${identity}: With the same Grok client and configuration root, ${source
-        ? `run Grok with arguments ${JSON.stringify(['plugin', 'install', source, '--trust'])}`
-        : 'locate the retained AW source in the operation review and install it in Grok with --trust'}. This grants Grok trust for the source. Then run aw plugin sync ${subject.pluginId} --context user --target grok.`;
-    } else if (subject?.field === 'nativeSource' && subject.target === 'gemini') {
-      const workspace = diagnostics.find((entry) => entry.subject?.field === 'workspace'
-        && entry.subject.pluginId === subject.pluginId && entry.subject.scope === subject.scope)?.detail?.path;
-      message = `${identity}: The native permission protocol is unconfirmed. ${detail.path
-        ? `Use Gemini's interactive extension installation with the exact source ${JSON.stringify(detail.path)}`
-        : 'Locate the frozen native source in the operation review and use Gemini\'s interactive extension installation'}${workspace
-        ? ` from workspace ${JSON.stringify(workspace)}` : ' from the reviewed workspace'}. Review each host permission yourself; do not skip permission prompts. Then recheck this target with AW status and sync.`;
+    const target = receipt?.targetResults.find((item) => matchesRecoveryPosition(subject, item));
+    const native = nativeSourceRecovery(diagnostic, diagnostics, receipt && target ? { receipt, target } : undefined);
+    if (native) {
+      if (!native.manual) continue;
+      for (const root of native.roots) if (root.kind === 'exact-project') exactProjects.add(JSON.stringify([root.pluginId, root.agent]));
+      message = `${identity}: ${native.message}`;
     } else if (subject?.field === 'workspace') continue;
     else if (diagnostic.code === 'nativeStateUnreadable' || detail.reasonCode.startsWith('config')) {
       message = `${identity}: Back up ${detail.path ? JSON.stringify(detail.path) : 'the affected configuration'} and inspect its format and permissions (${detail.reasonCode}). Repair only the invalid entries after review; retain unrelated configuration. Then run status for the same context and target.`;
@@ -172,10 +222,10 @@ export function inventoryRecoveryActions(values: readonly Pick<RecoveryDiagnosti
     } else continue;
     actions.set(message, { kind: 'manual', message });
   }
-  return [...actions.values()];
+  return { actions: [...actions.values()], exactProjects };
 }
 
-export function projectTarget(value: RecoveryTarget): PublicTargetResult {
+export function projectTarget(value: RecoveryTarget, receipt?: RecoveryReceipt): PublicTargetResult {
   return { pluginId: value.pluginId, target: value.agent, scope: value.scope, delivery: value.delivery,
     execution: value.execution, observation: value.observation, content: value.content ?? 'unknown',
     requiredBy: [...value.requiredBy], blockerCodes: [...new Set(value.blockers.map((entry) => entry.code))],
@@ -192,7 +242,7 @@ export function projectTarget(value: RecoveryTarget): PublicTargetResult {
     })) } : {}),
     ...(value.deploymentPlans ? { deploymentPlans: value.deploymentPlans.map(projectDeploymentPlan) } : {}),
     ...(value.deploymentObservations ? { deploymentObservations: value.deploymentObservations.map(projectDeploymentObservation) } : {}),
-    ...(value.deploymentReceipts ? { deploymentReceipts: value.deploymentReceipts.map(projectDeploymentReceipt) } : {}) };
+    ...(value.deploymentReceipts ? { deploymentReceipts: value.deploymentReceipts.map((entry) => projectDeploymentReceipt(entry, receipt ? { receipt, target: value } : undefined)) } : {}) };
 }
 
 export function projectDeploymentExclusion(value: DeploymentExclusion): PublicDeploymentExclusion {
@@ -251,18 +301,25 @@ export function projectDeploymentObservation(value: NonNullable<RecoveryTarget['
   };
 }
 
-export function projectDeploymentReceipt(value: NonNullable<RecoveryTarget['deploymentReceipts']>[number]): PublicDeploymentResult {
+export function projectDeploymentReceipt(value: NonNullable<RecoveryTarget['deploymentReceipts']>[number], context?: DeploymentRecoveryContext): PublicDeploymentResult {
+  const all = [...value.diagnostics, ...value.effects.flatMap((effect) => effect.diagnostics)]
+    .map((entry) => publicDiagnostic(entry, entry.subject, entry.severity));
+  const project = (entry: Diagnostic): Diagnostic => {
+    const diagnostic = publicDiagnostic(entry, entry.subject, entry.severity);
+    const native = nativeSourceRecovery(diagnostic, all, context);
+    return native ? { ...diagnostic, message: `${diagnostic.message} ${native.message}` } : diagnostic;
+  };
   return {
     ...projectDeploymentObservation(value),
     effects: value.effects.map((effect) => ({ id: effect.id, status: effect.status, mutation: effect.mutation,
-      diagnostics: effect.diagnostics.map((entry) => publicDiagnostic(entry, entry.subject, entry.severity)) })),
+      diagnostics: effect.diagnostics.map(project) })),
     unmet: value.unmet.map((gap) => ({ id: gap.id, kind: gap.kind,
       ...(gap.name ? { name: gap.name } : {}), ...(gap.componentId ? { componentId: gap.componentId } : {}),
       requiredFeatures: gap.requiredFeatures.map((requirement) => ({ feature: requirement.feature,
         ...(requirement.values ? { values: [...requirement.values] } : {}) })),
       reasonCode: gap.reasonCode, productIds: [...gap.productIds] })),
     reload: value.reload,
-    diagnostics: value.diagnostics.map((entry) => publicDiagnostic(entry, entry.subject, entry.severity)),
+    diagnostics: value.diagnostics.map(project),
   };
 }
 
@@ -321,7 +378,7 @@ function cleanupRecoveryActions(receipt: RecoveryReceipt): Array<{ kind: 'manual
 export function receiptResult(command: string, data: LifecycleData, receipt: RecoveryReceipt): CommandResult<LifecycleData> {
   data.requirements = { ...receipt.intent, roots: receipt.intent.roots ? [...receipt.intent.roots] : null };
   data.request.plugins = [...receipt.requestedRoots];
-  data.targetResults = receipt.targetResults.map(projectTarget);
+  data.targetResults = receipt.targetResults.map((target) => projectTarget(target, receipt));
   data.remainingTargets = receipt.remainingTargets.map(({ pluginId, agent, scope }) => ({ pluginId, target: agent, scope }));
   if (receipt.coverage) data.coverage = { scopes: [...receipt.coverage.scopes], currentProject: receipt.coverage.scopes.includes('project'), otherProjects: 'unobserved' };
   data.changes.requirements = receipt.declarationChanged ? 'changed' : data.changes.requirements;
@@ -356,6 +413,8 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   const status = receipt.ok ? 'success' : changed || completedOutput ? 'partial' : 'blocked';
   const result = commandResult(command, data, { status, diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));
+  const inventory = inventoryRecovery(result.diagnostics, receipt);
+  result.nextActions.push(...inventory.actions);
   if (!receipt.ok) {
     const statusContext = recoveryStatusContext(receipt);
     result.nextActions.push(...excludedProviders.values());
@@ -376,12 +435,10 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
       let checkRoot = false;
       for (const target of receipt.targetResults) {
         if (!receipt.remainingTargets.some((entry) => entry.pluginId === target.pluginId && entry.agent === target.agent && entry.scope === target.scope)) continue;
-        if (result.diagnostics.some((entry) => entry.subject?.pluginId === target.pluginId
-          && entry.subject.target === target.agent && entry.detail
-          && (entry.code === 'stateInventoryFailed' || entry.subject.field === 'nativeSource'))) continue;
-        const consent = target.agent === 'gemini' && result.diagnostics.some((entry) =>
-          (entry.code.startsWith('nativeConsent') || entry.code === 'nativeRefreshDataUnconfirmed'
-            || entry.code === 'nativeInstallContentPostcheckFailed') && entry.subject?.pluginId === target.pluginId);
+        const local = result.diagnostics.filter((entry) => matchesRecoveryPosition(entry.subject, target));
+        if (local.some((entry) => entry.code === 'stateInventoryFailed' && entry.detail)) continue;
+        const consent = target.agent === 'gemini' && local.some((entry) => geminiPermission(entry.code) === 'consent')
+          && !local.some((entry) => geminiPermission(entry.code) === 'manual');
         const roots = recoveryRetryDispositions(receipt, [target]);
         if (!roots.length) checkRoot = true;
         for (const root of roots) {
@@ -393,16 +450,13 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
         argv: ['aw', 'plugin', 'status', '--context', statusContext, '--json'],
         reason: 'Identify the current declared root for this dependency before retrying.', requiresConfirmation: false });
       for (const { root, consent } of retries.values()) {
-        result.nextActions.push(root.kind === 'exact-project'
-          ? { kind: 'manual', message: `In the TUI, review only the Project location for ${root.pluginId} on ${root.agent}.` }
-          : { kind: 'command', argv: ['aw', 'plugin', 'sync', root.pluginId, '--context', root.scope, '--target', root.agent,
-            ...(consent ? ['--native-consent'] : [])],
-            reason: consent ? 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.'
-              : 'Retry the selected incomplete target after resolving its diagnostics.', requiresConfirmation: true });
+        if (root.kind === 'exact-project' && inventory.exactProjects.has(JSON.stringify([root.pluginId, root.agent]))) continue;
+        result.nextActions.push(recoverySyncAction(root, consent
+          ? 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.'
+          : 'Retry the selected incomplete target after resolving its diagnostics.', consent));
       }
     }
   }
   result.nextActions.push(...cleanupRecoveryActions(receipt));
-  result.nextActions.push(...inventoryRecoveryActions(result.diagnostics));
   return result;
 }

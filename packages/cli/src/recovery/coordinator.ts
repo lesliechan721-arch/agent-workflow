@@ -114,6 +114,10 @@ export interface RecoveryOptions {
   dependencyScopeOverrides?: InstallCommandOptions['dependencyScopeOverrides'];
   demandOverride?: DemandSnapshot;
   excludedPluginIds?: string[];
+  /** User generic placements required only by a selected Project root in this sync. */
+  inheritedPortableProviderIds?: readonly string[];
+  /** Reviewed User outputs that must still satisfy each consumer after a Project hook. */
+  portableProviderChecks?: ReadonlyMap<string, readonly PortablePreparation[]>;
   /** Reviewed scoped activation work for an existing shared Native provider. */
   nativeActivationOnlyTargets?: Array<{ pluginId: string; platform: PlatformName; scope: Scope }>;
   /** Preview-only exits which are independently checked by owned cleanup plans. */
@@ -602,12 +606,22 @@ function portablePluginClosure(plan: RecoveryPlan, prepared: PortablePreparation
     .filter((plugin) => !prepared.options.excludedPluginIds?.includes(plugin.pluginId!));
 }
 
+export function verifiedInheritedPortableProviders(plan: RecoveryPlan): PortablePreparation[] {
+  const ids = plan.options.inheritedPortableProviderIds;
+  if (!ids?.length) return [];
+  return plan.portableGroups.filter((group) => ids.includes(group.options.selector) && !group.blockers.length
+    && !group.unmet.length && group.targets.some((target) => target.providerPluginId === group.options.selector)
+    && group.targets.every((target) => target.disposition === 'write' && target.ownership === 'aw'
+      && target.observation === 'satisfied' && target.installedDigest === target.expectedDigest));
+}
+
 function preparePortablePreApplyAuthorization(plan: RecoveryPlan): void {
   if (plan.command === 'cleanup' || plan.command === 'uninstall') return;
   const authorization = new Map<string, PreApplyAuthorizationTarget>();
+  const verifiedProviders = new Set(verifiedInheritedPortableProviders(plan).map((group) => group.options.selector));
   for (const prepared of plan.portableGroups) {
     for (const plugin of portablePluginClosure(plan, prepared)) {
-      if (!plugin.manifest.scripts?.preApply) continue;
+      if (!plugin.manifest.scripts?.preApply || verifiedProviders.has(plugin.pluginId!)) continue;
       for (const platform of prepared.options.agents) {
         if (pair(plan, prepared.options.selector, platform)?.blockers.length) continue;
         const target: PreApplyAuthorizationTarget = {
@@ -1126,6 +1140,7 @@ async function recheckPortableRecovery(plan: RecoveryPlan, groups: readonly Port
   const inspections = [
     ...groups.filter(({ options }) => !options.agents.every((agent) => pair(plan, options.selector, agent)?.blockers.length)),
     ...plan.portableProtectionGroups,
+    ...new Set(groups.flatMap((group) => plan.options.portableProviderChecks?.get(group.options.selector) ?? [])),
   ];
   if (!inspections.length) return;
   const readScope = new CatalogPreparationReadScope({ env: plan.context.env, signal: plan.runtime.signal });
@@ -1215,7 +1230,8 @@ async function executePortableGroups(plan: RecoveryPlan, groups: readonly Portab
         platform: 'generic', scope: plan.options.scope }, 'running'); }
       catch { /* Display callbacks don't control execution. */ }
     };
-    const checkPrewrite = jointChecked ? () => recheckPortableRecovery(plan, [prepared], progress) : undefined;
+    const providers = plan.options.portableProviderChecks?.get(prepared.options.selector);
+    const checkPrewrite = jointChecked || providers?.length ? () => recheckPortableRecovery(plan, [prepared], progress) : undefined;
     const agents: PortableAgent[] = [];
     for (const agent of prepared.options.agents) {
       if (pair(plan, prepared.options.selector, agent)!.blockers.length) continue;
@@ -1255,7 +1271,7 @@ async function executePortableGroups(plan: RecoveryPlan, groups: readonly Portab
     const result = await executePortableRecovery({ prepared, token: nativeRuntime.awHomeMutationToken!, authorizeUpdate: plan.options.yes,
       action: plan.command === 'install' ? 'sync' : plan.command, force: plan.options.force,
       targets: prepared.targets.filter((target) => agents.includes(target.agent)).map(({ skill, agent }) => ({ skill, agent })),
-      progress, checkPrewrite, onStart, admission: nativeRuntime.installAdmission, signal: nativeRuntime.signal }).catch((error) => {
+      progress, checkPrewrite, readProviders: providers, onStart, admission: nativeRuntime.installAdmission, signal: nativeRuntime.signal }).catch((error) => {
       if (!(error instanceof PortableInterruptedError)) throw error;
       interruption = error;
       return error.result;
@@ -1537,6 +1553,8 @@ export function describeRecoveryPlan(plan: RecoveryPlan): unknown {
     nativeActivationOnlyTargets: child.options.nativeActivationOnlyTargets,
     nativePlannedRetirements: child.options.nativePlannedRetirements,
     portable: child.portableGroups.map((group) => group.evidenceDigest),
+    inheritedPortable: child.options.portableProviderChecks?.size
+      ? [...child.options.portableProviderChecks].map(([root, providers]) => [root, providers.map((item) => item.evidenceDigest)]) : undefined,
     protectedPortable: child.portableProtectionGroups.map((group) => group.evidenceDigest),
     residue: child.portableResidues, blockers: child.receipt.blockers,
     targetBlockers: child.receipt.targetResults.map((target) => target.blockers),

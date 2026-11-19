@@ -18,6 +18,7 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createCodexNativeTestRuntime } from '../helpers/codex-native-fixture.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createCommandTestTiming } from '../helpers/command-timing.js';
@@ -480,6 +481,98 @@ describe('scoped recovery integration', () => {
       expect(await fs.pathExists(path.join(root, 'beta', SKILL_OWNER_MARKER))).toBe(false);
       expect(await fs.pathExists(path.join(setup.cwd, 'script-ran'))).toBe(timing === 'in preApply');
     });
+
+  // A retry of a Project root must verify its inherited provider without repeating a healthy User hook.
+  it.each([
+    ['generic', 'root'], ['generic', 'exact Project target'], ['generic', 'drift after hook'],
+    ['codex', 'root'], ['codex', 'drift after hook'], ['codex', 'missing provider'],
+    ['claude', 'root'], ['claude', 'drift after hook'],
+  ] as const)('recovers a Project dependency on %s (%s)', async (agent, scenario) => {
+    const isolated = getCurrentSourceTestIsolation();
+    const trace = path.join(isolated.layout.fixtureCwd, 'pre-apply-trace');
+    const control = path.join(isolated.layout.fixtureCwd, 'project-pre-apply');
+    const changeFile = path.join(isolated.layout.fixtureCwd, 'provider-file');
+    const userSkill = path.join(isolated.env.HOME!, '.agents', 'skills', 'shared');
+    const hook = [
+      "import fs from 'node:fs';",
+      "const { plugin, target } = JSON.parse(fs.readFileSync(0, 'utf8'));",
+      String.raw`fs.appendFileSync(${JSON.stringify(trace)}, plugin.name + '/' + target.scope + '\n');`,
+      `const action = fs.readFileSync(${JSON.stringify(control)}, 'utf8');`,
+      "if (plugin.name === 'beta' && action === 'fail') process.exit(17);",
+      `if (plugin.name === 'beta' && action === 'change provider') fs.writeFileSync(fs.readFileSync(${JSON.stringify(changeFile)}, 'utf8'), 'External bytes.');`,
+    ].join('\n');
+    const native = agent !== 'generic';
+    const drift = scenario === 'drift after hook';
+    const setup = await fixture([{ name: 'beta', dependencies: ['shared'], preApply: hook, native },
+      { name: 'shared', preApply: hook, native }]);
+    const runtime = agent === 'claude' ? (await createClaudeNativeTestRuntime({ env: setup.env, layout: { fixtureCwd: setup.cwd } })).runtime
+      : agent === 'codex' ? await nativeRuntime(setup) : undefined;
+    if (native) await setTargets(setup.options(), [agent]);
+    await fs.remove(setup.intentPath);
+    const project = { ...setup.options([agent]), all: false };
+    const user = { ...project, scope: 'user' as const, context: 'user' as const };
+    const retry = scenario === 'exact Project target' ? { ...project,
+      exactTargets: [{ pluginId: 'team/beta', agent: 'generic' as const, scope: 'project' as const }] } : project;
+    const hooks = async () => (await fs.readFile(trace, 'utf8')).trim().split('\n');
+    await fs.writeFile(control, 'fail');
+    const installed = await runRecovery('install', ['team/shared'], user, runtime);
+    expect(installed.ok).toBe(true);
+    const packageRoot = installed.targetResults[0]?.deploymentPlans?.flatMap((plan) => plan.effects)
+      .find((effect) => effect.kind === 'publish-package')?.destination;
+    const providerFile = native ? path.join(packageRoot!, 'skills', 'shared', 'SKILL.md') : path.join(userSkill, 'README.md');
+    await fs.writeFile(changeFile, providerFile);
+    expect(await fs.pathExists(providerFile)).toBe(true);
+    const failed = await runRecovery('install', ['team/beta'], project, runtime);
+    expect(failed).toMatchObject({ ok: false, declarationChanged: true,
+      remainingTargets: [expect.objectContaining({ pluginId: 'team/beta', agent, scope: 'project' })] });
+    expect(await hooks()).toEqual(['shared/user', 'beta/project']);
+    await fs.writeFile(trace, '');
+    await fs.writeFile(control, drift ? 'change provider' : 'ready');
+    if (scenario === 'missing provider') await fs.remove(packageRoot!);
+    const reviewed = await prepareRecovery('sync', ['team/beta'], retry, runtime);
+    const result = await executeRecovery(reviewed);
+    expect(await hooks()).toEqual(scenario === 'missing provider' ? ['shared/user', 'beta/project'] : ['beta/project']);
+    const location = path.join(portableRoot(setup, 'generic'), 'beta', 'SKILL.md');
+    if (native && drift) {
+      expect(await fs.readFile(providerFile, 'utf8')).toBe('External bytes.');
+      expect(result.ok, JSON.stringify(result.targetResults.map((target) => [target.pluginId, target.execution, target.blockers]))).toBe(false);
+      const consumer = result.targetResults.find((target) => target.pluginId === 'team/beta');
+      expect(consumer?.blockers.length).toBeGreaterThan(0);
+      expect(await fs.pathExists(path.join(path.dirname(packageRoot!), 'beta'))).toBe(false);
+    } else if (drift) {
+      expect(result).toMatchObject({ ok: false, targetResults: expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'team/beta', execution: 'not-run', blockers: expect.arrayContaining([
+          expect.objectContaining({ code: 'operationReviewStale' })]) })]) });
+      expect(await fs.pathExists(location)).toBe(false);
+      expect(await fs.readFile(path.join(userSkill, 'README.md'), 'utf8')).toBe('External bytes.');
+      await fs.remove(userSkill);
+      await fs.writeFile(control, 'ready');
+      await fs.writeFile(trace, '');
+      const repaired = await runRecovery('sync', ['team/beta'], project, runtime);
+      expect(repaired.ok, JSON.stringify(repaired.errors)).toBe(true);
+      expect(await hooks()).toEqual(['shared/user', 'beta/project']);
+    } else {
+      expect(result.ok, JSON.stringify(result.errors)).toBe(true);
+      const consumer = result.targetResults.find((target) => target.pluginId === 'team/beta');
+      expect(consumer).toMatchObject({ scope: 'project', relation: 'root', observation: 'verified' });
+      if (scenario === 'missing provider') {
+        expect(await fs.readFile(providerFile, 'utf8')).toContain('shared');
+      } else if (native) {
+        expect(consumer?.backend).toMatchObject({ targetResults: expect.arrayContaining([
+          expect.objectContaining({ action: 'keep', relation: 'dependency', target: expect.objectContaining({ pluginId: 'team/shared', scope: 'user' }) })]) });
+      } else {
+        expect(result.targetResults.find((target) => target.pluginId === 'team/shared')).toMatchObject({
+          scope: 'user', relation: 'dependency', execution: 'no-op', observation: 'verified' });
+      }
+      await fs.writeFile(trace, '');
+      expect((await runRecovery('sync', ['team/shared'], user, runtime)).ok).toBe(true);
+      expect(await hooks()).toEqual(['shared/user']);
+    }
+    if (!native) {
+      expect(await fs.readFile(location, 'utf8')).toContain('beta');
+      expect(await fs.readJson(path.join(userSkill, SKILL_OWNER_MARKER))).toMatchObject({ pluginId: 'team/shared', scope: 'user' });
+    }
+  }, 30_000);
 
   // Test Value Gate: changed Review evidence prevents all backend writes.
   it.each(['intent', 'preferences', 'footprint'])('rejects changed %s after Review', async (change) => {

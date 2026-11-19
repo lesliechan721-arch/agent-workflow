@@ -64,6 +64,8 @@ Review 冻结 Active snapshot、两份声明、部署偏好、配置、目标和
 
 dependency placement 由 User/Project 完整需求闭包自动决定，不提供 scope override 或手动选择。对允许跨 scope 复用的布局，User 需要的共同依赖由 User 提供；scope 独立的 Native 布局在各自 scope 物化。项目即使看到损坏的 User provider 也不自动复制一份 fallback。provider 切换先验证替代目标及 preApply，再清理可证明专属的旧输出；失败保留旧输出并阻止相关 consumer，独立目标继续。Native 的共享包、实际 activation 与专属组件分别核验；合法继承不伪装为项目缺失。安装准备被依赖阻断时，保留依赖、Agent、位置、安全原因和对应恢复入口。
 
+只同步项目根时，如果它复用的个人依赖已核验健康，重试会跳过该依赖的安装脚本。generic 会核对 AW 所有权和内容摘要。共享个人包的原生平台沿用宿主的依赖与登记检查，项目仍执行自己的启用步骤。项目脚本可能改变依赖，写入前须重新核验。缺失或变化的依赖按实际状态修复或报告冲突。显式选择该个人插件时仍按普通同步处理。
+
 依赖执行顺序只在本次命令内存在。内部后端结果保留 relation、requiredBy、安全后端状态和恢复建议；统一 CLI 生命周期 data 保留请求的所有目标、阻断与未完成项，不公开持久计划、锁或来源内部证据。精确匹配的现有 shared native 可复用，不建立 ownership ledger。
 
 精确插件升级可以选择完整需求闭包中的依赖项，不要求把依赖提升为 Intent root；选择仍绑定原有 root、target 与 provider scope。闭包之外的插件不能借此成为同步目标。

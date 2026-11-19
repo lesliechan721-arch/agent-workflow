@@ -96,7 +96,9 @@ export function deploymentResultLines(receipts: readonly PublicDeploymentResult[
     `  包${stateLabel(receipt.after.package)} · 登记${stateLabel(receipt.after.registration)} · ${reloadLabels[receipt.reload] ?? receipt.reload}`,
     ...nativeSourceLines(receipt.after),
     ...configurationLines(receipt.after),
-    ...receipt.diagnostics.map((entry) => `  ! ${technical ? `${entry.code} · ` : ''}${entry.message}`),
+    ...new Set([...receipt.diagnostics, ...receipt.effects.flatMap((effect) => effect.diagnostics
+      .filter((entry) => entry.subject?.field === 'nativeSource'))]
+      .map((entry) => `  ! ${technical ? `${entry.code} · ` : ''}${entry.message}`)),
   ]);
 }
 

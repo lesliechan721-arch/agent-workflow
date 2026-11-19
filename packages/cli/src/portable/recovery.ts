@@ -399,6 +399,7 @@ export async function executePortableRecovery(options: {
   progress?: CheckedPortableProgress;
   admission?: InstallAdmission;
   checkPrewrite?: () => Promise<RecoveryDiagnostic | undefined>;
+  readProviders?: readonly PortablePreparation[];
   onStart?: () => void;
   signal?: AbortSignal;
 }): Promise<PortableExecution> {
@@ -445,8 +446,13 @@ export async function executePortableRecovery(options: {
       if (!preflight || checkedEpoch !== epoch) {
         checkedEpoch = epoch;
         const capture = async () => ({ epoch: admission?.exclusiveGeneration ?? 0, problem: await read() });
-        preflight = admission ? admission.run(prepared.options.agents.map((agent) =>
-          ({ kind: 'path', value: layout.targetRoot(agent), access: 'read' })), capture, signal) : capture();
+        const readRoots = [...prepared.options.agents.map((agent) => layout.targetRoot(agent)),
+          ...(options.readProviders ?? []).flatMap((group) => {
+            const provider = portableRecoveryLayout(group.options.context);
+            return group.options.agents.map((agent) => provider.targetRoot(agent));
+          })];
+        preflight = admission ? admission.run([...new Set(readRoots)].map((value) =>
+          ({ kind: 'path', value, access: 'read' })), capture, signal) : capture();
       }
       return preflight;
     };

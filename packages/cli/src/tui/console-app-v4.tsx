@@ -129,7 +129,7 @@ import {
 import { DependencyGraphView, projectDependencyGraphView } from './dependency-graph-view.js';
 import { agentLabel, platformLabel, scopeLabel, recoveryReason } from './glossary.js';
 import { deploymentPlanLines, deploymentResultLines, deploymentObservationLines, deploymentExclusionLines, componentGapLines } from './deployment-view.js';
-import { projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
+import { inventoryRecoveryActions, projectDeploymentReceipt, projectDeploymentObservation } from '../commands/public-lifecycle-result.js';
 import type { FrozenDeploymentPlan } from '../platforms/contracts.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { QueryHeader, querySearchWidth } from './query-header.js';
@@ -326,7 +326,8 @@ function recoveryTargetLines(receipt: RecoveryReceipt, result: boolean): string[
     const key = target.agent;
     const group = groups.get(key) ?? { label: `→ ${agentLabel(target.agent)}`, targets: [] };
     group.targets.push(`${label}${reason ? ` · ${reason}` : ''}`);
-    if (result && target.deploymentReceipts) group.targets.push(...deploymentResultLines(target.deploymentReceipts.map(projectDeploymentReceipt)));
+    if (result && target.deploymentReceipts) group.targets.push(...deploymentResultLines(
+      target.deploymentReceipts.map((deployment) => projectDeploymentReceipt(deployment, { receipt, target }))));
     else if (result && target.deploymentObservations) group.targets.push(...deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation)));
     group.targets.push(...deploymentExclusionLines(target.deploymentExclusions ?? []), ...componentGapLines(target.componentGaps ?? []));
     groups.set(key, group);
@@ -444,6 +445,9 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     ...recoverySummaryErrors(receipt).map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
     ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
   ]).values()];
+  const nativeRecovery = inventoryRecoveryActions(receipt.targetResults.filter((target) => !target.deploymentReceipts?.length)
+    .flatMap((target) => [...target.blockers, ...(target.reasons ?? [])])
+    .filter((entry) => entry.subject?.field === 'nativeSource' || entry.subject?.field === 'workspace'), receipt);
   return [
     `范围：${receipt.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
     `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
@@ -455,10 +459,12 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
     ...receipt.targetResults.flatMap((target) => target.reasons?.map((reason) => `${reason.code} · ${reason.message}`) ?? []),
     ...(isRecoveryReviewStaleBeforeExecution(receipt) ? ['本次未执行，需要重新准备。'] : []),
     ...receipt.targetResults.map((target) => `${target.pluginId} · ${agentLabel(target.agent)} [${target.scope === 'user' ? '个人' : '当前项目'}] · ${target.delivery?.kind === 'native' ? '原生' : target.delivery?.kind === 'agent-skills' ? 'Skills' : '无交付'} · ${target.execution} · ${target.observation}${target.blockers.length ? ` · 受阻 ${target.blockers.map((blocker) => blocker.code).join('、')}` : ''}`),
-    ...receipt.targetResults.flatMap((target) => target.deploymentReceipts ? deploymentResultLines(target.deploymentReceipts.map(projectDeploymentReceipt), true)
+    ...receipt.targetResults.flatMap((target) => target.deploymentReceipts ? deploymentResultLines(
+      target.deploymentReceipts.map((deployment) => projectDeploymentReceipt(deployment, { receipt, target })), true)
       : target.deploymentObservations ? deploymentObservationLines(target.deploymentObservations.map(projectDeploymentObservation), true) : []),
     ...receipt.targetResults.flatMap((target) => target.recoveryActions?.map((action) =>
       `${target.pluginId} · ${target.agent}：${action}`) ?? []),
+    ...nativeRecovery.flatMap((action) => action.kind === 'manual' ? [action.message] : []),
     ...(receipt.commandResults ?? []).flatMap((result) => [
       `命令${result.producer.kind === 'package' ? '包' : '生产者'} ${result.producer.key} · ${result.producer.sourceId}/${result.producer.pluginName} · ${scopeLabel(result.producer.scope)}${result.producer.platform ? ` · ${platformLabel(result.producer.platform)}` : ''} · ${result.state}`,
       ...(result.recoveryActions.some((action) => action.startsWith('aw command package remove '))

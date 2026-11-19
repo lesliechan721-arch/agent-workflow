@@ -174,10 +174,10 @@ async function executeNativeLifecycleEffect(ctx: MutationContext,
     case 'gemini-extension': {
       const fixedConsentContract = product?.version === '0.67.0';
       if (effect.kind === 'register' || effect.kind === 'refresh') {
-        if (ctx.geminiNativeConsent !== prepared.plan) blocked('nativeConsentRequired');
         // Separate stdout/stderr pipes do not frame the complete authorization
         // text. Only the recorded client contract is safe for automatic answers.
         if (!fixedConsentContract) blocked('nativeConsentProtocolUnconfirmed');
+        if (ctx.geminiNativeConsent !== prepared.plan) blocked('nativeConsentRequired');
       }
       if (!ctx.geminiActivationSnapshot) blocked('nativeActivationEvidenceUnknown');
       const snapshot = await readGeminiActivationSnapshot(ctx, ctx.geminiActivationSnapshot);

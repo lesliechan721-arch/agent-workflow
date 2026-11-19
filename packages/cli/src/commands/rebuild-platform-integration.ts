@@ -10,7 +10,7 @@ import { getAgentPluginAdapter } from '../platforms/registry.js';
 import { getQualifiedPlatformProfile } from '../platforms/capabilities.js';
 import { getDeploymentLayout, getDeploymentResourceKey, getInvocationPolicyPhysicalKey } from '../platforms/layout.js';
 import { deploymentPackageComponent, inspectStaticSupplements, requiredDeploymentActivation } from '../platforms/inspection.js';
-import type { PlatformDriverState } from '../platforms/lifecycle.js';
+import { geminiRecoveryDiagnostics, type PlatformDriverState } from '../platforms/lifecycle.js';
 import { piProjectRegistrationHidden, piProjectRemovalConfirmed } from '../platforms/lifecycle-native.js';
 import { createNativeLifecycleServices } from '../platforms/lifecycle-native-services.js';
 import { assertGeminiProjectRules, geminiActivationEvidence, geminiActivationRules, geminiExtensionPaths, geminiScopePattern,
@@ -1084,10 +1084,10 @@ export class PlatformRebuildSession {
             : plan.binding.route === 'codex-marketplace' && requireIndependentActivation && after.scopeActivation === 'unknown'
               ? 'codexProjectActivationUnconfirmed'
               : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
-          receipt.diagnostics.push({ code, severity: 'error',
-            message: code === 'nativeInstallContentPostcheckFailed' && plan.binding.route === 'gemini-extension'
-              ? `The actual Gemini copy does not confirm the frozen package bytes. In the same workspace, review and run aw plugin sync ${plan.binding.plugin.pluginId} --context ${plan.binding.scope.kind} --target gemini --native-consent.`
-              : code === 'nativeInstallContentPostcheckFailed'
+          if (code === 'nativeInstallContentPostcheckFailed' && plan.binding.route === 'gemini-extension') {
+            receipt.diagnostics.push(...geminiRecoveryDiagnostics(plan, ctx.cwd, code));
+          } else receipt.diagnostics.push({ code, severity: 'error',
+            message: code === 'nativeInstallContentPostcheckFailed'
                 ? 'The installed native copy does not confirm the frozen package bytes. Check status and sync the affected target.'
                 : code === 'grokProjectAuthorizationDenied'
                   ? 'Grok denied authorization for the selected project. Review the project in Grok before syncing.'

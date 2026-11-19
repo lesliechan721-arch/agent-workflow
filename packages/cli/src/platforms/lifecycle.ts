@@ -33,6 +33,24 @@ export function lifecycleDiagnostic(binding: DeploymentBinding, code: string, me
   return { code, severity: 'error', message,
     subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } };
 }
+/** Keep the native input and workspace bound to the physical extension. The joint receipt owns AW retries. */
+export function geminiRecoveryDiagnostics(plan: FrozenDeploymentPlan, cwd: string,
+  code: keyof typeof geminiConsentMessages | keyof typeof geminiReplacementMessages): Diagnostic[] {
+  const { binding, evidence } = plan;
+  const messages = { ...geminiConsentMessages, ...geminiReplacementMessages };
+  const manual = code === 'nativeConsentProtocolUnconfirmed' || code === 'nativeConsentPromptUnsupported';
+  const description = manual
+    ? `${messages[code]} Back up the extension and its activation rules. Review each host permission with the same Gemini client and configuration root.`
+    : messages[code];
+  const subject = { pluginId: binding.plugin.pluginId, sourceId: binding.plugin.sourceId, target: binding.platform, scope: binding.scope.kind };
+  return [
+    { code, severity: 'error', message: description, subject: { ...subject, field: 'nativeSource' },
+      detail: { reasonCode: 'geminiNativeConsentSource', path: evidence.layout.packageRoot } },
+    { code: 'nativeConsentWorkspace', severity: 'warning', message: 'Review Gemini permissions in the identified workspace.',
+      subject: { ...subject, field: 'workspace' },
+      detail: { reasonCode: 'geminiNativeConsentWorkspace', path: binding.scope.kind === 'project' ? binding.scope.projectRoot : cwd } },
+  ];
+}
 function componentPath(component: OwnedComponent): string | null {
   return 'path' in component ? component.path : null;
 }
@@ -378,24 +396,15 @@ export async function executePlatformLifecycle(ctx: MutationContext,
         && (code === 'clientInstallEntryUnavailable' || code === 'nativeIdentityUnconfirmed' || code === 'nativeTrustRequired');
       result.mutation = mutation === 'none' || definite ? 'none' : mutation === 'confirmed' ? 'confirmed' : started ? 'possible' : 'none';
       result.status = definite || (geminiCode !== undefined && result.mutation === 'none') ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
-      const geminiMessage = consentCode ? geminiConsentMessages[consentCode] : replacementCode ? geminiReplacementMessages[replacementCode] : undefined;
-      const failureDiagnostic = lifecycleDiagnostic(binding, geminiCode ?? (code === 'operationPlanStale' ? code : definite ? code : 'platformMutationFailed'),
-        geminiMessage ? code === 'nativeConsentProtocolUnconfirmed' || code === 'nativeConsentPromptUnsupported'
-          ? `${geminiMessage} Back up extension ${JSON.stringify(state.identity?.packageId)} and its activation rules. Use the same Gemini client and configuration root in the identified workspace to inspect the retained installation and install the identified AW source. Review each host permission yourself. Then run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini.`
-          : `${geminiMessage} In the same workspace, review and run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini --native-consent.`
-          : definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.' : 'A platform action did not complete. Check status and retry the remaining actions.');
-      if (code === 'nativeConsentProtocolUnconfirmed' || code === 'nativeConsentPromptUnsupported') {
-        failureDiagnostic.subject = { ...failureDiagnostic.subject, sourceId: binding.plugin.sourceId, field: 'nativeSource' };
-        failureDiagnostic.detail = { reasonCode: 'geminiNativeConsentSource', path: plan.evidence.layout.packageRoot };
-        const workspaceDiagnostic: Diagnostic = { ...lifecycleDiagnostic(binding, 'nativeConsentWorkspace',
-          'Review the Gemini permissions in this exact workspace with the same client and configuration root.'), severity: 'warning',
-        subject: { ...failureDiagnostic.subject, field: 'workspace' },
-        detail: { reasonCode: 'geminiNativeConsentWorkspace', path: binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd } };
-        result.diagnostics.push(workspaceDiagnostic);
-        receipt.diagnostics.push(workspaceDiagnostic);
+      if (geminiCode) {
+        const diagnostics = geminiRecoveryDiagnostics(plan, ctx.cwd, geminiCode);
+        result.diagnostics.push(...diagnostics);
+        receipt.diagnostics.push(...diagnostics);
+      } else {
+        result.diagnostics.push(lifecycleDiagnostic(binding, code === 'operationPlanStale' || definite ? code : 'platformMutationFailed',
+          definite ? 'A required native identity, client entry, or host trust is unavailable. Complete it in the host and retry.'
+            : 'A platform action did not complete. Check status and retry the remaining actions.'));
       }
-      result.diagnostics.push(failureDiagnostic);
-      if (geminiCode) receipt.diagnostics.push(failureDiagnostic);
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
         && (!definite || code === 'nativeTrustRequired')) {
         result.diagnostics.push({ ...lifecycleDiagnostic(binding, 'grokNativeInstallRecovery',
@@ -439,11 +448,12 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       result.status = receipt.after.registration === 'unknown' || !afterConsumer || afterConsumer.activation === 'unknown'
         || binding.route === 'grok-cli' && receipt.after.components.some((component) => component.presence === 'unknown') ? 'unknown' : 'failed';
       const code = binding.route === 'gemini-extension' && !nativeContentReady ? 'nativeInstallContentPostcheckFailed' : 'nativeMutationPostcheckFailed';
-      const diagnostic = lifecycleDiagnostic(binding, code, code === 'nativeInstallContentPostcheckFailed'
-        ? `${geminiReplacementMessages.nativeInstallContentPostcheckFailed} In the same workspace, review and run aw plugin sync ${binding.plugin.pluginId} --context ${binding.scope.kind} --target gemini --native-consent.`
-        : 'The native command completed, but the final state does not confirm the requested result. Check status before retrying.');
-      result.diagnostics.push(diagnostic);
-      if (code === 'nativeInstallContentPostcheckFailed') receipt.diagnostics.push(diagnostic);
+      if (code === 'nativeInstallContentPostcheckFailed') {
+        const diagnostics = geminiRecoveryDiagnostics(plan, ctx.cwd, code);
+        result.diagnostics.push(...diagnostics);
+        receipt.diagnostics.push(...diagnostics);
+      } else result.diagnostics.push(lifecycleDiagnostic(binding, code,
+        'The native command completed, but the final state does not confirm the requested result. Check status before retrying.'));
       for (const componentId of effect.componentIds) {
         const component = plan.expected.components.find((item) => item.id === componentId);
         if (component) receipt.unmet.push({ id: `execution:${effect.id}:${componentId}`, componentId, kind: component.kind,

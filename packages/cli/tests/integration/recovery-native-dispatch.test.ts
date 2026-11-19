@@ -10,7 +10,7 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
-import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { createCatalogSnapshotFixture, createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
@@ -25,7 +25,93 @@ import type { ReadContext } from '../../src/platforms/contracts.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
+import { runCliEntry } from '../helpers/cli-entry.js';
+import type { CommandResult } from '../../src/output/public-result.js';
 import type { LifecycleData } from '../../src/commands/public-lifecycle-result.js';
+
+async function grokTrustFixture(failProject = false) {
+  installNativeTestQualification({ platforms: ['grok'], discovery: true, executable: process.execPath });
+  const { env, layout } = getCurrentSourceTestIsolation();
+  const cwd = layout.fixtureCwd;
+  await git(cwd, ['init', '--quiet']);
+  const catalog = path.join(cwd, 'grok-catalog');
+  const host = resolvePlatformConfigRoot('grok', { cwd, env });
+  const projectScript = path.join(cwd, 'project-preapply');
+  const names = ['base', 'bundle'];
+  for (const name of names) {
+    const skill = path.join(catalog, 'plugins', name, 'skills', name);
+    await fs.outputFile(path.join(skill, 'SKILL.md'), `---\nname: ${name}\ndescription: Use ${name}.\n---\nUse ${name}.\n`);
+    await fs.outputFile(path.join(skill, 'README.md'), `Use ${name}.\n`);
+  }
+  if (failProject) await fs.outputFile(path.join(catalog, 'plugins/base/pre-apply.mjs'), [
+    "import fs from 'node:fs';",
+    "if (JSON.parse(fs.readFileSync(0, 'utf8')).target.scope === 'project') {",
+    `  fs.writeFileSync(${JSON.stringify(projectScript)}, 'attempted'); process.exit(6);`,
+    "}",
+  ].join('\n'));
+  await createDependencyCatalogSnapshotFixture(catalog, names.map((name) => ({
+    name, dependencies: name === 'bundle' ? ['base'] : [], configureManifest(manifest) {
+      manifest.platforms = ['grok', 'generic'];
+      manifest.skills = './skills';
+      delete manifest.extensions;
+      if (failProject && name === 'base') manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
+    },
+  })));
+  const config = await readCatalogSourcesConfigSnapshot(env);
+  await replaceCatalogSourcesConfig({ config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: catalog }] },
+    expectedDigest: config.digest, env });
+  await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+  await setTargets({ cwd, env, scope: 'user' }, failProject ? ['grok'] : ['grok', 'generic']);
+
+  const registered = new Map<string, { name: string; path: string; source: string }>();
+  // Only the simulated interactive Grok invocation below may grant new-source trust.
+  const runner = async ({ command, args }: NativeCliInvocation) => {
+    expect(command).toBe(process.execPath);
+    const plugins = [...registered.values()];
+    let stdout: string;
+    if (args.includes('--version')) stdout = 'grok 1.0.77';
+    else if (args[0] === 'plugin' && args[1] === 'list') stdout = JSON.stringify(plugins.map((plugin) =>
+      ({ ...plugin, repo_key: 'local-' + plugin.name, version: '1.0.0', status: 'installed' })));
+    else if (args[0] === 'inspect') stdout = JSON.stringify({ grokVersion: '1.0.77', projectTrusted: true,
+      plugins: plugins.map(({ name, path: installed }) => ({ name, path: installed, scope: 'user', enabled: true })),
+      skills: [], agents: [], mcpServers: [] });
+    else throw new Error('Unexpected automatic Grok mutation: ' + JSON.stringify(args));
+    return { exitCode: 0, stdout, stderr: '' };
+  };
+  const aw = async (argv: string[]) => {
+    const result = await runCliEntry([...argv.slice(1), '--yes', '--json'], { cwd, env, nativeCliRunner: runner, interactive: false });
+    return result.parseJsonStdout<CommandResult<LifecycleData>>();
+  };
+  const trustAndRetry = async (result: CommandResult<LifecycleData>, plugin: string, expectedRoot: string) => {
+    const diagnostic = result.diagnostics.find((item) => item.code === 'grokNativeInstallRecovery'
+      && item.subject?.pluginId === 'local/' + plugin && item.subject.scope === 'user');
+    const source = diagnostic?.detail?.path;
+    expect(source, JSON.stringify(result.diagnostics)).toBeTruthy();
+    const manual = result.nextActions.find((action) => action.kind === 'manual'
+      && action.message.includes(JSON.stringify(['plugin', 'install', source, '--trust'])));
+    if (manual?.kind !== 'manual') throw new Error('Missing manual Grok install for ' + plugin);
+    const retryText = 'aw plugin sync local/' + expectedRoot + ' --context user --target grok';
+    expect(manual.message).toContain(retryText);
+    const provider = result.data.targetResults.find((target) => target.pluginId === 'local/' + plugin && target.target === 'grok');
+    const effects = provider?.deploymentReceipts?.flatMap((receipt) => receipt.effects.flatMap((effect) => effect.diagnostics));
+    expect(effects).toContainEqual(expect.objectContaining({ code: 'grokNativeInstallRecovery', message: expect.stringContaining(retryText) }));
+    if (plugin !== expectedRoot) expect(JSON.stringify(result)).not.toContain('aw plugin sync local/' + plugin + ' ');
+    const retries = result.nextActions.flatMap((action) => action.kind === 'command' && action.argv[2] === 'sync' ? [action.argv] : []);
+    expect(retries).toEqual([['aw', 'plugin', 'sync', 'local/' + expectedRoot, '--context', 'user', '--target', 'grok']]);
+    expect(result.nextActions.indexOf(manual)).toBeLessThan(result.nextActions.findIndex((action) => action.kind === 'command' && action.argv[2] === 'sync'));
+
+    const argv = JSON.parse(manual.message.match(/\["plugin","install",.+?,"--trust"\]/u)![0]) as string[];
+    expect(argv).toEqual(['plugin', 'install', source, '--trust']);
+    const approvedSource = argv[2]!;
+    const manifest = await fs.readJson(path.join(approvedSource, '.grok-plugin/plugin.json'));
+    expect(manifest.name).toBe(plugin);
+    const installed = path.join(host, 'installed-plugins', 'local-' + plugin);
+    await fs.copy(approvedSource, installed);
+    registered.set(plugin, { name: plugin, path: installed, source: approvedSource });
+    return aw(retries[0]!);
+  };
+  return { cwd, env, aw, projectScript, trustAndRetry };
+}
 
 describe('native recovery dispatch', () => {
   // Confirm both a completed empty rules projection and a real scoped Markdown rule
@@ -113,6 +199,53 @@ describe('native recovery dispatch', () => {
       });
     }
     expect(await fs.readFile(trace, 'utf8')).toBe(rendered);
+  });
+
+  // Test Value Gate: host trust applies to the retained dependency bytes, but only the
+  // declared root can be synced. The completed generic location is outside both retries.
+  it('trusts the retained Grok dependency source and recovers through the declared root', async () => {
+    const { aw, env, trustAndRetry } = await grokTrustFixture();
+    const first = await aw(['aw', 'plugin', 'install', 'local/bundle', '--scope', 'user']);
+    expect(first.status, JSON.stringify(first.diagnostics)).toBe('partial');
+    expect(first.data).toMatchObject({ requirements: { roots: ['local/bundle'] }, targetResults: expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'local/bundle', target: 'generic', execution: 'applied', content: 'satisfied' }),
+      expect.objectContaining({ pluginId: 'local/base', target: 'grok', blockerCodes: expect.arrayContaining(['nativeTrustRequired']) }),
+    ]) });
+    const sibling = path.join(env.HOME!, '.agents', 'skills', 'bundle', 'SKILL.md');
+    const before = await fs.readFile(sibling);
+    const stamp = (await fs.stat(sibling)).mtimeMs;
+    const undeclared = await aw(['aw', 'plugin', 'sync', 'local/base', '--context', 'user', '--target', 'grok']);
+    expect(undeclared.diagnostics).toContainEqual(expect.objectContaining({ code: 'syncPluginNotDesired' }));
+    const root = await trustAndRetry(first, 'base', 'bundle');
+    expect(root.status, JSON.stringify(root.diagnostics)).toBe('partial');
+    const completed = await trustAndRetry(root, 'bundle', 'bundle');
+    expect(completed.status, JSON.stringify(completed.diagnostics)).toBe('success');
+    expect(completed.data).toMatchObject({ remainingTargets: [], targetResults: expect.arrayContaining(['base', 'bundle'].map((name) =>
+      expect.objectContaining({ pluginId: 'local/' + name, target: 'grok', observation: 'verified', content: 'satisfied' }))) });
+    expect(await fs.readFile(sibling)).toEqual(before);
+    expect((await fs.stat(sibling)).mtimeMs).toBe(stamp);
+  });
+
+  it('keeps Grok User trust and one Project retry after the Project preApply independently fails', async () => {
+    const { cwd, env, aw, projectScript } = await grokTrustFixture(true);
+    for (const scope of ['user', 'project'] as const) await writeIntentFixture({ cwd, env, scope },
+      { roots: [{ pluginId: 'local/base' }], targets: ['grok'] });
+    const result = await aw(['aw', 'plugin', 'sync', 'local/base', '--context', 'project', '--target', 'grok']);
+    expect(result.status, JSON.stringify(result.diagnostics)).toBe('partial');
+    expect(await fs.readFile(projectScript, 'utf8')).toBe('attempted');
+    expect(result.data.targetResults.find((target) => target.scope === 'project')).toMatchObject({
+      pluginId: 'local/base', target: 'grok', execution: 'failed', blockerCodes: expect.arrayContaining(['preApplyFailed']),
+    });
+    expect(result.data.remainingTargets).toEqual(expect.arrayContaining(['user', 'project'].map((scope) =>
+      ({ pluginId: 'local/base', target: 'grok', scope }))));
+    const source = result.diagnostics.find((item) => item.code === 'grokNativeInstallRecovery'
+      && item.subject?.pluginId === 'local/base' && item.subject.scope === 'user')?.detail?.path;
+    expect(source).toBeTruthy();
+    const trust = result.nextActions.find((action) => action.kind === 'manual'
+      && action.message.includes(JSON.stringify(['plugin', 'install', source, '--trust'])));
+    expect(trust).toMatchObject({ message: expect.stringContaining('aw plugin sync local/base --context project --target grok') });
+    expect(result.nextActions.flatMap((action) => action.kind === 'command' && action.argv[2] === 'sync' ? [action.argv] : []))
+      .toEqual([['aw', 'plugin', 'sync', 'local/base', '--context', 'project', '--target', 'grok']]);
   });
 
   // Test Value Gate: Project retirement must use the real recovery preparation
