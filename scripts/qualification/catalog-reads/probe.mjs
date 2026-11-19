@@ -29,12 +29,12 @@ const report = (result) => options.output
   ? fs.writeFile(options.output, `${JSON.stringify(result, null, 2)}\n`)
   : process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 
-async function validate(buildRoot, catalog) {
+async function validate(buildRoot, catalog, expectedDigest = activeDigest) {
   const { validateCatalogSnapshotTransport } = await core(buildRoot);
   const start = performance.now();
   const result = await validateCatalogSnapshotTransport(catalog);
   const elapsedMs = performance.now() - start;
-  assert.equal(result.snapshotDigest, activeDigest);
+  if (expectedDigest) assert.equal(result.snapshotDigest, expectedDigest);
   assert.equal(result.manifest.entries.length, 12);
   return { elapsedMs, snapshotDigest: result.snapshotDigest, manifestSHA256: hash(JSON.stringify(result.manifest)) };
 }
@@ -216,11 +216,21 @@ async function check(variants, catalog, root) {
 if (options.worker === 'memory') {
   await memoryWorker(options.root, options.catalog);
 } else if (options.mode === 'fixture') {
-  const result = await validate(options.root, options.catalog);
+  const result = await validate(options.root, options.catalog, null);
   const entries = await fs.readdir(options.catalog, { recursive: true, withFileTypes: true });
-  const regularFiles = entries.filter((entry) => entry.isFile()).length;
-  assert.equal(regularFiles, fixtureFiles);
-  await report({ regularFiles, plugins: 12, snapshotDigest: result.snapshotDigest, manifestSHA256: result.manifestSHA256 });
+  const files = entries.filter((entry) => entry.isFile());
+  const metadata = { regularFiles: files.length, plugins: 12, snapshotDigest: result.snapshotDigest,
+    manifestSHA256: result.manifestSHA256 };
+  if (metadata.snapshotDigest !== activeDigest || files.length !== fixtureFiles) {
+    metadata.fileSHA256 = {};
+    for (const entry of files) {
+      const file = path.join(entry.parentPath, entry.name);
+      metadata.fileSHA256[path.relative(options.catalog, file)] = hash(await fs.readFile(file));
+    }
+  }
+  await report(metadata);
+  assert.equal(metadata.snapshotDigest, activeDigest);
+  assert.equal(files.length, fixtureFiles);
 } else if (options.mode === 'archive') {
   const expected = (await fs.readFile(path.join(options.catalog, 'catalog.sha256'), 'utf8')).split(/\s/u)[0];
   const archiveSHA256 = hash(await fs.readFile(path.join(options.catalog, 'catalog.tgz')));

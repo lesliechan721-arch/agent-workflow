@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+env:
+  CATALOG_REVISION: 53e39d212bab59251a88eeb3372c00ed1d63da6a
+  NODE_VERSION: 24.14.1
+
 jobs:
   fixture:
     runs-on: ubuntu-24.04
@@ -15,24 +19,25 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          ref: 53e39d212bab59251a88eeb3372c00ed1d63da6a
-          path: catalog-source
-          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
       - uses: actions/setup-node@v6
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
       - name: Build and verify the fixed public Catalog
-        working-directory: catalog-source
+        shell: bash
         run: |
+          source="$RUNNER_TEMP/catalog-source"
+          mkdir "$source"
+          git fetch --depth=1 origin "$CATALOG_REVISION"
+          git archive "$CATALOG_REVISION" | tar -x -C "$source"
+          cd "$source"
           pnpm install --frozen-lockfile
           pnpm build
           node packages/cli/dist/index.js dev catalog build --workspace-root "$PWD" --json > /dev/null
-          node ../scripts/qualification/catalog-reads/probe.mjs --mode fixture --root "$PWD" --catalog .aw/catalog
+          probe="$GITHUB_WORKSPACE/scripts/qualification/catalog-reads/probe.mjs"
+          node "$probe" --mode fixture --root "$PWD" --catalog .aw/catalog --output "$RUNNER_TEMP/catalog-fixture.json"
           tar -C .aw -czf "$RUNNER_TEMP/catalog.tgz" catalog
           cd "$RUNNER_TEMP"
           sha256sum catalog.tgz > catalog.sha256
@@ -42,7 +47,16 @@ jobs:
           path: |
             ${{ runner.temp }}/catalog.tgz
             ${{ runner.temp }}/catalog.sha256
+            ${{ runner.temp }}/catalog-fixture.json
           if-no-files-found: error
+          retention-days: 7
+      - name: Save public file fingerprints on a fixture mismatch
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-read-fixture-mismatch
+          path: ${{ runner.temp }}/catalog-fixture.json
+          if-no-files-found: ignore
           retention-days: 7
 
   measure:
@@ -66,7 +80,7 @@ jobs:
           version: 10.33.0
       - uses: actions/setup-node@v6
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
       - name: Build the three Core variants from the same checkout
         shell: bash
         run: |
