@@ -37,7 +37,7 @@ Darwin 上的同一固定 Gemini 只读版本/清单 probe 可使用 Node 标准
 
 Antigravity CLI `1.3.4` 在 Linux、macOS、Windows 的 x64/arm64 六环境开放 User 普通 Skill，依据[六环境 User 叶证据](../../../scripts/qualification/evidence/native-antigravity-user-skills-six-hosts-2026-11-14.json)。记录包含安装、版本更新、同版本正文刷新、目标 Git 项目与外部 neutral 的有效启用状态、实际副本字节、owner 保留及移除后双侧缺席。Linux 双架构与 macOS x64 来自原运行，macOS ARM64 与 Windows 双架构来自剩余环境补测，原运行的失败与容量取消保持。Project、App、其他 host、Agent 等其他组件仍 unverified；其他版本按相同接口最低条件判断，实测证据仍限于记录版本；Skill 加载、模型采用和会话 trust 未知独立记录。Linux x64 公开 AW 链已另行验证；该 Native 记录不证明其他宿主的公开 AW 完整编排，须由新的对应报告判断。
 
-Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 校验注册身份、架构、路径链和有界搜索。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
+Codex 发现复用安全 PATH/npm launcher 与 App 边界；App 内置入口须在合法 bundle/package 内，版本同样通过。macOS 检查 ~/Applications 与 /Applications；Windows 每次发现先在当前用户注册的 Main 包中查找 `OpenAI.Codex`，存在候选时核对开始菜单的精确 `<PackageFamilyName>!App`、架构和路径链，再做有界搜索。包查询失败时仍查开始菜单，有对应家族则报告发现不完整。单候选失败保留安全诊断，继续独立候选。多个产品面在同一 target 下分别保留，不以最高版本结果覆盖另一个面。
 
 符合现有兼容条件的 Codex CLI 支持用户可见、可手动调用的 Skill。安装时通过 `agents/openai.yaml` 的 `policy.allow_implicit_invocation` 保留作者声明的自动调用限制。禁用自动调用的 Skill 仍出现在用户的 Skill 列表中。
 
@@ -115,7 +115,7 @@ Gemini inspection 每次读取实际原生目录的完整摘要，并核对副�
 
 每个配对原生动作后，AW 只在配置完全等于固定版本预期变换时窄恢复此前的全局、全部项目与其他插件字段，并更新本次快照；失败时也只接受未改变或已知变换，遇到 stale 不覆盖外部修改。重装后再核对实际原生副本与本次冻结投影的完整摘要，原生退出 0、版本或登记存在均不能替代字节检查。失败保留 AW 源包和已核验的激活规则，以 partial/unknown 及 `nativeInstallContentPostcheckFailed` 等诊断给出恢复；不回滚包、不删除未知数据、不新建恢复 ledger，也不为其他项目新增信任。用户须先保留或处理本地数据、修复弱 owner 或安装现场，再在同一工作区显式运行许可恢复命令。
 
-Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`；项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，但后续路径仍须为与本次 AW marketplace 精确一致的绝对路径，才能确认来源。
+Copilot 的用户配置根遵循 `COPILOT_HOME`，未设置时使用 `HOME/.copilot`；项目启用规则独立写入项目配置。原生 marketplace 的 `Local: ` 显示前缀可以解析，但后续路径仍须为与本次 AW marketplace 精确一致的绝对路径，才能确认来源。包已确认发布、插件已登记，且写后观察仅因市场查询超时而无法确认归属时，回执采用同一 binding 在写后重核中重新取得的完整观察。再次超时或发现其他来源时，同步保留已发布的包并报告部分完成。
 
 Codex 本地 marketplace 登记在 Windows 上接受完整 drive/UNC 路径与对应 `\\?\` / `\\?\UNC\` 写法等价。仅统一 drive letter，目录组件及 UNC server/share 仍逐字比较；相对路径、其他设备路径、点组件、内部空组件、尾点/空格、ADS 和保留设备名均不匹配。不通过 realpath、symlink、8.3 或全串大小写折叠扩大来源归属。此比较不证明目录存在或 AW 所有，物理路径、owner、共享引用及锁内检查继续按[生命周期](lifecycle.md#ownership-与删除权限)执行。
 

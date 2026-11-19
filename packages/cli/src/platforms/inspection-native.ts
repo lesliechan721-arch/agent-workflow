@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { isCanonicalCodexMarketplaceRegistration } from '../utils/codex-shared-native.js';
 import { DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS } from '../constants.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
-import { runNativeCli } from '../utils/native-cli.js';
+import { NativeCliError, runNativeCli } from '../utils/native-cli.js';
 import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { rethrowFatalError } from '../utils/codex-executable-discovery.js';
 import { inspectOwnedComponents, readSkillOwnerMarker } from '../utils/ownership.js';
@@ -257,8 +257,12 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       ]);
       const marketplace = marketplaceRead.status === 'fulfilled' ? marketplaceRead.value : 'unknown';
       if (marketplaceRead.status === 'rejected') {
-        rethrowFatalError(marketplaceRead.reason); ctx.signal?.throwIfAborted();
-        diagnostic(result, binding, 'nativeMarketplaceUnconfirmed', 'The native marketplace source could not be confirmed. Keep the shared package.');
+        const error = marketplaceRead.reason;
+        rethrowFatalError(error); ctx.signal?.throwIfAborted();
+        result.diagnostics.push({ code: 'nativeMarketplaceUnconfirmed', severity: 'warning',
+          message: 'The native marketplace source could not be confirmed. Keep the shared package.',
+          subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind },
+          ...(error instanceof NativeCliError && error.reason === 'timeout' ? { detail: { reasonCode: error.operationDiagnostic.code } } : {}) });
       }
       if (marketplace === 'foreign') result.ownership = 'foreign';
       if (marketplace === 'unknown' && !['foreign', 'shared'].includes(result.ownership)) result.ownership = 'unknown';

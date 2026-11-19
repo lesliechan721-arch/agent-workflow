@@ -76,6 +76,18 @@ function packageDeliveryConfirmed(binding: DeploymentBinding, after: DeploymentO
     && (binding.route !== 'claude-marketplace' || after.scopeRegistration === undefined || after.scopeRegistration === 'present');
 }
 
+function recheckCopilotMarketplaceTimeout(receipt: DeploymentReceipt, fresh: DeploymentObservation): void {
+  const { ownership, registration, diagnostics } = receipt.after;
+  const [timeout] = diagnostics;
+  if (ownership !== 'unknown' || registration !== 'present' || diagnostics.length !== 1
+    || timeout?.code !== 'nativeMarketplaceUnconfirmed' || timeout.detail?.reasonCode !== 'nativeCliTimedOut') return;
+  // Keep the local owner, marketplace, registration and activation from the same
+  // read. Postcheck may annotate the receipt's components independently of rebase.
+  receipt.after = structuredClone(fresh);
+  receipt.diagnostics = receipt.diagnostics.filter((entry) => entry !== timeout);
+  receipt.diagnostics.push(...receipt.after.diagnostics);
+}
+
 /** Fingerprints are operation-local evidence; they confer no ownership or deletion rights. */
 async function pathEvidence(location: string): Promise<unknown> {
   const stat = await fs.lstat(location).catch((error: NodeJS.ErrnoException) => {
@@ -304,7 +316,7 @@ export class PlatformRebuildSession {
   private readonly mutableChecks = new Map<string, { physicalKey: string; marketplaceRoot: string | null;
     sourceId: string; sourceIdentity: string; assertStable(): Promise<void>;
     geminiActivationSnapshot?(): MutationContext['geminiActivationSnapshot'];
-    acceptMarketplaceRegistration(): Promise<void>; rebase(geminiExpected?: MutationContext['geminiActivationSnapshot']): Promise<void> }>();
+    acceptMarketplaceRegistration(): Promise<void>; rebase(geminiExpected?: MutationContext['geminiActivationSnapshot']): Promise<DeploymentObservation> }>();
   private readonly requestedOperations = new Map<string, TargetInput>();
   private readonly marketplaceTargets = new Set<DesiredTarget>();
   private marketplaceCandidatesFrozen = false;
@@ -809,6 +821,7 @@ export class PlatformRebuildSession {
             throw new Error('operationPlanStale: Gemini activation changed outside the checked native mutation.');
           }
           mutableBaseline = mutable;
+          return mutable.observation;
         } });
       const evidence: PreparationEvidence = { fingerprint: initial, managedCommandReview, layout: entry.layout, renderUnits: entry.layout.renderUnits,
         ownership: await Promise.all(inspected.components.map(async ({ component, state }) => ({ component, state,
@@ -1117,11 +1130,17 @@ export class PlatformRebuildSession {
             receipt.diagnostics.push({ code: 'managedCommandProducerFailed', severity: 'error', message: resolution.error.message,
               subject: { target: prepared.plan.binding.platform, pluginId: prepared.plan.binding.plugin.pluginId, scope: prepared.plan.binding.scope.kind } });
           }
+          const publish = prepared.plan.effects.find((effect) => effect.kind === 'publish-package');
+          const publication = receipt.effects.find((result) => result.id === publish?.id && result.status === 'applied');
           try {
             if (receipt.effects.some((effect) => effect.mutation !== 'none')) {
-              for (const check of this.mutableChecks.values()) if (check.physicalKey === prepared.plan.binding.physicalKey
+              for (const [bindingId, check] of this.mutableChecks) if (check.physicalKey === prepared.plan.binding.physicalKey
                 || executionContext.geminiActivationSnapshot && check.geminiActivationSnapshot?.()?.path === executionContext.geminiActivationSnapshot.path) {
-                await check.rebase(executionContext.geminiActivationSnapshot);
+                const fresh = await check.rebase(executionContext.geminiActivationSnapshot);
+                if (bindingId === receipt.bindingId && prepared.plan.binding.route === 'copilot-marketplace'
+                  && publication?.mutation === 'confirmed') {
+                  recheckCopilotMarketplaceTimeout(receipt, fresh);
+                }
               }
             }
           } catch (error) {
@@ -1160,12 +1179,10 @@ export class PlatformRebuildSession {
               }
             }
             const packageRemoved = !await fs.pathExists(root);
-            const replaced = receipt.effects.some((effect) => effect.status === 'applied'
-              && prepared.plan.effects.some((planned) => planned.id === effect.id && planned.kind === 'publish-package'));
             for (const producer of priorProducers.get(prepared.plan.binding.id) ?? []) {
               if (candidates.some((candidate) => artifactValueDigest(candidate.producer) === artifactValueDigest(producer))) continue;
               const componentId = producer.kind === 'static-skill' ? `skill:${producer.key}` : producer.key;
-              if (packageRemoved || replaced && !prepared.plan.expected.unmet.some((gap) => gap.id === componentId)) {
+              if (packageRemoved || publication && !prepared.plan.expected.unmet.some((gap) => gap.id === componentId)) {
                 await revokeManagedCommandBindings(producer, this.context.env);
               }
             }

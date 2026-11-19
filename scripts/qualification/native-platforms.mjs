@@ -159,7 +159,7 @@ export async function readSharedProviderStages(file) {
     const text = input.toString('utf8', 0, Math.min(bytesRead, limit));
     for (const line of text.split('\n').slice(0, -1)) {
       const { time, event } = JSON.parse(line);
-      if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(time)
+      if (typeof time !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(time)
         || !['performance:stage', 'rebuild:action'].includes(event?.type)) continue;
       const { name, phase, durationMs } = event.data ?? {};
       if (!['recovery.plan', 'recovery.lock.wait', 'recovery.locked.demand', 'recovery.locked.recheck',
@@ -343,6 +343,12 @@ export async function runScope(platform, scope, launcher, options = {}) {
               ...(sourceDiagnostic ? { nativeSourceConfiguration: await readQualificationCodexSources(env.CODEX_HOME) } : {}) } : {}),
           processManagement: { mode: result.containmentMode, gradingEvidenceAccepted: result.gradingEvidenceAccepted,
             descendantCleanupGuaranteed: result.descendantCleanupGuaranteed } }, root, options.clientBin));
+        if (stageLog && result.timedOut) {
+          // Each command records its own result. Inspect before the scenario
+          // restores configuration, and keep the install timeout as its failure.
+          await ctx.command(['plugin', 'list', '--json'], project, { entry: ctx.publicClientEntry }).catch(() => {});
+          await ctx.aw(['plugin', 'status', `qualification/${ctx.pluginName}`, args[2], '--context', 'project'], project).catch(() => {});
+        }
         if (expectedNonzero) {
           if (result.timedOut) throw new Error('command-timeout');
           if (result.maxBufferExceeded) throw new Error('command-output-limit');

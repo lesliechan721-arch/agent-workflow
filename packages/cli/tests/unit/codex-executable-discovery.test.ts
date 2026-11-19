@@ -1,4 +1,6 @@
+import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -327,6 +329,43 @@ describe('Codex executable discovery', () => {
       return { exitCode: 0, stdout: target ? 'true' : JSON.stringify(packages), stderr: '' };
     };
   }
+
+  // Exercise the actual system query with controlled cmdlet results. Empty
+  // registration can skip Start, while a failed query cannot hide a Start app.
+  it.runIf(process.platform === 'win32').each([
+    ['absent', 'throw', 'missing'],
+    ['throw', 'absent', 'missing'],
+    ['throw', 'match', 'unresolved'],
+    ['present', 'other', 'missing'],
+    ['present', 'match', 'compatible'],
+  ] as const)('checks Windows package %s against Start entry %s', async (packageState, startState, state) => {
+    const app = await executable('app/codex.exe');
+    const env = { ...isolation.env, SystemRoot: process.env.SystemRoot, AW_FIXTURE_PACKAGE: packageState,
+      AW_FIXTURE_START: startState, AW_FIXTURE_ROOT: path.dirname(app) };
+    const queryRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.env?.AW_CODEX_DISCOVERY_PATH) return { exitCode: 0, stdout: 'true', stderr: '' };
+      const query = Buffer.from(invocation.args.at(-1)!, 'base64').toString('utf16le');
+      const controlled = [
+        'function Get-AppxPackage { param($Name, $PackageTypeFilter, $ErrorAction)',
+        "  if ($env:AW_FIXTURE_PACKAGE -eq 'throw') { throw 'unavailable' }",
+        "  if ($env:AW_FIXTURE_PACKAGE -eq 'present' -and $Name -eq 'OpenAI.Codex' -and $PackageTypeFilter -eq 'Main') {",
+        "    [PSCustomObject]@{ PackageFamilyName='OpenAI.Codex_fixture'; InstallLocation=$env:AW_FIXTURE_ROOT; Architecture='X64'; Version='1.0.0.0' }",
+        '  }', '}',
+        'function Get-StartApps { param($ErrorAction)',
+        "  if ($env:AW_FIXTURE_START -eq 'throw') { throw 'unexpected Start enumeration' }",
+        "  if ($env:AW_FIXTURE_START -eq 'match') { [PSCustomObject]@{ AppID='OpenAI.Codex_fixture!App' } }",
+        "  if ($env:AW_FIXTURE_START -eq 'other') { [PSCustomObject]@{ AppID='OpenAI.Codex_other!App' } }",
+        '}', query,
+      ].join('\n');
+      const { stdout, stderr } = await promisify(execFile)(invocation.command,
+        [...invocation.args.slice(0, -1), Buffer.from(controlled, 'utf16le').toString('base64')],
+        { cwd: invocation.cwd, env: invocation.env, timeout: invocation.timeoutMs, windowsHide: true });
+      return { exitCode: 0, stdout, stderr };
+    };
+    const inspection = await inspectSystemCodex({ env, cwd: isolation.layout.fixtureCwd, platform: 'win32',
+      arch: 'x64', operationRequirement: requirement, queryRunner, runner: versionRunner(new Map([[app, '0.167.0']])) });
+    expect(inspection.state).toBe(state);
+  });
 
   it('compares every registered Windows App CLI after architecture filtering', async () => {
     const pathCommand = await executable('path/codex.EXE');

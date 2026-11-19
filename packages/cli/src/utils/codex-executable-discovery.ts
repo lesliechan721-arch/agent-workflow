@@ -258,15 +258,15 @@ async function discoverMacApps(
 }
 
 const WINDOWS_PACKAGES_QUERY = [
-  "$families = @(Get-StartApps -ErrorAction Stop | Where-Object { $_.AppID -like 'OpenAI.Codex_*!App' } | ForEach-Object { $_.AppID.Substring(0, $_.AppID.Length - 4) } | Sort-Object -Unique)",
+  "try { $registered = @(Get-AppxPackage -Name 'OpenAI.Codex' -PackageTypeFilter Main -ErrorAction Stop) } catch { $registered = $null }",
   '$packages = @()',
-  'if ($families.Count -gt 0) {',
-  '  $registered = @(Get-AppxPackage -PackageTypeFilter Main -ErrorAction Stop)',
-  '  foreach ($family in $families) {',
-  '    foreach ($package in $registered) {',
-  '      if ($package.PackageFamilyName -ieq $family) {',
-  '        $packages += @{ family = $family; root = $package.InstallLocation; architecture = $package.Architecture.ToString(); version = $package.Version.ToString() }',
-  '      }',
+  'if ($null -eq $registered -or $registered.Count -gt 0) {',
+  "  $startIds = @(Get-StartApps -ErrorAction Stop | Where-Object { $_.AppID -like 'OpenAI.Codex_*!App' } | ForEach-Object { $_.AppID })",
+  "  if ($null -eq $registered -and $startIds.Count -gt 0) { throw 'Codex package registration is unavailable.' }",
+  '  foreach ($package in $registered) {',
+  '    $family = $package.PackageFamilyName',
+  "    if ($startIds -icontains ($family + '!App')) {",
+  '      $packages += @{ family = $family; root = $package.InstallLocation; architecture = $package.Architecture.ToString(); version = $package.Version.ToString() }',
   '    }',
   '  }',
   '}',
