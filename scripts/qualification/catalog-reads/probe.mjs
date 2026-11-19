@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const activeDigest = 'sha256:51ba56d5a213dff84030a130f9a52df14862eb0746788e514ae10fc46ed4f051';
+const activeDigest = 'sha256:7131bfce3591200c78e8f70631b7387a8dce1ef337bf31550b2426091b46e4fd';
 const fixtureFiles = 3073;
 const self = fileURLToPath(import.meta.url);
 const { values: options } = parseArgs({ options: {
@@ -231,12 +231,18 @@ if (options.worker === 'memory') {
   await report(metadata);
   assert.equal(metadata.snapshotDigest, activeDigest);
   assert.equal(files.length, fixtureFiles);
+  const runtime = await fs.readFile(path.join(options.catalog,
+    'plugins/agent-subagent/skills/spawn-subagent/scripts/runtime/windows-native.mjs'), 'utf8');
+  assert.doesNotMatch(runtime, /aw-plugin-staging-/u, 'The public fixture must not embed a transient staging path.');
 } else if (options.mode === 'archive') {
   const expected = (await fs.readFile(path.join(options.catalog, 'catalog.sha256'), 'utf8')).split(/\s/u)[0];
   const archiveSHA256 = hash(await fs.readFile(path.join(options.catalog, 'catalog.tgz')));
   assert.match(expected, /^[0-9a-f]{64}$/u);
   assert.equal(archiveSHA256, expected);
-  await report({ archiveSHA256 });
+  const fixture = JSON.parse(await fs.readFile(path.join(options.catalog, 'catalog-fixture.json'), 'utf8'));
+  assert.equal(fixture.snapshotDigest, activeDigest);
+  assert.equal(fixture.regularFiles, fixtureFiles);
+  await report({ archiveSHA256, ...fixture });
 } else if (options.mode === 'read-once') {
   const catalog = await fs.realpath(options.catalog);
   const workspaceSHA256 = await variantDigest(options.root);
