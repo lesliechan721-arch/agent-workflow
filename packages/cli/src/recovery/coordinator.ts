@@ -82,6 +82,8 @@ export interface RecoveryOptions {
   /** Internal precise updates may select members of the complete desired closure. */
   allowDependencySelectors?: boolean;
   keepDependencies?: boolean;
+  /** Same-scope declarations selected for separate retired-plugin plans in this remove. */
+  retiringCatalogRoots?: readonly string[];
   retireUnselectedTargets?: boolean;
   cwd: string;
   env?: NodeJS.ProcessEnv;

@@ -292,7 +292,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
           nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
             requiresConfirmation: false, reason: expect.any(String) }] });
       } else {
-        expect(result.status).toBe('success');
+        expect(result.status, JSON.stringify(result.diagnostics)).toBe('success');
         expect(result.nextActions).toEqual([]);
         expect(current.allSatisfied).not.toBe(true);
       }
@@ -352,30 +352,40 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
   });
 
-  it.each(['shared', 'disjoint'] as const)('attributes a final User manifest read failure to a %s Project provider', async (relation) => {
-    const shared = relation === 'shared';
-    const value = await fixture(false, ['generic'], false, { a: ['x'], x: [shared ? 'd' : 'e'], b: ['d'], d: [], e: [] });
+  it.each([
+    ['generic', 'shared'], ['generic', 'disjoint'], ['opencode', 'shared'], ['generic', 'project root'],
+  ] as const)('attributes a final User manifest read failure on %s with a %s dependency', async (target, relation) => {
+    const sharesDependency = relation !== 'disjoint';
+    const ambiguous = target === 'generic' && relation === 'shared';
+    const value = await fixture(false, [target], true, { a: ['x'], x: [sharesDependency ? 'd' : 'e'], b: ['d'], d: [], e: [] });
     const user = { ...value.options, scope: 'user' as const };
     const project = { ...value.options, scope: 'project' as const };
     await fs.remove(await resolveIntentPath(project));
+    await setTargets(user, [target]);
     expect((await runPublicLifecycle('install', ['team/a'], user)).status).toBe('success');
+    if (relation === 'project root') expect((await runPublicLifecycle('install', ['team/d'], project)).status).toBe('success');
+    await fs.writeFile(value.hookTrace, '');
     const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
     const fault = failManifestAfterActiveCheck(path.join(active.snapshotPath, 'plugins/x/.agents-plugin/plugin.json'), ['recovery.status']);
     try {
       const result = await runPublicLifecycle('install', ['team/b'], project, fault.runtime);
-      expect(result).toMatchObject({ status: shared ? 'partial' : 'success', data: { changes: { requirements: 'changed', outputs: 'changed' },
-        remainingTargets: [], targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/b', target: 'generic',
+      expect(result).toMatchObject({ status: ambiguous ? 'partial' : 'success', data: { changes: { requirements: 'changed', outputs: 'changed' },
+        allSatisfied: null, remainingTargets: [], targetResults: expect.arrayContaining([expect.objectContaining({ pluginId: 'team/b', target,
           scope: 'project', execution: 'applied', observation: 'verified' })]) } });
-      if (shared) expect(result).toMatchObject({
+      if (ambiguous) expect(result).toMatchObject({
         diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
           subject: { pluginId: 'team/b', scope: 'project', target: 'generic' }, detail: { reasonCode: 'jointDemandUnknown' } })]),
         nextActions: [{ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'],
           requiresConfirmation: false, reason: expect.any(String) }] });
       else expect(result.nextActions).toEqual([]);
     } finally { fault.restore(); }
-    await expect(fs.readFile(path.join(value.projectRoot, 'b/SKILL.md'), 'utf8')).resolves.toContain('Use b.');
-    await expect(fs.readFile(path.join(shared ? value.userRoot : value.projectRoot, 'd/SKILL.md'), 'utf8')).resolves.toContain('Use d.');
-    await expect(fs.pathExists(path.join(shared ? value.projectRoot : value.userRoot, 'd'))).resolves.toBe(false);
+    const hooks: Array<{ plugin: string; scope: string }> = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(hooks.filter((event) => event.plugin === 'b')).toEqual([{ plugin: 'b', platform: target, scope: 'project' }]);
+    const skill = (scope: 'user' | 'project', name: string) => path.join(target === 'opencode'
+      ? value.nativeSkill(target, scope, name) : path.join(scope === 'user' ? value.userRoot : value.projectRoot, name), 'SKILL.md');
+    await expect(fs.readFile(skill('project', 'b'), 'utf8')).resolves.toContain('Use b.');
+    await expect(fs.pathExists(skill('user', 'd'))).resolves.toBe(sharesDependency);
+    await expect(fs.pathExists(skill('project', 'd'))).resolves.toBe(!ambiguous);
     await expect(readRecoveryStatus(project)).resolves.toMatchObject({ allSatisfied: true });
   });
 
@@ -401,6 +411,49 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     await expect(fs.pathExists(path.join(value.userRoot, 'a/SKILL.md'))).resolves.toBe(required);
     await expect(fs.pathExists(path.join(value.projectRoot, 'a'))).resolves.toBe(false);
     await expect(observeIntent(project)).resolves.toMatchObject({ value: { roots: [{ pluginId: 'team/b' }] } });
+  });
+
+  it.each(['verified', 'absent', 'drifted', 'unowned', 'copy lost under lock', 'manifest lost under lock'] as const)('checks the Project copy (%s) before removing a User provider with an unreadable consumer', async (copy) => {
+    const value = await fixture(false, ['generic'], false, { a: [], b: ['x'], x: ['a'] });
+    const user = { ...value.options, scope: 'user' as const };
+    const project = { ...value.options, scope: 'project' as const };
+    expect((await runPublicLifecycle('install', ['team/a'], user)).status).toBe('success');
+    expect((await runPublicLifecycle('install', ['team/b', 'team/a'], project)).status).toBe('success');
+    const projectCopy = path.join(value.projectRoot, 'a/SKILL.md');
+    const userCopy = path.join(value.userRoot, 'a/SKILL.md');
+    const projectFiles = await snapshotRegularTree(path.dirname(projectCopy));
+    const before = await fs.readFile(projectCopy, 'utf8');
+    expect(await fs.readFile(userCopy, 'utf8')).toBe(before);
+    expect(await fs.readFile(path.join(value.projectRoot, 'x/SKILL.md'), 'utf8')).toContain('Use x.');
+    if (copy === 'absent') await fs.remove(path.dirname(projectCopy));
+    if (copy === 'drifted') await fs.appendFile(projectCopy, 'Local edit.\n');
+    if (copy === 'unowned') await fs.remove(path.join(path.dirname(projectCopy), SKILL_OWNER_MARKER));
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: user.env });
+    const fault = failManifestAfterActiveCheck(path.join(active.snapshotPath, 'plugins/x/.agents-plugin/plugin.json'),
+      [...(copy === 'manifest lost under lock' ? [] : ['recovery.plan']), 'recovery.locked.demand', 'recovery.locked.recheck']);
+    const projectIntent = await observeIntent(project);
+    const userIntent = await observeIntent(user);
+    try {
+      const result = await runPublicLifecycle('remove', ['team/a'], user, { debugLogger: { log: async (event) => {
+        await fault.runtime.debugLogger!.log(event);
+        if (copy === 'copy lost under lock' && event.data?.name === 'recovery.locked.demand' && event.data.phase === 'start') {
+          await fs.remove(path.dirname(projectCopy));
+        }
+      } } });
+      if (copy === 'verified') {
+        expect(result.data).toMatchObject({ changes: { requirements: 'changed', outputs: 'changed' } });
+        expect(await fs.pathExists(userCopy)).toBe(false);
+        expect(await snapshotRegularTree(path.dirname(projectCopy))).toEqual(projectFiles);
+        await expect(observeIntent(user)).resolves.toMatchObject({ value: { roots: [] } });
+      } else {
+        expect(result).toMatchObject({ status: 'blocked', data: { changes: { requirements: 'none', outputs: 'none' } },
+          diagnostics: expect.arrayContaining([expect.objectContaining({ code: copy.endsWith('under lock')
+            ? 'operationReviewStale' : 'dependencyStillRequired' })]) });
+        expect(await fs.readFile(userCopy, 'utf8')).toBe(before);
+        expect(await observeIntent(user)).toEqual(userIntent);
+      }
+      expect(await observeIntent(project)).toEqual(projectIntent);
+    } finally { fault.restore(); }
   });
 
   it.each(['changed', 'invalid'] as const)('detects a %s second Intent before any output write', async (state) => {

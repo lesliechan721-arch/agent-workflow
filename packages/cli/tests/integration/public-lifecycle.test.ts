@@ -129,6 +129,9 @@ describe('public plugin lifecycle', () => {
     await createNativeDependencyCatalog(source, [{ name: 'active' }]);
     await fs.remove(path.join(source, 'plugins', 'retired'));
     await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true });
+    const retained = await runPublicLifecycle('remove', ['team/active'], location, runtime);
+    expect(retained).toMatchObject({ status: 'blocked', data: { changes: { requirements: 'none', outputs: 'none' } },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'dependencyStillRequired' })]) });
     const result = await runPublicLifecycle('remove', ['team/active', 'team/retired'], location, runtime);
     expect(result.status, JSON.stringify(result)).toMatch(/^(success|partial)$/u);
     const data = result.data as LifecycleData;

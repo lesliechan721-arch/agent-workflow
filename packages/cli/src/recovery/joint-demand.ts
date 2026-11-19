@@ -45,6 +45,8 @@ export interface JointDemandPlan {
   complete: boolean;
 }
 
+export const canReuseProviderAcrossScopes = (target: AgentId): boolean => target === 'generic' || hasSharedUserPackage(target);
+
 export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' | 'preferences'> & {
   scope?: Scope; context?: Scope; preferences?: DeploymentPreferences; expectedProjectRoot?: string;
 }): Promise<JointDemandSnapshot> {
@@ -170,11 +172,17 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
         ? demand.intent.value.sources[sourceId]?.logicalIdentity ?? sourceId : sourceId;
     };
     const uncertainUser = result.roots.filter((entry) => entry.scope === 'user' && entry.state === 'unknown');
-    for (const entry of result.roots.filter((entry) => entry.scope === 'project' && entry.state === 'required')) {
-      if (snapshot.user.roots !== null && !uncertainUser.some((user) => user.target === entry.target
+    const projectRoots = result.roots.filter((entry) => entry.scope === 'project' && entry.state === 'required');
+    for (const entry of projectRoots) {
+      if (!canReuseProviderAcrossScopes(entry.target)) continue;
+      // An explicit Project root always gets a scoped placement. Only the remaining
+      // dependencies can change provider when the missing User evidence is restored.
+      const reusable = entry.dependencies.filter((id) => !projectRoots.some((root) =>
+        root.pluginId === id && root.target === entry.target));
+      if (!reusable.length || snapshot.user.roots !== null && !uncertainUser.some((user) => user.target === entry.target
         && sourceIdentity(snapshot.user, user.pluginId) === sourceIdentity(snapshot.project!, entry.pluginId)
         && (!user.dependencies.length || user.pluginId.split('/')[0] !== entry.pluginId.split('/')[0]
-          || user.dependencies.some((id) => entry.dependencies.includes(id))))) continue;
+          || user.dependencies.some((id) => reusable.includes(id))))) continue;
       entry.state = 'unknown'; entry.blockers.push({ code: 'jointDemandUnknown', message: '完整需求未知，不能确定项目提供位置。' });
     }
   }
@@ -184,7 +192,7 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
       && entry.target === placement.target && entry.state === 'required'));
     // Separate native directories need their dependency closure in each scope.
     // Explicit roots also keep each scope's package, activation or generic output.
-    if (placement.target !== 'generic' && !hasSharedUserPackage(placement.target)
+    if (!canReuseProviderAcrossScopes(placement.target)
       || contributions.some((item) => item.scope === 'project' && item.path.length === 1)) {
       return (['user', 'project'] as const).flatMap((scope) => {
         const scoped = contributions.filter((item) => item.scope === scope);

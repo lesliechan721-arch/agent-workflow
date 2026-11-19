@@ -7,7 +7,6 @@ import { createEmptyIntent, calculateIntentDigest, removeIntentRoot, type Plugin
 import { observeIntent, writeIntent, resolveIntentPath, type IntentObservation } from '../intent/intent-store.js';
 import { describeStrongStateProblem } from '../intent/diagnostics.js';
 import { observePreferences, normalizeAgents, writePreferences, type AgentId } from '../intent/deployment-preferences.js';
-import { hasSharedUserPackage } from '../platforms/layout.js';
 import { withNativeObservationBatch, type NativeObservationBatch } from '../platforms/inspection-query.js';
 import { createScopeContext } from '../intent/scope-context.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
@@ -21,7 +20,7 @@ import { readCatalogGenerationState } from '../utils/catalog-generation-state.js
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readDemand, type DemandSnapshot } from './demand.js';
-import { readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
+import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
 import { prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
 import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
@@ -39,7 +38,6 @@ export interface JointRecoveryState {
   evidence: string;
 }
 const diagnostic = (code: string, message = code): RecoveryDiagnostic => ({ code, message });
-const canReuseProviderAcrossScopes = (target: AgentId): boolean => target === 'generic' || hasSharedUserPackage(target);
 function intentReceipt(observation: IntentObservation): RecoveryReceipt['intent'] {
   return { state: observation.state,
     roots: observation.state === 'valid' ? observation.value.roots.map((root) => root.pluginId)
@@ -298,15 +296,6 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
         && explicitlyRemoves({ pluginId, agent: placement.target, scope }))
         .flatMap((placement) => placement.contributions.filter((item) => item.path.length > 1
           && (placement.scope === scope || item.scope === scope)).map((item) => item.root));
-      // An uninstalled consumer still owns its declaration. An unreadable closure
-      // cannot authorize retiring the current provider before a replacement is known.
-      for (const root of demand.roots) {
-        if (root.state !== 'unknown' || root.pluginId === pluginId || !targets.includes(root.target)
-          || !explicitlyRemoves({ pluginId, scope, agent: root.target })
-          || (scope !== root.scope && !(scope === 'user' && canReuseProviderAcrossScopes(root.target)))) continue;
-        if (root.dependencies.length ? root.dependencies.includes(pluginId)
-          : parsePluginId(root.pluginId).sourceId === parsePluginId(pluginId).sourceId) consumers.push(root.pluginId);
-      }
       if (consumers.length) errors.push(diagnostic('dependencyStillRequired',
         `${pluginId} 仍被 ${[...new Set(consumers)].join('、')} 依赖。使用 --force 可强制移除所选输出。`));
     }
@@ -434,6 +423,25 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       }
     }
     if (command === 'uninstall' && !options.force) {
+      for (const root of demand.roots) {
+        if (root.state !== 'unknown' || !targets.includes(root.target)
+          || root.scope === scope && options.retiringCatalogRoots?.includes(root.pluginId)) continue;
+        for (const pluginId of requested) {
+          const provider = { pluginId, scope, agent: root.target };
+          if (root.pluginId === pluginId || !explicitlyRemoves(provider)
+            || !sameProvider({ scope: root.scope, agent: root.target }, provider)) continue;
+          if (root.dependencies.length ? !root.dependencies.includes(pluginId)
+            : parsePluginId(root.pluginId).sourceId !== parsePluginId(pluginId).sourceId) continue;
+          // Generic Project roots have their own directory. Verify the saved
+          // declaration's complete closure and ownership again under the write lock.
+          if (scope === 'user' && root.scope === 'project' && root.target === 'generic'
+            && ownsOutput({ pluginId, agent: root.target, scope: 'project' })
+            && currentStatus.inventory?.some((item) => item.pluginId === pluginId && item.targetResults.some((target) =>
+              target.agent === root.target && target.scope === 'project' && target.providerScope === 'project'
+              && target.observation === 'verified' && target.content === 'satisfied' && !target.blockers.length))) continue;
+          errors.push(diagnostic('dependencyStillRequired', `${pluginId} 仍被 ${root.pluginId} 依赖。使用 --force 可强制移除所选输出。`));
+        }
+      }
       for (const pluginId of requested) for (const agent of new Set(liveConsumers.map((consumer) => consumer.agent))) {
         const provider = { pluginId, agent, scope };
         const consumer = explicitlyRemoves(provider) ? retainedConsumerFor(provider) : undefined;

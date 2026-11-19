@@ -3,6 +3,7 @@ import { isPlatformTarget, normalizeStaticPluginComponents, type PluginComponent
 import type { PlatformName, Scope } from '../types.js';
 import { selectAgents, type AgentId } from '../intent/deployment-preferences.js';
 import { createScopeContext, type ScopeContext } from '../intent/scope-context.js';
+import { resolveIntentPath } from '../intent/intent-store.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import type { StatusScopedTarget } from '../commands/status-v6.js';
 import { inspectPortableExtraInstalled, inspectPortableRecovery, portablePreparationDiagnostic } from '../portable/recovery.js';
@@ -729,8 +730,14 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
       ] });
     result.coverage.requestComplete = result.coverage.native && result.coverage.portable;
     result.coverage.native &&= ownerInventory.errors.length === 0;
+    // The project scan includes User Intent. Demand accounts for its effect on
+    // shared providers, while this loop attributes failures to local outputs.
+    const userIntentPath = options.scope === 'project' && relevantErrors.some((error) => error.kind === 'lifecycleIntentRead')
+      ? await resolveIntentPath({ ...options, scope: 'user' }) : undefined;
+    const targetErrors = relevantErrors.filter((error) => !(userIntentPath && error.kind === 'lifecycleIntentRead'
+      && error.recoveryPath === userIntentPath));
     for (const target of result.inventory?.flatMap((entry) => entry.targetResults) ?? []) {
-      for (const error of relevantErrors) {
+      for (const error of targetErrors) {
         const relevance = error.relevance;
         const identity = parsePluginId(target.pluginId);
         if (!relevance.global && (relevance.platform && relevance.platform !== target.agent
