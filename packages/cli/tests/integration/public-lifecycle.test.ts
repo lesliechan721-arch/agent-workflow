@@ -111,24 +111,25 @@ describe('public plugin lifecycle', () => {
     await fs.chmod(path.join(bin, process.platform === 'win32' ? 'pi.exe' : 'pi'), 0o755);
     isolation.env.PATH = `${bin}${path.delimiter}${isolation.env.PATH ?? ''}`;
   });
-  it('runs each preApply alone and overlaps the independent Claude and Pi installs', async () => {
+  it.each([
+    { cores: 4, overlap: true }, { cores: 1, overlap: false },
+  ])('runs each preApply alone and overlaps the independent Claude and Pi installs only with capacity (cores=$cores)', async ({ cores, overlap }) => {
     const isolation = getCurrentSourceTestIsolation();
     const claude = await createClaudeNativeTestRuntime(isolation);
-    const tracePath = path.join(isolation.layout.fixtureCwd, 'native-script-events');
-    const note = (event: string) => fs.appendFile(tracePath, event + '\n');
+    const events: string[] = [];
     const { location } = await fixture({ targets: ['claude', 'pi'], platforms: ['claude', 'pi'], script: true });
     const runScript = defaultPluginProcessRunner.run.bind(defaultPluginProcessRunner);
     const script = vi.spyOn(defaultPluginProcessRunner, 'run').mockImplementation(async (invocation, options) => {
       const host = JSON.parse(invocation.stdin!).target.platform;
-      await note('start-script-' + host);
+      events.push('start-script-' + host);
       try { return await runScript(invocation, options); }
-      finally { await note('end-script-' + host); }
+      finally { events.push('end-script-' + host); }
     });
-    const installs = new Set<string>();
+    const activeInstalls = new Set<string>();
     const gate = Promise.withResolvers<void>();
-    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+    const parallelism = vi.spyOn(os, 'availableParallelism').mockReturnValue(cores);
     let timer: NodeJS.Timeout | undefined;
-    let expired = false;
+
     const runner: NativeCliRunner = async (invocation) => {
       const pi = ['pi', 'pi.exe'].includes(path.basename(invocation.command).toLowerCase());
       const run = pi ? piRunner : claude.nativeCliRunner;
@@ -136,27 +137,36 @@ describe('public plugin lifecycle', () => {
       const install = invocation.args.includes('install');
       const mutation = install || invocation.args.includes('add') || invocation.args.includes('enable');
       if (!mutation) return run(invocation);
-      await note('start-write-' + host);
+      const kind = install ? 'install' : 'write';
+      events.push('start-' + kind + '-' + host);
       try {
         if (install) {
-          installs.add(host);
-          if (installs.size === 2) gate.resolve();
-          timer ??= setTimeout(() => { expired = true; gate.resolve(); }, 3000);
+          activeInstalls.add(host);
+          if (activeInstalls.size === 2) { clearTimeout(timer); gate.resolve(); }
+          else timer ??= setTimeout(() => { events.push('install-gate-expired'); gate.resolve(); }, 3000);
           await gate.promise;
         }
         return await run(invocation);
-      } finally { await note('end-write-' + host); }
+      } finally {
+        if (install) activeInstalls.delete(host);
+        events.push('end-' + kind + '-' + host);
+      }
     };
     try {
       const result = await runPublicLifecycle('install', ['team/demo'], { ...location, yes: true }, { nativeCliRunner: runner });
       expect(result.status, JSON.stringify(result.diagnostics)).toBe('success');
-      expect([...installs].sort()).toEqual(['claude', 'pi']);
-      expect(expired).toBe(false);
-      const events = (await fs.readFile(tracePath, 'utf8')).trim().split('\n');
+      const claudeStart = events.indexOf('start-install-claude');
+      const piStart = events.indexOf('start-install-pi');
+      const claudeEnd = events.indexOf('end-install-claude');
+      const piEnd = events.indexOf('end-install-pi');
+      expect(Math.min(claudeStart, piStart, claudeEnd, piEnd), events.join(', ')).toBeGreaterThanOrEqual(0);
+      expect(Math.max(claudeStart, piStart) < Math.min(claudeEnd, piEnd), events.join(', ')).toBe(overlap);
+      expect(events.includes('install-gate-expired'), events.join(', ')).toBe(!overlap);
       let activeScripts = 0;
       let activeWrites = 0;
       const scripts: string[] = [];
       for (const event of events) {
+        if (event === 'install-gate-expired') continue;
         const [phase, kind, host] = event.split('-');
         if (kind === 'script') {
           if (phase === 'start') scripts.push(host!);

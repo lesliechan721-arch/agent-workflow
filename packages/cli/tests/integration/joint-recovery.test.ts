@@ -9,6 +9,10 @@ import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import type { CatalogGenerationStateFileV1 } from '../../src/types.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
+import { runCli } from '../../src/index.js';
+import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { publicExitCode } from '../../src/output/public-result.js';
+import { setAtomicConfigAfterRenameHookForTests } from '../../src/utils/plugin-config.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
@@ -35,7 +39,7 @@ async function fixture(collide = false, platforms: Array<'generic' | 'opencode' 
   const cwd = path.join(isolation.layout.fixtureCwd, 'joint-project');
   const source = path.join(isolation.layout.fixtureCwd, 'joint-source');
   const hookTrace = path.join(cwd, 'hook-trace.jsonl');
-  const hookFailure = path.join(cwd, 'fail-user-generic');
+  const hookFailure = path.join(cwd, 'fail-pre-apply');
   await fs.ensureDir(cwd); await git(cwd, ['init', '--quiet']);
   for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'skills', skill(name), 'SKILL.md'),
     `---\nname: ${skill(name)}\ndescription: Test ${name}\n---\nUse ${name}.\n`);
@@ -44,7 +48,8 @@ async function fixture(collide = false, platforms: Array<'generic' | 'opencode' 
   if (switchHook) for (const name of names) await fs.outputFile(path.join(source, 'plugins', name, 'pre-apply.mjs'), [
     "import fs from 'node:fs'; const c = JSON.parse(fs.readFileSync(0, 'utf8'));",
     `fs.appendFileSync(${JSON.stringify(hookTrace)}, JSON.stringify({ plugin: c.plugin.name, platform: c.target.platform, scope: c.target.scope }) + '\\n');`,
-    `if (fs.existsSync(${JSON.stringify(hookFailure)}) && c.plugin.name === 'd' && c.target.platform === 'generic' && c.target.scope === 'user') process.exit(23);`,
+    `const failure = ${JSON.stringify(hookFailure)};`,
+    "if (fs.existsSync(failure) && fs.readFileSync(failure, 'utf8') === [c.plugin.name, c.target.platform, c.target.scope].join('/')) process.exit(23);",
   ].join('\n'));
   await createDependencyCatalogSnapshotFixture(source, names.map((name) => ({ name,
     ...(graph[name]!.length ? { dependencies: graph[name] } : {}), configureManifest: (manifest) => {
@@ -345,6 +350,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     const value = await fixture();
     const user = { ...value.options, context: 'user' as const, scope: 'user' as const };
     expect((await runPublicLifecycle('sync', ['team/a'], user)).status).toBe('success');
+    await setTargets(user, ['cursor', 'generic']);
     const review = await prepareRecovery('install', ['team/b'], user);
     try {
       expect(review.receipt.targetResults[0]).toMatchObject({ pluginId: 'team/d', observation: 'verified', content: 'satisfied' });
@@ -354,9 +360,11 @@ describe('joint recovery through real Catalog and owned outputs', () => {
       if (event.data?.name === 'recovery.lock.wait' && event.data.phase === 'start') await fs.appendFile(provider, '\nChanged outside AW.\n');
     } } });
     const positions = ['team/d', 'team/b'].map((id) => ({ pluginId: id, target: 'generic', scope: 'user' }));
+    expect(publicExitCode(result)).toBe(3);
     expect(result).toMatchObject({ status: 'blocked', data: {
       requirements: { roots: ['team/a'] }, changes: { requirements: 'none', preferences: 'none', outputs: 'none' },
-      targetResults: positions.map((position) => ({ ...position, execution: 'not-run', observation: 'unknown', content: 'unknown' })),
+      targetResults: [...positions.map((position) => ({ ...position, execution: 'not-run', observation: 'unknown', content: 'unknown' })),
+        { pluginId: 'team/b', target: 'cursor', execution: 'no-op', observation: 'verified', satisfaction: 'unsupported' }],
       remainingTargets: positions,
     }, nextActions: [{ kind: 'manual', message: expect.stringContaining('original plugin install request') }] });
     await expect(fs.readFile(provider, 'utf8')).resolves.toContain('Changed outside AW.');
@@ -492,8 +500,9 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(receipt.remainingTargets.map(({ pluginId, scope }) => `${pluginId}:${scope}`).sort())
       .toEqual(['team/b:project', 'team/b:user', 'team/d:user']);
     expect(receipt.recoveryActions).toEqual(expect.arrayContaining([
-      'aw plugin status --context user --json', 'aw plugin sync team/d --context user --target generic',
+      'aw plugin status --context user --json', 'aw plugin sync team/b --context project --target generic',
     ]));
+    expect(receipt.recoveryActions.join('\n')).not.toContain('aw plugin sync team/d');
     await expectSavedIntent(receipt, user);
     expect(receipt.intent.roots).toEqual(['team/a', 'team/b']);
     await expect(fs.readFile(await resolveIntentPath(project))).resolves.toEqual(projectIntent);
@@ -503,6 +512,103 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     await expect(fs.pathExists(path.join(value.userRoot, 'd'))).resolves.toBe(false);
     const hooks = (await fs.readFile(value.hookTrace, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     expect(hooks).toEqual([{ plugin: 'a', platform: 'generic', scope: 'user' }]);
+    if (change === 'new Active') {
+      const action = receipt.recoveryActions.find((item) => item === 'aw plugin sync team/b --context project --target generic')!;
+      const capture = createCapturedCliIo();
+      expect(await runCli([...action.split(' ').slice(1), '--yes', '--json'], { ...user, interactive: false, io: capture.io })).toBe(0);
+      for (const [root, name] of [[value.userRoot, 'd'], [value.userRoot, 'b'], [value.projectRoot, 'b']] as const) {
+        await expect(fs.readFile(path.join(root, name, 'SKILL.md'), 'utf8')).resolves.toContain(`Use ${name}.`);
+      }
+      await expect(fs.readFile(await resolveIntentPath(project))).resolves.toEqual(projectIntent);
+      await expectSavedIntent(receipt, user);
+    }
+  });
+
+  it('counts a verified no-op as partial and retries a stale dependency through its declared root', async () => {
+    const value = await fixture(false, ['generic'], false, { a: [], b: ['d'], d: ['a'] });
+    const user = { ...value.options, context: 'user' as const, scope: 'user' as const };
+    expect((await runPublicLifecycle('install', ['team/b'], { ...user, only: 'requirements' })).status).toBe('success');
+    expect((await runPublicLifecycle('sync', ['team/a'], user)).status).toBe('success');
+    const statePath = resolveCatalogGenerationStatePath(user.env);
+    const before = await fs.readFile(statePath);
+    const next = JSON.parse(before.toString()) as CatalogGenerationStateFileV1;
+    next.sources.team!.active!.requestedRef = 'refs/heads/changed';
+    let moved = false;
+    const result = await runPublicLifecycle('sync', ['team/a', 'team/b'], { ...value.options, context: 'project' },
+      { debugLogger: { log: async (event) => {
+        if (moved || event.data?.name !== 'recovery.child.execute' || event.data.phase !== 'success') return;
+        moved = true;
+        await fs.writeJson(statePath, next);
+      } } });
+    expect(moved).toBe(true);
+    expect(publicExitCode(result)).toBe(4);
+    expect(result.data).toMatchObject({ changes: { requirements: 'none', preferences: 'none', outputs: 'none' },
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'team/a', execution: 'no-op', observation: 'verified' }),
+        expect.objectContaining({ pluginId: 'team/d', execution: 'not-run', blockerCodes: ['operationReviewStale'] }),
+      ]) });
+    const commands = result.nextActions.filter((action) => action.kind === 'command').map((action) => action.argv);
+    expect(commands).toEqual([['aw', 'plugin', 'sync', 'team/b', '--context', 'project', '--target', 'generic']]);
+    await fs.writeFile(statePath, before);
+    const capture = createCapturedCliIo();
+    expect(await runCli([...commands[0]!.slice(1), '--yes', '--json'], { ...value.options, interactive: false, io: capture.io })).toBe(0);
+    await expect(fs.readFile(path.join(value.userRoot, 'd', 'SKILL.md'), 'utf8')).resolves.toContain('Use d.');
+    await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+  });
+
+  it.each(['intent', 'preferences'] as const)('preserves pending roots and providers after an unconfirmed %s save', async (document) => {
+    const value = await fixture();
+    const user = { ...value.options, scope: 'user' as const, context: 'user' as const };
+    const file = document === 'intent' ? await resolveIntentPath(user) : await resolvePreferencesPath(user);
+    const original = await fs.readFile(file);
+    for (const state of ['different', 'invalid', 'absent'] as const) {
+      await fs.writeFile(file, original);
+      let observed = false;
+      setAtomicConfigAfterRenameHookForTests(async (saved) => {
+        if (saved !== file) return;
+        observed = true;
+        if (state === 'absent') await fs.unlink(file);
+        else await fs.writeFile(file, state === 'invalid' ? '{' : original);
+      });
+      try {
+        if (document === 'intent') {
+          const result = await runPublicLifecycle('install', ['team/b'], user);
+          const positions = ['team/d', 'team/b'].map((id) => ({ pluginId: id, target: 'generic', scope: 'user' }));
+          expect(publicExitCode(result)).toBe(4);
+          expect(result).toMatchObject({ data: { requirements: { state: state === 'different' ? 'valid' : state,
+            roots: state === 'different' ? ['team/a'] : state === 'invalid' ? null : [] }, changes: { requirements: 'changed', outputs: 'none' },
+            targetResults: positions.map((item) => ({ ...item, execution: 'not-run', observation: 'unknown', content: 'unknown' })),
+            remainingTargets: positions }, nextActions: [
+            { kind: 'command', argv: ['aw', 'plugin', 'status', '--context', 'user', '--json'] }, { kind: 'manual' },
+          ] });
+        } else {
+          const receipt = await runRecovery('sync', ['team/a'], { ...user, preferences: { schemaVersion: 2,
+            kind: 'aw-deployment-preferences', targets: ['generic', 'cursor'], exclusions: [] } });
+          expect(receipt).toMatchObject({ ok: false, unconfirmedSavedState: 'preferences', preferencesChanged: true,
+            declarationChanged: false, outputsMayHaveChanged: false, selection: { preferences: state === 'different' ? 'valid' : state },
+            remainingTargets: ['team/d', 'team/a'].map((id) => ({ pluginId: id, agent: 'generic', scope: 'user' })),
+            recoveryActions: ['aw plugin status --context user --json', expect.any(String)] });
+        }
+        expect(observed).toBe(true);
+        if (state === 'absent') expect(await fs.pathExists(file)).toBe(false);
+        else expect(await fs.readFile(file)).toEqual(state === 'invalid' ? Buffer.from('{') : original);
+        expect(await fs.pathExists(value.userRoot)).toBe(false);
+      } finally { setAtomicConfigAfterRenameHookForTests(undefined); }
+    }
+  });
+
+  it('keeps a completed User scope outside the recovery for its failed Project sibling', async () => {
+    const value = await fixture(false, ['generic'], true, { a: [], b: [] });
+    const user = { ...value.options, context: 'user' as const, scope: 'user' as const };
+    expect((await runPublicLifecycle('install', ['team/b'], user)).status).toBe('success');
+    await fs.writeFile(value.hookFailure, 'b/generic/project');
+    const result = await runPublicLifecycle('sync', ['team/b'], { ...value.options, context: 'project' });
+    expect(result).toMatchObject({ status: 'partial', data: {
+      targetResults: [{ pluginId: 'team/b', scope: 'user', execution: 'no-op', observation: 'verified' },
+        { pluginId: 'team/b', scope: 'project' }],
+      remainingTargets: [{ pluginId: 'team/b', target: 'generic', scope: 'project' }] },
+      nextActions: [{ kind: 'manual', message: expect.stringContaining('Project location for team/b on generic') }] });
+    await expect(fs.pathExists(path.join(value.projectRoot, 'b'))).resolves.toBe(false);
   });
 
   it('reports current Active after writing even when the complete reviewed Store is still readable', async () => {
@@ -905,7 +1011,7 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     expect(denied.errors.some((error) => error.code === 'preApplyAuthorizationRequired')).toBe(true);
     expect(await fs.readFile(value.hookTrace, 'utf8')).toBe('');
     expect(await Promise.all([fs.readFile(oldProvider, 'utf8'), fs.readFile(oldConsumer, 'utf8')])).toEqual(oldContents);
-    await fs.writeFile(value.hookFailure, 'fail User generic provider');
+    await fs.writeFile(value.hookFailure, 'd/generic/user');
 
     const result = await timing.measure('command', 'install with failing preApply', (sequence) =>
       runRecovery('install', ['team/b'], { ...value.options, scope: 'user' }, runtime(sequence)));

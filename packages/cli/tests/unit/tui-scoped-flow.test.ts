@@ -7,6 +7,7 @@ import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { executeIntentPlan, executeTargetsPlan,
   prepareIntentPlan, prepareTargetsPlan, projectScopedRecoveryHistory } from '../../src/tui/scoped-flow.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
+import { OperationHistoryStore } from '../../src/tui/operation-history.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('scoped TUI plan physical target', () => {
@@ -68,14 +69,30 @@ it('distinguishes stale before execution from a stale target after a sibling was
   expect(projectScopedRecoveryHistory(receipt, identity).summary.effects).toMatchObject({
     preApplyExternalEffect: 'notStarted', finalVerification: 'notStarted',
   });
+  const afterSave = projectScopedRecoveryHistory({ ...receipt, declarationChanged: true, unconfirmedSavedState: 'intent' }, identity);
+  expect(afterSave.summary).toMatchObject({ state: 'partial', effects: {
+    awWrite: 'notStarted', preApplyExternalEffect: 'notStarted', finalVerification: 'notStarted',
+  } });
+  expect(afterSave.diagnostics[0]?.detailLines).toEqual(['aw plugin status --context user --json']);
 
   receipt.blockers = [];
   receipt.errors = [stale];
   receipt.targetResults[0] = { ...receipt.targetResults[0]!, execution: 'applied', observation: 'verified', content: 'satisfied' };
-  receipt.targetResults[1] = { ...receipt.targetResults[1]!, execution: 'not-run', observation: 'unknown', satisfaction: 'pending', blockers: [stale] };
+  receipt.targetResults[1] = { ...receipt.targetResults[1]!, execution: 'not-run', observation: 'unknown',
+    satisfaction: 'pending', blockers: [stale], recoveryActions: ['untrusted-backend-detail'] };
   receipt.outputsMayHaveChanged = true;
   receipt.remainingTargets = [positions[1]!];
-  expect(projectScopedRecoveryHistory(receipt, identity).summary).toMatchObject({ state: 'partial',
+  const history = new OperationHistoryStore();
+  history.record(projectScopedRecoveryHistory(receipt, identity));
+  const record = history.get(identity.recordId)!;
+  expect(record.summary).toMatchObject({ state: 'partial', diagnosticCount: 1,
     effects: { awWrite: 'possible', preApplyExternalEffect: 'unknown', finalVerification: 'partial' },
   });
+  const retry = 'aw plugin sync team/demo --context user --target generic';
+  expect(record.diagnostics).toMatchObject([{ code: 'operationReviewStale',
+    target: { pluginId: 'team/demo', platform: 'generic', scope: 'user' },
+    detailLines: ['aw plugin status --context user --json', retry] }]);
+  expect(record.targets[0]).toMatchObject({ state: 'completed', diagnosticIds: [] });
+  expect(history.preview(identity.recordId)?.content).toContain(retry);
+  expect(history.preview(identity.recordId)?.content).not.toContain('untrusted-backend-detail');
 });

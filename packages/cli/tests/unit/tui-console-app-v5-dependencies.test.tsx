@@ -1,4 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
+import { prepareRecovery, type RecoveryPlan } from '../../src/recovery/coordinator.js';
+import { observeIntent } from '../../src/intent/intent-store.js';
+import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { type ScopedTaskRequest, scopedPlan, scopedTarget, mixedScopeConflictTarget } from '../helpers/tui-console-app-fixture.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -676,7 +681,18 @@ describe('ConsoleAppV4', () => {
 
   it('renders kept, failed, and skipped dependency targets as target-level results', async () => {
     const loaded = dependencyLoadResult();
-    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => scopedPlan(request));
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'project' as const, env: isolation.env, cwd: isolation.layout.fixtureCwd };
+    execFileSync('git', ['init', '--quiet'], { cwd: location.cwd, env: location.env });
+    await writeIntentFixture(location, { roots: [{ pluginId: 'official/agent-lab' }], agents: ['codex'] });
+    const originalIntent = await observeIntent(location);
+    let retryPlan: RecoveryPlan | undefined;
+    const prepareScopedTask = vi.fn(async (request: ScopedTaskRequest) => {
+      if (request.kind !== 'recovery' || request.command !== 'sync') return scopedPlan(request);
+      retryPlan = await prepareRecovery('sync', request.selectors, { ...location, scope: request.scope, cliVersion: '0.1.0',
+        targets: request.targets, exactTargets: request.exactTargets });
+      return { kind: 'recovery' as const, scope: request.scope, plan: retryPlan };
+    });
     const executeScopedTask = vi.fn(async (plan: ScopedTuiPlan) => ({
       kind: 'recovery' as const,
       receipt: { ...(plan as Extract<ScopedTuiPlan, { kind: 'recovery' }>).plan.receipt,
@@ -685,12 +701,12 @@ describe('ConsoleAppV4', () => {
           { ...scopedTarget('official/content-toolkit', 'codex', 'no-op', 'verified'),
             relation: 'dependency' as const },
           { ...scopedTarget('official/skill-toolkit', 'codex', 'failed', 'missing'),
-            scope: 'project' as const, relation: 'dependency' as const },
+            scope: 'project' as const, relation: 'dependency' as const, requiredBy: ['official/agent-lab'] },
           { ...scopedTarget('official/agent-lab', 'codex', 'not-run', 'missing'),
             scope: 'project' as const },
         ],
-        remainingTargets: [{ pluginId: 'official/skill-toolkit', agent: 'codex' as const,
-          scope: 'project' as const, delivery: { kind: 'native' as const, platform: 'codex' as const } }],
+        remainingTargets: ['official/skill-toolkit', 'official/agent-lab'].map((pluginId) => ({
+          pluginId, agent: 'codex' as const, scope: 'project' as const, delivery: { kind: 'native' as const, platform: 'codex' as const } })),
       },
     }));
     const value = controller({
@@ -729,8 +745,14 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
     expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
-      scope: 'project', exactTargets: [{ pluginId: 'official/skill-toolkit', agent: 'codex', scope: 'project' }],
+      command: 'sync', selectors: ['official/agent-lab'], scope: 'project',
+      exactTargets: [{ pluginId: 'official/agent-lab', agent: 'codex', scope: 'project' }],
     }), expect.any(AbortSignal));
+    await prepareScopedTask.mock.results.at(-1)!.value;
+    expect(retryPlan?.receipt.requestedRoots).toEqual(['official/agent-lab']);
+    expect(retryPlan?.receipt.blockers.map(({ code }) => code)).not.toContain('syncPluginNotDesired');
+    expect(await observeIntent(location)).toEqual(originalIntent);
+    await retryPlan?.context.dispose();
   });
 
   it('returns a successful dependency install to stable detail with a completion notice at 60x18', async () => {
@@ -1681,12 +1703,14 @@ describe('ConsoleAppV4', () => {
               ? [{ ...scopedTarget('official/content-toolkit', 'codex', 'no-op', 'verified'),
                   relation: 'dependency' as const }] : []),
             { ...scopedTarget('official/skill-toolkit', 'codex', 'failed', 'missing'),
-              scope: 'project' as const, relation: 'dependency' as const },
+              scope: 'project' as const, relation: 'dependency' as const, requiredBy: ['official/agent-lab'] },
             { ...scopedTarget('official/agent-lab', 'codex', 'not-run', 'missing'),
               scope: 'project' as const },
           ],
-          remainingTargets: [{ pluginId: 'official/skill-toolkit', agent: 'codex' as const,
-            scope: 'project' as const, delivery: { kind: 'native' as const, platform: 'codex' as const } }],
+          remainingTargets: ['official/skill-toolkit', 'official/agent-lab'].map((pluginId) => ({
+            pluginId, agent: 'codex' as const, scope: 'project' as const,
+            delivery: { kind: 'native' as const, platform: 'codex' as const },
+          })),
         },
       }));
       const value = controller({
@@ -1729,8 +1753,8 @@ describe('ConsoleAppV4', () => {
       await input(instance, '\r');
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
       expect(prepareScopedTask).toHaveBeenLastCalledWith(expect.objectContaining({
-        kind: 'recovery', scope: 'project',
-        exactTargets: [{ pluginId: 'official/skill-toolkit', agent: 'codex', scope: 'project' }],
+        kind: 'recovery', command: 'sync', scope: 'project', selectors: ['official/agent-lab'],
+        exactTargets: [{ pluginId: 'official/agent-lab', agent: 'codex', scope: 'project' }],
       }), expect.any(AbortSignal));
       expect(executeScopedTask).toHaveBeenCalledTimes(1);
     },

@@ -40,6 +40,7 @@ import {
   preparePortableRecovery,
   portablePreparationDiagnostic,
   portableReviewMatches,
+  unobservedPortableTarget,
   preparePortableCleanup,
   inspectPortableRecovery,
   inspectPortableResidue,
@@ -581,8 +582,11 @@ function portableOutcomes(plan: RecoveryPlan, prepared: PortablePreparation,
     ownership: entry.ownership, associatedAgents: entry.associatedAgents,
     execution: entry.execution, blockers: entry.blockers }));
   for (const code of [...globalBlockers, ...outcomes.flatMap((entry) => entry.blockers)]) block(target, code);
-  target.recoveryActions = portableRecoveryActions(plan, target.pluginId,
-    outcomes.filter((entry) => ['conflict', 'unknown'].includes(entry.observation)));
+  target.recoveryActions = portableRecoveryActions(plan, target.pluginId, outcomes.filter((entry) =>
+    entry.observation === 'conflict' || entry.observation === 'unknown' && !entry.blockers.includes('operationReviewStale')));
+  if (globalBlockers.includes('operationReviewStale') && prepared.mode !== 'cleanup') {
+    target.recoveryActions.push(`aw plugin sync ${target.pluginId} --context ${target.scope} --target ${agent}`);
+  }
 }
 
 function portablePluginClosure(plan: RecoveryPlan, prepared: PortablePreparation) {
@@ -1230,8 +1234,9 @@ async function executePortableGroups(plan: RecoveryPlan, groups: readonly Portab
         ? await nativeRuntime.installAdmission.run([{ kind: 'exclusive' }], preApply, nativeRuntime.signal) : await preApply();
       if (preApplyFailure) {
         const target = pair(plan, prepared.options.selector, agent)!;
+        portableOutcomes(plan, prepared, agent, prepared.targets.filter((entry) => entry.agent === agent)
+          .map((entry) => unobservedPortableTarget(entry, preApplyFailure)), [preApplyFailure]);
         if (preApplyFailure !== 'operationReviewStale') target.execution = 'failed';
-        block(target, preApplyFailure);
         target.recoveryActions = [`aw plugin sync ${target.pluginId} --context ${target.scope} --target ${agent}`
           + (preApplyFailure === 'operationReviewStale' ? '' : ' --yes')];
         continue;

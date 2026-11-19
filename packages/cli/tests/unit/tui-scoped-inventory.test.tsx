@@ -1021,7 +1021,10 @@ describe('scoped inventory in Ink', () => {
       expect(controller.dependencies.executeScopedTask).not.toHaveBeenCalled();
       await escape(instance);
       await press(instance, 'c');
-      await vi.waitFor(() => expect(instance.lastFrame()).toContain('操作汇总'));
+      await vi.waitFor(() => {
+        expect(prepareScopedTask).toHaveBeenCalledTimes(2);
+        expect(instance.lastFrame()).toContain('确认恢复可执行目标');
+      });
       const preparedRequest = prepareScopedTask.mock.calls[1]?.[0];
       await press(instance, '\r');
       await vi.waitFor(() => expect(instance.lastFrame()).toContain('恢复结果'));

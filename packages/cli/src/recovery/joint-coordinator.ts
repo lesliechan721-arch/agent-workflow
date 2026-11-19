@@ -23,7 +23,7 @@ import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
 import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan, type JointPlacement } from './joint-demand.js';
 import { checkFootprints, prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
 import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
-import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
+import { canRetryRecoveryRootWithCli, recoveryRetryTargets, type RecoveryReceipt, type RecoveryDiagnostic } from './receipt.js';
 import { limitInstallNativeRunner, mapInstallReads } from './install-concurrency.js';
 import { executeJointInstall } from './joint-install-execution.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from './interruption.js';
@@ -76,6 +76,30 @@ function providesExactTarget(placement: JointPlacement, exact: NonNullable<Recov
   return placement.target === exact.agent && placement.contributions.some((item) =>
     item.scope === exact.scope && item.path.includes(exact.pluginId));
 }
+function useDeclaredRetryRoots(receipt: RecoveryReceipt): void {
+  const sync = (item: Pick<RecoveryReceipt['targetResults'][number], 'pluginId' | 'scope' | 'agent'>) =>
+    `aw plugin sync ${item.pluginId} --context ${item.scope} --target ${item.agent}`;
+  for (const target of receipt.targetResults) {
+    if (!receipt.remainingTargets.some((entry) => targetKey(entry) === targetKey(target))
+      || target.relation !== 'dependency' && canRetryRecoveryRootWithCli(receipt, target)) continue;
+    const command = sync(target);
+    const roots = recoveryRetryTargets(receipt, [target]);
+    const revise = (action: string): string[] => {
+      if (!action.includes(command)) return [action];
+      if (!roots.length) return [`aw plugin status --context ${receipt.scope} --json`];
+      return roots.map((root) => {
+        if (canRetryRecoveryRootWithCli(receipt, root)) return action.replace(command, sync(root));
+        const precise = `请在 TUI 当前项目中选择 ${root.pluginId} 的 ${root.agent} 位置重新检查。`;
+        return action.startsWith(command) ? precise : action.replace(command, precise);
+      });
+    };
+    if (target.recoveryActions) target.recoveryActions = [...new Set(target.recoveryActions.flatMap(revise))];
+    receipt.recoveryActions = [...new Set(receipt.recoveryActions.flatMap(revise))];
+  }
+  const actions = new Set(receipt.recoveryActions);
+  receipt.recoveryActions = [...actions].filter((action) => !action.startsWith('aw plugin sync ')
+    || !action.includes(' --context user --target ') || !actions.has(action.replace(' --context user --target ', ' --context project --target ')));
+}
 function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): RecoveryReceipt {
   const joint = plan.joint!;
   const receipt = structuredClone(plan.receipt);
@@ -100,6 +124,7 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
       target.providerScope = placement.scope;
       if (plan.command !== 'uninstall' || placement.scope !== target.scope) target.relation = contributions.some((item) =>
         item.root === target.pluginId && item.scope === target.scope) ? 'root' : 'dependency';
+      if (target.relation === 'dependency') target.contributions = contributions;
       if (placement.scope !== target.scope) target.requirementScope = target.scope;
     }
   }
@@ -159,26 +184,30 @@ function finalStatusReadFailure(status: RecoveryStatus, receipt: RecoveryReceipt
   return undefined;
 }
 
-function staleBeforeFirstWrite(plan: RecoveryPlan): RecoveryReceipt {
-  const stale = diagnostic('operationReviewStale');
+function blockedBeforeDeployment(plan: RecoveryPlan, blocker = diagnostic('operationReviewStale'),
+  savedState?: RecoveryReceipt['unconfirmedSavedState']): RecoveryReceipt {
   if (!isInstallBatch(plan.command)) {
-    plan.receipt.blockers.push(stale);
+    plan.receipt.blockers.push(blocker);
     return mergeReceipts(plan, []);
   }
   const receipt = structuredClone(plan.receipt);
   receipt.ok = false;
-  receipt.blockers.push(stale);
+  receipt.blockers.push(blocker);
   receipt.errors = [...receipt.blockers];
   receipt.commandResults = [];
   receipt.nativeToolChanges = [];
   receipt.remainingTargets = [];
-  receipt.recoveryActions = ['确认依据已改变，请重新准备本次操作。'];
+  receipt.recoveryActions = savedState
+    ? [`aw plugin status --context ${plan.joint!.snapshot.context.context} --json`,
+      `请核对当前${savedState === 'intent' ? '插件声明' : '本机 Agent 偏好'}。确认需要的范围后重新准备本次操作。`]
+    : ['确认依据已改变，请重新准备本次操作。'];
+  if (savedState) receipt.unconfirmedSavedState = savedState;
   receipt.targetResults = receipt.targetResults.map((target) => {
     if (target.satisfaction === 'excluded' || target.satisfaction === 'unsupported') return target;
     const { pluginId, agent, scope, delivery, relation, requiredBy, requirementScope, providerScope } = target;
     receipt.remainingTargets.push({ pluginId, agent, scope, delivery });
     return { pluginId, agent, scope, delivery, relation, requiredBy, requirementScope, providerScope,
-      execution: 'not-run', observation: 'unknown', content: 'unknown', satisfaction: 'unknown', blockers: [stale] };
+      execution: 'not-run', observation: 'unknown', content: 'unknown', satisfaction: 'unknown', blockers: [blocker] };
   });
   return receipt;
 }
@@ -875,7 +904,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           plan.receipt.blockers.push(describeStrongStateProblem({ kind: 'intent', scope: plan.options.scope,
             state: currentIntent.state, filePath: await resolveIntentPath(plan.options) }));
         }
-        if (snapshotEvidence(actual) !== joint.evidence) return staleBeforeFirstWrite(plan);
+        if (snapshotEvidence(actual) !== joint.evidence) return blockedBeforeDeployment(plan);
         if (plan.blockExecution) return plan.receipt;
         // Recheck all backend candidates before any strong-state or output write.
         (execution.runtime?.codexObservationSession ?? plan.runtime.codexObservationSession)?.invalidate();
@@ -887,19 +916,19 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         lockedPlan = checked;
         const parallel = isInstallBatch(plan.command) && !joint.children.some((child) => child.command === 'cleanup');
         const children = parallel ? checked.joint!.children : joint.children;
-        if (!stable) return staleBeforeFirstWrite(plan);
+        if (!stable) return blockedBeforeDeployment(plan);
         performanceRuntime.signal?.throwIfAborted();
         if (joint.originalOptions.preferences) {
           const saved = await writePreferences({ ...plan.options, scope: 'user', token }, joint.originalOptions.preferences);
           plan.receipt.preferencesChanged = saved.changed;
           const committed = await observePreferences({ ...plan.options, scope: 'user' });
+          plan.receipt.selection.preferences = committed.state;
           if (committed.state !== 'valid') {
-            plan.receipt.blockers.push(diagnostic('deploymentPreferencesUnavailable'));
-            return mergeReceipts(plan, []);
+            return blockedBeforeDeployment(plan, diagnostic(committed.state === 'invalid'
+              ? 'deploymentPreferencesInvalid' : 'deploymentPreferencesUnavailable'), 'preferences');
           }
           if (JSON.stringify(committed.value) !== JSON.stringify(saved.value)) {
-            plan.receipt.blockers.push(diagnostic('operationReviewStale'));
-            return mergeReceipts(plan, []);
+            return blockedBeforeDeployment(plan, diagnostic('operationReviewStale'), 'preferences');
           }
           for (const child of children) {
             child.demand.preferences = committed;
@@ -913,15 +942,13 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           const committed = await observeIntent({ ...plan.options, scope: joint.declaration.scope });
           plan.receipt.intent = intentReceipt(committed);
           if (committed.state !== 'valid') {
-            plan.receipt.blockers.push(committed.state === 'absent'
+            return blockedBeforeDeployment(plan, committed.state === 'absent'
               ? diagnostic('pluginIntentStateUnavailable', '保存后未找到插件声明，未执行输出变更。')
               : describeStrongStateProblem({ kind: 'intent', scope: joint.declaration.scope,
-                state: committed.state, filePath: await resolveIntentPath({ ...plan.options, scope: joint.declaration.scope }) }));
-            return mergeReceipts(plan, []);
+                state: committed.state, filePath: await resolveIntentPath({ ...plan.options, scope: joint.declaration.scope }) }), 'intent');
           }
           if (calculateIntentDigest(committed.value) !== calculateIntentDigest(saved.value)) {
-            plan.receipt.blockers.push(diagnostic('operationReviewStale'));
-            return mergeReceipts(plan, []);
+            return blockedBeforeDeployment(plan, diagnostic('operationReviewStale'), 'intent');
           }
         }
         const results: RecoveryReceipt[] = joint.children.filter((child) => child.blockExecution
@@ -1164,6 +1191,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         receipt.ok &&= failedPackages.size === 0;
         receipt.outputsMayHaveChanged ||= packageResults.some((result) => result.state === 'completed');
         receipt.errors.push(...results.flatMap((result) => result.targetResults.flatMap((target) => target.blockers)));
+        if (!receipt.ok && isInstallBatch(plan.command)) useDeclaredRetryRoots(receipt);
 
         completedReceipt = receipt;
         if (interrupted) throw interrupted;

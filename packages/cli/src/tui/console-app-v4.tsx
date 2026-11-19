@@ -164,7 +164,7 @@ import {
 } from './model.js';
 import type { ScopedTuiPlan } from './scoped-flow.js';
 import { managedCommandRecoveryPlanChanges } from './operation-review-planner.js';
-import { isRecoveryReviewStaleBeforeExecution, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryTargets, recoverySummaryErrors, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
 import type { AgentId } from '../intent/deployment-preferences.js';
 import type { PluginContentItem, PluginContentType } from './plugin-content.js';
 import type { ConfigRouteLayer, PluginInstallFilter, TuiPageContext, TuiRoute } from './router.js';
@@ -377,19 +377,14 @@ function scopedPlanSummary(plan: ScopedTuiPlan): string {
   return [...new Set(lines)].join('\n');
 }
 
-function scopedResultErrors(receipt: RecoveryReceipt): RecoveryReceipt['errors'] {
-  // Child errors are also aggregated on the receipt. Keep a target's stale reason on its own row.
-  if (!receipt.targetResults.some((target) => target.blockers.some(({ code }) => code === 'operationReviewStale'))
-    || receipt.blockers.some(({ code }) => code === 'operationReviewStale')) return receipt.errors;
-  return receipt.errors.filter(({ code }) => code !== 'operationReviewStale');
-}
-
 function scopedResultSummary(receipt: RecoveryReceipt): string {
   return [receipt.coverage?.scopes.length === 2 ? '所有项目 + 当前项目' : scopeLabel(receipt.scope), ...recoveryTargetLines(receipt, true),
-    ...(receipt.declarationChanged ? ['插件清单已保存。'] : []),
-    ...(receipt.preferencesChanged ? ['Agent 选择已保存。'] : []),
+    ...(receipt.unconfirmedSavedState === 'intent' ? ['插件清单写入后的内容需要重新检查。']
+      : receipt.declarationChanged ? ['插件清单已保存。'] : []),
+    ...(receipt.unconfirmedSavedState === 'preferences' ? ['Agent 选择写入后的内容需要重新检查。']
+      : receipt.preferencesChanged ? ['Agent 选择已保存。'] : []),
     ...(receipt.configChanged ? ['插件设置已保存。'] : []),
-    ...[...new Set([...scopedResultErrors(receipt), ...receipt.blockers].map((entry) => recoveryReason(entry.code)))]
+    ...[...new Set([...recoverySummaryErrors(receipt), ...receipt.blockers].map((entry) => recoveryReason(entry.code)))]
       .map((reason) => `! ${reason}`),
     ...(receipt.commandResults?.length ? [`命令包：${receipt.commandResults.filter((entry) => entry.errors.length === 0).length} 项完成，${receipt.commandResults.filter((entry) => entry.errors.length > 0).length} 项需处理；详情中可查看恢复方法。`] : []),
   ].join('\n');
@@ -446,7 +441,7 @@ function scopedCommandPlanText(plan: Extract<ScopedTuiPlan, { kind: 'recovery' }
 function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
   if (!technical) return scopedResultSummary(receipt);
   const diagnostics = [...new Map([
-    ...scopedResultErrors(receipt).map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
+    ...recoverySummaryErrors(receipt).map((entry) => [`${entry.code}:${entry.message}`, `全局错误：${entry.code} · ${entry.message}`] as const),
     ...receipt.blockers.map((entry) => [`${entry.code}:${entry.message}`, `全局受阻：${entry.code} · ${entry.message}`] as const),
   ]).values()];
   return [
@@ -4886,10 +4881,12 @@ export function ConsoleAppV4(props: {
           : '本机工具已保存。';
       readingText = flow.receipt ? scopedResultText(flow.receipt, showTechnical)
         : (flow.errorCode ? showTechnical ? flow.errorCode : recoveryReason(flow.errorCode) : undefined) ?? (flow.changed ? '本机工具已保存。' : '本机工具没有变化。');
-      const retryTargets = flow.receipt?.targetResults.filter((target) =>
+      const failedPositions = flow.receipt?.targetResults.filter((target) =>
         (target.execution === 'failed' || target.execution === 'partial')
         && (target.observation === 'missing' || target.content === 'absent')) ?? [];
-      const retryKeys = new Set(retryTargets.map((target) => `${target.pluginId}\0${target.agent}\0${target.scope}`));
+      const retryTargets = flow.receipt ? recoveryRetryTargets(flow.receipt, failedPositions) : [];
+      const originalCommand = flow.plan?.kind === 'recovery' ? flow.plan.plan.command : undefined;
+      const retryKeys = new Set(failedPositions.map((target) => `${target.pluginId}\0${target.agent}\0${target.scope}`));
       const unknownTargets = flow.receipt?.targetResults.filter((target) =>
         target.observation === 'unknown'
         && !retryKeys.has(`${target.pluginId}\0${target.agent}\0${target.scope}`)) ?? [];
@@ -4910,10 +4907,10 @@ export function ConsoleAppV4(props: {
           closeScopedFlow(); void props.controller.refreshScopedInventory(flow.scope);
         } }] : []),
         ...(retryTargets.length ? [{ label: `重试明确失败项（${retryTargets.length}）`, run: () => beginScopedTask({
-          kind: 'recovery', scope: flow.scope, command: flow.receipt!.command as 'sync',
+          kind: 'recovery', scope: flow.scope, command: originalCommand === 'install' ? 'sync' : originalCommand ?? 'sync',
           selectors: [...new Set(retryTargets.map((target) => target.pluginId))],
           targets: [...new Set(retryTargets.map((target) => target.agent))],
-          exactTargets: retryTargets.map((target) => ({ pluginId: target.pluginId, agent: target.agent, scope: target.scope })),
+          exactTargets: retryTargets,
         }) }] : []),
       ];
       content = <ResultSurface status={flow.errorCode || flow.receipt && !flow.receipt.ok ? 'warning' : 'success'}

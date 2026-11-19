@@ -1177,7 +1177,7 @@ async function prepareConfigApplyPackages(options: ApplyPluginConfigOptions, plu
     } else {
       try {
         await assertManagedCommandPackageNativeToolsUnchanged({ plugin, producer: target.producer, env });
-        expectedPackage = await captureManagedCommandPackageEvidence(installed);
+        expectedPackage = await captureManagedCommandPackageEvidence(installed, env);
       } catch (error) { blocker = managedCommandDiagnostic(error); }
     }
     return { target, expectedPackage, blocker };

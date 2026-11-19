@@ -5057,9 +5057,14 @@ async function runRebuildCommandInSession(
         const preparedTargets = lockedPreparation.preparedTargets;
         const preparedTargetErrors = lockedPreparation.preparedTargetErrors;
         const removalRequiredConsumers = new Map<string, Set<string>>();
+        // Sync checks live references for Codex/Claude providers. Without a possible
+        // consumer the second inventory cannot add a dependency to this plan.
+        const syncNeedsConsumerCheck = options.command === 'sync' && executionSelections.some(({ platform, entry }) =>
+          (platform === 'codex' || platform === 'claude') && availableEntries.some((candidate) =>
+            candidate.source.sourceId === entry.source.sourceId && candidate.entry.dependencies.includes(entry.plugin.manifest.name)));
         if ((options.command === 'cleanup' && !cleanupForce)
           || (options.command === 'uninstall' && !uninstallForce)
-          || options.command === 'sync') {
+          || syncNeedsConsumerCheck) {
           const removalStateInventory = await readCurrentInventory();
           if (options.command !== 'cleanup') {
             const checked = options.command === 'uninstall'

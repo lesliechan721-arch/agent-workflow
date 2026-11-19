@@ -206,7 +206,7 @@ sequenceDiagram
   - Config Review 与锁内 writer 使用同一用户文档、profile、context 和有效输入证据。
   - `common` 变化检查公共及已知相关平台，平台变化只检查该平台；same-platform `valueRef` 的 provider 使用相同编译配置。
   - 普通保存保护授权来源中原先有效的引用，包括尚未安装的消费者。
-  - apply 通过联合恢复计划，只刷新已存在且受影响的原生平台、generic 与无平台命令包。缺失输出提示 sync。无平台命令包只读公共 schema/common，发布前重新核对该包的归属、已安装记录、资源内容和绑定可用性。Review 后包被移走或改写时，保留现场并返回该包的恢复入口。提供者失败阻止相关消费者，其它独立目标继续。apply 不新增 Intent 或 target。
+  - apply 通过联合恢复计划，只刷新已存在且受影响的原生平台、generic 与无平台命令包。缺失输出提示 sync。无平台命令包只读公共 schema/common，发布前重新核对该包的归属、已安装记录、文件内容和每个命令绑定的实际状态。在 POSIX 上还核对发布会恢复的文件权限。Review 后包被移走或改写时，保留现场并返回该包的恢复入口。提供者失败阻止相关消费者，其它独立目标继续。apply 不新增 Intent 或 target。
   - 共享影响通过 sharedNativeRenderUnits 记录 pluginName、platform、renderScope、configKeys、dynamicComponents 和真实 commandSets；没有准备结果时不伪造动态 Skill 身份。
   - 平台配置变更命中 renderer configKeys 或真实命令声明的 refreshKeys 时，保存仍只提交用户配置。后续 apply Review 明示共享包体影响与必要脚本授权；缺少 apply 授权不撤销已经保存的值。
 

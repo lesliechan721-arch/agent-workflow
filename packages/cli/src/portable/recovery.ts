@@ -100,6 +100,15 @@ export interface PortableExecutionTarget extends PortableTarget {
   execution: 'not-run' | 'no-op' | 'applied' | 'failed';
   blockers: string[];
 }
+/** A rejected Review still identifies the requested Skill, but no longer proves its installed state. */
+export function unobservedPortableTarget(target: PortableTarget, code: string): PortableExecutionTarget {
+  return {
+    skill: target.skill, agent: target.agent, physicalPath: target.physicalPath,
+    providerPluginId: target.providerPluginId, expectedDigest: target.expectedDigest,
+    disposition: target.disposition, associatedAgents: target.associatedAgents,
+    execution: 'not-run', observation: 'unknown', ownership: 'unknown', contentState: 'unknown', blockers: [code],
+  };
+}
 export interface PortableExecution {
   reviewProblem?: RecoveryDiagnostic;
   targets: PortableExecutionTarget[];
@@ -410,7 +419,7 @@ export async function executePortableRecovery(options: {
         : succeeded > 0 ? 'partial' : outputsMayHaveChanged ? 'failed' : 'not-run' };
   };
   const stale = (target: PortableTarget): PortableExecutionTarget =>
-    ({ ...target, execution: 'not-run', blockers: ['operationReviewStale'] });
+    unobservedPortableTarget(target, 'operationReviewStale');
   if (cleanup !== (prepared.mode === 'cleanup') || !prepared.evidenceDigest
     || options.force && !prepared.cleanupOptions?.force || options.targets?.some((pair) =>
       !selected.some((target) => target.agent === pair.agent && target.skill === pair.skill))) {

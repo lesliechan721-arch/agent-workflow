@@ -101,7 +101,8 @@ async function createCommandPackageReferenceFixture(options: {
   foreignSource?: boolean;
   withClaude?: boolean;
   mixedScopes?: boolean;
-  preApplyPackageChange?: 'move' | 'edit' | 'unbind';
+  preApplyPackageChange?: 'move' | 'edit' | 'unbind' | 'chmod';
+  twoBindings?: boolean;
   packagePlatforms?: Array<'codex' | 'claude'>;
   initialSelection?: 'final' | 'next';
 } = {}) {
@@ -116,16 +117,26 @@ async function createCommandPackageReferenceFixture(options: {
   const packageToChange = path.join(cwd, 'package-to-change.json');
   const fail = path.join(cwd, 'provider-render-fails');
   const packageKeys = options.mixedScopes ? ['personal', 'workspace'] : ['personal', 'uninstalled'];
+  const commandEntries = (options.twoBindings ? ['first', 'second'] : ['run'])
+    .map((key) => ({ key, runner: 'node', entry: 'tool.mjs', args: [], cwd: 'resource' }));
   for (const name of ['provider', 'consumer']) {
     const root = path.join(sourceRoot, 'plugins', name);
-    await fs.outputFile(path.join(root, 'commands/tool.mjs'), 'console.log("fixture");\n');
+    const usesHelper = options.preApplyPackageChange === 'chmod' && name === 'consumer';
+    await fs.outputFile(path.join(root, 'commands/tool.mjs'), usesHelper
+      ? "import {execFileSync} from 'node:child_process'; import {fileURLToPath} from 'node:url'; execFileSync(fileURLToPath(new URL('./helper', import.meta.url)));"
+      : 'console.log("fixture");\n');
+    if (usesHelper) {
+      const helper = path.join(root, 'commands/helper');
+      await fs.outputFile(helper, '#!/bin/sh\nexit 0\n');
+      await fs.chmod(helper, 0o755);
+    }
     await fs.outputFile(path.join(root, 'render.mjs'), [
       "import fs from 'node:fs'; const c=JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT,'utf8'));",
       `const name=${JSON.stringify(name)};`,
       `if(name==='provider'&&fs.existsSync(${JSON.stringify(fail)}))throw new Error('injected provider failure');`,
       `fs.appendFileSync(${JSON.stringify(renders)},JSON.stringify({plugin:name,surface:c.surface,ids:c.requestedArtifactIds,config:c.config.values})+'\\n');`,
       "if(c.surface==='agent-plugin'){const files={'SKILL.md':'---\\nname: '+name+'\\ndescription: Package reference fixture.\\n---\\n# Fixture\\n','README.md':'# Fixture\\n'};console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name,content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));}else{",
-      `const artifacts=c.requestedArtifactIds.map(id=>id.startsWith('command-package.')?{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['selected'],files:{'config.json':JSON.stringify({selected:c.config.values.selected${options.mixedScopes ? ',scope:c.scope' : ''}})}}:{id,target:'aw.command-set',kind:'commandSet',state:'present',refreshKeys:['selected'],entries:[{key:'run',runner:'node',entry:'tool.mjs',args:[],cwd:'resource'}]});`,
+      `const artifacts=c.requestedArtifactIds.map(id=>id.startsWith('command-package.')?{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['selected'],files:{'config.json':JSON.stringify({selected:c.config.values.selected${options.mixedScopes ? ',scope:c.scope' : ''}})}}:{id,target:'aw.command-set',kind:'commandSet',state:'present',refreshKeys:['selected'],entries:${JSON.stringify(commandEntries)}});`,
       'console.log(JSON.stringify({version:2,artifacts}));}',
     ].join('\n'));
     await fs.outputFile(path.join(root, 'pre-apply.mjs'), [
@@ -134,7 +145,7 @@ async function createCommandPackageReferenceFixture(options: {
       ...(name === 'consumer' && options.preApplyPackageChange ? [
         `const trigger=${JSON.stringify(packageToChange)}; if(fs.existsSync(trigger)){const {root,binding}=JSON.parse(fs.readFileSync(trigger,'utf8'));`,
         { move: "fs.renameSync(root,root+'.saved');", edit: "fs.writeFileSync(root+'/resource/config.json','external bytes');",
-          unbind: 'fs.unlinkSync(binding);' }[options.preApplyPackageChange],
+          unbind: 'fs.unlinkSync(binding);', chmod: "fs.chmodSync(root+'/resource/helper',0o644);" }[options.preApplyPackageChange],
         'fs.unlinkSync(trigger);}',
       ] : []),
     ].join('\n'));
@@ -301,7 +312,8 @@ describe('cross-plugin public config apply', () => {
     expect(await fs.readJson(config)).toEqual({ selected: 'next' });
   }, 30_000);
 
-  it.each(['move', 'edit', 'unbind'] as const)('preserves a package after a confirmed preApply %s and refreshes its sibling', async (change) => {
+  const packageChanges = ['move', 'edit', 'unbind', 'chmod'] as const;
+  it.each(packageChanges.filter((change) => change !== 'chmod' || process.platform !== 'win32'))('preserves a package after a confirmed preApply %s and refreshes its sibling', async (change) => {
     const { env, run, setSelected, packages, packageToChange } = await createCommandPackageReferenceFixture({ preApplyPackageChange: change });
     const installed = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
     expect(installed.exitCode, JSON.stringify(installed.payload.diagnostics)).toBe(0);
@@ -310,6 +322,11 @@ describe('cross-plugin public config apply', () => {
     const sibling = inventory.find((item) => item.producer.key === 'uninstalled')!;
     const root = path.dirname(affected.resourceRoot);
     const binding = path.join(env.AW_HOME!, 'commands', 'bindings', affected.sets[0]!.commandIds[0]! + '.json');
+    const helper = path.join(affected.resourceRoot, 'helper');
+    if (change === 'chmod') {
+      expect(affected.availability).toBe('ready');
+      expect((await fs.stat(helper)).mode & 0o777).toBe(0o755);
+    }
     await fs.writeJson(packageToChange, { root, binding });
     await setSelected('next');
 
@@ -330,11 +347,58 @@ describe('cross-plugin public config apply', () => {
       expect(await fs.readJson(path.join(root + '.saved', 'resource', 'config.json'))).toEqual({ selected: 'native' });
     } else if (change === 'edit') {
       expect(await fs.readFile(path.join(affected.resourceRoot, 'config.json'), 'utf8')).toBe('external bytes');
+    } else if (change === 'chmod') {
+      expect((await fs.stat(helper)).mode & 0o777).toBe(0o644);
+      expect(await fs.readFile(helper, 'utf8')).toBe('#!/bin/sh\nexit 0\n');
+      expect(await fs.readJson(path.join(affected.resourceRoot, 'config.json'))).toEqual({ selected: 'native' });
     } else {
       expect(await fs.pathExists(binding)).toBe(false);
       expect(await fs.readJson(path.join(affected.resourceRoot, 'config.json'))).toEqual({ selected: 'native' });
     }
     expect(await fs.readJson(path.join(sibling.resourceRoot, 'config.json'))).toEqual({ selected: 'next' });
+    if (change === 'chmod') {
+      const repaired = await run(['command', 'package', 'sync', 'team/consumer', 'personal', '--scope', 'user', '--yes']);
+      expect(repaired.exitCode, JSON.stringify(repaired.payload.diagnostics)).toBe(0);
+      expect((await fs.stat(helper)).mode & 0o777).toBe(0o755);
+    }
+  }, 60_000);
+
+  it.each(['unchanged', 'removed'] as const)('repairs a reviewed missing binding only when the second binding is %s', async (second) => {
+    const { env, run, setSelected, packages, packageToChange } = await createCommandPackageReferenceFixture({
+      preApplyPackageChange: 'unbind', twoBindings: true });
+    const installed = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
+    expect(installed.exitCode, JSON.stringify(installed.payload.diagnostics)).toBe(0);
+    const inventory = (await packages()).packages;
+    const affected = inventory.find((item) => item.producer.key === 'personal')!;
+    const sibling = inventory.find((item) => item.producer.key === 'uninstalled')!;
+    const bindings = affected.sets[0]!.commandIds.map((id) => path.join(env.AW_HOME!, 'commands', 'bindings', id + '.json'));
+    expect(bindings).toHaveLength(2);
+    await fs.unlink(bindings[0]!);
+    expect((await packages()).packages.find((item) => item.id === affected.id)?.availability).toBe('unavailable');
+    if (second === 'removed') await fs.writeJson(packageToChange, { binding: bindings[1] });
+    await setSelected('next');
+
+    const result = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user',
+      '--value-json', '[{"key":"next"}]', '--apply', '--yes']);
+    const changed = second === 'removed';
+    expect(await fs.pathExists(packageToChange)).toBe(false);
+    expect(result.exitCode, JSON.stringify(result.payload.diagnostics)).toBe(changed ? 4 : 0);
+    expect(result.payload.data.configWrite).toBe('succeeded');
+    expect(result.payload.data.apply.commandResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ producer: expect.objectContaining({ key: 'personal' }), state: changed ? 'failed' : 'completed',
+        blockerCodes: changed ? ['operationReviewStale'] : [] }),
+      expect.objectContaining({ producer: expect.objectContaining({ key: 'uninstalled' }), state: 'completed' }),
+    ]));
+    if (changed) expect(result.payload.nextActions).toContainEqual(expect.objectContaining({
+      argv: ['aw', 'command', 'package', 'sync', 'team/consumer', 'personal', '--scope', 'user'], requiresConfirmation: true }));
+    for (const binding of bindings) expect(await fs.pathExists(binding)).toBe(!changed);
+    expect(await fs.readJson(path.join(affected.resourceRoot, 'config.json'))).toEqual({ selected: changed ? 'native' : 'next' });
+    expect(await fs.readJson(path.join(sibling.resourceRoot, 'config.json'))).toEqual({ selected: 'next' });
+    if (changed) {
+      const repaired = await run(['command', 'package', 'sync', 'team/consumer', 'personal', '--scope', 'user', '--yes']);
+      expect(repaired.exitCode, JSON.stringify(repaired.payload.diagnostics)).toBe(0);
+    }
+    expect((await packages()).packages.find((item) => item.id === affected.id)?.availability).toBe('ready');
   }, 60_000);
 
   it('reports the shared packages when native provider preflight blocks their owner', async () => {

@@ -33,6 +33,7 @@ async function fixture(plugins: Array<{
   native?: boolean;
   portableSkill?: string;
   configurable?: boolean;
+  preApply?: string;
 }>, scope: 'user' | 'project' = 'project') {
   const isolation = getCurrentSourceTestIsolation();
   const cwd = path.join(isolation.layout.fixtureCwd, 'recovery-project');
@@ -42,6 +43,7 @@ async function fixture(plugins: Array<{
   for (const plugin of plugins) {
     const name = plugin.portableSkill ?? plugin.name;
     const pluginRoot = path.join(sourceRoot, 'plugins', plugin.name);
+    if (plugin.preApply) await fs.outputFile(path.join(pluginRoot, 'pre-apply.mjs'), plugin.preApply);
     const skill = path.join(pluginRoot, 'skills', name);
     await fs.outputFile(path.join(skill, 'SKILL.md'),
       `---\nname: ${name}\ndescription: ${name} fixture\n---\n${name}\n`);
@@ -56,6 +58,7 @@ async function fixture(plugins: Array<{
     configureManifest: (manifest) => {
       manifest.platforms = [...FIXTURE_TARGETS, ...(plugin.native ? ['codex', 'claude'] as const : [])];
       manifest.skills = './skills';
+      if (plugin.preApply) manifest.scripts = { preApply: { path: './pre-apply.mjs' } };
       if (plugin.native) manifest.extensions = {
         instructions: [{ name: 'native', title: 'Native', content: 'Native.', coverage: ['main'] }],
       };
@@ -442,6 +445,41 @@ describe('scoped recovery integration', () => {
     expect(await fs.readFile(prior)).toEqual(priorBytes);
     expect(await fs.readFile(path.join(saved, 'SKILL.md'), 'utf8')).toBe('Foreign replacement.\n');
   });
+
+  // Test Value Gate: a late external claim invalidates only the unexecuted root's observations.
+  it.each(['in preApply', 'before preApply', 'without a script'] as const)(
+    'drops obsolete Portable observations after an external claim %s', async (timing) => {
+      const preApply = timing === 'without a script' ? undefined : [
+        "import fs from 'node:fs';",
+        "process.chdir(JSON.parse(fs.readFileSync(0, 'utf8')).target.projectRoot);",
+        "fs.writeFileSync('script-ran', 'yes');",
+        "fs.mkdirSync('.agents/skills/beta', { recursive: true });",
+        "fs.writeFileSync('.agents/skills/beta/SKILL.md', 'external bytes');",
+      ].join('\n');
+      const setup = await fixture([{ name: 'beta', dependencies: ['shared'], preApply }, { name: 'shared' }]);
+      const review = await prepareRecovery('install', ['team/beta'], { ...setup.options(['generic']), all: false });
+      expect(review.receipt.targetResults.find((target) => target.pluginId === 'team/beta'))
+        .toMatchObject({ observation: 'missing', content: 'absent' });
+      const root = portableRoot(setup, 'generic');
+      const claimed = path.join(root, 'beta', 'SKILL.md');
+      const receipt = await executeRecovery(review, { runtime: { debugLogger: { log: async (event) => {
+        if (timing !== 'in preApply' && event.data?.name === 'recovery.child.execute' && event.data.phase === 'success'
+          && await fs.pathExists(path.join(root, 'shared', SKILL_OWNER_MARKER)) && !await fs.pathExists(claimed)) {
+          await fs.outputFile(claimed, 'external bytes');
+        }
+      } } } });
+      expect(receipt.targetResults.find((target) => target.pluginId === 'team/shared')).toMatchObject({
+        execution: 'applied', observation: 'verified', content: 'satisfied', scope: 'project', relation: 'dependency',
+      });
+      const beta = receipt.targetResults.find((target) => target.pluginId === 'team/beta');
+      expect(beta).toMatchObject({ execution: 'not-run', observation: 'unknown', content: 'unknown', scope: 'project',
+        relation: 'root', blockers: expect.arrayContaining([expect.objectContaining({ code: 'operationReviewStale' })]),
+        backend: expect.arrayContaining([expect.objectContaining({ skill: 'beta', observation: 'unknown', ownership: 'unknown' })]) });
+      expect(receipt.recoveryActions.some((action) => action.includes('aw plugin sync team/beta --context project --target generic'))).toBe(true);
+      expect(await fs.readFile(claimed, 'utf8')).toBe('external bytes');
+      expect(await fs.pathExists(path.join(root, 'beta', SKILL_OWNER_MARKER))).toBe(false);
+      expect(await fs.pathExists(path.join(setup.cwd, 'script-ran'))).toBe(timing === 'in preApply');
+    });
 
   // Test Value Gate: changed Review evidence prevents all backend writes.
   it.each(['intent', 'preferences', 'footprint'])('rejects changed %s after Review', async (change) => {

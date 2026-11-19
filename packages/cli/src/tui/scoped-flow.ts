@@ -1,6 +1,6 @@
 import type { Scope } from '../types.js';
 import { addRequirements, intentAdd, intentRemove } from '../commands/intent-command.js';
-import { calculateIntentDigest } from '../intent/intent-codec.js';
+import { calculateIntentDigest, canonicalPluginId } from '../intent/intent-codec.js';
 import { observeIntent, resolveIntentPath,
   type IntentLocation, type IntentObservation } from '../intent/intent-store.js';
 import { normalizeAgents, observePreferences, resetTargets, setAgents,
@@ -10,7 +10,8 @@ import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
-import { isRecoveryReviewStaleBeforeExecution, type RecoveryReceipt } from '../recovery/receipt.js';
+import { canRetryRecoveryRootWithCli, isRecoveryReviewStaleBeforeExecution, recoveryRetryTargets,
+  recoverySummaryErrors, type RecoveryReceipt } from '../recovery/receipt.js';
 import { safeDiagnosticCode } from './diagnostics.js';
 import { recoveryReason } from './glossary.js';
 import type { OperationHistoryRecord, OperationHistoryTarget, SafeOperationDiagnostic } from './operation-history.js';
@@ -41,15 +42,20 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   identity: Pick<OperationHistoryRecord['summary'], 'recordId' | 'epoch' | 'operationId' | 'createdAtMs'>,
 ): OperationHistoryRecord {
   const diagnostics: SafeOperationDiagnostic[] = [];
-  const addDiagnostic = (rawCode: string, target?: SafeOperationDiagnostic['target']) => {
+  const addDiagnostic = (rawCode: string, target?: SafeOperationDiagnostic['target'], detailLines: string[] = []) => {
     const code = safeDiagnosticCode(rawCode, 'recoveryFailed');
     const id = `${identity.recordId}:diagnostic:${diagnostics.length}`;
     diagnostics.push({ id, code, stage: 'execute', safeMessage: recoveryReason(code),
-      target, causes: [], detailLines: [] });
+      target, causes: [], detailLines });
     return id;
   };
-  for (const code of new Set([...receipt.blockers, ...receipt.errors].map((entry) => entry.code))) {
-    addDiagnostic(code);
+  const staleBeforeExecution = isRecoveryReviewStaleBeforeExecution(receipt);
+  const targetWorkNotStarted = staleBeforeExecution || Boolean(receipt.unconfirmedSavedState);
+  const checkStatus = `aw plugin status --context ${receipt.scope} --json`;
+  const globalIds = new Map<string, string>();
+  for (const code of new Set([...receipt.blockers, ...recoverySummaryErrors(receipt)].map((entry) => entry.code))) {
+    const details = receipt.unconfirmedSavedState ? [checkStatus] : [];
+    globalIds.set(code, addDiagnostic(code, undefined, details));
   }
   for (const result of receipt.commandResults ?? []) {
     for (const error of result.errors) addDiagnostic(error.code);
@@ -61,26 +67,43 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
         : entry.blockers.length > 0 || entry.observation !== 'verified' ? 'failed'
           : entry.execution === 'applied' ? 'completed' : entry.execution === 'no-op' ? 'kept' : 'failed';
     const diagnosticIds = [...new Set(entry.blockers.map((blocker) => blocker.code))]
-      .map((code) => addDiagnostic(code, target));
+      .map((code) => {
+        const globalId = targetWorkNotStarted && globalIds.get(code);
+        if (globalId) return globalId;
+        const details: string[] = [];
+        if (code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync')) {
+          details.push(checkStatus);
+          // Store reviewable commands from structured positions only. Backend prose may contain private data.
+          for (const position of recoveryRetryTargets(receipt, [entry])) {
+            try {
+              const root = canonicalPluginId(position.pluginId);
+              details.push(canRetryRecoveryRootWithCli(receipt, position)
+                ? `aw plugin sync ${root} --context ${position.scope} --target ${position.agent}`
+                : `在 TUI 中重新检查 ${root} 的 ${position.agent} 项目位置。`);
+            } catch { /* An invalid identity cannot be offered as a command. */ }
+          }
+        }
+        return addDiagnostic(code, target, details);
+      });
     return { ...target, state, diagnosticIds,
       ...(entry.blockers[0] ? { errorCode: safeDiagnosticCode(entry.blockers[0].code, 'recoveryFailed') } : {}) };
   });
   const verified = targets.some(({ state }) => state === 'completed' || state === 'kept');
   const changed = receipt.configChanged || receipt.declarationChanged || receipt.preferencesChanged || receipt.outputsMayHaveChanged;
   const state = receipt.ok ? 'succeeded' : verified || changed ? 'partial' : 'blocked';
-  const staleBeforeExecution = isRecoveryReviewStaleBeforeExecution(receipt);
   return {
     summary: {
       ...identity,
       state, operationKind: 'pluginWriteBatch',
       code: receipt.ok ? 'operationSucceeded' : diagnostics[0]?.code ?? 'recoveryFailed',
-      message: receipt.ok ? '批量恢复已完成。' : staleBeforeExecution ? recoveryReason('operationReviewStale') : '批量恢复仍有目标未完成。',
+      message: receipt.ok ? '批量恢复已完成。' : staleBeforeExecution ? recoveryReason('operationReviewStale')
+        : receipt.unconfirmedSavedState ? '保存后的内容需要重新检查，平台目标尚未执行。' : '批量恢复仍有目标未完成。',
       diagnosticCount: diagnostics.length,
       effects: {
         configCommit: receipt.configChanged ? 'completed' : 'notApplicable',
-        awWrite: receipt.outputsMayHaveChanged ? 'possible' : staleBeforeExecution ? 'notStarted' : 'notApplicable',
-        preApplyExternalEffect: staleBeforeExecution ? 'notStarted' : 'unknown',
-        finalVerification: receipt.ok ? 'completed' : verified ? 'partial' : staleBeforeExecution ? 'notStarted' : 'unknown',
+        awWrite: receipt.outputsMayHaveChanged ? 'possible' : targetWorkNotStarted ? 'notStarted' : 'notApplicable',
+        preApplyExternalEffect: targetWorkNotStarted ? 'notStarted' : 'unknown',
+        finalVerification: receipt.ok ? 'completed' : verified ? 'partial' : targetWorkNotStarted ? 'notStarted' : 'unknown',
       },
     },
     diagnostics,

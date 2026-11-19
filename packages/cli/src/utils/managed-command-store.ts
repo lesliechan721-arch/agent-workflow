@@ -21,7 +21,7 @@ import {
   type UserCommandDefinition,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
-import { calculatePluginBundleFingerprint } from './bundle-integrity.js';
+import { calculateFileDigest } from './bundle-integrity.js';
 import { verifyManagedCommandArtifactEvidence } from './managed-command-evidence.js';
 import { atomicReplaceSafeFile } from './safe-fs.js';
 import {
@@ -494,7 +494,7 @@ export async function syncManagedCommandPackage(options: {
       });
       if (!current) fail('configApplyRequiresExistingOutput', 'The reviewed command package is no longer installed. Run package sync first.');
       const view = await readManagedCommandPackageView(id, options.env ?? process.env);
-      const evidence = await captureManagedCommandPackageEvidence(view);
+      const evidence = await captureManagedCommandPackageEvidence(view, options.env);
       if (!equal(evidence, options.expectedPackage)) fail('operationReviewStale', 'The reviewed command package changed before publication.');
     }
     const removed = await revokeManagedCommandBindings(producer, options.env);
@@ -593,9 +593,49 @@ export interface ManagedCommandPackageEvidence {
   packageDigest: string;
 }
 
-/** The package directory includes its independent owner, installed record and all resource bytes. */
-export async function captureManagedCommandPackageEvidence(view: ManagedCommandPackageView): Promise<ManagedCommandPackageEvidence> {
-  return { availability: view.availability, packageDigest: await calculatePluginBundleFingerprint(path.dirname(view.resourceRoot)) };
+export async function captureManagedCommandPackageEvidence(view: ManagedCommandPackageView, env: NodeJS.ProcessEnv = process.env): Promise<ManagedCommandPackageEvidence> {
+  const packageRoot = path.dirname(view.resourceRoot);
+  const commandsRoot = await managedCommandRoot(env);
+  await safePath(commandsRoot, packageRoot);
+  const rootStat = await fs.lstat(packageRoot);
+  if (!rootStat.isDirectory()) fail('commandOwnerMismatch', 'The command package root must be a regular directory.');
+  const hash = crypto.createHash('sha256');
+  const add = (fields: unknown[]) => hash.update(JSON.stringify(fields)).update('\n');
+  // Windows chmod supports the writable bit. POSIX publication can restore all permission bits.
+  const modeMask = process.platform === 'win32' ? 0o200 : 0o777;
+  add(['directory', '', rootStat.mode & modeMask]);
+  async function visit(directory: string): Promise<void> {
+    for (const name of (await fs.readdir(directory)).sort()) {
+      const file = path.join(directory, name);
+      const relative = path.relative(packageRoot, file).split(path.sep).join('/');
+      const stat = await fs.lstat(file);
+      if (stat.isDirectory()) {
+        add(['directory', relative, stat.mode & modeMask]);
+        await visit(file);
+      } else if (stat.isFile()) {
+        add(['file', relative, stat.mode & modeMask, await calculateFileDigest(file)]);
+      } else if (stat.isSymbolicLink()) {
+        add(['symlink', relative, await fs.readlink(file)]);
+      } else fail('commandResourceInvalid', 'Command packages cannot contain special nodes.');
+    }
+  }
+  await visit(packageRoot);
+  // A single missing binding makes the whole package unavailable. Keep each installed entry distinguishable.
+  const record = await readInstalledCommandProducer(view.resourceRoot);
+  if (!equal(record.producer, view.producer)) fail('commandIdentityConflict', 'The package content and owner identities differ.');
+  for (const set of record.sets) for (const entry of set.entries) {
+    const id = getPluginCommandId({ schemaVersion: 2, producer: record.producer, set: set.set, key: entry.key, variant: entry.variant });
+    try {
+      const binding = await readBinding(commandsRoot, id);
+      const stat = await fs.lstat(path.join(commandsRoot, 'bindings', id + '.json'));
+      add(['binding', id, binding, stat.mode & modeMask]);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') add(['missingBinding', id]);
+      else if (error instanceof ManagedCommandError) add(['invalidBinding', id, error.code]);
+      else throw error;
+    }
+  }
+  return { availability: view.availability, packageDigest: `sha256:${hash.digest('hex')}` };
 }
 
 export async function listManagedCommandPackages(env: NodeJS.ProcessEnv = process.env): Promise<{ packages: ManagedCommandPackageView[]; errors: ManagedCommandDiagnostic[] }> {

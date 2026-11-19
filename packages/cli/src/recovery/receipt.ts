@@ -64,12 +64,49 @@ export interface RecoveryReceipt {
   preferencesChanged: boolean;
   configChanged: boolean;
   outputsMayHaveChanged: boolean;
+  /** A strong-state write returned, but the saved value could not be confirmed before deployment. */
+  unconfirmedSavedState?: 'intent' | 'preferences';
+}
+
+type RecoveryPosition = Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope'>;
+
+export function canRetryRecoveryRootWithCli(receipt: RecoveryReceipt, position: RecoveryPosition): boolean {
+  // A Project sync also visits the User declaration for that same plugin and Agent.
+  return position.scope !== 'project' || !receipt.targetResults.some((item) => item.scope === 'user'
+    && item.pluginId === position.pluginId && item.agent === position.agent && item.observation === 'verified'
+    && !item.blockers.length && (item.execution === 'applied' || item.execution === 'no-op')
+    && item.satisfaction !== 'excluded' && item.satisfaction !== 'unsupported');
+}
+
+export function recoveryRetryTargets(receipt: RecoveryReceipt, targets: readonly RecoveryTarget[]): RecoveryPosition[] {
+  if (receipt.unconfirmedSavedState || isRecoveryReviewStaleBeforeExecution(receipt)) return [];
+  const positions = new Map<string, RecoveryPosition>();
+  for (const target of targets) {
+    const roots = target.relation === 'dependency' && (receipt.command === 'sync' || receipt.command === 'install')
+      ? receipt.targetResults.filter((root) => root.agent === target.agent && receipt.requestedRoots.includes(root.pluginId)
+        && root.relation !== 'dependency' && (target.contributions
+          ? target.contributions.some((item) => item.root === root.pluginId && item.scope === root.scope)
+          : target.requiredBy.includes(root.pluginId) && root.scope === (target.requirementScope ?? target.scope))
+        && receipt.remainingTargets.some((item) => item.pluginId === root.pluginId && item.agent === root.agent && item.scope === root.scope))
+      : [target];
+    for (const { pluginId, agent, scope } of roots) positions.set([pluginId, agent, scope].join('\0'), { pluginId, agent, scope });
+  }
+  return [...positions.values()];
 }
 
 export function isRecoveryReviewStaleBeforeExecution(receipt: RecoveryReceipt): boolean {
   return receipt.blockers.some(({ code }) => code === 'operationReviewStale')
-    && !receipt.configChanged && !receipt.declarationChanged && !receipt.preferencesChanged
+    && !receipt.unconfirmedSavedState && !receipt.configChanged && !receipt.declarationChanged && !receipt.preferencesChanged
     && !receipt.outputsMayHaveChanged && !receipt.commandResults?.length
     && receipt.targetResults.every((target) => target.execution === 'not-run'
       || target.execution === 'no-op' && (target.satisfaction === 'excluded' || target.satisfaction === 'unsupported'));
+}
+
+/** Joint receipts also collect child errors. A localized stale reason already has a target. */
+export function recoverySummaryErrors(receipt: RecoveryReceipt): RecoveryDiagnostic[] {
+  if (!receipt.errors.some(({ code }) => code === 'operationReviewStale')
+    || receipt.blockers.some(({ code }) => code === 'operationReviewStale')) return receipt.errors;
+  const localized = new Set(receipt.targetResults.flatMap((target) => target.blockers
+    .filter(({ code }) => code === 'operationReviewStale').map((blocker) => JSON.stringify(blocker))));
+  return receipt.errors.filter((error) => error.code !== 'operationReviewStale' || !localized.has(JSON.stringify(error)));
 }
