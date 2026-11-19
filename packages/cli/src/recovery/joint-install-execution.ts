@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { RebuildCommandRuntime } from '../commands/rebuild-command.js';
-import type { CommandProducerResult, Scope } from '../types.js';
+import type { CommandProducerResult } from '../types.js';
 import type { AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import { executeCheckedScopedInstall, type CheckedPortableProgress, type RecoveryPlan } from './coordinator.js';
@@ -13,7 +13,11 @@ import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './rece
 
 type Position = Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope'>;
 const positionKey = ({ pluginId, agent, scope }: Position) => [pluginId, agent, scope].join('\0');
-const packageKey = (pluginId: string, scope: Scope) => [pluginId, scope].join('\0');
+type PackageTarget = NonNullable<RebuildCommandRuntime['configApplyPackages']>['targets'][number];
+function consumesPackage(target: Position, entry: PackageTarget): boolean {
+  return target.pluginId === entry.pluginId && target.agent !== 'generic' && entry.platforms.includes(target.agent)
+    && (target.scope === entry.scope || entry.scope === 'user');
+}
 
 interface InstallGroup {
   id: string;
@@ -21,7 +25,7 @@ interface InstallGroup {
   targets: RecoveryTarget[];
   dependencies: Set<string>;
   providerPositions: Map<RecoveryTarget, Position[]>;
-  packages: NonNullable<RebuildCommandRuntime['configApplyPackages']>['targets'];
+  packages: PackageTarget[];
 }
 
 export async function executeJointInstall(options: {
@@ -49,13 +53,16 @@ export async function executeJointInstall(options: {
   }
 
   const packages = options.runtime.configApplyPackages;
-  const packageOwner = new Map<string, InstallGroup>();
-  for (const entry of packages?.targets ?? []) {
-    const native = groups.filter((group) => group.targets.some((target) =>
-      target.agent !== 'generic' && target.pluginId === entry.pluginId));
-    const owner = native.find((group) => group.child?.options.scope === entry.scope) ?? native[0] ?? addGroup([]);
+  const entries = packages?.targets ?? [];
+  const packageOwner = new Map<PackageTarget, InstallGroup>();
+  const providerPositions = new Map<PackageTarget, Position[]>();
+  const providerPackages = new Map<PackageTarget, PackageTarget[]>();
+  for (const entry of entries) {
+    const consumers = groups.filter((group) => group.targets.some((target) => consumesPackage(target, entry)));
+    const owner = consumers.find((group) => group.targets.some((target) => consumesPackage(target, entry) && target.scope === entry.scope))
+      ?? consumers[0] ?? addGroup([]);
     owner.packages.push(entry);
-    packageOwner.set(packageKey(entry.pluginId, entry.scope), owner);
+    packageOwner.set(entry, owner);
   }
   function requireGroup(group: InstallGroup, provider?: InstallGroup): void {
     if (provider && provider !== group) group.dependencies.add(provider.id);
@@ -76,23 +83,32 @@ export async function executeJointInstall(options: {
         && item.platform === target.agent && item.scope === target.scope)) providers.push({ ...target, scope: 'user' });
       for (const provider of providers) requireGroup(group, targetGroup.get(positionKey(provider)));
       group.providerPositions.set(target, providers);
-      for (const scope of new Set([target.scope, 'user'] as const)) requireGroup(group, packageOwner.get(packageKey(target.pluginId, scope)));
+      for (const entry of entries) if (consumesPackage(target, entry)) requireGroup(group, packageOwner.get(entry));
     }
     // A host's later scope validates the first scope's exact acknowledged effects.
     const first = group.targets[0];
     if (first?.scope === 'project' && first.agent !== 'generic') {
       requireGroup(group, groups.find((other) => other.targets.some((target) => target.agent === first.agent && target.scope === 'user')));
     }
-    for (const entry of group.packages) for (const dependency of entry.dependencies) {
-      if (group.child && first) {
-        // The producer runs after this host's dependency preflight. Other hosts consuming
-        // the same package wait for this producer and cannot be its prerequisites.
-        requireGroup(group, targetGroup.get(positionKey({ pluginId: dependency, agent: first.agent, scope: first.scope }))
-          ?? targetGroup.get(positionKey({ pluginId: dependency, agent: first.agent, scope: 'user' })));
-      } else {
-        for (const provider of groups) if (provider.targets.some((target) => target.pluginId === dependency)) requireGroup(group, provider);
+    for (const entry of group.packages) {
+      const positions: Position[] = [];
+      // A native consumer has already preflighted its own host's dependencies.
+      // An independent package sees only its declared hosts in its render scope.
+      const platforms = first && first.agent !== 'generic' ? [first.agent] : entry.platforms;
+      for (const pluginId of entry.dependencies) for (const agent of platforms) {
+        const position: Position = { pluginId, agent, scope: first?.scope ?? entry.scope };
+        if (!targetGroup.has(positionKey(position))) position.scope = 'user';
+        const provider = targetGroup.get(positionKey(position));
+        if (provider) {
+          positions.push(position);
+          requireGroup(group, provider);
+        }
       }
-      requireGroup(group, packageOwner.get(packageKey(dependency, entry.scope)) ?? packageOwner.get(packageKey(dependency, 'user')));
+      const dependencies = entries.filter((item) => entry.dependencies.includes(item.pluginId)
+        && (item.scope === entry.scope || item.scope === 'user') && platforms.some((agent) => item.platforms.includes(agent)));
+      for (const item of dependencies) requireGroup(group, packageOwner.get(item));
+      providerPackages.set(entry, dependencies);
+      providerPositions.set(entry, positions);
     }
   }
 
@@ -101,9 +117,9 @@ export async function executeJointInstall(options: {
   const admission = createInstallAdmission({ signal });
   const portableProgress: CheckedPortableProgress = { completed: [], failed: [] };
   const failed = new Set<string>();
-  const packageFailures = new Set<string>();
-  const producerResults = new Map<string, Promise<CommandProducerResult[]>>();
-  const settledPackages = new Set<string>();
+  const produced = new Map<PackageTarget, CommandProducerResult[]>();
+  const pending = new Map<PackageTarget, Promise<CommandProducerResult[]>>();
+  const packageFailed = (entry: PackageTarget) => produced.get(entry)?.some((result) => result.state !== 'completed');
   const blockers = new Map<string, RecoveryDiagnostic>();
   const states = new Map<string, { target: RecoveryTarget; group: InstallGroup; value: 'waiting' | 'running' | 'completed' }>();
   for (const group of groups) for (const target of group.targets) {
@@ -122,11 +138,8 @@ export async function executeJointInstall(options: {
         const provider = states.get(positionKey(position));
         return provider && provider !== state && provider.value !== 'completed';
       });
-      const waitingForProducer = ([target.scope, 'user'] as const).some((scope) => {
-        const key = packageKey(target.pluginId, scope);
-        const owner = packageOwner.get(key);
-        return owner && owner !== group && !settledPackages.has(key);
-      });
+      const waitingForProducer = entries.some((entry) => consumesPackage(target, entry)
+        && packageOwner.get(entry) !== group && !produced.has(entry));
       if (waitingForProvider || waitingForProducer) waitingForDependencies++;
     }
     try { options.runtime.onInstallProgress({ running, completed, waitingForDependencies,
@@ -141,29 +154,46 @@ export async function executeJointInstall(options: {
     onInstallTargetState: (identity, value) => {
       if (identity.pluginId) state({ pluginId: identity.pluginId, agent: identity.platform, scope: identity.scope }, value);
     } };
-  function applyPackage(pluginId: string, scope: Scope): Promise<CommandProducerResult[]> {
-    const key = packageKey(pluginId, scope);
-    let pending = producerResults.get(key);
-    if (!pending) {
-      pending = Promise.resolve().then(() => packages!.execute(pluginId, scope, token)).then((records) => {
-        if (records.some((result) => result.state !== 'completed')) packageFailures.add(key);
-        settledPackages.add(key);
-        report();
-        return records;
-      });
-      producerResults.set(key, pending);
-    }
-    return pending;
-  }
-  function blockPackage(pluginId: string, scope: Scope, code: string): CommandProducerResult[] {
-    const key = packageKey(pluginId, scope);
-    if (producerResults.has(key)) return [];
-    const records = packages?.blocked?.(pluginId, scope, code) ?? [];
-    packageFailures.add(key);
-    producerResults.set(key, Promise.resolve(records));
-    settledPackages.add(key);
+  function blockPackage(entry: PackageTarget, code: string): CommandProducerResult[] {
+    const previous = produced.get(entry);
+    if (previous) return previous;
+    const records = packages!.blocked(entry.pluginId, entry.scope, code, entry.packageId);
+    produced.set(entry, records);
     report();
     return records;
+  }
+  function applyPackage(entry: PackageTarget): Promise<CommandProducerResult[]> {
+    const completed = produced.get(entry);
+    if (completed) return Promise.resolve(completed);
+    const previous = pending.get(entry);
+    if (previous) return previous;
+    const execute = async () => {
+      if (providerPositions.get(entry)?.some((item) => failed.has(positionKey(item)))
+        || providerPackages.get(entry)?.some(packageFailed)) return blockPackage(entry, 'dependencyApplyFailed');
+      try {
+        const records = await packages!.execute(entry.pluginId, entry.scope, token, entry.packageId);
+        if (!records.length) return blockPackage(entry, 'commandPackageApplyFailed');
+        produced.set(entry, records);
+        report();
+        return records;
+      } catch (error) {
+        const code = recoveryInterruptionCode(error, signal);
+        const records = blockPackage(entry, code ?? readSafeOperationError(error)?.code ?? 'commandPackageApplyFailed');
+        if (code) {
+          stop.abort(error);
+          throw error;
+        }
+        return records;
+      }
+    };
+    const result = execute();
+    pending.set(entry, result);
+    return result;
+  }
+  async function applyStandalone(entry: PackageTarget): Promise<void> {
+    const awHome = children[0]?.context.awHome;
+    await admission.run(awHome ? [{ kind: 'path', value: path.join(awHome, 'commands') }] : [{ kind: 'exclusive' }],
+      () => applyPackage(entry));
   }
   const receipts = new Map<InstallGroup, RecoveryReceipt>();
   const tasks: InstallTask<void>[] = groups.map((group) => ({
@@ -175,32 +205,15 @@ export async function executeJointInstall(options: {
           if (provider) target.blockers.push({ code: provider.scope === 'user' && target.scope === 'project'
             ? 'userProviderNotSatisfied' : 'dependencyApplyFailed',
             message: `依赖提供者未完成。恢复后重试 aw plugin sync ${target.pluginId} --context ${target.scope} --target ${target.agent} --yes` });
-          if ([target.scope, 'user' as const].some((scope) => packageFailures.has(packageKey(target.pluginId, scope)))) {
+          if (entries.some((entry) => consumesPackage(target, entry) && packageFailed(entry))) {
             target.blockers.push({ code: 'commandPackageProviderNotSatisfied', message: '所需托管命令包未完成。' });
           }
         }
         const child = group.child;
         if (!child) {
           for (const entry of group.packages) {
-            if (entry.dependencies.some((pluginId) => groups.some((provider) => provider.targets.some((target) =>
-              target.pluginId === pluginId && failed.has(positionKey(target))) || provider.packages.some((item) =>
-              item.pluginId === pluginId && packageFailures.has(packageKey(item.pluginId, item.scope)))))) {
-              blockPackage(entry.pluginId, entry.scope, 'dependencyApplyFailed');
-            } else {
-              try {
-                const awHome = children[0]?.context.awHome;
-                await admission.run(awHome ? [{ kind: 'path', value: path.join(awHome, 'commands') }] : [{ kind: 'exclusive' }],
-                  () => applyPackage(entry.pluginId, entry.scope));
-              } catch (error) {
-                if (recoveryInterruptionCode(error) === 'processCleanupUnconfirmed') throw error;
-                signal.throwIfAborted();
-                if (error instanceof Error && error.name === 'AbortError' || readSafeOperationError(error)) throw error;
-                const key = packageKey(entry.pluginId, entry.scope);
-                producerResults.delete(key);
-                blockPackage(entry.pluginId, entry.scope, 'commandPackageApplyFailed');
-              }
-            }
-            if (packageFailures.has(packageKey(entry.pluginId, entry.scope))) {
+            await applyStandalone(entry);
+            if (packageFailed(entry)) {
               blockers.set(group.id, { code: 'commandPackageProviderNotSatisfied', message: entry.pluginId });
             }
           }
@@ -208,16 +221,17 @@ export async function executeJointInstall(options: {
         }
         const generic = group.targets[0]!.agent === 'generic';
         const childRuntime: RebuildCommandRuntime = { ...runtime, batchInstallPlatform: child.runtime.batchInstallPlatform };
+        const ownedPackages = (identity: { pluginId?: string; platform: Position['agent']; scope: Position['scope'] }) =>
+          group.packages.filter((entry) => consumesPackage({ pluginId: identity.pluginId ?? '', agent: identity.platform, scope: identity.scope }, entry));
         if (group.packages.length) childRuntime.nativeTargetExecution = {
+          produces: (identity) => ownedPackages(identity).length > 0,
           async beforeApply(identity) {
             const results: CommandProducerResult[] = [];
-            for (const entry of group.packages.filter((item) => item.pluginId === identity.pluginId
-              && (item.scope === 'user' || item.scope === identity.scope))) results.push(...await applyPackage(entry.pluginId, entry.scope));
+            for (const entry of ownedPackages(identity)) results.push(...await applyPackage(entry));
             return results;
           },
-          blocked: (identity, code) => group.packages.filter((item) => item.pluginId === identity.pluginId
-            && (item.scope === 'user' || item.scope === identity.scope)).flatMap((item) =>
-              blockPackage(item.pluginId, item.scope, code === 'dependencyInstallFailed' ? 'dependencyApplyFailed' : code)),
+          blocked: (identity, code) => ownedPackages(identity).flatMap((entry) =>
+            blockPackage(entry, code === 'dependencyInstallFailed' ? 'dependencyApplyFailed' : code)),
         };
         const checked = await rebaseCheckedProjectInstall(child, receipts.values(), childRuntime);
         const receipt = await measureRecoveryPerformanceStage(runtime, 'recovery.child.execute', () =>
@@ -231,6 +245,13 @@ export async function executeJointInstall(options: {
           }
           if (target.blockers.length || !['applied', 'no-op'].includes(target.execution)) failed.add(positionKey(target));
           state(target, 'completed');
+        }
+        // A child may skip its native callback (preflight failure or a healthy wider provider).
+        for (const entry of group.packages) if (!produced.has(entry)) {
+          const owner = receipt.targetResults.find((target) => consumesPackage(target, entry));
+          const blocker = owner?.blockers[0] ?? receipt.blockers[0];
+          if (owner && !blocker && !failed.has(positionKey(owner))) await applyStandalone(entry);
+          else blockPackage(entry, blocker?.code ?? 'commandPackageProviderNotSatisfied');
         }
       } catch (error) {
         if (error instanceof RecoveryInterruptedError) receipts.set(group, error.receipt);
@@ -267,13 +288,8 @@ export async function executeJointInstall(options: {
       receipts.set(group, receipt);
     }
   }
-  const commands: CommandProducerResult[] = [];
-  for (const entry of packages?.targets ?? []) {
-    const result = producerResults.get(packageKey(entry.pluginId, entry.scope));
-    if (!result) continue;
-    try { commands.push(...await result); }
-    catch (error) { if (!interruption) throw error; }
-  }
+  const commands = entries.flatMap((entry) => produced.get(entry)
+    ?? blockPackage(entry, recoveryInterruptionCode(interruption, signal) ?? 'commandPackageProviderNotSatisfied'));
   return { receipts: groups.flatMap((group) => receipts.get(group) ?? []), commands,
     blockers: groups.flatMap((group) => blockers.get(group.id) ?? []), interruption };
 }

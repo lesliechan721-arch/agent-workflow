@@ -153,7 +153,7 @@ async function commandPackageActions(options: {
     commandPackagePreparationCaches.set(options.context, cache);
   }
   for (const declaration of options.plugin.manifest.managedCommands?.packages ?? []) {
-    if (!declaration.platforms.includes(options.platform)) continue;
+    if (!declaration.platforms.includes(options.platform) || options.scope === 'user' && declaration.scope === 'project') continue;
     const producer = await managedCommandProducerIdentity({ ...options, scope: declaration.scope,
       producer: { kind: 'package', packageKey: declaration.key } });
     const key = getCommandPackageId(producer);

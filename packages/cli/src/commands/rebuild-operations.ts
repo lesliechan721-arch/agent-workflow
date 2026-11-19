@@ -868,7 +868,7 @@ async function executeUninstall(options: {
   return succeeded('uninstall', target, accumulator);
 }
 
-function hasPlannedPreApply(target: DesiredTarget): boolean {
+export function hasPlannedPreApply(target: DesiredTarget): boolean {
   return !!target.preApplySource.manifest.scripts?.preApply
     && (!target.platformDeployment || !target.operationActions || target.operationActions.some((action) => action.kind === 'runPreApply'));
 }

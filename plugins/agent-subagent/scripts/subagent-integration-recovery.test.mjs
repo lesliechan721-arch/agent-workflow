@@ -230,7 +230,6 @@ test('lost worker result is fixed once and expires without regenerating work', {
 // cleanup even when cached content is damaged; read-only help must not scan.
 test('ordinary calls clean expired damaged content while help and invalid flags stay read-only', { timeout: testTimeoutMs }, async (t) => {
   const f = await fixture(t);
-  f.snapshot.effectiveValues.subagentRetentionHours = 24; await f.save();
   const started = await f.start({ finishImmediately: true });
   await f.initialized(started); await f.waitTerminal(started.run);
   const run = await f.evidence(started.run);
@@ -241,6 +240,9 @@ test('ordinary calls clean expired damaged content while help and invalid flags 
   run.meta.terminalAt = Date.now() - 86400001;
   await fs.writeFile(path.join(run.directory, 'owner.json'), JSON.stringify(run.meta), { mode: 0o600 });
   await fs.writeFile(path.join(run.directory, 'final.json'), '{damaged cached content');
+  // start and wait can launch a detached scan. Enable expiry after setup so
+  // only the three commands below can remove the deliberately expired run.
+  f.snapshot.effectiveValues.subagentRetentionHours = 24; await f.save();
   assert.equal((await f.command(['--help'])).code, 0); await fs.stat(run.directory);
   assert.equal((await f.command(['result', '--run', started.run, '--export', '--output-file', 'unused'])).code, 2); await fs.stat(run.directory);
   const expired = await f.command(['result', '--run', started.run]);

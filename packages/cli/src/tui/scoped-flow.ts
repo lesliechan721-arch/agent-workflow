@@ -68,19 +68,20 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   const verified = targets.some(({ state }) => state === 'completed' || state === 'kept');
   const changed = receipt.configChanged || receipt.declarationChanged || receipt.preferencesChanged || receipt.outputsMayHaveChanged;
   const state = receipt.ok ? 'succeeded' : verified || changed ? 'partial' : 'blocked';
-  const stale = diagnostics.some(({ code }) => code === 'operationReviewStale');
+  const staleBeforeExecution = !changed && [...receipt.blockers, ...receipt.errors].some(({ code }) => code === 'operationReviewStale')
+    && receipt.targetResults.every(({ execution }) => execution === 'not-run') && !receipt.commandResults?.length;
   return {
     summary: {
       ...identity,
       state, operationKind: 'pluginWriteBatch',
       code: receipt.ok ? 'operationSucceeded' : diagnostics[0]?.code ?? 'recoveryFailed',
-      message: receipt.ok ? '批量恢复已完成。' : stale ? recoveryReason('operationReviewStale') : '批量恢复仍有目标未完成。',
+      message: receipt.ok ? '批量恢复已完成。' : staleBeforeExecution ? recoveryReason('operationReviewStale') : '批量恢复仍有目标未完成。',
       diagnosticCount: diagnostics.length,
       effects: {
         configCommit: receipt.configChanged ? 'completed' : 'notApplicable',
-        awWrite: receipt.outputsMayHaveChanged ? 'possible' : stale ? 'notStarted' : 'notApplicable',
-        preApplyExternalEffect: stale ? 'notStarted' : 'unknown',
-        finalVerification: receipt.ok ? 'completed' : stale ? 'notStarted' : verified ? 'partial' : 'unknown',
+        awWrite: receipt.outputsMayHaveChanged ? 'possible' : staleBeforeExecution ? 'notStarted' : 'notApplicable',
+        preApplyExternalEffect: staleBeforeExecution ? 'notStarted' : 'unknown',
+        finalVerification: receipt.ok ? 'completed' : verified ? 'partial' : staleBeforeExecution ? 'notStarted' : 'unknown',
       },
     },
     diagnostics,

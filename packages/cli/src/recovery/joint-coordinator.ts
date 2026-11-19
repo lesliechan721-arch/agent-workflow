@@ -19,8 +19,8 @@ import { CatalogPreparationReadScope } from '../utils/catalog-operation-context.
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import { readDemand, type DemandSnapshot } from './demand.js';
-import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan } from './joint-demand.js';
+import { readDemand, resolveDelivery, type DemandSnapshot } from './demand.js';
+import { canReuseProviderAcrossScopes, readJointDemand, deriveJointDemand, deriveSharedReferenceView, type JointDemandSnapshot, type JointDemandPlan, type JointPlacement } from './joint-demand.js';
 import { checkFootprints, prepareScopedRecovery, executeScopedRecovery, executeRecoveryPreApply, refreshRecoveryNativePreviews, describeRecoveryPlan, errorCode, type RecoveryCommand, type RecoveryOptions, type RecoveryPlan, type RecoveryPreparationReads } from './coordinator.js';
 import { isTargetObservationReadError, readScopedRecoveryStatus, readRecoveryStatus, type RecoveryStatus } from './status.js';
 import type { RecoveryReceipt, RecoveryDiagnostic } from './receipt.js';
@@ -33,6 +33,7 @@ import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies
 export interface JointRecoveryState {
   snapshot: JointDemandSnapshot;
   demand: JointDemandPlan;
+  unplacedRoots: JointDemandPlan['roots'];
   removalDependencies: Map<string, string[] | null>;
   children: RecoveryPlan[];
   originalOptions: RecoveryOptions;
@@ -71,25 +72,22 @@ function asObservation(value: PluginIntent): IntentObservation {
 function targetKey(target: Pick<RecoveryReceipt['requestedTargets'][number], 'pluginId' | 'agent' | 'scope'>): string {
   return [target.pluginId, target.agent, target.scope].join('\0');
 }
+function providesExactTarget(placement: JointPlacement, exact: NonNullable<RecoveryOptions['exactTargets']>[number]): boolean {
+  return placement.target === exact.agent && placement.contributions.some((item) =>
+    item.scope === exact.scope && item.path.includes(exact.pluginId));
+}
 function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): RecoveryReceipt {
+  const joint = plan.joint!;
   const receipt = structuredClone(plan.receipt);
   receipt.targetResults = receipts.flatMap((item) => item.targetResults);
-  const reviewedOrder = plan.joint?.targetOrder;
+  receipt.remainingTargets = receipts.flatMap((item) => item.remainingTargets);
+  const actions = receipts.flatMap((item) => item.recoveryActions);
+  const reviewedOrder = joint.targetOrder;
   const byPosition = (a: RecoveryReceipt['requestedTargets'][number], b: RecoveryReceipt['requestedTargets'][number]) =>
     (reviewedOrder?.get(targetKey(a)) ?? Number.MAX_SAFE_INTEGER) - (reviewedOrder?.get(targetKey(b)) ?? Number.MAX_SAFE_INTEGER);
-  if (reviewedOrder) receipt.targetResults.sort(byPosition);
-  for (const root of plan.joint?.demand.roots ?? []) {
-    if (!receipt.requestedRoots.includes(root.pluginId) || !receipt.selection.agents.includes(root.target)
-      || !['unsupported', 'excluded'].includes(root.state)) continue;
-    receipt.targetResults.push({ pluginId: root.pluginId, agent: root.target, scope: root.scope,
-      requirementScope: root.scope, delivery: null, execution: 'no-op', observation: 'verified', content: 'satisfied',
-      satisfaction: root.state as 'unsupported' | 'excluded', requiredBy: [root.pluginId], blockers: [],
-      ...(root.reasons?.length ? { reasons: root.reasons } : {}) });
-  }
-  receipt.requestedTargets = receipt.targetResults.map(({ pluginId, agent, scope, delivery }) => ({ pluginId, agent, scope, delivery }));
   for (const target of receipt.targetResults) {
-    const placements = plan.joint?.demand.placements ?? [];
-    const activationOnly = plan.joint?.children.some((child) => child.options.nativeActivationOnlyTargets?.some((item) =>
+    const placements = joint.demand.placements;
+    const activationOnly = joint.children.some((child) => child.options.nativeActivationOnlyTargets?.some((item) =>
       item.pluginId === target.pluginId && item.platform === target.agent && item.scope === target.scope));
     const placement = placements.find((item) => item.pluginId === target.pluginId && item.target === target.agent && item.scope === target.scope)
       ?? (target.scope === 'project' && activationOnly ? placements.find((item) =>
@@ -100,19 +98,45 @@ function mergeReceipts(plan: RecoveryPlan, receipts: RecoveryReceipt[]): Recover
         : placement.contributions.filter((item) => item.scope === target.scope);
       target.requiredBy = [...new Set(contributions.map((item) => item.root))];
       target.providerScope = placement.scope;
-      if (placement.scope !== target.scope) {
-        target.requirementScope = target.scope;
-        target.relation = contributions.some((item) => item.root === target.pluginId) ? 'root' : 'dependency';
-      }
+      if (plan.command !== 'uninstall' || placement.scope !== target.scope) target.relation = contributions.some((item) =>
+        item.root === target.pluginId && item.scope === target.scope) ? 'root' : 'dependency';
+      if (placement.scope !== target.scope) target.requirementScope = target.scope;
     }
   }
-  receipt.remainingTargets = receipts.flatMap((item) => item.remainingTargets);
+  const executed = new Set(receipt.targetResults.map(targetKey));
+  const skipped: RecoveryReceipt['targetResults'] = [];
+  for (const root of joint.unplacedRoots) {
+    const position = { pluginId: root.pluginId, agent: root.target, scope: root.scope };
+    if (executed.has(targetKey(position))) continue;
+    const common = { ...position, relation: 'root' as const, requiredBy: [root.pluginId], requirementScope: root.scope,
+      blockers: root.blockers, ...(root.reasons?.length ? { reasons: root.reasons } : {}) };
+    if (root.state === 'excluded' || root.state === 'unsupported') {
+      const results = plan.options.exactTargets ? receipt.targetResults : skipped;
+      results.push({ ...common, delivery: null, execution: 'no-op', observation: 'verified',
+        content: 'satisfied', satisfaction: root.state });
+      continue;
+    }
+    const plugin = joint.snapshot[root.scope]?.roots?.find((item) => item.pluginId === root.pluginId)?.plugin;
+    const delivery = plugin ? resolveDelivery(plugin.manifest, root.target, root.scope) ?? null : null;
+    const recoveryActions = [
+      ...root.blockers.filter((blocker) => blocker.code === 'dependencyExcluded' && blocker.pluginId)
+        .map((blocker) => `aw target include ${blocker.pluginId} --target ${root.target}`),
+      `aw plugin sync ${root.pluginId} --context ${root.scope} --target ${root.target}`,
+    ];
+    receipt.targetResults.push({ ...common, delivery, execution: 'not-run', observation: 'unknown',
+      content: 'unknown', satisfaction: 'unknown', recoveryActions });
+    receipt.remainingTargets.push({ ...position, delivery });
+    actions.push(...recoveryActions);
+  }
+  if (reviewedOrder) receipt.targetResults.sort(byPosition);
+  receipt.targetResults.push(...skipped);
+  receipt.requestedTargets = receipt.targetResults.map(({ pluginId, agent, scope, delivery }) => ({ pluginId, agent, scope, delivery }));
   if (reviewedOrder) receipt.remainingTargets.sort(byPosition);
   receipt.errors = [...receipt.blockers, ...receipts.flatMap((item) => [...item.blockers, ...item.errors])];
   receipt.outputsMayHaveChanged = receipts.some((item) => item.outputsMayHaveChanged);
   receipt.commandResults = receipts.flatMap((item) => item.commandResults ?? []);
   receipt.nativeToolChanges = receipts.flatMap((item) => item.nativeToolChanges ?? []);
-  receipt.recoveryActions = [...new Set(receipts.flatMap((item) => item.recoveryActions))];
+  receipt.recoveryActions = [...new Set(actions)];
   receipt.ok = receipt.blockers.length === 0 && receipts.every((item) => item.ok);
   return receipt;
 }
@@ -207,6 +231,9 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   let observedStatus: RecoveryStatus | undefined;
   const evidence = snapshotEvidence(snapshot);
   const scope = options.scope ?? snapshot.context.context;
+  if (options.exactTargets && command !== 'uninstall') {
+    options = { ...options, exactTargets: options.exactTargets.map((entry) => ({ ...entry, scope: entry.scope ?? scope })) };
+  }
   const observedIntent = (scope === 'project' ? snapshot.project! : snapshot.user).intent;
   if (options.existingOnly) {
     // Existing owned deployments can be refreshed without converting them into declarations.
@@ -309,7 +336,6 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     }
   }
   const demand = deriveJointDemand(snapshot);
-  errors.push(...demand.errors);
   const rootIds = [...new Set([...(snapshot.user.roots ?? []), ...(snapshot.project?.roots ?? [])]
     .map((root) => root.pluginId))];
   if (command !== 'install' && command !== 'uninstall') {
@@ -321,6 +347,15 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     }) : rootIds;
   }
   const targets = options.targets ? normalizeAgents(options.targets) : snapshot.preferences?.targets ?? [];
+  const unplacedRoots = demand.roots.filter((root) => root.state !== 'required'
+    && requested.includes(root.pluginId) && targets.includes(root.target)
+    && (!options.exactTargets || options.exactTargets.some((exact) => exact.pluginId === root.pluginId
+      && exact.agent === root.target && (exact.scope ?? scope) === root.scope))
+    && (command !== 'uninstall' || root.state === 'excluded' || root.state === 'unsupported'));
+  // Global diagnostics gate shared preparation. A blocked install root cannot prevent
+  // an independent selected root from checking its Project activation.
+  const rootErrors = new Set(demand.roots.flatMap((root) => root.blockers));
+  errors.push(...demand.errors.filter((error) => command === 'uninstall' || !rootErrors.has(error)));
   const explicitlyRemoves = (item: { pluginId: string; agent: string | null; scope: Scope }): boolean =>
     item.scope === scope && requested.includes(item.pluginId) && (!options.exactTargets
       || options.exactTargets.some((exact) => exact.pluginId === item.pluginId && exact.agent === item.agent
@@ -349,8 +384,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       && (command === 'uninstall' ? previousDemand.placements.some((previous) => previous.pluginId === placement.pluginId
         && previous.target === placement.target && previous.contributions.some((item) => item.path.includes(exact.pluginId)
           && (!exact.scope || item.scope === exact.scope)))
-        : (!exact.scope || placement.contributions.some((item) => item.scope === exact.scope))
-          && (exact.pluginId === placement.pluginId || placement.contributions.some((item) => item.path.includes(exact.pluginId))))))
+        : providesExactTarget(placement, exact))))
     && (command === 'uninstall' ? canReuseProviderAcrossScopes(placement.target)
       && !(options.force && requested.includes(placement.pluginId))
       && previousDemand.placements.some((previous) => previous.pluginId === placement.pluginId && previous.target === placement.target
@@ -360,7 +394,8 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   const activationOnlyTargets: NonNullable<RecoveryOptions['nativeActivationOnlyTargets']> = [];
   if (snapshot.project && !errors.length) {
     const sharedNative = selected.filter((item) => item.scope === 'user' && ['codex', 'claude', 'gemini', 'copilot'].includes(item.target)
-      && item.contributions.some((entry) => entry.scope === 'project'));
+      && item.contributions.some((entry) => entry.scope === 'project' && (command === 'uninstall' || !options.exactTargets
+        || options.exactTargets.some((exact) => exact.scope === 'project' && exact.agent === item.target && entry.path.includes(exact.pluginId)))));
     if (sharedNative.length) {
       const expanded: DemandSnapshot = { ...snapshot.project, roots: [...new Map(sharedNative.map((item) => [item.pluginId, {
         pluginId: item.pluginId, sourceId: item.plugin.sourceId!, sourceState: 'ready' as const, blockers: [], plugin: item.plugin,
@@ -395,6 +430,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
     }
   }
   const context = await createScopeContext({ ...options, scope });
+  if (command !== 'uninstall') errors.push(...unplacedRoots.flatMap((root) => root.blockers));
   const baseDemand = scope === 'project' ? snapshot.project! : snapshot.user;
   const receipt: RecoveryReceipt = {
     schemaVersion: 1, kind: 'aw-recovery', command, scope, ok: false,
@@ -407,7 +443,7 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
   };
   const children: RecoveryPlan[] = [];
   const { signal: _signal, ...executionOptions } = options;
-  const joint: JointRecoveryState = { snapshot, demand, removalDependencies: dependencyClosures, children, originalOptions: executionOptions,
+  const joint: JointRecoveryState = { snapshot, demand, unplacedRoots, removalDependencies: dependencyClosures, children, originalOptions: executionOptions,
     selectors: [...selectors], declaration, evidence };
   const plan: RecoveryPlan = { command, options: { ...executionOptions, scope }, receipt, context, demand: baseDemand,
     originalIntent: observationEvidence(original.intent), preferencesEvidence: observationEvidence(snapshot.user.preferences),
@@ -682,14 +718,27 @@ async function prepareJointRecoveryInSession(command: RecoveryCommand, selectors
       }
       children.unshift(...cleanups);
     }
-    if (batch && !children.some((child) => child.command === 'cleanup')) {
-      // The public receipt historically lists each scope's Native roots across its selected
-      // clients, followed by Portable roots. Platform workers may finish in any order.
+    if ((batch || command === 'reinstall' && options.exactTargets) && !children.some((child) => child.command === 'cleanup')) {
       const order = new Map<string, number>();
-      const deliveries: AgentId[][] = [nativeTargets, targets.filter((agent) => agent === 'generic')];
-      for (const scope of snapshot.context.scopes) for (const agents of deliveries) {
-        const roots = new Set(selected.filter((item) => item.scope === scope && agents.includes(item.target)).map((item) => item.pluginId));
-        for (const pluginId of roots) for (const agent of agents) order.set(targetKey({ pluginId, agent, scope }), order.size);
+      if (options.exactTargets) {
+        // The caller ordered exact pairs. Insert their actual providers once, before the consuming pair.
+        for (const exact of options.exactTargets) {
+          for (const item of selected.filter((placement) => providesExactTarget(placement, exact))) {
+            const key = targetKey({ pluginId: item.pluginId, agent: item.target, scope: item.scope });
+            if (!order.has(key)) order.set(key, order.size);
+          }
+          const key = targetKey({ ...exact, scope: exact.scope ?? scope });
+          if (!order.has(key)) order.set(key, order.size);
+        }
+      } else {
+        // Ordinary batches list each scope's Native roots across clients, then Portable roots.
+        const deliveries: AgentId[][] = [nativeTargets, targets.filter((agent) => agent === 'generic')];
+        for (const scope of snapshot.context.scopes) for (const agents of deliveries) {
+          const roots = new Set(selected.filter((item) => item.scope === scope && agents.includes(item.target)).map((item) => item.pluginId));
+          for (const root of unplacedRoots) if (root.scope === scope && agents.includes(root.target)
+            && (root.state === 'blocked' || root.state === 'unknown')) roots.add(root.pluginId);
+          for (const pluginId of roots) for (const agent of agents) order.set(targetKey({ pluginId, agent, scope }), order.size);
+        }
       }
       joint.targetOrder = order;
     }
@@ -1100,6 +1149,7 @@ export async function executeJointRecovery(plan: RecoveryPlan,
         const { cwd, scope, env, cliVersion } = joint.originalOptions;
         const context = joint.snapshot.context.context;
         let statusFailure: RecoveryDiagnostic | undefined;
+        let statusFailureMessage = 'Could not read the final plugin status.';
         try {
           // The reviewed Catalog may still be readable after Active has moved. Bind the
           // final read to the current sources, once per binding across both scopes.
@@ -1111,14 +1161,20 @@ export async function executeJointRecovery(plan: RecoveryPlan,
           receipt.inSync = status.inSync;
           statusFailure = finalStatusReadFailure(status, receipt);
         } catch (error) {
-          if (recoveryInterruptionCode(error, runtime.signal)) throw error;
+          const interruption = recoveryInterruptionCode(error, runtime.signal);
+          if (runtime.signal?.aborted || interruption === 'operationInterrupted') throw error;
+          // All writes have settled. A failed final query leaves its own cleanup
+          // uncertain without invalidating the previously verified target receipts.
+          if (interruption === 'processCleanupUnconfirmed') {
+            statusFailureMessage = 'Could not read the final plugin status. The status query process cleanup could not be confirmed.';
+          }
           receipt.allSatisfied = null;
           receipt.inSync = null;
           statusFailure = diagnostic(readSafeOperationError(error)?.code ?? errorCode(error, 'statusUnavailable'));
         }
         if (statusFailure) {
           receipt.ok = false;
-          receipt.errors.push({ code: 'statusUnavailable', message: 'Could not read the final plugin status.',
+          receipt.errors.push({ code: 'statusUnavailable', message: statusFailureMessage,
             subject: statusFailure.subject, detail: { reasonCode: statusFailure.code } });
           receipt.recoveryActions.push(`aw plugin status --context ${context} --json`);
         }

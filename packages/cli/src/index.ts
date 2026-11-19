@@ -72,6 +72,7 @@ import {
 } from './utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
+  ConfigApplyInterruptedError,
   applyPluginConfig,
   buildConfigMutationReceipt,
   configWriteStateForError,
@@ -305,7 +306,9 @@ function configMutationFailure(
   error: unknown,
   env: NodeJS.ProcessEnv,
   cwd: string,
-): { code: string; message: string; configWrite: 'notStarted' | 'failed' | 'succeeded' } {
+): { code: string; message: string; configWrite: 'notStarted' | 'failed' | 'succeeded'; apply?: ConfigApplyInterruptedError['apply'] } {
+  if (error instanceof ConfigApplyInterruptedError) return { code: error.code, message: error.operationDiagnostic.safeMessage,
+    configWrite: error.configWrite, apply: error.apply };
   const configWrite = (error as { configWrite?: unknown })?.configWrite === 'succeeded' ? 'succeeded' : configWriteStateForError(error);
   if (error instanceof CommanderError) {
     return {
@@ -343,7 +346,7 @@ function configMutationFailure(
 function writeConfigMutationFailureReceipt(
   write: (text: string) => void,
   request: PreparsedConfigMutationJsonRequest,
-  failure: { code: string; message: string; configWrite: 'notStarted' | 'failed' | 'succeeded' },
+  failure: ReturnType<typeof configMutationFailure>,
 ): void {
   let plugin: string | undefined;
   try {
@@ -356,10 +359,11 @@ function writeConfigMutationFailureReceipt(
   }
   writeJsonReceipt(write, buildConfigMutationReceipt(request.command, {
     ok: false,
-    overallState: 'failed',
+    overallState: failure.apply ? 'partial' : 'failed',
     configWrite: failure.configWrite,
+    ...(failure.apply ? { apply: failure.apply } : {}),
     ...(plugin ? { plugin } : {}),
-    errors: [failure],
+    errors: [{ code: failure.code, message: failure.message }],
   }));
 }
 

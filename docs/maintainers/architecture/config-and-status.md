@@ -104,7 +104,13 @@ Grok inspect.projectTrusted 仅表示当前目录与运行时信任，不是新�
 
 显式 `--observe-native` 在符合 V2 接口最低条件的 OpenCode CLI 探测路径启动私有本地服务。该服务可能创建日志、状态和 cache，读取既有认证，加载已安装插件代码并按宿主现有配置连接外部服务。OpenCode 使用单次 --standalone API 绑定精确 location，不复用远程或版本不明的服务；active 确认当前 CLI 的启用与加载，failed 单独报告加载失败，异步激活尚未出现的条目保持 unknown，不将 CLI 结果提升为 Desktop 结果。进入启动路径时，公开结果通过 `nativeObservationSideEffects` 披露相关范围和副作用。该观察无需登录或模型会话。普通 status、TUI 和复用观察 session 的其他消费者默认不启用此模式。
 
-同一次只读 status 可复用相同 Active snapshot 校验、manifest 与入口发现；复用部分 Catalog 上下文时，必须补读现场残留候选所需的缺失来源，不能因该插件已无 Intent 而漏掉已安装目标。补读只限缺失的已配置来源，结果及失败仅在本次读取内共享；原生清单按真实入口、配置根、scope、cwd 和来源区分，neutral 与 Project 不能混为一次。TUI 重新检查及下一命令使用新会话。Review、锁内执行及写后观察不能共用过期 snapshot。Gemini、Copilot 与 Pi 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，常规检查逐次重新读取，并保留不可变输入失败与 stale 的优先级。新建单个 Pi/Gemini ensure 目标时，若同 session 仅有该目标、单 binding/plan 且无阻断或缺项，紧邻返回前的检查可复用同 build 渲染后取得的 discovery；原生事实与完整本地副本、配置、owner 等 observation 仍重新读取。此复用只交给首次创建者，缓存命中、执行和写后检查保持 fresh；并入其他可写目标时回退完整检查。首次返回检查失败不污染已构建目标的缓存，恢复输入后同 key 再准备仍执行完整检查。对 Gemini/Copilot/Pi 的单个正常非空部署，若完整动作明确没有 preApply、托管命令包写入或补足删除，可把纯准备和紧邻执行的重复完整核验合并到执行入口。入口核验失败仍走原 preflight 错误路径；只有同次调用、同一冻结计划的首个生命周期证据检查可消费该成功结果一次。每次执行仍重新核验，Pi 的有效清单仅隐藏 Project 段时，只有包及归属均 absent、无共享引用、全部 owner 槽位为空且动作仅发布与登记，才可使用该入口核验；registration 仍为 unknown，原生安装仍可拒绝未信任项目。脚本、托管写入、多部署、blocked、其他 unknown 现场及其他平台保持原检查，写后观察、rebase 和最终状态读取不复用该结果。跨调用不缓存弱现场结论。联合准备最终只有一个无阻断的 Gemini 或 Copilot ensure 组，且没有 Portable 部署、保护或残留时，首轮原生预览已封存该组全部目标，可省去返回 Review 前同一组的重复预览。多 scope、多组、移除及未完成计划继续刷新；来源激活后重准备、锁内复核、执行前检查和写后读取保持。产品面与 scope 的覆盖必须明确，unknown 不作为无引用。适用的进程、路径和身份检查见[平台边界](platforms.md)。
+同一次只读 status 可复用相同 Active snapshot 校验、manifest 与入口发现；复用部分 Catalog 上下文时，必须补读现场残留候选所需的缺失来源，不能因该插件已无 Intent 而漏掉已安装目标。补读只限缺失的已配置来源，结果及失败仅在本次读取内共享；原生清单按真实入口、配置根、scope、cwd 和来源区分，neutral 与 Project 不能混为一次。TUI 重新检查及下一命令使用新会话。Review、锁内执行及写后观察不能共用过期 snapshot。
+
+Gemini、Copilot 与 Pi 在同一次证据检查内可并行读取独立的不可变输入与可变现场，两项都结束后再比较，常规检查逐次重新读取，并保留不可变输入失败与 stale 的优先级。新建单个 Pi/Gemini ensure 目标时，若同 session 仅有该目标、单 binding/plan 且无阻断或缺项，紧邻返回前的检查可复用同 build 渲染后取得的 discovery；原生事实与完整本地副本、配置、owner 等 observation 仍重新读取。此复用只交给首次创建者，缓存命中、执行和写后检查保持 fresh；并入其他可写目标时回退完整检查。首次返回检查失败不污染已构建目标的缓存，恢复输入后同 key 再准备仍执行完整检查。
+
+已按平台核对的非 Codex 联合安装组，以及单独的 Gemini、Copilot、Pi 原生路由，可以在紧邻执行时完成一次完整入口核验。它适用于一个已冻结的非空 ensure 部署，组件齐全、现有包和归属可确定，动作只涉及发布、登记、刷新或启用。带脚本、托管命令写入、阻断或补足删除的目标分别检查。Codex 使用自己的登记和启用复核。Pi 有效清单仅缺 Project 段时，还要求包及归属均为 absent、无共享引用、全部 owner 槽位为空，动作仅为发布与登记。此时 registration 保持 unknown，原生客户端仍可拒绝未信任项目。入口核验失败沿用 preflight 错误路径。成功结果仅供这次调用的首个生命周期检查使用，写后观察、rebase 和最终状态都重新取证。
+
+联合安装按平台判断是否需要在返回 Review 前刷新预览。同一平台只有一个完整的 ensure 组、该组的目标均通过准备时，首轮预览已经封存全部候选。其它平台或独立的 Portable 组可以在同一批次中存在。一个平台有多个 scope 或共享来源候选时，在各组准备完成后再刷新并冻结。来源激活后的重准备、锁内复核与写后的真实读取继续各自执行。产品面与 scope 必须明确，unknown 保留覆盖缺口。适用的进程、路径和身份检查见[平台边界](platforms.md)。
 
 ### 3.2 scope 与共享物理包
 

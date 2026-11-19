@@ -194,7 +194,9 @@ Catalog publisher 测试必须覆盖 plan 的授权身份、`apply --expected-pl
 
 TUI 安装的离线性能门禁经过真实的 Review 和确认入口。对同一来源，比较一个与三个 Project 根，并保留 User 共用的依赖。预热物化后，Review 和锁内复查各只扫描一次整树。冷物化在每次发布前独立扫描。门禁还核对实际写出的 Skill 和 provider 调用次数。
 
-真实客户端复测使用 `node scripts/qualification/plugin-install-latency.mjs --build-root <已构建仓库> --catalog <固定的本地快照目录> --target <平台> --plugin <插件名>`。首次记录构建产物摘要与 Active Catalog 摘要，后续运行传 `--expected-build-digest <构建摘要>` 和 `--expected-active-digest <Catalog 摘要>`。每次使用临时 home 和项目，将首页加载、Review 和确认执行分别计时，统计完成的整树摘要、实际启动的原生命令与回执。对照构建应共用一个 Catalog，在同一台机器预热后交错测量，并核对每轮的客户端版本。
+真实客户端复测使用 `node scripts/qualification/plugin-install-latency.mjs --build-root <已构建仓库> --catalog <固定的本地快照目录> --target <平台> --plugin <插件名>`。同一条命令可以重复 `--target` 和 `--plugin`，例如 `--target claude --target pi --plugin human-content --plugin frontend-design`。默认使用 TUI 和已有 User/Project 声明，`--entry cli` 走公开命令，`--declarations empty` 从空声明开始。`--source <id=快照目录>` 可加入另一个来源，并以 `id/name` 选择插件。
+
+首次记录构建产物与 Active Catalog 摘要，后续运行传 `--expected-build-digest <构建摘要>` 和 `--expected-active-digest <Catalog 摘要>`。每轮使用独立的临时 home 和项目，在同一台机器交错运行两份构建。整单耗时取 Review 与确认执行之和，TUI 首页和来源同步另计。结果包含整树扫描、实际子进程起止、Portable 文件复制和发布区间。逐目标核对回执、客户端版本、原生登记与落盘内容后再比较耗时。
 
 性能测试位于 `packages/cli/tests/perf/`。每个预算必须输出一条具有唯一名称的结构化摘要：
 

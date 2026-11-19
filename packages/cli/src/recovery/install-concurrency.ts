@@ -87,6 +87,8 @@ function conflicts(left: readonly InstallResource[], right: readonly InstallReso
 export function createInstallAdmission(options: { signal?: AbortSignal; limit?: number } = {}): InstallAdmission {
   const limit = concurrencyLimit(options.limit ?? installConcurrencyLimits().writes);
   interface Entry { resources: InstallResource[]; start(): void }
+  const stopped = new AbortController();
+  const operationSignal = options.signal ? AbortSignal.any([stopped.signal, options.signal]) : stopped.signal;
   const waiting: Entry[] = [];
   const running = new Set<Entry>();
   let generation = 0;
@@ -102,16 +104,18 @@ export function createInstallAdmission(options: { signal?: AbortSignal; limit?: 
   return {
     get exclusiveGeneration() { return generation; },
     async run<T>(resources: readonly InstallResource[], action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-      const cancellation = options.signal && signal && signal !== options.signal
-        ? AbortSignal.any([options.signal, signal]) : signal ?? options.signal;
-      cancellation?.throwIfAborted();
+      const cancellation = signal && signal !== options.signal ? AbortSignal.any([operationSignal, signal]) : operationSignal;
+      cancellation.throwIfAborted();
       return new Promise<T>((resolve, reject) => {
         const entry: Entry = { resources: resources.map(canonicalResource), start() {
-          cancellation?.removeEventListener('abort', abort);
+          cancellation.removeEventListener('abort', abort);
           const execute = async () => {
-            try { cancellation?.throwIfAborted(); resolve(await action()); }
-            catch (error) { reject(error); }
-            finally {
+            try { cancellation.throwIfAborted(); resolve(await action()); }
+            catch (error) {
+              // Stop queued leaves before releasing an unconfirmed process's resources.
+              if (cleanupUnconfirmed(error)) stopped.abort(error);
+              reject(error);
+            } finally {
               if (entry.resources.some((resource) => resource.kind === 'exclusive')) generation++;
               running.delete(entry);
               dispatch();
@@ -122,10 +126,10 @@ export function createInstallAdmission(options: { signal?: AbortSignal; limit?: 
         function abort(): void {
           const index = waiting.indexOf(entry);
           if (index !== -1) waiting.splice(index, 1);
-          reject(cancellation!.reason);
+          reject(cancellation.reason);
         }
         waiting.push(entry);
-        cancellation?.addEventListener('abort', abort, { once: true });
+        cancellation.addEventListener('abort', abort, { once: true });
         dispatch();
       });
     },

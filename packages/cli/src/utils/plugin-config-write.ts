@@ -1,6 +1,6 @@
 import { resolveWorkContext } from '../intent/work-context.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
-import { RecoveryInterruptedError } from '../recovery/interruption.js';
+import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
 import { readDemand, demandNativeProjection } from '../recovery/demand.js';
 import { createScopeContext } from '../intent/scope-context.js';
 import type {
@@ -682,9 +682,7 @@ async function reinstallVisibleTargets(options: {
             scriptTimeoutMs: options.rebuildRuntime?.scriptTimeoutMs,
           });
         } catch (error) {
-          if (options.rebuildRuntime?.signal?.aborted
-            || error instanceof Error && error.name === 'AbortError'
-            || readSafeOperationError(error)) throw error;
+          if (recoveryInterruptionCode(error, options.rebuildRuntime?.signal) || readSafeOperationError(error)) throw error;
           result = {
             producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
             errors: [{ code: 'commandPackageApplyFailed', message: 'The managed command package could not be refreshed.' }],
@@ -1188,27 +1186,30 @@ async function prepareConfigApplyPackages(options: ApplyPluginConfigOptions, plu
   }));
   const errors = [...new Map(discoveries.flatMap((discovery) => discovery.errors).map((error) => [JSON.stringify(error), error])).values()];
   const evidence = { packages: entries, errors };
-  const targets = [...new Map(entries.map(({ target }) => {
+  const targets = entries.map(({ target }) => {
     const plugin = plugins.find((entry) => entry.manifest.name === target.producer.pluginName)!;
     const pluginId = plugin.pluginId ?? plugin.manifest.name;
     const dependencies = resolvePluginMetaDependencyClosure(referencePlugins, [plugin.manifest.name])
       .filter((entry) => entry.manifest.name !== plugin.manifest.name).map((entry) => entry.pluginId ?? entry.manifest.name);
-    return [`${pluginId}\0${target.producer.scope}`, { pluginId, scope: target.producer.scope, dependencies }] as const;
-  })).values()];
+    const declaration = plugin.manifest.managedCommands?.packages.find((item) => item.key === target.packageKey && item.scope === target.producer.scope);
+    return { pluginId, scope: target.producer.scope, packageId: target.packageId, platforms: declaration?.platforms ?? [], dependencies };
+  });
   const cache = plan.runtime.managedCommandProducerCache ??= new Map<string, Promise<CommandProducerResult>>();
   const hook: NonNullable<RebuildCommandRuntime['configApplyPackages']> = { targets, evidence,
-    blocked: (pluginId, scope, code) => {
+    blocked: (pluginId, scope, code, packageId) => {
       const plugin = plugins.find((entry) => (entry.pluginId ?? entry.manifest.name) === pluginId)!;
-      return entries.filter(({ target }) => target.producer.pluginName === plugin.manifest.name && target.producer.scope === scope)
+      return entries.filter(({ target }) => target.producer.pluginName === plugin.manifest.name && target.producer.scope === scope
+        && (!packageId || target.packageId === packageId))
         .map(({ target }): CommandProducerResult => ({
           producer: target.producer, state: 'failed', commandIds: [], removedCommandIds: [],
-          errors: [{ code, message: 'A required provider failed; the command package was not refreshed.' }],
+          errors: [{ code, message: 'The command package refresh did not complete.' }],
           recoveryActions: [`aw command package sync ${pluginId} ${target.packageKey} --scope ${scope} --yes`],
         }));
     },
-    execute: async (pluginId, scope, token) => {
+    execute: async (pluginId, scope, token, packageId) => {
       const plugin = plugins.find((entry) => (entry.pluginId ?? entry.manifest.name) === pluginId)!;
-      const selected = entries.filter(({ target }) => target.producer.pluginName === plugin.manifest.name && target.producer.scope === scope);
+      const selected = entries.filter(({ target }) => target.producer.pluginName === plugin.manifest.name && target.producer.scope === scope
+        && (!packageId || target.packageId === packageId));
       const results: CommandProducerResult[] = [];
       let executionContext: Awaited<ReturnType<typeof createScopeContext>> | undefined;
       try {
@@ -1327,6 +1328,18 @@ export async function disposePluginConfigApply(plan: RecoveryPlan): Promise<void
   await plan.context.dispose();
 }
 
+export class ConfigApplyInterruptedError extends Error {
+  readonly code: string;
+  readonly operationDiagnostic;
+  configWrite: 'notStarted' | 'succeeded' = 'notStarted';
+
+  constructor(error: RecoveryInterruptedError, readonly apply: ConfigApplyResult, signal?: AbortSignal) {
+    super(error.code === 'operationInterrupted' && signal?.reason instanceof Error ? signal.reason.message : error.message);
+    this.code = error.code;
+    this.operationDiagnostic = readSafeOperationError(error.cause) ?? error.operationDiagnostic;
+  }
+}
+
 export async function applyPluginConfig(options: ApplyPluginConfigOptions): Promise<{
   configWrite: 'notStarted'; overallState: RebuildReceiptOverallState; apply: ConfigApplyResult;
   otherProjectsMayRequireSync: boolean;
@@ -1354,9 +1367,14 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
       const discoveryErrors: ConfigApplyError[] = prepared.commandDiscoveryErrors.map((error) => ({
         stage: 'targetDiscovery', code: error.code, message: error.message,
       }));
+      let interruption: RecoveryInterruptedError | undefined;
       const receipt = await executeRecovery(prepared.plan, {
         yes: options.sharedNativeApplyConfirmed === true || options.preApplyConfirmed === true,
         runtime: { ...options.rebuildRuntime, awHomeMutationToken: token, preApplyConfirmed: options.preApplyConfirmed },
+      }).catch((error: unknown) => {
+        if (!(error instanceof RecoveryInterruptedError)) throw error;
+        interruption = error;
+        return error.receipt;
       });
       const retainedLegacyTargets = prepared.retainedLegacyTargets.filter((target) => !receipt.targetResults.some((result) =>
         (target.pluginId ? result.pluginId === target.pluginId : result.pluginId.split('/').at(-1) === target.pluginName)
@@ -1383,14 +1401,10 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
         commandResults: receipt.commandResults,
         ...(errors.length ? { errors } : {}),
       };
+      if (interruption) throw new ConfigApplyInterruptedError(interruption, apply, options.rebuildRuntime?.signal);
       return { configWrite: 'notStarted', overallState: ok ? 'succeeded' : 'partial', apply,
         otherProjectsMayRequireSync: true };
     } catch (error) {
-      // Config writers report the caller's cancellation alongside their committed save.
-      if (error instanceof RecoveryInterruptedError) {
-        if (error.code === 'operationInterrupted') options.rebuildRuntime?.signal?.throwIfAborted();
-        if (readSafeOperationError(error.cause)) throw error.cause;
-      }
       if (options.rebuildRuntime?.signal?.aborted || error instanceof Error && error.name === 'AbortError'
         || readSafeOperationError(error)) throw error;
       const apply = unavailableApply('targetDiscoveryFailed', 'targetDiscovery');
@@ -1590,6 +1604,11 @@ export async function applyPluginConfigWrite(
             'config.json',
           ].filter(Boolean).join('/')}`);
         }
+        if (error instanceof ConfigApplyInterruptedError) {
+          error.message = message;
+          if (configCommitted) error.configWrite = 'succeeded';
+          throw error;
+        }
         const safeError = new Error(message) as Error & {
           code?: string;
           configWrite?: 'failed' | 'succeeded';
@@ -1706,7 +1725,11 @@ export async function resetPluginConfigWithHelper(
       if (!options.plugin) return { ...saved, overallState: 'partial', apply: unavailableApply('sourceUnavailable', 'source') };
       if (saved.apply.state === 'skipped' && saved.apply.reason === 'noConfigChange') return saved;
       if (selection?.skipReason) return { ...saved, apply: skippedApply(selection.skipReason) };
-      const applied = await applyPluginConfig({ ...options, ...selection, plugin: options.plugin, awHomeMutationToken });
+      const applied = await applyPluginConfig({ ...options, ...selection, plugin: options.plugin, awHomeMutationToken })
+        .catch((error: unknown) => {
+          if (error instanceof ConfigApplyInterruptedError) error.configWrite = 'succeeded';
+          throw error;
+        });
       return { ...saved, overallState: applied.overallState, apply: applied.apply };
 
     },

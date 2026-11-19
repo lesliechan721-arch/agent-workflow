@@ -66,7 +66,6 @@ import { runPreApplyScript } from '../utils/plugin-scripts.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import { RebuildInterruptedError, RecoveryInterruptedError, recoveryInterruptionCode } from './interruption.js';
 import { mapInstallReads } from './install-concurrency.js';
-import { nativeInstallResources } from '../commands/rebuild-platform-integration.js';
 export type { CheckedPortableProgress } from '../portable/recovery.js';
 import { measureRecoveryPerformanceStage } from './performance.js';
 import { disposePreparedPlatformRebuildSession } from '../commands/rebuild-integration.js';
@@ -336,8 +335,6 @@ async function nativeOperation(plan: RecoveryPlan, pluginIds: string[], platform
     },
     runtime: {
       ...runtime,
-      ...((command === 'install' || command === 'sync') && platform !== 'both'
-        ? { batchInstallPlatform: platform } : {}),
       preserveLegacyNativeSkills: plan.options.existingOnly === true,
       nativeActivationOnlyTargets: plan.options.nativeActivationOnlyTargets,
       nativePlannedRetirements: plan.options.nativePlannedRetirements,
@@ -1150,22 +1147,17 @@ async function recheckPortableRecovery(plan: RecoveryPlan, groups: readonly Port
 
 async function executeNativeGroup(plan: RecoveryPlan, group: NativeGroup, nativeRuntime: RebuildCommandRuntime): Promise<void> {
   const { receipt } = plan;
+  const running = new Set<RecoveryTarget>();
   try {
-    const operation = group.preview.operationPlan;
-    const actions = operation?.actions ?? [];
-    const callsScript = actions.some((action) => action.kind === 'runPreApply');
-    const publishesCommands = !!nativeRuntime.nativeTargetExecution || actions.some((action) => action.kind === 'syncManagedCommandPackage');
-    const admission = nativeRuntime.installAdmission;
-    const holdGroup = admission && (callsScript || publishesCommands || group.platform === 'codex');
-    const run = () => nativeOperation(plan, group.pluginIds, group.platform, false,
-      { ...nativeRuntime, ...(holdGroup ? { installAdmission: undefined } : {}),
-        ...(group.preview.operationPlan
-          ? { expectedPlanFingerprint: group.preview.operationPlan.planFingerprint } : {}) },
+    const result = await nativeOperation(plan, group.pluginIds, group.platform, false,
+      { ...nativeRuntime, onInstallTargetState(identity, state) {
+        const target = identity.scope === plan.options.scope && identity.pluginId
+          ? pair(plan, identity.pluginId, identity.platform) : undefined;
+        if (target && state === 'running') running.add(target);
+        else if (target) running.delete(target);
+        nativeRuntime.onInstallTargetState?.(identity, state);
+      }, expectedPlanFingerprint: group.preview.operationPlan?.planFingerprint },
       group.command, nativeGroupTargets(group));
-    const result = holdGroup ? await admission.run(callsScript ? [{ kind: 'exclusive' }] : [
-      ...nativeInstallResources(operation?.deploymentPlans ?? []),
-      ...(publishesCommands ? [{ kind: 'path' as const, value: path.join(plan.context.awHome, 'commands') }] : []),
-    ], run, nativeRuntime.signal) : await run();
     receipt.outputsMayHaveChanged ||= result.rebuildResults.some((result) => result.actions.some((action) =>
       action.name === 'stale.cleanup' || action.name === 'native.write' || action.name === 'artifacts.write'
         || action.name === 'recovery.cleanup' || action.name === 'cleanup.owned'))
@@ -1183,7 +1175,15 @@ async function executeNativeGroup(plan: RecoveryPlan, group: NativeGroup, native
           deployment.effects.some((effect) => effect.mutation !== 'none')))
         || recorded.commandResults?.some((command) => command.state === 'completed') === true;
     }
-    if (recoveryInterruptionCode(error, nativeRuntime.signal)) throw error;
+    const interruption = recoveryInterruptionCode(error, nativeRuntime.signal);
+    if (interruption) {
+      for (const target of running) {
+        target.execution = 'partial'; target.observation = 'unknown'; target.content = 'unknown';
+        block(target, interruption);
+        receipt.outputsMayHaveChanged = true;
+      }
+      throw error;
+    }
     const code = errorCode(error, 'nativeRecoveryFailed');
     receipt.outputsMayHaveChanged ||= code !== 'preApplyAuthorizationRequired';
     for (const { pluginId, platform } of nativeGroupTargets(group)) {

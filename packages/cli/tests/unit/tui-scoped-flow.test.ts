@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import { writeIntentFixture } from '../helpers/plugin-intent-fixture.js';
 import { executeIntentPlan, executeTargetsPlan,
-  prepareIntentPlan, prepareTargetsPlan } from '../../src/tui/scoped-flow.js';
+  prepareIntentPlan, prepareTargetsPlan, projectScopedRecoveryHistory } from '../../src/tui/scoped-flow.js';
+import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('scoped TUI plan physical target', () => {
@@ -44,5 +45,34 @@ describe('scoped TUI plan physical target', () => {
     await swap();
     await expect(executeIntentPlan(location, plan)).rejects.toThrow('operationReviewStale');
     await expect(fs.readFile(target)).resolves.toEqual(original);
+  });
+});
+
+// Test Value Gate: a stale sibling must not erase execution facts from batch history.
+it('distinguishes stale before execution from a stale target after a sibling was verified', () => {
+  const stale = { code: 'operationReviewStale', message: 'Review again.' };
+  const positions = (['claude', 'generic'] as const).map((agent) => ({
+    pluginId: 'team/demo', agent, scope: 'user' as const, delivery: null,
+  }));
+  const receipt: RecoveryReceipt = {
+    schemaVersion: 1, kind: 'aw-recovery', scope: 'user', command: 'install', ok: false,
+    intent: { state: 'valid', roots: ['team/demo'] }, requestedRoots: ['team/demo'], requestedTargets: positions,
+    selection: { agents: ['claude', 'generic'], origin: 'argument', preferences: 'valid' },
+    blockers: [stale], errors: [], remainingTargets: positions, recoveryActions: [],
+    declarationChanged: false, configChanged: false, preferencesChanged: false, outputsMayHaveChanged: false,
+    targetResults: positions.map((position) => ({ ...position, execution: 'not-run', observation: 'unknown', blockers: [], requiredBy: [] })),
+  };
+  const identity = { recordId: 'batch', epoch: 0, operationId: 'sync', createdAtMs: 0 };
+  expect(projectScopedRecoveryHistory(receipt, identity).summary.effects).toMatchObject({
+    preApplyExternalEffect: 'notStarted', finalVerification: 'notStarted',
+  });
+
+  receipt.blockers = [];
+  receipt.targetResults[0] = { ...receipt.targetResults[0]!, execution: 'applied', observation: 'verified', content: 'satisfied' };
+  receipt.targetResults[1]!.blockers = [stale];
+  receipt.outputsMayHaveChanged = true;
+  receipt.remainingTargets = [positions[1]!];
+  expect(projectScopedRecoveryHistory(receipt, identity).summary).toMatchObject({ state: 'partial',
+    effects: { awWrite: 'possible', preApplyExternalEffect: 'unknown', finalVerification: 'partial' },
   });
 });

@@ -7,6 +7,7 @@ import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '.
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { resolvePluginConfigStorePath, writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
@@ -99,16 +100,20 @@ async function createNativeReferenceFixture(preApply = false) {
 async function createCommandPackageReferenceFixture(options: {
   foreignSource?: boolean;
   withClaude?: boolean;
+  mixedScopes?: boolean;
+  packagePlatforms?: Array<'codex' | 'claude'>;
   initialSelection?: 'final' | 'next';
 } = {}) {
-  const platforms: Array<'codex' | 'claude'> = options.withClaude ? ['codex', 'claude'] : ['codex'];
+  const platforms: Array<'codex' | 'claude'> = options.mixedScopes ? ['claude'] : options.withClaude ? ['codex', 'claude'] : ['codex'];
   const isolation = getCurrentSourceTestIsolation();
   const cwd = isolation.layout.fixtureCwd;
   const env = isolation.env;
   const sourceRoot = path.join(cwd, 'package-reference-source');
+  if (options.mixedScopes) execFileSync('git', ['init', '-q'], { cwd });
   const renders = path.join(cwd, 'package-renders.jsonl');
   const scripts = path.join(cwd, 'package-pre-apply.jsonl');
   const fail = path.join(cwd, 'provider-render-fails');
+  const packageKeys = options.mixedScopes ? ['personal', 'workspace'] : ['personal', 'uninstalled'];
   for (const name of ['provider', 'consumer']) {
     const root = path.join(sourceRoot, 'plugins', name);
     await fs.outputFile(path.join(root, 'commands/tool.mjs'), 'console.log("fixture");\n');
@@ -118,7 +123,7 @@ async function createCommandPackageReferenceFixture(options: {
       `if(name==='provider'&&fs.existsSync(${JSON.stringify(fail)}))throw new Error('injected provider failure');`,
       `fs.appendFileSync(${JSON.stringify(renders)},JSON.stringify({plugin:name,surface:c.surface,ids:c.requestedArtifactIds,config:c.config.values})+'\\n');`,
       "if(c.surface==='agent-plugin'){const files={'SKILL.md':'---\\nname: '+name+'\\ndescription: Package reference fixture.\\n---\\n# Fixture\\n','README.md':'# Fixture\\n'};console.log(JSON.stringify({version:3,components:c.allowedOutputKinds.includes('skill')?[{id:name,kind:'skill',name,content:{files:Object.fromEntries(Object.entries(files).map(([p,text])=>[p,{text}]))}}]:[],omitted:[],unmet:[]}));}else{",
-      "const artifacts=c.requestedArtifactIds.map(id=>id.startsWith('command-package.')?{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['selected'],files:{'config.json':JSON.stringify({selected:c.config.values.selected})}}:{id,target:'aw.command-set',kind:'commandSet',state:'present',refreshKeys:['selected'],entries:[{key:'run',runner:'node',entry:'tool.mjs',args:[],cwd:'resource'}]});",
+      `const artifacts=c.requestedArtifactIds.map(id=>id.startsWith('command-package.')?{id,target:'aw.command-package',kind:'commandPackage',state:'present',refreshKeys:['selected'],files:{'config.json':JSON.stringify({selected:c.config.values.selected${options.mixedScopes ? ',scope:c.scope' : ''}})}}:{id,target:'aw.command-set',kind:'commandSet',state:'present',refreshKeys:['selected'],entries:[{key:'run',runner:'node',entry:'tool.mjs',args:[],cwd:'resource'}]});`,
       'console.log(JSON.stringify({version:2,artifacts}));}',
     ].join('\n'));
     await fs.outputFile(path.join(root, 'pre-apply.mjs'), [
@@ -144,8 +149,8 @@ async function createCommandPackageReferenceFixture(options: {
       manifest.scripts = { artifacts: { render: { runner: 'node', path: './render.mjs' } }, preApply: { path: './pre-apply.mjs' } };
       manifest.artifacts = { configKeys: name === 'provider' ? ['registry'] : ['selected'], scopes: ['user'] };
       if (name === 'consumer') manifest.managedCommands = {
-        packages: ['personal', 'uninstalled'].map((key) => ({ key, sourceDir: './commands', scope: 'user', platforms, render: true, refreshKeys: ['selected'] })),
-        sets: ['personal', 'uninstalled'].map((key) => ({ set: key, mode: 'dynamic', producer: { kind: 'package', packageKey: key }, refreshKeys: ['selected'] })),
+        packages: packageKeys.map((key) => ({ key, sourceDir: './commands', scope: key === 'workspace' ? 'project' : 'user', platforms: options.packagePlatforms ?? platforms, render: true, refreshKeys: ['selected'] })),
+        sets: packageKeys.map((key) => ({ set: key, mode: 'dynamic', producer: { kind: 'package', packageKey: key }, refreshKeys: ['selected'] })),
       };
     },
   })));
@@ -162,9 +167,9 @@ async function createCommandPackageReferenceFixture(options: {
   const claude = options.withClaude ? await createClaudeNativeTestRuntime(isolation) : undefined;
   const runner = (invocation: NativeCliInvocation) => claude && isClaudeInvocation(invocation)
     ? claude.nativeCliRunner(invocation) : codex.nativeCliRunner(invocation);
-  const run = async (args: string[]) => {
+  const run = async (args: string[], signal?: AbortSignal) => {
     const output = createCapturedCliIo();
-    const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner });
+    const exitCode = await runSafeCli([...args, '--json'], { cwd, env, io: output.io, interactive: false, nativeCliRunner: runner, signal });
     return { exitCode, payload: JSON.parse(output.readStdout()), stderr: output.readStderr() };
   };
   expect(await run(['target', 'set', ...platforms])).toMatchObject({ exitCode: 0 });
@@ -287,6 +292,115 @@ describe('cross-plugin public config apply', () => {
     expect(packageRecovered, JSON.stringify(packageRecovered)).toMatchObject({ exitCode: 0 });
     expect(await fs.readJson(config)).toEqual({ selected: 'next' });
   }, 30_000);
+
+  it('reports the shared packages when native provider preflight blocks their owner', async () => {
+    const { run, setSelected, fail, config } = await createCommandPackageReferenceFixture({ withClaude: true });
+    const installed = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
+    expect(installed.exitCode, JSON.stringify(installed.payload.diagnostics)).toBe(0);
+    await setSelected('next');
+    await fs.outputFile(fail, 'fail');
+    const commits = vi.spyOn(managedCommandStore, 'syncManagedCommandPackage');
+    try {
+      const result = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user',
+        '--value-json', '[{"key":"next"}]', '--apply', '--yes']);
+      expect(result.exitCode, JSON.stringify(result.payload.diagnostics)).toBe(4);
+      const packages = result.payload.data.apply.commandResults;
+      expect(packages).toHaveLength(2);
+      for (const key of ['personal', 'uninstalled']) expect(packages).toContainEqual(
+        expect.objectContaining({ producer: expect.objectContaining({ key }), state: 'failed' }));
+      expect(commits).not.toHaveBeenCalled();
+      expect(await fs.readJson(config)).toEqual({ selected: 'native' });
+    } finally { commits.mockRestore(); }
+  }, 60_000);
+
+  it('refreshes an independent Codex package when the provider fails on Claude', async () => {
+    const { run, setSelected, fail, config } = await createCommandPackageReferenceFixture({ withClaude: true, packagePlatforms: ['codex'] });
+    expect((await run(['target', 'set', 'claude'])).exitCode).toBe(0);
+    const provider = await run(['plugin', 'install', 'team/provider', '--scope', 'user', '--yes']);
+    expect(provider.exitCode, JSON.stringify(provider.payload.diagnostics)).toBe(0);
+    await setSelected('next');
+    await fs.outputFile(fail, 'fail');
+    const result = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user',
+      '--value-json', '[{"key":"next"}]', '--apply', '--yes']);
+    expect(result.exitCode, JSON.stringify(result.payload.diagnostics)).toBe(4);
+    expect(result.payload.data.apply.targetResults).toContainEqual(expect.objectContaining({
+      target: expect.objectContaining({ pluginId: 'team/provider', platform: 'claude' }), state: 'failed' }));
+    expect(result.payload.data.apply.commandResults).toEqual([expect.objectContaining({
+      producer: expect.objectContaining({ key: 'personal' }), state: 'completed' })]);
+    expect(await fs.readJson(config)).toEqual({ selected: 'next' });
+  }, 30_000);
+
+  it.each(['user', 'project'] as const)('refreshes both command scopes with only a %s native installation', async (nativeScope) => {
+    const { run, setSelected, packages } = await createCommandPackageReferenceFixture({ mixedScopes: true, withClaude: true });
+    const installed = await run(['plugin', 'install', 'team/consumer', '--scope', nativeScope, '--target', 'claude', '--yes']);
+    expect(installed.exitCode, JSON.stringify(installed.payload.diagnostics)).toBe(0);
+    const projectPackage = await run(['command', 'package', 'sync', 'team/consumer', 'workspace', '--scope', 'project', '--yes']);
+    expect(projectPackage.exitCode, JSON.stringify(projectPackage.payload.diagnostics)).toBe(0);
+    const locations = (await packages()).packages.map(({ producer, resourceRoot }) => ({ scope: producer.scope, file: path.join(resourceRoot, 'config.json') }));
+    expect(locations).toHaveLength(2);
+    for (const { file, scope } of locations) expect(await fs.readJson(file)).toEqual({ selected: 'native', scope });
+    await setSelected('final');
+    const commits = vi.spyOn(managedCommandStore, 'syncManagedCommandPackage');
+    try {
+      const applied = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'project',
+        '--value-json', '[{"key":"final"}]', '--apply', '--yes']);
+      expect(applied.exitCode, JSON.stringify(applied.payload.diagnostics)).toBe(0);
+      const commands = applied.payload.data.apply.commandResults;
+      expect(commands).toHaveLength(2);
+      for (const [key, scope] of [['personal', 'user'], ['workspace', 'project']]) expect(commands).toContainEqual(
+        expect.objectContaining({ producer: expect.objectContaining({ key, scope }), state: 'completed' }));
+      for (const { file, scope } of locations) expect(await fs.readFile(file, 'utf8')).toBe(JSON.stringify({ selected: 'final', scope }));
+      expect(commits.mock.calls.map(([item]) => item.producer.scope).sort()).toEqual(['project', 'user']);
+    } finally { commits.mockRestore(); }
+  }, 60_000);
+
+  it.each(['ordinary', 'cancelled cleanup'] as const)('reports a shared producer failure on both hosts after %s failure', async (mode) => {
+    const { run, setSelected, config, cwd, env } = await createCommandPackageReferenceFixture({ withClaude: true });
+    const installed = await run(['plugin', 'install', 'team/consumer', '--scope', 'user', '--yes']);
+    expect(installed.exitCode, JSON.stringify(installed.payload.diagnostics)).toBe(0);
+    await setSelected('final');
+    const controller = new AbortController();
+    const commit = managedCommandStore.syncManagedCommandPackage;
+    const called: string[] = [];
+    const commits = vi.spyOn(managedCommandStore, 'syncManagedCommandPackage').mockImplementation(async (entry) => {
+      called.push(entry.producer.key);
+      if (mode === 'ordinary' && entry.producer.key !== 'personal') return commit(entry);
+      if (mode === 'cancelled cleanup') {
+        controller.abort(new DOMException('Interrupted', 'AbortError'));
+        throw Object.assign(new Error('Unconfirmed process cleanup'), { code: 'pluginProcessCleanupFailed' });
+      }
+      throw attachSafeOperationError(new Error('Injected producer failure'), {
+        safeMessage: 'The producer failed.', code: 'commandPackageApplyFailed' });
+    });
+    try {
+      const applied = await run(['plugin', 'config', 'set', 'team/provider', 'registry', '--context', 'user',
+        '--value-json', '[{"key":"final"}]', '--apply', '--yes'], controller.signal);
+      expect(applied.exitCode, JSON.stringify(applied.payload)).toBe(mode === 'ordinary' ? 4 : 1);
+      expect(applied.payload.data.configWrite).toBe('succeeded');
+      expect(applied.payload.data.apply.state).toBe('partial');
+      const targets = applied.payload.data.apply.targetResults;
+      expect(targets.some((entry: { target: { pluginId: string }; state: string }) =>
+        entry.target.pluginId === 'team/provider' && entry.state === 'completed')).toBe(true);
+      for (const platform of ['codex', 'claude']) {
+        expect(targets).toContainEqual(expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/consumer', platform }),
+          state: expect.stringMatching(/failed|skipped/u) }));
+      }
+      expect(await fs.readJson(config)).toEqual({ selected: 'native' });
+      expect((await fs.readJson(resolvePluginConfigStorePath({ sourceId: 'team', pluginName: 'provider', scope: 'user', cwd, env }))).common.registry)
+        .toEqual([{ key: 'final' }]);
+      const results = applied.payload.data.apply.commandResults;
+      expect(results).toHaveLength(2);
+      if (mode === 'ordinary') {
+        expect(called.sort()).toEqual(['personal', 'uninstalled']);
+        expect(results).toContainEqual(expect.objectContaining({ producer: expect.objectContaining({ key: 'personal' }), state: 'failed' }));
+        expect(results).toContainEqual(expect.objectContaining({ producer: expect.objectContaining({ key: 'uninstalled' }), state: 'completed' }));
+      } else {
+        expect(called).toHaveLength(1);
+        expect(results.every((entry: { state: string }) => entry.state === 'failed')).toBe(true);
+        expect(applied.payload.diagnostics).toContainEqual(expect.objectContaining({ code: 'processCleanupUnconfirmed' }));
+      }
+    } finally { commits.mockRestore(); }
+  }, 60_000);
 
   it('updates two hosts and publishes each cross-platform command package once after its provider', async () => {
     const { run, setSelected, config } = await createCommandPackageReferenceFixture({ withClaude: true });

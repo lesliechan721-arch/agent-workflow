@@ -74,6 +74,7 @@ export interface LifecycleData {
 }
 
 const messages: Record<string, string> = {
+  dependencyExcluded: 'A required plugin is excluded from this target by the local deployment policy.',
   ...geminiConsentMessages,
   confirmationRequired: 'Repeat this request with --yes to confirm the listed effects.',
   noTargetsEnabled: 'No effective deployment targets are enabled. Set targets or choose --only requirements.',
@@ -333,10 +334,17 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   if (receipt.commandResults) data.commandResults = receipt.commandResults.map(({ producer, state, commandIds, removedCommandIds, errors }) => ({ producer, state, commandIds, removedCommandIds, blockerCodes: errors.map((entry) => entry.code) }));
   if (receipt.nativeToolChanges) data.nativeToolChanges = receipt.nativeToolChanges.map(({ producer, before, after }) => ({ producer, before, after }));
   const diagnostics = [...receipt.blockers, ...receipt.errors].map((entry) => publicDiagnostic(entry));
+  const excludedProviders = new Map<string, NextAction>();
   for (const target of receipt.targetResults) {
     const subject = { pluginId: target.pluginId, target: target.agent, scope: target.scope };
     diagnostics.push(...target.blockers.map((entry) => publicDiagnostic(entry, subject)));
     diagnostics.push(...(target.reasons ?? []).map((entry) => publicDiagnostic(entry, subject, 'warning')));
+    for (const blocker of target.blockers) if (blocker.code === 'dependencyExcluded' && blocker.pluginId) {
+      excludedProviders.set(`${blocker.pluginId}\0${target.agent}`, { kind: 'command',
+        argv: ['aw', 'target', 'include', blocker.pluginId, '--target', target.agent],
+        reason: 'If you want this dependency on this target, remove its local exclusion before retrying.',
+        requiresConfirmation: true });
+    }
   }
   for (const result of receipt.commandResults ?? []) diagnostics.push(...result.errors.map((entry) => publicDiagnostic({ code: entry.code, message: entry.message },
     { pluginId: `${result.producer.sourceId}/${result.producer.pluginName}`, scope: result.producer.scope })));
@@ -345,6 +353,7 @@ export function receiptResult(command: string, data: LifecycleData, receipt: Rec
   const result = commandResult(command, data, { status, diagnostics: [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()] });
   if (data.request.mode === 'outputs-only') result.diagnostics.push(publicDiagnostic('outputsRetainedRequirements', undefined, 'info'));
   if (!receipt.ok) {
+    result.nextActions.push(...excludedProviders.values());
     if (receipt.errors.some((error) => error.code === 'statusUnavailable')) {
       result.nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'status', '--context', data.request.context, '--json'],
         reason: 'Recheck the current status after the completed writes.', requiresConfirmation: false });

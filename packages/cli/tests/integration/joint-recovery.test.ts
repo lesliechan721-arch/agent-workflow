@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'fs-extra';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { getNativeTestLayout, installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
@@ -9,6 +9,9 @@ import { createCommandTestTiming } from '../helpers/command-timing.js';
 import type { RebuildCommandRuntime } from '../../src/commands/rebuild-command.js';
 import type { CatalogGenerationStateFileV1 } from '../../src/types.js';
 import { runPublicLifecycle } from '../../src/commands/public-lifecycle.js';
+import { createCliExecutionContext } from '../../src/commands/runtime.js';
+import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
+import { TuiController } from '../../src/tui/controller.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
@@ -17,7 +20,7 @@ import { resolveCatalogGenerationStatePath } from '../../src/utils/catalog-gener
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { writeIntent, observeIntent, resolveIntentPath } from '../../src/intent/intent-store.js';
 import type { RecoveryReceipt } from '../../src/recovery/receipt.js';
-import { resolvePreferencesPath, setTargets } from '../../src/intent/deployment-preferences.js';
+import { resolvePreferencesPath, writePreferences, setTargets, type DeploymentPreferences } from '../../src/intent/deployment-preferences.js';
 import { prepareRecovery, executeRecovery, runRecovery } from '../../src/recovery/coordinator.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
 import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
@@ -103,6 +106,75 @@ function failManifestAfterActiveCheck(file: string, stages: string[]) {
 
 describe('joint recovery through real Catalog and owned outputs', () => {
   beforeEach(() => { installNativeTestQualification({ discovery: true }); });
+  it.each([false, true])('keeps exact TUI pairs and their provider in Review and recovery (provider excluded=%s)', async (blocked) => {
+    const value = await fixture(false, ['opencode', 'generic'], false, { a: ['d'], b: [], d: [] });
+    const project = { ...value.options, scope: 'project' as const };
+    const intent = await observeIntent(project);
+    if (intent.state !== 'valid') throw new Error('fixtureIntentMissing');
+    await writeIntent(project, { ...intent.value, roots: [{ pluginId: 'team/a' }, { pluginId: 'team/b' }] });
+    const exclusions = [{ plugin: 'team/a', target: 'generic' }, { plugin: 'team/b', target: 'opencode' }] as const;
+    const policy: DeploymentPreferences = { schemaVersion: 2, kind: 'aw-deployment-preferences',
+      targets: ['opencode', 'generic', 'cursor'], exclusions: [...exclusions] };
+    await writePreferences(project, { ...policy,
+      exclusions: [...exclusions, ...(blocked ? [{ plugin: 'team/d', target: 'opencode' as const }] : [])] });
+    const tui = new TuiController(createTuiControllerDependencies(createCliExecutionContext({ ...value.options, interactive: false })));
+    onTestFinished(() => tui.dispose());
+    const pairs = [{ pluginId: 'team/a', agent: 'opencode' }, { pluginId: 'team/b', agent: 'generic' }] as const;
+    const prepare = async (exact: Array<{ pluginId: string; agent: 'opencode' | 'generic' | 'cursor' }>) => {
+      const reviewed = await tui.prepareScopedTask({ kind: 'recovery', command: 'sync', scope: 'project',
+        selectors: exact.map((pair) => pair.pluginId), targets: exact.map((pair) => pair.agent), exactTargets: exact,
+      });
+      if (reviewed.kind !== 'recovery') throw new Error('Expected recovery Review');
+      return reviewed;
+    };
+    const review = await prepare([...pairs]);
+    const executed = await tui.executeScopedTask(review);
+    if (executed.kind !== 'recovery') throw new Error('Expected recovery receipt');
+    const keys = (receipt: RecoveryReceipt) => receipt.targetResults.map((item) => [item.pluginId, item.agent, item.scope]);
+    const expected = [
+      ...(!blocked ? [['team/d', 'opencode', 'project']] : []),
+      ['team/a', 'opencode', 'project'], ['team/b', 'generic', 'project'],
+    ];
+    expect(keys(review.plan.receipt)).toEqual(expected);
+    expect(keys(executed.receipt)).toEqual(expected);
+    const history = tui.listOperationHistory();
+    expect(history).toHaveLength(1);
+    expect(tui.getOperationDiagnostic(history[0]!.recordId)?.targets.map((item) => [item.pluginId, item.platform, item.scope])).toEqual(expected);
+    expect(executed.receipt.targetResults.at(-1)).toMatchObject({ execution: 'applied', observation: 'verified' });
+    await expect(fs.readFile(path.join(value.projectRoot, 'b', 'SKILL.md'), 'utf8')).resolves.toContain('Use b.');
+    expect(executed.receipt.ok).toBe(!blocked);
+    const remaining = executed.receipt.remainingTargets.map(({ pluginId, agent, scope }) => ({ pluginId, agent, scope }));
+    expect(remaining).toEqual(blocked ? [{ ...pairs[0], scope: 'project' }] : []);
+    if (blocked) {
+      expect(executed.receipt.targetResults[0]).toMatchObject({ execution: 'not-run', observation: 'unknown', content: 'unknown',
+        blockers: [expect.objectContaining({ code: 'dependencyExcluded', pluginId: 'team/d' })],
+        recoveryActions: ['aw target include team/d --target opencode', 'aw plugin sync team/a --context project --target opencode'] });
+      const cli = await runPublicLifecycle('sync', ['team/a'], { ...value.options, context: 'user', targets: ['opencode'] });
+      expect(cli).toMatchObject({ status: 'blocked', data: { changes: { preferences: 'none', outputs: 'none' },
+        remainingTargets: [{ pluginId: 'team/a', target: 'opencode', scope: 'user' }] }, nextActions: [
+        { argv: ['aw', 'target', 'include', 'team/d', '--target', 'opencode'] },
+        { argv: ['aw', 'plugin', 'sync', 'team/a', '--context', 'user', '--target', 'opencode'] },
+      ] });
+      // The other exact pair remains independently complete while this exclusion still exists.
+      expect(await tui.executeScopedTask(await prepare([pairs[1]]))).toMatchObject({ receipt: { ok: true } });
+      await writePreferences(project, policy);
+      const retry = await prepare([pairs[0]]);
+      const recovered = await tui.executeScopedTask(retry);
+      expect(recovered).toMatchObject({ kind: 'recovery', receipt: { ok: true, remainingTargets: [],
+        targetResults: [
+          { pluginId: 'team/d', agent: 'opencode', scope: 'project', requiredBy: ['team/a'], relation: 'dependency' },
+          { pluginId: 'team/a', agent: 'opencode', scope: 'project' },
+        ] } });
+    } else {
+      const skipped = await prepare([{ pluginId: 'team/b', agent: 'cursor' }, { pluginId: 'team/a', agent: 'generic' }]);
+      expect(await tui.executeScopedTask(skipped)).toMatchObject({ receipt: { ok: true, remainingTargets: [],
+        targetResults: [
+          { pluginId: 'team/b', agent: 'cursor', satisfaction: 'unsupported', execution: 'no-op' },
+          { pluginId: 'team/a', agent: 'generic', satisfaction: 'excluded', execution: 'no-op' },
+        ] } });
+    }
+    expect(await fs.pathExists(value.nativeSkill('opencode', 'user', 'a'))).toBe(false);
+  }, 30000);
   // Public receipts must identify the saved scope and digest, independently of output execution.
   it.each(['user', 'project'] as const)('reports the saved %s Intent after initial install, add, no-op and remove', async (scope) => {
     const value = await fixture();
@@ -1224,6 +1296,11 @@ describe('joint recovery through real Catalog and owned outputs', () => {
     const result = await runRecovery('sync', [], value.options);
     expect(result.ok).toBe(false);
     expect(result.errors.some((item) => item.code === 'sourceMissing')).toBe(true);
+    expect(result.remainingTargets.map(({ pluginId, scope, agent }) => [pluginId, scope, agent])).toEqual([
+      ['missing/provider', 'user', 'generic'], ['missing/consumer', 'project', 'generic'],
+    ]);
+    for (const remaining of result.remainingTargets) expect(result.targetResults.find((item) => item.pluginId === remaining.pluginId))
+      .toMatchObject({ execution: 'not-run', observation: 'unknown', content: 'unknown', satisfaction: 'unknown' });
     expect(await fs.pathExists(path.join(value.userRoot, 'a', 'SKILL.md'))).toBe(true);
     expect(await fs.pathExists(path.join(value.projectRoot, 'b', 'SKILL.md'))).toBe(true);
     expect(await fs.pathExists(path.join(value.projectRoot, 'd'))).toBe(false);

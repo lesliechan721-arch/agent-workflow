@@ -152,6 +152,7 @@ import {
 } from './rebuild-integration.js';
 import {
   executeRebuildOperation,
+  hasPlannedPreApply,
   prepareRebuildOperation,
   type DesiredTarget,
   type PreparedRebuildOperation,
@@ -198,14 +199,15 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     state: 'running' | 'completed') => void;
   nativePlannedRetirements?: readonly { pluginId: string; platform: PlatformName; scope: Scope }[];
   nativeTargetExecution?: {
+    produces?(identity: RebuildTargetIdentity): boolean;
     beforeApply(identity: RebuildTargetIdentity): Promise<CommandProducerResult[]>;
     blocked?(identity: RebuildTargetIdentity, code: string): CommandProducerResult[];
   };
   configApplyPackages?: {
-    targets: Array<{ pluginId: string; scope: Scope; dependencies: string[] }>;
+    targets: Array<{ pluginId: string; scope: Scope; packageId: string; platforms: PlatformName[]; dependencies: string[] }>;
     evidence: unknown;
-    execute(pluginId: string, scope: Scope, token: AwHomeMutationToken): Promise<CommandProducerResult[]>;
-    blocked?(pluginId: string, scope: Scope, code: string): CommandProducerResult[];
+    execute(pluginId: string, scope: Scope, token: AwHomeMutationToken, packageId?: string): Promise<CommandProducerResult[]>;
+    blocked(pluginId: string, scope: Scope, code: string, packageId?: string): CommandProducerResult[];
   };
   awHomeMutationToken?: AwHomeMutationToken;
   executionInput?: NativeExecutionInput;
@@ -2480,6 +2482,9 @@ async function runRebuildCommandInSession(
     executionInput.selectedTargets.some((selected) =>
       selected.pluginId === target.pluginId && selected.platform === target.platform && selected.scope === target.scope);
   const runtimeEnv = executionInput.context.env;
+  const admission = options.runtime?.installAdmission;
+  const initialGeneration = admission?.exclusiveGeneration ?? 0;
+  if (initialGeneration && requestedPlatforms.includes('codex')) options.runtime?.codexObservationSession?.invalidate();
   const retainSelectors = options.command === 'cleanup' ? options.pluginNames.map(parsePluginId) : [];
   const primarySourceId = retainSelectors.some((selector) => !selector.sourceId)
     ? await readCatalogSourcesConfigSnapshot(runtimeEnv)
@@ -4597,6 +4602,31 @@ async function runRebuildCommandInSession(
           return commandForTarget(selection, lockedPlan);
         };
         const deferredPreApply = new Set<string>();
+        let observationGeneration = initialGeneration;
+        const refreshCodexObservation = () => {
+          if (!admission || observationGeneration === admission.exclusiveGeneration) return;
+          executionContext.codexObservationSession?.invalidate();
+          observationGeneration = admission.exclusiveGeneration;
+        };
+        const prepareOperation = async (input: Parameters<typeof prepareRebuildOperation>[0]) => {
+          refreshCodexObservation();
+          const prepared = await prepareRebuildOperation({ ...input, onActionEvent: async (event) => {
+            if (event.data.name === 'preApply' && event.data.phase === 'start') {
+              try { options.runtime?.onInstallTargetState?.(input.target.identity, 'running'); }
+              catch { /* Progress observers cannot change execution. */ }
+            }
+            await emitRebuildActionEvent(executionContext, event);
+          } });
+          if (prepared.status === 'failed') {
+            const diagnostic = prepared.result.failures.map((failure) => failure.operationDiagnostic)
+              .find((failure) => failure && recoveryInterruptionCode(failure));
+            if (diagnostic) {
+              throw attachSafeOperationError(new Error(diagnostic.safeMessage), diagnostic);
+            }
+            executionContext.signal?.throwIfAborted();
+          }
+          return prepared;
+        };
         const prepareLockedTargets = async (preparationOptions: {
           eligibleKeys?: ReadonlySet<string>;
           skipPreApply?: boolean;
@@ -4680,21 +4710,23 @@ async function runRebuildCommandInSession(
             }
             // A consumer's script can change external state. Wait for the provider's
             // actual execution result even when both targets passed native preflight.
-            if (options.runtime?.batchInstallPlatform && entry.plugin.manifest.dependencies?.length
-              && prepared.target.operationActions?.some((action) => action.kind === 'runPreApply')) deferredPreApply.add(key);
-            const preparedOperation = await prepareRebuildOperation({
+            const hasScript = hasPlannedPreApply(prepared.target);
+            if (options.runtime?.batchInstallPlatform && entry.plugin.manifest.dependencies?.length && hasScript) deferredPreApply.add(key);
+            const skipPreApply = preparationOptions.skipPreApply || deferredPreApply.has(key);
+            const prepare = () => prepareOperation({
               command: executionCommand,
               target: prepared.target,
               driver: integration.driver,
-              ...((preparationOptions.skipPreApply || deferredPreApply.has(key)) ? { skipPreApply: true } : {}),
+              skipPreApply,
               ...(preparationOptions.deferCodexNativeInspection
                 && platform === 'codex'
                 && executionContext.codexManager === undefined
                 && (prepared.target.writeNativeRequired ?? prepared.target.requiresNative)
                 ? { deferNativeInspection: true }
                 : {}),
-              onActionEvent: (event) => emitRebuildActionEvent(executionContext, event),
             });
+            const preparedOperation = admission && hasScript && !skipPreApply
+              ? await admission.run([{ kind: 'exclusive' }], prepare, executionContext.signal) : await prepare();
             if (preparedOperation.status === 'failed') {
               failures.set(key, preparedOperation.result);
               states.set(key, 'failed');
@@ -5201,6 +5233,15 @@ async function runRebuildCommandInSession(
             JSON.stringify(entry) === JSON.stringify(result))) executionContext.commandResults.push(result);
         }
       };
+      const prepareDependentScript = async (selection: ExecutionSelection, key: string) => {
+        if (!deferredPreApply.has(key) || operationPreparationFailures.has(key)) return;
+        const target = preparedTargets.get(key)!.target;
+        const command = executionCommandFor(selection);
+        if (command === 'cleanup' || command === 'uninstall') return;
+        const preparation = await prepareOperation({ command, target, driver: lockedPreparation.integration.driver });
+        if (preparation.status === 'failed') operationPreparationFailures.set(key, preparation.result);
+        else operationPreparations.set(key, preparation.preparation);
+      };
       const executeSelection = async (selection: ExecutionSelection, index: number): Promise<void> => {
         const record = (result: RebuildCommandResult): void => { results[index] = result; };
         const { entry, platform } = selection;
@@ -5282,7 +5323,19 @@ async function runRebuildCommandInSession(
             failedDependency || failedConsumer ? 'skipped' : 'failed');
           return;
         }
-        if (isHealthyWiderDependency(planned)) {
+        // Target execution normally verifies its deployment immediately before writing.
+        // A producer or a retained target can finish without entering that executor.
+        if (admission && admission.exclusiveGeneration !== initialGeneration
+          && (planned.action === 'keep' || reconcileActivationOnly || nativeTargetExecution && (nativeTargetExecution.produces?.(identity) ?? true))
+          && !operationPreparationFailures.has(key)) {
+          try { await preparedTargets.get(key)?.target.platformDeployment?.verify(); }
+          catch (error) {
+            if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+            operationPreparationFailures.set(key, failedResult(requestedMethod, identity,
+              error instanceof Error ? error.message : String(error)));
+          }
+        }
+        if (isHealthyWiderDependency(planned) && !operationPreparationFailures.has(key)) {
           record({
             platforms: [platform], plugins: [identity.pluginName], warnings: [], rebuildResults: [],
             targetResults: [{ target: identity, action: 'keep', state: 'completed' }],
@@ -5295,16 +5348,7 @@ async function runRebuildCommandInSession(
           dependencyStates.set(key, 'kept');
           return;
         }
-        if (deferredPreApply.has(key) && !operationPreparationFailures.has(key)) {
-          const target = preparedTargets.get(key)!.target;
-          const command = executionCommandFor(selection);
-          if (command !== 'cleanup' && command !== 'uninstall') {
-            const preparation = await prepareRebuildOperation({ command, target, driver: lockedPreparation.integration.driver,
-              onActionEvent: (event) => emitRebuildActionEvent(executionContext, event) });
-            if (preparation.status === 'failed') operationPreparationFailures.set(key, preparation.result);
-            else operationPreparations.set(key, preparation.preparation);
-          }
-        }
+        if (!admission) await prepareDependentScript(selection, key);
         const operationPreparationFailure = operationPreparationFailures.get(key);
         if (operationPreparationFailure) {
           const targetResult = toTargetResult(operationPreparationFailure);
@@ -5339,8 +5383,7 @@ async function runRebuildCommandInSession(
               packageFailure = 'commandPackageProviderNotSatisfied';
             }
           } catch (error) {
-            executionContext.signal?.throwIfAborted();
-            if (error instanceof Error && error.name === 'AbortError') throw error;
+            if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
             packageFailure = 'commandPackageApplyFailed';
             recordTargetCommands(nativeTargetExecution.blocked?.(identity, packageFailure) ?? []);
           }
@@ -5600,14 +5643,17 @@ async function runRebuildCommandInSession(
         catch { /* Progress observers cannot change a target's outcome. */ }
       };
       const pendingCodex = new Set<ExecutionSelection>();
+      const verifiedGenerations = new Map<string, number>();
       const runSelection = async (selection: ExecutionSelection, index: number): Promise<void> => {
         reportTargetState(selection, 'running');
+        refreshCodexObservation();
         await executeSelection(selection, index);
+        if (admission) verifiedGenerations.set(executionKey(selection, lockedPlan), admission.exclusiveGeneration);
         if (selection.platform === 'codex') pendingCodex.add(selection);
         const unconfirmed = results[index]?.rebuildResults.flatMap((result) => [
           ...result.failures.flatMap((failure) => failure.operationDiagnostic ? [failure.operationDiagnostic] : []),
           ...(result.deploymentReceipts ?? []).flatMap((receipt) => receipt.diagnostics),
-        ]).find(({ code }) => code === 'processCleanupUnconfirmed');
+        ]).find((diagnostic) => recoveryInterruptionCode(diagnostic) === 'processCleanupUnconfirmed');
         if (unconfirmed) {
           const message = 'safeMessage' in unconfirmed ? unconfirmed.safeMessage : unconfirmed.message;
           throw attachSafeOperationError(new Error(message), { code: unconfirmed.code, safeMessage: message });
@@ -5628,50 +5674,20 @@ async function runRebuildCommandInSession(
         }
         reportTargetState(selection, 'completed');
       };
-      const admission = options.runtime?.installAdmission;
-      const privatePackages: Array<{ dispose(): Promise<void> }> = [];
-      try {
-        if (admission && options.runtime?.batchInstallPlatform) {
-          const selectedKeys = new Set(executionSelections.map((selection) => executionKey(selection, lockedPlan)));
-          const tasks = executionSelections.flatMap((selection, index): InstallTask<void>[] => {
-            const planned = planTargetFor(lockedPlan, selection)!;
-            const id = executionKey(selection, lockedPlan);
-            const dependencies = (selection.entry.plugin.manifest.dependencies ?? []).flatMap((pluginName) => {
-              const pluginId = formatPluginId({ sourceId: selection.entry.source.sourceId, pluginName });
-              const dependency = dependencyTargetFor(lockedPlan, planned, pluginId);
-              const key = dependency && planExecutionKey(dependency);
-              return key && selectedKeys.has(key) ? [key] : [];
-            });
-            const target = lockedPreparation.preparedTargets.get(id)?.target;
-            const deployment = target?.platformDeployment;
-            const resources = nativeInstallResources(deployment?.plans ?? []);
-            if (deployment?.writesManagedCommands) resources.push({ kind: 'path', value: path.join(resolveAwHome(runtimeEnv), 'commands') });
-            const apply = { id, dependencies, resources, run: () => runSelection(selection, index) };
-            const staging = deployment?.privatePackage;
-            if (!staging || executionSelections.length < 2 || !operationPreparations.has(id)) return [apply];
-            privatePackages.push(staging);
-            const stageId = `package-staging:\0${id}`;
-            return [{
-              id: stageId, dependencies, resources: [], run: async () => {
-                if (dependencies.some((key) => !['completed', 'kept'].includes(dependencyStates.get(key) ?? ''))) return;
-                reportTargetState(selection, 'running');
-                try { await staging.prepare(); }
-                catch (error) {
-                  if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
-                  operationPreparationFailures.set(id, failedResult(options.command, target!.identity,
-                    error instanceof Error ? error.message : String(error)));
-                }
-              },
-            }, { ...apply, dependencies: [stageId] }];
-          });
-          await runInstallTasks(tasks, { admission, signal: executionContext.signal });
-        } else {
-          for (const [index, selection] of executionSelections.entries()) {
-            if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
-            await runSelection(selection, index);
+      const finishCodex = async () => {
+        refreshCodexObservation();
+        for (const selection of codexSelections) {
+          const key = executionKey(selection, lockedPlan);
+          if (!admission || admission.exclusiveGeneration === verifiedGenerations.get(key)) continue;
+          const target = preparedTargets.get(key)?.target;
+          if (target && ['completed', 'kept'].includes(dependencyStates.get(key) ?? '')) {
+            try { await target.platformDeployment?.verify(); }
+            catch (error) {
+              if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+              failCompletedCodexTarget({ identity: target.identity, message: error instanceof Error ? error.message : String(error) });
+            }
           }
         }
-        if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
         const activationMutationPluginIds = new Set(lockedCodexPlans.flatMap((plan) => [
           ...plan.activationActions.user,
           ...plan.activationActions.project,
@@ -5879,6 +5895,96 @@ async function runRebuildCommandInSession(
               }
             }
           }
+        }
+      };
+      const privatePackages: Array<{ dispose(): Promise<void> }> = [];
+      try {
+        if (admission && options.runtime?.batchInstallPlatform) {
+          const selectedKeys = new Set(executionSelections.map((selection) => executionKey(selection, lockedPlan)));
+          const tasks = executionSelections.flatMap((selection, index): InstallTask<void>[] => {
+            const planned = planTargetFor(lockedPlan, selection)!;
+            const id = executionKey(selection, lockedPlan);
+            const dependencies = (selection.entry.plugin.manifest.dependencies ?? []).flatMap((pluginName) => {
+              const pluginId = formatPluginId({ sourceId: selection.entry.source.sourceId, pluginName });
+              const dependency = dependencyTargetFor(lockedPlan, planned, pluginId);
+              const key = dependency && planExecutionKey(dependency);
+              return key && selectedKeys.has(key) ? [key] : [];
+            });
+            const target = lockedPreparation.preparedTargets.get(id)?.target;
+            const deployment = target?.platformDeployment;
+            const resources = nativeInstallResources(deployment?.plans ?? []);
+            const producesCommands = target && nativeTargetExecution
+              && (nativeTargetExecution.produces?.(target.identity) ?? true);
+            if (deployment?.writesManagedCommands || producesCommands
+              || target?.operationActions?.some((action) => action.kind === 'syncManagedCommandPackage')) {
+              resources.push({ kind: 'path', value: path.join(resolveAwHome(runtimeEnv), 'commands') });
+            }
+            const leaves: InstallTask<void>[] = [];
+            let prerequisites = dependencies;
+            const providersReady = () => dependencies.every((key) => ['completed', 'kept'].includes(dependencyStates.get(key) ?? ''));
+            for (const key of dependencies) {
+              const plans = preparedTargets.get(key)?.target.platformDeployment?.plans;
+              if (plans?.length) for (const resource of nativeInstallResources(plans)) {
+                resources.push(resource.kind === 'exclusive' ? resource : { ...resource, access: 'read' });
+              }
+            }
+            const verifyProviders = async () => {
+              if (!target || !providersReady() || operationPreparationFailures.has(id)) return;
+              refreshCodexObservation();
+              for (const key of dependencies) {
+                if (verifiedGenerations.get(key) === admission.exclusiveGeneration) continue;
+                try { await preparedTargets.get(key)?.target.platformDeployment?.verify(); }
+                catch (error) {
+                  if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+                  operationPreparationFailures.set(id, failedResult(options.command, target.identity,
+                    `dependencyInstallFailed: ${key.split('\0')[0]} changed after verification.`));
+                  return;
+                }
+                verifiedGenerations.set(key, admission.exclusiveGeneration);
+              }
+            };
+            if (deferredPreApply.has(id) && operationPreparations.has(id)) {
+              const script = `preApply:\0${id}`;
+              leaves.push({ id: script, dependencies, resources: [{ kind: 'exclusive' }], run: async () => {
+                if (!providersReady()) return;
+                await verifyProviders();
+                await prepareDependentScript(selection, id);
+              } });
+              prerequisites = [script];
+            }
+            const staging = deployment?.privatePackage;
+            if (staging && executionSelections.length >= 2 && operationPreparations.has(id)) {
+              privatePackages.push(staging);
+              const stage = `package-staging:\0${id}`;
+              leaves.push({ id: stage, dependencies: prerequisites, resources: [], run: async () => {
+                if (!providersReady() || operationPreparationFailures.has(id)) return;
+                reportTargetState(selection, 'running');
+                try { await staging.prepare(); }
+                catch (error) {
+                  if (recoveryInterruptionCode(error, executionContext.signal)) throw error;
+                  operationPreparationFailures.set(id, failedResult(options.command, target!.identity,
+                    error instanceof Error ? error.message : String(error)));
+                }
+              } });
+              prerequisites = [stage];
+            }
+            leaves.push({ id, dependencies: prerequisites, resources, run: async () => {
+              await verifyProviders();
+              await runSelection(selection, index);
+            } });
+            return leaves;
+          });
+          await runInstallTasks(tasks, { admission, signal: executionContext.signal });
+        } else {
+          for (const [index, selection] of executionSelections.entries()) {
+            if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
+            await runSelection(selection, index);
+          }
+        }
+        if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
+        if (codexSelections.length) {
+          if (admission) await admission.run(nativeInstallResources(lockedOperationPlan.deploymentPlans ?? []), finishCodex, executionContext.signal);
+          else await finishCodex();
         }
         if (options.runtime?.batchInstallPlatform) executionContext.signal?.throwIfAborted();
         for (const selection of pendingCodex) reportTargetState(selection, 'completed');

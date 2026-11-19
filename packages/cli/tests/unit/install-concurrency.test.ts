@@ -53,6 +53,22 @@ describe('operation-local install concurrency', () => {
     expect(starts).toEqual(['read1', 'read2', 'script']);
   });
 
+  it('stops already queued script and native leaves before releasing an unconfirmed process', async () => {
+    const admission = createInstallAdmission({ limit: 2 });
+    const release = gate();
+    const cleanup = attachSafeOperationError(new Error('cleanup failed'),
+      { code: 'processCleanupUnconfirmed', safeMessage: 'Process cleanup could not be confirmed.' });
+    const first = admission.run([{ kind: 'exclusive' }], async () => { await release.wait; throw cleanup; });
+    const next = vi.fn(async () => {});
+    const queuedScript = admission.run([{ kind: 'exclusive' }], next);
+    const queuedNative = admission.run([{ kind: 'key', value: 'independent-host' }], next);
+    release.open();
+    const results = await Promise.allSettled([first, queuedScript, queuedNative]);
+    expect(results).toEqual(Array(3).fill({ status: 'rejected', reason: cleanup }));
+    await expect(admission.run([], next)).rejects.toBe(cleanup);
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid dependency graph before starting any write', async () => {
     const run = vi.fn(async () => 1);
     await expect(runInstallTasks([{ id: 'first', resources: [], run },
