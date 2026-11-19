@@ -1,11 +1,11 @@
 import path from 'node:path';
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { readCatalogSourcesConfigSnapshot, replaceCatalogSourcesConfig } from '../../src/utils/catalog-sources.js';
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
-import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
+import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { createDependencyCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { installNativeTestQualification } from '../helpers/native-execution-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
@@ -15,7 +15,12 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 // install deadline. Measure external requests through real discovery and CLI,
 // while preserving the completed package, descriptor and project activation.
 describe('public Copilot discovery budget', () => {
-  it('installs a project from its first source generation with bounded native requests', async () => {
+  it.each([
+    ['healthy', null], ['marketplace timeout', 'nativeMarketplaceUnconfirmed'],
+    ['marketplace exit', 'nativeMarketplaceUnconfirmed'], ['invalid marketplace JSON', 'nativeMarketplaceUnconfirmed'],
+    ['timeout with unconfirmed cleanup', 'nativeCliTimedOut'], ['unknown source format', null],
+    ['configuration read failure', 'nativeConfigurationUnreadable'],
+  ] as const)('installs a project with bounded requests when the final read reports %s', async (scenario, failure) => {
     const { env: isolatedEnv, layout } = getCurrentSourceTestIsolation();
     const cwd = path.join(layout.fixtureCwd, 'copilot-project');
     const source = path.join(layout.fixtureCwd, 'copilot-source');
@@ -48,14 +53,22 @@ describe('public Copilot discovery budget', () => {
     let marketplaceRoot: string | undefined;
     let marketplaceName: string | undefined;
     let installed = false;
+    let finalRead = false;
     const runner = async (invocation: NativeCliInvocation) => {
       const args = invocation.args[0] === actualEntry ? invocation.args.slice(1) : invocation.args;
       calls.push(args);
       let stdout = '';
       if (args.join(' ') === '--version') stdout = 'GitHub Copilot CLI 1.0.95';
-      else if (args.join(' ') === 'plugin marketplace list --json') stdout = JSON.stringify(marketplaceRoot
-        ? [{ name: marketplaceName, source: marketplaceRoot }] : []);
-      else if (args.join(' ') === 'plugin list --json') {
+      else if (args.join(' ') === 'plugin marketplace list --json') {
+        if (finalRead && (scenario === 'marketplace timeout' || scenario === 'timeout with unconfirmed cleanup')) {
+          throw new NativeCliError({ invocation, exitCode: 124, reason: 'timeout', stdout: '', stderr: 'controlled timeout',
+            ...(scenario === 'timeout with unconfirmed cleanup' ? { cleanupError: new Error('controlled cleanup failure') } : {}) });
+        }
+        if (finalRead && scenario === 'marketplace exit') return { exitCode: 1, stdout: '', stderr: 'controlled failure' };
+        if (finalRead && scenario === 'invalid marketplace JSON') return { exitCode: 0, stdout: '{', stderr: '' };
+        stdout = JSON.stringify(marketplaceRoot ? [{ name: marketplaceName,
+          source: finalRead && scenario === 'unknown source format' ? {} : marketplaceRoot }] : []);
+      } else if (args.join(' ') === 'plugin list --json') {
         const settingsPath = path.join(invocation.cwd, '.github/copilot/settings.local.json');
         const settings = await fs.pathExists(settingsPath) ? await fs.readJson(settingsPath) : {};
         stdout = JSON.stringify(installed ? [{ name: 'demo', marketplace: marketplaceName, source: marketplaceRoot,
@@ -69,13 +82,36 @@ describe('public Copilot discovery budget', () => {
       } else throw new Error(`Unexpected controlled native request: ${args.join(' ')}`);
       return { exitCode: 0, stdout, stderr: '' };
     };
+    const settingsPath = path.join(cwd, '.github/copilot/settings.local.json');
+    const readFile = fs.readFile.bind(fs);
+    let restoreRead: (() => void) | undefined;
     const result = await runCliEntry(['plugin', 'install', 'team/demo', '--scope', 'project', '--target', 'copilot', '--yes', '--json'],
-      { cwd, env, nativeCliRunner: runner });
-    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
-    expect(result.parseJsonStdout()).toMatchObject({ status: 'success' });
+      { cwd, env, nativeCliRunner: runner, debugLogger: { log(event) {
+        if (event.data?.name !== 'recovery.status' || event.data.phase !== 'start') return;
+        finalRead = true;
+        if (scenario === 'configuration read failure') {
+          const spy = vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+            if (String(args[0]) === settingsPath) throw Object.assign(new Error('controlled read failure'), { code: 'EIO' });
+            return readFile(...args);
+          });
+          restoreRead = () => spy.mockRestore();
+        }
+      } } }).finally(() => restoreRead?.());
+    expect(finalRead).toBe(true);
+    expect(result.exitCode, result.stdout + result.stderr).toBe(failure ? 4 : 0);
+    expect(result.parseJsonStdout()).toMatchObject({ status: failure ? 'partial' : 'success', data: {
+      changes: { requirements: 'changed', outputs: 'changed' }, remainingTargets: [],
+      allSatisfied: scenario === 'healthy' ? true : null,
+      targetResults: [expect.objectContaining({ pluginId: 'team/demo', target: 'copilot', scope: 'project',
+        execution: 'applied', observation: 'verified' })] },
+      ...(failure ? { diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
+        ...(scenario === 'timeout with unconfirmed cleanup' ? {} : { subject: { pluginId: 'team/demo', target: 'copilot', scope: 'project' } }),
+        detail: { reasonCode: failure } })]),
+        nextActions: [expect.objectContaining({ argv: ['aw', 'plugin', 'status', '--context', 'project', '--json'], requiresConfirmation: false })] }
+        : { nextActions: [] }) });
     expect(installed).toBe(true);
     expect(await fs.readFile(path.join(marketplaceRoot!, 'plugins/demo/skills/demo/SKILL.md'), 'utf8')).toBe(content);
-    const settings = await fs.readJson(path.join(cwd, '.github/copilot/settings.local.json'));
+    const settings = await fs.readJson(settingsPath);
     expect(settings.enabledPlugins[`demo@${marketplaceName}`]).toBe(true);
     expect(calls.length).toBeLessThanOrEqual(85);
   });

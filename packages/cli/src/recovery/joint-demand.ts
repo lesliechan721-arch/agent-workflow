@@ -101,8 +101,16 @@ export function deriveJointDemand(snapshot: JointDemandSnapshot): JointDemandPla
           entry.blockers = root.blockers.map((code) => ({ code, pluginId: root.pluginId, message: `${root.pluginId}: ${code}` }));
           continue;
         }
+        if (root.unreadableDependency && resolveDelivery(root.plugin.manifest, target, demand.scope)) {
+          entry.state = 'unknown';
+          result.complete = false;
+          entry.blockers.push({ code: 'pluginManifestUnavailable', pluginId: root.pluginId,
+            message: `无法读取 ${root.pluginId} 所需的 ${root.unreadableDependency} 清单。` });
+          continue;
+        }
         let closure: PluginMeta[];
-        try { closure = resolvePluginMetaDependencyClosure(demand.plugins.filter((plugin) => plugin.sourceId === root.sourceId), [root.plugin.manifest.name]); }
+        try { closure = root.unreadableDependency ? [root.plugin]
+          : resolvePluginMetaDependencyClosure(demand.plugins.filter((plugin) => plugin.sourceId === root.sourceId), [root.plugin.manifest.name]); }
         catch (error) {
           entry.state = 'blocked'; entry.blockers.push({ code: 'dependencyContractInvalid', pluginId: root.pluginId,
             message: error instanceof Error ? error.message : '依赖合同无效。' }); continue;

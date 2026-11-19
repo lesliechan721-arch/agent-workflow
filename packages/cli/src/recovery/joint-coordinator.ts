@@ -112,6 +112,7 @@ function finalStatusReadFailure(status: RecoveryStatus, receipt: RecoveryReceipt
       && target.scope === scope && target.agent === agent;
     const root = status.inventory?.find((item) => item.pluginId === pluginId && item.targetResults.some(matches));
     const failure = root?.blockers.find((entry) => root.sourceState !== 'ready' || entry.code === 'pluginManifestUnavailable')
+      ?? root?.targetResults.find(matches)?.blockers.find((entry) => entry.code === 'pluginManifestUnavailable')
       ?? status.observedTargets?.find(matches)?.blockers.find(isTargetObservationReadError);
     if (failure) return { ...failure, subject: { pluginId, scope, target: agent } };
   }

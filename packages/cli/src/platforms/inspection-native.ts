@@ -39,6 +39,16 @@ function diagnostic(result: DeploymentObservation, binding: DeploymentBinding, c
   result.diagnostics.push({ code, severity: 'warning', message,
     subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } });
 }
+function marketplaceReadDiagnostic(binding: DeploymentBinding, error: unknown): DeploymentObservation['diagnostics'][number] {
+  // Keep ambiguous identities unconfirmed. A reasonCode identifies a failed command or unreadable response.
+  const reasonCode = error instanceof NativeCliError ? error.operationDiagnostic.code
+    : error instanceof SyntaxError ? 'nativeObservationInvalid'
+    : error instanceof Error && error.message === 'nativeObservationOutputLimit' ? 'nativeObservationOutputLimit' : undefined;
+  return { code: 'nativeMarketplaceUnconfirmed', severity: 'warning',
+    message: 'The native marketplace source could not be confirmed. Keep the shared package.',
+    subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind },
+    ...(reasonCode ? { detail: { reasonCode } } : {}) };
+}
 async function inspectConfiguration(ctx: ReadContext, binding: DeploymentBinding, result: DeploymentObservation,
   read: () => Promise<Omit<DeploymentConfigurationObservation, 'scope' | 'reasonCodes'>>): Promise<void> {
   try { result.configuration = { scope: binding.scope.kind, ...await read(), reasonCodes: [] }; }
@@ -217,7 +227,7 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       if (marketplaceRead.status === 'rejected') {
         rethrowFatalError(marketplaceRead.reason); ctx.signal?.throwIfAborted();
         if (!['foreign', 'shared'].includes(result.ownership)) result.ownership = 'unknown';
-        diagnostic(result, binding, 'nativeMarketplaceUnconfirmed', 'The native marketplace source could not be confirmed. Keep the shared package.');
+        result.diagnostics.push(marketplaceReadDiagnostic(binding, marketplaceRead.reason));
       } else if (marketplaceRead.value === 'foreign') result.ownership = 'foreign';
       if (pluginsRead.status === 'rejected') throw pluginsRead.reason;
       const inventory = rows(pluginsRead.value);
@@ -259,10 +269,7 @@ export async function inspectNativeDeployment(ctx: ReadContext, binding: Deploym
       if (marketplaceRead.status === 'rejected') {
         const error = marketplaceRead.reason;
         rethrowFatalError(error); ctx.signal?.throwIfAborted();
-        result.diagnostics.push({ code: 'nativeMarketplaceUnconfirmed', severity: 'warning',
-          message: 'The native marketplace source could not be confirmed. Keep the shared package.',
-          subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind },
-          ...(error instanceof NativeCliError && error.reason === 'timeout' ? { detail: { reasonCode: error.operationDiagnostic.code } } : {}) });
+        result.diagnostics.push(marketplaceReadDiagnostic(binding, error));
       }
       if (marketplace === 'foreign') result.ownership = 'foreign';
       if (marketplace === 'unknown' && !['foreign', 'shared'].includes(result.ownership)) result.ownership = 'unknown';

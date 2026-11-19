@@ -10,12 +10,9 @@ import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { createClaudeNativeTestRuntime } from '../helpers/claude-native-fixture.js';
 import { createNativeDependencyCatalog } from '../helpers/write-command-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { runCliEntry } from '../helpers/cli-entry.js';
 
-// Test Value Gate: real joint Review must reject drift from its ordinary
-// observations through the baseline and final independent checks.
-it.each([
-  'activation before baseline', 'activation after baseline', 'client version before baseline',
-] as const)('shares ordinary Claude observations and detects %s within one joint preparation', async (change) => {
+async function claudeCatalog() {
   const isolation = getCurrentSourceTestIsolation();
   const claude = await createClaudeNativeTestRuntime(isolation);
   const cwd = isolation.layout.fixtureCwd;
@@ -28,6 +25,35 @@ it.each([
   await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env });
   const options = { cwd, env, context: 'user' as const, scope: 'user' as const, cliVersion: '1.0.0', yes: true };
   await setTargets(options, ['claude']);
+  return { claude, options };
+}
+
+it('preserves the verified Claude install when its final marketplace command fails', async () => {
+  const { claude, options } = await claudeCatalog();
+  let finalRead = false;
+  const result = await runCliEntry(['plugin', 'install', 'team/first', '--scope', 'user', '--context', 'user', '--target', 'claude', '--yes', '--json'], {
+    ...options, debugLogger: { log(event) {
+      if (event.data?.name === 'recovery.status' && event.data.phase === 'start') finalRead = true;
+    } },
+    nativeCliRunner: (request) => finalRead && claude.isClaudeInvocation(request)
+      && request.args.slice(-4).join(' ') === 'plugin marketplace list --json'
+      ? Promise.resolve({ exitCode: 1, stdout: '', stderr: 'controlled failure' }) : claude.nativeCliRunner(request),
+  });
+  expect(result.exitCode).toBe(4);
+  expect(result.parseJsonStdout()).toMatchObject({ status: 'partial', data: { remainingTargets: [],
+    changes: { requirements: 'changed', outputs: 'changed' },
+    targetResults: [expect.objectContaining({ pluginId: 'team/first', target: 'claude', scope: 'user', observation: 'verified' })] },
+    diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'statusUnavailable',
+      detail: { reasonCode: 'nativeMarketplaceUnconfirmed' } })]),
+    nextActions: [expect.objectContaining({ argv: ['aw', 'plugin', 'status', '--context', 'user', '--json'] })] });
+});
+
+// Test Value Gate: real joint Review must reject drift from its ordinary
+// observations through the baseline and final independent checks.
+it.each([
+  'activation before baseline', 'activation after baseline', 'client version before baseline',
+] as const)('shares ordinary Claude observations and detects %s within one joint preparation', async (change) => {
+  const { claude, options } = await claudeCatalog();
   const selectors = ['team/first'];
   const installed = await runRecovery('install', selectors, options, claude.runtime);
   expect(installed, JSON.stringify(installed)).toMatchObject({ ok: true, targetResults: [{ execution: 'applied', content: 'satisfied' }] });

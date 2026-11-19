@@ -98,8 +98,13 @@ export interface ReadRecoveryStatusOptions {
 const NATIVE_READ_ERRORS = new Set(['nativeStateUnreadable', 'stateInventoryFailed', 'configReadFailed',
   'configInvalid', 'componentInspectionFailed', 'targetInspectionFailed', 'codexNativeObservationFailed',
   'nativeObservationFailed', 'nativeObservationUnavailable']);
-export function isTargetObservationReadError({ code }: RecoveryDiagnostic): boolean {
-  return NATIVE_READ_ERRORS.has(code) || code === 'portableObservationFailed' || code === 'portablePreparationFailed'
+function isNativeReadError({ code, detail }: RecoveryDiagnostic, needsOwnership = true): boolean {
+  return NATIVE_READ_ERRORS.has(code) || needsOwnership && (code === 'nativeConfigurationUnreadable'
+    || code === 'nativeMarketplaceUnconfirmed' && detail !== undefined);
+}
+export function isTargetObservationReadError(entry: RecoveryDiagnostic): boolean {
+  const { code } = entry;
+  return isNativeReadError(entry) || code === 'portableObservationFailed' || code === 'portablePreparationFailed'
     || /(?:VerificationFailed|ReadFailed|LockInvalid)/u.test(code);
 }
 function diagnostic(code: string): RecoveryDiagnostic { return { code, message: `目标尚未满足：${code}。` }; }
@@ -268,7 +273,8 @@ async function readAdapterObservations(options: ReadRecoveryStatusOptions, conte
             const requiredActivation = requiredDeploymentActivation(binding, live, !inheritsUserNative);
             for (const entry of live.diagnostics) {
               if (entry.code === 'codexProjectActivationUnconfirmed' && inheritsUserNative && requiredActivation === 'enabled') continue;
-              const destination = entry.severity === 'error' || (hasPackageExpectation || confirmedEmpty || confirmedEmptyPackage) && NATIVE_READ_ERRORS.has(entry.code)
+              const needsOwnership = live.ownership === 'unknown' && live.package !== 'absent' && live.registration !== 'absent';
+              const destination = entry.severity === 'error' || (hasPackageExpectation || confirmedEmpty || confirmedEmptyPackage) && isNativeReadError(entry, needsOwnership)
                 ? observation.blockers : observation.reasons!;
               destination.push({ code: entry.code, message: entry.message, subject: { ...subject, ...entry.subject }, detail: entry.detail });
             }
@@ -467,7 +473,7 @@ export async function statusFromObservations(options: Omit<ReadRecoveryStatusOpt
           if (native.deploymentExclusions) target.deploymentExclusions = native.deploymentExclusions;
           target.blockers.push(...native.blockers);
           if (native.reasons?.length) target.reasons = [...native.reasons];
-          errors.push(...native.blockers.filter((entry) => NATIVE_READ_ERRORS.has(entry.code))
+          errors.push(...native.blockers.filter((entry) => isNativeReadError(entry))
             .map((entry) => ({ ...entry, pluginId: root.pluginId })));
           target.backend = { ...(native.assumedActivation ? { assumedActivation: true } : {}),
             ...(native.backend ? { live: safeNativePlacement(native.backend as StatusScopedTarget) } : {}) };
@@ -719,7 +725,7 @@ export async function readScopedRecoveryStatus(options: ReadRecoveryStatusOption
       portableCoverage: portableExtra.complete, portableInstalled: portableExtra.targets,
       nativeReadErrors: [
         ...relevantErrors.map(inventoryRecoveryDiagnostic),
-        ...adapters.observations.flatMap((entry) => entry.blockers.filter((error) => NATIVE_READ_ERRORS.has(error.code))),
+        ...adapters.observations.flatMap((entry) => entry.blockers.filter((error) => isNativeReadError(error))),
       ] });
     result.coverage.requestComplete = result.coverage.native && result.coverage.portable;
     result.coverage.native &&= ownerInventory.errors.length === 0;
