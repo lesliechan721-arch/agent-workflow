@@ -99,7 +99,7 @@ jobs:
           node "$probe" --mode archive --catalog "$input" --output "$input/archive.json"
           for variant in serial four eight; do
             mkdir "$input/$variant"
-            tar -xzf - -C "$input/$variant" < "$input/catalog.tgz"
+            (cd "$input/$variant" && tar -xzf -) < "$input/catalog.tgz"
             node "$probe" --mode read-once --root "$builds/$variant" --catalog "$input/$variant/catalog" --output "$input/$variant-first.json"
           done
           node "$probe" --serial "$builds/serial" --four "$builds/four" --eight "$builds/eight" \
