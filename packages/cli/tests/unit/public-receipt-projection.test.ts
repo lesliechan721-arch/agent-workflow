@@ -47,15 +47,21 @@ describe('public domain result projection', () => {
   it('binds a manual Gemini permission check to the frozen source and workspace', () => {
     const subject = { pluginId: 'team/demo', target: 'gemini', scope: 'project' as const };
     const actions = inventoryRecoveryActions([
-      { code: 'nativeConsentProtocolUnverified', subject: { ...subject, field: 'nativeSource' },
-        detail: { reasonCode: 'nativeConsentProtocolUnverified', path: '/home/example/frozen-source' } },
+      { code: 'nativeConsentProtocolUnconfirmed', subject: { ...subject, field: 'nativeSource' },
+        detail: { reasonCode: 'geminiNativeConsentSource', path: '/home/example/frozen-source' } },
       { code: 'nativeConsentWorkspace', subject: { ...subject, field: 'workspace' },
-        detail: { reasonCode: 'nativeConsentWorkspace', path: '/home/example/project' } },
+        detail: { reasonCode: 'geminiNativeConsentWorkspace', path: '/home/example/project' } },
+      { code: 'nativeConsentActivationConfig', subject: { ...subject, scope: 'user', field: 'activationConfig' },
+        detail: { reasonCode: 'geminiNativeConsentActivationConfig', path: '/other-home/.gemini/extensions/extension-enablement.json', configKey: 'demo' } },
+      { code: 'nativeConsentActivationConfig', subject: { ...subject, field: 'activationConfig' },
+        detail: { reasonCode: 'geminiNativeConsentActivationConfig', path: '/home/example/.gemini/extensions/extension-enablement.json', configKey: 'demo' } },
     ]);
     expect(actions).toHaveLength(1);
     const output = JSON.stringify(actions);
     expect(output).toContain('/home/example/frozen-source');
     expect(output).toContain('/home/example/project');
+    expect(output).toContain('/home/example/.gemini/extensions/extension-enablement.json');
+    expect(output).not.toContain('/other-home');
     expect(output).toContain('Review each host permission yourself');
     expect(output).not.toContain('--consent');
   });

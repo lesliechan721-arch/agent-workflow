@@ -11,7 +11,8 @@ import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { controller, deferred, loadResult, scopedPlan, scopedReceipt, type ScopedTaskRequest } from '../helpers/tui-console-app-fixture.js';
 import { focusAction, input, nextTurn } from '../helpers/tui-console-app-input.js';
-import type { ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
+import { projectScopedRecoveryHistory, type ScopedTuiPlan } from '../../src/tui/scoped-flow.js';
+import { OperationHistoryStore } from '../../src/tui/operation-history.js';
 import { deploymentObservationLines, deploymentResultLines } from '../../src/tui/deployment-view.js';
 
 afterEach(cleanup);
@@ -91,6 +92,15 @@ describe('native deployment public and TUI consumers', () => {
       expect(details).toContain(`review only the Project location for ${rootId} on gemini`);
       expect(details).not.toContain(`sync ${rootId}`);
     }
+    receipt.ok = false;
+    provider.deploymentReceipts = [deploymentReceipt];
+    const history = new OperationHistoryStore();
+    history.record(projectScopedRecoveryHistory(receipt, { recordId: 'permission', epoch: 0, operationId: 'sync', createdAtMs: 0 }));
+    const report = history.preview('permission')!.content;
+    expect(report).toContain(`在 TUI 中重新检查 ${rootId} 的 ${agent} ${scope === 'project' ? '项目' : '个人'}位置。`);
+    expect(report).toContain(agent === 'gemini' ? '启用规则' : '信任步骤');
+    expect(report).not.toContain('/isolated/');
+    expect(report).not.toContain(`sync ${providerId}`);
   });
 
   // Test Value Gate: local declarations can disagree with effective native state;

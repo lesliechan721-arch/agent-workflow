@@ -47,13 +47,14 @@ function codeOf(error: unknown): string {
   return /^[A-Za-z][A-Za-z0-9-]*$/u.test(first ?? '') ? first! : 'lifecycleFailed';
 }
 
-export function effectsForPlan(plan: RecoveryPlan): Confirmation['effects'] {
+export function effectsForPlan(plan: RecoveryPlan, pendingSourceIds: readonly string[] = []): Confirmation['effects'] {
   const effects: Confirmation['effects'] = [];
-  if (plan.command !== 'cleanup' && plan.command !== 'uninstall') {
+  if (pendingSourceIds.length && plan.command !== 'cleanup' && plan.command !== 'uninstall') {
     // A temporary candidate can be blocked on generation preparation. Its scripts
     // are still known effects of the request and must be authorized before Active changes.
     for (const placement of plan.joint?.demand.placements ?? []) {
-      if (!placement.plugin.manifest.scripts?.preApply || !plan.receipt.selection.agents.includes(placement.target)
+      if (!placement.plugin.sourceId || !pendingSourceIds.includes(placement.plugin.sourceId)
+        || !placement.plugin.manifest.scripts?.preApply || !plan.receipt.selection.agents.includes(placement.target)
         || !placement.contributions.some((entry) => plan.receipt.requestedRoots.includes(entry.root))) continue;
       effects.push({ code: 'runPreApply', message: 'Run the plugin preApply script.', impact: 'unknown', subject: { pluginId: placement.pluginId, target: placement.target, scope: placement.scope } });
     }
@@ -385,7 +386,7 @@ async function runPublicLifecycleRequest(command: 'install' | 'remove' | 'sync',
         preview = await prepareRecovery(command === 'sync' && options.rebuild ? 'reinstall' : command, healthySelectors(), preparedOptions, { ...runtime, catalogReadScope });
         reviewedRoots = preview.joint?.demand.roots;
         if (preview.blockExecution) { const result = receiptResult(id, data, preview.receipt); await preview.context.dispose(); return withSourceFailures(result); }
-        if (!confirm([...effectsForPlan(preview), ...sourceEffects])) {
+        if (!confirm([...effectsForPlan(preview, candidates.map((candidate) => candidate.sourceId)), ...sourceEffects])) {
           const result = confirmationRequired(preview.receipt);
           await preview.context.dispose();
           return withSourceFailures(result);

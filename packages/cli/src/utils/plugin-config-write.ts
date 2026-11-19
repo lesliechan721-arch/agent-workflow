@@ -1,5 +1,7 @@
 import { resolveWorkContext } from '../intent/work-context.js';
 import type { RecoveryPlan } from '../recovery/coordinator.js';
+import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryRetryTargets, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
+import { geminiPermission, inventoryRecoveryActions, publicDiagnostic, recoverySyncAction } from '../commands/public-lifecycle-result.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from '../recovery/interruption.js';
 import { readDemand, demandNativeProjection } from '../recovery/demand.js';
 import { createScopeContext } from '../intent/scope-context.js';
@@ -1338,6 +1340,59 @@ export class ConfigApplyInterruptedError extends Error {
   }
 }
 
+function configApplyGeminiRecovery(receipt: RecoveryReceipt, options: ApplyPluginConfigOptions):
+  Map<RecoveryTarget, NonNullable<ConfigApplyTargetResult['geminiRecovery']>> {
+  const position = ({ pluginId, agent, scope }: Pick<RecoveryTarget, 'pluginId' | 'agent' | 'scope'>) => `${pluginId}\0${agent}\0${scope}`;
+  const pending = new Set(receipt.remainingTargets.map(position));
+  const recovery = new Map<RecoveryTarget, NonNullable<ConfigApplyTargetResult['geminiRecovery']>>();
+  const targets = receipt.targetResults.filter((target) => target.agent === 'gemini'
+    && target.satisfaction !== 'excluded' && target.satisfaction !== 'unsupported');
+  const canSuggestRetry = !receipt.unconfirmedSavedState && !isRecoveryReviewStaleBeforeExecution(receipt);
+  const declaredAt = ({ pluginId, scope }: Pick<RecoveryTarget, 'pluginId' | 'scope'>): boolean =>
+    (scope === receipt.scope ? receipt.intent.roots : receipt.reviewedUserRoots)?.includes(pluginId) === true;
+  for (const target of targets) {
+    if (!pending.has(position(target))) continue;
+    const source = target.blockers.find((entry) => entry.subject?.field === 'nativeSource'
+      && entry.subject.pluginId === target.pluginId && entry.subject.target === target.agent && entry.subject.scope === target.scope
+      && entry.detail?.reasonCode === 'geminiNativeConsentSource' && geminiPermission(entry.code));
+    if (!source) continue;
+    const locations = [source, ...(target.reasons ?? []).filter((entry) => entry.subject?.pluginId === target.pluginId
+      && entry.subject.target === target.agent && entry.subject.scope === target.scope
+      && (entry.code === 'nativeConsentWorkspace' || entry.code === 'nativeConsentActivationConfig'))];
+    const permission = geminiPermission(source.code);
+    const retries = recoveryRetryDispositions(receipt, [target]);
+    const declared = retries.filter(declaredAt);
+    const canRetryConfig = canSuggestRetry && declared.length === 0 && receipt.intent.roots !== null
+      && !options.applyTargets && targets.length === 1 && target.scope === receipt.scope && target.pluginId === options.plugin.pluginId;
+    const nextActions = canRetryConfig && permission === 'consent' ? []
+      : inventoryRecoveryActions(locations, declared.length === retries.length ? receipt : undefined);
+    for (const root of declared) {
+      if (root.kind === 'exact-project' && nextActions.some((action) => action.kind === 'manual')) continue;
+      nextActions.push(recoverySyncAction(root, permission === 'manual'
+        ? 'Retry after completing the Gemini recovery steps and verifying the original activation rules.'
+        : 'Review Gemini source-folder and current-workspace trust, then explicitly authorize this retry.', permission === 'consent'));
+    }
+    if (canRetryConfig) nextActions.push({ kind: 'command', argv: ['aw', 'plugin', 'config', 'apply', target.pluginId,
+      '--context', target.scope, '--target', target.agent, ...(permission === 'consent' ? ['--native-consent'] : [])],
+      reason: permission === 'manual' ? 'After the Gemini recovery steps, verify the same existing output with config apply.'
+        : 'Review Gemini trust, then authorize this existing-output refresh explicitly.', requiresConfirmation: true });
+    else if (!declared.length && canSuggestRetry) nextActions.push({ kind: 'command',
+      argv: ['aw', 'plugin', 'status', target.pluginId, '--context', target.scope],
+      reason: 'Check the original context and reopen the affected Gemini location in AW.', requiresConfirmation: false });
+    const diagnostics = locations.map((entry) => publicDiagnostic(entry, entry.subject,
+      entry === source ? 'error' : entry.code === 'nativeConsentWorkspace' ? 'warning' : 'info'));
+    recovery.set(target, { diagnostics, nextActions });
+    // A dependent blockage already has the recovery action for its declared root.
+    const roots = new Set(recoveryRetryTargets(receipt, [target]).filter(declaredAt).map(position));
+    for (const entry of receipt.targetResults) if (roots.has(position(entry)) && !recovery.has(entry)
+      && entry.blockers.length > 0 && entry.blockers.every((blocker) => blocker.pluginId === target.pluginId
+        && (blocker.code === 'dependencyApplyFailed' || blocker.code === 'userProviderNotSatisfied' || geminiPermission(blocker.code)))) {
+      recovery.set(entry, { diagnostics: [], nextActions: [] });
+    }
+  }
+  return recovery;
+}
+
 export async function applyPluginConfig(options: ApplyPluginConfigOptions): Promise<{
   configWrite: 'notStarted'; overallState: RebuildReceiptOverallState; apply: ConfigApplyResult;
   otherProjectsMayRequireSync: boolean;
@@ -1382,6 +1437,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
       const errors: ConfigApplyError[] = [...discoveryErrors, ...receipt.blockers, ...receipt.errors].map((error) => ({
         stage: 'stage' in error ? error.stage as ConfigApplyError['stage'] : 'apply', code: error.code, message: error.message,
       }));
+      const geminiRecovery = configApplyGeminiRecovery(receipt, options);
       const apply: ConfigApplyResult = {
         state: ok ? 'succeeded' : 'partial',
         targetResults: [...receipt.targetResults.filter((target) => target.satisfaction !== 'unsupported' && target.satisfaction !== 'excluded').map((target): ConfigApplyTargetResult => ({
@@ -1392,6 +1448,7 @@ export async function applyPluginConfig(options: ApplyPluginConfigOptions): Prom
             : target.execution === 'not-run' ? 'skipped' : 'failed',
           ...(target.blockers.length ? { errorCode: target.blockers[0]!.code,
             message: target.blockers.map((item) => item.message).join(' ') } : {}),
+          ...(geminiRecovery.has(target) ? { geminiRecovery: geminiRecovery.get(target) } : {}),
         })), ...retainedLegacyTargets.map((target): ConfigApplyTargetResult => ({
           target, action: 'refresh', state: 'skipped',
           message: 'The inactive legacy output was preserved. Configuration apply does not create an activation.',

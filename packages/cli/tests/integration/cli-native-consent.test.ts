@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { resolvePlatformConfigRoot } from '../../src/platforms/discovery.js';
 import { renderNpmCmdShim } from '../../src/utils/windows-npm-shim.js';
-import { geminiActivationRules, geminiPathEnabled, geminiScopePattern, readGeminiActivationSnapshot } from '../../src/platforms/gemini-activation.js';
+import { geminiActivationRules, geminiPathEnabled, geminiScopePattern, geminiUserActivation, readGeminiActivationSnapshot } from '../../src/platforms/gemini-activation.js';
 import { setTargets } from '../../src/intent/deployment-preferences.js';
 import { observeIntent } from '../../src/intent/intent-store.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
@@ -22,7 +22,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 async function geminiFixture(graph: Record<string, string[]>, syncSource: boolean, version = '0.67.0') {
   const { env: isolatedEnv, layout } = getCurrentSourceTestIsolation();
   const bin = path.join(layout.fixtureCwd, 'gemini-bin');
-  const env = { ...isolatedEnv, PATH: bin };
+  const env = { ...isolatedEnv, PATH: bin, GEMINI_CLI_HOME: path.join(layout.fixtureCwd, 'gemini config home') };
   const cwd = path.join(layout.fixtureCwd, 'consent-work');
   const source = path.join(layout.fixtureCwd, 'consent-source');
   await fs.ensureDir(cwd);
@@ -63,9 +63,12 @@ async function geminiFixture(graph: Record<string, string[]>, syncSource: boolea
     // Independent fixed-host sample; the activation helper must restore its
     // reviewed global intent after this native User enable transformation.
     const activation = path.join(configRoot, 'extensions/extension-enablement.json');
-    const existing = await fs.readJson(activation).catch(() => ({}));
-    await fs.outputFile(activation,
-      JSON.stringify({ ...existing, [manifest.name]: { overrides: [geminiScopePattern(path.dirname(configRoot))] } }, null, 2));
+    const existing: Record<string, { overrides: string[] }> = await fs.readJson(activation).catch(() => ({}));
+    const next = Object.fromEntries(Object.entries(existing).map(([name, entry]) => [name, { overrides: entry.overrides }]));
+    const home = geminiScopePattern(path.dirname(configRoot));
+    const outsideHome = (rule: string) => !rule.replace(/^!/u, '').startsWith(home.slice(0, -1));
+    next[manifest.name] = { overrides: [...(next[manifest.name]?.overrides ?? []).filter(outsideHome), home] };
+    await fs.outputFile(activation, JSON.stringify(next, null, 2));
   };
   const runner = async (invocation: NativeCliInvocation) => {
     const args = invocation.args[0] === await fs.realpath(entry) ? invocation.args.slice(1) : invocation.args;
@@ -100,6 +103,14 @@ async function geminiFixture(graph: Record<string, string[]>, syncSource: boolea
   };
   const cli = (argv: string[]) => runCliEntry([...argv, '--yes', '--json'], { cwd, env, nativeCliRunner: runner });
   return { cwd, env, nativeInstalls, cli, installSource, runner, probesBeforeInstall: () => probesBeforeInstall, versionProbes: () => versionProbes };
+}
+
+function reviewedGeminiInstallSource(message: string, expectedSource: string): string {
+  const input = message.match(/\["extensions","install","(?:[^"\\]|\\.)*"\]/u)?.[0];
+  if (!input) throw new Error('Expected an explicit interactive Gemini install.');
+  const args = JSON.parse(input) as string[];
+  expect(args).toEqual(['extensions', 'install', expectedSource]);
+  return args[2]!;
 }
 
 // Test Value Gate: the real CLI parser and recovery path must preserve a separate
@@ -194,19 +205,73 @@ describe('CLI Gemini native consent', () => {
         && entry.subject.pluginId === `team/${name}`)!.detail!.path!;
       const workspace = result.diagnostics.find((entry) => entry.subject?.field === 'workspace'
         && entry.subject.pluginId === `team/${name}`)!.detail!.path!;
+      const activation = result.diagnostics.find((entry) => entry.subject?.field === 'activationConfig'
+        && entry.subject.pluginId === `team/${name}`)!.detail!.path!;
       expect(result.nextActions[0]).toMatchObject({ kind: 'manual', message: expect.stringContaining(JSON.stringify(source)) });
       if (result.nextActions[0]?.kind !== 'manual') throw new Error('Expected manual Gemini consent.');
       expect(result.nextActions[0].message).toContain(JSON.stringify(workspace));
-      expect(result.nextActions[0].message).toContain('review each host permission');
+      expect(result.nextActions[0].message).toContain('Review each host permission yourself');
+      expect(result.nextActions[0].message).not.toContain('--consent');
+      expect(result.nextActions[0].message).toContain(JSON.stringify(activation));
       expect(result.nextActions[0].message).toContain(retry.join(' '));
       expect(JSON.stringify(result)).not.toContain('aw plugin sync team/d ');
       await expect(fs.readJson(path.join(source, 'gemini-extension.json'))).resolves.toMatchObject({ name });
-      await host.installSource(source);
+      const before = await fs.pathExists(activation) ? await fs.readJson(activation) : null;
+      await host.installSource(reviewedGeminiInstallSource(result.nextActions[0].message, source));
+      const after = await fs.readJson(activation);
+      if (before === null) {
+        expect(Object.keys(after)).toEqual([name]);
+        await fs.remove(activation);
+      } else {
+        expect(before).not.toHaveProperty(name);
+        delete after[name];
+        expect(after).toEqual(before);
+        await fs.writeJson(activation, after);
+      }
       // The next pending extension still needs its own reviewed host permission.
       expect(result.nextActions).toContainEqual(expect.objectContaining({ kind: 'command', argv: retry }));
       attempt = await host.cli(retry.slice(1));
     }
     expect(attempt.exitCode, attempt.stdout + attempt.stderr).toBe(0);
+    const snapshot = await readGeminiActivationSnapshot(host);
+    expect(geminiUserActivation(snapshot, 'd', host.env.GEMINI_CLI_HOME)).toBe(true);
+    expect(host.nativeInstalls).toHaveLength(0);
+  }, 30_000);
+
+  it('keeps a first Project-only Gemini install disabled elsewhere when there was no activation file', async () => {
+    const host = await geminiFixture({ b: [] }, true, '0.68.0');
+    await git(host.cwd, ['init', '--quiet']);
+    const first = await host.cli(['plugin', 'install', 'team/b', '--scope', 'project', '--context', 'project']);
+    expect(first.exitCode, first.stdout + first.stderr).toBe(4);
+    const result = first.parseJsonStdout<CommandResult<LifecycleData>>();
+    const source = result.diagnostics.find((entry) => entry.subject?.field === 'nativeSource')!.detail!.path!;
+    const config = result.diagnostics.find((entry) => entry.subject?.field === 'activationConfig')!.detail!;
+    expect(config).toMatchObject({ configKey: 'b', reasonCode: 'geminiNativeConsentActivationConfigProjectOnly' });
+    const activation = config.path!;
+    expect(await fs.pathExists(activation)).toBe(false);
+    const manual = result.nextActions.find((action) => action.kind === 'manual');
+    if (!manual) throw new Error('Expected manual Gemini consent.');
+    expect(manual.message).toContain('"!*"');
+    await host.installSource(reviewedGeminiInstallSource(manual.message, source));
+    const otherProject = path.join(host.env.GEMINI_CLI_HOME, 'outside reviewed project');
+    await fs.ensureDir(otherProject);
+    const changed = await readGeminiActivationSnapshot(host);
+    expect(geminiPathEnabled(geminiActivationRules(changed, 'b'), otherProject)).toBe(true);
+    expect(Object.keys(JSON.parse(changed.content!))).toEqual(['b']);
+    // The absent baseline contains no unrelated values. Add the reviewed User default only.
+    await fs.writeJson(activation, { b: { overrides: ['!*'] } });
+    const retry = result.nextActions.find((action) => action.kind === 'command' && action.argv[2] === 'sync');
+    if (!retry || retry.kind !== 'command') throw new Error('Expected Project retry.');
+    const completed = await host.cli(retry.argv.slice(1));
+    expect(completed.exitCode, completed.stdout + completed.stderr).toBe(0);
+    expect(completed.parseJsonStdout<CommandResult<LifecycleData>>().data.targetResults).toEqual([
+      expect.objectContaining({ pluginId: 'team/b', scope: 'project', observation: 'verified' }),
+    ]);
+    const verified = await readGeminiActivationSnapshot(host);
+    const rules = geminiActivationRules(verified, 'b');
+    expect(geminiPathEnabled(rules, await fs.realpath(host.cwd))).toBe(true);
+    expect(geminiPathEnabled(rules, otherProject)).toBe(false);
+    expect(geminiUserActivation(verified, 'b', host.env.GEMINI_CLI_HOME)).toBe(false);
     expect(host.nativeInstalls).toHaveLength(0);
   }, 30_000);
 
@@ -243,9 +308,16 @@ describe('CLI Gemini native consent', () => {
     await expect(fs.readFile(path.join(host.cwd, 'retained-settings'), 'utf8')).resolves.toBe('LOCAL_DATA=retain\n');
   }, 30_000);
 
-  it('reviews Gemini permission at the host before retrying only a declared Project location through the TUI', async () => {
+  it.each([false, true])('reviews Gemini permission at the host before retrying only a declared Project location through the TUI with User enabled=%s', async (userEnabled) => {
     const host = await geminiFixture({ b: [] }, true);
     await git(host.cwd, ['init', '--quiet']);
+    const otherProject = path.join(host.env.GEMINI_CLI_HOME, 'other project');
+    const activation = path.join(resolvePlatformConfigRoot('gemini', host), 'extensions/extension-enablement.json');
+    const backup = path.join(host.cwd, 'activation-backup.json');
+    const disabledElsewhere = `!${geminiScopePattern(otherProject)}`;
+    await fs.ensureDir(otherProject);
+    await fs.outputJson(activation, { b: { overrides: [userEnabled ? '*' : '!*', disabledElsewhere], setting: 'keep' },
+      sibling: { overrides: ['*'], setting: { preserve: true } } });
     for (const scope of ['user', 'project']) {
       const saved = await host.cli(['plugin', 'install', 'team/b', '--scope', scope, '--only', 'requirements']);
       expect(saved.exitCode, saved.stdout + saved.stderr).toBe(0);
@@ -265,19 +337,41 @@ describe('CLI Gemini native consent', () => {
     const errors = receipt.targetResults.flatMap((target) => [...target.blockers, ...target.reasons ?? []]);
     const source = errors.find((entry) => entry.subject?.field === 'nativeSource')!.detail!.path!;
     const workspace = errors.find((entry) => entry.subject?.field === 'workspace')!.detail!.path!;
+    expect(errors.find((entry) => entry.subject?.field === 'activationConfig')?.detail)
+      .toEqual({ reasonCode: 'geminiNativeConsentActivationConfig', path: activation, configKey: 'b' });
     const steps = inventoryRecoveryActions(errors, receipt);
     expect(steps).toHaveLength(1);
     expect(steps[0]).toMatchObject({ kind: 'manual', message: expect.stringContaining('review only the Project location for team/b on gemini') });
     if (steps[0]?.kind !== 'manual') throw new Error('Expected host permission before TUI recovery.');
     expect(steps[0].message).toContain(JSON.stringify(source));
     expect(steps[0].message).toContain(JSON.stringify(workspace));
+    expect(steps[0].message).toContain(JSON.stringify(activation));
+    expect(steps[0].message).not.toContain('--consent');
     expect(steps[0].message).not.toContain('aw plugin sync');
     await expect(fs.readJson(path.join(source, 'gemini-extension.json'))).resolves.toMatchObject({ name: 'b' });
-    await host.installSource(source);
+    await fs.copyFile(activation, backup);
+    const before = await fs.readJson(backup);
+    await host.installSource(reviewedGeminiInstallSource(steps[0].message, source));
+    const changed = await fs.readJson(activation);
+    expect(geminiPathEnabled(changed.b.overrides, otherProject)).toBe(true);
+    expect(changed.sibling).not.toHaveProperty('setting');
+    await fs.writeJson(activation, { ...changed, later: { overrides: ['!*'], setting: 'external edit' } });
+    // Restore the verified host changes and keep the independent edit before a new Review.
+    const current = await fs.readJson(activation);
+    current.b = { ...current.b, overrides: before.b.overrides, setting: before.b.setting };
+    current.sibling.setting = before.sibling.setting;
+    await fs.writeJson(activation, current);
     const recovered = await apply();
     expect(recovered, JSON.stringify(recovered.errors)).toMatchObject({ ok: true, remainingTargets: [] });
-    expect(recovered.targetResults.filter((target) => target.scope === 'project')).toContainEqual(
-      expect.objectContaining({ pluginId: 'team/b', agent: 'gemini', observation: 'verified' }));
+    expect(recovered.targetResults).toEqual([expect.objectContaining({ pluginId: 'team/b', agent: 'gemini', scope: 'project', observation: 'verified' })]);
+    const snapshot = await readGeminiActivationSnapshot(host);
+    const scopes = geminiActivationRules(snapshot, 'b');
+    expect(geminiPathEnabled(scopes, await fs.realpath(host.cwd))).toBe(true);
+    expect(geminiPathEnabled(scopes, otherProject)).toBe(false);
+    expect(scopes).toContain(disabledElsewhere);
+    expect(geminiUserActivation(snapshot, 'b', host.env.GEMINI_CLI_HOME)).toBe(userEnabled);
+    expect(await fs.readJson(activation)).toEqual({ b: { ...before.b, overrides: scopes }, sibling: before.sibling,
+      later: { overrides: ['!*'], setting: 'external edit' } });
     expect(host.nativeInstalls).toHaveLength(0);
   }, 30_000);
 

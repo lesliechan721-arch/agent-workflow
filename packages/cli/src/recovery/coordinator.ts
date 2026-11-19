@@ -606,19 +606,23 @@ function portablePluginClosure(plan: RecoveryPlan, prepared: PortablePreparation
     .filter((plugin) => !prepared.options.excludedPluginIds?.includes(plugin.pluginId!));
 }
 
-export function verifiedInheritedPortableProviders(plan: RecoveryPlan): PortablePreparation[] {
-  const ids = plan.options.inheritedPortableProviderIds;
-  if (!ids?.length) return [];
-  return plan.portableGroups.filter((group) => ids.includes(group.options.selector) && !group.blockers.length
+export function canCheckPortableProvider(group: PortablePreparation): boolean {
+  return !group.blockers.length
     && !group.unmet.length && group.targets.some((target) => target.providerPluginId === group.options.selector)
-    && group.targets.every((target) => target.disposition === 'write' && target.ownership === 'aw'
-      && target.observation === 'satisfied' && target.installedDigest === target.expectedDigest));
+    && group.targets.every((target) => target.disposition === 'write');
+}
+
+function isHealthyPortableProvider(group: PortablePreparation): boolean {
+  return canCheckPortableProvider(group) && group.targets.every((target) => target.ownership === 'aw'
+    && target.observation === 'satisfied' && target.installedDigest === target.expectedDigest);
 }
 
 function preparePortablePreApplyAuthorization(plan: RecoveryPlan): void {
   if (plan.command === 'cleanup' || plan.command === 'uninstall') return;
   const authorization = new Map<string, PreApplyAuthorizationTarget>();
-  const verifiedProviders = new Set(verifiedInheritedPortableProviders(plan).map((group) => group.options.selector));
+  const verifiedProviders = new Set(plan.portableGroups.filter((group) =>
+    plan.options.inheritedPortableProviderIds?.includes(group.options.selector) && isHealthyPortableProvider(group))
+    .map((group) => group.options.selector));
   for (const prepared of plan.portableGroups) {
     for (const plugin of portablePluginClosure(plan, prepared)) {
       if (!plugin.manifest.scripts?.preApply || verifiedProviders.has(plugin.pluginId!)) continue;
@@ -1137,10 +1141,12 @@ function portablePrewriteBinding(context: CatalogOperationContext | undefined, s
 
 async function recheckPortableRecovery(plan: RecoveryPlan, groups: readonly PortablePreparation[] = plan.portableGroups,
   progress?: CheckedPortableProgress): Promise<RecoveryDiagnostic | undefined> {
+  const executable = groups.filter(({ options }) => !options.agents.every((agent) => pair(plan, options.selector, agent)?.blockers.length));
+  const providers = new Set(executable.flatMap((group) => plan.options.portableProviderChecks?.get(group.options.selector) ?? []));
   const inspections = [
-    ...groups.filter(({ options }) => !options.agents.every((agent) => pair(plan, options.selector, agent)?.blockers.length)),
+    ...executable,
     ...plan.portableProtectionGroups,
-    ...new Set(groups.flatMap((group) => plan.options.portableProviderChecks?.get(group.options.selector) ?? [])),
+    ...providers,
   ];
   if (!inspections.length) return;
   const readScope = new CatalogPreparationReadScope({ env: plan.context.env, signal: plan.runtime.signal });
@@ -1166,7 +1172,9 @@ async function recheckPortableRecovery(plan: RecoveryPlan, groups: readonly Port
     }
     const checked = await inspectPortableRecovery({ ...prepared.options, catalogOperationContext: current,
       signal: plan.runtime.signal }, readScope);
-    if (!portableReviewMatches(prepared, checked, progress?.completed)) return diagnostic('operationReviewStale');
+    // The provider ran first. Its original missing state is never sufficient for a consumer.
+    if (providers.has(prepared) && !isHealthyPortableProvider(checked)
+      || !portableReviewMatches(prepared, checked, progress?.completed)) return diagnostic('operationReviewStale');
   }, { signal: plan.runtime.signal });
   return problems.find((problem) => problem !== undefined);
 }
@@ -1330,7 +1338,7 @@ export async function executeCheckedScopedInstall(child: RecoveryPlan, execution
 }
 
 export async function executeScopedRecovery(plan: RecoveryPlan,
-  execution: { yes?: boolean; runtime?: RebuildCommandRuntime } = {}): Promise<RecoveryReceipt> {
+  execution: { yes?: boolean; runtime?: RebuildCommandRuntime; portableProgress?: CheckedPortableProgress } = {}): Promise<RecoveryReceipt> {
   if (plan.sourceRefreshes.length > 0) {
     const receipt = structuredClone(plan.receipt);
     receipt.blockers.push(diagnostic('sourceRefreshConfirmationRequired'));
@@ -1404,7 +1412,8 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
         return completeReceipt(receipt);
       }
       const executableNativeGroups = recheckedGroups.filter((group) => group !== undefined && group !== 'stale');
-      const portableBlocker = await recheckPortableRecovery(plan);
+      const portableProgress = execution.portableProgress ?? { completed: [], failed: [] };
+      const portableBlocker = await recheckPortableRecovery(plan, plan.portableGroups, portableProgress);
       if (portableBlocker) {
         receipt.blockers.push(portableBlocker);
         return completeReceipt(receipt);
@@ -1437,7 +1446,7 @@ export async function executeScopedRecovery(plan: RecoveryPlan,
         }
       }
       for (const group of executableNativeGroups) await executeNativeGroup(plan, group, nativeRuntime);
-      await executePortableGroups(plan, plan.portableGroups, nativeRuntime, { completed: [], failed: [] });
+      await executePortableGroups(plan, plan.portableGroups, nativeRuntime, portableProgress);
       for (const { kind, pluginId, observation } of plan.portableResidues) {
         if (kind !== 'cleanup') continue;
         if (observation.state === 'absent') continue;

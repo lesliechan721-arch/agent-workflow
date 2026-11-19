@@ -447,7 +447,8 @@ function scopedResultText(receipt: RecoveryReceipt, technical = false): string {
   ]).values()];
   const nativeRecovery = inventoryRecoveryActions(receipt.targetResults.filter((target) => !target.deploymentReceipts?.length)
     .flatMap((target) => [...target.blockers, ...(target.reasons ?? [])])
-    .filter((entry) => entry.subject?.field === 'nativeSource' || entry.subject?.field === 'workspace'), receipt);
+    .filter((entry) => entry.subject?.field === 'nativeSource' || entry.subject?.field === 'workspace'
+      || entry.subject?.field === 'activationConfig' || entry.subject?.field === 'nativeConfigRoot'), receipt);
   return [
     `范围：${receipt.scope === 'user' ? '个人（所有项目）' : '当前项目'}`,
     `完整请求：${receipt.requestedRoots.join('、') || '无'}`,
@@ -2732,6 +2733,8 @@ export function ConsoleAppV4(props: {
       : snapshot.portableDraft.candidates.filter((candidate) => queryMatches(query,
         candidate.name, candidate.shortDescription ?? candidate.description.split(/[。！？\n]/u)[0]))
     : [];
+  const configRecoveryDetails = route.name === 'result' && snapshot.result
+    ? props.controller.currentConfigRecoveryDetails(snapshot.result.operationId) : [];
   const supportsTechnicalDetails = !(route.name === 'pluginDependencies' && route.view !== 'removeBlocked'
     || route.name === 'pluginDependencyNode' || route.name === 'portableDependencies')
     && (snapshot.phase === 'error'
@@ -2753,6 +2756,7 @@ export function ConsoleAppV4(props: {
     || portableVariantCandidates.length > 0
     || Boolean(route.name === 'portableBlocker' && plugin)
     || Boolean(route.name === 'configUnavailable' && plugin)
+    || configRecoveryDetails.length > 0
     || Boolean(route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
       && snapshot.result.operationKind === 'portableInstall'));
   const characterInput = !activeVariantPreview && !activeFieldIsConst && !activePropertyIsConst && isCharacterInputMode(route, searchFocus)
@@ -3131,6 +3135,10 @@ export function ConsoleAppV4(props: {
     setPortableResultDetailOpen(false);
     setPortableResultDetailOffset(0);
     setShowTechnical((value) => !value);
+    if (configRecoveryDetails.length) {
+      setFocus(0);
+      setScrollOffset(0);
+    }
     if (!(route.name === 'result' && snapshot.result
       && 'operationKind' in snapshot.result
       && snapshot.result.operationKind === 'portableInstall')) {
@@ -10169,6 +10177,8 @@ export function ConsoleAppV4(props: {
         }),
       });
     }
+    if (configRecoveryDetails.length) actions.unshift({ label: '查看 Gemini 恢复详情',
+      description: '先检查原安装位置并保留启用规则', run: toggleTechnical });
     const visibleMessages = resultSummary?.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
     const visibleChanges = resultSummary?.changes?.slice(0, policy.mode === 'compact' ? 2 : 4) ?? [];
     type ResultTarget = Omit<NonNullable<OperationResultSummary['targets']>[number], 'platform'> & { platform: PlatformTarget };
@@ -10585,6 +10595,17 @@ export function ConsoleAppV4(props: {
         ? <Pager page={portableSkillPage.page} pageCount={portableSkillPage.pageCount} columns={size.columns - 2} /> : null}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
     </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成' : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'} meta={resultTargets.length > 0 ? `${resultTargets.length} 个目标` : undefined}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{configGroupRows}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{visibleCommandResultRows}{resultTargetPage.pageCount > 1 ? <Pager page={resultTargetPage.page} pageCount={resultTargetPage.pageCount} columns={size.columns - 6} /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="已保存的设置层不会重写。失败的保存层保留草稿；应用失败时只重试应用。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
+    if (configRecoveryDetails.length > 0 && showTechnical) {
+      title = 'Gemini 恢复详情';
+      description = '完成下方核对后，再重新应用设置。';
+      help = '←→ 阅读全部详情 · Esc 返回结果摘要';
+      readingText = configRecoveryDetails.join('\n\n');
+      actions = [{ label: '返回结果摘要', run: toggleTechnical }];
+      content = <Box flexDirection="column">
+        {readingPage(readingText, size.columns - 2, pageActionBudget(3))}
+        <SemanticRows actions={actions} focus={0} kind="action" compact />
+      </Box>;
+    }
   } else if (route.name === 'pluginContent' && plugin) {
     const overview = props.controller.getPluginContentOverview(plugin.pluginId);
     const contentState = props.controller.getPluginContentState(plugin.pluginId);
@@ -12099,6 +12120,8 @@ export function ConsoleAppV4(props: {
       setPortableResultDetailOffset(0);
       setFocus(portableResultDetailReturnFocus.current);
       setScrollOffset(0);
+    } else if (globalAction === 'back' && configRecoveryDetails.length > 0 && showTechnical) {
+      toggleTechnical();
     } else if (globalAction === 'back' && route.name === 'portableSkillSelect' && portableToolsOpen) {
       setPortableToolsOpen(false);
       setFocus(0);

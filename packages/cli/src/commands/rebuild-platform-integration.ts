@@ -1085,7 +1085,7 @@ export class PlatformRebuildSession {
               ? 'codexProjectActivationUnconfirmed'
               : nativeContentIncomplete ? 'nativeInstallContentPostcheckFailed' : 'deploymentPostcheckFailed';
           if (code === 'nativeInstallContentPostcheckFailed' && plan.binding.route === 'gemini-extension') {
-            receipt.diagnostics.push(...geminiRecoveryDiagnostics(plan, ctx.cwd, code));
+            receipt.diagnostics.push(...geminiRecoveryDiagnostics(plan, ctx, code));
           } else receipt.diagnostics.push({ code, severity: 'error',
             message: code === 'nativeInstallContentPostcheckFailed'
                 ? 'The installed native copy does not confirm the frozen package bytes. Check status and sync the affected target.'

@@ -6,12 +6,12 @@ import type {
   DeploymentBinding, DeploymentObservation, DeploymentReceipt, Diagnostic,
   FrozenDeploymentPlan, HostContribution, LifecyclePrepareInput, MutationContext,
   NativeIdentity, PlannedEffect, PreparedDeployment, PrepareResult, ProductInstallation,
-  ProjectionResult,
+  ProjectionResult, ReadContext,
 } from './contracts.js';
 import { inspectDeployment, requiredDeploymentActivation, selectedNativeConsumer } from './inspection.js';
 import { executeNativeLifecycle, grokRegistrationOwned, nativeLifecycleEffectKey, nativeRoute, piProjectRegistrationHidden, routeReload } from './lifecycle-native.js';
-import { geminiConsentMessages } from './gemini-consent.js';
-import { geminiReplacementMessages } from './gemini-activation.js';
+import { geminiConsentMessages, geminiProjectOnlyRecoveryReason } from './gemini-consent.js';
+import { geminiExtensionPaths, geminiReplacementMessages } from './gemini-activation.js';
 import { selectNativeProduct } from './discovery.js';
 
 interface PreparedContribution {
@@ -33,22 +33,24 @@ export function lifecycleDiagnostic(binding: DeploymentBinding, code: string, me
   return { code, severity: 'error', message,
     subject: { target: binding.platform, pluginId: binding.plugin.pluginId, scope: binding.scope.kind } };
 }
-/** Keep the native input and workspace bound to the physical extension. The joint receipt owns AW retries. */
-export function geminiRecoveryDiagnostics(plan: FrozenDeploymentPlan, cwd: string,
+/** Keep recovery locations bound to the physical extension. The joint receipt owns AW retries. */
+export function geminiRecoveryDiagnostics(plan: FrozenDeploymentPlan, ctx: ReadContext,
   code: keyof typeof geminiConsentMessages | keyof typeof geminiReplacementMessages): Diagnostic[] {
   const { binding, evidence } = plan;
   const messages = { ...geminiConsentMessages, ...geminiReplacementMessages };
-  const manual = code === 'nativeConsentProtocolUnconfirmed' || code === 'nativeConsentPromptUnsupported';
-  const description = manual
-    ? `${messages[code]} Back up the extension and its activation rules. Review each host permission with the same Gemini client and configuration root.`
-    : messages[code];
+  const projectOnlyRegistration = binding.scope.kind === 'project' && evidence.userActivationEnabled === false
+    && plan.effects.some((effect) => effect.kind === 'register');
   const subject = { pluginId: binding.plugin.pluginId, sourceId: binding.plugin.sourceId, target: binding.platform, scope: binding.scope.kind };
   return [
-    { code, severity: 'error', message: description, subject: { ...subject, field: 'nativeSource' },
+    { code, severity: 'error', message: messages[code], subject: { ...subject, field: 'nativeSource' },
       detail: { reasonCode: 'geminiNativeConsentSource', path: evidence.layout.packageRoot } },
     { code: 'nativeConsentWorkspace', severity: 'warning', message: 'Review Gemini permissions in the identified workspace.',
       subject: { ...subject, field: 'workspace' },
-      detail: { reasonCode: 'geminiNativeConsentWorkspace', path: binding.scope.kind === 'project' ? binding.scope.projectRoot : cwd } },
+      detail: { reasonCode: 'geminiNativeConsentWorkspace', path: binding.scope.kind === 'project' ? binding.scope.projectRoot : ctx.cwd } },
+    { code: 'nativeConsentActivationConfig', severity: 'info', message: 'This Gemini file contains the shared User and Project extension activation rules.',
+      subject: { ...subject, field: 'activationConfig' },
+      detail: { reasonCode: projectOnlyRegistration ? geminiProjectOnlyRecoveryReason : 'geminiNativeConsentActivationConfig',
+        path: geminiExtensionPaths(ctx).file, configKey: evidence.nativeIdentity?.packageId } },
   ];
 }
 function componentPath(component: OwnedComponent): string | null {
@@ -397,7 +399,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       result.mutation = mutation === 'none' || definite ? 'none' : mutation === 'confirmed' ? 'confirmed' : started ? 'possible' : 'none';
       result.status = definite || (geminiCode !== undefined && result.mutation === 'none') ? 'blocked' : result.mutation === 'possible' ? 'unknown' : 'failed';
       if (geminiCode) {
-        const diagnostics = geminiRecoveryDiagnostics(plan, ctx.cwd, geminiCode);
+        const diagnostics = geminiRecoveryDiagnostics(plan, ctx, geminiCode);
         result.diagnostics.push(...diagnostics);
         receipt.diagnostics.push(...diagnostics);
       } else {
@@ -407,10 +409,16 @@ export async function executePlatformLifecycle(ctx: MutationContext,
       }
       if (binding.route === 'grok-cli' && (effect.kind === 'register' || effect.kind === 'refresh')
         && (!definite || code === 'nativeTrustRequired')) {
+        const subject = { target: 'grok', pluginId: binding.plugin.pluginId, scope: binding.scope.kind };
         result.diagnostics.push({ ...lifecycleDiagnostic(binding, 'grokNativeInstallRecovery',
           'The owned AW source package is retained for interactive Grok installation.'), severity: 'warning',
-          subject: { target: 'grok', pluginId: binding.plugin.pluginId, scope: binding.scope.kind, field: 'nativeSource' },
-          detail: { reasonCode: 'grokNativeInstallSource', path: plan.evidence.layout.packageRoot } });
+          subject: { ...subject, field: 'nativeSource' },
+          detail: { reasonCode: 'grokNativeInstallSource', path: plan.evidence.layout.packageRoot } },
+        { code: 'grokNativeInstallWorkspace', severity: 'info', message: 'Review the retained source in this workspace.',
+          subject: { ...subject, field: 'workspace' }, detail: { reasonCode: 'grokNativeInstallWorkspace', path: ctx.cwd } });
+        if (state.product?.entry?.kind === 'cli') result.diagnostics.push({ code: 'grokNativeInstallConfigRoot', severity: 'info',
+          message: 'Use this Grok configuration root when reviewing the retained source.', subject: { ...subject, field: 'nativeConfigRoot' },
+          detail: { reasonCode: 'grokNativeInstallConfigRoot', path: state.product.entry.configRoot } });
       }
       if (effect.kind === 'publish-package') packageReady = false;
       if (effect.kind === 'register' || effect.kind === 'refresh') nativeReady = false;
@@ -449,7 +457,7 @@ export async function executePlatformLifecycle(ctx: MutationContext,
         || binding.route === 'grok-cli' && receipt.after.components.some((component) => component.presence === 'unknown') ? 'unknown' : 'failed';
       const code = binding.route === 'gemini-extension' && !nativeContentReady ? 'nativeInstallContentPostcheckFailed' : 'nativeMutationPostcheckFailed';
       if (code === 'nativeInstallContentPostcheckFailed') {
-        const diagnostics = geminiRecoveryDiagnostics(plan, ctx.cwd, code);
+        const diagnostics = geminiRecoveryDiagnostics(plan, ctx, code);
         result.diagnostics.push(...diagnostics);
         receipt.diagnostics.push(...diagnostics);
       } else result.diagnostics.push(lifecycleDiagnostic(binding, code,

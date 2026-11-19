@@ -140,7 +140,8 @@ function boundDiagnostics(
 /** Keep the full guidance on each target while showing shared actions once in a whole-operation view. */
 export function distinctRecoveryLines(lines: readonly string[], shown: Set<string>): string[] {
   return lines.filter((line) => {
-    if (!line.startsWith('aw plugin sync ') && !line.startsWith('aw plugin status ') && !line.startsWith('在 TUI 中重新检查 ')) return true;
+    if (!line.startsWith('aw plugin sync ') && !line.startsWith('aw plugin status ') && !line.startsWith('在 TUI 中重新检查 ')
+      && !line.startsWith('从插件详情重新审阅安装位置。')) return true;
     if (shown.has(line)) return false;
     shown.add(line);
     return true;

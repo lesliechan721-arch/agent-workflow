@@ -11,7 +11,7 @@ import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js
 import type { RecoveryPlan } from '../recovery/coordinator.js';
 import type { RetirePlan } from '../recovery/retirement.js';
 import { isRecoveryReviewStaleBeforeExecution, recoveryRetryDispositions, recoveryStatusContext,
-  recoverySummaryErrors, type RecoveryReceipt } from '../recovery/receipt.js';
+  recoverySummaryErrors, type RecoveryReceipt, type RecoveryTarget } from '../recovery/receipt.js';
 import { safeDiagnosticCode } from './diagnostics.js';
 import { recoveryReason } from './glossary.js';
 import type { OperationHistoryRecord, OperationHistoryTarget, SafeOperationDiagnostic } from './operation-history.js';
@@ -37,6 +37,14 @@ export interface IntentPlan {
 
 export type ScopedTuiPlan = { kind: 'recovery'; scope: Scope; plan: RecoveryPlan }
   | { kind: 'retire'; scope: Scope; plan: RetirePlan } | TargetsPlan | IntentPlan;
+
+function nativePermissionCodes(target: RecoveryTarget): string[] {
+  if (target.agent !== 'gemini' && target.agent !== 'grok') return [];
+  const diagnostics = [...target.blockers, ...target.reasons ?? [], ...(target.deploymentReceipts ?? []).flatMap((item) =>
+    [...item.diagnostics, ...item.effects.flatMap((effect) => effect.diagnostics)])];
+  return diagnostics.filter(({ subject }) => subject?.field === 'nativeSource' && subject.pluginId === target.pluginId
+    && subject.target === target.agent && subject.scope === target.scope).map(({ code }) => code);
+}
 
 export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
   identity: Pick<OperationHistoryRecord['summary'], 'recordId' | 'epoch' | 'operationId' | 'createdAtMs'>,
@@ -66,18 +74,29 @@ export function projectScopedRecoveryHistory(receipt: RecoveryReceipt,
       : entry.execution === 'not-run' ? 'skipped'
         : entry.blockers.length > 0 || entry.observation !== 'verified' ? 'failed'
           : entry.execution === 'applied' ? 'completed' : entry.execution === 'no-op' ? 'kept' : 'failed';
-    const diagnosticIds = [...new Set(entry.blockers.map((blocker) => blocker.code))]
+    const permissionCodes = !targetWorkNotStarted && receipt.remainingTargets.some((position) => position.pluginId === entry.pluginId
+      && position.agent === entry.agent && position.scope === entry.scope) ? nativePermissionCodes(entry) : [];
+    const diagnosticIds = [...new Set([...entry.blockers.map((blocker) => blocker.code), ...permissionCodes])]
       .map((code) => {
         const globalId = targetWorkNotStarted && globalIds.get(code);
         if (globalId) return globalId;
         const details: string[] = [];
-        if (code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync')) {
+        const permission = permissionCodes.includes(code);
+        if (permission || code === 'operationReviewStale' && (receipt.command === 'install' || receipt.command === 'sync')) {
           details.push(checkStatus);
+          if (permission) details.push(entry.agent === 'gemini'
+            ? '从插件详情重新审阅安装位置。打开结果详情，按当前来源、工作区和启用规则的提示完成 Gemini 许可。'
+            : '从插件详情重新审阅安装位置。打开结果详情，在同一 Grok 客户端核对来源并完成信任步骤。');
           // Store reviewable commands from structured positions only. Backend prose may contain private data.
           for (const position of recoveryRetryDispositions(receipt, [entry])) {
             try {
               const root = canonicalPluginId(position.pluginId);
-              details.push(position.kind === 'cli'
+              if (permission) {
+                const alsoUser = position.scope === 'project' && position.kind === 'cli' && receipt.remainingTargets.some((item) =>
+                  item.pluginId === root && item.agent === position.agent && item.scope === 'user');
+                const scope = alsoUser ? '个人和项目' : position.scope === 'user' ? '个人' : '项目';
+                details.push(`在 TUI 中重新检查 ${root} 的 ${position.agent} ${scope}位置。`);
+              } else details.push(position.kind === 'cli'
                 ? `aw plugin sync ${root} --context ${position.scope} --target ${position.agent}`
                 : `在 TUI 中重新检查 ${root} 的 ${position.agent} 项目位置。`);
             } catch { /* An invalid identity cannot be offered as a command. */ }

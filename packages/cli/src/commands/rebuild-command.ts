@@ -4074,6 +4074,39 @@ async function runRebuildCommandInSession(
         target.relation === 'dependency'
         && target.resolvedScope !== options.commandOptions.scope
         && target.action === 'keep';
+      const lifecycleCommand = options.command === 'install'
+        || options.command === 'sync' || options.command === 'reinstall';
+      const preApplyAuthorizationForPlan = (plan: ReconcileOperationPlan,
+        preparedTargets?: ReadonlyMap<string, { target: DesiredTarget }>): PreApplyAuthorizationTarget[] =>
+        lifecycleCommand ? executionSelections.flatMap((selection) => {
+          const { entry, platform } = selection;
+          const planned = planTargetFor(plan, selection);
+          if (!planned || planned.action === 'block' || isHealthyWiderDependency(planned)
+            || !entry.plugin.manifest.scripts?.preApply) return [];
+          const identity = { pluginId: entry.pluginId, platform, scope: planned.resolvedScope };
+          if (isNativeActivationOnlyTarget(executionContext, identity)) return [];
+          if (preparedTargets) {
+            const prepared = preparedTargets.get(executionKey(selection, plan));
+            if (!prepared || !hasPlannedPreApply(prepared.target)) return [];
+          }
+          return [{
+            ...identity,
+            pluginName: entry.plugin.manifest.name,
+            sourceId: entry.source.sourceId,
+            sourceIdentity: entry.source.sourceIdentity,
+            relation: planned.relation === 'requested' ? 'requested'
+              : planned.requiredBy.some((pluginId) => selectedIds.has(pluginId)) ? 'direct' : 'transitive',
+          }];
+        }) : [];
+      const assertPreApplyAuthorization = (plan: ReconcileOperationPlan,
+        preparedTargets: ReadonlyMap<string, { target: DesiredTarget }>) => {
+        if (options.commandOptions.yes === true || options.runtime?.preApplyConfirmed === true
+          || !preApplyAuthorizationForPlan(plan, preparedTargets).length) return;
+        throw namespacedPreflightError(
+          'preApplyAuthorizationRequired: Running plugin preApply requires --yes or an accepted Review.',
+          preflightTargets,
+        );
+      };
       const createCodexPlans = async (
         _plan: ReconcileOperationPlan,
         _activationSupport: 'observed' | 'assumed' = 'observed',
@@ -4391,28 +4424,7 @@ async function runRebuildCommandInSession(
         );
         const preview = mergeRebuildCommandResults([]);
         preview.dependencyPlan = authorizationPlan;
-        preview.preApplyAuthorization = executionSelections.flatMap((selection) => {
-          const { entry, platform } = selection;
-          const planned = planTargetFor(authorizationPlan, selection);
-          if (!planned || planned.action === 'block' || isHealthyWiderDependency(planned)
-            || !entry.plugin.manifest.scripts?.preApply) {
-            return [];
-          }
-          const relation = planned.relation === 'requested'
-            ? 'requested' as const
-            : planned.requiredBy.some((pluginId) => selectedIds.has(pluginId))
-              ? 'direct' as const
-              : 'transitive' as const;
-          return [{
-            pluginId: entry.pluginId,
-            pluginName: entry.plugin.manifest.name,
-            sourceId: entry.source.sourceId,
-            sourceIdentity: entry.source.sourceIdentity,
-            platform,
-            scope: planned.resolvedScope,
-            relation,
-          }];
-        });
+        preview.preApplyAuthorization = preApplyAuthorizationForPlan(authorizationPlan);
         return preview;
       }
       if (options.runtime?.previewOperationPlan) {
@@ -4436,6 +4448,7 @@ async function runRebuildCommandInSession(
         );
         const preview = mergeRebuildCommandResults([]);
         preview.dependencyPlan = initialPlan;
+        preview.preApplyAuthorization = preApplyAuthorizationForPlan(initialPlan, previewPreparation.preparedTargets);
         const blockedTargets = [...previewPreparation.preparedTargets.values()].flatMap(({ target }) => {
           const receipts = target.platformDeployment?.blockedReceipts ?? [];
           if (!receipts.length) return [];
@@ -4531,24 +4544,6 @@ async function runRebuildCommandInSession(
           exactOwnedTextTargets(lockedPlan),
           exactSkillMarkerTargets(lockedPlan),
         );
-        const lifecycleCommand = options.command === 'install'
-          || options.command === 'sync'
-          || options.command === 'reinstall';
-        const preApplyRequired = lifecycleCommand && executionSelections.some(({ entry, platform }) =>
-          entry.plugin.manifest.scripts?.preApply !== undefined
-          && lockedPlan.targets.some((target) =>
-            target.pluginId === entry.pluginId
-            && target.platform === platform
-            && target.action !== 'block'
-            && !isHealthyWiderDependency(target)));
-        if (preApplyRequired
-          && options.commandOptions.yes !== true
-          && options.runtime?.preApplyConfirmed !== true) {
-          throw namespacedPreflightError(
-            'preApplyAuthorizationRequired: Running plugin preApply requires --yes or an accepted Review.',
-            preflightTargets,
-          );
-        }
         const provisionalLockedCodexPlans = await createCodexPlans(lockedPlan);
         const codexManagerRequired = provisionalLockedCodexPlans.some((plan) =>
           plan.sharedNativeActions.some((action) =>
@@ -4557,6 +4552,7 @@ async function runRebuildCommandInSession(
             || action.action === 'repair'));
         let lockedCodexPlans = provisionalLockedCodexPlans;
         let lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, true);
+        assertPreApplyAuthorization(lockedPlan, lockedPreparation.preparedTargets);
         let lockedOperationPlan = await withNativeToolRemovalImpact(createRebuildOperationPlan({
           dependencyPlan: lockedPlan,
           codexPlans: lockedCodexPlans,
@@ -4869,6 +4865,7 @@ async function runRebuildCommandInSession(
               executionContext.codexManager,
             );
             lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, false);
+            assertPreApplyAuthorization(lockedPlan, lockedPreparation.preparedTargets);
             const eligibleKeys = new Set(operationPreparations.keys());
             const initialOperationPreparations = new Map(operationPreparations);
             const finalPreparation = await prepareLockedTargets({

@@ -7,7 +7,7 @@ import { executeCheckedScopedInstall, type CheckedPortableProgress, type Recover
 import { createInstallAdmission, runInstallTasks, type InstallTask } from './install-concurrency.js';
 import { RecoveryInterruptedError, recoveryInterruptionCode } from './interruption.js';
 import { rebaseCheckedProjectInstall } from './joint-install-native-rebase.js';
-import type { JointDemandPlan } from './joint-demand.js';
+import { indexJointDependencies, type JointDemandPlan } from './joint-demand.js';
 import { measureRecoveryPerformanceStage } from './performance.js';
 import type { RecoveryDiagnostic, RecoveryReceipt, RecoveryTarget } from './receipt.js';
 
@@ -37,6 +37,7 @@ export async function executeJointInstall(options: {
   existingOnly?: boolean;
 }): Promise<{ receipts: RecoveryReceipt[]; commands: CommandProducerResult[]; blockers: RecoveryDiagnostic[]; interruption?: unknown }> {
   const { children, demand, token } = options;
+  const dependencyGraph = indexJointDependencies(demand);
   const groups: InstallGroup[] = [];
   const targetGroup = new Map<string, InstallGroup>();
   const addGroup = (targets: RecoveryTarget[], child?: RecoveryPlan) => {
@@ -69,16 +70,8 @@ export async function executeJointInstall(options: {
   }
   for (const group of groups) {
     for (const target of group.targets) {
-      const placement = demand.placements.find((item) => item.target === target.agent
-        && item.pluginId === target.pluginId && item.scope === target.scope)
-        ?? demand.placements.find((item) => item.target === target.agent && item.pluginId === target.pluginId && item.scope === 'user');
-      const providers: Position[] = [];
-      for (const name of placement?.plugin.manifest.dependencies ?? []) {
-        const pluginId = `${placement!.plugin.sourceId}/${name}`;
-        const candidates = demand.placements.filter((item) => item.target === target.agent && item.pluginId === pluginId);
-        const provider = candidates.find((item) => item.scope === target.scope) ?? candidates.find((item) => item.scope === 'user');
-        if (provider) providers.push({ pluginId, agent: provider.target, scope: provider.scope });
-      }
+      const providers: Position[] = dependencyGraph.directProviders({ pluginId: target.pluginId, target: target.agent, scope: target.scope })
+        .map((provider) => ({ pluginId: provider.pluginId, agent: provider.target, scope: provider.scope }));
       if (group.child?.options.nativeActivationOnlyTargets?.some((item) => item.pluginId === target.pluginId
         && item.platform === target.agent && item.scope === target.scope)) providers.push({ ...target, scope: 'user' });
       for (const provider of providers) requireGroup(group, targetGroup.get(positionKey(provider)));

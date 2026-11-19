@@ -200,6 +200,7 @@ sequenceDiagram
   - 普通保存先通过 schema 和引用预检，再提交用户文档；按请求另行准备既有输出刷新。
   - `configWrite` 精确报告 `notStarted`、`failed`、`succeeded`，独立 apply 不重复保存。
   - **已保存配置绝不回滚**：一旦原子提交完成，无论后续的平台发现、依赖解析、renderer 或 preApply 抛出何种异常，**已提交的配置文档绝不被撤销**。回执以 `partial` 或 `unavailable` 报告，并附带安全恢复指引（如 `aw plugin sync`）。
+  - Gemini 宿主许可阻断时，回执保留独立目标的结果，并按[公开宿主许可合同](../../reference/cli.md#1-入口请求与确认)显示精确来源、工作区和共享激活文件。恢复动作沿用实际声明根与目标位置。仅保留安装的输出在可限定到原位置时使用配置 apply 恢复。未验证的许可协议需先在宿主中人工处理。
   - 状态检查与预览不运行 preApply。
   - JSON stdout 仅输出一个安全回执，敏感值不进入 argv、诊断或 Review。
 - **Config Review 证据绑定**：

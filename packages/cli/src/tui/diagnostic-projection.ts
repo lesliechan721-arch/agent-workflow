@@ -1,5 +1,8 @@
-import type { PlatformName, Scope } from '../types.js';
+import type { ConfigApplyTargetResult, PlatformName, Scope } from '../types.js';
+import { geminiPermission } from '../commands/public-lifecycle-result.js';
+import { redactString } from '../output/redact.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
+import { collectSensitiveTokenRepresentations } from '../utils/sensitive-content.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
 import type { OperationKind } from './controller.js';
 import type { OperationEffectFacts, SafeOperationDiagnostic } from './operation-history.js';
@@ -37,7 +40,7 @@ const SAFE_ERROR_CODES = new Set([
 function targetFrom(value: unknown): Target | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as Record<string, unknown>;
-  if ((candidate.platform !== 'codex' && candidate.platform !== 'claude')
+  if ((candidate.platform !== 'codex' && candidate.platform !== 'claude' && candidate.platform !== 'gemini')
     || (candidate.scope !== 'user' && candidate.scope !== 'project')) return undefined;
   return {
     ...(typeof candidate.pluginId === 'string' ? { pluginId: candidate.pluginId } : {}),
@@ -175,6 +178,7 @@ export function projectExecutionDiagnostics(
   diagnostics: SafeOperationDiagnostic[];
   effects: OperationEffectFacts;
   targetEffects: Map<string, OperationEffectFacts>;
+  configRecoveryDetails?: string[];
 } {
   const raw = execution && typeof execution === 'object' ? execution as Record<string, unknown> : {};
   const diagnostics: SafeOperationDiagnostic[] = [];
@@ -370,6 +374,7 @@ export function projectExecutionDiagnostics(
   if (operationKind === 'configSaveBatch') {
     const groups = Array.isArray(raw.groups) ? raw.groups : [];
     const groupFacts: OperationEffectFacts[] = [];
+    const configRecoveryDetails: string[] = [];
     for (const [index, candidate] of groups.entries()) {
       if (!candidate || typeof candidate !== 'object') continue;
       const group = candidate as Record<string, unknown>;
@@ -390,6 +395,7 @@ export function projectExecutionDiagnostics(
         apply,
       }, `${idPrefix}:config-batch:${scope}:${index}`, sensitiveValues, 'configSave');
       diagnostics.push(...projected.diagnostics);
+      configRecoveryDetails.push(...projected.configRecoveryDetails ?? []);
       if (group.status === 'failed'
         && (group.configSaved !== true || projected.diagnostics.length === 0)) {
         const saved = group.configSaved === true;
@@ -417,6 +423,7 @@ export function projectExecutionDiagnostics(
         preApplyExternalEffect: 'notApplicable', finalVerification: 'notStarted',
       },
       targetEffects,
+      ...(configRecoveryDetails.length ? { configRecoveryDetails } : {}),
     };
   }
   const rebuildResults = [
@@ -556,6 +563,7 @@ export function projectExecutionDiagnostics(
     }
   }
   if (apply) {
+    const configRecoveryDetails: string[] = [];
     const errors = [
       ...(apply.error && typeof apply.error === 'object' ? [apply.error] : []),
       ...(Array.isArray(apply.errors) ? apply.errors : []),
@@ -578,14 +586,30 @@ export function projectExecutionDiagnostics(
       const entry = candidate as Record<string, unknown>;
       if (entry.state !== 'failed' && entry.state !== 'skipped') continue;
       const target = targetFrom(entry.target);
+      const recovery = target?.platform === 'gemini'
+        ? (candidate as ConfigApplyTargetResult).geminiRecovery : undefined;
+      const nativeSource = recovery?.diagnostics.find((item) => item.subject?.field === 'nativeSource'
+        && item.subject.pluginId === target?.pluginId && item.subject.scope === target?.scope
+        && item.subject.target === 'gemini');
+      const permission = nativeSource && geminiPermission(nativeSource.code);
+      if (permission && recovery) {
+        for (const action of recovery.nextActions) {
+          if (action.kind !== 'manual' && (permission === 'manual' || recovery.nextActions.some((step) => step.kind === 'manual'))) continue;
+          let text = action.kind === 'manual' ? action.message
+            : `${action.reason}\n${action.argv.join(' ')}`;
+          for (const token of collectSensitiveTokenRepresentations(sensitiveValues)) text = text.split(token).join('[REDACTED]');
+          configRecoveryDetails.push(redactString(text));
+        }
+      }
       diagnostics.push({
         id: `${idPrefix}:config-target:${index}`,
         code: typeof entry.errorCode === 'string'
           ? safeDiagnosticCode(entry.errorCode, 'configApplyFailed') : 'configApplyFailed',
         stage: 'apply',
-        safeMessage: 'The config was not applied to this target.',
+        safeMessage: permission ? 'Gemini permission or native recovery is required for this location.'
+          : 'The config was not applied to this target.',
         ...(target ? { target } : {}),
-        causes: [], detailLines: [],
+        causes: [], detailLines: permission ? ['在当前结果中查看 Gemini 恢复详情。离开结果后，从插件详情重新审阅同一安装位置，并核对启用规则。'] : [],
       });
     }
     const rebuildFacts = rebuildResults
@@ -604,7 +628,8 @@ export function projectExecutionDiagnostics(
       finalVerification: apply.state === 'succeeded' ? 'completed'
         : apply.state === 'partial' || apply.state === 'unavailable' ? 'failed' : 'notStarted',
     };
-    return { diagnostics, effects: configEffects, targetEffects };
+    return { diagnostics, effects: configEffects, targetEffects,
+      ...(configRecoveryDetails.length ? { configRecoveryDetails } : {}) };
   }
 
   const facts = rebuildResults.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'))

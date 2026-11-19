@@ -1685,12 +1685,14 @@ export class TuiController {
   #operationHistory = new OperationHistoryStore();
   #sessionEpoch = 0;
   #lastRecordedResultId?: string;
+  #configRecovery?: { operationId: string; details: string[] };
   readonly #operationDiagnostics = new Map<string, {
     diagnostics: SafeOperationDiagnostic[];
     effects: OperationEffectFacts;
     targetEffects?: Map<string, OperationEffectFacts>;
     targets?: OperationHistoryTarget[];
     sensitiveValues?: string[];
+    configRecoveryDetails?: string[];
   }>();
 
   constructor(
@@ -1966,8 +1968,14 @@ export class TuiController {
   #publish(): void {
     if (this.#disposed) return;
     this.#recordTerminalResult();
+    if (this.#router.snapshot.current.route.name !== 'result'
+      || this.#configRecovery?.operationId !== this.#result?.operationId) this.#configRecovery = undefined;
     const snapshot = this.snapshot;
     for (const listener of this.#listeners) listener(snapshot);
+  }
+
+  currentConfigRecoveryDetails(operationId: string): readonly string[] {
+    return this.#configRecovery?.operationId === operationId ? this.#configRecovery.details : [];
   }
 
   #recordTerminalResult(): void {
@@ -1984,6 +1992,8 @@ export class TuiController {
         finalVerification: result.state === 'succeeded' ? 'completed' as const : 'unknown' as const,
       },
     };
+    this.#configRecovery = projected.configRecoveryDetails?.length
+      ? { operationId: result.operationId, details: projected.configRecoveryDetails } : undefined;
     if ('summary' in result && result.summary) {
       Object.assign(result.summary, sanitizeOperationSummary(
         result.summary,
@@ -5660,6 +5670,7 @@ export class TuiController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#configRecovery = undefined;
     this.#scopedPreparationAbort?.abort();
     this.#invalidatePortableResultRecheck();
     this.#cancelReviewPreparation();

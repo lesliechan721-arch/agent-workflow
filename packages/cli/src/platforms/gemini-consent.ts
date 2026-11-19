@@ -6,6 +6,7 @@ export const geminiConsentMessages = {
   nativeConsentProtocolUnconfirmed: 'AW cannot verify the complete Gemini permission text before answering separate output streams. Automatic native installation or update was not started.',
   nativeConsentPromptUnsupported: 'Gemini requested an unknown, repeated, or incomplete native consent exchange. No further answer was sent. Keep the current files and review the native permissions manually.',
 };
+export const geminiProjectOnlyRecoveryReason = 'geminiNativeConsentActivationConfigProjectOnly';
 
 /** Recorded 0.67.0 contract only. Unverified clients must use manual native consent. */
 export function geminiConsentInput(operation: 'register' | 'refresh', source: string, cwd: string, packageId: string): NativeCliInput {

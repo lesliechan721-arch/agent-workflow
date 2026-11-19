@@ -47,6 +47,55 @@ export interface JointDemandPlan {
 
 export const canReuseProviderAcrossScopes = (target: AgentId): boolean => target === 'generic' || hasSharedUserPackage(target);
 
+type PlacementPosition = Pick<JointPlacement, 'pluginId' | 'target' | 'scope'>;
+const placementKey = ({ pluginId, target, scope }: PlacementPosition): string => [pluginId, target, scope].join('\0');
+
+/** Contribution paths explain a demand. Follow manifest edges to find all its providers. */
+export function indexJointDependencies(demand: JointDemandPlan) {
+  const placements = new Map(demand.placements.map((item) => [placementKey(item), item]));
+  const manifests = new Map(demand.placements.map((item) => [item.pluginId, item.plugin]));
+  const dependencies = new Map<string, Set<string>>();
+  function dependencyIds(pluginId: string): string[] {
+    const plugin = manifests.get(pluginId);
+    return plugin?.manifest.dependencies?.map((name) => `${plugin.sourceId}/${name}`) ?? [];
+  }
+  function reaches(root: string, dependency: string): boolean {
+    if (root === dependency) return true;
+    const known = dependencies.get(root);
+    if (known) return known.has(dependency);
+    const closure = new Set<string>();
+    const visit = (pluginId: string) => {
+      if (closure.has(pluginId)) return;
+      closure.add(pluginId);
+      for (const id of dependencyIds(pluginId)) visit(id);
+    };
+    visit(root);
+    dependencies.set(root, closure);
+    return closure.has(dependency);
+  }
+  function directProviders(consumer: PlacementPosition): JointPlacement[] {
+    return dependencyIds(consumer.pluginId).flatMap((pluginId) => {
+      const provider = placements.get(placementKey({ ...consumer, pluginId }))
+        ?? (consumer.scope === 'project' && canReuseProviderAcrossScopes(consumer.target)
+          ? placements.get(placementKey({ ...consumer, pluginId, scope: 'user' })) : undefined);
+      return provider ? [provider] : [];
+    });
+  }
+  function providers(consumer: PlacementPosition): Set<JointPlacement> {
+    const closure = new Set<JointPlacement>();
+    const visit = (position: PlacementPosition) => {
+      for (const provider of directProviders(position)) {
+        if (closure.has(provider)) continue;
+        closure.add(provider);
+        visit(provider);
+      }
+    };
+    visit(consumer);
+    return closure;
+  }
+  return { reaches, directProviders, providers };
+}
+
 export async function readJointDemand(options: Omit<ReadDemandOptions, 'scope' | 'preferences'> & {
   scope?: Scope; context?: Scope; preferences?: DeploymentPreferences; expectedProjectRoot?: string;
 }): Promise<JointDemandSnapshot> {
